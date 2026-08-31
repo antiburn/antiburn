@@ -262,6 +262,11 @@ export interface SessionAnalysisPayload {
    * fills the gap on its own; the view should show an indexing state, not
    * an empty-transcript state. */
   analysisPending: boolean
+  /** True when the fields above come from a published fence that a fresher
+   * pass is already queued or running behind, or whose transcript has since
+   * moved on. The data on screen is real, just not the latest — unlike
+   * `analysisPending`, which means there is nothing to show yet. */
+  analysisStale: boolean
 }
 
 /**

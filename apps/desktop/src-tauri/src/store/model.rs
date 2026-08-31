@@ -211,6 +211,12 @@ pub struct EvidenceRow {
     pub next_attempt_at_epoch: Option<i64>,
     pub analyzed_at_epoch: Option<i64>,
     pub last_error: Option<String>,
+    /// The claim fence a winning publish last stamped, or `None` when this
+    /// session has never published. Unlike `claim_fence`, a later reclaim or
+    /// requeue does not move this value — only the next winning publish
+    /// does. See the `v21` migration in `store::schema` for the full
+    /// contract.
+    pub published_fence: Option<i64>,
 }
 
 /// The current revisions for both transcript-derived projections.

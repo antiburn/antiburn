@@ -633,7 +633,8 @@ fn requeue_and_wake_worker(app: &tauri::AppHandle, store: &Store, key: &SessionK
 }
 
 /// Nudges the worker when the analysis this pass just served from rows was
-/// published against a transcript that has since changed.
+/// published against a transcript that has since changed. Returns whether it
+/// found one — the caller folds that into the payload's `analysisStale` flag.
 ///
 /// Reuses [`analysis::fingerprint_with_subagents`] — the same cheap
 /// `mtime:size` check `get_session_analysis_fingerprint` computes for the
@@ -648,9 +649,9 @@ async fn nudge_if_evidence_stale(
     key: &SessionKey,
     session_id: &str,
     wsl_distro: Option<&str>,
-) {
+) -> bool {
     let Some(source) = analysis::locate(kind, session_id, wsl_distro).await else {
-        return;
+        return false;
     };
     let live_fingerprint =
         analysis::fingerprint_with_subagents(kind, session_id, wsl_distro, &source).await;
@@ -659,9 +660,11 @@ async fn nudge_if_evidence_stale(
         .ok()
         .flatten()
         .map(|record| record.source_fingerprint);
-    if evidence_is_stale(stored_fingerprint.as_deref(), &live_fingerprint) {
+    let stale = evidence_is_stale(stored_fingerprint.as_deref(), &live_fingerprint);
+    if stale {
         requeue_and_wake_worker(app, store, key);
     }
+    stale
 }
 
 /// Whether the stored analysis's own fingerprint no longer matches the
@@ -669,6 +672,26 @@ async fn nudge_if_evidence_stale(
 /// comparison itself is testable without a located source or an app handle.
 fn evidence_is_stale(stored_fingerprint: Option<&str>, live_fingerprint: &str) -> bool {
     stored_fingerprint != Some(live_fingerprint)
+}
+
+/// Whether a served, replayed analysis is stale: a fresher pass is queued
+/// (`pending`) or running (`processing`) behind the served fence, or that
+/// fence's transcript has already moved past it (`fingerprint_mismatch`).
+///
+/// `failed` is deliberately excluded: a failed pass has given up, so nothing
+/// fresher is queued or running behind the served fence until something
+/// requeues it, at which point it reads `pending` again. Split out from
+/// [`get_session_analysis`] and [`get_subagent_analysis`] so the rule itself
+/// is testable without a store or an app handle.
+fn analysis_is_stale(
+    evidence_status: Option<crate::store::EvidenceStatus>,
+    fingerprint_mismatch: bool,
+) -> bool {
+    let status_stale = matches!(
+        evidence_status,
+        Some(crate::store::EvidenceStatus::Pending | crate::store::EvidenceStatus::Processing)
+    );
+    status_stale || fingerprint_mismatch
 }
 
 fn path_is_under(path: &str, root: &str) -> bool {
@@ -843,16 +866,18 @@ pub async fn get_session_analysis(
 
     // Rows are the only way this command computes an analysis: every agent
     // is in the evidence cohort, so this always serves the worker's last
-    // published pass. A missing or not-yet-published row set reports a
-    // pending payload instead of re-parsing the transcript in-process, and
-    // nudges the worker so the gap closes on its own. Publishing a fresh
-    // pass is the worker's job — see its announce callback in
-    // `insights_worker::spawn` — so this command never caches one itself or
-    // emits `SESSION_ENTRY_CHANGED_EVENT` for it.
-    let (analysis, analysis_pending) =
+    // published pass — the last one that ever finished, even while a fresh
+    // pass is requeued or in flight over an actively-written session. A
+    // session that has never published at all reports a pending payload
+    // instead of re-parsing the transcript in-process, and nudges the
+    // worker so the gap closes on its own. Publishing a fresh pass is the
+    // worker's job — see its announce callback in `insights_worker::spawn`
+    // — so this command never caches one itself or emits
+    // `SESSION_ENTRY_CHANGED_EVENT` for it.
+    let (analysis, analysis_pending, analysis_stale) =
         match analysis::analysis_from_rows(&store, &key, &session_id, &agent) {
             Some(replayed) => {
-                nudge_if_evidence_stale(
+                let fingerprint_mismatch = nudge_if_evidence_stale(
                     &app,
                     &store,
                     kind,
@@ -861,11 +886,13 @@ pub async fn get_session_analysis(
                     wsl_distro.as_deref(),
                 )
                 .await;
-                (replayed, false)
+                let evidence_status = store.evidence(&key).ok().flatten().map(|row| row.status);
+                let stale = analysis_is_stale(evidence_status, fingerprint_mismatch);
+                (replayed, false, stale)
             }
             None => {
                 requeue_and_wake_worker(&app, &store, &key);
-                (analysis::SessionAnalysis::unavailable(), true)
+                (analysis::SessionAnalysis::unavailable(), true, false)
             }
         };
     let relations = resolve_lineage(&app, kind, &key, wsl_distro.as_deref()).await;
@@ -902,6 +929,7 @@ pub async fn get_session_analysis(
         started_at_epoch: analysis.started_at_epoch,
         source_path: analysis.source_path.clone(),
         analysis_pending,
+        analysis_stale,
     })
 }
 
@@ -941,22 +969,30 @@ pub async fn get_subagent_analysis(
         return Err(format!("unknown agent {agent}"));
     };
     // Rows are the only way this command computes an analysis — see the
-    // matching comment in `get_session_analysis`. A missing or not-yet-
-    // published row set reports a pending payload and nudges the worker,
-    // instead of re-parsing the sub-agent's own transcript in-process.
+    // matching comment in `get_session_analysis`. A parent session that has
+    // never published at all reports a pending payload and nudges the
+    // worker, instead of re-parsing the sub-agent's own transcript
+    // in-process.
     let store = app.state::<Store>();
     let parent_key = SessionKey::for_session(&agent, &parent_session_id, wsl_distro.as_deref());
-    let (analysis, analysis_pending) = match analysis::subagent_analysis_from_rows(
+    let (analysis, analysis_pending, analysis_stale) = match analysis::subagent_analysis_from_rows(
         &store,
         &parent_key,
         &parent_session_id,
         &subagent_id,
         &agent,
     ) {
-        Some(replayed) => (replayed, false),
+        Some(replayed) => {
+            let evidence_status = store
+                .evidence(&parent_key)
+                .ok()
+                .flatten()
+                .map(|row| row.status);
+            (replayed, false, analysis_is_stale(evidence_status, false))
+        }
         None => {
             requeue_and_wake_worker(&app, &store, &parent_key);
-            (analysis::SessionAnalysis::unavailable(), true)
+            (analysis::SessionAnalysis::unavailable(), true, false)
         }
     };
     Ok(SessionAnalysis {
@@ -978,6 +1014,7 @@ pub async fn get_subagent_analysis(
         started_at_epoch: analysis.started_at_epoch,
         source_path: analysis.source_path.clone(),
         analysis_pending,
+        analysis_stale,
     })
 }
 
@@ -1954,6 +1991,52 @@ mod tests {
     }
 
     #[test]
+    fn a_ready_or_unsupported_fence_with_no_fingerprint_mismatch_is_not_stale() {
+        assert!(!analysis_is_stale(
+            Some(crate::store::EvidenceStatus::Ready),
+            false
+        ));
+        assert!(!analysis_is_stale(
+            Some(crate::store::EvidenceStatus::Unsupported),
+            false
+        ));
+    }
+
+    #[test]
+    fn a_fence_left_by_a_requeue_or_a_running_pass_is_stale() {
+        // The served rows are the last winning publish's, but the evidence
+        // row itself is not terminal: a fresher pass is queued or running
+        // behind them.
+        assert!(analysis_is_stale(
+            Some(crate::store::EvidenceStatus::Pending),
+            false
+        ));
+        assert!(analysis_is_stale(
+            Some(crate::store::EvidenceStatus::Processing),
+            false
+        ));
+    }
+
+    #[test]
+    fn a_fingerprint_mismatch_is_stale_even_on_a_terminal_status() {
+        assert!(analysis_is_stale(
+            Some(crate::store::EvidenceStatus::Ready),
+            true
+        ));
+    }
+
+    #[test]
+    fn a_failed_pass_behind_an_earlier_publish_is_not_stale_on_its_own() {
+        // Nothing fresher is queued or running: the worker gave up. The
+        // served rows stay marked fresh until something requeues this row,
+        // at which point it reads `pending` again.
+        assert!(!analysis_is_stale(
+            Some(crate::store::EvidenceStatus::Failed),
+            false
+        ));
+    }
+
+    #[test]
     fn a_relative_path_never_reaches_the_platform_opener() {
         for path in [
             "",
@@ -2037,6 +2120,7 @@ mod tests {
             next_attempt_at_epoch: None,
             analyzed_at_epoch: Some(1),
             last_error: None,
+            published_fence: Some(0),
         }
     }
 

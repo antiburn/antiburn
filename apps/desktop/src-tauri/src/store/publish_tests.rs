@@ -273,9 +273,10 @@ fn a_won_race_removes_turn_rows_from_every_superseded_fence_and_keeps_only_its_o
     );
 }
 
-/* R1: `Store::published_turn_rows` only exposes a complete, published
- * fence — never a claim in flight, never a superseded fence, and never a
- * status other than `ready` or `unsupported`. */
+/* R1: `Store::published_turn_rows` only ever exposes `published_fence`'s own
+ * rows — never a superseded fence, and never a claim in flight's partial
+ * rows, even while that claim moves `status` and `claim_fence` out from
+ * under it. */
 
 fn revisions() -> ProjectionRevisions {
     ProjectionRevisions {
@@ -309,8 +310,16 @@ fn published_turn_rows_returns_the_winning_pass_rows_in_order() {
     );
 }
 
+/// The whole point of `published_fence`: an actively-written session is
+/// reclaimed and requeued constantly, so its evidence `status` is almost
+/// never terminal at drilldown-open. Before `published_fence`,
+/// `published_turn_rows` gated on `status`, so this in-flight claim made it
+/// return `None` — the "Analyzing this session…" screen for minutes, even
+/// though the last publish's rows were still sitting right there. Now it
+/// keeps serving them: only the *next* winning publish moves
+/// `published_fence` (and only then does it delete this fence's rows).
 #[test]
-fn published_turn_rows_is_none_while_a_newer_claim_is_in_flight() {
+fn published_turn_rows_serves_the_last_published_fence_while_a_newer_claim_is_in_flight() {
     let store = store();
     let (record, claim) = claimed_projection(&store, "claim-in-flight", 100, 60);
     let key = record.key.clone();
@@ -322,12 +331,13 @@ fn published_turn_rows_is_none_while_a_newer_claim_is_in_flight() {
             .publish_projections(&record, None, &completion, &[])
             .unwrap()
     );
-    assert!(store.published_turn_rows(&key).unwrap().is_some());
+    let published = store.published_turn_rows(&key).unwrap();
+    assert!(published.is_some());
 
     // A newer pass claims the session: status flips to `processing` and the
-    // fence bumps, while the earlier published fence's rows are still on
-    // disk — only a publish deletes a superseded fence. This pass then
-    // writes some, but not all, of its own rows before this check runs.
+    // fence bumps, while `published_fence` still names the earlier, winning
+    // fence — only a publish moves it. This pass then writes some, but not
+    // all, of its own rows before this check runs.
     mark_evidence_pending_in(&store.lock(), &key).unwrap();
     let next_claim = store
         .claim_next_evidence(&["claude-code"], 200, 60)
@@ -339,8 +349,8 @@ fn published_turn_rows_is_none_while_a_newer_claim_is_in_flight() {
 
     assert_eq!(
         store.published_turn_rows(&key).unwrap(),
-        None,
-        "a claim in flight must never expose the old fence or a partial new one"
+        published,
+        "an in-flight claim's partial rows must never leak into a published_fence read"
     );
 }
 
@@ -384,31 +394,45 @@ fn published_turn_rows_is_none_when_failed() {
     assert_eq!(store.published_turn_rows(&key).unwrap(), None);
 }
 
-/// `Unsupported` is an insights verdict, not a parse-quality one: no
-/// detector was eligible for this source, but the rows and the
-/// `session_analysis` record a winning pass wrote are still complete.
-/// `published_turn_rows` must serve them exactly as it would for `Ready`,
-/// so the drilldown's rows-first read never falls back to a live parse for
-/// a session this terminal.
+/// For a terminal row (`ready` or `unsupported`), `published_fence` always
+/// equals `claim_fence`: a winning publish stamps both from the same
+/// completion in the same statement. So reading rows by `published_fence`
+/// alone serves exactly the rows the old status-gated read served for these
+/// two statuses — including `unsupported`, which is an insights verdict (no
+/// detector was eligible for this source), not a parse-quality one: the
+/// rows and the `session_analysis` record a winning pass wrote are still
+/// complete for it, same as `ready`.
 #[test]
-fn published_turn_rows_serves_rows_when_unsupported() {
+fn published_fence_equals_claim_fence_for_every_terminal_status() {
     let store = store();
-    let (record, claim) = claimed_projection(&store, "unsupported-status", 100, 60);
-    let key = record.key.clone();
-    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
-    writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Unsupported, "{}".into());
-    assert!(
-        store
-            .publish_projections(&record, None, &completion, &[])
-            .unwrap(),
-        "an unsupported completion still publishes"
-    );
-    assert_eq!(
-        store.published_turn_rows(&key).unwrap(),
-        Some(vec![turn_row(0), turn_row(1)]),
-        "status `unsupported` names a complete row projection, same as `ready`"
-    );
+    for status in [PublishedEvidence::Ready, PublishedEvidence::Unsupported] {
+        let session_id = format!("terminal-equivalence-{}", status.as_str());
+        let (record, claim) = claimed_projection(&store, &session_id, 100, 60);
+        let key = record.key.clone();
+        let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+        writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
+        let completion = evidence_completion(&claim, status, "{}".into());
+        assert!(
+            store
+                .publish_projections(&record, None, &completion, &[])
+                .unwrap(),
+            "a {} completion still publishes",
+            status.as_str()
+        );
+
+        let evidence = store.evidence(&key).unwrap().unwrap();
+        assert_eq!(
+            evidence.published_fence,
+            Some(evidence.claim_fence),
+            "a winning publish stamps published_fence and claim_fence together"
+        );
+        assert_eq!(
+            store.published_turn_rows(&key).unwrap(),
+            Some(vec![turn_row(0), turn_row(1)]),
+            "status `{}` names a complete row projection, same as `ready`",
+            status.as_str()
+        );
+    }
 }
 
 #[test]
@@ -454,5 +478,154 @@ fn a_second_publish_supersedes_the_first_in_published_turn_rows() {
         store.published_turn_rows(&key).unwrap().expect("ready"),
         vec![turn_row(0), turn_row(1)],
         "only the new pass's rows must come back, none of the superseded fence's"
+    );
+}
+
+/* R6: `published_fence` itself — a winning publish stamps it, a lost race
+ * and every other evidence transition leave it exactly where it was. */
+
+#[test]
+fn publish_projections_stamps_published_fence_with_the_completion_claim_fence() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "publish-stamps-fence", 100, 60);
+    let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    writer.write_turn_rows(&[turn_row(0)]).unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+
+    assert_eq!(
+        store.evidence(&key).unwrap().unwrap().published_fence,
+        Some(claim.claim_fence)
+    );
+}
+
+#[test]
+fn a_lost_race_does_not_stamp_published_fence() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "lost-race-no-fence-stamp", 100, 60);
+    let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    writer.write_turn_rows(&[turn_row(0)]).unwrap();
+    advance_source_generation_past(&store, &key);
+    let completion =
+        evidence_completion(&claim, PublishedEvidence::Ready, "{\"lost\":true}".into());
+
+    assert!(
+        !store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+
+    assert_eq!(store.evidence(&key).unwrap().unwrap().published_fence, None);
+}
+
+#[test]
+fn a_requeue_and_a_reclaim_leave_published_fence_intact() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "requeue-claim-preserve-fence", 100, 60);
+    let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    writer.write_turn_rows(&[turn_row(0)]).unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+    let published_fence = store.evidence(&key).unwrap().unwrap().published_fence;
+    assert_eq!(published_fence, Some(claim.claim_fence));
+
+    // A fingerprint change requeues the session: status flips back to
+    // `pending`. Only the next winning publish may move `published_fence`.
+    mark_evidence_pending_in(&store.lock(), &key).unwrap();
+    assert_eq!(
+        store.evidence(&key).unwrap().unwrap().published_fence,
+        published_fence
+    );
+
+    // The worker reclaims it: status flips to `processing` and `claim_fence`
+    // bumps, while `published_fence` still names the earlier, winning fence.
+    let next_claim = store
+        .claim_next_evidence(&["claude-code"], 200, 60)
+        .unwrap()
+        .expect("reclaimable");
+    assert_eq!(next_claim.claim_fence, claim.claim_fence + 1);
+    assert_eq!(
+        store.evidence(&key).unwrap().unwrap().published_fence,
+        published_fence
+    );
+}
+
+#[test]
+fn fail_evidence_leaves_published_fence_intact() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "fail-preserve-fence", 100, 60);
+    let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    writer.write_turn_rows(&[turn_row(0)]).unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+    let published_fence = store.evidence(&key).unwrap().unwrap().published_fence;
+
+    mark_evidence_pending_in(&store.lock(), &key).unwrap();
+    let next_claim = store
+        .claim_next_evidence(&["claude-code"], 200, 60)
+        .unwrap()
+        .expect("reclaimable");
+    assert!(
+        store
+            .fail_evidence(
+                &next_claim,
+                EvidenceFailure::Retry {
+                    next_attempt_at_epoch: 300,
+                },
+                "transient",
+            )
+            .unwrap()
+    );
+
+    assert_eq!(
+        store.evidence(&key).unwrap().unwrap().published_fence,
+        published_fence
+    );
+}
+
+/// The published-analysis carve-out this change exists for: a session
+/// requeued after a publish (an actively-written transcript, fingerprinted
+/// again) still serves its last published rows, not `None`, while the fresh
+/// pass is only queued and has not run yet.
+#[test]
+fn published_turn_rows_serves_the_last_published_fence_after_a_requeue() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "requeue-after-publish", 100, 60);
+    let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+
+    mark_evidence_pending_in(&store.lock(), &key).unwrap();
+    assert_eq!(
+        store.evidence(&key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+
+    assert_eq!(
+        store.published_turn_rows(&key).unwrap(),
+        Some(vec![turn_row(0), turn_row(1)]),
+        "a requeue must not hide the last published pass's rows"
     );
 }

@@ -11,7 +11,7 @@
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -431,4 +431,20 @@ SELECT environment_key, agent, session_id
   FROM session
  WHERE agent IN ('cursor', 'copilot', 'cline', 'kiro', 'amp-code', 'antigravity', 'windsurf')
 ON CONFLICT(environment_key, agent, session_id) DO NOTHING;
+"#;
+
+/// v21 — the fence a row set was actually published under, tracked apart
+/// from `claim_fence`.
+///
+/// `claim_fence` moves the moment a session is reclaimed, even before the
+/// new pass writes or publishes anything. `published_fence` moves only when
+/// [`super::Store::publish_projections`] wins its race, so it always names a
+/// complete, still-on-disk row set: a claim in flight, or a requeue back to
+/// `pending`, leaves it exactly where the last winning publish put it. The
+/// backfill gives every session `publish_projections` has already reached
+/// its own last winning fence, the only fence whose rows are still on disk
+/// for a `ready` or `unsupported` row.
+const V21: &str = r#"
+ALTER TABLE session_evidence ADD COLUMN published_fence INTEGER;
+UPDATE session_evidence SET published_fence = claim_fence WHERE status IN ('ready','unsupported');
 "#;

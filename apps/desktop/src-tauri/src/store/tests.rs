@@ -637,6 +637,7 @@ fn session_evidence_table_shape_is_stable() {
             "next_attempt_at_epoch",
             "analyzed_at_epoch",
             "last_error",
+            "published_fence",
         ]
     );
 }
@@ -2379,13 +2380,95 @@ async fn analysis_from_rows_serves_a_published_pass_without_reading_a_transcript
     assert!(replayed.source_path.is_none());
 }
 
-/// Before a worker pass has published anything, `analysis_from_rows` finds
-/// no complete row set and returns `None` — the command switch's own signal
-/// that this session's drilldown is still pending. The worker fills the gap
-/// on its own next pass; the command no longer re-parses the transcript
-/// in-process to answer this call.
+/// The published_fence carve-out this whole change exists for: an
+/// actively-written session is requeued on nearly every fingerprint check,
+/// which used to make `published_turn_rows` — and so `analysis_from_rows`
+/// — return `None` on every drilldown open, however many passes had
+/// already published. Requeuing flips `status` back to `pending` without
+/// touching `published_fence`, so the last winning pass's rows and analysis
+/// stay fully replayable while the fresh pass is only queued.
+#[tokio::test]
+async fn analysis_from_rows_still_serves_a_published_pass_after_a_requeue() {
+    let store = store();
+    let mut record = session("rows-replay-requeued", 1_000);
+    record.source_fingerprint = Some("sv1:rows-replay-requeued".into());
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    let store_for_runner = store.clone();
+    let runner = move |record: &SessionRecord,
+                       _signal: crate::analysis::PassSignal,
+                       claim_fence: i64| {
+        let row_store: Arc<dyn TurnRowStore> = Arc::new(FencedTurnRowStore::new(
+            store_for_runner.clone(),
+            record.key.clone(),
+            claim_fence,
+        ));
+        let mut pass = crate::analysis::evidence_pass_with_turn_rows(
+            &[antiburn_local::analysis::SessionInput {
+                agent: "claude".into(),
+                session_id: record.key.session_id.clone(),
+                source: antiburn_local::analysis::RawSource::Jsonl(
+                    r#"{"type":"assistant","timestamp":100,"message":{"id":"m","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":2,"output_tokens":3},"content":[]}}
+"#
+                    .into(),
+                ),
+            }],
+            &|| false,
+            Some(row_store),
+        );
+        pass.analysis.fingerprint = record
+            .source_fingerprint
+            .clone()
+            .unwrap_or_else(|| crate::analysis::MISSING_FINGERPRINT.into());
+        Box::pin(async move { pass }) as crate::insights_worker::PassFuture
+    };
+    assert!(
+        crate::insights_worker::process_next(
+            &store,
+            &crate::insights_worker::WorkerHandle::default(),
+            &|| 1_100,
+            &runner,
+            &|_| {},
+        )
+        .await
+        .unwrap()
+    );
+
+    // The transcript grew: the drilldown's own nudge requeues the session
+    // for a fresh pass, exactly as `commands::nudge_if_evidence_stale` does.
+    store.requeue_session_evidence(&record.key).unwrap();
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+
+    let replayed = crate::analysis::analysis_from_rows(
+        &store,
+        &record.key,
+        &record.key.session_id,
+        "claude-code",
+    )
+    .expect("a requeued session still replays its last published rows");
+
+    assert!(replayed.metrics.is_some());
+    assert_eq!(replayed.fingerprint, "sv1:rows-replay-requeued");
+}
+
+/// Before a worker pass has ever published anything, `published_fence` is
+/// `NULL`, so `analysis_from_rows` finds no row set and returns `None` — the
+/// command switch's own signal that this session's drilldown is still
+/// pending. The worker fills the gap on its own next pass; the command no
+/// longer re-parses the transcript in-process to answer this call. A claim
+/// in flight over an *already-published* session is a different case —
+/// see `published_turn_rows_serves_the_last_published_fence_while_a_newer_claim_is_in_flight`
+/// in `publish_tests`.
 #[test]
-fn analysis_from_rows_returns_none_before_rows_are_ready() {
+fn analysis_from_rows_returns_none_before_anything_was_ever_published() {
     let store = store();
     let (_, claim) = claimed_projection(&store, "rows-not-ready", 100, 60);
     assert_eq!(
@@ -3433,10 +3516,10 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 20);
+    assert_eq!(super::schema::MIGRATIONS.len(), 21);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 20);
+    assert_eq!(store.schema_version().unwrap(), 21);
 }
 
 #[test]
