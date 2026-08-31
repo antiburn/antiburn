@@ -265,6 +265,52 @@ pub fn metrics_from_rows(
     Ok(merge_metrics(&parent, &children))
 }
 
+/// Rebuilds each source's own `SessionMetrics` from `rows`, keyed by
+/// `source_key`, without merging them together.
+///
+/// The drilldown needs the parent's metrics and each child's separately (for
+/// example `top_level_cost`, `subagents_cost`, and each sub-agent's own
+/// figures in the desktop app's orchestration status), which
+/// [`metrics_from_rows`] cannot give it — that function only returns the one
+/// merged view. This function reuses [`is_parent_group`]'s rule
+/// (`source_key == session_id`) to tell the parent's rows from a child's:
+/// the parent's own group replays with its rows' own `event.source`; every
+/// other group replays as an external child, with `event.source` forced to
+/// [`EventSource::Parent`] within its own accumulator (see
+/// [`event_from_row`]'s doc comment for why).
+///
+/// `rows` must already carry `query_turn_rows`'s own order — sorted by
+/// `(source_key, turn_index)`. `summary_for` supplies the `SessionSummary`
+/// for one `source_key` at a time, the same contract [`metrics_from_rows`]
+/// uses.
+///
+/// To rebuild the same merged view the live pipeline computes, call
+/// [`metrics_from_rows`] on the same `rows` and `summary_for` — it reuses
+/// [`merge_metrics`] internally, the merge the live pipeline itself uses.
+/// Never fails: an empty `rows`, or a `rows` with no group whose
+/// `source_key` equals `session_id`, simply replays every group as an
+/// external child (no group is the parent) rather than erroring — unlike
+/// [`metrics_from_rows`], nothing here depends on finding the parent among
+/// several groups.
+pub fn metrics_by_source(
+    agent: impl Into<String>,
+    session_id: impl Into<String>,
+    rows: &[TurnRow],
+    mut summary_for: impl FnMut(&str) -> SessionSummary,
+) -> std::collections::BTreeMap<String, SessionMetrics> {
+    let agent = agent.into();
+    let session_id = session_id.into();
+    let mut by_source = std::collections::BTreeMap::new();
+    for group in group_by_source(rows) {
+        let force_parent_source = !is_parent_group(&group, &session_id);
+        let summary = summary_for(group.source_key);
+        let accumulator =
+            accumulator_from_group(&agent, &session_id, &group, force_parent_source, summary);
+        by_source.insert(group.source_key.to_string(), accumulator.metrics());
+    }
+    by_source
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,5 +592,130 @@ mod tests {
         });
 
         assert_eq!(result, Err(MissingParentRows));
+    }
+
+    /// One parent turn plus two child turns, each in its own source. Every
+    /// group's own `metrics_by_source` entry must match a direct
+    /// accumulator built from that group's own event alone, and the three
+    /// entries summed must equal `metrics_from_rows`'s own merged view over
+    /// the same rows — the split the drilldown and `get_subagent_analysis`
+    /// both need.
+    #[test]
+    fn metrics_by_source_splits_a_parent_and_two_children_without_merging() {
+        let mut parent_event = NormalizedEvent::new(Role::Assistant);
+        parent_event.ts_ms = Some(1_000);
+        parent_event.model = Some("claude-opus-4-6".to_owned());
+        parent_event.usage = Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            ..Usage::default()
+        };
+        let parent_row = turn_row_from_event(&parent_event, "parent-1", 0);
+
+        let mut child_a_event = NormalizedEvent::new(Role::Assistant);
+        child_a_event.ts_ms = Some(2_000);
+        child_a_event.model = Some("claude-haiku-4-6".to_owned());
+        child_a_event.usage = Usage {
+            input_tokens: 3,
+            output_tokens: 1,
+            ..Usage::default()
+        };
+        let mut child_a_row = turn_row_from_event(&child_a_event, "child-a", 0);
+        child_a_row.scope = TurnScope::Delegated;
+        child_a_row.child_id = Some("child-a".to_owned());
+
+        let mut child_b_event = NormalizedEvent::new(Role::Assistant);
+        child_b_event.ts_ms = Some(3_000);
+        child_b_event.model = Some("claude-sonnet-4-6".to_owned());
+        child_b_event.usage = Usage {
+            input_tokens: 7,
+            output_tokens: 2,
+            ..Usage::default()
+        };
+        let mut child_b_row = turn_row_from_event(&child_b_event, "child-b", 0);
+        child_b_row.scope = TurnScope::Delegated;
+        child_b_row.child_id = Some("child-b".to_owned());
+
+        let rows = vec![parent_row, child_a_row, child_b_row];
+
+        let summary_for = |source_key: &str| SessionSummary {
+            model: Some(
+                match source_key {
+                    "parent-1" => "claude-opus-4-6",
+                    "child-a" => "claude-haiku-4-6",
+                    "child-b" => "claude-sonnet-4-6",
+                    other => panic!("unexpected source_key {other:?}"),
+                }
+                .to_owned(),
+            ),
+            ..SessionSummary::default()
+        };
+
+        let by_source = metrics_by_source("claude", "parent-1", &rows, summary_for);
+        assert_eq!(
+            by_source.keys().collect::<Vec<_>>(),
+            vec!["child-a", "child-b", "parent-1"]
+        );
+
+        let mut expected_parent = SessionMetricsAccumulator::new("claude", "parent-1");
+        expected_parent.record(NormalizedRecord::MetricsEvent(Box::new(parent_event)));
+        expected_parent.finish(summary_for("parent-1"));
+        assert_eq!(
+            by_source["parent-1"].tokens_in,
+            expected_parent.metrics().tokens_in
+        );
+        assert_eq!(
+            by_source["parent-1"].model_breakdown,
+            expected_parent.metrics().model_breakdown
+        );
+
+        let mut expected_child_a = SessionMetricsAccumulator::new("claude", "parent-1");
+        expected_child_a.record(NormalizedRecord::MetricsEvent(Box::new(child_a_event)));
+        expected_child_a.finish(summary_for("child-a"));
+        assert_eq!(
+            by_source["child-a"].tokens_in,
+            expected_child_a.metrics().tokens_in
+        );
+        assert_eq!(
+            by_source["child-a"].model_breakdown,
+            expected_child_a.metrics().model_breakdown
+        );
+
+        let mut expected_child_b = SessionMetricsAccumulator::new("claude", "parent-1");
+        expected_child_b.record(NormalizedRecord::MetricsEvent(Box::new(child_b_event)));
+        expected_child_b.finish(summary_for("child-b"));
+        assert_eq!(
+            by_source["child-b"].tokens_in,
+            expected_child_b.metrics().tokens_in
+        );
+        assert_eq!(
+            by_source["child-b"].model_breakdown,
+            expected_child_b.metrics().model_breakdown
+        );
+
+        let merged = metrics_from_rows("claude", "parent-1", &rows, summary_for)
+            .expect("the parent group's source_key equals the session id");
+        assert_eq!(
+            merged.tokens_in,
+            by_source
+                .values()
+                .map(|metrics| metrics.tokens_in)
+                .sum::<u64>()
+        );
+    }
+
+    /// No group's `source_key` equals `session_id`, unlike
+    /// `metrics_from_rows`'s own version of this case: this function never
+    /// errors, it just has no group it treats as the parent.
+    #[test]
+    fn metrics_by_source_never_errors_when_no_group_is_the_parent() {
+        let event = NormalizedEvent::new(Role::Assistant);
+        let row = turn_row_from_event(&event, "source-a", 0);
+
+        let by_source = metrics_by_source("claude", "neither-source-key", &[row], |_| {
+            SessionSummary::default()
+        });
+
+        assert_eq!(by_source.keys().collect::<Vec<_>>(), vec!["source-a"]);
     }
 }

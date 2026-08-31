@@ -5,6 +5,8 @@
 
 use std::io::{self, BufRead};
 
+use serde::{Deserialize, Serialize};
+
 pub const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
 pub const SCAN_QUANTUM_BYTES: usize = 64 * 1024;
 
@@ -162,7 +164,8 @@ pub enum RecordSkip {
     ReadFailed { index: u64, kind: io::ErrorKind },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PartialReason {
     Oversized,
     MalformedRecord,

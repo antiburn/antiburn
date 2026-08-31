@@ -46,6 +46,7 @@ fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> Ana
         model_breakdown_json: "{}".into(),
         inclusive_models_json: "[]".into(),
         initial_context_json: None,
+        source_summaries_json: None,
         source_fingerprint: fingerprint.into(),
         pricing_generation: 1,
         analyzed_generation: generation,
@@ -295,6 +296,7 @@ fn session_analysis_holds_the_cache_values_and_the_projection_revisions() {
             "analyzer_revision",
             "metrics_schema_revision",
             "initial_context_json",
+            "source_summaries_json",
         ]
     );
 }
@@ -742,6 +744,7 @@ fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
                 model_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
+                source_summaries_json: None,
                 source_fingerprint: "1:1".into(),
                 pricing_generation: 0,
                 analyzed_generation: 0,
@@ -1105,6 +1108,7 @@ fn analysis_round_trips_and_is_replaced_rather_than_duplicated() {
             r#"[{"model":"claude-haiku-4-5"},{"model":"claude-opus-4-6","thinkingMode":"high"}]"#
                 .into(),
         initial_context_json: None,
+        source_summaries_json: None,
         source_fingerprint: "1700000000:4096".into(),
         pricing_generation: 0,
         analyzed_generation: 7,
@@ -1139,6 +1143,7 @@ fn save_analysis_writes_the_generation_and_revision_columns() {
         model_breakdown_json: "{}".into(),
         inclusive_models_json: "[]".into(),
         initial_context_json: None,
+        source_summaries_json: None,
         source_fingerprint: "sv1:source".into(),
         pricing_generation: 3,
         analyzed_generation: 8,
@@ -1177,6 +1182,7 @@ fn save_analysis_round_trips_initial_context_json() {
         model_breakdown_json: "{}".into(),
         inclusive_models_json: "[]".into(),
         initial_context_json: Some(r#"{"sources":[]}"#.into()),
+        source_summaries_json: None,
         source_fingerprint: "sv1:source".into(),
         pricing_generation: 1,
         analyzed_generation: 1,
@@ -1196,6 +1202,7 @@ fn publish_projections_round_trips_initial_context_json() {
     let (record, claim) = claimed_projection(&store, "publish-initial-context", 100, 60);
     let record = AnalysisRecord {
         initial_context_json: Some(r#"{"sources":[{"name":"CLAUDE.md","tokens":120}]}"#.into()),
+        source_summaries_json: None,
         ..record
     };
     let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
@@ -1215,6 +1222,37 @@ fn publish_projections_round_trips_initial_context_json() {
     );
 }
 
+/// V19 adds `source_summaries_json`. `publish_projections` — the worker's
+/// own publish path — is what actually writes it; the drilldown's
+/// rows-replay path (seam R3c) reads it back through `analysis()`.
+#[test]
+fn publish_projections_round_trips_source_summaries_json() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "publish-source-summaries", 100, 60);
+    let record = AnalysisRecord {
+        source_summaries_json: Some(
+            r#"{"child-1":{"model":"claude-haiku-4-6"},"publish-source-summaries":{"model":"claude-opus-4-6"}}"#
+                .into(),
+        ),
+        ..record
+    };
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+
+    assert_eq!(
+        store
+            .analysis(&record.key)
+            .unwrap()
+            .and_then(|stored| stored.source_summaries_json),
+        record.source_summaries_json
+    );
+}
+
 #[test]
 fn save_analysis_never_clears_a_known_start_time() {
     let store = store();
@@ -1230,6 +1268,7 @@ fn save_analysis_never_clears_a_known_start_time() {
         model_breakdown_json: "{}".into(),
         inclusive_models_json: "[]".into(),
         initial_context_json: None,
+        source_summaries_json: None,
         source_fingerprint: "sv1:source".into(),
         pricing_generation: 0,
         analyzed_generation: 1,
@@ -1310,6 +1349,7 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
                 model_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
+                source_summaries_json: None,
                 source_fingerprint: "x".into(),
                 pricing_generation: 0,
                 analyzed_generation: 0,
@@ -1454,6 +1494,7 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
                 inclusive_models_json: r#"[{"model":"claude-opus-4-6","thinkingMode":"high"}]"#
                     .into(),
                 initial_context_json: None,
+                source_summaries_json: None,
                 source_fingerprint: "1:1".into(),
                 pricing_generation: 0,
                 analyzed_generation: 0,
@@ -2126,6 +2167,132 @@ fn a_revision_change_requeues_session_evidence_without_touching_the_generation()
     );
 }
 
+/// Seam R3c: a worker pass publishes rows and per-source summaries, and
+/// `analysis::analysis_from_rows` rebuilds the session-detail payload from
+/// `store` alone. `record.source_label` names a transcript path that does
+/// not exist on disk, so a payload here proves the replay path reads no
+/// transcript — a live parse of that path would find nothing.
+#[tokio::test]
+async fn analysis_from_rows_serves_a_published_pass_without_reading_a_transcript() {
+    let store = store();
+    let mut record = session("rows-replay-parent", 1_000);
+    record.source_fingerprint = Some("sv1:rows-replay-parent".into());
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    // `published_evidence_pass` (used elsewhere in this module) writes its
+    // rows to a standalone `MemoryTurnRowStore`, disconnected from `store`'s
+    // own tables — fine for the evidence-JSON assertions those tests make,
+    // but this test needs rows `store.published_turn_rows` can actually
+    // read back, so the runner fences its rows into `store` itself, exactly
+    // as `insights_worker::run_record_pass` does in production.
+    let store_for_runner = store.clone();
+    let runner = move |record: &SessionRecord,
+                       _signal: crate::analysis::PassSignal,
+                       claim_fence: i64| {
+        let row_store: Arc<dyn TurnRowStore> = Arc::new(FencedTurnRowStore::new(
+            store_for_runner.clone(),
+            record.key.clone(),
+            claim_fence,
+        ));
+        let mut pass = crate::analysis::evidence_pass_with_turn_rows(
+            &[antiburn_local::analysis::SessionInput {
+                agent: "claude".into(),
+                session_id: record.key.session_id.clone(),
+                source: antiburn_local::analysis::RawSource::Jsonl(
+                    r#"{"type":"assistant","timestamp":100,"message":{"id":"m","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":2,"output_tokens":3},"content":[]}}
+"#
+                    .into(),
+                ),
+            }],
+            &|| false,
+            Some(row_store),
+        );
+        pass.analysis.fingerprint = record
+            .source_fingerprint
+            .clone()
+            .unwrap_or_else(|| crate::analysis::MISSING_FINGERPRINT.into());
+        Box::pin(async move { pass }) as crate::insights_worker::PassFuture
+    };
+    assert!(
+        crate::insights_worker::process_next(
+            &store,
+            &crate::insights_worker::WorkerHandle::default(),
+            &|| 1_100,
+            &runner,
+            &|_| {},
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Ready
+    );
+
+    let replayed = crate::analysis::analysis_from_rows(
+        &store,
+        &record.key,
+        &record.key.session_id,
+        "claude-code",
+    )
+    .expect("a ready, published pass replays from rows");
+
+    assert!(replayed.metrics.is_some());
+    assert_eq!(replayed.fingerprint, "sv1:rows-replay-parent");
+    assert_eq!(replayed.cost, replayed.top_level_cost);
+    assert!(replayed.source_path.is_none());
+}
+
+/// Before a worker pass has published anything, `analysis_from_rows` finds
+/// no ready row set and returns `None` — the command switch's own signal to
+/// fall back to a live parse.
+#[test]
+fn analysis_from_rows_returns_none_before_rows_are_ready() {
+    let store = store();
+    let (_, claim) = claimed_projection(&store, "rows-not-ready", 100, 60);
+    assert_eq!(
+        store.evidence(&claim.key).unwrap().unwrap().status,
+        EvidenceStatus::Processing
+    );
+
+    assert!(
+        crate::analysis::analysis_from_rows(
+            &store,
+            &claim.key,
+            &claim.key.session_id,
+            "claude-code"
+        )
+        .is_none()
+    );
+}
+
+/// The drilldown's rows-replay path requeues a session whose stored
+/// fingerprint no longer matches the live transcript
+/// (`commands::nudge_if_evidence_stale`). This proves the underlying store
+/// mechanism it calls: requeuing a `ready` row moves it back to `pending`
+/// for the worker's next pass.
+#[test]
+fn requeue_session_evidence_marks_a_ready_session_pending() {
+    let store = store();
+    let record = seed_current_session_evidence(&store, "requeue-on-mismatch");
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Ready
+    );
+
+    store.requeue_session_evidence(&record.key).unwrap();
+
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+}
+
 #[tokio::test]
 async fn reprocessing_a_revision_one_row_leaves_no_placeholder_in_stored_evidence_json() {
     let store = store();
@@ -2222,6 +2389,7 @@ fn a_catalog_change_requeues_no_session_evidence() {
                 model_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
+                source_summaries_json: None,
                 source_fingerprint: "sv1:current".into(),
                 pricing_generation: 2,
                 analyzed_generation: 1,
@@ -3089,10 +3257,10 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 18);
+    assert_eq!(super::schema::MIGRATIONS.len(), 19);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 18);
+    assert_eq!(store.schema_version().unwrap(), 19);
 }
 
 #[test]
