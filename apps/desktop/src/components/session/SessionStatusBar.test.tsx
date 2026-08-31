@@ -143,6 +143,19 @@ describe("SessionStatusBar", () => {
     expect(verdict.textContent).toBe("Unsupported checks")
   })
 
+  it("shows the verdict, not the state text, once at least one check is assessed", () => {
+    render(<SessionStatusBar checks={CHECKS} evidenceState="processing" />)
+    const verdict = screen.getByLabelText("Computing — 5 of 6 burn checks pass")
+    expect(verdict.textContent).toBe("5/6 burn checks")
+  })
+
+  it("prefixes the transient state onto an assessed but stale verdict", () => {
+    render(<SessionStatusBar checks={CHECKS} evidenceState="stale" />)
+    const verdict = screen.getByLabelText("Refreshing — 5 of 6 burn checks pass")
+    expect(verdict.textContent).toBe("5/6 burn checks")
+    expect(verdict.style.color).toContain("--color-system-orange")
+  })
+
   it("never shows a denominator smaller than the not-assessed tail", () => {
     const oneAssessed: SessionHygieneCheck[] = [
       CHECKS[0]!,

@@ -128,22 +128,31 @@ export function SessionStatusBar({
   const stateText = stateLabel
     ? `${stateLabel} checks${sessionHygieneStateIsTransient(evidenceState) ? "…" : ""}`
     : null
+  // Once at least one check is assessed, the verdict is worth more than the
+  // state label — a stale or refreshing session still has a last result. Only
+  // the never-assessed case keeps the plain state text in the count's place.
+  const showStateText = stateLabel !== null && assessedCount === 0
   const checkNoun = checks.length === 1 ? "burn check" : "burn checks"
   const notAssessedText = notAssessed.length > 0 ? ` · ${notAssessed.length} not assessed` : ""
   const countText =
     assessedCount === 0
       ? "Not assessed"
       : `${passed.length}/${checks.length} ${checkNoun}${notAssessedText}`
-  const verdictLabel = stateLabel
+  // A transient state next to an assessed verdict still names itself, as a
+  // prefix on the aria label and the tooltip text.
+  const verdictPrefix = stateLabel && !showStateText ? `${stateLabel} — ` : ""
+  const verdictLabel = showStateText
     ? `${stateLabel} session hygiene checks`
-    : allPassed
-      ? "All checks pass"
-      : assessedCount === 0
-        ? "No checks assessed"
-        : `${passed.length} of ${checks.length} ${checkNoun} pass${
-            notAssessed.length > 0 ? `; ${notAssessed.length} not assessed` : ""
-          }`
-  const tooltip = stateLabel ? verdictLabel : renderTooltip(failed, passed, notAssessed)
+    : `${verdictPrefix}${
+        allPassed
+          ? "All checks pass"
+          : assessedCount === 0
+            ? "No checks assessed"
+            : `${passed.length} of ${checks.length} ${checkNoun} pass${
+                notAssessed.length > 0 ? `; ${notAssessed.length} not assessed` : ""
+              }`
+      }`
+  const tooltip = showStateText ? verdictLabel : renderTooltip(failed, passed, notAssessed)
 
   return (
     <div className="flex w-full items-center justify-between gap-x-1.5 text-label-secondary">
@@ -156,7 +165,7 @@ export function SessionStatusBar({
           className="font-mono type-footnote font-medium! tracking-tight! [word-spacing:-2px] leading-[13px] tabular-nums"
           style={{ color: verdictInk(failedShare, assessedCount) }}
         >
-          {stateText ?? countText}
+          {showStateText ? stateText : countText}
         </span>
       </Tooltip>
 
