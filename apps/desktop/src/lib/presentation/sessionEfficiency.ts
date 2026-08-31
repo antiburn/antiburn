@@ -1,10 +1,8 @@
 /**
- * The three efficiency metrics the Efficiency card shows, and the band each
- * one falls in.
+ * The headline efficiency metric and the three spend shares the card shows.
  *
- * The bands are per agent family. Codex bills a cheaper cache and a leaner
- * prompt, so its "ok" range sits lower on every scale. Any agent that is not
- * Codex reads against the Claude Code bands.
+ * The bands differ by agent family because pricing and harness behavior differ.
+ * Any agent other than Codex uses the Claude Code bands.
  */
 
 import type { SessionEfficiency } from "../types/session"
@@ -28,6 +26,8 @@ export interface EfficiencyMetrics {
   realWorkShare: EfficiencyMetric | null
   /** Share of the spend that was rewrite, in the range 0 to 1. */
   rewriteShare: EfficiencyMetric | null
+  /** Share of the spend that was carry, in the range 0 to 1. */
+  carryShare: EfficiencyMetric | null
   unpricedTurns: number
   profile: EfficiencyProfile
 }
@@ -47,6 +47,7 @@ interface ProfileEdges {
   costPerMTok: BandEdges
   rewriteShare: BandEdges
   realWorkShare: BandEdges
+  carryShare: BandEdges
 }
 
 const EDGES: Record<EfficiencyProfile, ProfileEdges> = {
@@ -54,11 +55,15 @@ const EDGES: Record<EfficiencyProfile, ProfileEdges> = {
     costPerMTok: { good: 33, bad: 80, higherIsBetter: false },
     rewriteShare: { good: 0.1, bad: 0.25, higherIsBetter: false },
     realWorkShare: { good: 0.36, bad: 0.18, higherIsBetter: true },
+    // Carry uses the overhead left when Real Work and Rewrite reach the same band.
+    carryShare: { good: 0.54, bad: 0.57, higherIsBetter: false },
   },
   codex: {
     costPerMTok: { good: 20, bad: 46, higherIsBetter: false },
     rewriteShare: { good: 0.08, bad: 0.14, higherIsBetter: false },
     realWorkShare: { good: 0.33, bad: 0.17, higherIsBetter: true },
+    // Carry uses the overhead left when Real Work and Rewrite reach the same band.
+    carryShare: { good: 0.59, bad: 0.69, higherIsBetter: false },
   },
 }
 
@@ -78,13 +83,7 @@ function bandFor(value: number, edges: BandEdges): EfficiencyBand {
   return "ok"
 }
 
-/**
- * One row's thermometer. `segments` lists the three bands in numeric order,
- * left to right. `position` is where the value sits on the track, in the
- * range 0 to 1. Each band takes one third of the track. The value maps
- * linearly inside its band: the low band runs from 0 to the first edge, the
- * high band from the second edge to twice that edge.
- */
+/** The three bands and marker position for one efficiency thermometer. */
 export interface EfficiencyThermometer {
   segments: [EfficiencyBand, EfficiencyBand, EfficiencyBand]
   position: number
@@ -108,7 +107,7 @@ function thermometerFor(value: number, edges: BandEdges): EfficiencyThermometer 
   }
 }
 
-/** The thermometer for one metric's value, read against `profile`'s bands. */
+/** Build the thermometer for one metric and agent profile. */
 export function efficiencyThermometer(
   value: number,
   metricKey: keyof ProfileEdges,
@@ -138,6 +137,7 @@ export function efficiencyMetrics(totals: SessionEfficiency, agent: string): Eff
     rewriteShare: hasSpend
       ? metric(totals.rewriteUsd / totals.totalUsd, edges.rewriteShare)
       : null,
+    carryShare: hasSpend ? metric(totals.carryUsd / totals.totalUsd, edges.carryShare) : null,
     unpricedTurns: totals.unpricedTurns,
     profile,
   }
@@ -160,6 +160,11 @@ function formatEdge(metricKey: keyof ProfileEdges, value: number): string {
   return metricKey === "costPerMTok" ? `$${value}` : `${Math.round(value * 100)}%`
 }
 
+function readableProfile(profile: EfficiencyProfile) {
+  if (profile === "claude") return "Claude"
+  if (profile === "codex") return "Codex"
+}
+
 /**
  * The band word after a value. A bad reading names its direction: a high
  * cost or rewrite share, or a low real-work share.
@@ -172,27 +177,19 @@ export function efficiencyBandWord(
   return EDGES.claude[metricKey].higherIsBetter ? "low" : "high"
 }
 
-/** What one metric measures, for a row tooltip. */
-export function efficiencyMetricDescription(metricKey: keyof ProfileEdges): string {
-  switch (metricKey) {
-    case "costPerMTok":
-      return "Cost for real work. Waste increases this cost, so high efficiency is a low number here."
-    case "realWorkShare":
-      return "How much you spent on real work. The rest of your spend was just re-reading or re-sending context."
-    case "rewriteShare":
-      return "How much you spent rewriting the cache: usually after compaction, a cache miss, or a model switch."
-  }
-}
-
-/** One sentence of thresholds for a row tooltip. */
-export function efficiencyThresholdsText(
+/** Describe the good, bad, and neutral ranges for one metric. */
+export function efficiencyThresholdGuidance(
   metricKey: keyof ProfileEdges,
   profile: EfficiencyProfile,
-): string {
+): string[] {
   const edges = EDGES[profile][metricKey]
   const fmt = (value: number) => formatEdge(metricKey, value)
   if (edges.higherIsBetter) {
-    return `[Good = over ${fmt(edges.good)}; Low = below ${fmt(edges.bad)}; otherwise OK]`
+    return [
+      `For ${readableProfile(profile)}, aim for above ${fmt(edges.good)}. Below ${fmt(edges.bad)} is too low.`,
+    ]
   }
-  return `[Good = below ${fmt(edges.good)}; High = over ${fmt(edges.bad)}; otherwise OK]`
+  return [
+    `For ${readableProfile(profile)}, aim for below ${fmt(edges.good)}. Above ${fmt(edges.bad)} is too high.`,
+  ]
 }

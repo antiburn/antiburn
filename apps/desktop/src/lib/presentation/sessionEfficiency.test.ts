@@ -5,9 +5,7 @@ import {
   efficiencyBandWord,
   efficiencyMetrics,
   efficiencyProfile,
-  efficiencyThresholdsText,
-  efficiencyMetricDescription,
-  efficiencyThermometer,
+  efficiencyThresholdGuidance,
   formatCostPerMTok,
   formatSharePercent,
 } from "./sessionEfficiency"
@@ -27,38 +25,47 @@ function totals(over: Partial<SessionEfficiency> = {}): SessionEfficiency {
 }
 
 describe("efficiencyMetrics", () => {
-  it("derives the three ratios from the totals", () => {
+  it("derives the headline cost and three spend shares", () => {
     const m = efficiencyMetrics(totals(), "claude-code")
     expect(m.costPerMTok?.value).toBeCloseTo(40)
     expect(m.realWorkShare?.value).toBeCloseTo(0.34)
     expect(m.rewriteShare?.value).toBeCloseTo(0.12)
+    expect(m.carryShare?.value).toBeCloseTo(0.54)
     expect(m.unpricedTurns).toBe(0)
     expect(m.profile).toBe("claude")
   })
 
-  it("bands a ok Claude session as ok on every metric", () => {
+  it("bands an ok Claude session as ok on every metric", () => {
     const m = efficiencyMetrics(totals(), "claude-code")
     expect(m.costPerMTok?.band).toBe("ok")
     expect(m.realWorkShare?.band).toBe("ok")
     expect(m.rewriteShare?.band).toBe("ok")
+    expect(m.carryShare?.band).toBe("ok")
   })
 
-  it("bands the Claude edges: cost, rewrite, and real work", () => {
+  it("bands the Claude edges for each metric", () => {
     const cheap = efficiencyMetrics(
-      totals({ totalUsd: 5, newWorkUsd: 4, rewriteUsd: 0.2 }),
+      totals({ totalUsd: 5, newWorkUsd: 4, carryUsd: 0.8, rewriteUsd: 0.2 }),
       "claude-code",
     )
     expect(cheap.costPerMTok?.band).toBe("good")
     expect(cheap.realWorkShare?.band).toBe("good")
     expect(cheap.rewriteShare?.band).toBe("good")
+    expect(cheap.carryShare?.band).toBe("good")
 
     const dear = efficiencyMetrics(
-      totals({ totalUsd: 25, newWorkUsd: 4, rewriteUsd: 7 }),
+      totals({ totalUsd: 25, newWorkUsd: 4, carryUsd: 14, rewriteUsd: 7 }),
       "claude-code",
     )
     expect(dear.costPerMTok?.band).toBe("bad")
     expect(dear.realWorkShare?.band).toBe("bad")
     expect(dear.rewriteShare?.band).toBe("bad")
+
+    const highCarry = efficiencyMetrics(
+      totals({ totalUsd: 10, newWorkUsd: 2, carryUsd: 6, rewriteUsd: 2 }),
+      "claude-code",
+    )
+    expect(highCarry.carryShare?.band).toBe("bad")
   })
 
   it("treats the Claude gaps between ok and bad as ok", () => {
@@ -79,7 +86,7 @@ describe("efficiencyMetrics", () => {
     expect(dear.costPerMTok?.band).toBe("bad")
     expect(dear.rewriteShare?.band).toBe("good")
     const good = efficiencyMetrics(
-      totals({ totalUsd: 4, newWorkUsd: 1.4, rewriteUsd: 0.2 }),
+      totals({ totalUsd: 4, newWorkUsd: 1.4, carryUsd: 2.4, rewriteUsd: 0.2 }),
       "codex",
     )
     expect(good.costPerMTok?.band).toBe("good")
@@ -91,6 +98,7 @@ describe("efficiencyMetrics", () => {
     expect(m.costPerMTok).toBeNull()
     expect(m.realWorkShare).toBeNull()
     expect(m.rewriteShare).toBeNull()
+    expect(m.carryShare).toBeNull()
   })
 
   it("returns a null cost per MTok when the token denominator is zero", () => {
@@ -123,45 +131,27 @@ describe("formatting", () => {
     expect(formatSharePercent(0)).toBe("0%")
   })
 
-  it("places a value on its thermometer by band thirds", () => {
-    // Lower is better: good | ok | bad, edges at $33 and $80, top at $160.
-    expect(efficiencyThermometer(0, "costPerMTok", "claude")).toEqual({
-      segments: ["good", "ok", "bad"],
-      position: 0,
-    })
-    expect(efficiencyThermometer(33, "costPerMTok", "claude").position).toBeCloseTo(1 / 3)
-    expect(efficiencyThermometer(80, "costPerMTok", "claude").position).toBeCloseTo(2 / 3)
-    expect(efficiencyThermometer(120, "costPerMTok", "claude").position).toBeCloseTo(5 / 6)
-    expect(efficiencyThermometer(999, "costPerMTok", "claude").position).toBe(1)
-    // Higher is better: bad | ok | good, edges at 18% and 36%.
-    const realWork = efficiencyThermometer(0.27, "realWorkShare", "claude")
-    expect(realWork.segments).toEqual(["bad", "ok", "good"])
-    expect(realWork.position).toBeCloseTo(0.5)
-  })
-
-  it("describes each metric in a sentence", () => {
-    expect(efficiencyMetricDescription("costPerMTok")).toMatch(/Cost for real work/)
-    expect(efficiencyMetricDescription("realWorkShare")).toMatch(/spent on real work/)
-    expect(efficiencyMetricDescription("rewriteShare")).toMatch(/rewriting the cache/)
-  })
-
   it("names the direction of a bad reading", () => {
     expect(efficiencyBandWord("good", "costPerMTok")).toBe("good")
     expect(efficiencyBandWord("ok", "rewriteShare")).toBe("ok")
     expect(efficiencyBandWord("bad", "costPerMTok")).toBe("high")
     expect(efficiencyBandWord("bad", "rewriteShare")).toBe("high")
     expect(efficiencyBandWord("bad", "realWorkShare")).toBe("low")
+    expect(efficiencyBandWord("bad", "carryShare")).toBe("high")
   })
 
   it("spells the thresholds for the agent's profile", () => {
-    expect(efficiencyThresholdsText("costPerMTok", "claude")).toBe(
-      "[Good = below $33; High = over $80; otherwise OK]",
-    )
-    expect(efficiencyThresholdsText("realWorkShare", "codex")).toBe(
-      "[Good = over 33%; Low = below 17%; otherwise OK]",
-    )
-    expect(efficiencyThresholdsText("rewriteShare", "codex")).toBe(
-      "[Good = below 8%; High = over 14%; otherwise OK]",
-    )
+    expect(efficiencyThresholdGuidance("costPerMTok", "claude")).toEqual([
+      "For Claude, aim for below $33. Above $80 is too high.",
+    ])
+    expect(efficiencyThresholdGuidance("realWorkShare", "codex")).toEqual([
+      "For Codex, aim for above 33%. Below 17% is too low.",
+    ])
+    expect(efficiencyThresholdGuidance("rewriteShare", "codex")).toEqual([
+      "For Codex, aim for below 8%. Above 14% is too high.",
+    ])
+    expect(efficiencyThresholdGuidance("carryShare", "codex")).toEqual([
+      "For Codex, aim for below 59%. Above 69% is too high.",
+    ])
   })
 })
