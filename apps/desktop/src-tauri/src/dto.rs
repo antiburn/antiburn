@@ -189,6 +189,13 @@ pub struct SessionAnalysis {
     /// The transcript's own path, for the reveal action. Absent for sessions
     /// held in a vendor database rather than a file.
     pub source_path: Option<String>,
+    /// True when no published row set exists yet for this session, so every
+    /// other field above is [`SessionAnalysis::unavailable`]'s placeholder
+    /// rather than a real read. The worker fills the gap on its own; the
+    /// view should show an indexing state, not an empty-transcript state.
+    ///
+    /// [`SessionAnalysis::unavailable`]: crate::analysis::SessionAnalysis::unavailable
+    pub analysis_pending: bool,
 }
 
 /// A protected directory the last pass declined to read, and how many working
