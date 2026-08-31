@@ -1494,6 +1494,41 @@ fn known_zero_cache_writes_do_not_use_rehydration_inference() {
     assert_eq!(m.cache_rehydration_count, 0);
 }
 
+/// Two consecutive uncached replays remain visible when Codex reports zero
+/// cache writes. The cache recovery does not turn either replay into a write.
+#[test]
+fn codex_consecutive_uncached_replays_keep_distinct_rewrite_tokens() {
+    let fixture = concat!(
+        r#"{"timestamp":"2026-08-22T07:55:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":113000,"cached_input_tokens":106088,"cache_write_input_tokens":0,"output_tokens":50},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T07:56:30Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":114400,"cached_input_tokens":6912,"cache_write_input_tokens":0,"output_tokens":60},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T07:56:35Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":115800,"cached_input_tokens":6912,"cache_write_input_tokens":0,"output_tokens":70},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T07:56:40Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":117200,"cached_input_tokens":110288,"cache_write_input_tokens":0,"output_tokens":80},"model_context_window":258400}}}"#,
+    );
+    let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
+    assert!(session.cache_write_tokens_available);
+    let metrics = analyze_session(&session);
+
+    let material_rewrites = metrics
+        .buckets
+        .iter()
+        .filter_map(|bucket| (bucket.rewrite_tokens >= 20_000).then_some(bucket.rewrite_tokens))
+        .collect::<Vec<_>>();
+    assert_eq!(material_rewrites, vec![106_088, 107_488]);
+    assert_eq!(
+        metrics
+            .buckets
+            .iter()
+            .map(|bucket| bucket.cache_write_tokens)
+            .sum::<u64>(),
+        0
+    );
+    assert_eq!(metrics.cache_rehydration_count, 0);
+    assert_eq!(metrics.cache_routing_miss_count, 0);
+}
+
 /// A real `cache_write_input_tokens` count now reaches mode 1 (the direct
 /// signal) for Codex, the same way it already does for a source that always
 /// reported cache writes. Turn one's cache read covers most of its context
@@ -1514,6 +1549,13 @@ fn codex_confirmed_cache_write_is_read_as_a_direct_signal_rehydration() {
 
     assert_eq!(m.cache_rehydration_count, 1);
     assert_eq!(m.cache_routing_miss_count, 0);
+    let rehydration = m
+        .buckets
+        .iter()
+        .find(|bucket| bucket.is_cache_rehydration)
+        .expect("the rehydration bucket");
+    assert_eq!(rehydration.cache_write_tokens, 25_000);
+    assert_eq!(rehydration.rewrite_tokens, 30_000);
 }
 
 #[test]

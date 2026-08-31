@@ -320,18 +320,20 @@ impl SessionMetricsAccumulator {
         let ordinal = self.observed_turns;
         self.observed_turns = self.observed_turns.saturating_add(1);
         self.tallies.observe(&event);
-        self.efficiency.observe(EfficiencyInput {
-            ts_ms: event.ts_ms,
-            role: event.role,
-            message_id: event.message_id.as_deref(),
-            model: event.model.as_deref(),
-            usage: event.usage,
-        });
         if let Some(timestamp) = event.ts_ms {
             self.active.observe(timestamp);
             self.last_effective_ts = timestamp;
         }
         let effective_ts = event.ts_ms.unwrap_or(self.last_effective_ts);
+        self.efficiency.observe(EfficiencyInput {
+            ordinal,
+            ts_ms: event.ts_ms,
+            role: event.role,
+            source: event.source,
+            message_id: event.message_id.as_deref(),
+            model: event.model.as_deref(),
+            usage: event.usage,
+        });
         let mut slot = SlotAggregate::new(ordinal, effective_ts);
         slot.timestamp = event.ts_ms;
         let model = event
@@ -882,6 +884,11 @@ impl SessionMetricsAccumulator {
             &self.speed_interner,
             &self.last_tool_interner,
         );
+        for mark in self.efficiency.clone().rewrite_marks() {
+            let index = bucket_index(mark.key.0, mark.key.1, active_ms, axis, self.observed_turns);
+            buckets[index].rewrite_tokens =
+                buckets[index].rewrite_tokens.saturating_add(mark.tokens);
+        }
 
         let mut skill_marks = self.skill_marks.clone();
         for timestamp in self.reorder.iter().filter_map(|slot| slot.timestamp) {

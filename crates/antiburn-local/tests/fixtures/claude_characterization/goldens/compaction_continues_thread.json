@@ -4063,6 +4063,7 @@
           "isCompactionBoundary": false,
           "lastTool": null,
           "model": "claude-sonnet-4-6",
+          "rewriteTokens": 20,
           "secsSincePriorTurn": 10,
           "speed": null,
           "subagentLaunches": 0,

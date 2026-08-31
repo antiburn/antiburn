@@ -52,6 +52,7 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     isCompactionBoundary: false,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    rewriteTokens: 0,
     isCacheRehydration: false,
     isCacheRoutingMiss: false,
     secsSincePriorTurn: null,
@@ -94,7 +95,12 @@ describe("ContextTokensChart", () => {
   it("draws a wide red bar up to the context level for a cache-rehydration bucket", () => {
     const buckets = [
       bucket({ contextTokens: 200_000 }),
-      bucket({ contextTokens: 50_000, cacheWriteTokens: 40_000, isCacheRehydration: true }),
+      bucket({
+        contextTokens: 50_000,
+        cacheWriteTokens: 40_000,
+        rewriteTokens: 40_000,
+        isCacheRehydration: true,
+      }),
       bucket({ contextTokens: 200_000 }),
     ]
     const { container } = render(
@@ -128,7 +134,12 @@ describe("ContextTokensChart", () => {
   it("draws no compaction line and keeps the rehydration marker solid", () => {
     const buckets = [
       bucket({ contextTokens: 100_000, isCompactionBoundary: true }),
-      bucket({ contextTokens: 100_000, cacheWriteTokens: 90_000, isCacheRehydration: true }),
+      bucket({
+        contextTokens: 100_000,
+        cacheWriteTokens: 90_000,
+        rewriteTokens: 90_000,
+        isCacheRehydration: true,
+      }),
     ]
     const { container } = render(
       <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
@@ -165,7 +176,12 @@ describe("ContextTokensChart", () => {
   it("draws a lighter bar up to the context level for a cache-routing-miss bucket", () => {
     const buckets = [
       bucket({ contextTokens: 200_000 }),
-      bucket({ contextTokens: 50_000, cacheWriteTokens: 40_000, isCacheRoutingMiss: true }),
+      bucket({
+        contextTokens: 50_000,
+        cacheWriteTokens: 40_000,
+        rewriteTokens: 40_000,
+        isCacheRoutingMiss: true,
+      }),
       bucket({ contextTokens: 200_000 }),
     ]
     const { container } = render(
@@ -175,6 +191,23 @@ describe("ContextTokensChart", () => {
     const bar = container.querySelector('line[stroke="var(--color-context-critical)"]')
     expect(bar).not.toBeNull()
     expect(bar?.getAttribute("stroke-opacity")).toBe("0.2")
+  })
+
+  it("draws consecutive material rewrites without cache-event flags", () => {
+    const buckets = [
+      bucket({ contextTokens: 113_000 }),
+      bucket({ contextTokens: 114_400, rewriteTokens: 106_088 }),
+      bucket({ contextTokens: 115_800, rewriteTokens: 107_488 }),
+      bucket({ contextTokens: 117_200, rewriteTokens: 5_512 }),
+    ]
+    const { container } = render(
+      <ContextTokensChart buckets={buckets} contextWindow={258_400} />,
+    )
+
+    expect(
+      container.querySelectorAll('line[stroke="var(--color-context-critical)"]'),
+    ).toHaveLength(2)
+    expect(screen.getAllByText("rewrite")).toHaveLength(2)
   })
 
   it("draws sub-agent tokens as a third series on the token axis", () => {
@@ -198,6 +231,7 @@ function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
     isCompactionBoundary: false,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    rewriteTokens: 0,
     isCacheRehydration: false,
     isCacheRoutingMiss: false,
     secsSincePriorTurn: null,
@@ -363,6 +397,27 @@ describe("ContextTokensTooltip", () => {
     )
 
     expect(screen.getByText("Cache routing miss · 12.0k re-sent uncached")).toBeInTheDocument()
+  })
+
+  it("names a derived rewrite separately from a reported cache write", () => {
+    render(
+      <ContextTokensTooltip
+        active
+        contextWindow={200_000}
+        payload={[
+          {
+            payload: point({
+              rewriteTokens: 106_088,
+              cacheWriteTokens: 0,
+              tokensIn: 107_488,
+            }),
+          },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText("Context rewrite · 106.1k re-sent")).toBeInTheDocument()
+    expect(screen.queryByText(/^Cache write/)).not.toBeInTheDocument()
   })
 
   it("shows the wall-clock gap since the prior parent turn", () => {

@@ -225,6 +225,7 @@
           "isCompactionBoundary": false,
           "lastTool": "Task",
           "model": "claude-opus-4-6",
+          "rewriteTokens": 10,
           "secsSincePriorTurn": 0,
           "speed": null,
           "subagentLaunches": 1,

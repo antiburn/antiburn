@@ -35,6 +35,7 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
     isCompactionBoundary: false,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    rewriteTokens: 0,
     isCacheRehydration: false,
     isCacheRoutingMiss: false,
     secsSincePriorTurn: null,

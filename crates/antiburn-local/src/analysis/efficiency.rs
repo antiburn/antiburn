@@ -22,16 +22,18 @@ use std::mem::size_of;
 
 use serde::{Deserialize, Serialize};
 
-use crate::analysis::model::{NormalizedEvent, Role, Usage};
+use crate::analysis::model::{EventSource, NormalizedEvent, Role, Usage};
 use crate::analysis::pricing::{lookup_pricing, strip_window_tag};
 use crate::pricing::ModelPricing;
 
 /// Open message state covers heavily interleaved parent and sidechain records.
 const MAX_OPEN_MESSAGES: usize = 64;
 /// The finalized-turn window restores local timestamp order.
-const MAX_EFF_REORDER: usize = 32;
+const MAX_EFF_REORDER: usize = 64;
 /// The evicted-id window catches a message that returns after eviction.
 const MAX_EFF_EVICTED: usize = MAX_OPEN_MESSAGES;
+/// The rewrite list keeps eight entries per visible chart bucket.
+const MAX_REWRITE_MARKS: usize = 1_440;
 
 /// Additive spend totals for one or more threads.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -102,16 +104,20 @@ enum ModelStatus {
 #[derive(Clone)]
 struct Turn {
     creation: u64,
+    ordinal: u64,
     ts: i64,
     id: Option<MessageKey>,
+    source: EventSource,
     model: ModelStatus,
     usage: Usage,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct EfficiencyInput<'a> {
+    pub(crate) ordinal: u64,
     pub(crate) ts_ms: Option<i64>,
     pub(crate) role: Role,
+    pub(crate) source: EventSource,
     pub(crate) message_id: Option<&'a str>,
     pub(crate) model: Option<&'a str>,
     pub(crate) usage: Usage,
@@ -125,6 +131,12 @@ struct PricedAmounts {
     rewrite: f64,
     growth: u64,
     output: u64,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct RewriteMark {
+    pub(crate) key: (i64, u64),
+    pub(crate) tokens: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -146,7 +158,9 @@ pub(crate) struct EfficiencyReducer {
     reorder: Vec<Turn>,
     totals: EfficiencyTotals,
     fallback_overflow: FallbackOverflow,
+    rewrite_marks: Vec<RewriteMark>,
     previous_context: Option<u64>,
+    previous_parent_context: Option<u64>,
     last_folded: Option<(i64, u64)>,
     last_ts: i64,
     creation: u64,
@@ -162,7 +176,9 @@ impl Default for EfficiencyReducer {
             reorder: Vec::new(),
             totals: EfficiencyTotals::default(),
             fallback_overflow: FallbackOverflow::default(),
+            rewrite_marks: Vec::new(),
             previous_context: None,
+            previous_parent_context: None,
             last_folded: None,
             last_ts: i64::MIN,
             creation: 0,
@@ -216,8 +232,10 @@ impl EfficiencyReducer {
         }
         self.open.push_back(Turn {
             creation: self.creation,
+            ordinal: input.ordinal,
             ts: self.last_ts,
             id: message_key,
+            source: input.source,
             model: model_status(input.model),
             usage: input.usage,
         });
@@ -261,6 +279,19 @@ impl EfficiencyReducer {
             .previous_context
             .map_or(context, |prior| context.saturating_sub(prior));
         self.previous_context = Some(context);
+        if turn.source == EventSource::Parent {
+            let parent_growth = self
+                .previous_parent_context
+                .map_or(context, |prior| context.saturating_sub(prior));
+            self.previous_parent_context = Some(context);
+            let rewrite_tokens = derived_rewrite_tokens(turn.usage, parent_growth);
+            if rewrite_tokens > 0 && self.rewrite_marks.len() < MAX_REWRITE_MARKS {
+                self.rewrite_marks.push(RewriteMark {
+                    key: (turn.ts, turn.ordinal),
+                    tokens: rewrite_tokens,
+                });
+            }
+        }
         match turn.model {
             // The session fallback model prices a missing-model turn later,
             // at finish. Until then, only its raw usage can be kept.
@@ -295,6 +326,11 @@ impl EfficiencyReducer {
         self.totals
     }
 
+    pub(crate) fn rewrite_marks(mut self) -> Vec<RewriteMark> {
+        self.flush();
+        self.rewrite_marks
+    }
+
     pub(crate) fn retained_bytes(&self) -> usize {
         self.open
             .capacity()
@@ -304,6 +340,11 @@ impl EfficiencyReducer {
                 self.evicted
                     .capacity()
                     .saturating_mul(size_of::<MessageKey>()),
+            )
+            .saturating_add(
+                self.rewrite_marks
+                    .capacity()
+                    .saturating_mul(size_of::<RewriteMark>()),
             )
     }
 }
@@ -323,8 +364,8 @@ fn priced_contribution(usage: Usage, growth: u64, price: &ModelPricing) -> Price
     let fresh = usage
         .input_tokens
         .saturating_add(usage.cache_creation_tokens);
-    let new_tokens = fresh.min(growth);
-    let rewrite_tokens = fresh.saturating_sub(new_tokens);
+    let rewrite_tokens = derived_rewrite_tokens(usage, growth);
+    let new_tokens = fresh.saturating_sub(rewrite_tokens);
     let fresh_rate = if fresh == 0 {
         0.0
     } else {
@@ -340,6 +381,10 @@ fn priced_contribution(usage: Usage, growth: u64, price: &ModelPricing) -> Price
         growth,
         output: usage.output_tokens,
     }
+}
+
+pub(crate) fn derived_rewrite_tokens(usage: Usage, growth: u64) -> u64 {
+    usage.effective_input_tokens().saturating_sub(growth)
 }
 
 /// Adds one priced turn's amounts into the running totals.
@@ -367,8 +412,8 @@ fn add_fallback_overflow(target: &mut FallbackOverflow, usage: Usage, growth: u6
     let fresh = usage
         .input_tokens
         .saturating_add(usage.cache_creation_tokens);
-    let new_tokens = fresh.min(growth);
-    let rewrite_tokens = fresh.saturating_sub(new_tokens);
+    let rewrite_tokens = derived_rewrite_tokens(usage, growth);
+    let new_tokens = fresh.saturating_sub(rewrite_tokens);
     let input_share = if fresh == 0 {
         0.0
     } else {
@@ -430,13 +475,18 @@ pub fn thread_efficiency(
     fallback_model: Option<&str>,
 ) -> EfficiencyTotals {
     thread_efficiency_from_inputs(
-        events.iter().map(|event| EfficiencyInput {
-            ts_ms: event.ts_ms,
-            role: event.role,
-            message_id: event.message_id.as_deref(),
-            model: event.model.as_deref(),
-            usage: event.usage,
-        }),
+        events
+            .iter()
+            .enumerate()
+            .map(|(ordinal, event)| EfficiencyInput {
+                ordinal: ordinal.try_into().unwrap_or(u64::MAX),
+                ts_ms: event.ts_ms,
+                role: event.role,
+                source: event.source,
+                message_id: event.message_id.as_deref(),
+                model: event.model.as_deref(),
+                usage: event.usage,
+            }),
         fallback_model,
     )
 }
@@ -748,8 +798,10 @@ mod tests {
             // One stale timestamp arrives after older turns already folded.
             let ts_ms = if index == 200 { 0 } else { index as i64 };
             reducer.observe(EfficiencyInput {
+                ordinal: index.try_into().unwrap_or(u64::MAX),
                 ts_ms: Some(ts_ms),
                 role: Role::Assistant,
+                source: EventSource::Parent,
                 message_id: Some(&message_id),
                 model: Some(MODEL),
                 usage: Usage {
@@ -824,10 +876,12 @@ mod tests {
         recurrence.message_id = Some("message-0".to_string());
         events.push(recurrence);
         let mut reducer = EfficiencyReducer::default();
-        for event in &events {
+        for (ordinal, event) in events.iter().enumerate() {
             reducer.observe(EfficiencyInput {
+                ordinal: ordinal.try_into().unwrap_or(u64::MAX),
                 ts_ms: event.ts_ms,
                 role: event.role,
+                source: event.source,
                 message_id: event.message_id.as_deref(),
                 model: event.model.as_deref(),
                 usage: event.usage,

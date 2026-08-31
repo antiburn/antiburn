@@ -4128,6 +4128,7 @@
         "isCompactionBoundary": false,
         "lastTool": null,
         "model": "model-a",
+        "rewriteTokens": 3,
         "secsSincePriorTurn": 1,
         "speed": null,
         "subagentLaunches": 0,

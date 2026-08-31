@@ -53,6 +53,10 @@ pub struct Bucket {
     /// This is a breakdown of `tokens_in`, not an addition to it — `tokens_in`
     /// already includes cache writes as effective input.
     pub cache_write_tokens: u64,
+    /// Fresh parent input that does not grow context.
+    /// This derived value does not depend on reported cache-write tokens.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rewrite_tokens: u64,
     /// True when a cache rehydration turn lands in this bucket.
     pub is_cache_rehydration: bool,
     /// True when an uncached context replay lands here too soon for a cache expiry.
@@ -98,6 +102,10 @@ pub struct Bucket {
     /// The context token count right after the compaction in this bucket,
     /// when known. Parent turns only. Keeps the last compaction's value.
     pub compaction_post_tokens: Option<u64>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// Estimated USD cost of a session, split by billable component. An on-device
@@ -367,6 +375,7 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         let mut subagent_tokens = 0u64;
         let mut cache_read = 0u64;
         let mut cache_write = 0u64;
+        let mut rewrite = 0u64;
         // Average only sessions that report values in this bucket.
         let mut tok_contributors = 0u64;
         let mut ctx_sum = 0u64;
@@ -390,6 +399,7 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
             subagent_tokens = subagent_tokens.saturating_add(b.subagent_tokens);
             cache_read = cache_read.saturating_add(b.cache_read_tokens);
             cache_write = cache_write.saturating_add(b.cache_write_tokens);
+            rewrite = rewrite.saturating_add(b.rewrite_tokens);
             if b.tokens_in > 0 || b.tokens_out > 0 || b.subagent_tokens > 0 {
                 tok_contributors += 1;
             }
@@ -410,6 +420,7 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         bucket.subagent_tokens = subagent_tokens.checked_div(tok_contributors).unwrap_or(0);
         bucket.cache_read_tokens = cache_read.checked_div(tok_contributors).unwrap_or(0);
         bucket.cache_write_tokens = cache_write.checked_div(tok_contributors).unwrap_or(0);
+        bucket.rewrite_tokens = rewrite.checked_div(tok_contributors).unwrap_or(0);
         bucket.context_tokens = ctx_sum.checked_div(ctx_contributors).unwrap_or(0);
         bucket.is_compaction_boundary = is_compaction_boundary;
         bucket.is_cache_rehydration = is_cache_rehydration;
