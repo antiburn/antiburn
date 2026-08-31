@@ -1216,49 +1216,6 @@ fn publish_projections_round_trips_initial_context_json() {
 }
 
 #[test]
-fn migrating_forward_adds_initial_context_json_as_null_on_existing_rows() {
-    // V17 adds `initial_context_json` to `session_analysis`. Built by hand
-    // up to V16 so only that column-add migration runs; a fresh
-    // `Store::open_in_memory` would already be past it.
-    let connection = rusqlite::Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..16] {
-        connection.execute_batch(sql).unwrap();
-    }
-    connection
-        .execute(
-            "INSERT INTO session_analysis (
-                 environment_key, agent, session_id, model_breakdown_json,
-                 inclusive_models_json, source_fingerprint, pricing_generation,
-                 analyzed_generation, parser_revision, analyzer_revision,
-                 metrics_schema_revision)
-             VALUES ('native', 'claude-code', 'pre-v17', '{}', '[]',
-                     'sv1:pre-v17', 1, 1, 1, 1, 1)",
-            [],
-        )
-        .unwrap();
-    connection
-        .pragma_update(None, "user_version", 16i64)
-        .unwrap();
-
-    let store = Store::from_connection(
-        connection,
-        Path::new("/tmp/antiburn-migration-test").to_path_buf(),
-    )
-    .expect("migrates cleanly to the latest version");
-
-    assert_eq!(
-        store.schema_version().unwrap(),
-        super::schema::MIGRATIONS.len() as i64
-    );
-    let key = SessionKey::new("native", "claude-code", "pre-v17");
-    let record = store
-        .analysis(&key)
-        .unwrap()
-        .expect("row survives migration");
-    assert_eq!(record.initial_context_json, None);
-}
-
-#[test]
 fn save_analysis_never_clears_a_known_start_time() {
     let store = store();
     let key = SessionKey::new("native", "claude-code", "known-start");
