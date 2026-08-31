@@ -2116,7 +2116,7 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
     assert_eq!(
         crate::analysis::projection_revisions(),
         ProjectionRevisions {
-            parser_revision: 15,
+            parser_revision: 16,
             analyzer_revision: 15,
             metrics_schema_revision: 2,
             evidence_schema_revision: 11,
@@ -3120,6 +3120,9 @@ fn turn_row(turn_index: u64) -> TurnRow {
         compaction_trigger: None,
         compaction_pre_tokens: None,
         compaction_post_tokens: None,
+        has_thinking: false,
+        last_tool: None,
+        subagent_launches: 0,
         content: Vec::new(),
     }
 }
@@ -3129,10 +3132,70 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 17);
+    assert_eq!(super::schema::MIGRATIONS.len(), 18);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 17);
+    assert_eq!(store.schema_version().unwrap(), 18);
+}
+
+#[test]
+fn migrating_forward_adds_the_chart_signal_columns_with_their_defaults() {
+    // V18 adds `has_thinking`, `last_tool`, `subagent_launches` to `turn`.
+    // Built by hand up to V17 so only that column-add migration runs; a
+    // fresh `Store::open_in_memory` would already be past it.
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..17] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO session (
+                 environment_key, agent, session_id, source_kind,
+                 source_label, first_seen_at, last_seen_at)
+             VALUES ('native', 'claude-code', 'pre-v18', 'file', 's1',
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO turn (
+                 environment_key, agent, session_id, claim_fence, source_key,
+                 thread_id, turn_index, scope, role, input_tokens,
+                 cache_read_tokens, cache_write_tokens, output_tokens,
+                 is_compaction_boundary)
+             VALUES ('native', 'claude-code', 'pre-v18', 1, 's1', 's1', 0,
+                     'main', 'assistant', 0, 0, 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+    connection
+        .pragma_update(None, "user_version", 17i64)
+        .unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-migration-test").to_path_buf(),
+    )
+    .expect("migrates cleanly to the latest version");
+
+    assert_eq!(
+        store.schema_version().unwrap(),
+        super::schema::MIGRATIONS.len() as i64
+    );
+    let connection = store.lock();
+    let (has_thinking, last_tool, subagent_launches): (i64, Option<String>, i64) = connection
+        .query_row(
+            "SELECT has_thinking, last_tool, subagent_launches FROM turn
+              WHERE environment_key = 'native' AND agent = 'claude-code'
+                AND session_id = 'pre-v18'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(has_thinking, 0);
+    assert_eq!(last_tool, None);
+    assert_eq!(subagent_launches, 0);
 }
 
 #[test]

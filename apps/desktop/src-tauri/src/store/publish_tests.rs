@@ -116,6 +116,9 @@ fn turn_row(turn_index: u64) -> TurnRow {
         compaction_trigger: None,
         compaction_pre_tokens: None,
         compaction_post_tokens: None,
+        has_thinking: false,
+        last_tool: None,
+        subagent_launches: 0,
         content: Vec::new(),
     }
 }

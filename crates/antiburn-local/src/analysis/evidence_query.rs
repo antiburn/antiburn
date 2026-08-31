@@ -269,7 +269,7 @@ const TURN_ROWS_SQL: &str = "SELECT source_key, thread_id, turn_index, scope, ch
         role, ts_ms, model, effort, speed, input_tokens, cache_read_tokens,
         cache_write_tokens, output_tokens, is_compaction_boundary, message_id,
         uuid, parent_uuid, compaction_trigger, compaction_pre_tokens,
-        compaction_post_tokens
+        compaction_post_tokens, has_thinking, last_tool, subagent_launches
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
   ORDER BY source_key, turn_index";
@@ -309,6 +309,7 @@ pub fn query_turn_rows(
             let compaction_pre_tokens: Option<i64> = row.get(19)?;
             let compaction_post_tokens: Option<i64> = row.get(20)?;
             let compaction_trigger: Option<String> = row.get(18)?;
+            let has_thinking: i64 = row.get(21)?;
             Ok(TurnRow {
                 source_key: row.get(0)?,
                 thread_id: row.get(1)?,
@@ -333,6 +334,9 @@ pub fn query_turn_rows(
                     .and_then(CompactionTrigger::parse),
                 compaction_pre_tokens: compaction_pre_tokens.map(as_u64),
                 compaction_post_tokens: compaction_post_tokens.map(as_u64),
+                has_thinking: has_thinking != 0,
+                last_tool: row.get(22)?,
+                subagent_launches: as_u64(row.get(23)?) as u32,
                 content: Vec::new(),
             })
         },
@@ -1148,6 +1152,9 @@ mod tests {
             compaction_trigger: None,
             compaction_pre_tokens: None,
             compaction_post_tokens: None,
+            has_thinking: false,
+            last_tool: None,
+            subagent_launches: 0,
             content: Vec::new(),
         }
     }
@@ -1239,6 +1246,9 @@ mod tests {
         row.compaction_trigger = Some(CompactionTrigger::Manual);
         row.compaction_pre_tokens = Some(100);
         row.compaction_post_tokens = Some(20);
+        row.has_thinking = true;
+        row.last_tool = Some("Task".to_owned());
+        row.subagent_launches = 2;
         row.content = vec![crate::analysis::interface::ContentPart::new(
             crate::analysis::interface::ContentKind::ToolResult,
             "captured text",
@@ -1262,6 +1272,9 @@ mod tests {
         assert_eq!(row.compaction_trigger, Some(CompactionTrigger::Manual));
         assert_eq!(row.compaction_pre_tokens, Some(100));
         assert_eq!(row.compaction_post_tokens, Some(20));
+        assert!(row.has_thinking);
+        assert_eq!(row.last_tool.as_deref(), Some("Task"));
+        assert_eq!(row.subagent_launches, 2);
         assert!(
             row.content.is_empty(),
             "this query never joins turn_content"
