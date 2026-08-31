@@ -4145,6 +4145,7 @@
         "isCompactionBoundary": false,
         "lastTool": null,
         "model": "gpt-test",
+        "rewriteTokens": 60000,
         "secsSincePriorTurn": 600,
         "speed": null,
         "subagentLaunches": 0,

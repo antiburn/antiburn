@@ -1014,6 +1014,7 @@
         "isCompactionBoundary": false,
         "lastTool": null,
         "model": "gpt-alpha",
+        "rewriteTokens": 400,
         "secsSincePriorTurn": 2,
         "speed": null,
         "subagentLaunches": 0,

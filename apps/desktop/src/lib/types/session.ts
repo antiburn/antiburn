@@ -33,6 +33,8 @@ export interface SessionBucket {
   cacheReadTokens: number
   /** The bucket sums parent cache-write tokens, which are part of `tokensIn`. */
   cacheWriteTokens: number
+  /** Fresh parent input that does not grow context. */
+  rewriteTokens?: number
   /** True when a turn in this bucket is a cache rehydration: the cache TTL lapsed and re-wrote. */
   isCacheRehydration: boolean
   /** True when a turn in this bucket is a cache routing miss: a fast re-send too soon for a TTL lapse. */

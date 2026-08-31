@@ -42,11 +42,12 @@ const WARM_FLOOR_TOKENS = 400_000
 const CRITICAL_TOKENS = 1_000_000
 /** Band label text, drawn inside the plot. */
 const AXIS_LABEL = { fontSize: 9, fill: "var(--color-label-tertiary)" }
-// A cache-miss bar is a few pixels wide on each side of its bucket so it
-// reads as a block of cost, not a hairline.
-const CACHE_MISS_BAR_WIDTH = 6
-/** Bar opacity for a real rehydration: a TTL lapse the user can act on. */
-const REHYDRATION_BAR_OPACITY = 0.6
+// A rewrite bar is a few pixels wide so it reads as a block of cost.
+const REWRITE_BAR_WIDTH = 6
+/** Small rewrites stay in the tooltip and do not add chart noise. */
+const MATERIAL_REWRITE_TOKENS = 20_000
+/** Default opacity for a material rewrite. */
+const REWRITE_BAR_OPACITY = 0.6
 /** Bar opacity for a routing miss: the same cost, but not avoidable, so the mark draws lighter. */
 const ROUTING_MISS_BAR_OPACITY = 0.2
 
@@ -85,8 +86,8 @@ const TOKEN_ROWS: Array<{
 /**
  * Cache rows are not drawn on the chart, so they get a hollow swatch in the
  * input color: the same family as "Parent in", but not a plotted series.
- * Vendors that report no cache writes (Codex) always show zero, so that row
- * hides when it has nothing to say.
+ * Some vendors report a known zero cache write, so that row hides when it
+ * has nothing to say.
  */
 const CACHE_ROWS: Array<{
   key: "cacheReadTokens" | "cacheWriteTokens"
@@ -144,10 +145,8 @@ function betweenCallsLabel(gap: NonNullable<ContextTokenPoint["betweenCalls"]>):
 }
 
 /**
- * The rehydration tooltip line. A vendor that reports cache writes (Claude)
- * names the tokens written. A vendor that does not (Codex) always reports
- * zero writes, so the line names the fresh input instead: that is the
- * context the API had to re-read at full price after the cache expired.
+ * The rehydration tooltip names a reported write when one exists. Otherwise,
+ * it names the fresh input that the API had to read again at full price.
  */
 function rehydrationLabel(point: ContextTokenPoint): string {
   if (point.cacheWriteTokens > 0) {
@@ -168,13 +167,15 @@ function routingMissLabel(point: ContextTokenPoint): string {
   return `Cache routing miss · ${formatCompact(point.tokensIn)} re-sent uncached`
 }
 
+function rewriteLabel(point: ContextTokenPoint): string {
+  return `Context rewrite · ${formatCompact(point.rewriteTokens)} re-sent`
+}
+
 /**
- * One vertical bar for a cache-miss bucket (a rehydration or a routing
- * miss): from the baseline up to the context level, on the context axis when
- * one renders, or spanning the plot on the tokens axis otherwise. `opacity`
- * carries the two kinds' relative weight; the shape and color stay the same.
+ * A material rewrite reaches its token level on the context axis. A legacy
+ * cache marker reaches the context level when no rewrite quantity exists.
  */
-function cacheMissBar(
+function rewriteBar(
   point: ContextTokenPoint,
   keyPrefix: string,
   hasContextAxis: boolean,
@@ -186,12 +187,12 @@ function cacheMissBar(
       yAxisId="context"
       segment={[
         { x: point.index, y: 0 },
-        { x: point.index, y: point.contextTokens },
+        { x: point.index, y: point.rewriteTokens || point.contextTokens },
       ]}
       stroke="var(--color-context-critical)"
-      strokeWidth={CACHE_MISS_BAR_WIDTH}
+      strokeWidth={REWRITE_BAR_WIDTH}
       strokeOpacity={opacity}
-      label={{ ...AXIS_LABEL, value: "cache", position: "top" }}
+      label={{ ...AXIS_LABEL, value: "rewrite", position: "top" }}
     />
   ) : (
     <ReferenceLine
@@ -199,9 +200,9 @@ function cacheMissBar(
       yAxisId="tokens"
       x={point.index}
       stroke="var(--color-context-critical)"
-      strokeWidth={CACHE_MISS_BAR_WIDTH}
+      strokeWidth={REWRITE_BAR_WIDTH}
       strokeOpacity={opacity}
-      label={{ ...AXIS_LABEL, value: "cache", position: "top" }}
+      label={{ ...AXIS_LABEL, value: "rewrite", position: "top" }}
     />
   )
 }
@@ -281,6 +282,9 @@ export function ContextTokensTooltip({
           <span style={{ color: "var(--color-context-critical)", opacity: 0.6 }}>
             {routingMissLabel(point)}
           </span>
+        )}
+        {point.rewriteTokens > 0 && (
+          <span style={{ color: "var(--color-context-critical)" }}>{rewriteLabel(point)}</span>
         )}
         {point.secsSincePriorTurn != null && (
           <span>Since prior turn · {formatDuration(point.secsSincePriorTurn)}</span>
@@ -405,27 +409,26 @@ export function ContextTokensChart({
             label={{ ...AXIS_LABEL, value: formatTokenBand(value), position: "insideTopLeft" }}
           />
         ))}
-        {/* A compaction draws no mark: the drop in the context area shows it,
-            and the tooltip names it. A cache rehydration draws a wide red bar
-            from the baseline up to the context level at that time, because
-            the area shows no change for it. The bar height scales its weight:
-            a rehydration of a small context costs little and shows little. A
-            cache routing miss draws the same bar at lower opacity: the same
-            cost, but a provider-side miss the user cannot avoid. */}
+        {/* A compaction adds no separate mark because the context area shows
+            its drop. A material rewrite draws a wide red bar to its token
+            level. Cache classification changes the opacity only. */}
         {data
-          .filter((point) => point.isCacheRehydration)
-          .map((point) =>
-            cacheMissBar(point, "cache-rehydration", !!contextAxis, REHYDRATION_BAR_OPACITY),
-          )}
-        {data
-          .filter((point) => point.isCacheRoutingMiss)
-          .map((point) =>
-            cacheMissBar(point, "cache-routing-miss", !!contextAxis, ROUTING_MISS_BAR_OPACITY),
-          )}
+          .filter(
+            (point) =>
+              point.rewriteTokens >= MATERIAL_REWRITE_TOKENS ||
+              point.isCacheRehydration ||
+              point.isCacheRoutingMiss,
+          )
+          .map((point) => {
+            const opacity = point.isCacheRoutingMiss
+              ? ROUTING_MISS_BAR_OPACITY
+              : REWRITE_BAR_OPACITY
+            return rewriteBar(point, "rewrite", !!contextAxis, opacity)
+          })}
         {/* A mode change (model, thinking effort, or speed) draws no line at
             all — only its label, at the top of the plot — so it stays a
             calm annotation rather than another vertical mark competing with
-            compaction and cache-rehydration. */}
+            compaction and rewrite markers. */}
         {modeChangeMarkers(data).map((marker) => (
           <ReferenceLine
             key={`mode-${marker.index}`}

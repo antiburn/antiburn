@@ -30,6 +30,7 @@ export interface ContextTokenPoint {
   isCompactionBoundary: boolean
   cacheReadTokens: number
   cacheWriteTokens: number
+  rewriteTokens: number
   isCacheRehydration: boolean
   isCacheRoutingMiss: boolean
   secsSincePriorTurn: number | null
@@ -105,6 +106,7 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
     isCompactionBoundary: bucket.isCompactionBoundary,
     cacheReadTokens: bucket.cacheReadTokens,
     cacheWriteTokens: bucket.cacheWriteTokens,
+    rewriteTokens: bucket.rewriteTokens ?? 0,
     isCacheRehydration: bucket.isCacheRehydration,
     isCacheRoutingMiss: bucket.isCacheRoutingMiss,
     secsSincePriorTurn: bucket.secsSincePriorTurn,

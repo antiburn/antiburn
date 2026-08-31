@@ -451,7 +451,9 @@ fn cache_miss_events(
 }
 
 struct ReferenceEfficiencyTurn<'a> {
+    event_index: usize,
     ts: i64,
+    source: EventSource,
     model: Option<&'a str>,
     usage: Usage,
 }
@@ -478,6 +480,12 @@ struct ReferenceFallbackAggregate {
     turns: u64,
 }
 
+struct ReferenceRewrite {
+    event_index: usize,
+    ts: i64,
+    tokens: u64,
+}
+
 /// Returns the independent reference computation of efficiency totals.
 ///
 /// This keeps its own turn-merge and pricing logic instead of calling into
@@ -491,11 +499,11 @@ struct ReferenceFallbackAggregate {
 fn reference_efficiency(
     turns: &[(EventSource, &MetricTurn)],
     fallback_model: Option<&str>,
-) -> EfficiencyTotals {
+) -> (EfficiencyTotals, Vec<ReferenceRewrite>) {
     let mut merged = Vec::new();
     let mut index_by_id = HashMap::new();
     let mut last_ts = i64::MIN;
-    for (_, event) in turns {
+    for (event_index, (source, event)) in turns.iter().enumerate() {
         if let Some(timestamp) = event.ts_ms {
             last_ts = timestamp;
         }
@@ -518,7 +526,9 @@ fn reference_efficiency(
             index_by_id.insert(id, merged.len());
         }
         merged.push(ReferenceEfficiencyTurn {
+            event_index,
             ts: last_ts,
+            source: *source,
             model: event.model.as_deref(),
             usage: event.usage,
         });
@@ -528,12 +538,27 @@ fn reference_efficiency(
 
     let mut totals = EfficiencyTotals::default();
     let mut fallback = ReferenceFallbackAggregate::default();
+    let mut rewrites = Vec::new();
     let mut previous_context = None;
+    let mut previous_parent_context = None;
     for turn in merged {
         let usage = turn.usage;
         let context = usage.context_tokens();
         let growth = previous_context.map_or(context, |prior: u64| context.saturating_sub(prior));
         previous_context = Some(context);
+        if turn.source == EventSource::Parent {
+            let parent_growth =
+                previous_parent_context.map_or(context, |prior: u64| context.saturating_sub(prior));
+            previous_parent_context = Some(context);
+            let rewrite_tokens = usage.effective_input_tokens().saturating_sub(parent_growth);
+            if rewrite_tokens > 0 {
+                rewrites.push(ReferenceRewrite {
+                    event_index: turn.event_index,
+                    ts: turn.ts,
+                    tokens: rewrite_tokens,
+                });
+            }
+        }
 
         let Some(model) = turn.model else {
             let fresh = usage
@@ -619,7 +644,7 @@ fn reference_efficiency(
             totals.priced_turns = totals.priced_turns.saturating_add(fallback.turns);
         }
     }
-    totals
+    (totals, rewrites)
 }
 
 pub(crate) fn finalize_metrics(
@@ -849,7 +874,21 @@ pub(crate) fn finalize_metrics(
         tallies.peak_context_tokens,
     );
     let cost = crate::analysis::pricing::price_breakdown(&model_breakdown);
-    let efficiency = reference_efficiency(turns, summary.model.as_deref());
+    let (efficiency, rewrites) = reference_efficiency(turns, summary.model.as_deref());
+    for rewrite in rewrites {
+        let progress = if active_ms > 0 {
+            active_progress(rewrite.ts)
+        } else if turns.len() > 1 {
+            rewrite.event_index as f32 / (turns.len() - 1) as f32
+        } else {
+            0.0
+        }
+        .clamp(0.0, 1.0);
+        let bucket_index = ((progress * BUCKETS as f32) as usize).min(BUCKETS - 1);
+        buckets[bucket_index].rewrite_tokens = buckets[bucket_index]
+            .rewrite_tokens
+            .saturating_add(rewrite.tokens);
+    }
 
     SessionMetrics {
         agent: identity.agent,

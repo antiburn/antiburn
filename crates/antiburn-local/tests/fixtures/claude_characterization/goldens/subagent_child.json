@@ -4036,6 +4036,7 @@
           "isCompactionBoundary": false,
           "lastTool": null,
           "model": "claude-3-5-haiku-20241022",
+          "rewriteTokens": 20,
           "secsSincePriorTurn": 3,
           "speed": null,
           "subagentLaunches": 0,

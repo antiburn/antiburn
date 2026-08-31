@@ -143,7 +143,9 @@ pub const ANALYZER_REVISION: i64 = 16;
 // (`query_model_breakdown`, `query_model_runs`), so every session in the
 // durable evidence queue must requeue into the new shape
 // (`reconcile_evidence_revisions`).
-pub const METRICS_SCHEMA_REVISION: i64 = 2;
+// +1 for per-bucket rewrite tokens. The Context chart uses them to show
+// derived rewrite markers. Stored analyses must rerun to populate this field.
+pub const METRICS_SCHEMA_REVISION: i64 = 3;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
 // +1 more for `RepeatedContext::paid_tokens` (part F).
 // +1 more for `SourceCapabilities::linear_record_order`.

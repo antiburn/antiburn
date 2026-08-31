@@ -4063,6 +4063,7 @@
           "isCompactionBoundary": false,
           "lastTool": null,
           "model": "claude-opus-4-6",
+          "rewriteTokens": 5,
           "secsSincePriorTurn": 5,
           "speed": null,
           "subagentLaunches": 0,
