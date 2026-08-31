@@ -549,6 +549,19 @@ fn is_spawn_agent_call(
 /// `reject_nested = false` pass), so a record that starts carrying real
 /// evidence still fails closed. `inter_agent_communication_metadata` carries
 /// only a `trigger_turn` link id.
+///
+/// The ten `collab_agent_*` / `collab_waiting_*` / `collab_close_*` /
+/// `collab_resume_*` payload types are a different family: a codex collab
+/// (multi-agent) session logs one begin and one end record for each step of
+/// an inter-agent call (spawn, interaction, wait, close, resume). Each field
+/// repeats data the paired `spawn_agent` function call already carries. A
+/// verified read of the public codex protocol source (`openai/codex`,
+/// `EventMsg`'s ten `Collab*` variants) found no usage, token, or billing
+/// field on any of the ten payload structs. `collab_agent_spawn_begin` and
+/// `collab_agent_spawn_end` do carry `model` and `reasoning_effort`, but
+/// these fields name the spawned agent's configuration, not billing
+/// evidence, so this allowlist entry is a deliberate, verified override of
+/// the scalar-key scan for those two names only.
 fn is_recognized_eventless(record_type: Option<&str>, payload_type: Option<&str>) -> bool {
     matches!(
         record_type,
@@ -569,6 +582,23 @@ fn is_recognized_eventless(record_type: Option<&str>, payload_type: Option<&str>
                     | "turn_aborted"
                     | "thread_settings_applied"
                     | "item_completed"
+            )
+        )
+    ) || matches!(
+        (record_type, payload_type),
+        (
+            Some("event_msg"),
+            Some(
+                "collab_agent_spawn_begin"
+                    | "collab_agent_spawn_end"
+                    | "collab_agent_interaction_begin"
+                    | "collab_agent_interaction_end"
+                    | "collab_waiting_begin"
+                    | "collab_waiting_end"
+                    | "collab_close_begin"
+                    | "collab_close_end"
+                    | "collab_resume_begin"
+                    | "collab_resume_end"
             )
         )
     ) || matches!(
@@ -1748,7 +1778,7 @@ mod tests {
 
     #[test]
     fn record_to_event_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 13_963_361_553_191_881_769;
+        const EXPECTED_FINGERPRINT: u64 = 14_650_998_214_792_687_338;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();

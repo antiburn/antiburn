@@ -98,11 +98,18 @@ pub use vendors::claude::ClaudeAdapter;
 pub use vendors::pi::PiAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
+// +1 for Codex collab-family recognition: `collab_agent_spawn_begin`,
+// `collab_agent_spawn_end`, `collab_agent_interaction_begin`,
+// `collab_agent_interaction_end`, `collab_waiting_begin`,
+// `collab_waiting_end`, `collab_close_begin`, `collab_close_end`,
+// `collab_resume_begin`, and `collab_resume_end` are now recognized as
+// eventless (`vendors::codex::is_recognized_eventless`), so a stored Codex
+// collab session must re-ingest to clear its degraded `Partial` coverage.
+pub const PARSER_REVISION: i64 = 17;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
 // populate them.
-pub const PARSER_REVISION: i64 = 16;
 // +1 for Codex cache-write tokens: `codex_usage` now splits
 // `cache_write_input_tokens` into `cache_creation_tokens` instead of
 // folding it into `input_tokens`, so a stored Codex session must re-ingest
