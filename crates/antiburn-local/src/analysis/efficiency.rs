@@ -22,6 +22,8 @@ use crate::pricing::ModelPricing;
 const MAX_OPEN_MESSAGES: usize = 64;
 /// The finalized-turn window restores local timestamp order.
 const MAX_EFF_REORDER: usize = 32;
+/// The evicted-id window catches a message that returns after eviction.
+const MAX_EFF_EVICTED: usize = MAX_OPEN_MESSAGES;
 /// The contribution list keeps eight entries per visible chart bucket.
 const MAX_EFF_CONTRIBUTIONS: usize = 1_440;
 
@@ -140,11 +142,13 @@ struct FallbackOverflow {
 #[derive(Clone)]
 pub(crate) struct EfficiencyReducer {
     open: VecDeque<Turn>,
+    evicted: VecDeque<MessageKey>,
     reorder: Vec<Turn>,
     contributions: Vec<Contribution>,
     overflow_totals: EfficiencyTotals,
     fallback_overflow: FallbackOverflow,
     previous_context: Option<u64>,
+    last_folded: Option<(i64, u64)>,
     last_ts: i64,
     creation: u64,
     pub(crate) open_overflow: u64,
@@ -156,11 +160,13 @@ impl Default for EfficiencyReducer {
     fn default() -> Self {
         Self {
             open: VecDeque::new(),
+            evicted: VecDeque::new(),
             reorder: Vec::new(),
             contributions: Vec::new(),
             overflow_totals: EfficiencyTotals::default(),
             fallback_overflow: FallbackOverflow::default(),
             previous_context: None,
+            last_folded: None,
             last_ts: i64::MIN,
             creation: 0,
             open_overflow: 0,
@@ -191,12 +197,26 @@ impl EfficiencyReducer {
             }
             return;
         }
+        // A message that returns after its turn was evicted splits its usage
+        // across two turns. Count that split once, here, not on eviction.
+        if let Some(id) = message_key
+            && let Some(index) = self.evicted.iter().position(|evicted_id| *evicted_id == id)
+        {
+            self.evicted.remove(index);
+            self.open_overflow = self.open_overflow.saturating_add(1);
+            tracing::debug!(event = "metrics_efficiency_open_window_capped");
+        }
         if self.open.len() == MAX_OPEN_MESSAGES
             && let Some(turn) = self.open.pop_front()
         {
+            let evicted_id = turn.id;
             self.finalize_turn(turn);
-            self.open_overflow = self.open_overflow.saturating_add(1);
-            tracing::debug!(event = "metrics_efficiency_open_window_capped");
+            if let Some(id) = evicted_id {
+                if self.evicted.len() == MAX_EFF_EVICTED {
+                    self.evicted.pop_front();
+                }
+                self.evicted.push_back(id);
+            }
         }
         self.open.push_back(Turn {
             creation: self.creation,
@@ -215,8 +235,6 @@ impl EfficiencyReducer {
         self.reorder.push(turn);
         if self.reorder.len() > MAX_EFF_REORDER {
             self.emit_earliest();
-            self.reorder_overflow = self.reorder_overflow.saturating_add(1);
-            tracing::debug!(event = "metrics_efficiency_reorder_window_capped");
         }
     }
 
@@ -234,6 +252,14 @@ impl EfficiencyReducer {
     }
 
     fn fold(&mut self, turn: Turn) {
+        // A turn that folds behind an already folded turn shows the reorder
+        // window was too small. Routine eviction is silent.
+        let key = (turn.ts, turn.creation);
+        if self.last_folded.is_some_and(|last| key < last) {
+            self.reorder_overflow = self.reorder_overflow.saturating_add(1);
+            tracing::debug!(event = "metrics_efficiency_reorder_window_capped");
+        }
+        self.last_folded = Some(key);
         let context = turn.usage.context_tokens();
         let growth = self
             .previous_context
@@ -250,8 +276,11 @@ impl EfficiencyReducer {
         if self.contributions.len() < MAX_EFF_CONTRIBUTIONS {
             self.contributions.push(contribution);
         } else {
+            // The first overflow shows the cap is hit. Later overflows repeat the same state.
+            if self.contribution_overflow == 0 {
+                tracing::debug!(event = "metrics_efficiency_contributions_capped");
+            }
             self.contribution_overflow = self.contribution_overflow.saturating_add(1);
-            tracing::debug!(event = "metrics_efficiency_contributions_capped");
             fold_overflow(
                 contribution,
                 &mut self.overflow_totals,
@@ -288,6 +317,11 @@ impl EfficiencyReducer {
             .capacity()
             .saturating_mul(size_of::<Turn>())
             .saturating_add(self.reorder.capacity().saturating_mul(size_of::<Turn>()))
+            .saturating_add(
+                self.evicted
+                    .capacity()
+                    .saturating_mul(size_of::<MessageKey>()),
+            )
             .saturating_add(
                 self.contributions
                     .capacity()
@@ -776,8 +810,10 @@ mod tests {
         let mut reducer = EfficiencyReducer::default();
         for index in 0..(MAX_EFF_CONTRIBUTIONS + MAX_OPEN_MESSAGES + MAX_EFF_REORDER + 10) {
             let message_id = format!("message-{index}");
+            // One stale timestamp arrives after older turns already folded.
+            let ts_ms = if index == 200 { 0 } else { index as i64 };
             reducer.observe(EfficiencyInput {
-                ts_ms: Some(index as i64),
+                ts_ms: Some(ts_ms),
                 role: Role::Assistant,
                 message_id: Some(&message_id),
                 model: Some(MODEL),
@@ -790,7 +826,10 @@ mod tests {
             });
         }
         reducer.flush();
-        assert!(reducer.open_overflow > 0);
+        // Every message id here is unique, so no evicted turn ever
+        // reappears. Routine eviction stays silent and open_overflow holds
+        // at zero.
+        assert_eq!(reducer.open_overflow, 0);
         assert!(reducer.reorder_overflow > 0);
         assert!(reducer.contribution_overflow > 0);
     }
@@ -806,7 +845,20 @@ mod tests {
         let mut recurrence = turn(100, 1, 1, 0, 0);
         recurrence.message_id = Some("message-0".to_string());
         events.push(recurrence);
-        let totals = thread_efficiency(&events, None);
+        let mut reducer = EfficiencyReducer::default();
+        for event in &events {
+            reducer.observe(EfficiencyInput {
+                ts_ms: event.ts_ms,
+                role: event.role,
+                message_id: event.message_id.as_deref(),
+                model: event.model.as_deref(),
+                usage: event.usage,
+            });
+        }
+        // message-0 is evicted, then returns as the last event. That
+        // recurrence, not the eviction, is the one degradation counted here.
+        assert_eq!(reducer.open_overflow, 1);
+        let totals = reducer.finish(None);
         assert_eq!(totals.priced_turns, (MAX_OPEN_MESSAGES + 2) as u64);
     }
 }
