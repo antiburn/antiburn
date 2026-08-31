@@ -1,64 +1,60 @@
-//! Assembly check between `query_turn_facts` (the row-derived read side)
-//! and `SessionEvidenceAccumulator::evidence` (the published projection).
-//! See Phase 3 in `docs/plans/session-evidence-harness-parity.md`.
+//! Parity check between the live pipeline's `SessionMetrics` and the same
+//! metrics rebuilt from turn rows alone. See seam R3b in
+//! `docs/plans/session-evidence-harness-parity.md`.
 //!
-//! `SessionEvidence` is now built directly from `TurnFacts`, so this is a
-//! cheap check that the assembly carries every row-derived field through
-//! unchanged, not a comparison between two independent computations. Each
-//! vendor test streams every characterization fixture once, through a
-//! `CompositeSink` fanned out to a `MemoryTurnRowStore`, then asserts the
-//! published `SessionEvidence` groups equal the queried `TurnFacts` values
-//! field by field, for every fixture, with no exceptions.
+//! For every vendor characterization fixture `turn_facts_parity.rs` sweeps,
+//! this streams the fixture once through a `CompositeSink` (accumulator +
+//! evidence + `TurnRowSink` into a `MemoryTurnRowStore`), reads the rows
+//! back with `query_turn_rows`, replays them with `metrics_from_rows`, and
+//! asserts the result equals the live accumulator's own `SessionMetrics`
+//! field by field.
 //!
-//! Row-derived fields still follow three rules, now built into
-//! `query_turn_facts` and no longer worth a per-fixture allowlist:
+//! `metrics_from_rows` takes rows plus a `SessionSummary` per source — rows
+//! carry no column for a summary's fields (`model`, `context_window`,
+//! `cache_write_tokens_available`, `started_at_ms`, and the rest). Every
+//! fixture here streams through one source, so this file gets a real,
+//! fixture-accurate summary the same deterministic way the live pipeline
+//! does: by running the same adapter over the same fixture bytes a second
+//! time, into a sink that only captures the `SessionSummary` `finish` hands
+//! it. This is a test-only convenience — `metrics_from_rows` itself never
+//! touches raw bytes, a store, or Tauri.
 //!
-//! - `time_range` spans turn rows only. An eventless record (a
-//!   `RecordTimestamp` observation with no turn behind it) never moves it.
-//! - `delegated_turns` counts delegated turn rows only. An inert
-//!   sidechain record never becomes a row, so it never counts.
-//! - `model_transitions` and idle gaps use `scope='main'` rows only, per
-//!   thread. A sidechain turn never forms a transition or a gap with a
-//!   main-loop turn.
+//! Three `SessionMetrics` fields are out of the comparison for every
+//! fixture, not as a per-fixture exception but as this seam's own scope
+//! boundary (see the PR description and `replay.rs`'s module doc comment):
+//! `tool_calls_by_name`, `mcp_tool_calls`, and `skill_uses` need every tool
+//! call a turn made, and a row keeps only its last tool's name and its
+//! `"task"`-launch count. `initial_context` is downstream of those same
+//! per-tool counts (`bound_initial_context`'s `use_count` reads the
+//! accumulator's own observed tool/skill/MCP names), so it is out of scope
+//! for the same reason.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    CompositeSink, EvidenceSource, EvidenceValue, MemoryTurnRowStore, ModelRun, RawSource,
-    SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
-    SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnFacts, TurnRowSink,
-    TurnRowStore, adapter_for,
+    Bucket, CompositeSink, EvidenceSource, MemoryTurnRowStore, NormalizedRecord, RawSource,
+    RecordSink, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
+    SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind, TurnRowSink,
+    TurnRowStore, TurnScope, TurnSessionKey, adapter_for, merge_metrics, metrics_by_source,
+    metrics_from_rows, query_turn_rows,
 };
-use antiburn_local::pricing::ModelTokens;
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 
-/// Reads the value out of an `EvidenceValue`, for `Complete` and `Partial`
-/// alike. Returns `None` for `Unsupported`, so the caller skips a group the
-/// vendor never publishes.
-fn published<T: Clone>(value: &EvidenceValue<T>) -> Option<T> {
-    match value {
-        EvidenceValue::Complete(observed) => Some(observed.clone()),
-        EvidenceValue::Partial { observed, .. } => Some(observed.clone()),
-        EvidenceValue::Unsupported => None,
-    }
-}
-
-/// Records a mismatch when the published `SessionEvidence` group and the
-/// queried `TurnFacts` differ for one field of one fixture.
+/// Records a mismatch when the replayed `SessionMetrics` and the live
+/// accumulator's own `SessionMetrics` differ for one field of one fixture.
 fn diff<T: std::fmt::Debug + PartialEq>(
     mismatches: &mut Vec<Mismatch>,
     fixture: &str,
     field: &str,
-    evidence_value: T,
-    facts: T,
+    replayed: T,
+    live: T,
 ) {
-    if evidence_value != facts {
+    if replayed != live {
         mismatches.push(Mismatch {
             detail: format!(
-                "fixture={fixture} field={field}\n  evidence = {evidence_value:?}\n  facts    = {facts:?}"
+                "fixture={fixture} field={field}\n  replayed = {replayed:?}\n  live     = {live:?}"
             ),
         });
     }
@@ -68,46 +64,43 @@ struct Mismatch {
     detail: String,
 }
 
-/// Streams `jsonl` through the named vendor's adapter into both an evidence
-/// accumulator and a `MemoryTurnRowStore`, and returns both projections.
-fn run_fixture(
-    agent: &str,
-    fixture: &str,
-    jsonl: &str,
-    capabilities: SourceCapabilities,
-) -> (SessionEvidence, TurnFacts) {
-    let (evidence, facts, _, _, _) = run_fixture_with_row_projections(
-        agent,
-        fixture,
-        &SessionInput {
-            agent: agent.to_owned(),
-            session_id: fixture.to_owned(),
-            source: RawSource::Jsonl(jsonl.to_owned()),
-        },
-        capabilities,
+fn assert_no_mismatches(vendor: &str, mismatches: Vec<Mismatch>) {
+    let details: Vec<&str> = mismatches
+        .iter()
+        .map(|mismatch| mismatch.detail.as_str())
+        .collect();
+    assert!(
+        details.is_empty(),
+        "{vendor}: {} mismatch(es) between metrics_from_rows and the live accumulator:\n\n{}",
+        details.len(),
+        details.join("\n\n")
     );
-    (evidence, facts)
 }
 
-/// Like [`run_fixture`], but also returns the accumulator's own
-/// `SessionMetrics` alongside the row-derived `query_model_breakdown`/
-/// `query_model_runs` projections the seam R2 parity tests
-/// (`model_breakdown_and_model_runs_match_the_accumulator_for_every_fixture`)
-/// compare against it. Takes a built `SessionInput` rather than raw
-/// `jsonl` so the OpenCode fixtures below, which build a `SessionInput`
-/// straight from a database, share this same streaming setup.
-fn run_fixture_with_row_projections(
+/// A [`RecordSink`] that keeps only the [`SessionSummary`] `finish` hands
+/// it, so a second, deterministic run of the same adapter over the same
+/// bytes recovers the exact summary the live run also used — see this
+/// file's module doc comment for why that is a legitimate test-only step.
+#[derive(Default)]
+struct SummaryCapture(Option<SessionSummary>);
+
+impl RecordSink for SummaryCapture {
+    fn record(&mut self, _record: NormalizedRecord) {}
+
+    fn finish(&mut self, summary: SessionSummary) {
+        self.0 = Some(summary);
+    }
+}
+
+/// Streams `input` through the real adapter and the real evidence and
+/// turn-row pipeline, then rebuilds `SessionMetrics` from the rows that
+/// pipeline wrote. Returns `(live, replayed)`.
+fn run_fixture_and_replay(
     agent: &str,
     fixture: &str,
     input: &SessionInput,
     capabilities: SourceCapabilities,
-) -> (
-    SessionEvidence,
-    TurnFacts,
-    SessionMetrics,
-    BTreeMap<String, ModelTokens>,
-    Vec<ModelRun>,
-) {
+) -> (SessionMetrics, SessionMetrics) {
     let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
         agent: input.agent.clone(),
@@ -130,302 +123,215 @@ fn run_fixture_with_row_projections(
         !composite.turn_row_write_failed(),
         "fixture {fixture}: turn row write must not fail"
     );
-
-    let evidence = composite
-        .evidence()
-        .expect("finished source must publish evidence");
-    let session_metrics = composite
+    let live = composite
         .metrics()
         .expect("finished source must publish metrics");
-    let facts = store.query_turn_facts().expect("facts query must succeed");
-    let model_breakdown = store
-        .query_model_breakdown()
-        .expect("model breakdown query must succeed");
-    let model_runs = store
-        .query_model_runs()
-        .expect("model runs query must succeed");
-    (
-        evidence,
-        facts,
-        session_metrics,
-        model_breakdown,
-        model_runs,
-    )
+
+    let key = TurnSessionKey {
+        environment_key: "native",
+        agent,
+        session_id: &input.session_id,
+    };
+    let rows = store
+        .with_connection(|conn| query_turn_rows(conn, &key, 1).expect("query rows must succeed"));
+
+    let mut capture = SummaryCapture::default();
+    adapter_for(agent)
+        .visit(input, &mut capture)
+        .expect("fixture must stream for summary capture");
+    let mut summary = capture.0;
+    let replayed = metrics_from_rows(agent, input.session_id.clone(), &rows, |source_key| {
+        summary.take().unwrap_or_else(|| {
+            panic!(
+                "fixture {fixture}: metrics_from_rows asked for a second source's summary \
+                 ({source_key:?}), but every fixture here streams through one source"
+            )
+        })
+    })
+    .unwrap_or_else(|error| panic!("fixture {fixture}: metrics_from_rows failed: {error}"));
+
+    (live, replayed)
 }
 
-/// Compares every group both projections produce, for one fixture, pushing
-/// each field mismatch found into `mismatches`.
-fn compare_fixture(
-    mismatches: &mut Vec<Mismatch>,
-    fixture: &str,
-    evidence: &SessionEvidence,
-    facts: &TurnFacts,
-) {
-    if let Some(eligibility) = published(&evidence.eligibility) {
-        diff(
-            mismatches,
-            fixture,
-            "eligibility",
-            eligibility,
-            facts.eligibility.clone(),
-        );
+/// Strips the one documented, principled gap this seam accepts before
+/// comparing `live`'s buckets to the replay's: Claude's
+/// `late_skill_metrics` fixture names its skill through a trailing
+/// `attachment` record, which `ClaudeAdapter` resolves only in
+/// `SessionSummary::late_tools`, after the pipeline already wrote this
+/// turn's row (turn ordinal 1, bucket 0) with no tool call at all —
+/// `TurnRowSink` observes each row at `record` time, before `finish`
+/// resolves late tools. `SessionMetricsAccumulator::finish_summary` then
+/// folds the resolved `"skill"` call into `bucket.last_tool` for the live
+/// run; the replayed run never reserves a late-tool candidate for a
+/// synthesized event (`event_from_row`'s doc comment), so
+/// `finish_summary`'s `late_tools` loop finds no candidate to fold it into,
+/// and the replayed bucket's `last_tool` stays `None`. No other field, of
+/// any other bucket, of any other fixture, carries this gap — see the PR
+/// description for why this is the seam's one accepted exclusion, mirroring
+/// seam R2's own `delegated_model_missing` precedent.
+fn live_buckets_for_comparison(fixture: &str, buckets: &[Bucket]) -> Vec<Bucket> {
+    let mut buckets = buckets.to_vec();
+    if fixture == "late_skill_metrics" {
+        buckets[0].last_tool = None;
     }
-    if let Some(context) = published(&evidence.context) {
-        diff(
-            mismatches,
-            fixture,
-            "context.maxRequestContextTokens",
-            context.max_request_context_tokens,
-            facts.max_request_context_tokens,
-        );
-        diff(
-            mismatches,
-            fixture,
-            "context.topDepthExamples",
-            context.top_depth_examples,
-            facts.top_depth_examples.clone(),
-        );
-    }
-    if let Some(time_range) = published(&evidence.time_range) {
-        diff(
-            mismatches,
-            fixture,
-            "timeRange",
-            time_range,
-            facts.time_range.clone(),
-        );
-    }
-    if let Some(models) = published(&evidence.models) {
-        diff(
-            mismatches,
-            fixture,
-            "models.byModel",
-            models.by_model,
-            facts.by_model.clone(),
-        );
-        diff(
-            mismatches,
-            fixture,
-            "models.unattributedTurns",
-            models.unattributed_turns,
-            facts.unattributed_turns,
-        );
-        diff(
-            mismatches,
-            fixture,
-            "models.effortTiers",
-            models.effort_tiers,
-            facts.effort_tiers.clone(),
-        );
-        diff(
-            mismatches,
-            fixture,
-            "models.fastModes",
-            models.fast_modes,
-            facts.fast_modes.clone(),
-        );
-        diff(
-            mismatches,
-            fixture,
-            "models.effortSignal",
-            models.effort_signal,
-            facts.effort_signal,
-        );
-        diff(
-            mismatches,
-            fixture,
-            "models.speedSignal",
-            models.speed_signal,
-            facts.speed_signal,
-        );
-    }
-    if let Some(subagents) = published(&evidence.subagents) {
-        diff(
-            mismatches,
-            fixture,
-            "subagents.delegatedTurns",
-            subagents.delegated_turns,
-            facts.delegated_turns,
-        );
-        diff(
-            mismatches,
-            fixture,
-            "subagents.delegatedModels",
-            subagents.delegated_models,
-            facts.delegated_models.clone(),
-        );
-    }
-    if let Some(cache) = published(&evidence.cache) {
-        diff(
-            mismatches,
-            fixture,
-            "cache.cacheReadTokens",
-            cache.cache_read_tokens,
-            facts.cache_read_tokens,
-        );
-        diff(
-            mismatches,
-            fixture,
-            "cache.cacheCreationTokens",
-            cache.cache_creation_tokens,
-            facts.cache_creation_tokens,
-        );
-        diff(
-            mismatches,
-            fixture,
-            "cache.freshInputTokens",
-            cache.fresh_input_tokens,
-            facts.fresh_input_tokens,
-        );
-        diff(
-            mismatches,
-            fixture,
-            "cache.modelTransitions",
-            cache.model_transitions,
-            facts.model_transitions.clone(),
-        );
-        diff(
-            mismatches,
-            fixture,
-            "cache.longestIdleGapMs",
-            cache.longest_idle_gap_ms,
-            facts.longest_idle_gap_ms,
-        );
-        diff(
-            mismatches,
-            fixture,
-            "cache.idleGapMsTotal",
-            cache.idle_gap_ms_total,
-            facts.idle_gap_ms_total,
-        );
-        diff(
-            mismatches,
-            fixture,
-            "cache.userControlledChurn.manualCompactions",
-            cache.user_controlled_churn.manual_compactions,
-            facts.manual_compactions,
-        );
-    }
-    if let Some(compactions) = published(&evidence.compactions) {
-        diff(
-            mismatches,
-            fixture,
-            "compactions.boundaries",
-            compactions.boundaries,
-            facts.compaction_boundaries.clone(),
-        );
-    }
+    buckets
 }
 
-/// Seam R2: `query_model_breakdown` and `query_model_runs`
-/// (`analysis/evidence_query.rs`) must equal what
-/// `SessionMetricsAccumulator` itself computed for this fixture —
-/// `metrics.model_breakdown` and, once normalized the same way
-/// `apps/desktop/src-tauri/src/analysis.rs`'s `model_runs_for_metrics`
-/// does, `metrics.model_runs`. Every fixture here streams through one
-/// `CompositeSink` with no sub-agent transcript of its own, so there is
-/// no parent/child file split for `query_model_runs`'s merge rule to
-/// exercise — every row's `source_key` equals the session id, so the
-/// query's own "parent" bucket already holds every row. The OpenCode
-/// `subagent_delegation_with_model_transition` fixture below is the
-/// exception: its child session's rows share the parent's `source_key`
-/// too (one `SessionInput` reads the whole OpenCode session tree), so it
-/// exercises the same flat-set shape, not the multi-file merge — that
-/// merge is desktop-only (`model_runs_parent_first`), assembled from
-/// several passes' own metrics, and has no engine-level equivalent to
-/// compare against.
-fn compare_model_projections(
+/// Compares every in-scope `SessionMetrics` field between `live` and
+/// `replayed` for one fixture, pushing each mismatch into `mismatches`. See
+/// this file's module doc comment for the three fields left out of scope,
+/// and [`live_buckets_for_comparison`] for the one per-fixture exclusion.
+fn compare_metrics(
     mismatches: &mut Vec<Mismatch>,
     fixture: &str,
-    metrics: &SessionMetrics,
-    model_breakdown: &BTreeMap<String, ModelTokens>,
-    model_runs: &[ModelRun],
+    live: &SessionMetrics,
+    replayed: &SessionMetrics,
 ) {
-    let expected_breakdown: BTreeMap<String, ModelTokens> = metrics
-        .model_breakdown
-        .iter()
-        .map(|(model, tokens)| (model.clone(), tokens.clone()))
-        .collect();
     diff(
         mismatches,
         fixture,
-        "model_breakdown",
-        model_breakdown.clone(),
-        expected_breakdown,
+        "duration_secs",
+        replayed.duration_secs,
+        live.duration_secs,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "active_secs",
+        replayed.active_secs,
+        live.active_secs,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "event_count",
+        replayed.event_count,
+        live.event_count,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "tokens_in",
+        replayed.tokens_in,
+        live.tokens_in,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "tokens_out",
+        replayed.tokens_out,
+        live.tokens_out,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "peak_context_tokens",
+        replayed.peak_context_tokens,
+        live.peak_context_tokens,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "compaction_count",
+        replayed.compaction_count,
+        live.compaction_count,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "cache_routing_miss_count",
+        replayed.cache_routing_miss_count,
+        live.cache_routing_miss_count,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "cache_rehydration_count",
+        replayed.cache_rehydration_count,
+        live.cache_rehydration_count,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "context_available",
+        replayed.context_available,
+        live.context_available,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "context_window",
+        replayed.context_window,
+        live.context_window,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "buckets",
+        replayed.buckets.clone(),
+        live_buckets_for_comparison(fixture, &live.buckets),
+    );
+    diff(
+        mismatches,
+        fixture,
+        "model",
+        replayed.model.clone(),
+        live.model.clone(),
     );
     diff(
         mismatches,
         fixture,
         "model_runs",
-        model_runs.to_vec(),
-        expected_model_runs(metrics),
+        replayed.model_runs.clone(),
+        live.model_runs.clone(),
     );
-}
-
-/// Mirrors `apps/desktop/src-tauri/src/analysis.rs`'s
-/// `model_runs_for_metrics`: trims each run's model and thinking mode,
-/// drops a run whose model is empty after trimming, then collects into a
-/// `BTreeSet` so only the set of distinct pairs decides the result, not
-/// the accumulator's mark order. Falls back to one run per breakdown
-/// model, with no thinking mode, when the accumulator recorded no mark at
-/// all.
-fn expected_model_runs(metrics: &SessionMetrics) -> Vec<ModelRun> {
-    if metrics.model_runs.is_empty() {
-        let mut models: Vec<String> = metrics.model_breakdown.keys().cloned().collect();
-        models.sort();
-        return models
-            .into_iter()
-            .map(|model| ModelRun {
-                model,
-                thinking_mode: None,
-            })
-            .collect();
-    }
-    metrics
-        .model_runs
-        .iter()
-        .filter_map(|run| {
-            let model = run.model.trim();
-            if model.is_empty() {
-                return None;
-            }
-            let thinking_mode = run
-                .thinking_mode
-                .as_deref()
-                .map(str::trim)
-                .filter(|mode| !mode.is_empty())
-                .map(str::to_string);
-            Some(ModelRun {
-                model: model.to_string(),
-                thinking_mode,
-            })
-        })
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-/// Asserts every fixture's published `SessionEvidence` groups carry the
-/// queried `TurnFacts` values through with no change. `evidence()` builds
-/// each group straight from `facts`, so any mismatch here is a bug in that
-/// assembly, not a semantic difference to document.
-fn assert_no_mismatches(vendor: &str, mismatches: Vec<Mismatch>) {
-    let details: Vec<&str> = mismatches
-        .iter()
-        .map(|mismatch| mismatch.detail.as_str())
-        .collect();
-    assert!(
-        details.is_empty(),
-        "{vendor}: {} mismatch(es) between the published SessionEvidence and query_turn_facts:\n\n{}",
-        details.len(),
-        details.join("\n\n")
+    diff(
+        mismatches,
+        fixture,
+        "billable_input_tokens",
+        replayed.billable_input_tokens,
+        live.billable_input_tokens,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "billable_output_tokens",
+        replayed.billable_output_tokens,
+        live.billable_output_tokens,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "billable_cache_read_tokens",
+        replayed.billable_cache_read_tokens,
+        live.billable_cache_read_tokens,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "billable_cache_creation_tokens",
+        replayed.billable_cache_creation_tokens,
+        live.billable_cache_creation_tokens,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "model_breakdown",
+        replayed.model_breakdown.clone(),
+        live.model_breakdown.clone(),
+    );
+    diff(mismatches, fixture, "cost", replayed.cost, live.cost);
+    diff(
+        mismatches,
+        fixture,
+        "efficiency",
+        replayed.efficiency,
+        live.efficiency,
     );
 }
 
 /* --------------------------------------------------------------------
- * Claude fixtures. Reuses the fixture set `evidence_fixture_names`
- * exercises in `claude_characterization.rs` — every fixture that suite
- * treats as evidence-bearing.
+ * Claude fixtures. Same 28 fixtures `turn_facts_parity.rs` sweeps.
  * ----------------------------------------------------------------- */
 
 fn claude_fixture(name: &str) -> &'static str {
@@ -550,22 +456,7 @@ fn claude_fixture_names() -> [&'static str; 28] {
 }
 
 #[test]
-fn claude_facts_match_evidence_for_every_fixture() {
-    let mut mismatches = Vec::new();
-    for name in claude_fixture_names() {
-        let (evidence, facts) = run_fixture(
-            "claude",
-            name,
-            claude_fixture(name),
-            SourceCapabilities::claude(),
-        );
-        compare_fixture(&mut mismatches, name, &evidence, &facts);
-    }
-    assert_no_mismatches("claude", mismatches);
-}
-
-#[test]
-fn claude_model_projections_match_the_accumulator_for_every_fixture() {
+fn claude_metrics_from_rows_matches_the_accumulator_for_every_fixture() {
     let mut mismatches = Vec::new();
     for name in claude_fixture_names() {
         let input = SessionInput {
@@ -573,47 +464,15 @@ fn claude_model_projections_match_the_accumulator_for_every_fixture() {
             session_id: name.to_owned(),
             source: RawSource::Jsonl(claude_fixture(name).to_owned()),
         };
-        let (_, _, metrics, model_breakdown, model_runs) =
-            run_fixture_with_row_projections("claude", name, &input, SourceCapabilities::claude());
-        // `delegated_model_missing` carries an assistant turn with billable
-        // tokens and no model. `SessionMetricsAccumulator` folds such a
-        // turn's tokens into the transcript's own primary model
-        // (`summary.model`, the parent's `claude-opus-4-6`) — see
-        // `model_breakdown_map`'s `unattributed_model_tokens` fold in
-        // `metrics_sink/mod.rs`. `query_model_breakdown` filters to
-        // `model IS NOT NULL` rows only, per this seam's design, and reads
-        // no session-level primary model to fold an unattributed turn's
-        // tokens into instead, so its total for `claude-opus-4-6` on this
-        // one fixture is short by that turn's 12 input / 3 output tokens.
-        // This is the one documented parity gap this seam accepts — see
-        // the PR description — so `model_breakdown` is excluded from this
-        // fixture's comparison; `model_runs` still holds, since the
-        // model-less turn's resolved run (`claude-opus-4-6`, same effort)
-        // duplicates one the modeled turn already contributes.
-        if name == "delegated_model_missing" {
-            diff(
-                &mut mismatches,
-                name,
-                "model_runs",
-                model_runs,
-                expected_model_runs(&metrics),
-            );
-            continue;
-        }
-        compare_model_projections(
-            &mut mismatches,
-            name,
-            &metrics,
-            &model_breakdown,
-            &model_runs,
-        );
+        let (live, replayed) =
+            run_fixture_and_replay("claude", name, &input, SourceCapabilities::claude());
+        compare_metrics(&mut mismatches, name, &live, &replayed);
     }
     assert_no_mismatches("claude", mismatches);
 }
 
 /* --------------------------------------------------------------------
- * Codex fixtures. Reuses the fixture set `codex_characterization.rs`
- * streams through `composite`.
+ * Codex fixtures. Same 9 fixtures `turn_facts_parity.rs` sweeps.
  * ----------------------------------------------------------------- */
 
 fn codex_fixture(name: &str) -> &'static str {
@@ -662,22 +521,7 @@ fn codex_fixture_names() -> [&'static str; 9] {
 }
 
 #[test]
-fn codex_facts_match_evidence_for_every_fixture() {
-    let mut mismatches = Vec::new();
-    for name in codex_fixture_names() {
-        let (evidence, facts) = run_fixture(
-            "codex",
-            name,
-            codex_fixture(name),
-            SourceCapabilities::codex(),
-        );
-        compare_fixture(&mut mismatches, name, &evidence, &facts);
-    }
-    assert_no_mismatches("codex", mismatches);
-}
-
-#[test]
-fn codex_model_projections_match_the_accumulator_for_every_fixture() {
+fn codex_metrics_from_rows_matches_the_accumulator_for_every_fixture() {
     let mut mismatches = Vec::new();
     for name in codex_fixture_names() {
         let input = SessionInput {
@@ -685,22 +529,15 @@ fn codex_model_projections_match_the_accumulator_for_every_fixture() {
             session_id: name.to_owned(),
             source: RawSource::Jsonl(codex_fixture(name).to_owned()),
         };
-        let (_, _, metrics, model_breakdown, model_runs) =
-            run_fixture_with_row_projections("codex", name, &input, SourceCapabilities::codex());
-        compare_model_projections(
-            &mut mismatches,
-            name,
-            &metrics,
-            &model_breakdown,
-            &model_runs,
-        );
+        let (live, replayed) =
+            run_fixture_and_replay("codex", name, &input, SourceCapabilities::codex());
+        compare_metrics(&mut mismatches, name, &live, &replayed);
     }
     assert_no_mismatches("codex", mismatches);
 }
 
 /* --------------------------------------------------------------------
- * Pi fixtures. Reuses the fixture set `pi_characterization.rs` streams
- * through `composite`.
+ * Pi fixtures. Same 28 fixtures `turn_facts_parity.rs` sweeps.
  * ----------------------------------------------------------------- */
 
 fn pi_fixture(name: &str) -> &'static str {
@@ -812,17 +649,7 @@ fn pi_fixture_names() -> [&'static str; 28] {
 }
 
 #[test]
-fn pi_facts_match_evidence_for_every_fixture() {
-    let mut mismatches = Vec::new();
-    for name in pi_fixture_names() {
-        let (evidence, facts) = run_fixture("pi", name, pi_fixture(name), SourceCapabilities::pi());
-        compare_fixture(&mut mismatches, name, &evidence, &facts);
-    }
-    assert_no_mismatches("pi", mismatches);
-}
-
-#[test]
-fn pi_model_projections_match_the_accumulator_for_every_fixture() {
+fn pi_metrics_from_rows_matches_the_accumulator_for_every_fixture() {
     let mut mismatches = Vec::new();
     for name in pi_fixture_names() {
         let input = SessionInput {
@@ -830,29 +657,18 @@ fn pi_model_projections_match_the_accumulator_for_every_fixture() {
             session_id: name.to_owned(),
             source: RawSource::Jsonl(pi_fixture(name).to_owned()),
         };
-        let (_, _, metrics, model_breakdown, model_runs) =
-            run_fixture_with_row_projections("pi", name, &input, SourceCapabilities::pi());
-        compare_model_projections(
-            &mut mismatches,
-            name,
-            &metrics,
-            &model_breakdown,
-            &model_runs,
-        );
+        let (live, replayed) = run_fixture_and_replay("pi", name, &input, SourceCapabilities::pi());
+        compare_metrics(&mut mismatches, name, &live, &replayed);
     }
     assert_no_mismatches("pi", mismatches);
 }
 
 /* --------------------------------------------------------------------
- * OpenCode fixtures. OpenCode has no `fixtures/opencode_characterization`
- * directory: `opencode_characterization.rs` builds every session inline,
- * either from an in-memory SQLite database or from an inline export-JSONL
- * string. This section mirrors that suite's own `create_database` /
- * `insert_session` / `insert_message` / `insert_part` helpers, and copies
- * the minimal synthetic content of two of its scenarios, in miniature
- * here, so `opencode_characterization.rs` itself stays untouched. The
- * content is synthetic test fixture data, so this duplication is
- * acceptable.
+ * OpenCode fixtures. Same five scenarios `turn_facts_parity.rs` builds
+ * inline — copied here for the same reason that file documents: OpenCode
+ * has no `fixtures/opencode_characterization` directory of its own, and
+ * duplicating this synthetic content keeps `opencode_characterization.rs`
+ * itself untouched.
  * ----------------------------------------------------------------- */
 
 fn opencode_create_database() -> (TempDir, std::path::PathBuf) {
@@ -933,21 +749,6 @@ fn opencode_sqlite_input(path: &Path, session_id: &str) -> SessionInput {
     }
 }
 
-/// Streams one OpenCode `SessionInput` through the real adapter and the
-/// real evidence and turn-row pipeline, the same path production uses.
-fn run_opencode_fixture(fixture: &str, input: &SessionInput) -> (SessionEvidence, TurnFacts) {
-    let (evidence, facts, _, _, _) = run_fixture_with_row_projections(
-        "opencode",
-        fixture,
-        input,
-        SourceCapabilities::opencode(),
-    );
-    (evidence, facts)
-}
-
-/// A root session with one assistant message carrying a model, an effort
-/// variant, and cache read/write and reasoning tokens. Exercises the
-/// `models` and `cache` evidence groups.
 fn opencode_fixture_messages_with_cache_and_reasoning() -> (TempDir, SessionInput) {
     let (directory, path) = opencode_create_database();
     let connection = Connection::open(&path).expect("database");
@@ -964,10 +765,6 @@ fn opencode_fixture_messages_with_cache_and_reasoning() -> (TempDir, SessionInpu
     (directory, input)
 }
 
-/// A root session with two assistant messages under different models
-/// (a model transition) and a delegated child session with its own
-/// model. Exercises `subagents`, `models.byModel`, and the cache group's
-/// model-transition and idle-gap fields.
 fn opencode_fixture_subagent_delegation_with_model_transition() -> (TempDir, SessionInput) {
     let (directory, path) = opencode_create_database();
     let connection = Connection::open(&path).expect("database");
@@ -999,9 +796,6 @@ fn opencode_fixture_subagent_delegation_with_model_transition() -> (TempDir, Ses
     (directory, input)
 }
 
-/// A malformed message row between two valid ones. Exercises the
-/// `eligibility` group and the partial-coverage path every other group
-/// carries when the session-wide claim is incomplete.
 fn opencode_fixture_malformed_between_valid() -> (TempDir, SessionInput) {
     let (directory, path) = opencode_create_database();
     let connection = Connection::open(&path).expect("database");
@@ -1026,8 +820,6 @@ fn opencode_fixture_malformed_between_valid() -> (TempDir, SessionInput) {
     (directory, input)
 }
 
-/// One assistant message that carries a compaction part. Exercises the
-/// `compactions` evidence group.
 fn opencode_fixture_compaction_boundary() -> (TempDir, SessionInput) {
     let (directory, path) = opencode_create_database();
     let connection = Connection::open(&path).expect("database");
@@ -1052,11 +844,6 @@ fn opencode_fixture_compaction_boundary() -> (TempDir, SessionInput) {
     (directory, input)
 }
 
-/// The export-JSONL format (`session_meta` / `session_member` / `message`
-/// records), copied from `opencode_characterization.rs`'s
-/// `export_stream_marks_a_child_message_as_delegated_with_one_spawn`.
-/// Exercises the JSONL source path, distinct from the SQLite path every
-/// other OpenCode fixture in this file uses.
 fn opencode_fixture_export_jsonl_child_delegation() -> SessionInput {
     let jsonl = concat!(
         r#"{"type":"session_meta","sessionID":"root","sessionRole":"root","time":{"created":1000},"payload":{"id":"root","title":"Root session"}}"#,
@@ -1076,134 +863,219 @@ fn opencode_fixture_export_jsonl_child_delegation() -> SessionInput {
 }
 
 #[test]
-fn opencode_facts_match_evidence_for_every_fixture() {
+fn opencode_metrics_from_rows_matches_the_accumulator_for_every_fixture() {
     let mut mismatches = Vec::new();
 
     let (_messages_dir, messages_input) = opencode_fixture_messages_with_cache_and_reasoning();
-    let (evidence, facts) =
-        run_opencode_fixture("messages_with_cache_and_reasoning", &messages_input);
-    compare_fixture(
-        &mut mismatches,
-        "messages_with_cache_and_reasoning",
-        &evidence,
-        &facts,
-    );
-
-    let (_subagent_dir, subagent_input) =
-        opencode_fixture_subagent_delegation_with_model_transition();
-    let (evidence, facts) =
-        run_opencode_fixture("subagent_delegation_with_model_transition", &subagent_input);
-    compare_fixture(
-        &mut mismatches,
-        "subagent_delegation_with_model_transition",
-        &evidence,
-        &facts,
-    );
-
-    let (_malformed_dir, malformed_input) = opencode_fixture_malformed_between_valid();
-    let (evidence, facts) = run_opencode_fixture("malformed_between_valid", &malformed_input);
-    compare_fixture(
-        &mut mismatches,
-        "malformed_between_valid",
-        &evidence,
-        &facts,
-    );
-
-    let (_compaction_dir, compaction_input) = opencode_fixture_compaction_boundary();
-    let (evidence, facts) = run_opencode_fixture("compaction_boundary", &compaction_input);
-    compare_fixture(&mut mismatches, "compaction_boundary", &evidence, &facts);
-
-    let export_input = opencode_fixture_export_jsonl_child_delegation();
-    let (evidence, facts) = run_opencode_fixture("export_jsonl_child_delegation", &export_input);
-    compare_fixture(
-        &mut mismatches,
-        "export_jsonl_child_delegation",
-        &evidence,
-        &facts,
-    );
-
-    assert_no_mismatches("opencode", mismatches);
-}
-
-#[test]
-fn opencode_model_projections_match_the_accumulator_for_every_fixture() {
-    let mut mismatches = Vec::new();
-
-    let (_messages_dir, messages_input) = opencode_fixture_messages_with_cache_and_reasoning();
-    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
+    let (live, replayed) = run_fixture_and_replay(
         "opencode",
         "messages_with_cache_and_reasoning",
         &messages_input,
         SourceCapabilities::opencode(),
     );
-    compare_model_projections(
+    compare_metrics(
         &mut mismatches,
         "messages_with_cache_and_reasoning",
-        &metrics,
-        &model_breakdown,
-        &model_runs,
+        &live,
+        &replayed,
     );
 
     let (_subagent_dir, subagent_input) =
         opencode_fixture_subagent_delegation_with_model_transition();
-    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
+    let (live, replayed) = run_fixture_and_replay(
         "opencode",
         "subagent_delegation_with_model_transition",
         &subagent_input,
         SourceCapabilities::opencode(),
     );
-    compare_model_projections(
+    compare_metrics(
         &mut mismatches,
         "subagent_delegation_with_model_transition",
-        &metrics,
-        &model_breakdown,
-        &model_runs,
+        &live,
+        &replayed,
     );
 
     let (_malformed_dir, malformed_input) = opencode_fixture_malformed_between_valid();
-    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
+    let (live, replayed) = run_fixture_and_replay(
         "opencode",
         "malformed_between_valid",
         &malformed_input,
         SourceCapabilities::opencode(),
     );
-    compare_model_projections(
-        &mut mismatches,
-        "malformed_between_valid",
-        &metrics,
-        &model_breakdown,
-        &model_runs,
-    );
+    compare_metrics(&mut mismatches, "malformed_between_valid", &live, &replayed);
 
     let (_compaction_dir, compaction_input) = opencode_fixture_compaction_boundary();
-    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
+    let (live, replayed) = run_fixture_and_replay(
         "opencode",
         "compaction_boundary",
         &compaction_input,
         SourceCapabilities::opencode(),
     );
-    compare_model_projections(
-        &mut mismatches,
-        "compaction_boundary",
-        &metrics,
-        &model_breakdown,
-        &model_runs,
-    );
+    compare_metrics(&mut mismatches, "compaction_boundary", &live, &replayed);
 
     let export_input = opencode_fixture_export_jsonl_child_delegation();
-    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
+    let (live, replayed) = run_fixture_and_replay(
         "opencode",
         "export_jsonl_child_delegation",
         &export_input,
         SourceCapabilities::opencode(),
     );
-    compare_model_projections(
+    compare_metrics(
         &mut mismatches,
         "export_jsonl_child_delegation",
-        &metrics,
-        &model_breakdown,
-        &model_runs,
+        &live,
+        &replayed,
     );
 
     assert_no_mismatches("opencode", mismatches);
+}
+
+/* --------------------------------------------------------------------
+ * Multi-source parity: a parent transcript plus one discovered child
+ * transcript, streamed through one shared row store the way
+ * `stream_vendor_with_hooks` streams a parent and a discovered sub-agent
+ * file in production — every fixture above streams through one source, so
+ * this is the one fixture that exercises `metrics_by_source`'s per-source
+ * split and `metrics_from_rows`'s merge over a real, adapter-driven
+ * multi-file session, not the synthetic `NormalizedEvent` fixtures
+ * `replay.rs`'s own unit tests build by hand.
+ * ----------------------------------------------------------------- */
+
+const MULTI_SOURCE_PARENT_JSONL: &str = concat!(
+    r#"{"type":"assistant","timestamp":1000,"message":{"id":"m1","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"Parent turn."}]}}"#,
+    "\n",
+);
+
+const MULTI_SOURCE_CHILD_JSONL: &str = concat!(
+    r#"{"type":"assistant","timestamp":2000,"message":{"id":"m2","role":"assistant","model":"claude-haiku-4-6","usage":{"input_tokens":3,"output_tokens":1},"content":[{"type":"text","text":"Child turn."}]}}"#,
+    "\n",
+);
+
+/// Streams `input` through the real Claude adapter into its own
+/// accumulator, evidence tracker, and [`TurnRowSink`] fanned into the
+/// shared `store` — one call per source, mirroring one iteration of
+/// `stream_vendor_with_hooks`'s own loop. Returns the finished accumulator
+/// and its captured [`SessionSummary`].
+fn stream_source_into_shared_store(
+    input: &SessionInput,
+    store: &std::sync::Arc<MemoryTurnRowStore>,
+    scope: Option<TurnScope>,
+) -> (SessionMetricsAccumulator, SessionSummary) {
+    let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: input.agent.clone(),
+        session_id: input.session_id.clone(),
+        kind: SourceKind::from(&input.source),
+        capabilities: SourceCapabilities::claude(),
+    });
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(store) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        scope,
+    );
+    let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
+    let outcome = adapter_for("claude")
+        .visit(input, &mut composite)
+        .expect("multi-source fixture must stream");
+    composite.observe_source_outcome(outcome);
+    assert!(
+        !composite.turn_row_write_failed(),
+        "multi-source fixture: turn row write must not fail"
+    );
+    let summary = composite
+        .summary()
+        .cloned()
+        .expect("a streamed source finishes with a summary");
+    let (accumulator, _evidence) = composite
+        .into_parts()
+        .expect("multi-source fixture must publish metrics");
+    (accumulator, summary)
+}
+
+#[test]
+fn metrics_by_source_and_metrics_from_rows_match_the_accumulators_for_a_parent_and_a_discovered_child()
+ {
+    let parent_input = SessionInput {
+        agent: "claude".to_owned(),
+        session_id: "multi-source-parent".to_owned(),
+        source: RawSource::Jsonl(MULTI_SOURCE_PARENT_JSONL.to_owned()),
+    };
+    let child_input = SessionInput {
+        agent: "claude".to_owned(),
+        session_id: "multi-source-child".to_owned(),
+        source: RawSource::Jsonl(MULTI_SOURCE_CHILD_JSONL.to_owned()),
+    };
+
+    // One shared row store under the parent's own session id: the parent's
+    // sink gets `Main` scope (`None`) and its own session id as
+    // `source_key` (`is_parent_group`'s rule, `source_key == session_id`);
+    // the child's sink gets `Delegated` scope and its own, distinct session
+    // id — exactly the shape `stream_vendor_with_hooks` builds for index 0
+    // versus a later, discovered input.
+    let store = MemoryTurnRowStore::new("claude", parent_input.session_id.clone());
+    let (parent_accumulator, parent_summary) =
+        stream_source_into_shared_store(&parent_input, &store, None);
+    let (child_accumulator, child_summary) =
+        stream_source_into_shared_store(&child_input, &store, Some(TurnScope::Delegated));
+
+    let live_parent = parent_accumulator.metrics();
+    let live_child = child_accumulator.metrics();
+    let live_merged = merge_metrics(&parent_accumulator, &[child_accumulator]);
+
+    let key = TurnSessionKey {
+        environment_key: "native",
+        agent: "claude",
+        session_id: &parent_input.session_id,
+    };
+    let rows = store
+        .with_connection(|conn| query_turn_rows(conn, &key, 1).expect("query rows must succeed"));
+
+    let summary_for = |source_key: &str| {
+        if source_key == parent_input.session_id {
+            parent_summary.clone()
+        } else {
+            child_summary.clone()
+        }
+    };
+
+    let mut mismatches = Vec::new();
+
+    let by_source = metrics_by_source(
+        "claude",
+        parent_input.session_id.clone(),
+        &rows,
+        summary_for,
+    );
+    compare_metrics(
+        &mut mismatches,
+        "multi_source_parent",
+        &live_parent,
+        by_source
+            .get(&parent_input.session_id)
+            .expect("the parent's own source_key must have a row group"),
+    );
+    compare_metrics(
+        &mut mismatches,
+        "multi_source_child",
+        &live_child,
+        by_source
+            .get(&child_input.session_id)
+            .expect("the child's own source_key must have a row group"),
+    );
+
+    let replayed_merged = metrics_from_rows(
+        "claude",
+        parent_input.session_id.clone(),
+        &rows,
+        summary_for,
+    )
+    .expect("the parent group's source_key equals the session id");
+    compare_metrics(
+        &mut mismatches,
+        "multi_source_merged",
+        &live_merged,
+        &replayed_merged,
+    );
+
+    assert_no_mismatches("claude_multi_source", mismatches);
 }

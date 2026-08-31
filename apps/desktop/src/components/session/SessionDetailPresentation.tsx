@@ -101,6 +101,12 @@ export interface SessionDetailPresentationProps {
    * empty state from "nothing happened" to "we cannot read this yet".
    */
   supportsAnalysis: boolean
+  /**
+   * True when no published row set exists yet for this session. Changes the
+   * empty state to an indexing message: the worker has not analyzed the
+   * session yet, so "no analyzable messages" would be wrong.
+   */
+  analysisPending: boolean
 
   /** The cost result the breakdown describes, when one was priced. */
   cost: LocalSessionCost | null
@@ -409,6 +415,7 @@ export function SessionDetailPresentation({
   error,
   session,
   supportsAnalysis,
+  analysisPending,
   cost,
   costSplit,
   efficiency,
@@ -590,7 +597,14 @@ export function SessionDetailPresentation({
         {showEmptyState && (
           <div className="flex flex-col items-center justify-center px-8 py-12 text-center">
             <Moon size={28} aria-hidden="true" className="mb-3 text-label-tertiary" />
-            {!supportsAnalysis ? (
+            {analysisPending ? (
+              <>
+                <p className="type-body text-label">Analyzing this session…</p>
+                <p className="mt-1 type-callout text-label-tertiary">
+                  Indexing is in progress. This view updates on its own once it finishes.
+                </p>
+              </>
+            ) : !supportsAnalysis ? (
               <p className="type-body text-label">
                 Session analysis for {agentDisplayName(session.agent)} sessions isn&apos;t
                 available yet

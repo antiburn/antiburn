@@ -14,7 +14,11 @@ import {
   type HudDetailState,
   type LiveUsageSummaryPayload,
 } from "../../lib/ipc"
-import { hideOverlayWindow, setFloatingHudEnabled } from "../../lib/overlayWindow"
+import {
+  hideOverlayWindow,
+  recordHudPosition,
+  setFloatingHudEnabled,
+} from "../../lib/overlayWindow"
 import { prefersReducedMotion } from "../../lib/popoverHeight"
 import { deriveUsageBars, noMeterSelected, type UsageBarItem } from "../../lib/usageBars"
 
@@ -325,6 +329,9 @@ export class OverlaySession {
   private stopDrag = (): void => {
     if (!this.snapshot.dragging) return
     this.settleDrag()
+    // The drag is what makes this display the preferred one, so the record
+    // happens here and not in `settleDrag`, which a failed drag start shares.
+    void recordHudPosition().catch(() => {})
   }
 
   private settleDrag(): void {

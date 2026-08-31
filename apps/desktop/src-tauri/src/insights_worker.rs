@@ -465,6 +465,34 @@ mod tests {
         pass
     }
 
+    /// Like [`published_pass`], but for a generic-JSONL agent (Copilot):
+    /// `capabilities_for_vendor` maps it to `SourceCapabilities::generic()`
+    /// (every field unset), so this exercises the real GENERIC-adapter path
+    /// a widened-cohort worker pass now takes for an uncharacterized vendor.
+    fn generic_published_pass(record: &SessionRecord) -> EvidencePass {
+        let store: Arc<dyn TurnRowStore> =
+            MemoryTurnRowStore::new("copilot", record.key.session_id.clone());
+        let mut pass = analysis::evidence_pass_with_turn_rows(
+            &[SessionInput {
+                agent: "copilot".into(),
+                session_id: record.key.session_id.clone(),
+                source: RawSource::Jsonl(
+                    r#"{"role":"user","content":"hi"}
+{"role":"assistant","content":"hello","usage":{"prompt_tokens":2,"completion_tokens":3}}
+"#
+                    .into(),
+                ),
+            }],
+            &|| false,
+            Some(store),
+        );
+        pass.analysis.fingerprint = record
+            .source_fingerprint
+            .clone()
+            .unwrap_or_else(|| analysis::MISSING_FINGERPRINT.into());
+        pass
+    }
+
     async fn captured_signal(slot: &Mutex<Option<PassSignal>>) -> PassSignal {
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
@@ -569,6 +597,45 @@ mod tests {
             store.evidence(&claim.key).unwrap().unwrap().status,
             EvidenceStatus::Unsupported
         );
+    }
+
+    /// The widened cohort now enqueues generic-JSONL agents (Copilot, Cline,
+    /// Kiro, Amp, Windsurf) alongside the vendors with a dedicated adapter.
+    /// Before capabilities_for_vendor was made total, a Published pass with
+    /// no evidence (the legacy analyze_sources_with path's shape) made
+    /// apply_outcome error, leaving the claim stuck reprocessing forever.
+    /// With every vendor streaming through a real `SourceCapabilities`
+    /// profile, a generic-agent session must instead complete terminally —
+    /// here, `SourceCapabilities::generic()` is all-unset, so no detector is
+    /// eligible and the terminal status is `Unsupported`, never a stuck
+    /// `Processing` claim or an `apply_outcome` error.
+    #[tokio::test]
+    async fn a_generic_agent_session_completes_terminally_through_process_next() {
+        let store = store();
+        let mut copilot_record = record("generic-terminal");
+        copilot_record.key.agent = "copilot".to_owned();
+        store
+            .upsert_sessions(&[copilot_record], &crate::agents::evidence_cohort())
+            .unwrap();
+        let handle = WorkerHandle::default();
+        let runner = |record: &SessionRecord, _: PassSignal, _: i64| {
+            let pass = generic_published_pass(record);
+            Box::pin(async move { pass }) as PassFuture
+        };
+
+        let processed = process_next(&store, &handle, &|| 100, &runner, &|_| {})
+            .await
+            .unwrap();
+        assert!(processed);
+
+        let key = SessionKey::new("native", "copilot", "generic-terminal");
+        let evidence = store.evidence(&key).unwrap().unwrap();
+        assert_eq!(
+            evidence.status,
+            EvidenceStatus::Unsupported,
+            "a capability-free source publishes as unsupported, not stuck processing"
+        );
+        assert_ne!(evidence.status, EvidenceStatus::Processing);
     }
 
     #[test]

@@ -160,6 +160,7 @@ pub fn run() {
             commands::open_privacy_policy,
             commands::open_overlay_window,
             commands::hide_overlay_window,
+            commands::record_hud_position,
             commands::install_update,
             commands::show_hud_detail,
             commands::hide_hud_detail,
@@ -261,6 +262,11 @@ pub fn run() {
             // menu-bar item to unlight it. The popover itself is lazy, and its
             // dismissal path already treats a missing window as idle.
             global_click::install(app.handle());
+
+            // The HUD follows the desk it is on: a display that disconnects
+            // sends it to one still connected, and the display coming back
+            // takes it again. The watcher idles while the HUD is closed.
+            hud::spawn_display_watcher(app.handle());
 
             // The first run gets a window rather than silence. Everything above
             // is in place by now, so the flow's first paint can already read

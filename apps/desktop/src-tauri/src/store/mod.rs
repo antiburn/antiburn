@@ -27,6 +27,8 @@ mod schema;
 #[cfg(test)]
 mod privacy_tests;
 #[cfg(test)]
+mod publish_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::{HashMap, HashSet};
@@ -35,9 +37,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use antiburn_local::analysis::{
-    TurnFacts, TurnRow, TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows,
+    ModelRun, TurnFacts, TurnRow, TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows,
     delete_turn_rows, delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_turn_rows,
-    query_turn_facts,
+    query_model_breakdown, query_model_runs, query_turn_facts, query_turn_rows,
 };
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -278,24 +280,24 @@ impl Store {
     /// shell side effects a transition owes without another writer changing the
     /// answer between the two operations.
     pub fn replace_settings(&self, settings: &AppSettings) -> Result<(AppSettings, AppSettings)> {
-        self.update_settings(|current| *current = settings.clone())
+        self.replace_settings_with(settings, |_, _| Ok(()))
+            .map(|(previous, saved, ())| (previous, saved))
     }
 
-    /// Replace preferences and apply their retention policy in one transaction.
-    pub fn replace_settings_and_apply_retention(
+    /// Replace preferences and apply another database change in one transaction.
+    pub fn replace_settings_with<T>(
         &self,
         settings: &AppSettings,
-        now_epoch: i64,
-    ) -> Result<(AppSettings, AppSettings, usize)> {
+        apply: impl FnOnce(&rusqlite::Transaction<'_>, &AppSettings) -> Result<T>,
+    ) -> Result<(AppSettings, AppSettings, T)> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         let previous = read_settings(&tx)?;
         let saved = settings.clone().normalized();
         write_settings(&tx, &saved)?;
-        let removed =
-            apply_session_retention_in(&tx, saved.session_data_retention_days, now_epoch)?;
+        let result = apply(&tx, &saved)?;
         tx.commit()?;
-        Ok((previous, saved, removed))
+        Ok((previous, saved, result))
     }
 
     /// Apply the stored session-data retention policy.
@@ -714,6 +716,31 @@ impl Store {
             .collect()
     }
 
+    /// Each session's current source generation, in request order.
+    ///
+    /// A caller compares this against an evidence row's own
+    /// `analyzed_generation` to find evidence analyzed against a generation
+    /// the source has since moved past — see `session_hygiene_payload` in
+    /// `commands.rs`. `None` marks a key with no `session` row.
+    pub fn source_generation_batch(&self, keys: &[SessionKey]) -> Result<Vec<Option<i64>>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT source_generation FROM session
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+        )?;
+        keys.iter()
+            .map(|key| {
+                statement
+                    .query_row(
+                        params![key.environment_key, key.agent, key.session_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(Into::into)
+            })
+            .collect()
+    }
+
     /// Count the evidence backlog for one environment.
     ///
     /// The counts feed the Insights pane's processing status. They are
@@ -1084,13 +1111,15 @@ impl Store {
         transaction.execute(
             "INSERT INTO session_analysis (
                  environment_key, agent, session_id, model_breakdown_json,
-                 inclusive_models_json, source_fingerprint, pricing_generation,
-                 analyzed_generation, parser_revision, analyzer_revision,
-                 metrics_schema_revision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 inclusive_models_json, initial_context_json, source_summaries_json,
+                 source_fingerprint, pricing_generation, analyzed_generation,
+                 parser_revision, analyzer_revision, metrics_schema_revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
                  model_breakdown_json = excluded.model_breakdown_json,
                  inclusive_models_json = excluded.inclusive_models_json,
+                 initial_context_json = excluded.initial_context_json,
+                 source_summaries_json = excluded.source_summaries_json,
                  source_fingerprint = excluded.source_fingerprint,
                  pricing_generation = excluded.pricing_generation,
                  analyzed_generation = excluded.analyzed_generation,
@@ -1103,6 +1132,8 @@ impl Store {
                 record.key.session_id,
                 record.model_breakdown_json,
                 record.inclusive_models_json,
+                record.initial_context_json,
+                record.source_summaries_json,
                 record.source_fingerprint,
                 record.pricing_generation,
                 record.analyzed_generation,
@@ -1189,6 +1220,19 @@ impl Store {
         Ok(true)
     }
 
+    /// Requeues one session's evidence row for the durable worker.
+    ///
+    /// Wraps [`mark_evidence_pending_in`] in its own connection lock, for a
+    /// caller outside a transaction this module already holds open — the
+    /// drilldown command switch nudges the worker this way when it finds
+    /// the stored analysis fingerprint no longer matches the live
+    /// transcript's. Idempotent: requeuing a session already `pending` (or
+    /// already claimed) just clears its retry state again.
+    pub fn requeue_session_evidence(&self, key: &SessionKey) -> Result<()> {
+        let connection = self.lock();
+        mark_evidence_pending_in(&connection, key)
+    }
+
     /// Deletes every turn row for one session. Used by delete paths that do
     /// not go through [`Self::delete_session`] or
     /// [`Self::clear_local_session_data`].
@@ -1207,7 +1251,57 @@ impl Store {
         )?)
     }
 
-    /// Cache one session's derived analysis.
+    /// One session's published turn rows, or `None` when no complete,
+    /// published set of rows exists to read.
+    ///
+    /// A claim bumps `session_evidence.claim_fence` and writes new rows
+    /// under that fence while the last published pass's rows still sit
+    /// under the old fence. A publish that wins deletes every other
+    /// fence's rows and sets status `ready` or `unsupported`; a publish
+    /// that loses its race deletes only its own fence's rows and leaves the
+    /// earlier published fence in place. So `claim_fence` names a complete
+    /// set of rows when status is `ready` or `unsupported` — both are
+    /// terminal states a winning publish reached, so both name a complete
+    /// fence. `unsupported` means no detector was eligible for this source,
+    /// an insights verdict, not a parse-quality one; the rows and the
+    /// session_analysis record are still complete for it. With status
+    /// `pending`, `processing`, or `failed`, `claim_fence` may point at
+    /// partial or missing rows, and this method returns `None` for those.
+    /// The evidence lookup and the row query run under one lock, so a claim
+    /// racing this read cannot swap the fence in between them.
+    pub fn published_turn_rows(&self, key: &SessionKey) -> Result<Option<Vec<TurnRow>>> {
+        let connection = self.lock();
+        let Some(evidence) = connection
+            .query_row(
+                EVIDENCE_BY_KEY_SQL,
+                params![key.environment_key, key.agent, key.session_id],
+                evidence_from_row,
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        if !matches!(
+            evidence.status,
+            EvidenceStatus::Ready | EvidenceStatus::Unsupported
+        ) {
+            return Ok(None);
+        }
+        Ok(Some(query_turn_rows(
+            &connection,
+            &turn_session_key(key),
+            evidence.claim_fence,
+        )?))
+    }
+
+    /// Write one session's analysis columns directly, without the evidence
+    /// claim `publish_projections` requires.
+    ///
+    /// Test scaffolding only. Every production write goes through
+    /// `publish_projections`, which also settles the session's evidence
+    /// claim; this method exists so fixture setup can seed
+    /// `session_analysis` without first driving a claim through the worker.
+    #[cfg(test)]
     pub fn save_analysis(
         &self,
         record: &AnalysisRecord,
@@ -1218,13 +1312,15 @@ impl Store {
         transaction.execute(
             "INSERT INTO session_analysis (
                  environment_key, agent, session_id, model_breakdown_json,
-                 inclusive_models_json, source_fingerprint, pricing_generation,
-                 analyzed_generation, parser_revision, analyzer_revision,
-                 metrics_schema_revision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 inclusive_models_json, initial_context_json, source_summaries_json,
+                 source_fingerprint, pricing_generation, analyzed_generation,
+                 parser_revision, analyzer_revision, metrics_schema_revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
                  model_breakdown_json = excluded.model_breakdown_json,
                  inclusive_models_json = excluded.inclusive_models_json,
+                 initial_context_json = excluded.initial_context_json,
+                 source_summaries_json = excluded.source_summaries_json,
                  source_fingerprint = excluded.source_fingerprint,
                  pricing_generation = excluded.pricing_generation,
                  analyzed_generation = excluded.analyzed_generation,
@@ -1237,6 +1333,8 @@ impl Store {
                 record.key.session_id,
                 record.model_breakdown_json,
                 record.inclusive_models_json,
+                record.initial_context_json,
+                record.source_summaries_json,
                 record.source_fingerprint,
                 record.pricing_generation,
                 record.analyzed_generation,
@@ -1266,9 +1364,9 @@ impl Store {
         let connection = self.lock();
         let mut statement = connection.prepare(
             "SELECT environment_key, agent, session_id, model_breakdown_json,
-                    inclusive_models_json, source_fingerprint, pricing_generation,
-                    analyzed_generation, parser_revision, analyzer_revision,
-                    metrics_schema_revision
+                    inclusive_models_json, initial_context_json, source_summaries_json,
+                    source_fingerprint, pricing_generation, analyzed_generation,
+                    parser_revision, analyzer_revision, metrics_schema_revision
                FROM session_analysis
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         )?;
@@ -1284,12 +1382,14 @@ impl Store {
                         ),
                         model_breakdown_json: row.get(3)?,
                         inclusive_models_json: row.get(4)?,
-                        source_fingerprint: row.get(5)?,
-                        pricing_generation: row.get(6)?,
-                        analyzed_generation: row.get(7)?,
-                        parser_revision: row.get(8)?,
-                        analyzer_revision: row.get(9)?,
-                        metrics_schema_revision: row.get(10)?,
+                        initial_context_json: row.get(5)?,
+                        source_summaries_json: row.get(6)?,
+                        source_fingerprint: row.get(7)?,
+                        pricing_generation: row.get(8)?,
+                        analyzed_generation: row.get(9)?,
+                        parser_revision: row.get(10)?,
+                        analyzer_revision: row.get(11)?,
+                        metrics_schema_revision: row.get(12)?,
                     })
                 },
             )
@@ -1954,7 +2054,7 @@ fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<bool> 
     Ok(removed > 0)
 }
 
-fn apply_session_retention_in(
+pub(crate) fn apply_session_retention_in(
     connection: &Connection,
     retention_days: i32,
     now_epoch: i64,
@@ -2099,6 +2199,29 @@ impl TurnRowStore for FencedTurnRowStore {
     fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
         let connection = self.store.lock();
         Ok(query_turn_facts(
+            &connection,
+            &turn_session_key(&self.key),
+            self.claim_fence,
+        )?)
+    }
+
+    fn query_model_breakdown(
+        &self,
+    ) -> Result<
+        std::collections::BTreeMap<String, antiburn_local::pricing::ModelTokens>,
+        TurnRowError,
+    > {
+        let connection = self.store.lock();
+        Ok(query_model_breakdown(
+            &connection,
+            &turn_session_key(&self.key),
+            self.claim_fence,
+        )?)
+    }
+
+    fn query_model_runs(&self) -> Result<Vec<ModelRun>, TurnRowError> {
+        let connection = self.store.lock();
+        Ok(query_model_runs(
             &connection,
             &turn_session_key(&self.key),
             self.claim_fence,

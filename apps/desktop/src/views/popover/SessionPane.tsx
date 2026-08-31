@@ -354,6 +354,7 @@ export function SessionPane({
           : {}),
       }}
       supportsAnalysis={payload?.supportsAnalysis ?? agentSupportsAnalysis(subject.agent)}
+      analysisPending={payload?.analysisPending ?? false}
       cost={cost}
       costSplit={costSplit}
       efficiency={payload?.efficiency ?? null}

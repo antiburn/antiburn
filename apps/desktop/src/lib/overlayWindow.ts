@@ -14,6 +14,15 @@ export async function hideOverlayWindow(): Promise<void> {
   await invoke("hide_overlay_window")
 }
 
+/**
+ * Remember where the HUD sits, after a drag moved it.
+ *
+ * The shell reads the window position itself, so this carries no coordinates.
+ */
+export function recordHudPosition(): Promise<void> {
+  return invoke("record_hud_position")
+}
+
 const HUD_PREF_KEY = "antiburn.showFloatingHud"
 
 export function isFloatingHudEnabled(): boolean {

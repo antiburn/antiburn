@@ -9,7 +9,7 @@
 //! never on a runtime worker, where a multi-megabyte transcript would stall
 //! every other command.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Read;
 use std::sync::{
     Arc,
@@ -18,12 +18,12 @@ use std::sync::{
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, ActiveSessionsSummary, CompositeSink, EVIDENCE_SCHEMA_REVISION,
-    EfficiencyTotals, EvidenceSource, METRICS_SCHEMA_REVISION, ModelRun, NormalizedSession,
+    EfficiencyTotals, EvidenceSource, InitialContextBreakdown, METRICS_SCHEMA_REVISION, ModelRun,
     PARSER_REVISION, RawSource, SessionCost, SessionEvidence, SessionEvidenceAccumulator,
-    SessionInput, SessionMetrics, SessionMetricsAccumulator, SkillUse, SourceCapabilities,
-    SourceClaim, SourceKind, TurnRowSink, TurnRowStore, TurnScope, VisitOutcome, adapter_for,
-    aggregate_metrics, analyze_session, analyze_sources_with, append_only_guarantee, merge_metrics,
-    merge_subagent_events, normalize_source, price_breakdown, pricing_generation,
+    SessionInput, SessionMetrics, SessionMetricsAccumulator, SessionSummary, SkillUse,
+    SourceCapabilities, SourceClaim, SourceKind, TurnRow, TurnRowSink, TurnRowStore, TurnScope,
+    VisitOutcome, adapter_for, aggregate_metrics, append_only_guarantee, merge_metrics,
+    metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
@@ -34,14 +34,15 @@ use antiburn_local::pricing::ModelTokens;
 
 #[cfg(test)]
 use antiburn_local::analysis::{
-    ClaudeAdapter, CoverageReason, EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore, VendorAdapter,
+    ClaudeAdapter, CoverageReason, EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore,
+    VendorAdapter, analyze_sources_with,
 };
 #[cfg(test)]
 use antiburn_local::insights::{DetectorId, clean_facts_complete, eligible};
 
 use crate::agents::{supports_analysis, vendor_label};
 use crate::dto::{BillableTokens, OrchestrationStatus, SubagentMember};
-use crate::store::{AnalysisRecord, ProjectionRevisions, SessionKey};
+use crate::store::{AnalysisRecord, ProjectionRevisions, RelationKind, SessionKey, Store};
 
 /// Minimum sub-agents before a session reads as an orchestrator. One delegated
 /// task is ordinary; two or more is genuine fan-out. Mirrors the webview's
@@ -57,10 +58,6 @@ pub struct ClaimedSource {
 pub struct CancelFlag(Arc<AtomicBool>);
 
 impl CancelFlag {
-    pub fn from_flag(flag: Arc<AtomicBool>) -> Self {
-        Self(flag)
-    }
-
     pub fn never() -> Self {
         Self(Arc::new(AtomicBool::new(false)))
     }
@@ -145,6 +142,30 @@ pub struct StreamedSession {
     pub subagents: Vec<(SessionMetrics, Option<i64>)>,
     pub started_at_epoch: Option<i64>,
     pub evidence: Option<SessionEvidence>,
+    /// `inclusive_model_breakdown` and `model_runs`, read back from turn
+    /// rows instead of the accumulator. `Some` only when this pass had a
+    /// `turn_row_store` — see [`RowProjections`].
+    pub row_projections: Option<RowProjections>,
+    /// Each source's own `SessionSummary`, keyed by `source_key`. `Some`
+    /// only when this pass had a `turn_row_store` — see
+    /// [`stream_vendor_with_hooks`].
+    pub source_summaries: Option<BTreeMap<String, SessionSummary>>,
+}
+
+/// `inclusive_model_breakdown` and `model_runs`, derived from published
+/// turn rows instead of `SessionMetricsAccumulator`.
+///
+/// A pass with a `turn_row_store` (the durable evidence worker) computes
+/// these from `query_model_breakdown`/`query_model_runs` instead of the
+/// accumulator's own tally, proving the two agree over every
+/// characterization fixture — see the engine crate's
+/// `tests/turn_facts_parity.rs`, the `*_model_projections_match_the_
+/// accumulator_for_every_fixture` tests. A pass with no row store (an
+/// on-demand view, or a non-evidence-cohort agent) keeps the accumulator's
+/// values — see `analyze_for_evidence`.
+pub struct RowProjections {
+    pub model_breakdown: std::collections::BTreeMap<String, ModelTokens>,
+    pub model_runs: Vec<ModelRun>,
 }
 
 enum StreamOutcome {
@@ -166,6 +187,8 @@ enum ComputedAnalysis {
         started_at_epoch: Option<i64>,
         parent_fingerprint: Option<String>,
         evidence: Box<Option<SessionEvidence>>,
+        row_projections: Option<RowProjections>,
+        source_summaries: Option<BTreeMap<String, SessionSummary>>,
     },
     SourceChanged,
     Missing,
@@ -255,6 +278,13 @@ pub struct SessionAnalysis {
     pub analyzed_generation: i64,
     pub started_at_epoch: Option<i64>,
     pub source_changed: bool,
+    /// Each source's own `SessionSummary`, keyed by `source_key`. `Some`
+    /// only for a worker pass (one with a `turn_row_store`) over an
+    /// evidence-cohort agent — see [`stream_vendor_with_hooks`]. The
+    /// drilldown's rows-replay path reads this back (persisted as
+    /// `source_summaries_json`) to rebuild per-source metrics without a
+    /// transcript.
+    pub source_summaries: Option<BTreeMap<String, SessionSummary>>,
 }
 
 impl SessionAnalysis {
@@ -281,6 +311,7 @@ impl SessionAnalysis {
             analyzed_generation: 0,
             started_at_epoch: None,
             source_changed: false,
+            source_summaries: None,
         }
     }
 
@@ -291,12 +322,28 @@ impl SessionAnalysis {
             return None;
         }
         let revisions = projection_revisions();
+        // `initial_context` sits on `metrics` (see `analyze_for_evidence`,
+        // which grafts the parent's own breakdown onto the merged pass), so
+        // this reads the same value on both the worker and legacy paths.
+        let initial_context_json = self
+            .metrics
+            .as_ref()
+            .and_then(|metrics| metrics.initial_context.as_ref())
+            .and_then(|breakdown| serde_json::to_string(breakdown).ok());
+        // `None` on every path except a worker pass over an evidence-cohort
+        // agent — see `Self::source_summaries`'s doc comment.
+        let source_summaries_json = self
+            .source_summaries
+            .as_ref()
+            .and_then(|summaries| serde_json::to_string(summaries).ok());
         Some(AnalysisRecord {
             key: key.clone(),
             model_breakdown_json: serde_json::to_string(&self.inclusive_model_breakdown)
                 .unwrap_or_else(|_| "{}".to_string()),
             inclusive_models_json: serde_json::to_string(&self.model_runs)
                 .unwrap_or_else(|_| "[]".to_string()),
+            initial_context_json,
+            source_summaries_json,
             source_fingerprint: self.fingerprint.clone(),
             pricing_generation: pricing_generation() as i64,
             analyzed_generation: self.analyzed_generation,
@@ -403,16 +450,6 @@ fn combined_fingerprint(source: &SessionSource, subagent_paths: &[std::path::Pat
         .unwrap_or_else(|_| MISSING_FINGERPRINT.to_string())
 }
 
-/// Whether a cached analysis is still good for `source`.
-///
-/// A cache entry is stale when the transcript changed or when a newer pricing
-/// snapshot was installed, since cost is baked into the cached record.
-pub fn cache_is_fresh(cached: &AnalysisRecord, fingerprint: &str) -> bool {
-    fingerprint != MISSING_FINGERPRINT
-        && cached.source_fingerprint == fingerprint
-        && cached.pricing_generation == pricing_generation() as i64
-}
-
 /// The path of a file-backed source.
 pub fn source_path(source: &SessionSource) -> Option<String> {
     match source {
@@ -479,36 +516,25 @@ fn inline_fingerprint(content: &str) -> String {
     .fingerprint()
 }
 
-fn stream_vendor(inputs: &[SessionInput], cancel: &CancelFlag) -> StreamOutcome {
-    stream_vendor_with_claim_hook(inputs, cancel, &test_subagent_after_claim)
-}
+/// No-op `after_claim` hook for [`stream_vendor_with_hooks`]. Production
+/// callers (`analyze_for_evidence`) have no reason to observe a source's
+/// claim as it streams; a test that does inject its own hook directly
+/// instead, through [`stream_vendor_with_claim_hook`].
+fn no_after_claim(_: usize, _: &std::path::Path) {}
 
-#[cfg(not(test))]
-fn test_subagent_after_claim(_: usize, _: &std::path::Path) {}
+// `stream_vendor` and `stream_vendor_with_claim_hook` have no production
+// caller left: the drilldown's live-parse fallback (`analyze_subagent`) is
+// gone, and every remaining caller is test scaffolding for
+// `stream_vendor_with_hooks`'s streaming contract — see the `save_analysis`
+// precedent for the same treatment. `stream_vendor_with_hooks` itself stays
+// outside `#[cfg(test)]`: `analyze_for_evidence` still calls it directly in
+// production.
+#[cfg(test)]
+fn stream_vendor(inputs: &[SessionInput], cancel: &CancelFlag) -> StreamOutcome {
+    stream_vendor_with_claim_hook(inputs, cancel, &no_after_claim)
+}
 
 #[cfg(test)]
-fn test_subagent_after_claim(_: usize, path: &std::path::Path) {
-    use std::io::Write;
-
-    let append = {
-        let mut override_ = subagent_test_override()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        override_
-            .as_mut()
-            .filter(|override_| override_.source_path == path)
-            .and_then(|override_| override_.append_after_claim.take())
-    };
-    if let Some(append) = append {
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(path)
-            .expect("open changed sub-agent source")
-            .write_all(append.as_bytes())
-            .expect("append changed sub-agent source");
-    }
-}
-
 fn stream_vendor_with_claim_hook(
     inputs: &[SessionInput],
     cancel: &CancelFlag,
@@ -517,13 +543,23 @@ fn stream_vendor_with_claim_hook(
     stream_vendor_with_hooks(inputs, &|| cancel.cancelled(), after_claim, None, None)
 }
 
-fn capabilities_for_vendor(agent: &str) -> Option<SourceCapabilities> {
+/// Every vendor label's evidence-streaming contract. Total: an
+/// uncharacterized vendor (Cursor, Antigravity, or any generic-JSONL agent)
+/// still gets a real `SourceCapabilities` profile — an honest, mostly- or
+/// fully-unset one — so it takes the same streaming path as every other
+/// vendor instead of a separate, uncharacterized fallback. `published_status`
+/// (insights_worker.rs) is what turns an unset profile into the terminal
+/// `Unsupported` state; this function's job is only to describe the source,
+/// never to decide whether it is good enough.
+fn capabilities_for_vendor(agent: &str) -> SourceCapabilities {
     match agent {
-        "claude" => Some(SourceCapabilities::claude()),
-        "codex" => Some(SourceCapabilities::codex()),
-        "opencode" => Some(SourceCapabilities::opencode()),
-        "pi" => Some(SourceCapabilities::pi()),
-        _ => None,
+        "claude" => SourceCapabilities::claude(),
+        "codex" => SourceCapabilities::codex(),
+        "opencode" => SourceCapabilities::opencode(),
+        "pi" => SourceCapabilities::pi(),
+        "cursor" => SourceCapabilities::cursor(),
+        "antigravity" => SourceCapabilities::antigravity(),
+        _ => SourceCapabilities::generic(),
     }
 }
 
@@ -552,16 +588,20 @@ fn stream_vendor_with_hooks(
     // per-index accumulator the loop below builds.
     let mut parent_residual: Option<SessionEvidenceAccumulator> = None;
     let mut parent_fingerprint = None;
+    // Captured only for a worker pass (a `turn_row_store` is given): the
+    // point of persisting these is to replay rows later, so a pass with no
+    // rows to replay skips the clone. See `SessionAnalysis::source_summaries`.
+    let mut source_summaries: BTreeMap<String, SessionSummary> = BTreeMap::new();
     for (index, input) in inputs.iter().enumerate() {
         if cancelled() {
             return StreamOutcome::ParentUnreadable;
         }
-        let Some(capabilities) = capabilities_for_vendor(&input.agent) else {
-            if index == 0 {
-                return StreamOutcome::ParentUnsupported;
-            }
-            continue;
-        };
+        // Every vendor label now resolves to a real (possibly all-unset)
+        // capability profile, so this can never fall through to
+        // `StreamOutcome::ParentUnsupported` the way an unrecognized vendor
+        // used to; a Sqlite source from a non-OpenCode vendor is the one
+        // remaining path that outcome still covers, further down.
+        let capabilities = capabilities_for_vendor(&input.agent);
         let adapter = adapter_for(&input.agent);
         let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
         let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
@@ -660,6 +700,11 @@ fn stream_vendor_with_hooks(
                 if accumulator.turn_row_write_failed() {
                     return StreamOutcome::ParentUnreadable;
                 }
+                if turn_row_store.is_some()
+                    && let Some(summary) = accumulator.summary()
+                {
+                    source_summaries.insert(input.session_id.clone(), summary.clone());
+                }
                 let Some((metrics, residual)) = accumulator.into_parts() else {
                     if index == 0 {
                         return StreamOutcome::ParentUnreadable;
@@ -704,14 +749,40 @@ fn stream_vendor_with_hooks(
     // cannot build a `SessionEvidence`, since every row-derived group comes
     // from `TurnFacts`. A row query failure fails the whole pass, the same
     // way a turn-row write failure does above — published metrics must
-    // never disagree with rows this pass could not read back.
-    let evidence = match turn_row_store {
-        Some(store) => match store.query_turn_facts() {
-            Ok(facts) => parent_residual.map(|residual| residual.evidence(&facts)),
-            Err(_) => return StreamOutcome::ParentUnreadable,
-        },
-        None => None,
+    // never disagree with rows this pass could not read back. The same
+    // fail-the-pass rule covers `row_projections`: `inclusive_model_breakdown`
+    // and `model_runs` must never publish out of step with the rows this
+    // pass itself wrote.
+    let (evidence, row_projections) = match turn_row_store {
+        Some(store) => {
+            let facts = match store.query_turn_facts() {
+                Ok(facts) => facts,
+                Err(_) => return StreamOutcome::ParentUnreadable,
+            };
+            let evidence = parent_residual.map(|residual| residual.evidence(&facts));
+            let model_breakdown = match store.query_model_breakdown() {
+                Ok(model_breakdown) => model_breakdown,
+                Err(_) => return StreamOutcome::ParentUnreadable,
+            };
+            let model_runs = match store.query_model_runs() {
+                Ok(model_runs) => model_runs,
+                Err(_) => return StreamOutcome::ParentUnreadable,
+            };
+            (
+                evidence,
+                Some(RowProjections {
+                    model_breakdown,
+                    model_runs,
+                }),
+            )
+        }
+        None => (None, None),
     };
+    // `row_projections` is `Some` exactly when this pass had a
+    // `turn_row_store` — the same condition that gates the capture loop
+    // above — so it doubles as the flag for whether to keep the captured
+    // summaries rather than discard them.
+    let source_summaries = row_projections.is_some().then_some(source_summaries);
     StreamOutcome::Published {
         session: Box::new(StreamedSession {
             parent: parent_metrics,
@@ -719,42 +790,18 @@ fn stream_vendor_with_hooks(
             subagents,
             started_at_epoch,
             evidence,
+            row_projections,
+            source_summaries,
         }),
         parent_fingerprint,
     }
 }
 
-/// Normalize the parent and every sub-agent input, then merge their events
-/// into one time-aligned session via [`merge_subagent_events`].
-///
-/// Matches inputs to the parent by `session_id` rather than by position, so
-/// this stays correct even if a vendor adapter fails to read one input (the
-/// same tolerance [`analyze_sources_with`] gives the per-source batch).
-/// `None` when the parent itself could not be normalized.
 fn attributed_generation(claimed: &ClaimedSource, actual_fingerprint: Option<&str>) -> i64 {
     match (claimed.fingerprint.as_deref(), actual_fingerprint) {
         (Some(expected), Some(actual)) if expected == actual => claimed.generation,
         _ => 0,
     }
-}
-
-fn merge_parent_and_subagents(
-    inputs: &[SessionInput],
-    parent_session_id: &str,
-) -> Option<NormalizedSession> {
-    let mut parent = None;
-    let mut subagents = Vec::new();
-    for input in inputs {
-        let Ok(normalized) = normalize_source(input) else {
-            continue;
-        };
-        if normalized.session_id == parent_session_id {
-            parent = Some(normalized);
-        } else {
-            subagents.push(normalized);
-        }
-    }
-    Some(merge_subagent_events(parent?, subagents))
 }
 
 /// Order the sub-agent roster earliest-first.
@@ -778,6 +825,11 @@ fn sort_members(members: &mut [SubagentMember]) {
 /// session's own headline metrics — buckets, token totals, tool mix — so the
 /// detail view's chart and header sum a sub-agent's activity into the same
 /// session instead of hiding it.
+///
+/// `export_session` (`commands.rs`) is this function's only caller now. The
+/// drilldown itself reads rows instead — see `analysis_from_rows` — because
+/// export wants a live parse: a fresh fingerprint and a `source_path` an
+/// exported document can point to, neither of which a row replay carries.
 pub async fn analyze(
     agent: AgentKind,
     session_id: &str,
@@ -794,11 +846,7 @@ pub async fn analyze(
         None,
     )
     .await;
-    debug_assert!(
-        pass.evidence.is_none()
-            || (capabilities_for_vendor(vendor_label(agent)).is_some()
-                && pass.outcome == PassOutcome::Published)
-    );
+    debug_assert!(pass.evidence.is_none() || pass.outcome == PassOutcome::Published);
     pass.analysis
 }
 
@@ -887,126 +935,109 @@ pub async fn analyze_for_evidence(
         .map(|(id, label, _)| (id, label))
         .collect();
 
-    let inputs_for_merge = inputs.clone();
-    let parent_session_id_for_merge = parent_session_id.clone();
-    let streams_evidence = capabilities_for_vendor(label).is_some();
-
     // The engine's analysis is synchronous and CPU-bound; keep it off the
-    // runtime's worker threads.
+    // runtime's worker threads. Every vendor now has a real (possibly
+    // all-unset) `SourceCapabilities` profile, so every session streams
+    // through `stream_vendor_with_hooks` — there is no separate,
+    // uncharacterized-vendor fallback pass any more.
     let signal_for_pass = signal.clone();
     let computed = tauri::async_runtime::spawn_blocking(move || {
-        if streams_evidence {
-            let cancelled = || signal_for_pass.observe();
-            return match stream_vendor_with_hooks(
-                &inputs,
-                &cancelled,
-                &test_subagent_after_claim,
-                database_claim.as_deref(),
-                turn_row_store,
-            ) {
-                StreamOutcome::Published {
-                    session,
-                    parent_fingerprint,
-                } => ComputedAnalysis::Published {
-                    parent: Box::new(session.parent),
-                    merged: Box::new(session.merged),
-                    subagents: session.subagents,
-                    started_at_epoch: session.started_at_epoch,
-                    parent_fingerprint,
-                    evidence: Box::new(session.evidence),
-                },
-                StreamOutcome::SourceChanged => ComputedAnalysis::SourceChanged,
-                StreamOutcome::ParentMissing => ComputedAnalysis::Missing,
-                StreamOutcome::ParentUnsupported => ComputedAnalysis::Unsupported,
-                StreamOutcome::ParentUnreadable => ComputedAnalysis::Unavailable,
-            };
-        }
-        let batch = analyze_sources_with(inputs, true);
-        let Some(merged) =
-            merge_parent_and_subagents(&inputs_for_merge, &parent_session_id_for_merge)
-                .map(|session| analyze_session(&session))
-        else {
-            return ComputedAnalysis::Unavailable;
-        };
-        let mut sessions = batch.sessions;
-        let Some(parent_index) = sessions
-            .iter()
-            .position(|metrics| metrics.session_id == parent_session_id_for_merge)
-        else {
-            return ComputedAnalysis::Unavailable;
-        };
-        let parent = sessions.remove(parent_index);
-        ComputedAnalysis::Published {
-            parent: Box::new(parent),
-            merged: Box::new(merged),
-            // This path has no per-event accumulator to read a child's
-            // earliest timestamp from, so every child's start stays unknown.
-            subagents: sessions
-                .into_iter()
-                .map(|metrics| (metrics, None))
-                .collect(),
-            started_at_epoch: None,
-            parent_fingerprint: None,
-            evidence: Box::new(None),
+        let cancelled = || signal_for_pass.observe();
+        match stream_vendor_with_hooks(
+            &inputs,
+            &cancelled,
+            &no_after_claim,
+            database_claim.as_deref(),
+            turn_row_store,
+        ) {
+            StreamOutcome::Published {
+                session,
+                parent_fingerprint,
+            } => ComputedAnalysis::Published {
+                parent: Box::new(session.parent),
+                merged: Box::new(session.merged),
+                subagents: session.subagents,
+                started_at_epoch: session.started_at_epoch,
+                parent_fingerprint,
+                evidence: Box::new(session.evidence),
+                row_projections: session.row_projections,
+                source_summaries: session.source_summaries,
+            },
+            StreamOutcome::SourceChanged => ComputedAnalysis::SourceChanged,
+            StreamOutcome::ParentMissing => ComputedAnalysis::Missing,
+            StreamOutcome::ParentUnsupported => ComputedAnalysis::Unsupported,
+            StreamOutcome::ParentUnreadable => ComputedAnalysis::Unavailable,
         }
     })
     .await;
 
-    debug_assert!(capabilities_for_vendor(vendor_label(agent)).is_none() || signal.progress() > 0);
+    debug_assert!(signal.progress() > 0);
     let Ok(computed) = computed else {
         return unavailable_evidence_pass(PassOutcome::Unreadable, source_path, Some(fingerprint));
     };
-    let (parent_metrics, merged, subagents, started_at_epoch, parent_fingerprint, evidence) =
-        match computed {
-            ComputedAnalysis::Published {
-                parent,
-                merged,
-                subagents,
-                started_at_epoch,
-                parent_fingerprint,
-                evidence,
-            } => (
-                *parent,
-                *merged,
-                subagents,
-                started_at_epoch,
-                parent_fingerprint,
-                *evidence,
-            ),
-            ComputedAnalysis::SourceChanged => {
-                return EvidencePass {
-                    analysis: SessionAnalysis {
-                        source_path,
-                        fingerprint,
-                        source_changed: true,
-                        ..SessionAnalysis::unavailable()
-                    },
-                    evidence: None,
-                    outcome: PassOutcome::SourceChanged,
-                };
-            }
-            ComputedAnalysis::Missing => {
-                return unavailable_evidence_pass(
-                    PassOutcome::SourceMissing,
+    let (
+        parent_metrics,
+        merged,
+        subagents,
+        started_at_epoch,
+        parent_fingerprint,
+        evidence,
+        row_projections,
+        source_summaries,
+    ) = match computed {
+        ComputedAnalysis::Published {
+            parent,
+            merged,
+            subagents,
+            started_at_epoch,
+            parent_fingerprint,
+            evidence,
+            row_projections,
+            source_summaries,
+        } => (
+            *parent,
+            *merged,
+            subagents,
+            started_at_epoch,
+            parent_fingerprint,
+            *evidence,
+            row_projections,
+            source_summaries,
+        ),
+        ComputedAnalysis::SourceChanged => {
+            return EvidencePass {
+                analysis: SessionAnalysis {
                     source_path,
-                    Some(fingerprint),
-                );
-            }
-            ComputedAnalysis::Unsupported => {
-                return unavailable_evidence_pass(
-                    PassOutcome::Unsupported,
-                    source_path,
-                    Some(fingerprint),
-                );
-            }
-            ComputedAnalysis::Unavailable => {
-                return unavailable_evidence_pass(
-                    PassOutcome::Unreadable,
-                    source_path,
-                    Some(fingerprint),
-                );
-            }
-        };
+                    fingerprint,
+                    source_changed: true,
+                    ..SessionAnalysis::unavailable()
+                },
+                evidence: None,
+                outcome: PassOutcome::SourceChanged,
+            };
+        }
+        ComputedAnalysis::Missing => {
+            return unavailable_evidence_pass(
+                PassOutcome::SourceMissing,
+                source_path,
+                Some(fingerprint),
+            );
+        }
+        ComputedAnalysis::Unsupported => {
+            return unavailable_evidence_pass(
+                PassOutcome::Unsupported,
+                source_path,
+                Some(fingerprint),
+            );
+        }
+        ComputedAnalysis::Unavailable => {
+            return unavailable_evidence_pass(
+                PassOutcome::Unreadable,
+                source_path,
+                Some(fingerprint),
+            );
+        }
+    };
     let analyzed_generation = attributed_generation(&claimed, parent_fingerprint.as_deref());
     let by_id: HashMap<String, (SessionMetrics, Option<i64>)> = subagents
         .into_iter()
@@ -1014,6 +1045,72 @@ pub async fn analyze_for_evidence(
             (metrics.session_id.clone(), (metrics, started_at_epoch))
         })
         .collect();
+    let analysis = assemble_session_analysis(AssembledMetrics {
+        parent_metrics,
+        merged,
+        by_id,
+        roster,
+        row_projections,
+        agent_slug,
+        parent_session_id,
+        source_path,
+        fingerprint,
+        analyzed_generation,
+        started_at_epoch,
+        source_summaries,
+    });
+    EvidencePass {
+        analysis,
+        evidence,
+        outcome: PassOutcome::Published,
+    }
+}
+
+/// Everything [`assemble_session_analysis`] needs to build one
+/// [`SessionAnalysis`] from a parent's and every sub-agent's own metrics —
+/// whether they came from a live streaming pass ([`analyze_for_evidence`])
+/// or the drilldown's rows-replay path ([`analysis_from_rows`]).
+struct AssembledMetrics {
+    parent_metrics: SessionMetrics,
+    /// The parent's and every sub-agent's events, merged and time-aligned —
+    /// see `merge_metrics`/`metrics_from_rows`.
+    merged: SessionMetrics,
+    /// Each sub-agent's own metrics, paired with the unix-second timestamp
+    /// of its earliest transcript event, keyed by its own session id.
+    by_id: HashMap<String, (SessionMetrics, Option<i64>)>,
+    /// `(subagent_id, label)` for every sub-agent this session's roster
+    /// names, in no particular order — `sort_members` orders the result.
+    roster: Vec<(String, String)>,
+    row_projections: Option<RowProjections>,
+    agent_slug: String,
+    parent_session_id: String,
+    source_path: Option<String>,
+    fingerprint: String,
+    analyzed_generation: i64,
+    started_at_epoch: Option<i64>,
+    source_summaries: Option<BTreeMap<String, SessionSummary>>,
+}
+
+/// Builds the session-detail [`SessionAnalysis`] from a parent's and every
+/// sub-agent's own metrics. Shared by the live streaming pass
+/// ([`analyze_for_evidence`]) and the drilldown's rows-replay path
+/// ([`analysis_from_rows`]), so the two build the identical DTO shape from
+/// whichever source supplied the metrics.
+fn assemble_session_analysis(input: AssembledMetrics) -> SessionAnalysis {
+    let AssembledMetrics {
+        parent_metrics,
+        merged,
+        by_id,
+        roster,
+        row_projections,
+        agent_slug,
+        parent_session_id,
+        source_path,
+        fingerprint,
+        analyzed_generation,
+        started_at_epoch,
+        source_summaries,
+    } = input;
 
     // `metrics` is the session's headline view: buckets, token totals, and
     // tool mix summed across the parent and every sub-agent, time-aligned.
@@ -1091,43 +1188,172 @@ pub async fn analyze_for_evidence(
         .collect();
     let has_subagents = !subagent_breakdowns.is_empty();
     let subagents_model_breakdown = merge_model_breakdowns(subagent_breakdowns.iter().copied());
-    let inclusive_model_breakdown = metrics.model_breakdown.clone();
+    let accumulator_model_breakdown = metrics.model_breakdown.clone();
+    let accumulator_model_runs =
+        model_runs_parent_first(&parent_metrics, by_id.values().map(|(child, _)| child));
+    // The worker path (`row_projections` is `Some`) reads
+    // `inclusive_model_breakdown` and `model_runs` back from published turn
+    // rows instead of the accumulator — see `RowProjections`. Every other
+    // caller keeps the accumulator's own values.
+    let (inclusive_model_breakdown, model_runs) = match row_projections {
+        Some(RowProjections {
+            model_breakdown,
+            model_runs,
+        }) => (model_breakdown.into_iter().collect(), model_runs),
+        None => (accumulator_model_breakdown, accumulator_model_runs),
+    };
 
     let top_level_cost = price_breakdown(&parent_metrics.model_breakdown);
     let subagents_cost = price_breakdown(&subagents_model_breakdown);
     let cost = metrics.cost;
     let models = sorted_models(&inclusive_model_breakdown);
-    let model_runs =
-        model_runs_parent_first(&parent_metrics, by_id.values().map(|(child, _)| child));
     let inclusive_tokens = Some(sum_billable_tokens(&inclusive_model_breakdown));
     let subagents_tokens = has_subagents.then(|| sum_billable_tokens(&subagents_model_breakdown));
     let skills = metrics.skill_uses.clone();
     let summary = aggregate_metrics(vec![metrics.clone()]);
 
-    EvidencePass {
-        analysis: SessionAnalysis {
-            efficiency: Some(metrics.efficiency),
-            metrics: Some(metrics),
-            summary: Some(summary),
-            cost,
-            top_level_cost,
-            subagents_cost,
-            inclusive_tokens,
-            subagents_tokens,
-            models,
-            model_runs,
-            inclusive_model_breakdown,
-            skills,
-            orchestration,
-            source_path,
-            fingerprint,
-            analyzed_generation,
-            started_at_epoch,
-            source_changed: false,
-        },
-        evidence,
-        outcome: PassOutcome::Published,
+    SessionAnalysis {
+        efficiency: Some(metrics.efficiency),
+        metrics: Some(metrics),
+        summary: Some(summary),
+        cost,
+        top_level_cost,
+        subagents_cost,
+        inclusive_tokens,
+        subagents_tokens,
+        models,
+        model_runs,
+        inclusive_model_breakdown,
+        skills,
+        orchestration,
+        source_path,
+        fingerprint,
+        analyzed_generation,
+        started_at_epoch,
+        source_changed: false,
+        source_summaries,
     }
+}
+
+/// Rebuilds one session's `SessionAnalysis` from its last-published turn
+/// rows and the per-source summaries a worker pass persisted alongside
+/// them — seam R3c. Touches no transcript: every input comes from `store`.
+///
+/// Returns `None` when replay cannot proceed, which the caller (the
+/// `get_session_analysis` command switch) reads as "fall back to the live
+/// parse": no published rows yet (evidence not `ready`), no cached
+/// analysis record, no `source_summaries_json` on that record (a legacy or
+/// scan-triggered pass, never a worker one, wrote it), that JSON failing to
+/// parse, or [`metrics_from_rows`] finding no row group for the session's
+/// own id ([`antiburn_local::analysis::MissingParentRows`] — the same
+/// "rows exist but look wrong" signal a live production command must not
+/// panic on).
+pub fn analysis_from_rows(
+    store: &Store,
+    key: &SessionKey,
+    session_id: &str,
+    agent_slug: &str,
+) -> Option<SessionAnalysis> {
+    let rows = store.published_turn_rows(key).ok().flatten()?;
+    let record = store.analysis(key).ok().flatten()?;
+    let source_summaries_json = record.source_summaries_json.as_deref()?;
+    let source_summaries: BTreeMap<String, SessionSummary> =
+        serde_json::from_str(source_summaries_json).ok()?;
+    let initial_context: Option<InitialContextBreakdown> = record
+        .initial_context_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str(json).ok());
+
+    let summary_for = |source_key: &str| {
+        source_summaries
+            .get(source_key)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut by_source = metrics_by_source(agent_slug, session_id, &rows, summary_for);
+    let mut parent_metrics = by_source.remove(session_id)?;
+    // `metrics_by_source` replays each source's own tool-call history from
+    // its rows' last-tool-only summary (`replay.rs`'s module doc comment),
+    // so the `initial_context` it projects is not the live pass's own — the
+    // R3b parity harness excludes it from comparison for the same reason.
+    // The persisted `initial_context_json` (seam R3) is the live pass's own
+    // value; grafting it here is exactly what the live path's own
+    // `assemble_session_analysis` graft step already does downstream, from
+    // whichever `parent_metrics.initial_context` this function hands it.
+    if let Some(initial_context) = initial_context {
+        parent_metrics.initial_context = Some(initial_context);
+    }
+    let merged = metrics_from_rows(agent_slug, session_id, &rows, summary_for).ok()?;
+
+    let by_id: HashMap<String, (SessionMetrics, Option<i64>)> = by_source
+        .into_iter()
+        .map(|(source_key, metrics)| {
+            let started_at_epoch = source_started_at_epoch(&source_summaries, &rows, &source_key);
+            (source_key, (metrics, started_at_epoch))
+        })
+        .collect();
+
+    // The roster's labels come from the last worker pass's own discovery,
+    // not from rows (a row carries no label) — `publish_projections`
+    // persists them as `session_relation` rows in the same transaction
+    // that publishes these turn rows, so the two are never out of step.
+    let roster = store
+        .relations(key)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|relation| relation.kind == RelationKind::Subagent)
+        .map(|relation| {
+            let label = relation.label.unwrap_or_else(|| "Sub-agent".to_string());
+            (relation.related_id, label)
+        })
+        .collect();
+
+    let started_at_epoch = source_started_at_epoch(&source_summaries, &rows, session_id);
+
+    Some(assemble_session_analysis(AssembledMetrics {
+        parent_metrics,
+        merged,
+        by_id,
+        roster,
+        // The accumulator's own model breakdown and runs are what
+        // `metrics_by_source`/`metrics_from_rows` just derived — there is
+        // no separate row-store query to reconcile against here, unlike
+        // the worker pass's own `RowProjections`.
+        row_projections: None,
+        agent_slug: agent_slug.to_string(),
+        parent_session_id: session_id.to_string(),
+        // Rows carry no file path; the drilldown's reveal action stays
+        // unavailable for a replayed view. `get_session_analysis_fingerprint`
+        // still resolves the live path independently for the freshness poll.
+        source_path: None,
+        fingerprint: record.source_fingerprint,
+        analyzed_generation: record.analyzed_generation,
+        started_at_epoch,
+        // Nothing new to persist: this call replays the worker's own
+        // published rows, it does not write anything.
+        source_summaries: None,
+    }))
+}
+
+/// One source's started-at time, unix seconds: the persisted summary's own
+/// `started_at_ms` when it has one, else the earliest `ts_ms` among that
+/// source's own rows — the same two-step fallback
+/// `SessionMetricsAccumulator::started_at_ms` uses live.
+fn source_started_at_epoch(
+    source_summaries: &BTreeMap<String, SessionSummary>,
+    rows: &[TurnRow],
+    source_key: &str,
+) -> Option<i64> {
+    source_summaries
+        .get(source_key)
+        .and_then(|summary| summary.started_at_ms)
+        .or_else(|| {
+            rows.iter()
+                .filter(|row| row.source_key == source_key)
+                .filter_map(|row| row.ts_ms)
+                .min()
+        })
+        .map(|ms| ms / 1000)
 }
 
 pub(crate) fn unsupported_evidence_pass() -> EvidencePass {
@@ -1152,7 +1378,7 @@ fn unavailable_evidence_pass(
 
 #[cfg(test)]
 pub(crate) fn evidence_pass(inputs: &[SessionInput], cancelled: &dyn Fn() -> bool) -> EvidencePass {
-    evidence_pass_with_hook(inputs, cancelled, &test_subagent_after_claim, None)
+    evidence_pass_with_hook(inputs, cancelled, &no_after_claim, None)
 }
 
 /// Like [`evidence_pass`], with a [`TurnRowStore`] fanned out through the
@@ -1165,12 +1391,7 @@ pub(crate) fn evidence_pass_with_turn_rows(
     cancelled: &dyn Fn() -> bool,
     turn_row_store: Option<Arc<dyn TurnRowStore>>,
 ) -> EvidencePass {
-    evidence_pass_with_hook(
-        inputs,
-        cancelled,
-        &test_subagent_after_claim,
-        turn_row_store,
-    )
+    evidence_pass_with_hook(inputs, cancelled, &no_after_claim, turn_row_store)
 }
 
 #[cfg(test)]
@@ -1186,12 +1407,14 @@ fn evidence_pass_with_hook(
                 merged,
                 evidence,
                 started_at_epoch,
+                source_summaries,
                 ..
             } = *session;
             EvidencePass {
                 analysis: SessionAnalysis {
                     metrics: Some(merged),
                     started_at_epoch,
+                    source_summaries,
                     ..SessionAnalysis::unavailable()
                 },
                 evidence,
@@ -1222,69 +1445,21 @@ pub fn projection_revisions() -> ProjectionRevisions {
     }
 }
 
-/// Analyze one sub-agent transcript on its own.
-///
-/// A sub-agent is a session in its own right. The analysis surface opens its
-/// transcript like any other session. Vendors do not nest orchestration, so
-/// this path analyzes one input.
-pub async fn analyze_subagent(
-    agent: AgentKind,
-    parent_session_id: &str,
-    subagent_id: &str,
-    wsl_distro: Option<&str>,
-    cancel: CancelFlag,
+/// Builds the session-detail [`SessionAnalysis`] for a transcript with no
+/// sub-agent split of its own — a sub-agent viewed on its own, from the
+/// drilldown's rows-replay path ([`subagent_analysis_from_rows`]). `cost` and
+/// `top_level_cost` name the same figure: a sub-agent launches no sub-agent
+/// of its own, so its own transcript is the whole story.
+fn standalone_session_analysis(
+    mut metrics: SessionMetrics,
+    agent_slug: String,
+    source_path: Option<String>,
+    fingerprint: String,
+    started_at_epoch: Option<i64>,
 ) -> SessionAnalysis {
-    let Some(source) =
-        locate_subagent_source(agent, parent_session_id, subagent_id, wsl_distro).await
-    else {
-        return SessionAnalysis::unavailable();
-    };
-    let Some(raw) = raw_source(&source).await else {
-        return SessionAnalysis::unavailable();
-    };
-
-    let input = SessionInput {
-        agent: vendor_label(agent).to_string(),
-        session_id: subagent_id.to_string(),
-        source: raw,
-    };
-    let fingerprint = fingerprint_of(&source);
-    let source_path = source_path(&source);
-    let agent_slug = agent.slug().to_string();
-
-    let streams_evidence = capabilities_for_vendor(vendor_label(agent)).is_some();
-    let computed = tauri::async_runtime::spawn_blocking(move || {
-        if streams_evidence {
-            return match stream_vendor(&[input], &cancel) {
-                StreamOutcome::Published { session, .. } => {
-                    Some((session.parent, session.started_at_epoch))
-                }
-                StreamOutcome::SourceChanged
-                | StreamOutcome::ParentMissing
-                | StreamOutcome::ParentUnsupported
-                | StreamOutcome::ParentUnreadable => None,
-            };
-        }
-        analyze_sources_with(vec![input], true)
-            .sessions
-            .into_iter()
-            .next()
-            .map(|metrics| (metrics, None))
-    })
-    .await;
-    let Ok(Some((mut metrics, started_at_epoch))) = computed else {
-        return SessionAnalysis {
-            source_path,
-            fingerprint,
-            ..SessionAnalysis::unavailable()
-        };
-    };
     metrics.agent = agent_slug;
     cap_skill_descriptions(&mut metrics.skill_uses);
 
-    // A sub-agent launches no sub-agent of its own. Its own transcript is
-    // the whole story. `cost` and `top_level_cost` name the same figure
-    // here.
     let cost = price_breakdown(&metrics.model_breakdown);
     let models = sorted_models(&metrics.model_breakdown);
     let model_runs = model_runs_for_metrics(&metrics);
@@ -1312,45 +1487,49 @@ pub async fn analyze_subagent(
         analyzed_generation: 0,
         started_at_epoch,
         source_changed: false,
+        source_summaries: None,
     }
 }
 
-async fn locate_subagent_source(
-    agent: AgentKind,
+/// Rebuilds one sub-agent's `SessionAnalysis` from the parent session's
+/// last-published turn rows and persisted per-source summaries — the same
+/// data [`analysis_from_rows`] reads, assembled as a standalone view of
+/// just that sub-agent's own rows (`source_key == subagent_id`).
+///
+/// Returns `None` under the same conditions [`analysis_from_rows`] does,
+/// plus one more: no row group in `rows` carries `subagent_id` as its own
+/// `source_key` (the child transcript's rows are not among what this pass
+/// published — a session with sub-agents this worker pass could not read).
+pub fn subagent_analysis_from_rows(
+    store: &Store,
+    parent_key: &SessionKey,
     parent_session_id: &str,
     subagent_id: &str,
-    wsl_distro: Option<&str>,
-) -> Option<SessionSource> {
-    #[cfg(test)]
-    {
-        let override_ = subagent_test_override()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(override_) = override_.as_ref()
-            && override_.parent_session_id == parent_session_id
-            && override_.subagent_id == subagent_id
-        {
-            return Some(SessionSource::File(override_.source_path.clone()));
-        }
-    }
-    Explorers::DISK
-        .locate_subagent_source_in_environment(&agent, parent_session_id, subagent_id, wsl_distro)
-        .await
-}
+    agent_slug: &str,
+) -> Option<SessionAnalysis> {
+    let rows = store.published_turn_rows(parent_key).ok().flatten()?;
+    let record = store.analysis(parent_key).ok().flatten()?;
+    let source_summaries_json = record.source_summaries_json.as_deref()?;
+    let source_summaries: BTreeMap<String, SessionSummary> =
+        serde_json::from_str(source_summaries_json).ok()?;
 
-#[cfg(test)]
-struct SubagentTestOverride {
-    parent_session_id: String,
-    subagent_id: String,
-    source_path: std::path::PathBuf,
-    append_after_claim: Option<String>,
-}
+    let summary_for = |source_key: &str| {
+        source_summaries
+            .get(source_key)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut by_source = metrics_by_source(agent_slug, parent_session_id, &rows, summary_for);
+    let metrics = by_source.remove(subagent_id)?;
+    let started_at_epoch = source_started_at_epoch(&source_summaries, &rows, subagent_id);
 
-#[cfg(test)]
-fn subagent_test_override() -> &'static std::sync::Mutex<Option<SubagentTestOverride>> {
-    static OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<SubagentTestOverride>>> =
-        std::sync::OnceLock::new();
-    OVERRIDE.get_or_init(|| std::sync::Mutex::new(None))
+    Some(standalone_session_analysis(
+        metrics,
+        agent_slug.to_string(),
+        None,
+        record.source_fingerprint,
+        started_at_epoch,
+    ))
 }
 
 /// Whether analysis of this agent's transcripts is more than a generic parse.
@@ -1813,16 +1992,6 @@ mod tests {
         ]
         .join("\n")
             + "\n"
-    }
-
-    struct SubagentOverrideGuard;
-
-    impl Drop for SubagentOverrideGuard {
-        fn drop(&mut self) {
-            *subagent_test_override()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        }
     }
 
     #[test]
@@ -2577,44 +2746,6 @@ mod tests {
         assert_eq!(second.progress(), 1);
     }
 
-    #[tokio::test]
-    async fn a_changed_subagent_source_rejects_the_direct_subagent_view() {
-        let directory = tempfile::TempDir::new().expect("tempdir");
-        let path = directory.path().join("agent-review-gap.jsonl");
-        std::fs::write(&path, claude_record("before-change", 1_760_000_000))
-            .expect("write sub-agent");
-        let parent_session_id = "review-gap-parent";
-        let subagent_id = "review-gap-child";
-        {
-            let mut override_ = subagent_test_override()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            assert!(override_.is_none());
-            *override_ = Some(SubagentTestOverride {
-                parent_session_id: parent_session_id.to_string(),
-                subagent_id: subagent_id.to_string(),
-                source_path: path,
-                append_after_claim: Some(claude_record("after-change", 1_760_000_001)),
-            });
-        }
-        let _guard = SubagentOverrideGuard;
-
-        let analysis = analyze_subagent(
-            AgentKind::Claude,
-            parent_session_id,
-            subagent_id,
-            None,
-            CancelFlag::never(),
-        )
-        .await;
-
-        assert!(analysis.metrics.is_none());
-        assert!(analysis.summary.is_none());
-        assert!(analysis.cost.is_none());
-        assert!(analysis.inclusive_tokens.is_none());
-        assert!(analysis.inclusive_model_breakdown.is_empty());
-    }
-
     #[test]
     fn an_inline_source_records_matching_and_mismatching_generations() {
         let content = claude_record("inline", 1_760_000_000);
@@ -2727,10 +2858,10 @@ mod tests {
         let directory = tempfile::TempDir::new().expect("tempdir");
         let path = directory.path().join("parent.jsonl");
         std::fs::write(&path, claude_record("parent", 1_760_000_000)).expect("write parent");
-        let flag = Arc::new(AtomicBool::new(true));
+        let flag = CancelFlag(Arc::new(AtomicBool::new(true)));
 
         assert!(matches!(
-            stream_vendor(&[file_input(&path, "parent")], &CancelFlag::from_flag(flag),),
+            stream_vendor(&[file_input(&path, "parent")], &flag),
             StreamOutcome::ParentUnreadable
         ));
     }
@@ -2742,45 +2873,6 @@ mod tests {
         assert!(is_active(Some(now), now));
         assert!(!is_active(Some(now - ACTIVE_SESSION_WINDOW_SECS - 1), now));
         assert!(!is_active(None, now));
-    }
-
-    #[test]
-    fn a_source_with_no_file_behind_it_never_satisfies_the_cache() {
-        let cached = AnalysisRecord {
-            key: SessionKey::new("native", "claude-code", "abc"),
-            model_breakdown_json: "{}".into(),
-            inclusive_models_json: "[]".into(),
-            source_fingerprint: MISSING_FINGERPRINT.into(),
-            pricing_generation: pricing_generation() as i64,
-            analyzed_generation: 0,
-            parser_revision: 0,
-            analyzer_revision: 0,
-            metrics_schema_revision: 0,
-        };
-        assert!(!cache_is_fresh(&cached, MISSING_FINGERPRINT));
-
-        let cached = AnalysisRecord {
-            source_fingerprint: "123:456".into(),
-            ..cached
-        };
-        assert!(cache_is_fresh(&cached, "123:456"));
-        assert!(!cache_is_fresh(&cached, "123:999"));
-    }
-
-    #[test]
-    fn a_stale_pricing_generation_invalidates_a_matching_fingerprint() {
-        let cached = AnalysisRecord {
-            key: SessionKey::new("native", "claude-code", "abc"),
-            model_breakdown_json: "{}".into(),
-            inclusive_models_json: "[]".into(),
-            source_fingerprint: "123:456".into(),
-            pricing_generation: pricing_generation() as i64 - 1,
-            analyzed_generation: 0,
-            parser_revision: 0,
-            analyzer_revision: 0,
-            metrics_schema_revision: 0,
-        };
-        assert!(!cache_is_fresh(&cached, "123:456"));
     }
 
     #[test]

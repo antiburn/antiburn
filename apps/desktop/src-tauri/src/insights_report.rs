@@ -276,6 +276,8 @@ mod tests {
             key: session.key,
             model_breakdown_json: "{}".to_owned(),
             inclusive_models_json: "[]".to_owned(),
+            initial_context_json: None,
+            source_summaries_json: None,
             source_fingerprint: fingerprint,
             pricing_generation: 1,
             analyzed_generation: claim.source_generation,
@@ -434,6 +436,17 @@ mod tests {
     mod population {
         use super::*;
 
+        // The evidence cohort now covers every AgentKind
+        // (crate::agents::evidence_cohort), so a real scan never leaves a
+        // session with no session_evidence row: `awaiting_provider_support`
+        // trends to zero once the widened-cohort migration backfills every
+        // existing session. The tests below still exercise DENOMINATOR_SQL's
+        // partitioning directly, by passing a literal `evidence_agents` list
+        // (`&[]` or `&["claude-code"]`) to `upsert_sessions`/`change_source`
+        // rather than the real `evidence_cohort()`, so they stay a synthetic,
+        // SQL-level pin of the bucket rather than a claim that production
+        // still produces that row shape.
+
         #[test]
         fn denominator_partitions_non_cohort_rows_by_reason() {
             let data_dir = TempDir::new().unwrap();
@@ -544,6 +557,47 @@ mod tests {
         }
 
         #[test]
+        fn stale_generation_evidence_never_joins_the_cohort() {
+            // `denominator_partitions_non_cohort_rows_by_reason` above pins
+            // the coverage bucket this row lands in. This test pins the
+            // narrower claim I5 asks for: `COHORT_SQL` itself excludes it,
+            // so the report's badge computation never runs on it.
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+
+            publish_ready(&store, "current", 120);
+            publish_ready(&store, "stale", 121);
+            // The source grows a new generation and no requeue has run yet:
+            // this row is still 'ready', with current revisions, but was
+            // analyzed against the generation the source has since moved
+            // past.
+            change_source(&store, "stale", &[]);
+
+            let report = reduce_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {},
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+
+            assert_eq!(report.context.coverage.discovered, 2);
+            assert_eq!(report.context.coverage.ready, 1);
+            assert_eq!(report.context.coverage.stale, 1);
+            assert_eq!(
+                report.assessed_sessions, 1,
+                "evidence analyzed against a superseded source generation must not join the cohort"
+            );
+        }
+
+        // Pi names the fixture agent, not a Pi-specific behavior:
+        // `reconcile_evidence_revisions(&crate::agents::evidence_cohort(), ..)`
+        // now enrolls every agent's late-joining session the same way, since
+        // the cohort covers all of them. This still exercises the real
+        // `evidence_cohort()` (unlike the other `population` tests above),
+        // so it pins that the widened cohort keeps moving a session with no
+        // evidence row out of `awaiting_provider_support`.
+        #[test]
         fn pi_backfill_moves_awaiting_support_into_the_pending_queue() {
             let data_dir = TempDir::new().unwrap();
             let store = Store::open(data_dir.path()).unwrap();
@@ -559,6 +613,8 @@ mod tests {
                         key: pi.key.clone(),
                         model_breakdown_json: "{}".to_owned(),
                         inclusive_models_json: "[]".to_owned(),
+                        initial_context_json: None,
+                        source_summaries_json: None,
                         source_fingerprint: "sv1:pi-backfill".to_owned(),
                         pricing_generation: 1,
                         analyzed_generation: 1,

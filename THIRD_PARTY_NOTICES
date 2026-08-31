@@ -176,7 +176,7 @@ Frontend packages
 @types/d3-shape@3.1.8 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/d3-shape
 @types/d3-time@3.0.4 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/d3-time
 @types/d3-timer@3.0.2 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/d3-timer
-@types/react-dom@19.2.4 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react-dom
+@types/react-dom@19.2.5 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react-dom
 @types/react@19.2.18 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/react
 @types/use-sync-external-store@0.0.6 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/use-sync-external-store
 aria-hidden@1.2.6 | MIT | https://github.com/theKashey/aria-hidden#readme
@@ -200,7 +200,7 @@ eventemitter3@5.0.4 | MIT | https://github.com/primus/eventemitter3#readme
 get-nonce@1.0.1 | MIT | https://github.com/theKashey/get-nonce
 immer@11.1.16 | MIT | https://github.com/immerjs/immer#readme
 internmap@2.0.3 | ISC | https://github.com/mbostock/internmap/
-lucide-react@1.33.0 | ISC | https://lucide.dev
+lucide-react@1.34.0 | ISC | https://lucide.dev
 react-dom@19.2.8 | MIT | https://react.dev/
 react-is@17.0.2 | MIT | https://reactjs.org/
 react-redux@9.3.0 | MIT | https://github.com/reduxjs/react-redux
@@ -272,6 +272,7 @@ cargo_toml@0.22.3 | Apache-2.0 OR MIT | https://gitlab.com/lib.rs/cargo_toml
 cc@1.4.2 | MIT OR Apache-2.0 | https://github.com/rust-lang/cc-rs
 cfb@0.7.3 | MIT | https://github.com/mdsteele/rust-cfb
 cfg-expr@0.15.8 | MIT OR Apache-2.0 | https://github.com/EmbarkStudios/cfg-expr
+cfg-expr@0.20.9 | MIT OR Apache-2.0 | https://github.com/EmbarkStudios/cfg-expr
 cfg-if@1.0.4 | MIT OR Apache-2.0 | https://github.com/rust-lang/cfg-if
 concurrent-queue@2.5.0 | Apache-2.0 OR MIT | https://github.com/smol-rs/concurrent-queue
 cookie@0.18.2 | MIT OR Apache-2.0 | https://github.com/SergioBenitez/cookie-rs
@@ -363,13 +364,19 @@ getrandom@0.2.17 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom
 getrandom@0.3.4 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom
 getrandom@0.4.3 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom
 gio-sys@0.18.1 | MIT | https://github.com/gtk-rs/gtk-rs-core
+gio-sys@0.22.9 | MIT | https://github.com/gtk-rs/gtk-rs-core
 gio@0.18.4 | MIT | https://github.com/gtk-rs/gtk-rs-core
+gio@0.22.9 | MIT | https://github.com/gtk-rs/gtk-rs-core
 glam@0.28.0 | MIT OR Apache-2.0 | https://github.com/bitshifter/glam-rs
 glib-macros@0.18.5 | MIT | https://github.com/gtk-rs/gtk-rs-core
+glib-macros@0.22.9 | MIT | https://github.com/gtk-rs/gtk-rs-core
 glib-sys@0.18.1 | MIT | https://github.com/gtk-rs/gtk-rs-core
+glib-sys@0.22.9 | MIT | https://github.com/gtk-rs/gtk-rs-core
 glib@0.18.5 | MIT | https://github.com/gtk-rs/gtk-rs-core
+glib@0.22.9 | MIT | https://github.com/gtk-rs/gtk-rs-core
 glob@0.3.4 | MIT OR Apache-2.0 | https://github.com/rust-lang/glob
 gobject-sys@0.18.0 | MIT | https://github.com/gtk-rs/gtk-rs-core
+gobject-sys@0.22.9 | MIT | https://github.com/gtk-rs/gtk-rs-core
 gtk-sys@0.18.2 | MIT | https://github.com/gtk-rs/gtk3-rs
 gtk3-macros@0.18.2 | MIT | https://github.com/gtk-rs/gtk3-rs
 gtk@0.18.2 | MIT | https://github.com/gtk-rs/gtk3-rs
@@ -492,7 +499,7 @@ pin-project-internal@1.1.13 | Apache-2.0 OR MIT | https://github.com/taiki-e/pin
 pin-project-lite@0.2.17 | Apache-2.0 OR MIT | https://github.com/taiki-e/pin-project-lite
 pin-project@1.1.13 | Apache-2.0 OR MIT | https://github.com/taiki-e/pin-project
 piper@0.2.5 | MIT OR Apache-2.0 | https://github.com/smol-rs/piper
-pkg-config@0.3.33 | MIT OR Apache-2.0 | https://github.com/rust-lang/pkg-config-rs
+pkg-config@0.3.34 | MIT OR Apache-2.0 | https://github.com/rust-lang/pkg-config-rs
 plist@1.10.0 | MIT | https://github.com/ebarnard/rust-plist/
 png@0.17.16 | MIT OR Apache-2.0 | https://github.com/image-rs/image-png
 png@0.18.1 | MIT OR Apache-2.0 | https://github.com/image-rs/image-png
@@ -605,9 +612,11 @@ syn@3.0.3 | MIT OR Apache-2.0 | https://github.com/dtolnay/syn
 sync_wrapper@1.0.2 | Apache-2.0 | https://github.com/Actyx/sync_wrapper
 synstructure@0.13.2 | MIT | https://github.com/mystor/synstructure
 system-deps@6.2.2 | MIT OR Apache-2.0 | https://github.com/gdesmott/system-deps
+system-deps@9.0.0 | MIT OR Apache-2.0 | https://github.com/gdesmott/system-deps
 tao@0.35.3 | Apache-2.0 | https://github.com/tauri-apps/tao
 tar@0.4.46 | MIT OR Apache-2.0 | https://github.com/composefs/tar-rs
 target-lexicon@0.12.16 | Apache-2.0 WITH LLVM-exception | https://github.com/bytecodealliance/target-lexicon
+target-lexicon@0.13.5 | Apache-2.0 WITH LLVM-exception | https://github.com/bytecodealliance/target-lexicon
 tauri-build@2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tauri-codegen@2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
 tauri-macros@2.6.3 | Apache-2.0 OR MIT | https://github.com/tauri-apps/tauri
@@ -678,7 +687,7 @@ untrusted@0.9.0 | ISC | https://github.com/briansmith/untrusted
 url@2.5.8 | MIT OR Apache-2.0 | https://github.com/servo/rust-url
 urlpattern@0.3.0 | MIT | https://github.com/denoland/rust-urlpattern
 utf8_iter@1.0.4 | Apache-2.0 OR MIT | https://github.com/hsivonen/utf8_iter
-uuid@1.24.1 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid
+uuid@1.26.0 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid
 vcpkg@0.2.15 | MIT OR Apache-2.0 | https://github.com/mcgoo/vcpkg-rs
 version-compare@0.2.1 | MIT | https://gitlab.com/timvisee/version-compare
 version_check@0.9.5 | MIT OR Apache-2.0 | https://github.com/SergioBenitez/version_check
@@ -1269,7 +1278,7 @@ Used by:
   @types/d3-shape@3.1.8
   @types/d3-time@3.0.4
   @types/d3-timer@3.0.2
-  @types/react-dom@19.2.4
+  @types/react-dom@19.2.5
   @types/react@19.2.18
   @types/use-sync-external-store@0.0.6
 
@@ -1360,6 +1369,7 @@ Used by:
   syn@2.0.119
   syn@3.0.3
   system-deps@6.2.2
+  system-deps@9.0.0
   thiserror-impl@1.0.69
   thiserror-impl@2.0.20
   thiserror@1.0.69
@@ -1651,11 +1661,17 @@ Used by:
   gdkx11-sys@0.18.2
   gdkx11@0.18.2
   gio-sys@0.18.1
+  gio-sys@0.22.9
   gio@0.18.4
+  gio@0.22.9
   glib-macros@0.18.5
+  glib-macros@0.22.9
   glib-sys@0.18.1
+  glib-sys@0.22.9
   glib@0.18.5
+  glib@0.22.9
   gobject-sys@0.18.0
+  gobject-sys@0.22.9
   gtk-sys@0.18.2
   gtk3-macros@0.18.2
   gtk@0.18.2
@@ -2110,7 +2126,7 @@ Used by:
   filetime@0.2.29
   find-msvc-tools@0.1.10
   openssl-probe@0.2.1
-  pkg-config@0.3.33
+  pkg-config@0.3.34
   socket2@0.6.5
   toml_datetime@0.6.3
 
@@ -2171,6 +2187,7 @@ SOFTWARE.
 
 Used by:
   cfg-expr@0.15.8
+  cfg-expr@0.20.9
 
 Copyright (c) 2019 Embark Studios
 
@@ -5615,7 +5632,7 @@ DEALINGS IN THE SOFTWARE.
 ========================================
 
 Used by:
-  lucide-react@1.33.0
+  lucide-react@1.34.0
 
 ISC License
 
@@ -9106,6 +9123,7 @@ DEALINGS IN THE SOFTWARE.
 
 Used by:
   target-lexicon@0.12.16
+  target-lexicon@0.13.5
 
 Apache License
                            Version 2.0, January 2004
@@ -10021,7 +10039,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  uuid@1.24.1
+  uuid@1.26.0
 
 Copyright (c) 2014 The Rust Project Developers
 Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon

@@ -40,6 +40,7 @@ mod metrics_sink;
 mod model;
 mod pricing;
 pub(crate) mod records;
+mod replay;
 mod rows;
 mod source_validity;
 pub(crate) mod threads;
@@ -62,7 +63,9 @@ pub use evidence::{
     SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass, ToolEvidence, ToolUse,
     TurnCounts,
 };
-pub use evidence_query::{TurnFacts, query_turn_facts};
+pub use evidence_query::{
+    TurnFacts, query_model_breakdown, query_model_runs, query_turn_facts, query_turn_rows,
+};
 pub use evidence_sink::{CompositeSink, RETAINED_EVIDENCE_BYTES_BOUND, SessionEvidenceAccumulator};
 pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
@@ -80,11 +83,13 @@ pub use model::{
     EventSource, ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
 };
 pub use pricing::{install_runtime_pricing, price_breakdown, pricing_generation};
+pub use replay::{MissingParentRows, event_from_row, metrics_by_source, metrics_from_rows};
 pub use rows::{
     MemoryTurnRowStore, TURN_MIGRATIONS, TURN_ROW_BATCH_SIZE, TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL,
-    TurnRow, TurnRowError, TurnRowSink, TurnRowStore, TurnScope, TurnSessionKey,
-    count_turn_content_rows, count_turn_rows, delete_turn_rows, delete_turn_rows_except_fence,
-    delete_turn_rows_for_fence, insert_turn_rows, turn_row_from_event,
+    TURN_SCHEMA_V3_SQL, TurnRow, TurnRowError, TurnRowSink, TurnRowStore, TurnScope,
+    TurnSessionKey, count_turn_content_rows, count_turn_rows, delete_turn_rows,
+    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_turn_rows,
+    turn_row_from_event,
 };
 pub use source_validity::{
     AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, SourceClaim, append_only_guarantee,
@@ -93,7 +98,11 @@ pub use vendors::claude::ClaudeAdapter;
 pub use vendors::pi::PiAdapter;
 pub use vendors::{adapter_for, has_dedicated_adapter};
 
-pub const PARSER_REVISION: i64 = 15;
+// +1 for turn row chart signals: `has_thinking`, `last_tool`, and
+// `subagent_launches` are now ingest-derived row columns
+// (`rows::turn_row_from_event`), so every session must reparse to
+// populate them.
+pub const PARSER_REVISION: i64 = 16;
 // +1 for Codex cache-write tokens: `codex_usage` now splits
 // `cache_write_input_tokens` into `cache_creation_tokens` instead of
 // folding it into `input_tokens`, so a stored Codex session must re-ingest
@@ -118,7 +127,12 @@ pub const PARSER_REVISION: i64 = 15;
 // value, instead of demanding every eligible turn carry one. A session
 // with subagent work is no longer always `SignalMissing`.
 pub const ANALYZER_REVISION: i64 = 15;
-pub const METRICS_SCHEMA_REVISION: i64 = 1;
+// +1 for seam R2: the worker path now derives `inclusive_model_breakdown`
+// and `model_runs` from published turn rows instead of the accumulator
+// (`query_model_breakdown`, `query_model_runs`), so every session in the
+// durable evidence queue must requeue into the new shape
+// (`reconcile_evidence_revisions`).
+pub const METRICS_SCHEMA_REVISION: i64 = 2;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
 // +1 more for `RepeatedContext::paid_tokens` (part F).
 pub const EVIDENCE_SCHEMA_REVISION: i64 = 11;

@@ -257,6 +257,11 @@ export interface SessionAnalysisPayload {
    * unknown. The sub-agent roster uses it to show each member's start as
    * elapsed time from the session start. */
   startedAtEpoch: number | null
+  /** True when no published row set exists yet for this session, so every
+   * other field above is a placeholder rather than a real read. The worker
+   * fills the gap on its own; the view should show an indexing state, not
+   * an empty-transcript state. */
+  analysisPending: boolean
 }
 
 /**

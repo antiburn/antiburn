@@ -18,8 +18,9 @@ use crate::analysis::evidence::{
     ModelTokens, ModelTransition, ParseDiagnostics, SessionTimeRange, SignalCoverage, TurnCounts,
     cap_string, insert_diagnostic_field, record_diagnostic_set_cap,
 };
-use crate::analysis::model::CompactionTrigger;
-use crate::analysis::rows::TurnSessionKey;
+use crate::analysis::model::{CompactionTrigger, ModelRun};
+use crate::analysis::pricing::strip_window_tag;
+use crate::analysis::rows::{TurnRow, TurnScope, TurnSessionKey, parse_role};
 
 /// The row-derived facts for one session, at one claim fence.
 ///
@@ -264,6 +265,85 @@ fn query_core(
     )
 }
 
+const TURN_ROWS_SQL: &str = "SELECT source_key, thread_id, turn_index, scope, child_id,
+        role, ts_ms, model, effort, speed, input_tokens, cache_read_tokens,
+        cache_write_tokens, output_tokens, is_compaction_boundary, message_id,
+        uuid, parent_uuid, compaction_trigger, compaction_pre_tokens,
+        compaction_post_tokens, has_thinking, last_tool, subagent_launches
+   FROM turn
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  ORDER BY source_key, turn_index";
+
+/// Reads the full ordered turn rows for `key` at `claim_fence`, without
+/// their `turn_content` text. A later change adds a separate content read.
+///
+/// Rows come back ordered by `(source_key, turn_index)`, the same order a
+/// pass wrote them in. Every returned row carries an empty
+/// [`TurnRow::content`] — this query never joins `turn_content`.
+pub fn query_turn_rows(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+) -> rusqlite::Result<Vec<TurnRow>> {
+    let mut statement = conn.prepare(TURN_ROWS_SQL)?;
+    let rows = statement.query_map(
+        params![key.environment_key, key.agent, key.session_id, claim_fence],
+        |row| {
+            let scope_text: String = row.get(3)?;
+            let scope = TurnScope::parse(&scope_text).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    format!("unrecognized turn scope {scope_text:?}").into(),
+                )
+            })?;
+            let role_text: String = row.get(5)?;
+            let role = parse_role(&role_text).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    5,
+                    rusqlite::types::Type::Text,
+                    format!("unrecognized turn role {role_text:?}").into(),
+                )
+            })?;
+            let is_compaction_boundary: i64 = row.get(14)?;
+            let compaction_pre_tokens: Option<i64> = row.get(19)?;
+            let compaction_post_tokens: Option<i64> = row.get(20)?;
+            let compaction_trigger: Option<String> = row.get(18)?;
+            let has_thinking: i64 = row.get(21)?;
+            Ok(TurnRow {
+                source_key: row.get(0)?,
+                thread_id: row.get(1)?,
+                turn_index: as_u64(row.get(2)?),
+                scope,
+                child_id: row.get(4)?,
+                role,
+                ts_ms: row.get(6)?,
+                model: row.get(7)?,
+                effort: row.get(8)?,
+                speed: row.get(9)?,
+                input_tokens: as_u64(row.get(10)?),
+                cache_read_tokens: as_u64(row.get(11)?),
+                cache_write_tokens: as_u64(row.get(12)?),
+                output_tokens: as_u64(row.get(13)?),
+                is_compaction_boundary: is_compaction_boundary != 0,
+                message_id: row.get(15)?,
+                uuid: row.get(16)?,
+                parent_uuid: row.get(17)?,
+                compaction_trigger: compaction_trigger
+                    .as_deref()
+                    .and_then(CompactionTrigger::parse),
+                compaction_pre_tokens: compaction_pre_tokens.map(as_u64),
+                compaction_post_tokens: compaction_post_tokens.map(as_u64),
+                has_thinking: has_thinking != 0,
+                last_tool: row.get(22)?,
+                subagent_launches: as_u64(row.get(23)?) as u32,
+                content: Vec::new(),
+            })
+        },
+    )?;
+    rows.collect()
+}
+
 /* --------------------------------------------------------------------
  * Top depth examples.
  * ----------------------------------------------------------------- */
@@ -398,6 +478,155 @@ fn add_model_tokens(
         }
         tokens.last_ts_ms = tokens.last_ts_ms.max(ts_ms);
     }
+}
+
+/* --------------------------------------------------------------------
+ * Model breakdown and model runs (seam R2).
+ *
+ * `query_model_breakdown` and `query_model_runs` derive the two fields
+ * `SessionMetricsAccumulator` computes for `SessionAnalysis`'s
+ * `inclusive_model_breakdown` and `model_runs`
+ * (`apps/desktop/src-tauri/src/analysis.rs`). They read the same `turn`
+ * rows as `query_by_model` above, but with the `pricing`/`model` shapes
+ * the desktop layer expects, and with no `MAX_MODELS`/`MAX_MODEL_RUNS`
+ * cap: the accumulator caps each source file's own tally at that
+ * constant, a limit no characterization fixture approaches, so this
+ * reads every distinct row instead of replicating the cap.
+ * ----------------------------------------------------------------- */
+
+const MODEL_BREAKDOWN_SQL: &str = "SELECT model, input_tokens, output_tokens,
+        cache_read_tokens, cache_write_tokens
+   FROM turn
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+    AND role = 'assistant' AND model IS NOT NULL
+    AND (input_tokens != 0 OR output_tokens != 0
+         OR cache_read_tokens != 0 OR cache_write_tokens != 0)";
+
+/// Per-model billable token totals over every assistant row with a model,
+/// at both scopes — the row-derived equivalent of
+/// `SessionMetricsAccumulator::model_breakdown_map`, merged across the
+/// parent transcript and every sub-agent the same way
+/// `merge_model_breakdowns` (`apps/desktop/src-tauri/src/analysis.rs`)
+/// does: by simple per-field sum.
+///
+/// A row's `model` is stripped of its window tag and trimmed the same way
+/// `SessionMetricsAccumulator::observe_model_usage` does before it is used
+/// as a map key; a row whose model is blank after that is dropped, since
+/// the accumulator drops it too instead of folding it in unattributed.
+///
+/// `cache_creation_1h_tokens` always stays `0`. No vendor adapter
+/// populates a 1h split on the events `add_usage`
+/// (`crates/antiburn-local/src/analysis/metrics_sink/tally.rs`) folds into
+/// `SessionMetricsAccumulator::model_breakdown` — that function only ever
+/// touches `input_tokens`, `output_tokens`, `cache_read_tokens`, and
+/// `cache_creation_tokens` — so the accumulator path stores `0` there too,
+/// and parity holds.
+pub fn query_model_breakdown(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+) -> rusqlite::Result<BTreeMap<String, crate::pricing::ModelTokens>> {
+    let mut statement = conn.prepare(MODEL_BREAKDOWN_SQL)?;
+    let mut rows = statement.query(params![
+        key.environment_key,
+        key.agent,
+        key.session_id,
+        claim_fence
+    ])?;
+    let mut breakdown: BTreeMap<String, crate::pricing::ModelTokens> = BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        let model: String = row.get(0)?;
+        let model = strip_window_tag(&model).trim();
+        if model.is_empty() {
+            continue;
+        }
+        let input: i64 = row.get(1)?;
+        let output: i64 = row.get(2)?;
+        let cache_read: i64 = row.get(3)?;
+        let cache_write: i64 = row.get(4)?;
+        let entry = breakdown.entry(model.to_string()).or_default();
+        entry.input_tokens = entry.input_tokens.saturating_add(as_u64(input));
+        entry.output_tokens = entry.output_tokens.saturating_add(as_u64(output));
+        entry.cache_read_tokens = entry.cache_read_tokens.saturating_add(as_u64(cache_read));
+        entry.cache_creation_tokens = entry
+            .cache_creation_tokens
+            .saturating_add(as_u64(cache_write));
+    }
+    Ok(breakdown)
+}
+
+const MODEL_RUNS_SQL: &str = "SELECT source_key, model, effort
+   FROM turn
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+    AND role = 'assistant' AND model IS NOT NULL
+    AND (input_tokens != 0 OR output_tokens != 0
+         OR cache_read_tokens != 0 OR cache_write_tokens != 0)";
+
+/// Distinct `(model, effort)` pairs that produced billable tokens, parent
+/// runs first — the row-derived equivalent of
+/// `apps/desktop/src-tauri/src/analysis.rs`'s `model_runs_parent_first`.
+///
+/// A row qualifies the same way a turn qualifies for
+/// `SessionMetricsAccumulator::observe_model_usage`'s `ModelRunMark`: an
+/// assistant row with a model and at least one billable token field set.
+/// The row's own `effort` column already holds `event.thinking_mode`
+/// verbatim (`turn_row_from_event`), so no further mapping is needed there.
+///
+/// `model_runs_for_metrics` (`apps/desktop/src-tauri/src/analysis.rs`)
+/// discards the accumulator's first-appearance mark order at the end of
+/// each source file's own pass, collecting into a `BTreeSet` and back —
+/// so only the *set* of distinct pairs a source file contributes
+/// determines the output, not the order its turns arrived in. This
+/// mirrors that: rows whose `source_key` is the session's own id (the
+/// parent transcript) are grouped and sorted first; every other row's
+/// `source_key` names a sub-agent transcript, and those pairs are
+/// grouped, sorted, and appended afterward, minus any pair the parent
+/// group already contributed — exactly `model_runs_parent_first_lists`'s
+/// merge rule.
+pub fn query_model_runs(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+) -> rusqlite::Result<Vec<ModelRun>> {
+    let mut statement = conn.prepare(MODEL_RUNS_SQL)?;
+    let mut rows = statement.query(params![
+        key.environment_key,
+        key.agent,
+        key.session_id,
+        claim_fence
+    ])?;
+    let mut parent_runs: BTreeSet<ModelRun> = BTreeSet::new();
+    let mut child_runs: BTreeSet<ModelRun> = BTreeSet::new();
+    while let Some(row) = rows.next()? {
+        let source_key: String = row.get(0)?;
+        let model: String = row.get(1)?;
+        let model = strip_window_tag(&model).trim();
+        if model.is_empty() {
+            continue;
+        }
+        let effort: Option<String> = row.get(2)?;
+        let thinking_mode = effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|mode| !mode.is_empty())
+            .map(str::to_string);
+        let run = ModelRun {
+            model: model.to_string(),
+            thinking_mode,
+        };
+        if source_key == key.session_id {
+            parent_runs.insert(run);
+        } else {
+            child_runs.insert(run);
+        }
+    }
+    let mut result: Vec<ModelRun> = parent_runs.iter().cloned().collect();
+    result.extend(
+        child_runs
+            .into_iter()
+            .filter(|run| !parent_runs.contains(run)),
+    );
+    Ok(result)
 }
 
 /* --------------------------------------------------------------------
@@ -923,6 +1152,9 @@ mod tests {
             compaction_trigger: None,
             compaction_pre_tokens: None,
             compaction_post_tokens: None,
+            has_thinking: false,
+            last_tool: None,
+            subagent_launches: 0,
             content: Vec::new(),
         }
     }
@@ -962,6 +1194,91 @@ mod tests {
         insert_turn_rows(&conn, &KEY, 2, &[base_row("s1", 0)]).expect("insert other fence");
         let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
         assert_eq!(facts.eligibility.turns, 0);
+    }
+
+    #[test]
+    fn turn_rows_come_back_ordered_by_source_key_then_turn_index() {
+        let conn = test_connection();
+        insert(
+            &conn,
+            &[
+                base_row("s2", 1),
+                base_row("s1", 1),
+                base_row("s2", 0),
+                base_row("s1", 0),
+            ],
+        );
+        let rows = query_turn_rows(&conn, &KEY, 1).expect("query rows");
+        let order: Vec<(&str, u64)> = rows
+            .iter()
+            .map(|row| (row.source_key.as_str(), row.turn_index))
+            .collect();
+        assert_eq!(
+            order,
+            vec![("s1", 0), ("s1", 1), ("s2", 0), ("s2", 1)],
+            "rows must sort by (source_key, turn_index)"
+        );
+    }
+
+    #[test]
+    fn turn_rows_omits_rows_under_another_fence() {
+        let conn = test_connection();
+        insert_turn_rows(&conn, &KEY, 2, &[base_row("s1", 0)]).expect("insert other fence");
+        let rows = query_turn_rows(&conn, &KEY, 1).expect("query rows");
+        assert!(rows.is_empty(), "another fence's rows must not appear");
+    }
+
+    #[test]
+    fn turn_rows_carries_every_scalar_column_and_leaves_content_empty() {
+        let conn = test_connection();
+        let mut row = base_row("s1", 0);
+        row.scope = TurnScope::Delegated;
+        row.child_id = Some("s1".to_owned());
+        row.role = "tool";
+        row.effort = Some("high".to_owned());
+        row.speed = Some("fast".to_owned());
+        row.cache_read_tokens = 3;
+        row.cache_write_tokens = 4;
+        row.is_compaction_boundary = true;
+        row.message_id = Some("msg-1".to_owned());
+        row.uuid = Some("uuid-1".to_owned());
+        row.parent_uuid = Some("uuid-0".to_owned());
+        row.compaction_trigger = Some(CompactionTrigger::Manual);
+        row.compaction_pre_tokens = Some(100);
+        row.compaction_post_tokens = Some(20);
+        row.has_thinking = true;
+        row.last_tool = Some("Task".to_owned());
+        row.subagent_launches = 2;
+        row.content = vec![crate::analysis::interface::ContentPart::new(
+            crate::analysis::interface::ContentKind::ToolResult,
+            "captured text",
+        )];
+        insert(&conn, &[row]);
+
+        let rows = query_turn_rows(&conn, &KEY, 1).expect("query rows");
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.scope, TurnScope::Delegated);
+        assert_eq!(row.child_id.as_deref(), Some("s1"));
+        assert_eq!(row.role, "tool");
+        assert_eq!(row.effort.as_deref(), Some("high"));
+        assert_eq!(row.speed.as_deref(), Some("fast"));
+        assert_eq!(row.cache_read_tokens, 3);
+        assert_eq!(row.cache_write_tokens, 4);
+        assert!(row.is_compaction_boundary);
+        assert_eq!(row.message_id.as_deref(), Some("msg-1"));
+        assert_eq!(row.uuid.as_deref(), Some("uuid-1"));
+        assert_eq!(row.parent_uuid.as_deref(), Some("uuid-0"));
+        assert_eq!(row.compaction_trigger, Some(CompactionTrigger::Manual));
+        assert_eq!(row.compaction_pre_tokens, Some(100));
+        assert_eq!(row.compaction_post_tokens, Some(20));
+        assert!(row.has_thinking);
+        assert_eq!(row.last_tool.as_deref(), Some("Task"));
+        assert_eq!(row.subagent_launches, 2);
+        assert!(
+            row.content.is_empty(),
+            "this query never joins turn_content"
+        );
     }
 
     #[test]

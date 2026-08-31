@@ -996,6 +996,13 @@ pub struct CompositeSink {
     /// fails. `Cell` because the query happens from `evidence(&self)` —
     /// see that method's doc comment for why `&self` is enough.
     turn_row_query_failed: Cell<bool>,
+    /// The `SessionSummary` [`RecordSink::finish`] was called with, kept
+    /// for [`Self::summary`] — a caller that fans this source's summary out
+    /// to a `BTreeMap<source_key, SessionSummary>` (a worker pass, for the
+    /// desktop app's drilldown replay) needs it after `finish` runs, and
+    /// `finish` itself only borrows the summary before moving it on to
+    /// `self.metrics`.
+    summary: Option<SessionSummary>,
 }
 
 impl CompositeSink {
@@ -1005,6 +1012,7 @@ impl CompositeSink {
             evidence,
             turn_rows: None,
             turn_row_query_failed: Cell::new(false),
+            summary: None,
         }
     }
 
@@ -1021,11 +1029,19 @@ impl CompositeSink {
             evidence,
             turn_rows: Some(turn_rows),
             turn_row_query_failed: Cell::new(false),
+            summary: None,
         }
     }
 
     pub fn metrics(&self) -> Option<SessionMetrics> {
         self.evidence.can_publish().then(|| self.metrics.metrics())
+    }
+
+    /// This source's own `SessionSummary`, once [`RecordSink::finish`] has
+    /// run. `None` before `finish`, and for a source `finish` never runs
+    /// for (an unreadable source the caller skipped).
+    pub fn summary(&self) -> Option<&SessionSummary> {
+        self.summary.as_ref()
     }
 
     /// `None` when there is no fanned-out [`TurnRowSink`] — a pass without a
@@ -1090,6 +1106,7 @@ impl RecordSink for CompositeSink {
         if let Some(turn_rows) = &mut self.turn_rows {
             turn_rows.flush();
         }
+        self.summary = Some(summary.clone());
         self.metrics.finish(summary);
     }
 }

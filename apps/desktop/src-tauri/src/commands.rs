@@ -46,8 +46,8 @@ use crate::scan::{self, ScanController};
 use crate::settings;
 use crate::store::model::environment_key;
 use crate::store::{
-    AnalysisRecord, AppSettings, RelationKind, RelationRecord, RepositoryRecord, SessionKey,
-    SessionRecord, Store, iso_from_epoch,
+    AppSettings, RelationKind, RelationRecord, RepositoryRecord, SessionKey, SessionRecord, Store,
+    iso_from_epoch,
 };
 
 /// Anything that goes wrong becomes a string the webview can show.
@@ -198,7 +198,17 @@ pub fn end_popover_hold(app: tauri::AppHandle) {
 /// Open or re-show the always-on-top usage HUD.
 #[tauri::command]
 pub async fn open_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
-    antiburn_hud::open(&app).map_err(fail)
+    let entries = crate::hud::load_placements(&app.state::<Store>());
+    antiburn_hud::open(&app, &entries).map_err(fail)
+}
+
+/// Remember where the HUD is, after a drag moved it.
+///
+/// No argument: the webview knows a drag ended, the shell knows where the
+/// window is, and that split keeps geometry out of the IPC payload.
+#[tauri::command]
+pub fn record_hud_position(app: tauri::AppHandle) {
+    crate::hud::record_position(&app);
 }
 
 /// Hide the usage HUD and cancel any pending reveal.
@@ -339,7 +349,13 @@ pub const SETTINGS_CHANGED_EVENT: &str = "settings:changed";
 pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResult<AppSettings> {
     let store = app.state::<Store>();
     let (previous, saved, removed) = store
-        .replace_settings_and_apply_retention(&settings, crate::retention::unix_now())
+        .replace_settings_with(&settings, |tx, saved| {
+            crate::store::apply_session_retention_in(
+                tx,
+                saved.session_data_retention_days,
+                crate::retention::unix_now(),
+            )
+        })
         .map_err(fail)?;
     crate::retention::note_removed(&app, removed);
     apply_settings_transition(&app, &previous, &saved);
@@ -606,43 +622,53 @@ fn repository_label(repositories: &[RepositoryRecord], cwd: Option<&str>) -> Str
     }
 }
 
-/// Whether `next` carries model data the popover list would render
-/// differently from `previous`.
+/// Requeues one session's evidence row and wakes the durable worker, so a
+/// gap the drilldown just found (rows not ready, or ready but stale) closes
+/// on its own without the caller waiting on it. Errors are swallowed: this
+/// is a best-effort nudge, not a step the drilldown's own response depends
+/// on — the worker's next pass either way is what actually closes the gap.
+fn requeue_and_wake_worker(app: &tauri::AppHandle, store: &Store, key: &SessionKey) {
+    let _ = store.requeue_session_evidence(key);
+    crate::insights_worker::wake(app);
+}
+
+/// Nudges the worker when the analysis this pass just served from rows was
+/// published against a transcript that has since changed.
 ///
-/// Compares only the two fields the list reads (`model_breakdown_json` for
-/// cost, `inclusive_models_json` for the model pills). The fingerprint and
-/// pricing generation can change on every re-analysis without moving either
-/// figure, and an event for that would be noise the popover cannot show.
-fn analysis_changed(previous: Option<&AnalysisRecord>, next: &AnalysisRecord) -> bool {
-    match previous {
-        None => true,
-        Some(previous) => {
-            previous.model_breakdown_json != next.model_breakdown_json
-                || previous.inclusive_models_json != next.inclusive_models_json
-        }
-    }
-}
-
-fn cache_detail_analysis(
+/// Reuses [`analysis::fingerprint_with_subagents`] — the same cheap
+/// `mtime:size` check `get_session_analysis_fingerprint` computes for the
+/// webview's own 10s poll — so a fingerprint mismatch found here is exactly
+/// the mismatch that poll will see next, and the requeue this triggers
+/// covers the gap before then. Does nothing (and requeues nothing) when the
+/// stored and live fingerprints already agree.
+async fn nudge_if_evidence_stale(
+    app: &tauri::AppHandle,
     store: &Store,
-    record: &AnalysisRecord,
-    started_at_epoch: Option<i64>,
-) -> bool {
-    if crate::agents::evidence_cohort().contains(&record.key.agent.as_str()) {
-        return false;
+    kind: AgentKind,
+    key: &SessionKey,
+    session_id: &str,
+    wsl_distro: Option<&str>,
+) {
+    let Some(source) = analysis::locate(kind, session_id, wsl_distro).await else {
+        return;
+    };
+    let live_fingerprint =
+        analysis::fingerprint_with_subagents(kind, session_id, wsl_distro, &source).await;
+    let stored_fingerprint = store
+        .analysis(key)
+        .ok()
+        .flatten()
+        .map(|record| record.source_fingerprint);
+    if evidence_is_stale(stored_fingerprint.as_deref(), &live_fingerprint) {
+        requeue_and_wake_worker(app, store, key);
     }
-    let previous = store.analysis(&record.key).ok().flatten();
-    store.save_analysis(record, started_at_epoch).is_ok()
-        && analysis_changed(previous.as_ref(), record)
 }
 
-fn cache_detail_relations(store: &Store, key: &SessionKey, members: &[RelationRecord]) -> bool {
-    if crate::agents::evidence_cohort().contains(&key.agent.as_str()) {
-        return false;
-    }
-    store
-        .replace_relations(key, RelationKind::Subagent, members)
-        .is_ok()
+/// Whether the stored analysis's own fingerprint no longer matches the
+/// transcript's live one — split out from [`nudge_if_evidence_stale`] so the
+/// comparison itself is testable without a located source or an app handle.
+fn evidence_is_stale(stored_fingerprint: Option<&str>, live_fingerprint: &str) -> bool {
+    stored_fingerprint != Some(live_fingerprint)
 }
 
 fn path_is_under(path: &str, root: &str) -> bool {
@@ -814,55 +840,40 @@ pub async fn get_session_analysis(
     };
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
     let store = app.state::<Store>();
-    let claimed = store
-        .session_source_state(&key)
-        .ok()
-        .flatten()
-        .map(|state| analysis::ClaimedSource {
-            fingerprint: state.source_fingerprint,
-            generation: state.source_generation,
-        })
-        .unwrap_or(analysis::ClaimedSource {
-            fingerprint: None,
-            generation: 0,
-        });
 
-    let analysis = analysis::analyze(
-        kind,
-        &session_id,
-        wsl_distro.as_deref(),
-        claimed,
-        analysis::CancelFlag::never(),
-    )
-    .await;
+    // Rows are the only way this command computes an analysis: every agent
+    // is in the evidence cohort, so this always serves the worker's last
+    // published pass. A missing or not-yet-published row set reports a
+    // pending payload instead of re-parsing the transcript in-process, and
+    // nudges the worker so the gap closes on its own. Publishing a fresh
+    // pass is the worker's job — see its announce callback in
+    // `insights_worker::spawn` — so this command never caches one itself or
+    // emits `SESSION_ENTRY_CHANGED_EVENT` for it.
+    let (analysis, analysis_pending) =
+        match analysis::analysis_from_rows(&store, &key, &session_id, &agent) {
+            Some(replayed) => {
+                nudge_if_evidence_stale(
+                    &app,
+                    &store,
+                    kind,
+                    &key,
+                    &session_id,
+                    wsl_distro.as_deref(),
+                )
+                .await;
+                (replayed, false)
+            }
+            None => {
+                requeue_and_wake_worker(&app, &store, &key);
+                (analysis::SessionAnalysis::unavailable(), true)
+            }
+        };
     let relations = resolve_lineage(&app, kind, &key, wsl_distro.as_deref()).await;
 
     let stored = store.session(&key).ok().flatten();
 
-    if let Some(record) = analysis.record(&key)
-        && cache_detail_analysis(&store, &record, analysis.started_at_epoch)
-        && let Some(session_record) = stored.clone()
-    {
-        let repositories = store.repositories().unwrap_or_default();
-        let now = scan::unix_now();
-        if let Ok(entry) = activity_entry(&store, &repositories, session_record, now) {
-            let _ = app.emit(SESSION_ENTRY_CHANGED_EVENT, &entry);
-        }
-    }
     let orchestration = match &analysis.orchestration {
-        Some(orchestration) => {
-            let members: Vec<RelationRecord> = orchestration
-                .members
-                .iter()
-                .map(|member| RelationRecord {
-                    kind: RelationKind::Subagent,
-                    related_id: member.subagent_id.clone(),
-                    label: Some(member.label.clone()),
-                })
-                .collect();
-            cache_detail_relations(&store, &key, &members);
-            Some(orchestration.clone())
-        }
+        Some(orchestration) => Some(orchestration.clone()),
         // The listing came back empty. That is usually the truth, but it is
         // also what a momentarily unreadable transcript looks like, so a roster
         // the store already recorded is shown rather than silently dropped.
@@ -890,6 +901,7 @@ pub async fn get_session_analysis(
         relations: (!relations.is_empty()).then_some(relations),
         started_at_epoch: analysis.started_at_epoch,
         source_path: analysis.source_path.clone(),
+        analysis_pending,
     })
 }
 
@@ -928,15 +940,25 @@ pub async fn get_subagent_analysis(
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
-    let _ = &app;
-    let analysis = analysis::analyze_subagent(
-        kind,
+    // Rows are the only way this command computes an analysis — see the
+    // matching comment in `get_session_analysis`. A missing or not-yet-
+    // published row set reports a pending payload and nudges the worker,
+    // instead of re-parsing the sub-agent's own transcript in-process.
+    let store = app.state::<Store>();
+    let parent_key = SessionKey::for_session(&agent, &parent_session_id, wsl_distro.as_deref());
+    let (analysis, analysis_pending) = match analysis::subagent_analysis_from_rows(
+        &store,
+        &parent_key,
         &parent_session_id,
         &subagent_id,
-        wsl_distro.as_deref(),
-        analysis::CancelFlag::never(),
-    )
-    .await;
+        &agent,
+    ) {
+        Some(replayed) => (replayed, false),
+        None => {
+            requeue_and_wake_worker(&app, &store, &parent_key);
+            (analysis::SessionAnalysis::unavailable(), true)
+        }
+    };
     Ok(SessionAnalysis {
         summary: analysis.summary.clone(),
         supports_analysis: analysis::analysis_supported(kind),
@@ -955,6 +977,7 @@ pub async fn get_subagent_analysis(
         relations: None,
         started_at_epoch: analysis.started_at_epoch,
         source_path: analysis.source_path.clone(),
+        analysis_pending,
     })
 }
 
@@ -1208,8 +1231,10 @@ pub async fn get_session_hygiene(
                 )
             })
             .collect::<Vec<_>>();
-        let rows = app.state::<Store>().evidence_batch(&keys).map_err(fail)?;
-        Ok(session_hygiene_payloads(rows))
+        let store = app.state::<Store>();
+        let rows = store.evidence_batch(&keys).map_err(fail)?;
+        let source_generations = store.source_generation_batch(&keys).map_err(fail)?;
+        Ok(session_hygiene_payloads(rows, source_generations))
     })
     .await
     .map_err(fail)?
@@ -1217,11 +1242,18 @@ pub async fn get_session_hygiene(
 
 fn session_hygiene_payloads(
     rows: Vec<Option<crate::store::EvidenceRow>>,
+    source_generations: Vec<Option<i64>>,
 ) -> Vec<SessionHygienePayload> {
-    rows.into_iter().map(session_hygiene_payload).collect()
+    rows.into_iter()
+        .zip(source_generations)
+        .map(|(row, source_generation)| session_hygiene_payload(row, source_generation))
+        .collect()
 }
 
-fn session_hygiene_payload(row: Option<crate::store::EvidenceRow>) -> SessionHygienePayload {
+fn session_hygiene_payload(
+    row: Option<crate::store::EvidenceRow>,
+    source_generation: Option<i64>,
+) -> SessionHygienePayload {
     let Some(row) = row else {
         return SessionHygienePayload::not_assessed(
             "pending",
@@ -1234,7 +1266,13 @@ fn session_hygiene_payload(row: Option<crate::store::EvidenceRow>) -> SessionHyg
             let revisions_are_current = row.parser_revision == Some(PARSER_REVISION)
                 && row.analyzer_revision == Some(ANALYZER_REVISION)
                 && row.evidence_schema_revision == Some(EVIDENCE_SCHEMA_REVISION);
-            if !revisions_are_current {
+            // A session whose source grew a new generation, with the
+            // requeue not yet run or still pending, must not serve badges
+            // from the previous generation's evidence. This mirrors
+            // `CURRENT_EVIDENCE_PREDICATE` in `insights_report.rs`.
+            let generation_is_current =
+                row.analyzed_generation.is_some() && row.analyzed_generation == source_generation;
+            if !revisions_are_current || !generation_is_current {
                 return SessionHygienePayload::not_assessed(
                     "stale",
                     NotAssessedReason::IncompleteEvidence,
@@ -1861,143 +1899,19 @@ mod tests {
         assert_eq!(iso_from_epoch(None), "1970-01-01T00:00:00Z");
     }
 
-    fn analysis_record(model_breakdown_json: &str, inclusive_models_json: &str) -> AnalysisRecord {
-        AnalysisRecord {
-            key: SessionKey::new("env", "claude-code", "session-1"),
-            model_breakdown_json: model_breakdown_json.into(),
-            inclusive_models_json: inclusive_models_json.into(),
-            source_fingerprint: "fingerprint".into(),
-            pricing_generation: 1,
-            analyzed_generation: 1,
-            parser_revision: 1,
-            analyzer_revision: 1,
-            metrics_schema_revision: 1,
-        }
+    #[test]
+    fn matching_fingerprints_are_not_stale() {
+        assert!(!evidence_is_stale(Some("sv1:a"), "sv1:a"));
     }
 
     #[test]
-    fn a_first_analysis_always_counts_as_changed() {
-        let next = analysis_record("{}", "[]");
-        assert!(analysis_changed(None, &next));
+    fn a_changed_fingerprint_is_stale() {
+        assert!(evidence_is_stale(Some("sv1:a"), "sv1:b"));
     }
 
     #[test]
-    fn identical_model_data_is_not_a_change() {
-        let previous = analysis_record(
-            r#"{"claude-fable-5":{}}"#,
-            r#"[{"model":"claude-fable-5"}]"#,
-        );
-        let next = analysis_record(
-            r#"{"claude-fable-5":{}}"#,
-            r#"[{"model":"claude-fable-5"}]"#,
-        );
-        assert!(!analysis_changed(Some(&previous), &next));
-    }
-
-    #[test]
-    fn a_new_model_in_either_field_counts_as_changed() {
-        let previous = analysis_record("{}", "[]");
-        let breakdown_changed = analysis_record(r#"{"claude-fable-5":{}}"#, "[]");
-        let models_changed = analysis_record("{}", r#"[{"model":"claude-fable-5"}]"#);
-        assert!(analysis_changed(Some(&previous), &breakdown_changed));
-        assert!(analysis_changed(Some(&previous), &models_changed));
-    }
-
-    #[test]
-    fn the_detail_path_does_not_persist_evidence_cohort_projections() {
-        let directory = tempfile::TempDir::new().unwrap();
-        let store = Store::open_in_memory(directory.path()).unwrap();
-        let session = |agent: &str, id: &str| SessionRecord {
-            key: SessionKey::new("native", agent, id),
-            source_kind: "file".into(),
-            source_label: format!("/tmp/{id}.jsonl"),
-            wsl_distro: None,
-            title: None,
-            title_source: None,
-            cwd: None,
-            surface: "cli".into(),
-            updated_at_epoch: Some(100),
-            activity_cursor: String::new(),
-            activity_source: "event".into(),
-            subagent_count: 0,
-            fork_parent_session_id: None,
-            source_fingerprint: Some(format!("sv1:{id}")),
-        };
-        let claude = session("claude-code", "claude-detail");
-        let codex = session("codex", "codex-detail");
-        store
-            .upsert_sessions(
-                &[claude.clone(), codex.clone()],
-                &crate::agents::evidence_cohort(),
-            )
-            .unwrap();
-        let _claim = store
-            .claim_next_evidence(&crate::agents::evidence_cohort(), 100, 300)
-            .unwrap()
-            .unwrap();
-        let sentinel = AnalysisRecord {
-            key: claude.key.clone(),
-            model_breakdown_json: r#"{"sentinel":{}}"#.into(),
-            inclusive_models_json: "[]".into(),
-            source_fingerprint: "sv1:sentinel".into(),
-            pricing_generation: 1,
-            analyzed_generation: 0,
-            parser_revision: 1,
-            analyzer_revision: 1,
-            metrics_schema_revision: 1,
-        };
-        store.save_analysis(&sentinel, None).unwrap();
-        let sentinel_relation = RelationRecord {
-            kind: RelationKind::Subagent,
-            related_id: "sentinel-child".into(),
-            label: None,
-        };
-        store
-            .replace_relations(
-                &claude.key,
-                RelationKind::Subagent,
-                std::slice::from_ref(&sentinel_relation),
-            )
-            .unwrap();
-        let mut claude_next = sentinel.clone();
-        claude_next.model_breakdown_json = r#"{"replacement":{}}"#.into();
-        let replacement = RelationRecord {
-            kind: RelationKind::Subagent,
-            related_id: "replacement-child".into(),
-            label: None,
-        };
-
-        assert!(!cache_detail_analysis(&store, &claude_next, None));
-        assert!(!cache_detail_relations(
-            &store,
-            &claude.key,
-            std::slice::from_ref(&replacement),
-        ));
-        assert_eq!(store.analysis(&claude.key).unwrap(), Some(sentinel));
-        assert_eq!(
-            store.relations(&claude.key).unwrap(),
-            vec![sentinel_relation]
-        );
-
-        let codex_analysis = AnalysisRecord {
-            key: codex.key.clone(),
-            model_breakdown_json: r#"{"codex":{}}"#.into(),
-            inclusive_models_json: "[]".into(),
-            source_fingerprint: "sv1:codex-detail".into(),
-            pricing_generation: 1,
-            analyzed_generation: 1,
-            parser_revision: 1,
-            analyzer_revision: 1,
-            metrics_schema_revision: 1,
-        };
-        assert!(!cache_detail_analysis(&store, &codex_analysis, None));
-        assert!(!cache_detail_relations(
-            &store,
-            &codex.key,
-            std::slice::from_ref(&replacement),
-        ));
-        assert_eq!(store.analysis(&codex.key).unwrap(), None);
-        assert!(store.relations(&codex.key).unwrap().is_empty());
+    fn no_stored_fingerprint_is_stale() {
+        assert!(evidence_is_stale(None, "sv1:a"));
     }
 
     #[test]
@@ -2102,9 +2016,14 @@ mod tests {
         synthetic_evidence_accumulator().evidence(&antiburn_local::analysis::TurnFacts::default())
     }
 
+    // The generation `evidence_row` stamps as `analyzed_generation`. Tests
+    // that are not exercising a generation mismatch pass this back as the
+    // session's current source generation, so the row reads as current.
+    const SYNTHETIC_GENERATION: Option<i64> = Some(1);
+
     #[test]
     fn session_hygiene_preserves_queue_states_without_a_false_clean_result() {
-        let missing = session_hygiene_payload(None);
+        let missing = session_hygiene_payload(None, SYNTHETIC_GENERATION);
         assert_eq!(missing.evidence_state, "pending");
         assert!(
             missing
@@ -2113,10 +2032,10 @@ mod tests {
                 .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed))
         );
 
-        let processing = session_hygiene_payload(Some(evidence_row(
-            crate::store::EvidenceStatus::Processing,
-            None,
-        )));
+        let processing = session_hygiene_payload(
+            Some(evidence_row(crate::store::EvidenceStatus::Processing, None)),
+            SYNTHETIC_GENERATION,
+        );
         assert_eq!(processing.evidence_state, "processing");
     }
 
@@ -2128,7 +2047,7 @@ mod tests {
         );
         row.parser_revision = Some(PARSER_REVISION - 1);
 
-        let payload = session_hygiene_payload(Some(row));
+        let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
         assert_eq!(payload.evidence_state, "stale");
         assert!(
             payload
@@ -2139,17 +2058,70 @@ mod tests {
     }
 
     #[test]
+    fn session_hygiene_never_serves_a_requeued_rows_leftover_evidence() {
+        // `reconcile_evidence_revisions` flips a stale Ready row's status to
+        // Pending but keeps its old `evidence_json` by design (see
+        // `store/mod.rs`). This row copies that shape: a non-Ready status
+        // next to fully current evidence from a previous pass.
+        let mut row = evidence_row(
+            crate::store::EvidenceStatus::Pending,
+            Some(synthetic_evidence()),
+        );
+        row.retry_count = 0;
+
+        let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
+        assert_eq!(payload.evidence_state, "pending");
+        assert!(
+            payload
+                .badges
+                .iter()
+                .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed)),
+            "leftover evidence_json on a requeued row must never surface a Clean or Finding badge"
+        );
+    }
+
+    #[test]
+    fn session_hygiene_marks_evidence_from_an_earlier_source_generation_as_stale() {
+        // The source grew a new generation (a requeue not yet run, or still
+        // pending) while this row's evidence is still Ready and carries
+        // current revisions from the previous generation.
+        let row = evidence_row(
+            crate::store::EvidenceStatus::Ready,
+            Some(synthetic_evidence()),
+        );
+        assert_eq!(row.analyzed_generation, SYNTHETIC_GENERATION);
+        let newer_source_generation = Some(2);
+
+        let payload = session_hygiene_payload(Some(row), newer_source_generation);
+        assert_eq!(payload.evidence_state, "stale");
+        assert!(
+            payload
+                .badges
+                .iter()
+                .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed)),
+            "evidence analyzed against a superseded source generation must never surface a Clean or Finding badge"
+        );
+    }
+
+    #[test]
     fn session_hygiene_batches_preserve_order_and_isolate_invalid_rows() {
         let mut invalid = evidence_row(crate::store::EvidenceStatus::Ready, None);
         invalid.evidence_json = Some("{".to_owned());
-        let payloads = session_hygiene_payloads(vec![
-            None,
-            Some(invalid),
-            Some(evidence_row(
-                crate::store::EvidenceStatus::Ready,
-                Some(synthetic_evidence()),
-            )),
-        ]);
+        let payloads = session_hygiene_payloads(
+            vec![
+                None,
+                Some(invalid),
+                Some(evidence_row(
+                    crate::store::EvidenceStatus::Ready,
+                    Some(synthetic_evidence()),
+                )),
+            ],
+            vec![
+                SYNTHETIC_GENERATION,
+                SYNTHETIC_GENERATION,
+                SYNTHETIC_GENERATION,
+            ],
+        );
 
         assert_eq!(payloads.len(), 3);
         assert_eq!(payloads[0].evidence_state, "pending");
@@ -2172,7 +2144,7 @@ mod tests {
         ));
         let row = evidence_row(crate::store::EvidenceStatus::Ready, Some(evidence));
 
-        let payload = session_hygiene_payload(Some(row));
+        let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
         assert_eq!(payload.evidence_state, "activelyGrowing");
         assert!(payload.badges.iter().all(|badge| {
             // Model Overthinking / Fast Mode Overuse report a missing

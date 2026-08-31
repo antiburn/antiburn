@@ -167,7 +167,8 @@ pub enum RelationProvenance {
 }
 
 /// Session facts that an adapter can state only after the last record.
-#[derive(Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SessionSummary {
     /// True when this adapter can observe cache-write tokens.
     pub cache_write_tokens_available: bool,

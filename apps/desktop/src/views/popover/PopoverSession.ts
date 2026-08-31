@@ -83,6 +83,20 @@ function isUnavailableAnalysis(state: PopoverAnalysisState, key: string): boolea
   )
 }
 
+/**
+ * Whether the settled analysis for `key` reports the drilldown as still
+ * pending: the worker has not published a row set for this session yet, so
+ * the shell served a placeholder payload rather than a real read.
+ */
+function isAnalysisPending(state: PopoverAnalysisState, key: string): boolean {
+  return (
+    state !== null &&
+    state.key === key &&
+    state.payload !== null &&
+    state.payload.analysisPending
+  )
+}
+
 export interface PopoverSnapshot {
   appVersion: string | null
   debugBuild: boolean
@@ -744,6 +758,14 @@ export class PopoverSession {
    * since the last tick (or the seed), re-load the analysis. Overlapping
    * ticks are dropped rather than queued — a slow fetch is left to finish on
    * its own, and the next interval simply tries again.
+   *
+   * A pending analysis (the worker has not published rows for this session
+   * yet) re-loads on every tick, unbounded, whether or not the fingerprint
+   * moved: there is nothing to compare against until the worker's first
+   * pass lands, and that pass is what this poll is waiting for. That check
+   * runs before, and short-circuits, the bounded unavailable-analysis retry
+   * below, which answers a different question — a published pass that
+   * turned up nothing to show.
    */
   private tickAnalysisPoll = (): void => {
     if (this.analysisPollInFlight) return
@@ -758,6 +780,10 @@ export class PopoverSession {
         const previous = this.analysisFingerprint
         this.analysisFingerprint = fingerprint
         if (previous !== null && fingerprint !== previous) {
+          void this.refreshAnalysis()
+          return
+        }
+        if (isAnalysisPending(this.snapshot.analysis, key)) {
           void this.refreshAnalysis()
           return
         }

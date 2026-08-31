@@ -47,6 +47,8 @@ fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> Ana
         key,
         model_breakdown_json: "{}".into(),
         inclusive_models_json: "[]".into(),
+        initial_context_json: None,
+        source_summaries_json: None,
         source_fingerprint: fingerprint.into(),
         pricing_generation: 1,
         analyzed_generation: generation,
@@ -95,29 +97,17 @@ fn evidence_completion(
     }
 }
 
-fn seed_current_session_evidence(store: &Store, session_id: &str) -> SessionRecord {
+/// Seed a session and mark its evidence row Ready with every column current,
+/// but write no `session_analysis` row. Use this to isolate the
+/// missing-analysis requeue arm from the `metrics_schema_revision` join it
+/// depends on.
+fn seed_ready_evidence_row(store: &Store, session_id: &str) -> SessionRecord {
     let mut record = session(session_id, 1_000);
     record.source_fingerprint = Some("sv1:current".into());
     store
         .upsert_sessions(
             std::slice::from_ref(&record),
             &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
-    store
-        .save_analysis(
-            &AnalysisRecord {
-                key: record.key.clone(),
-                model_breakdown_json: "{}".into(),
-                inclusive_models_json: "[]".into(),
-                source_fingerprint: "sv1:current".into(),
-                pricing_generation: 1,
-                analyzed_generation: 1,
-                parser_revision: 1,
-                analyzer_revision: 1,
-                metrics_schema_revision: 1,
-            },
-            None,
         )
         .unwrap();
     store
@@ -135,6 +125,17 @@ fn seed_current_session_evidence(store: &Store, session_id: &str) -> SessionReco
                 record.key.agent,
                 record.key.session_id
             ],
+        )
+        .unwrap();
+    record
+}
+
+fn seed_current_session_evidence(store: &Store, session_id: &str) -> SessionRecord {
+    let record = seed_ready_evidence_row(store, session_id);
+    store
+        .save_analysis(
+            &projection_record(record.key.clone(), "sv1:current", 1),
+            None,
         )
         .unwrap();
     record
@@ -296,6 +297,8 @@ fn session_analysis_holds_the_cache_values_and_the_projection_revisions() {
             "parser_revision",
             "analyzer_revision",
             "metrics_schema_revision",
+            "initial_context_json",
+            "source_summaries_json",
         ]
     );
 }
@@ -751,6 +754,8 @@ fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
                 key: SessionKey::new("native", "claude-code", "abc"),
                 model_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
+                initial_context_json: None,
+                source_summaries_json: None,
                 source_fingerprint: "1:1".into(),
                 pricing_generation: 0,
                 analyzed_generation: 0,
@@ -918,6 +923,8 @@ fn session_retention_removes_all_derived_session_data() {
                 key: key.clone(),
                 model_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
+                initial_context_json: None,
+                source_summaries_json: None,
                 source_fingerprint: "1:1".into(),
                 pricing_generation: 0,
                 analyzed_generation: 0,
@@ -979,12 +986,14 @@ fn saving_retention_and_removing_expired_sessions_is_one_store_operation() {
         .unwrap();
 
     let (_, saved, removed) = store
-        .replace_settings_and_apply_retention(
+        .replace_settings_with(
             &AppSettings {
                 session_data_retention_days: SESSION_DATA_RETENTION_DAYS_30,
                 ..AppSettings::default()
             },
-            2_000_000_000,
+            |tx, saved| {
+                apply_session_retention_in(tx, saved.session_data_retention_days, 2_000_000_000)
+            },
         )
         .unwrap();
 
@@ -1339,6 +1348,8 @@ fn analysis_round_trips_and_is_replaced_rather_than_duplicated() {
         inclusive_models_json:
             r#"[{"model":"claude-haiku-4-5"},{"model":"claude-opus-4-6","thinkingMode":"high"}]"#
                 .into(),
+        initial_context_json: None,
+        source_summaries_json: None,
         source_fingerprint: "1700000000:4096".into(),
         pricing_generation: 0,
         analyzed_generation: 7,
@@ -1358,34 +1369,32 @@ fn analysis_round_trips_and_is_replaced_rather_than_duplicated() {
     assert_eq!(stored.source_fingerprint, "1700000900:8192");
 }
 
+/// `publish_projections` is the worker's own write path (`save_analysis` is
+/// test scaffolding only), so this pins the generation and revision columns
+/// against the path production actually uses.
 #[test]
-fn save_analysis_writes_the_generation_and_revision_columns() {
+fn publish_projections_writes_the_generation_and_revision_columns() {
     let store = store();
-    let key = SessionKey::new("native", "claude-code", "revisions");
-    store
-        .upsert_sessions(
-            &[session("revisions", 1_000)],
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
+    let (record, claim) = claimed_projection(&store, "revisions", 100, 60);
     let record = AnalysisRecord {
-        key: key.clone(),
-        model_breakdown_json: "{}".into(),
-        inclusive_models_json: "[]".into(),
-        source_fingerprint: "sv1:source".into(),
         pricing_generation: 3,
-        analyzed_generation: 8,
         parser_revision: 1,
         analyzer_revision: 2,
         metrics_schema_revision: 3,
+        ..record
     };
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
 
-    store.save_analysis(&record, Some(900)).unwrap();
+    assert!(
+        store
+            .publish_projections(&record, Some(900), &completion, &[])
+            .unwrap()
+    );
 
-    assert_eq!(store.analysis(&key).unwrap(), Some(record));
+    assert_eq!(store.analysis(&record.key).unwrap(), Some(record.clone()));
     assert_eq!(
         store
-            .session_source_state(&key)
+            .session_source_state(&record.key)
             .unwrap()
             .expect("source state")
             .started_at_epoch,
@@ -1394,33 +1403,96 @@ fn save_analysis_writes_the_generation_and_revision_columns() {
 }
 
 #[test]
-fn save_analysis_never_clears_a_known_start_time() {
+fn publish_projections_round_trips_initial_context_json() {
     let store = store();
-    let key = SessionKey::new("native", "claude-code", "known-start");
-    store
-        .upsert_sessions(
-            &[session("known-start", 1_000)],
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
+    let (record, claim) = claimed_projection(&store, "publish-initial-context", 100, 60);
     let record = AnalysisRecord {
-        key: key.clone(),
-        model_breakdown_json: "{}".into(),
-        inclusive_models_json: "[]".into(),
-        source_fingerprint: "sv1:source".into(),
-        pricing_generation: 0,
-        analyzed_generation: 1,
-        parser_revision: 1,
-        analyzer_revision: 1,
-        metrics_schema_revision: 1,
+        initial_context_json: Some(r#"{"sources":[{"name":"CLAUDE.md","tokens":120}]}"#.into()),
+        source_summaries_json: None,
+        ..record
     };
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
 
-    store.save_analysis(&record, Some(800)).unwrap();
-    store.save_analysis(&record, None).unwrap();
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
 
     assert_eq!(
         store
-            .session_source_state(&key)
+            .analysis(&record.key)
+            .unwrap()
+            .and_then(|stored| stored.initial_context_json),
+        record.initial_context_json
+    );
+}
+
+/// V19 adds `source_summaries_json`. `publish_projections` — the worker's
+/// own publish path — is what actually writes it; the drilldown's
+/// rows-replay path (seam R3c) reads it back through `analysis()`.
+#[test]
+fn publish_projections_round_trips_source_summaries_json() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "publish-source-summaries", 100, 60);
+    let record = AnalysisRecord {
+        source_summaries_json: Some(
+            r#"{"child-1":{"model":"claude-haiku-4-6"},"publish-source-summaries":{"model":"claude-opus-4-6"}}"#
+                .into(),
+        ),
+        ..record
+    };
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+
+    assert_eq!(
+        store
+            .analysis(&record.key)
+            .unwrap()
+            .and_then(|stored| stored.source_summaries_json),
+        record.source_summaries_json
+    );
+}
+
+/// A later publish with no `started_at_epoch` (the common case: the worker
+/// already learned the start time on an earlier pass) must not clear it.
+#[test]
+fn publish_projections_never_clears_a_known_start_time() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "known-start", 100, 60);
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, Some(800), &completion, &[])
+            .unwrap()
+    );
+
+    // Requeue and reclaim, mirroring a second worker pass over the same
+    // session, then publish again with no start time.
+    store.requeue_session_evidence(&record.key).unwrap();
+    let claim = store
+        .claim_next_evidence(&["claude-code"], 200, 60)
+        .unwrap()
+        .expect("requeued session is claimable");
+    let record = AnalysisRecord {
+        analyzed_generation: claim.source_generation,
+        ..record
+    };
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+
+    assert_eq!(
+        store
+            .session_source_state(&record.key)
             .unwrap()
             .expect("source state")
             .started_at_epoch,
@@ -1486,6 +1558,8 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
                 key: key.clone(),
                 model_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
+                initial_context_json: None,
+                source_summaries_json: None,
                 source_fingerprint: "x".into(),
                 pricing_generation: 0,
                 analyzed_generation: 0,
@@ -1629,6 +1703,8 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
                 model_breakdown_json: r#"{"claude-opus-4-6":{"input_tokens":10}}"#.into(),
                 inclusive_models_json: r#"[{"model":"claude-opus-4-6","thinkingMode":"high"}]"#
                     .into(),
+                initial_context_json: None,
+                source_summaries_json: None,
                 source_fingerprint: "1:1".into(),
                 pricing_generation: 0,
                 analyzed_generation: 0,
@@ -2248,9 +2324,9 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
     assert_eq!(
         crate::analysis::projection_revisions(),
         ProjectionRevisions {
-            parser_revision: 15,
+            parser_revision: 16,
             analyzer_revision: 15,
-            metrics_schema_revision: 1,
+            metrics_schema_revision: 2,
             evidence_schema_revision: 11,
         }
     );
@@ -2260,6 +2336,22 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
 fn a_revision_change_requeues_session_evidence_without_touching_the_generation() {
     let store = store();
     let record = seed_current_session_evidence(&store, "revision-requeue");
+    // Set nonzero retry state first. Then the test can show that
+    // reconcile resets the state, not that it was already zero.
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence
+                SET retry_count = 3, last_error = 'stale attempt',
+                    next_attempt_at_epoch = 500
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
     let before = store.session_source_state(&record.key).unwrap().unwrap();
     let revisions = ProjectionRevisions {
         evidence_schema_revision: 2,
@@ -2276,9 +2368,174 @@ fn a_revision_change_requeues_session_evidence_without_touching_the_generation()
     let evidence = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(evidence.status, EvidenceStatus::Pending);
     assert_eq!(evidence.evidence_json.as_deref(), Some("{\"groups\":[]}"));
+    assert_eq!(evidence.retry_count, 0);
+    assert_eq!(evidence.last_error, None);
+    assert_eq!(evidence.next_attempt_at_epoch, None);
     assert_eq!(
         store.session_source_state(&record.key).unwrap().unwrap(),
         before
+    );
+}
+
+/// Seam R3c: a worker pass publishes rows and per-source summaries, and
+/// `analysis::analysis_from_rows` rebuilds the session-detail payload from
+/// `store` alone. `record.source_label` names a transcript path that does
+/// not exist on disk, so a payload here proves the replay path reads no
+/// transcript — a live parse of that path would find nothing.
+#[tokio::test]
+async fn analysis_from_rows_serves_a_published_pass_without_reading_a_transcript() {
+    let store = store();
+    let mut record = session("rows-replay-parent", 1_000);
+    record.source_fingerprint = Some("sv1:rows-replay-parent".into());
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    // `published_evidence_pass` (used elsewhere in this module) writes its
+    // rows to a standalone `MemoryTurnRowStore`, disconnected from `store`'s
+    // own tables — fine for the evidence-JSON assertions those tests make,
+    // but this test needs rows `store.published_turn_rows` can actually
+    // read back, so the runner fences its rows into `store` itself, exactly
+    // as `insights_worker::run_record_pass` does in production.
+    let store_for_runner = store.clone();
+    let runner = move |record: &SessionRecord,
+                       _signal: crate::analysis::PassSignal,
+                       claim_fence: i64| {
+        let row_store: Arc<dyn TurnRowStore> = Arc::new(FencedTurnRowStore::new(
+            store_for_runner.clone(),
+            record.key.clone(),
+            claim_fence,
+        ));
+        let mut pass = crate::analysis::evidence_pass_with_turn_rows(
+            &[antiburn_local::analysis::SessionInput {
+                agent: "claude".into(),
+                session_id: record.key.session_id.clone(),
+                source: antiburn_local::analysis::RawSource::Jsonl(
+                    r#"{"type":"assistant","timestamp":100,"message":{"id":"m","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":2,"output_tokens":3},"content":[]}}
+"#
+                    .into(),
+                ),
+            }],
+            &|| false,
+            Some(row_store),
+        );
+        pass.analysis.fingerprint = record
+            .source_fingerprint
+            .clone()
+            .unwrap_or_else(|| crate::analysis::MISSING_FINGERPRINT.into());
+        Box::pin(async move { pass }) as crate::insights_worker::PassFuture
+    };
+    assert!(
+        crate::insights_worker::process_next(
+            &store,
+            &crate::insights_worker::WorkerHandle::default(),
+            &|| 1_100,
+            &runner,
+            &|_| {},
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Ready
+    );
+
+    let replayed = crate::analysis::analysis_from_rows(
+        &store,
+        &record.key,
+        &record.key.session_id,
+        "claude-code",
+    )
+    .expect("a ready, published pass replays from rows");
+
+    assert!(replayed.metrics.is_some());
+    assert_eq!(replayed.fingerprint, "sv1:rows-replay-parent");
+    assert_eq!(replayed.cost, replayed.top_level_cost);
+    assert!(replayed.source_path.is_none());
+}
+
+/// Before a worker pass has published anything, `analysis_from_rows` finds
+/// no complete row set and returns `None` — the command switch's own signal
+/// that this session's drilldown is still pending. The worker fills the gap
+/// on its own next pass; the command no longer re-parses the transcript
+/// in-process to answer this call.
+#[test]
+fn analysis_from_rows_returns_none_before_rows_are_ready() {
+    let store = store();
+    let (_, claim) = claimed_projection(&store, "rows-not-ready", 100, 60);
+    assert_eq!(
+        store.evidence(&claim.key).unwrap().unwrap().status,
+        EvidenceStatus::Processing
+    );
+
+    assert!(
+        crate::analysis::analysis_from_rows(
+            &store,
+            &claim.key,
+            &claim.key.session_id,
+            "claude-code"
+        )
+        .is_none()
+    );
+}
+
+/// `published_turn_rows`' widening (R5 part 1) reaches `analysis_from_rows`
+/// too: a pass published with status `unsupported` is exactly as replayable
+/// as one published `ready`, because `Unsupported` is an insights verdict
+/// (no detector was eligible), not a parse-quality one — the rows and the
+/// `session_analysis` record a winning pass wrote are complete either way.
+#[test]
+fn analysis_from_rows_serves_a_pass_published_unsupported() {
+    let store = store();
+    let (mut record, claim) = claimed_projection(&store, "s1", 100, 60);
+    // A row whose own `source_key` names the parent session, so
+    // `metrics_by_source` groups it under `record.key.session_id` the way
+    // `analysis_from_rows` expects for the parent entry.
+    record.source_summaries_json = Some("{}".into());
+    let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    writer.write_turn_rows(&[turn_row(0)]).unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Unsupported, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+    assert_eq!(
+        store.evidence(&key).unwrap().unwrap().status,
+        EvidenceStatus::Unsupported
+    );
+
+    let replayed =
+        crate::analysis::analysis_from_rows(&store, &key, &key.session_id, "claude-code")
+            .expect("an unsupported, published pass still replays from rows");
+
+    assert!(replayed.metrics.is_some());
+}
+
+/// The drilldown's rows-replay path requeues a session whose stored
+/// fingerprint no longer matches the live transcript
+/// (`commands::nudge_if_evidence_stale`). This proves the underlying store
+/// mechanism it calls: requeuing a `ready` row moves it back to `pending`
+/// for the worker's next pass.
+#[test]
+fn requeue_session_evidence_marks_a_ready_session_pending() {
+    let store = store();
+    let record = seed_current_session_evidence(&store, "requeue-on-mismatch");
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Ready
+    );
+
+    store.requeue_session_evidence(&record.key).unwrap();
+
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
     );
 }
 
@@ -2377,6 +2634,8 @@ fn a_catalog_change_requeues_no_session_evidence() {
                 key: record.key.clone(),
                 model_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
+                initial_context_json: None,
+                source_summaries_json: None,
                 source_fingerprint: "sv1:current".into(),
                 pricing_generation: 2,
                 analyzed_generation: 1,
@@ -2426,21 +2685,30 @@ fn reconciling_session_evidence_skips_a_disabled_agent() {
 }
 
 #[test]
-fn a_session_outside_the_evidence_cohort_gets_no_row() {
+fn every_agent_kind_is_in_the_evidence_cohort_and_gets_a_row() {
+    // The cohort now covers every AgentKind (crate::agents::evidence_cohort
+    // derives from AgentKind::ALL), so upserting a session for any slug
+    // queues an evidence row. No agent is outside the cohort any more.
     let store = store();
-    let claude = session("cohort-claude", 1_000);
-    let mut cursor = session("cohort-cursor", 1_000);
-    cursor.key.agent = "cursor".to_string();
+    let cohort = crate::agents::evidence_cohort();
+    let sessions: Vec<SessionRecord> = cohort
+        .iter()
+        .map(|slug| {
+            let mut record = session(&format!("cohort-{slug}"), 1_000);
+            record.key.agent = (*slug).to_string();
+            record
+        })
+        .collect();
 
-    store
-        .upsert_sessions(
-            &[claude.clone(), cursor.clone()],
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
+    store.upsert_sessions(&sessions, &cohort).unwrap();
 
-    assert!(store.evidence(&claude.key).unwrap().is_some());
-    assert!(store.evidence(&cursor.key).unwrap().is_none());
+    for record in &sessions {
+        assert!(
+            store.evidence(&record.key).unwrap().is_some(),
+            "{} should get an evidence row",
+            record.key.agent
+        );
+    }
 }
 
 #[test]
@@ -3232,6 +3500,9 @@ fn turn_row(turn_index: u64) -> TurnRow {
         compaction_trigger: None,
         compaction_pre_tokens: None,
         compaction_post_tokens: None,
+        has_thinking: false,
+        last_tool: None,
+        subagent_launches: 0,
         content: Vec::new(),
     }
 }
@@ -3241,10 +3512,10 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 16);
+    assert_eq!(super::schema::MIGRATIONS.len(), 20);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 16);
+    assert_eq!(store.schema_version().unwrap(), 20);
 }
 
 #[test]
@@ -3528,4 +3799,379 @@ fn clearing_local_session_data_removes_turn_content_written_through_the_fenced_w
         .query_row("SELECT COUNT(*) FROM turn_content", [], |row| row.get(0))
         .unwrap();
     assert_eq!(remaining, 0);
+}
+
+// The tests below pin `reconcile_evidence_revisions`'s individual requeue
+// decisions. Each test isolates one arm of its SQL. A future edit that
+// changes requeue behavior then fails one named test.
+
+#[test]
+fn a_parser_revision_mismatch_alone_requeues_and_resets_retry_state() {
+    let store = store();
+    let record = seed_current_session_evidence(&store, "parser-revision-requeue");
+    // Set nonzero retry state first. Then the test can show that
+    // reconcile resets the state, not that it was already zero.
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence
+                SET retry_count = 3, last_error = 'stale attempt',
+                    next_attempt_at_epoch = 500
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+    let before = store.session_source_state(&record.key).unwrap().unwrap();
+    let revisions = ProjectionRevisions {
+        parser_revision: 2,
+        ..projection_revisions()
+    };
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], revisions)
+            .unwrap(),
+        1
+    );
+
+    let evidence = store.evidence(&record.key).unwrap().unwrap();
+    assert_eq!(evidence.status, EvidenceStatus::Pending);
+    assert_eq!(evidence.retry_count, 0);
+    assert_eq!(evidence.last_error, None);
+    assert_eq!(evidence.next_attempt_at_epoch, None);
+    assert_eq!(
+        store.session_source_state(&record.key).unwrap().unwrap(),
+        before
+    );
+}
+
+#[test]
+fn an_analyzer_revision_mismatch_alone_requeues_session_evidence() {
+    let store = store();
+    let record = seed_current_session_evidence(&store, "analyzer-revision-requeue");
+    let before = store.session_source_state(&record.key).unwrap().unwrap();
+    let revisions = ProjectionRevisions {
+        analyzer_revision: 2,
+        ..projection_revisions()
+    };
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], revisions)
+            .unwrap(),
+        1
+    );
+
+    let evidence = store.evidence(&record.key).unwrap().unwrap();
+    assert_eq!(evidence.status, EvidenceStatus::Pending);
+    assert_eq!(evidence.evidence_json.as_deref(), Some("{\"groups\":[]}"));
+    assert_eq!(
+        store.session_source_state(&record.key).unwrap().unwrap(),
+        before
+    );
+}
+
+#[test]
+fn a_stale_metrics_schema_revision_in_session_analysis_requeues_a_current_row() {
+    let store = store();
+    let record = seed_current_session_evidence(&store, "metrics-stale-requeue");
+    // The evidence row's own columns, and `analyzed_generation`, are current.
+    // Only the joined `session_analysis` row's `metrics_schema_revision` is
+    // stale, so this isolates the missing-analysis requeue arm.
+    store
+        .lock()
+        .execute(
+            "UPDATE session_analysis SET metrics_schema_revision = 0
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
+            .unwrap(),
+        1
+    );
+
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+}
+
+#[test]
+fn a_missing_session_analysis_row_requeues_an_otherwise_current_evidence_row() {
+    let store = store();
+    let record = seed_ready_evidence_row(&store, "metrics-missing-requeue");
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
+            .unwrap(),
+        1
+    );
+
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+}
+
+#[test]
+fn an_analyzed_generation_behind_the_session_requeues_even_when_revisions_match() {
+    let store = store();
+    let record = seed_current_session_evidence(&store, "generation-behind-requeue");
+    // Increase the session's generation directly. This bypasses
+    // `upsert_sessions` and tests only the generation check in
+    // `reconcile_evidence_revisions`.
+    store
+        .lock()
+        .execute(
+            "UPDATE session SET source_generation = 2
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
+            .unwrap(),
+        1
+    );
+
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+}
+
+#[test]
+fn a_failed_row_with_a_revision_mismatch_requeues_despite_its_status() {
+    let store = store();
+    let record = seed_current_session_evidence(&store, "failed-revision-requeue");
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence SET status = 'failed', last_error = 'earlier failure'
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+    let revisions = ProjectionRevisions {
+        evidence_schema_revision: 2,
+        ..projection_revisions()
+    };
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], revisions)
+            .unwrap(),
+        1
+    );
+
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+}
+
+#[test]
+fn a_failed_row_current_except_for_a_missing_analysis_row_does_not_requeue() {
+    let store = store();
+    let record = seed_ready_evidence_row(&store, "failed-missing-analysis-guard");
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence SET status = 'failed', last_error = 'earlier failure'
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+    let before = store.evidence(&record.key).unwrap().unwrap();
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
+            .unwrap(),
+        0
+    );
+
+    assert_eq!(store.evidence(&record.key).unwrap().unwrap(), before);
+}
+
+#[test]
+fn an_unsupported_row_with_a_revision_mismatch_requeues_despite_its_status() {
+    let store = store();
+    let record = seed_current_session_evidence(&store, "unsupported-revision-requeue");
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence SET status = 'unsupported'
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+    let revisions = ProjectionRevisions {
+        evidence_schema_revision: 2,
+        ..projection_revisions()
+    };
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], revisions)
+            .unwrap(),
+        1
+    );
+
+    assert_eq!(
+        store.evidence(&record.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+}
+
+#[test]
+fn an_unsupported_row_current_except_for_a_missing_analysis_row_does_not_requeue() {
+    let store = store();
+    let record = seed_ready_evidence_row(&store, "unsupported-missing-analysis-guard");
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence SET status = 'unsupported'
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id
+            ],
+        )
+        .unwrap();
+    let before = store.evidence(&record.key).unwrap().unwrap();
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
+            .unwrap(),
+        0
+    );
+
+    assert_eq!(store.evidence(&record.key).unwrap().unwrap(), before);
+}
+
+#[test]
+fn a_stale_row_for_an_agent_outside_the_list_is_neither_enrolled_nor_requeued() {
+    let store = store();
+    let claude = seed_current_session_evidence(&store, "agent-filter-claude");
+    let mut codex = session("agent-filter-codex", 1_000);
+    codex.key.agent = "codex".into();
+    codex.source_fingerprint = Some("sv1:current".into());
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&codex),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    store
+        .save_analysis(
+            &projection_record(codex.key.clone(), "sv1:current", 1),
+            None,
+        )
+        .unwrap();
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence
+                SET status = 'ready', analyzed_generation = 1,
+                    processed_fingerprint = 'sv1:current', parser_revision = 1,
+                    analyzer_revision = 1, evidence_schema_revision = 1,
+                    evidence_json = '{\"groups\":[]}', diagnostics_json = '[]',
+                    retry_count = 0, claim_fence = 4, analyzed_at_epoch = 900
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![
+                codex.key.environment_key,
+                codex.key.agent,
+                codex.key.session_id
+            ],
+        )
+        .unwrap();
+    let codex_before = store.evidence(&codex.key).unwrap().unwrap();
+    let mut codex_unseen = session("agent-filter-codex-unseen", 1_000);
+    codex_unseen.key.agent = "codex".into();
+    store
+        .upsert_sessions(std::slice::from_ref(&codex_unseen), &[])
+        .unwrap();
+    // The mismatch spans two revisions, not one. An agent-filter
+    // bug would still requeue this row.
+    let revisions = ProjectionRevisions {
+        evidence_schema_revision: 2,
+        ..projection_revisions()
+    };
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], revisions)
+            .unwrap(),
+        1
+    );
+
+    assert_eq!(
+        store.evidence(&claude.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+    assert_eq!(store.evidence(&codex.key).unwrap().unwrap(), codex_before);
+    assert!(store.evidence(&codex_unseen.key).unwrap().is_none());
+}
+
+#[test]
+fn reconcile_counts_enrollment_and_requeue_together_in_one_call() {
+    let store = store();
+    let requeue_target = seed_current_session_evidence(&store, "combined-requeue");
+    let mut new_session = session("combined-enroll", 1_000);
+    new_session.source_fingerprint = Some("sv1:new".into());
+    store
+        .upsert_sessions(std::slice::from_ref(&new_session), &[])
+        .unwrap();
+    assert!(store.evidence(&new_session.key).unwrap().is_none());
+    let revisions = ProjectionRevisions {
+        parser_revision: 2,
+        ..projection_revisions()
+    };
+
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], revisions)
+            .unwrap(),
+        2
+    );
+
+    assert!(store.evidence(&new_session.key).unwrap().is_some());
+    assert_eq!(
+        store.evidence(&requeue_target.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
 }

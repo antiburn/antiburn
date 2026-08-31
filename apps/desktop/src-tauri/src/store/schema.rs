@@ -11,7 +11,7 @@
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -387,3 +387,48 @@ const V15: &str = antiburn_local::analysis::TURN_SCHEMA_SQL;
 /// the same reason [`V15`] re-exports `TURN_SCHEMA_SQL` instead of stating
 /// its own DDL.
 const V16: &str = antiburn_local::analysis::TURN_SCHEMA_V2_SQL;
+
+/// v17 adds `initial_context_json` to `session_analysis`: the serialized
+/// initial-context breakdown a later change (seam R3) reads back. Nullable,
+/// with no default, because an existing row's initial context is unknown
+/// until the next analysis pass fills it in — unlike [`V7`]'s
+/// `inclusive_models_json`, there is no empty-but-valid value to backfill.
+const V17: &str = r#"
+ALTER TABLE session_analysis ADD COLUMN initial_context_json TEXT;
+"#;
+
+/// v18 adds the three chart-signal columns `query_turn_rows` reads:
+/// `has_thinking`, `last_tool`, `subagent_launches`.
+///
+/// `antiburn_local::analysis::TURN_SCHEMA_V3_SQL` owns the column list, for
+/// the same reason [`V16`] re-exports `TURN_SCHEMA_V2_SQL` instead of
+/// stating its own DDL.
+const V18: &str = antiburn_local::analysis::TURN_SCHEMA_V3_SQL;
+
+/// v19 adds `source_summaries_json` to `session_analysis`: each source's own
+/// serialized `SessionSummary`, keyed by `source_key`, that seam R3c's
+/// drilldown replay reads back to rebuild per-source metrics without a
+/// transcript. Nullable, with no default, for the same reason [`V17`]'s
+/// `initial_context_json` is: an existing row's per-source summaries are
+/// unknown until the next worker pass fills them in. Only a pass with a
+/// `turn_row_store` (the durable evidence worker) writes this column; the
+/// on-demand and scan-triggered passes leave it `NULL`.
+const V19: &str = r#"
+ALTER TABLE session_analysis ADD COLUMN source_summaries_json TEXT;
+"#;
+
+/// v20 — add existing sessions of the newly widened evidence cohort agents to
+/// the durable evidence queue.
+///
+/// The evidence cohort now covers every [`AgentKind`](antiburn_local::model::AgentKind):
+/// Cursor, Copilot, Cline, Kiro, Amp, Antigravity, and Windsurf join Claude,
+/// Codex, OpenCode, and Pi. A normal upsert queues future source generations
+/// for these agents; this migration also queues rows that scans stored before
+/// they joined the cohort, following the same shape as [`V12`]/[`V13`]/[`V14`].
+const V20: &str = r#"
+INSERT INTO session_evidence (environment_key, agent, session_id)
+SELECT environment_key, agent, session_id
+  FROM session
+ WHERE agent IN ('cursor', 'copilot', 'cline', 'kiro', 'amp-code', 'antigravity', 'windsurf')
+ON CONFLICT(environment_key, agent, session_id) DO NOTHING;
+"#;
