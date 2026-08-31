@@ -41,6 +41,7 @@ export interface AnchoredTriggerBridge<T, P = undefined> {
   ) => Promise<AnchoredWindowRequest<T>>
   conceal: () => Promise<void>
   listen: (handler: (event: AnchoredWindowLifecycleEvent<T>) => void) => Promise<() => void>
+  state: () => Promise<AnchoredWindowState<T>>
 }
 
 interface ScheduledRequest<T, P> {
@@ -194,6 +195,7 @@ export class AnchoredTriggerController<T, P = undefined> {
         return
       }
       this.stopListening = unlisten
+      await this.readState(generation)
     } catch {
       if (generation !== this.listenerGeneration || this.listeners.size === 0) return
       this.retryTimer = setTimeout(() => {
@@ -202,6 +204,22 @@ export class AnchoredTriggerController<T, P = undefined> {
           void this.startListening()
         }
       }, LISTENER_RETRY_MS)
+    }
+  }
+
+  private async readState(listenerGeneration: number): Promise<void> {
+    const requestRevision = this.requestRevision
+    try {
+      const state = await this.bridge.state()
+      if (
+        listenerGeneration === this.listenerGeneration &&
+        requestRevision === this.requestRevision &&
+        this.listeners.size > 0
+      ) {
+        this.acceptLifecycle({ companionLabel: this.companionLabel, state })
+      }
+    } catch {
+      // The active event listener remains the recovery path for a failed state read.
     }
   }
 

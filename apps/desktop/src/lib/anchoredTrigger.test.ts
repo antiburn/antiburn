@@ -27,6 +27,7 @@ function harness(
       lifecycle = handler
       return () => undefined
     }),
+    state: vi.fn(async () => state(0, null)),
   }
   const controller = new AnchoredTriggerController(
     "detail",
@@ -74,6 +75,7 @@ describe("AnchoredTriggerController", () => {
       request,
       conceal: vi.fn(async () => undefined),
       listen: vi.fn(async () => () => undefined),
+      state: vi.fn(async () => state(0, null)),
     }
     const controller = new AnchoredTriggerController(
       "detail",
@@ -138,6 +140,43 @@ describe("AnchoredTriggerController", () => {
       generation: 2,
     })
     unsubscribe()
+  })
+
+  it("reconciles lifecycle state after a listener retry", async () => {
+    vi.useFakeTimers()
+    const bridge: AnchoredTriggerBridge<Target> = {
+      request: vi.fn(async (target) => ({
+        generation: 1,
+        target,
+        retargetCommitRequired: false,
+      })),
+      conceal: vi.fn(async () => undefined),
+      listen: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("listener unavailable"))
+        .mockResolvedValueOnce(() => undefined),
+      state: vi.fn(async () => state(2, null)),
+    }
+    const controller = new AnchoredTriggerController(
+      "detail",
+      (left: Target, right: Target) => left.id === right.id,
+      bridge,
+    )
+    const unsubscribe = controller.subscribe(() => undefined)
+
+    try {
+      await controller.hover({ id: "stale" }, ANCHOR)
+      await vi.advanceTimersByTimeAsync(250)
+
+      expect(controller.getSnapshot()).toEqual({
+        activation: "idle",
+        target: null,
+        generation: 2,
+      })
+    } finally {
+      unsubscribe()
+      vi.useRealTimers()
+    }
   })
 
   it("serializes a late old success behind the latest local target", async () => {

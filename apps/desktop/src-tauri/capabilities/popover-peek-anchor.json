@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "popover-peek-anchor",
+  "description": "Control capability for the popover that owns the passive companion anchor.",
+  "windows": ["popover"],
+  "permissions": [
+    "allow-get-popover-peek-state",
+    "allow-hide-popover-peek",
+    "allow-show-popover-peek"
+  ]
+}

@@ -38,6 +38,7 @@ function controllerWith(data: (generation: number) => Promise<PopoverPeekData>) 
   return new PopoverPeekController({
     data,
     listen: vi.fn(async () => () => undefined),
+    ready: vi.fn(async () => true),
     state: vi.fn(),
   })
 }
@@ -57,6 +58,77 @@ describe("PopoverPeekController", () => {
       coldLoading: true,
       failed: null,
     })
+  })
+
+  it("reports renderer readiness only after the request listener attaches", async () => {
+    const listening = deferred<() => void>()
+    const ready = vi.fn(async () => true)
+    const controller = new PopoverPeekController({
+      data: vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),
+      listen: vi.fn(() => listening.promise),
+      ready,
+      state: vi.fn(async () => ({
+        generation: 0,
+        target: null,
+        rendererReady: false,
+        visible: false,
+        awaitingRetargetCommit: false,
+        awaitingPresentation: false,
+        awaitingConcealment: false,
+      })),
+    })
+    Object.defineProperty(window, "__ANTIBURN_WINDOW_GENERATION__", {
+      configurable: true,
+      value: 9,
+    })
+    controller.commitRenderer(document.createElement("div"))
+    const unsubscribe = controller.subscribe(() => undefined)
+
+    expect(ready).not.toHaveBeenCalled()
+    listening.resolve(() => undefined)
+    await listening.promise
+    await Promise.resolve()
+
+    expect(ready).toHaveBeenCalledWith(9)
+    unsubscribe()
+  })
+
+  it("retries renderer readiness after a transient command failure", async () => {
+    vi.useFakeTimers()
+    const ready = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("command unavailable"))
+      .mockResolvedValueOnce(true)
+    const controller = new PopoverPeekController({
+      data: vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),
+      listen: vi.fn(async () => () => undefined),
+      ready,
+      state: vi.fn(async () => ({
+        generation: 0,
+        target: null,
+        rendererReady: false,
+        visible: false,
+        awaitingRetargetCommit: false,
+        awaitingPresentation: false,
+        awaitingConcealment: false,
+      })),
+    })
+    Object.defineProperty(window, "__ANTIBURN_WINDOW_GENERATION__", {
+      configurable: true,
+      value: 9,
+    })
+    controller.commitRenderer(document.createElement("div"))
+    const unsubscribe = controller.subscribe(() => undefined)
+
+    try {
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(250)
+
+      expect(ready).toHaveBeenCalledTimes(2)
+    } finally {
+      unsubscribe()
+      vi.useRealTimers()
+    }
   })
 
   it("uses an initial presentation immediately without starting another load", () => {

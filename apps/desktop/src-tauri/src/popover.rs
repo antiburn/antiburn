@@ -117,7 +117,6 @@ const WIDTH: f64 = 380.0;
 /// and the card corners inside it must agree, so change both together.
 /// `scripts/check-design-drift.mjs` reads this constant and fails if the two
 /// numbers differ.
-#[cfg(target_os = "macos")]
 pub(crate) const CORNER_RADIUS: f64 = 10.0;
 
 /// Tallest the popover may ever get, in logical pixels.

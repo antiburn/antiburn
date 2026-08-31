@@ -293,12 +293,16 @@ describe("PopoverPeekView", () => {
 
     expect(popoverPeekPresented).toHaveBeenCalledTimes(1)
     expect(document.querySelector('[data-generation="2"]')).not.toBeInTheDocument()
+    expect(document.querySelector('[data-generation="1"]')).toHaveTextContent(
+      "No local evidence yet",
+    )
+    expect(screen.queryByTestId("popover-peek-loading")).not.toBeInTheDocument()
 
     act(flushFrames)
     expect(popoverPeekRetargetReady).not.toHaveBeenCalled()
     await act(async () => flushFrames())
 
-    expect(popoverPeekRetargetReady).toHaveBeenCalledWith(2, null)
+    expect(popoverPeekRetargetReady).toHaveBeenCalledWith(2, 196)
     await waitFor(() => expect(popoverPeekPresented).toHaveBeenCalledWith(2, 196))
   })
 

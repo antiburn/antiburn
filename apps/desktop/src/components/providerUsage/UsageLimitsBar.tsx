@@ -49,8 +49,6 @@ export interface UsageLimitsBarProps {
   onViewAll: () => void
   /** Report provider hover for a passive companion preview. */
   onHoverProvider?: (provider: string | null, anchor: AnchorRegion | null) => void
-  /** Select one provider's companion preview without pinning it. */
-  onSelectProvider?: (provider: string, anchor: AnchorRegion) => void
   /** The provider trigger retained by the active companion lifecycle. */
   activeProvider?: {
     provider: string
@@ -84,7 +82,6 @@ export function UsageLimitsBar({
   refreshing,
   onViewAll,
   onHoverProvider,
-  onSelectProvider,
   activeProvider,
 }: UsageLimitsBarProps) {
   const limited = live.providers.filter((provider) => liveWindows(provider).length > 0)
@@ -121,7 +118,6 @@ export function UsageLimitsBar({
                 provider={provider}
                 onOpen={onViewAll}
                 onHover={onHoverProvider}
-                onSelect={onSelectProvider}
                 activation={
                   activeProvider?.provider === provider.provider
                     ? activeProvider.activation
@@ -300,13 +296,11 @@ function ProviderRadial({
   provider,
   onOpen,
   onHover,
-  onSelect,
   activation,
 }: {
   provider: LiveProviderUsagePayload
   onOpen?: (() => void) | undefined
   onHover?: ((provider: string | null, anchor: AnchorRegion | null) => void) | undefined
-  onSelect?: ((provider: string, anchor: AnchorRegion) => void) | undefined
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
   const percent = maxLiveUsedPercent(provider)
@@ -314,22 +308,12 @@ function ProviderRadial({
   return (
     <button
       type="button"
-      onClick={(event) => {
-        if (onSelect) {
-          onSelect(provider.provider, measureAnchorRegion(event.currentTarget))
-          return
-        }
-        onOpen?.()
-      }}
+      onClick={onOpen}
       onMouseEnter={(event) =>
         onHover?.(provider.provider, measureAnchorRegion(event.currentTarget))
       }
       onMouseLeave={() => onHover?.(null, null)}
-      onBlur={() => {
-        if (onSelect) onHover?.(null, null)
-      }}
       data-state={activation ?? "idle"}
-      aria-pressed={onSelect ? activation === "selected" : undefined}
       title={`${provider.displayName} — ${figure}`}
       className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08] data-[state=hovered]:bg-brand-tint/[0.08] data-[state=selected]:bg-surface-selected"
       aria-label={`${provider.displayName}${

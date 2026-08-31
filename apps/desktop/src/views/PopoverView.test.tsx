@@ -612,8 +612,8 @@ describe("PopoverView", () => {
       anchor: expect.any(Object),
       initialPresentation: {
         kind: "provider",
-        summary: expect.any(Object),
-        live: expect.any(Object),
+        summary: { ...PROVIDER_USAGE, providers: [] },
+        live: LIVE_USAGE,
       },
     })
   })
@@ -677,35 +677,16 @@ describe("PopoverView", () => {
     expect(screen.queryByText(/^v\d/)).toBeNull()
   })
 
-  it("retains click selection until the companion lifecycle clears it", async () => {
+  it("opens the full Usage view from a provider preview trigger", async () => {
     render(<PopoverView />)
 
     const trigger = await screen.findByRole("button", { name: "Codex at 40 percent" })
     fireEvent.mouseEnter(trigger)
     fireEvent.click(trigger)
 
-    expect(trigger).toHaveAttribute("data-state", "selected")
-    expect(trigger).toHaveAttribute("aria-pressed", "true")
-    expect(screen.queryByRole("heading", { name: "Usage" })).not.toBeInTheDocument()
-
-    fireEvent.mouseLeave(trigger)
+    expect(await screen.findByRole("heading", { name: "Usage" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Back to activity" })).toBeInTheDocument()
     expect(invoke).toHaveBeenCalledWith("hide_popover_peek")
-    expect(trigger).toHaveAttribute("data-state", "selected")
-
-    await waitFor(() => expect(listeners.get("anchored-window-state")).toHaveLength(1))
-    emit("anchored-window-state", {
-      companionLabel: "popover-peek",
-      state: {
-        generation: 2,
-        target: null,
-        rendererReady: true,
-        visible: false,
-        awaitingPresentation: false,
-        awaitingConcealment: true,
-      },
-    })
-    expect(trigger).toHaveAttribute("data-state", "idle")
-    expect(trigger).toHaveAttribute("aria-pressed", "false")
   })
 
   it("still shows a live-only pill on a fresh day with zero local spend anywhere", async () => {

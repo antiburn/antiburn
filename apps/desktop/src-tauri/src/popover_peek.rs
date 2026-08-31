@@ -86,6 +86,14 @@ fn validate_peek_caller(actual: &str) -> Result<(), String> {
     }
 }
 
+fn validate_state_caller(actual: &str) -> Result<(), String> {
+    if actual == LABEL || actual == crate::popover::LABEL {
+        Ok(())
+    } else {
+        Err(format!("{actual} cannot read {LABEL} state"))
+    }
+}
+
 #[tauri::command]
 pub fn show_popover_peek(
     window: tauri::WebviewWindow,
@@ -121,7 +129,7 @@ pub fn get_popover_peek_state(
     window: tauri::WebviewWindow,
     manager: tauri::State<'_, PopoverPeekManager>,
 ) -> Result<AnchoredWindowState<PopoverPeekTarget>, String> {
-    validate_peek_caller(window.label())?;
+    validate_state_caller(window.label())?;
     Ok(manager.state())
 }
 
@@ -247,14 +255,18 @@ pub fn popover_peek_concealed(
 }
 
 pub fn prewarm(app: &tauri::AppHandle) {
-    if let Some(manager) = app.try_state::<PopoverPeekManager>() {
-        let _ = manager.prewarm(app);
+    if let Some(manager) = app.try_state::<PopoverPeekManager>()
+        && let Err(error) = manager.prewarm(app)
+    {
+        ::tracing::warn!(event = "popover_peek_prewarm_failed", companion_label = LABEL, error = %error);
     }
 }
 
 pub fn conceal_now(app: &tauri::AppHandle) {
-    if let Some(manager) = app.try_state::<PopoverPeekManager>() {
-        let _ = manager.conceal_for_anchor_hide(app);
+    if let Some(manager) = app.try_state::<PopoverPeekManager>()
+        && let Err(error) = manager.conceal_for_anchor_hide(app)
+    {
+        ::tracing::warn!(event = "popover_peek_conceal_failed", companion_label = LABEL, error = %error);
     }
 }
 
@@ -309,6 +321,9 @@ mod tests {
         assert!(validate_peek_caller(LABEL).is_ok());
         assert!(validate_peek_caller("popover").is_err());
         assert!(validate_peek_caller("settings").is_err());
+        assert!(validate_state_caller(LABEL).is_ok());
+        assert!(validate_state_caller("popover").is_ok());
+        assert!(validate_state_caller("settings").is_err());
     }
 
     #[test]

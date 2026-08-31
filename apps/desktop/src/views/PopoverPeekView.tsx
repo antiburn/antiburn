@@ -5,7 +5,6 @@ import { Skeleton } from "../components/ui/Skeleton"
 import {
   popoverPeekConcealed,
   popoverPeekPresented,
-  popoverPeekReady,
   popoverPeekRetargetReady,
   type PopoverPeekTarget,
 } from "../lib/popoverPeekIpc"
@@ -18,13 +17,6 @@ import {
   type AnchoredPresentation,
 } from "./popover/AnchoredContentPresenter"
 import { UsageView } from "./popover/UsageView"
-
-function reportRendererReady(node: HTMLDivElement | null) {
-  const generation = window.__ANTIBURN_WINDOW_GENERATION__
-  if (node && typeof generation === "number" && Number.isSafeInteger(generation)) {
-    void popoverPeekReady(generation).catch(() => undefined)
-  }
-}
 
 function reportConcealed(generation: number) {
   return (node: HTMLSpanElement | null) => {
@@ -169,7 +161,7 @@ function presentedContent(
   snapshot: PopoverPeekSnapshot,
 ): AnchoredPresentation<PeekPayload> | null {
   const presented = snapshot.presented
-  if (!presented || presented.request.generation !== snapshot.requested.generation) return null
+  if (!presented) return null
   return {
     generation: presented.request.generation,
     value:
@@ -222,11 +214,11 @@ function PeekContent({
   const presented = presentedContent(snapshot)
   return (
     <AnchoredContentPresenter
-      key={request.generation}
+      key={request.initialPresentation ? request.generation : "retained"}
       requestedGeneration={request.generation}
       presented={presented}
       candidate={candidateContent(snapshot)}
-      coldLoading={presented == null}
+      coldLoading={snapshot.coldLoading}
       busy={snapshot.presented?.request.generation !== request.generation}
       loading={<PeekLoading target={request.target} />}
       renderContent={(payload) => <PeekPayloadContent payload={payload} />}
@@ -250,9 +242,10 @@ export function PopoverPeekView() {
     controller.getSnapshot,
     controller.getSnapshot,
   )
+  const commitRenderer = (node: HTMLDivElement | null) => controller.commitRenderer(node)
 
   return (
-    <div ref={reportRendererReady} className="h-full text-label">
+    <div ref={commitRenderer} className="h-full text-label">
       <PeekContent snapshot={snapshot} controller={controller} />
     </div>
   )

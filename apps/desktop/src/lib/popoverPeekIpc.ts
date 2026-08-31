@@ -73,6 +73,11 @@ export async function getPopoverPeekState(): Promise<PopoverPeekState> {
   return invoke<PopoverPeekState>("get_popover_peek_state")
 }
 
+/** Read the latest preview lifecycle from the popover that owns the anchor. */
+export async function getPopoverPeekAnchorState(): Promise<PopoverPeekState> {
+  return getPopoverPeekState()
+}
+
 /** Load the current target through the companion's restricted shell command. */
 export async function getPopoverPeekData(generation: number): Promise<PopoverPeekData> {
   if (!hasShell()) throw new Error("popover peek data requires the desktop shell")

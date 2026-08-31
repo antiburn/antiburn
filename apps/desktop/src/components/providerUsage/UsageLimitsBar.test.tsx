@@ -112,23 +112,14 @@ describe("UsageLimitsBar — the ring row", () => {
     expect(onViewAll).toHaveBeenCalledOnce()
   })
 
-  it("renders and reports a controlled companion selection", () => {
-    const onViewAll = vi.fn()
-    const onSelectProvider = vi.fn()
+  it("renders a controlled companion activation", () => {
     bar({
-      onViewAll,
-      onSelectProvider,
-      activeProvider: { provider: "anthropic", activation: "selected" },
+      activeProvider: { provider: "anthropic", activation: "hovered" },
     })
 
     const trigger = screen.getByRole("button", { name: "Claude at 42 percent" })
-    expect(trigger).toHaveAttribute("data-state", "selected")
-    expect(trigger).toHaveAttribute("aria-pressed", "true")
-    expect(trigger).toHaveClass("data-[state=selected]:bg-surface-selected")
-
-    fireEvent.click(trigger)
-    expect(onSelectProvider).toHaveBeenCalledWith("anthropic", expect.any(Object))
-    expect(onViewAll).not.toHaveBeenCalled()
+    expect(trigger).toHaveAttribute("data-state", "hovered")
+    expect(trigger).toHaveClass("data-[state=hovered]:bg-brand-tint/[0.08]")
   })
 
   it("says so rather than claiming zero when a provider states no figure", () => {

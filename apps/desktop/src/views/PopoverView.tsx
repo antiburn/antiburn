@@ -19,6 +19,7 @@ import {
   type ProviderUsageSummaryPayload,
 } from "../lib/ipc"
 import {
+  getPopoverPeekAnchorState,
   hidePopoverPeek,
   onPopoverPeekLifecycle,
   POPOVER_PEEK_LABEL,
@@ -52,7 +53,28 @@ function createPopoverPeekTriggers(): AnchoredTriggerController<
       showPopoverPeek(target, anchor, presentation ?? null),
     conceal: hidePopoverPeek,
     listen: onPopoverPeekLifecycle,
+    state: getPopoverPeekAnchorState,
   })
+}
+
+function selectedProviderPresentation(
+  presentation: PopoverPeekData | undefined,
+  provider: string,
+): PopoverPeekData | undefined {
+  if (!presentation) return undefined
+  return {
+    ...presentation,
+    summary: {
+      ...presentation.summary,
+      providers: presentation.summary.providers.filter((entry) => entry.provider === provider),
+    },
+    live: {
+      ...presentation.live,
+      providers: presentation.live.providers.filter((entry) => entry.provider === provider),
+      errors: presentation.live.errors.filter((entry) => entry.provider === provider),
+      meters: presentation.live.meters.filter((entry) => entry.provider === provider),
+    },
+  }
 }
 
 /**
@@ -386,22 +408,11 @@ export function PopoverView() {
                     utcOffsetMinutes: -new Date().getTimezoneOffset(),
                   },
                   anchor,
-                  peekPresentation,
+                  selectedProviderPresentation(peekPresentation, provider),
                 )
               } else {
                 void peekTriggers.leave()
               }
-            }}
-            onSelectProvider={(provider, anchor) => {
-              void peekTriggers.select(
-                {
-                  kind: "provider",
-                  provider,
-                  utcOffsetMinutes: -new Date().getTimezoneOffset(),
-                },
-                anchor,
-                peekPresentation,
-              )
             }}
             activeProvider={
               peekTrigger.target?.kind === "provider" && peekTrigger.activation !== "idle"

@@ -2,6 +2,7 @@ import {
   getPopoverPeekData,
   getPopoverPeekState,
   onPopoverPeekRequest,
+  popoverPeekReady,
   type PopoverPeekData,
   type PopoverPeekRequest,
   type PopoverPeekTarget,
@@ -34,12 +35,14 @@ interface PopoverPeekBridge {
   listen: typeof onPopoverPeekRequest
   state: typeof getPopoverPeekState
   data: typeof getPopoverPeekData
+  ready: typeof popoverPeekReady
 }
 
 const DEFAULT_BRIDGE: PopoverPeekBridge = {
   listen: onPopoverPeekRequest,
   state: getPopoverPeekState,
   data: getPopoverPeekData,
+  ready: popoverPeekReady,
 }
 
 const LISTENER_RETRY_MS = 250
@@ -70,6 +73,9 @@ export class PopoverPeekController {
   private startGeneration = 0
   private readonly bridge: PopoverPeekBridge
   private retryTimer: ReturnType<typeof setTimeout> | null = null
+  private readyRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private rendererGeneration: number | null = null
+  private readyGeneration: number | null = null
   private activeLoad: PopoverPeekActiveRequest | null = null
   private pendingLoad: PopoverPeekActiveRequest | null = null
 
@@ -78,6 +84,14 @@ export class PopoverPeekController {
   }
 
   getSnapshot = (): PopoverPeekSnapshot => this.snapshot
+
+  commitRenderer(node: HTMLDivElement | null): void {
+    if (!node) return
+    const generation = window.__ANTIBURN_WINDOW_GENERATION__
+    if (typeof generation !== "number" || !Number.isSafeInteger(generation)) return
+    this.rendererGeneration = generation
+    void this.reportReady(this.startGeneration)
+  }
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
@@ -88,6 +102,8 @@ export class PopoverPeekController {
         this.startGeneration += 1
         if (this.retryTimer != null) clearTimeout(this.retryTimer)
         this.retryTimer = null
+        if (this.readyRetryTimer != null) clearTimeout(this.readyRetryTimer)
+        this.readyRetryTimer = null
         this.stopListening?.()
         this.stopListening = null
       }
@@ -202,7 +218,33 @@ export class PopoverPeekController {
       return
     }
     this.stopListening = unlisten
+    void this.reportReady(startGeneration)
     await this.readState(startGeneration)
+  }
+
+  private async reportReady(startGeneration: number): Promise<void> {
+    const generation = this.rendererGeneration
+    if (
+      generation == null ||
+      this.readyGeneration === generation ||
+      startGeneration !== this.startGeneration ||
+      this.stopListening == null ||
+      this.listeners.size === 0
+    ) {
+      return
+    }
+    this.readyGeneration = generation
+    try {
+      await this.bridge.ready(generation)
+    } catch {
+      if (this.readyGeneration !== generation) return
+      this.readyGeneration = null
+      if (startGeneration !== this.startGeneration || this.listeners.size === 0) return
+      this.readyRetryTimer = setTimeout(() => {
+        this.readyRetryTimer = null
+        void this.reportReady(startGeneration)
+      }, LISTENER_RETRY_MS)
+    }
   }
 
   private async readState(startGeneration: number): Promise<void> {
