@@ -8,6 +8,7 @@ use super::PlatformDiscovery;
 
 const MACOS_CODE_DIRS: &[&str] = &[
     "dev",
+    "Developer",
     "Documents/GitHub",
     "src",
     "code",
