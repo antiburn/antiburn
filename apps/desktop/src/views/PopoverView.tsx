@@ -9,6 +9,7 @@ import { Skeleton } from "../components/ui/Skeleton"
 import { renderAgentIcon } from "../lib/agentIcon"
 import { indexOfSession } from "../lib/activityEntries"
 import { attentionBanners } from "../lib/attention"
+import { AnchoredTriggerController } from "../lib/anchoredTrigger"
 import {
   DEFAULT_SETTINGS,
   noteInteraction,
@@ -17,6 +18,14 @@ import {
   type LiveUsageSummaryPayload,
   type ProviderUsageSummaryPayload,
 } from "../lib/ipc"
+import {
+  hidePopoverPeek,
+  onPopoverPeekLifecycle,
+  POPOVER_PEEK_LABEL,
+  showPopoverPeek,
+  type PopoverPeekData,
+  type PopoverPeekTarget,
+} from "../lib/popoverPeekIpc"
 import type { PopoverSurface } from "../lib/popoverHeight"
 import { PopoverSession, sessionKey } from "./popover/PopoverSession"
 import { foldUsageChart } from "./popover/usageChartFold"
@@ -29,6 +38,22 @@ import type { SessionSubject } from "./popover/SessionPane"
 const SessionPane = lazy(() =>
   import("./popover/SessionPane").then(({ SessionPane: pane }) => ({ default: pane })),
 )
+
+function samePopoverPeekTarget(left: PopoverPeekTarget, right: PopoverPeekTarget): boolean {
+  return left.provider === right.provider && left.utcOffsetMinutes === right.utcOffsetMinutes
+}
+
+function createPopoverPeekTriggers(): AnchoredTriggerController<
+  PopoverPeekTarget,
+  PopoverPeekData
+> {
+  return new AnchoredTriggerController(POPOVER_PEEK_LABEL, samePopoverPeekTarget, {
+    request: (target, anchor, presentation) =>
+      showPopoverPeek(target, anchor, presentation ?? null),
+    conceal: hidePopoverPeek,
+    listen: onPopoverPeekLifecycle,
+  })
+}
 
 /**
  * The tray popover.
@@ -156,11 +181,20 @@ function PopoverFooter({
 
 export function PopoverView() {
   const [session] = useState(() => new PopoverSession())
+  const [peekTriggers] = useState(createPopoverPeekTriggers)
   const state = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
     session.getSnapshot,
   )
+  const peekTrigger = useSyncExternalStore(
+    peekTriggers.subscribe,
+    peekTriggers.getSnapshot,
+    peekTriggers.getSnapshot,
+  )
+  const peekPresentation: PopoverPeekData | undefined = state.usage
+    ? { kind: "provider", summary: state.usage, live: state.liveUsage }
+    : undefined
 
   const current = state.presentedSession
   const windowDays = state.settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays
@@ -332,6 +366,7 @@ export function PopoverView() {
             onToggleExpanded={() => session.setOverviewLimitsExpanded(!limitsExpanded)}
             refreshing={state.usageRefreshing}
             onViewAll={() => {
+              void hidePopoverPeek().catch(() => undefined)
               // A provider pill is the one place the reader asks for the full
               // Usage view from the activity surface. Counts and a three-value
               // evidence label, never a per-provider list.
@@ -342,6 +377,40 @@ export function PopoverView() {
               })
               session.setShowUsage(true)
             }}
+            onHoverProvider={(provider, anchor) => {
+              if (provider && anchor) {
+                void peekTriggers.hover(
+                  {
+                    kind: "provider",
+                    provider,
+                    utcOffsetMinutes: -new Date().getTimezoneOffset(),
+                  },
+                  anchor,
+                  peekPresentation,
+                )
+              } else {
+                void peekTriggers.leave()
+              }
+            }}
+            onSelectProvider={(provider, anchor) => {
+              void peekTriggers.select(
+                {
+                  kind: "provider",
+                  provider,
+                  utcOffsetMinutes: -new Date().getTimezoneOffset(),
+                },
+                anchor,
+                peekPresentation,
+              )
+            }}
+            activeProvider={
+              peekTrigger.target?.kind === "provider" && peekTrigger.activation !== "idle"
+                ? {
+                    provider: peekTrigger.target.provider,
+                    activation: peekTrigger.activation,
+                  }
+                : null
+            }
           />
         </div>
 
@@ -354,6 +423,7 @@ export function PopoverView() {
               days={windowDays}
               onOpenSession={(entry) => {
                 if (!entry.sessionId) return
+                void hidePopoverPeek().catch(() => undefined)
                 // The card click, not the traversal inside a session — the
                 // question is how often the list leads anywhere, and the
                 // newer/older arrows would drown that out. Instrumented here

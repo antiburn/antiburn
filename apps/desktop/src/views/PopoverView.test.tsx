@@ -247,6 +247,11 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve(HEALTHY_STORAGE)
       case "set_popover_height":
         return Promise.resolve(true)
+      case "show_popover_peek":
+        return Promise.resolve({
+          generation: 1,
+          target: (args as { target: unknown }).target,
+        })
       default:
         return Promise.resolve(null)
     }
@@ -507,25 +512,6 @@ describe("PopoverView", () => {
     ])
   })
 
-  it("notes an opened usage view with a bucketable count and what it could show", async () => {
-    render(<PopoverView />)
-
-    // A provider pill on the limits bar opens the Usage view. The pill is the
-    // fixture's Codex because the bar uses providers that report live windows.
-    fireEvent.click(await screen.findByRole("button", { name: /codex/i }))
-
-    // `live`, and it cannot currently be anything else. The bar returns null
-    // unless some provider reports live windows, and it holds the only route
-    // to the Usage view — so `usageEvidence`'s other two values are
-    // unreachable from the sole call site. The field is kept as it is rather
-    // than narrowed here, because which way to close that gap — re-siting the
-    // event, adding a second entry point, or dropping the distinction — is a
-    // product decision and not this merge's to make.
-    expect(invoke).toHaveBeenCalledWith("note_interaction", {
-      interaction: { kind: "usageViewed", providers: 1, evidence: "live" },
-    })
-  })
-
   it("warns before an export and only writes once a destination is chosen", async () => {
     confirmDialog.mockResolvedValue(true)
     saveDialog.mockResolvedValue("/home/avery/Desktop/antiburn-session.json")
@@ -611,6 +597,27 @@ describe("PopoverView", () => {
     expect(screen.getByRole("button", { name: "Codex at 40 percent" })).toBeInTheDocument()
   })
 
+  it("requests a provider preview directly on pointer entry", async () => {
+    render(<PopoverView />)
+
+    const trigger = await screen.findByRole("button", { name: "Codex at 40 percent" })
+    fireEvent.mouseEnter(trigger)
+    expect(trigger).toHaveAttribute("data-state", "hovered")
+    expect(invoke).toHaveBeenCalledWith("show_popover_peek", {
+      target: {
+        kind: "provider",
+        provider: "openai",
+        utcOffsetMinutes: -new Date().getTimezoneOffset(),
+      },
+      anchor: expect.any(Object),
+      initialPresentation: {
+        kind: "provider",
+        summary: expect.any(Object),
+        live: expect.any(Object),
+      },
+    })
+  })
+
   it("shows cached limits and sessions while the provider refresh is still running", async () => {
     let finishRefresh: (() => void) | null = null
     const baseInvoke = invoke.getMockImplementation()!
@@ -670,16 +677,35 @@ describe("PopoverView", () => {
     expect(screen.queryByText(/^v\d/)).toBeNull()
   })
 
-  it("opens the full usage view from a provider pill and comes back", async () => {
+  it("retains click selection until the companion lifecycle clears it", async () => {
     render(<PopoverView />)
 
-    fireEvent.click(await screen.findByRole("button", { name: "Codex at 40 percent" }))
+    const trigger = await screen.findByRole("button", { name: "Codex at 40 percent" })
+    fireEvent.mouseEnter(trigger)
+    fireEvent.click(trigger)
 
-    expect(await screen.findByRole("heading", { name: "Usage" })).toBeInTheDocument()
-    expect(screen.queryByText("Wire the tray popover")).not.toBeInTheDocument()
+    expect(trigger).toHaveAttribute("data-state", "selected")
+    expect(trigger).toHaveAttribute("aria-pressed", "true")
+    expect(screen.queryByRole("heading", { name: "Usage" })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("button", { name: "Back to activity" }))
-    expect(await screen.findByText("Wire the tray popover")).toBeInTheDocument()
+    fireEvent.mouseLeave(trigger)
+    expect(invoke).toHaveBeenCalledWith("hide_popover_peek")
+    expect(trigger).toHaveAttribute("data-state", "selected")
+
+    await waitFor(() => expect(listeners.get("anchored-window-state")).toHaveLength(1))
+    emit("anchored-window-state", {
+      companionLabel: "popover-peek",
+      state: {
+        generation: 2,
+        target: null,
+        rendererReady: true,
+        visible: false,
+        awaitingPresentation: false,
+        awaitingConcealment: true,
+      },
+    })
+    expect(trigger).toHaveAttribute("data-state", "idle")
+    expect(trigger).toHaveAttribute("aria-pressed", "false")
   })
 
   it("still shows a live-only pill on a fresh day with zero local spend anywhere", async () => {
@@ -989,7 +1015,7 @@ describe("PopoverView — window behaviour", () => {
     mockCommands()
   })
 
-  it("asks the shell for each surface height, bounded at the contract ceiling", async () => {
+  it("asks the shell for each active surface height within the contract ceiling", async () => {
     render(<PopoverView />)
     await screen.findByText("Wire the tray popover")
 
@@ -1000,16 +1026,14 @@ describe("PopoverView — window behaviour", () => {
       }),
     )
 
-    fireEvent.click(await screen.findByRole("button", { name: "Codex at 40 percent" }))
+    fireEvent.click(await screen.findByText("Wire the tray popover"))
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("set_popover_height", {
-        height: 780,
+        height: 700,
         animate: true,
       }),
     )
 
-    // Nothing exceeds the ceiling, which is above the default 700 for the
-    // Usage surface alone. The shell clamps to the same number.
     const heights = invoke.mock.calls
       .filter(([command]) => command === "set_popover_height")
       .map(([, args]) => (args as { height: number }).height)
@@ -1069,22 +1093,16 @@ describe("PopoverView — window behaviour", () => {
     )
   })
 
-  // The activity surface no longer opens a provider panel: a pill on the
-  // limits bar goes straight to the Usage view. `PopoverSession` still gives
-  // a surface the chance to claim Escape through `defaultPrevented`, but no
-  // popover surface takes it today, so there is nothing left here to drive
-  // that path. The test that did drive it is deleted rather than weakened.
-
   it("moves focus to the heading of the surface that takes over", async () => {
     render(<PopoverView />)
 
     const activity = await screen.findByRole("button", { name: "antiburn v0.1.0 debug" })
     await waitFor(() => expect(activity).toHaveFocus())
 
-    fireEvent.click(await screen.findByRole("button", { name: "Codex at 40 percent" }))
+    fireEvent.click(await screen.findByText("Wire the tray popover"))
 
-    const usage = await screen.findByRole("heading", { name: "Usage" })
-    await waitFor(() => expect(usage).toHaveFocus())
+    const detail = await screen.findByRole("heading", { name: "Session Detail" })
+    await waitFor(() => expect(detail).toHaveFocus())
   })
 })
 

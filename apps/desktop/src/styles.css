@@ -63,8 +63,8 @@ body {
 }
 
 /*
- * The macOS popover window is the exception. It carries the Popover material
- * (src-tauri/src/popover.rs), and the material shows the desktop through it.
+ * The macOS popover windows are the exception. They carry the Popover material,
+ * and the material shows the desktop through them.
  * A window surface does not belong on top of that: `bg-window` is a flat grey,
  * and over the material it reads as a slab with a hard edge.
  *
@@ -85,10 +85,29 @@ body {
  * so on every other platform the popover is an ordinary opaque square window
  * that still needs its surface painted and must not be rounded.
  */
-:root[data-platform="macos"][data-route="popover"] #root {
+:root[data-platform="macos"][data-route="popover"] #root,
+:root[data-platform="macos"][data-route="popover-peek"] #root {
   background-color: var(--color-bg-primary);
   border-radius: var(--radius-popover);
   overflow: hidden;
+}
+
+/*
+ * The source views fill the main popover. The anchored wrappers let those
+ * unchanged views report their natural height to the companion manager.
+ */
+[data-popover-peek-usage] > div {
+  height: auto;
+}
+
+/* The companion replaces the long footer with a one-line context note. */
+[data-popover-peek-usage] > div > footer {
+  display: none;
+}
+
+[data-popover-peek-usage] .ui-scroll-viewport {
+  height: auto;
+  overflow: visible !important;
 }
 
 /*

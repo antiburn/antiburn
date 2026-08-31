@@ -72,7 +72,10 @@ pub fn engine_catalog_version() -> &'static str {
 #[tauri::command]
 pub fn window_ready(window: tauri::WebviewWindow, generation: u64) {
     match window.label() {
-        crate::popover::LABEL => crate::popover::renderer_ready(&window, generation),
+        crate::popover::LABEL => {
+            crate::popover::renderer_ready(&window, generation);
+            crate::popover_peek::prewarm(window.app_handle());
+        }
         crate::settings::LABEL => crate::settings::renderer_ready(&window, generation),
         crate::onboarding::LABEL => crate::onboarding::renderer_ready(&window, generation),
         label => {
@@ -740,6 +743,13 @@ pub fn get_provider_usage(
     app: tauri::AppHandle,
     utc_offset_minutes: Option<i32>,
 ) -> CommandResult<ProviderUsageSummary> {
+    provider_usage_summary(&app, utc_offset_minutes)
+}
+
+pub(crate) fn provider_usage_summary(
+    app: &tauri::AppHandle,
+    utc_offset_minutes: Option<i32>,
+) -> CommandResult<ProviderUsageSummary> {
     let now = scan::unix_now();
     let offset = utc_offset_minutes.unwrap_or(0);
     let since = provider_usage::lookback_start(now, offset);
@@ -776,6 +786,10 @@ pub fn get_live_usage(
     app: tauri::AppHandle,
     _utc_offset_minutes: Option<i32>,
 ) -> CommandResult<LiveUsageSummary> {
+    Ok(cached_live_usage(&app))
+}
+
+pub(crate) fn cached_live_usage(app: &tauri::AppHandle) -> LiveUsageSummary {
     let settings = app
         .try_state::<Store>()
         .and_then(|store| store.settings().ok());
@@ -790,14 +804,14 @@ pub fn get_live_usage(
         let hidden = settings
             .map(|settings| settings.live_usage_hidden_providers)
             .unwrap_or_default();
-        return Ok(LiveUsageSummary {
+        return LiveUsageSummary {
             meters: live
                 .map(|live| provider_usage::live::roster(&live.sources, &hidden))
                 .unwrap_or_default(),
             ..LiveUsageSummary::default()
-        });
+        };
     }
-    Ok(live.map(|live| live.snapshot()).unwrap_or_default())
+    live.map(|live| live.snapshot()).unwrap_or_default()
 }
 
 /// Refresh the provider's own limit figures and publish the new snapshot.

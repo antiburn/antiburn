@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-scan-roots"
+description = "Enables the list_scan_roots command without any pre-configured scope."
+commands.allow = ["list_scan_roots"]
+
+[[permission]]
+identifier = "deny-list-scan-roots"
+description = "Denies the list_scan_roots command without any pre-configured scope."
+commands.deny = ["list_scan_roots"]

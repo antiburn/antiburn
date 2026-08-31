@@ -144,11 +144,12 @@ describe("UsageView", () => {
     expect(within(card!).getByText(/Easing · <0\.1×/)).toBeInTheDocument()
   })
 
-  it("explains how local spend estimates are calculated", () => {
+  it("explains local spend and provider limits", () => {
     render(<UsageView summary={summary()} onBack={vi.fn()} />)
 
-    expect(screen.getByText(/window of its most recent activity/)).toBeInTheDocument()
-    expect(screen.getByText(/Not a bill/)).toBeInTheDocument()
+    expect(
+      screen.getByText("Local spend is estimated; plan limits come from your provider."),
+    ).toBeInTheDocument()
   })
 
   it("is honest when there is nothing to show", () => {
@@ -453,11 +454,12 @@ describe("UsageView — plan limits layered over local estimates", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/sign in again/i)
   })
 
-  it("separates the two halves in the footer, so neither claim covers the other", () => {
+  it("shows the usage disclaimer in the footer", () => {
     render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />)
 
-    expect(screen.getByText(/Spend figures are local estimates/)).toBeInTheDocument()
-    expect(screen.getByText(/Plan limits are your provider.s own figures/)).toBeInTheDocument()
+    expect(
+      screen.getByText("Local spend is estimated; plan limits come from your provider."),
+    ).toBeInTheDocument()
   })
 })
 

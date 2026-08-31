@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-settings-window"
+description = "Enables the open_settings_window command without any pre-configured scope."
+commands.allow = ["open_settings_window"]
+
+[[permission]]
+identifier = "deny-open-settings-window"
+description = "Denies the open_settings_window command without any pre-configured scope."
+commands.deny = ["open_settings_window"]

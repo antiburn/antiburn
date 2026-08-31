@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-show-popover-peek"
+description = "Enables the show_popover_peek command without any pre-configured scope."
+commands.allow = ["show_popover_peek"]
+
+[[permission]]
+identifier = "deny-show-popover-peek"
+description = "Denies the show_popover_peek command without any pre-configured scope."
+commands.deny = ["show_popover_peek"]

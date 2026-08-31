@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-popover-peek-retarget-ready"
+description = "Enables the popover_peek_retarget_ready command without any pre-configured scope."
+commands.allow = ["popover_peek_retarget_ready"]
+
+[[permission]]
+identifier = "deny-popover-peek-retarget-ready"
+description = "Denies the popover_peek_retarget_ready command without any pre-configured scope."
+commands.deny = ["popover_peek_retarget_ready"]

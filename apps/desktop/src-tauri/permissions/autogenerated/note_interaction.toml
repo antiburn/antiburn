@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-note-interaction"
+description = "Enables the note_interaction command without any pre-configured scope."
+commands.allow = ["note_interaction"]
+
+[[permission]]
+identifier = "deny-note-interaction"
+description = "Denies the note_interaction command without any pre-configured scope."
+commands.deny = ["note_interaction"]

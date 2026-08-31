@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-repository-enabled"
+description = "Enables the set_repository_enabled command without any pre-configured scope."
+commands.allow = ["set_repository_enabled"]
+
+[[permission]]
+identifier = "deny-set-repository-enabled"
+description = "Denies the set_repository_enabled command without any pre-configured scope."
+commands.deny = ["set_repository_enabled"]

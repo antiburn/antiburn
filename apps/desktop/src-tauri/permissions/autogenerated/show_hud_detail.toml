@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-show-hud-detail"
+description = "Enables the show_hud_detail command without any pre-configured scope."
+commands.allow = ["show_hud_detail"]
+
+[[permission]]
+identifier = "deny-show-hud-detail"
+description = "Denies the show_hud_detail command without any pre-configured scope."
+commands.deny = ["show_hud_detail"]

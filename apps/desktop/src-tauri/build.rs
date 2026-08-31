@@ -1,3 +1,12 @@
+include!("src/app_commands.rs");
+
+macro_rules! command_names {
+    ($( $handler:path => $name:literal, )*) => {
+        &[$($name),*]
+    };
+}
+
+const APP_COMMANDS: &[&str] = with_app_commands!(command_names);
 fn main() {
     // `analytics::config` reads these with `option_env!`, which is
     // resolved at compile time. Cargo does not track an environment variable
@@ -8,5 +17,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=ANTIBURN_ANALYTICS_URL");
     println!("cargo:rerun-if-env-changed=ANTIBURN_ANALYTICS_OPERATOR");
     println!("cargo:rerun-if-env-changed=ANTIBURN_ANALYTICS_ENABLED");
-    tauri_build::build();
+    let attributes = tauri_build::Attributes::new()
+        .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS));
+    tauri_build::try_build(attributes).expect("failed to build the Tauri application");
 }

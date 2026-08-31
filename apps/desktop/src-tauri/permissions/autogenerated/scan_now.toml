@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-scan-now"
+description = "Enables the scan_now command without any pre-configured scope."
+commands.allow = ["scan_now"]
+
+[[permission]]
+identifier = "deny-scan-now"
+description = "Denies the scan_now command without any pre-configured scope."
+commands.deny = ["scan_now"]

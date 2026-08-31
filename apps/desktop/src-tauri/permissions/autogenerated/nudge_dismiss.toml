@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nudge-dismiss"
+description = "Enables the nudge_dismiss command without any pre-configured scope."
+commands.allow = ["nudge_dismiss"]
+
+[[permission]]
+identifier = "deny-nudge-dismiss"
+description = "Denies the nudge_dismiss command without any pre-configured scope."
+commands.deny = ["nudge_dismiss"]

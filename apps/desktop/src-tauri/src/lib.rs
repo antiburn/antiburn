@@ -66,6 +66,7 @@ mod notifications;
 mod nudges;
 mod onboarding;
 mod popover;
+mod popover_peek;
 mod provider_usage;
 mod repositories;
 mod retention;
@@ -87,6 +88,8 @@ mod webview_defaults;
 mod window_lifecycle;
 mod window_placement;
 mod window_readiness;
+
+include!("app_commands.rs");
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -134,6 +137,12 @@ impl Schedulers {
 /// created. None has a meaningful degraded mode. The shell opens onboarding
 /// when required. Other windows load when the first interaction requests them.
 pub fn run() {
+    macro_rules! command_handlers {
+        ($( $handler:path => $name:literal, )*) => {
+            tauri::generate_handler![$($handler),*]
+        };
+    }
+
     let log_directory_name = if cfg!(debug_assertions) {
         "antiburn-debug"
     } else {
@@ -153,82 +162,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(webview_defaults::plugin())
-        .invoke_handler(tauri::generate_handler![
-            commands::add_scan_root,
-            commands::app_info,
-            commands::begin_popover_hold,
-            commands::cancel_scan,
-            commands::check_for_updates,
-            commands::clear_local_index,
-            commands::default_scan_roots,
-            commands::delete_session_data,
-            commands::engine_catalog_version,
-            commands::end_popover_hold,
-            commands::export_session,
-            commands::get_provider_usage,
-            commands::get_live_usage,
-            commands::get_latest_session_activity,
-            commands::refresh_live_usage,
-            commands::get_scan_status,
-            commands::get_insights_report,
-            commands::get_hygiene_summary,
-            commands::get_insights_status,
-            commands::get_session_hygiene,
-            commands::cancel_insights_report,
-            commands::get_folder_permissions,
-            commands::request_folder_access,
-            commands::restart_onboarding,
-            commands::open_folder_access_settings,
-            commands::open_github_repo,
-            commands::open_analytics_documentation,
-            commands::open_privacy_policy,
-            commands::open_overlay_window,
-            commands::hide_overlay_window,
-            commands::record_hud_position,
-            commands::install_update,
-            commands::show_hud_detail,
-            commands::hide_hud_detail,
-            commands::conceal_hud_detail,
-            commands::get_hud_detail_state,
-            commands::set_hud_detail_size,
-            commands::get_consent_diagnostics,
-            commands::recheck_folder_permissions,
-            commands::restart_to_update,
-            commands::get_session_analysis,
-            commands::get_session_analysis_fingerprint,
-            commands::get_settings,
-            commands::get_storage_health,
-            commands::get_subagent_analysis,
-            commands::get_update_status,
-            commands::hide_popover,
-            commands::finish_onboarding,
-            commands::note_interaction,
-            commands::list_recent_sessions,
-            commands::list_repositories,
-            commands::list_scan_roots,
-            commands::open_settings_window,
-            commands::popover_content_ready,
-            commands::post_test_notification,
-            commands::post_sample_notification,
-            commands::quit_app,
-            commands::refresh_repositories,
-            commands::remove_scan_root,
-            commands::reveal_source,
-            commands::scan_now,
-            commands::set_popover_height,
-            commands::resize_overlay_window,
-            commands::set_repository_enabled,
-            commands::set_settings,
-            commands::start_update_simulation,
-            commands::take_settings_pane,
-            commands::window_ready,
-            antiburn_nudge::commands::nudge_action,
-            antiburn_nudge::commands::nudge_dismiss,
-            antiburn_nudge::commands::nudge_ready,
-            antiburn_nudge::commands::nudge_resize,
-            antiburn_nudge::commands::nudge_reveal,
-            antiburn_nudge::commands::nudge_set_hovered,
-        ])
+        .invoke_handler(with_app_commands!(command_handlers))
         .on_window_event(on_window_event)
         .setup(|app| {
             // A menu-bar app owns no Dock icon and no application menu. The
@@ -272,6 +206,7 @@ pub fn run() {
             app.manage(scan::ScanController::default());
             app.manage(Schedulers::default());
             app.manage(popover::PopoverState::default());
+            app.manage(popover_peek::manager());
             app.manage(updates::UpdaterState::default());
             app.manage(notifications::NotificationState::default());
             app.manage(storage_health::StorageHealth::default());
@@ -281,6 +216,9 @@ pub fn run() {
             app.manage(WindowRebuildState::default());
             app.manage(nudges::AnchorOverride::default());
             app.manage(antiburn_nudge::NotificationGate::default());
+
+            // Build the resident placeholder before any hover can request it.
+            popover_peek::prewarm(app.handle());
 
             tray::create(app.handle())?;
             // After the tray, and on the main thread: the monitor reaches the
@@ -532,6 +470,20 @@ fn defer_rebuild_after_destroy(app: &tauri::AppHandle, window: ManagedWindow) {
 
 /// Window policy shared by every window the shell creates.
 fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
+    if let Some(manager) = window
+        .app_handle()
+        .try_state::<popover_peek::PopoverPeekManager>()
+    {
+        manager.handle_anchor_event(window, event);
+        if window.label() == popover_peek::LABEL && matches!(event, WindowEvent::Destroyed) {
+            manager.handle_companion_destroyed();
+            let app = window.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::task::yield_now().await;
+                popover_peek::prewarm(&app);
+            });
+        }
+    }
     match event {
         // A popover is dismissed by looking away from it. Anything else that
         // takes focus — another app, the settings window — closes it.

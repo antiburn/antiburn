@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-post-test-notification"
+description = "Enables the post_test_notification command without any pre-configured scope."
+commands.allow = ["post_test_notification"]
+
+[[permission]]
+identifier = "deny-post-test-notification"
+description = "Denies the post_test_notification command without any pre-configured scope."
+commands.deny = ["post_test_notification"]

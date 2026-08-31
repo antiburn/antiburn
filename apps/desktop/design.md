@@ -214,6 +214,7 @@ motion:
   switch: "180ms ease-out track + thumb"
   progress-pulse: "1.5s loop"
   segmented-indicator: "120ms ease-out slide; reduced motion swaps to a 60ms per-segment crossfade"
+  anchored-content: "100ms opacity-only crossfade after native geometry commits; reduced motion uses 60ms"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
 components:
   button-secondary:
@@ -324,11 +325,11 @@ Notes for what isn't expressible as a token:
   the arrow cursor by default. A full-row disclosure can use `cursor-pointer!` as a click affordance.
 - **Motion** — `prefers-reduced-motion: reduce` clamps every animation and transition globally
   (`src/styles/motion.css`). A surface that still needs a hint of movement re-states a short
-  duration there, with the reason; today the only such exception is the segmented control's
-  reduced-motion fill, which crossfades over 60ms instead of swapping instantly. An ambient loop
-  stops instead of shortening: no duration makes a loop acceptable, so the activity-row title
-  shimmer in `src/styles/session-rows.css` sets `animation: none` and keeps its resting
-  meaning — the title paints as plain primary text.
+  duration there, with the reason. The segmented control's reduced-motion fill and the anchored
+  content presenter's opacity-only handoff crossfade over 60ms instead of swapping instantly. An
+  ambient loop stops instead of shortening: no duration makes a loop acceptable, so the
+  activity-row title shimmer in `src/styles/session-rows.css` sets `animation: none` and keeps its
+  resting meaning — the title paints as plain primary text.
 - **State** — style the headless control primitives via `[data-state]` / `[data-highlighted]`, not
   `:hover`.
 - **Scroll edges** — use the shared `ScrollPane` `topEdgeFade` prop when scrolling content needs to
