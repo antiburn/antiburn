@@ -643,6 +643,55 @@ fn cache_detail_analysis(
         && analysis_changed(previous.as_ref(), record)
 }
 
+/// Requeues one session's evidence row and wakes the durable worker, so a
+/// gap the drilldown just found (rows not ready, or ready but stale) closes
+/// on its own without the caller waiting on it. Errors are swallowed: this
+/// is a best-effort nudge, not a step the drilldown's own response depends
+/// on — the worker's next pass either way is what actually closes the gap.
+fn requeue_and_wake_worker(app: &tauri::AppHandle, store: &Store, key: &SessionKey) {
+    let _ = store.requeue_session_evidence(key);
+    crate::insights_worker::wake(app);
+}
+
+/// Nudges the worker when the analysis this pass just served from rows was
+/// published against a transcript that has since changed.
+///
+/// Reuses [`analysis::fingerprint_with_subagents`] — the same cheap
+/// `mtime:size` check `get_session_analysis_fingerprint` computes for the
+/// webview's own 10s poll — so a fingerprint mismatch found here is exactly
+/// the mismatch that poll will see next, and the requeue this triggers
+/// covers the gap before then. Does nothing (and requeues nothing) when the
+/// stored and live fingerprints already agree.
+async fn nudge_if_evidence_stale(
+    app: &tauri::AppHandle,
+    store: &Store,
+    kind: AgentKind,
+    key: &SessionKey,
+    session_id: &str,
+    wsl_distro: Option<&str>,
+) {
+    let Some(source) = analysis::locate(kind, session_id, wsl_distro).await else {
+        return;
+    };
+    let live_fingerprint =
+        analysis::fingerprint_with_subagents(kind, session_id, wsl_distro, &source).await;
+    let stored_fingerprint = store
+        .analysis(key)
+        .ok()
+        .flatten()
+        .map(|record| record.source_fingerprint);
+    if evidence_is_stale(stored_fingerprint.as_deref(), &live_fingerprint) {
+        requeue_and_wake_worker(app, store, key);
+    }
+}
+
+/// Whether the stored analysis's own fingerprint no longer matches the
+/// transcript's live one — split out from [`nudge_if_evidence_stale`] so the
+/// comparison itself is testable without a located source or an app handle.
+fn evidence_is_stale(stored_fingerprint: Option<&str>, live_fingerprint: &str) -> bool {
+    stored_fingerprint != Some(live_fingerprint)
+}
+
 fn cache_detail_relations(store: &Store, key: &SessionKey, members: &[RelationRecord]) -> bool {
     if crate::agents::evidence_cohort().contains(&key.agent.as_str()) {
         return false;
@@ -834,14 +883,47 @@ pub async fn get_session_analysis(
             generation: 0,
         });
 
-    let analysis = analysis::analyze(
-        kind,
-        &session_id,
-        wsl_distro.as_deref(),
-        claimed,
-        analysis::CancelFlag::never(),
-    )
-    .await;
+    // Rows first, for an evidence-cohort agent: the drilldown serves the
+    // worker's last published pass instead of re-parsing the transcript
+    // inline. A fresh transcript replays cheaply; a missing or not-ready
+    // row set falls back to the live parse exactly as before, and nudges
+    // the worker so the gap closes for next time.
+    let analysis = if crate::agents::evidence_cohort().contains(&agent.as_str()) {
+        match analysis::analysis_from_rows(&store, &key, &session_id, &agent) {
+            Some(replayed) => {
+                nudge_if_evidence_stale(
+                    &app,
+                    &store,
+                    kind,
+                    &key,
+                    &session_id,
+                    wsl_distro.as_deref(),
+                )
+                .await;
+                replayed
+            }
+            None => {
+                requeue_and_wake_worker(&app, &store, &key);
+                analysis::analyze(
+                    kind,
+                    &session_id,
+                    wsl_distro.as_deref(),
+                    claimed,
+                    analysis::CancelFlag::never(),
+                )
+                .await
+            }
+        }
+    } else {
+        analysis::analyze(
+            kind,
+            &session_id,
+            wsl_distro.as_deref(),
+            claimed,
+            analysis::CancelFlag::never(),
+        )
+        .await
+    };
     let relations = resolve_lineage(&app, kind, &key, wsl_distro.as_deref()).await;
 
     let stored = store.session(&key).ok().flatten();
@@ -935,15 +1017,39 @@ pub async fn get_subagent_analysis(
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
-    let _ = &app;
-    let analysis = analysis::analyze_subagent(
-        kind,
-        &parent_session_id,
-        &subagent_id,
-        wsl_distro.as_deref(),
-        analysis::CancelFlag::never(),
-    )
-    .await;
+    let analysis = if crate::agents::evidence_cohort().contains(&agent.as_str()) {
+        let store = app.state::<Store>();
+        let parent_key = SessionKey::for_session(&agent, &parent_session_id, wsl_distro.as_deref());
+        match analysis::subagent_analysis_from_rows(
+            &store,
+            &parent_key,
+            &parent_session_id,
+            &subagent_id,
+            &agent,
+        ) {
+            Some(replayed) => replayed,
+            None => {
+                requeue_and_wake_worker(&app, &store, &parent_key);
+                analysis::analyze_subagent(
+                    kind,
+                    &parent_session_id,
+                    &subagent_id,
+                    wsl_distro.as_deref(),
+                    analysis::CancelFlag::never(),
+                )
+                .await
+            }
+        }
+    } else {
+        analysis::analyze_subagent(
+            kind,
+            &parent_session_id,
+            &subagent_id,
+            wsl_distro.as_deref(),
+            analysis::CancelFlag::never(),
+        )
+        .await
+    };
     Ok(SessionAnalysis {
         summary: analysis.summary.clone(),
         supports_analysis: analysis::analysis_supported(kind),
@@ -1889,6 +1995,7 @@ mod tests {
             model_breakdown_json: model_breakdown_json.into(),
             inclusive_models_json: inclusive_models_json.into(),
             initial_context_json: None,
+            source_summaries_json: None,
             source_fingerprint: "fingerprint".into(),
             pricing_generation: 1,
             analyzed_generation: 1,
@@ -1963,6 +2070,7 @@ mod tests {
             model_breakdown_json: r#"{"sentinel":{}}"#.into(),
             inclusive_models_json: "[]".into(),
             initial_context_json: None,
+            source_summaries_json: None,
             source_fingerprint: "sv1:sentinel".into(),
             pricing_generation: 1,
             analyzed_generation: 0,
@@ -2008,6 +2116,7 @@ mod tests {
             model_breakdown_json: r#"{"codex":{}}"#.into(),
             inclusive_models_json: "[]".into(),
             initial_context_json: None,
+            source_summaries_json: None,
             source_fingerprint: "sv1:codex-detail".into(),
             pricing_generation: 1,
             analyzed_generation: 1,
@@ -2023,6 +2132,21 @@ mod tests {
         ));
         assert_eq!(store.analysis(&codex.key).unwrap(), None);
         assert!(store.relations(&codex.key).unwrap().is_empty());
+    }
+
+    #[test]
+    fn matching_fingerprints_are_not_stale() {
+        assert!(!evidence_is_stale(Some("sv1:a"), "sv1:a"));
+    }
+
+    #[test]
+    fn a_changed_fingerprint_is_stale() {
+        assert!(evidence_is_stale(Some("sv1:a"), "sv1:b"));
+    }
+
+    #[test]
+    fn no_stored_fingerprint_is_stale() {
+        assert!(evidence_is_stale(None, "sv1:a"));
     }
 
     #[test]

@@ -1649,6 +1649,7 @@ mod tests {
             model_breakdown_json: r#"{"cached":true}"#.to_string(),
             inclusive_models_json: "[]".to_string(),
             initial_context_json: None,
+            source_summaries_json: None,
             source_fingerprint: legacy_fingerprint.clone(),
             pricing_generation: antiburn_local::analysis::pricing_generation() as i64,
             analyzed_generation: 0,

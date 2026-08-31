@@ -36,7 +36,8 @@ use antiburn_local::analysis::{
     Bucket, CompositeSink, EvidenceSource, MemoryTurnRowStore, NormalizedRecord, RawSource,
     RecordSink, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
     SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind, TurnRowSink,
-    TurnRowStore, TurnSessionKey, adapter_for, metrics_from_rows, query_turn_rows,
+    TurnRowStore, TurnScope, TurnSessionKey, adapter_for, merge_metrics, metrics_by_source,
+    metrics_from_rows, query_turn_rows,
 };
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -927,4 +928,154 @@ fn opencode_metrics_from_rows_matches_the_accumulator_for_every_fixture() {
     );
 
     assert_no_mismatches("opencode", mismatches);
+}
+
+/* --------------------------------------------------------------------
+ * Multi-source parity: a parent transcript plus one discovered child
+ * transcript, streamed through one shared row store the way
+ * `stream_vendor_with_hooks` streams a parent and a discovered sub-agent
+ * file in production — every fixture above streams through one source, so
+ * this is the one fixture that exercises `metrics_by_source`'s per-source
+ * split and `metrics_from_rows`'s merge over a real, adapter-driven
+ * multi-file session, not the synthetic `NormalizedEvent` fixtures
+ * `replay.rs`'s own unit tests build by hand.
+ * ----------------------------------------------------------------- */
+
+const MULTI_SOURCE_PARENT_JSONL: &str = concat!(
+    r#"{"type":"assistant","timestamp":1000,"message":{"id":"m1","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"Parent turn."}]}}"#,
+    "\n",
+);
+
+const MULTI_SOURCE_CHILD_JSONL: &str = concat!(
+    r#"{"type":"assistant","timestamp":2000,"message":{"id":"m2","role":"assistant","model":"claude-haiku-4-6","usage":{"input_tokens":3,"output_tokens":1},"content":[{"type":"text","text":"Child turn."}]}}"#,
+    "\n",
+);
+
+/// Streams `input` through the real Claude adapter into its own
+/// accumulator, evidence tracker, and [`TurnRowSink`] fanned into the
+/// shared `store` — one call per source, mirroring one iteration of
+/// `stream_vendor_with_hooks`'s own loop. Returns the finished accumulator
+/// and its captured [`SessionSummary`].
+fn stream_source_into_shared_store(
+    input: &SessionInput,
+    store: &std::sync::Arc<MemoryTurnRowStore>,
+    scope: Option<TurnScope>,
+) -> (SessionMetricsAccumulator, SessionSummary) {
+    let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: input.agent.clone(),
+        session_id: input.session_id.clone(),
+        kind: SourceKind::from(&input.source),
+        capabilities: SourceCapabilities::claude(),
+    });
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(store) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        scope,
+    );
+    let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
+    let outcome = adapter_for("claude")
+        .visit(input, &mut composite)
+        .expect("multi-source fixture must stream");
+    composite.observe_source_outcome(outcome);
+    assert!(
+        !composite.turn_row_write_failed(),
+        "multi-source fixture: turn row write must not fail"
+    );
+    let summary = composite
+        .summary()
+        .cloned()
+        .expect("a streamed source finishes with a summary");
+    let (accumulator, _evidence) = composite
+        .into_parts()
+        .expect("multi-source fixture must publish metrics");
+    (accumulator, summary)
+}
+
+#[test]
+fn metrics_by_source_and_metrics_from_rows_match_the_accumulators_for_a_parent_and_a_discovered_child()
+ {
+    let parent_input = SessionInput {
+        agent: "claude".to_owned(),
+        session_id: "multi-source-parent".to_owned(),
+        source: RawSource::Jsonl(MULTI_SOURCE_PARENT_JSONL.to_owned()),
+    };
+    let child_input = SessionInput {
+        agent: "claude".to_owned(),
+        session_id: "multi-source-child".to_owned(),
+        source: RawSource::Jsonl(MULTI_SOURCE_CHILD_JSONL.to_owned()),
+    };
+
+    // One shared row store under the parent's own session id: the parent's
+    // sink gets `Main` scope (`None`) and its own session id as
+    // `source_key` (`is_parent_group`'s rule, `source_key == session_id`);
+    // the child's sink gets `Delegated` scope and its own, distinct session
+    // id — exactly the shape `stream_vendor_with_hooks` builds for index 0
+    // versus a later, discovered input.
+    let store = MemoryTurnRowStore::new("claude", parent_input.session_id.clone());
+    let (parent_accumulator, parent_summary) =
+        stream_source_into_shared_store(&parent_input, &store, None);
+    let (child_accumulator, child_summary) =
+        stream_source_into_shared_store(&child_input, &store, Some(TurnScope::Delegated));
+
+    let live_parent = parent_accumulator.metrics();
+    let live_child = child_accumulator.metrics();
+    let live_merged = merge_metrics(&parent_accumulator, &[child_accumulator]);
+
+    let key = TurnSessionKey {
+        environment_key: "native",
+        agent: "claude",
+        session_id: &parent_input.session_id,
+    };
+    let rows = store
+        .with_connection(|conn| query_turn_rows(conn, &key, 1).expect("query rows must succeed"));
+
+    let summary_for = |source_key: &str| {
+        if source_key == parent_input.session_id {
+            parent_summary.clone()
+        } else {
+            child_summary.clone()
+        }
+    };
+
+    let mut mismatches = Vec::new();
+
+    let by_source = metrics_by_source(
+        "claude",
+        parent_input.session_id.clone(),
+        &rows,
+        summary_for,
+    );
+    compare_metrics(
+        &mut mismatches,
+        "multi_source_parent",
+        &live_parent,
+        by_source
+            .get(&parent_input.session_id)
+            .expect("the parent's own source_key must have a row group"),
+    );
+    compare_metrics(
+        &mut mismatches,
+        "multi_source_child",
+        &live_child,
+        by_source
+            .get(&child_input.session_id)
+            .expect("the child's own source_key must have a row group"),
+    );
+
+    let replayed_merged = metrics_from_rows(
+        "claude",
+        parent_input.session_id.clone(),
+        &rows,
+        summary_for,
+    )
+    .expect("the parent group's source_key equals the session id");
+    compare_metrics(
+        &mut mismatches,
+        "multi_source_merged",
+        &live_merged,
+        &replayed_merged,
+    );
+
+    assert_no_mismatches("claude_multi_source", mismatches);
 }

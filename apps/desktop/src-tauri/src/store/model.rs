@@ -136,8 +136,15 @@ pub struct AnalysisRecord {
     /// This JSON array puts parent model runs before sub-agent-only runs.
     pub inclusive_models_json: String,
     /// Serialized `InitialContextBreakdown`. `None` until an analysis pass
-    /// fills it in; nothing reads this back yet.
+    /// fills it in.
     pub initial_context_json: Option<String>,
+    /// Serialized `BTreeMap<String, SessionSummary>`, one entry per source
+    /// (the parent transcript and every discovered child), keyed by
+    /// `source_key`. Only a worker pass (one with a `turn_row_store`) writes
+    /// this; every other pass leaves it `None`. The drilldown's rows-replay
+    /// path reads it back to rebuild per-source metrics without a
+    /// transcript — see `analysis::analysis_from_rows`.
+    pub source_summaries_json: Option<String>,
     /// This fingerprint covers the parent transcript and its sub-agent transcripts.
     pub source_fingerprint: String,
     /// `antiburn_local::analysis::pricing_generation()` at the time of writing.

@@ -1083,14 +1083,15 @@ impl Store {
         transaction.execute(
             "INSERT INTO session_analysis (
                  environment_key, agent, session_id, model_breakdown_json,
-                 inclusive_models_json, initial_context_json, source_fingerprint,
-                 pricing_generation, analyzed_generation, parser_revision,
-                 analyzer_revision, metrics_schema_revision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 inclusive_models_json, initial_context_json, source_summaries_json,
+                 source_fingerprint, pricing_generation, analyzed_generation,
+                 parser_revision, analyzer_revision, metrics_schema_revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
                  model_breakdown_json = excluded.model_breakdown_json,
                  inclusive_models_json = excluded.inclusive_models_json,
                  initial_context_json = excluded.initial_context_json,
+                 source_summaries_json = excluded.source_summaries_json,
                  source_fingerprint = excluded.source_fingerprint,
                  pricing_generation = excluded.pricing_generation,
                  analyzed_generation = excluded.analyzed_generation,
@@ -1104,6 +1105,7 @@ impl Store {
                 record.model_breakdown_json,
                 record.inclusive_models_json,
                 record.initial_context_json,
+                record.source_summaries_json,
                 record.source_fingerprint,
                 record.pricing_generation,
                 record.analyzed_generation,
@@ -1190,6 +1192,19 @@ impl Store {
         Ok(true)
     }
 
+    /// Requeues one session's evidence row for the durable worker.
+    ///
+    /// Wraps [`mark_evidence_pending_in`] in its own connection lock, for a
+    /// caller outside a transaction this module already holds open — the
+    /// drilldown command switch nudges the worker this way when it finds
+    /// the stored analysis fingerprint no longer matches the live
+    /// transcript's. Idempotent: requeuing a session already `pending` (or
+    /// already claimed) just clears its retry state again.
+    pub fn requeue_session_evidence(&self, key: &SessionKey) -> Result<()> {
+        let connection = self.lock();
+        mark_evidence_pending_in(&connection, key)
+    }
+
     /// Deletes every turn row for one session. Used by delete paths that do
     /// not go through [`Self::delete_session`] or
     /// [`Self::clear_local_session_data`].
@@ -1255,14 +1270,15 @@ impl Store {
         transaction.execute(
             "INSERT INTO session_analysis (
                  environment_key, agent, session_id, model_breakdown_json,
-                 inclusive_models_json, initial_context_json, source_fingerprint,
-                 pricing_generation, analyzed_generation, parser_revision,
-                 analyzer_revision, metrics_schema_revision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 inclusive_models_json, initial_context_json, source_summaries_json,
+                 source_fingerprint, pricing_generation, analyzed_generation,
+                 parser_revision, analyzer_revision, metrics_schema_revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
                  model_breakdown_json = excluded.model_breakdown_json,
                  inclusive_models_json = excluded.inclusive_models_json,
                  initial_context_json = excluded.initial_context_json,
+                 source_summaries_json = excluded.source_summaries_json,
                  source_fingerprint = excluded.source_fingerprint,
                  pricing_generation = excluded.pricing_generation,
                  analyzed_generation = excluded.analyzed_generation,
@@ -1276,6 +1292,7 @@ impl Store {
                 record.model_breakdown_json,
                 record.inclusive_models_json,
                 record.initial_context_json,
+                record.source_summaries_json,
                 record.source_fingerprint,
                 record.pricing_generation,
                 record.analyzed_generation,
@@ -1305,9 +1322,9 @@ impl Store {
         let connection = self.lock();
         let mut statement = connection.prepare(
             "SELECT environment_key, agent, session_id, model_breakdown_json,
-                    inclusive_models_json, initial_context_json, source_fingerprint,
-                    pricing_generation, analyzed_generation, parser_revision,
-                    analyzer_revision, metrics_schema_revision
+                    inclusive_models_json, initial_context_json, source_summaries_json,
+                    source_fingerprint, pricing_generation, analyzed_generation,
+                    parser_revision, analyzer_revision, metrics_schema_revision
                FROM session_analysis
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         )?;
@@ -1324,12 +1341,13 @@ impl Store {
                         model_breakdown_json: row.get(3)?,
                         inclusive_models_json: row.get(4)?,
                         initial_context_json: row.get(5)?,
-                        source_fingerprint: row.get(6)?,
-                        pricing_generation: row.get(7)?,
-                        analyzed_generation: row.get(8)?,
-                        parser_revision: row.get(9)?,
-                        analyzer_revision: row.get(10)?,
-                        metrics_schema_revision: row.get(11)?,
+                        source_summaries_json: row.get(6)?,
+                        source_fingerprint: row.get(7)?,
+                        pricing_generation: row.get(8)?,
+                        analyzed_generation: row.get(9)?,
+                        parser_revision: row.get(10)?,
+                        analyzer_revision: row.get(11)?,
+                        metrics_schema_revision: row.get(12)?,
                     })
                 },
             )

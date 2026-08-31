@@ -45,6 +45,7 @@ fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> Ana
         model_breakdown_json: "{}".into(),
         inclusive_models_json: "[]".into(),
         initial_context_json: None,
+        source_summaries_json: None,
         source_fingerprint: fingerprint.into(),
         pricing_generation: 1,
         analyzed_generation: generation,

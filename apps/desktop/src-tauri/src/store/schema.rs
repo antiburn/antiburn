@@ -11,7 +11,7 @@
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -404,3 +404,15 @@ ALTER TABLE session_analysis ADD COLUMN initial_context_json TEXT;
 /// the same reason [`V16`] re-exports `TURN_SCHEMA_V2_SQL` instead of
 /// stating its own DDL.
 const V18: &str = antiburn_local::analysis::TURN_SCHEMA_V3_SQL;
+
+/// v19 adds `source_summaries_json` to `session_analysis`: each source's own
+/// serialized `SessionSummary`, keyed by `source_key`, that seam R3c's
+/// drilldown replay reads back to rebuild per-source metrics without a
+/// transcript. Nullable, with no default, for the same reason [`V17`]'s
+/// `initial_context_json` is: an existing row's per-source summaries are
+/// unknown until the next worker pass fills them in. Only a pass with a
+/// `turn_row_store` (the durable evidence worker) writes this column; the
+/// on-demand and scan-triggered passes leave it `NULL`.
+const V19: &str = r#"
+ALTER TABLE session_analysis ADD COLUMN source_summaries_json TEXT;
+"#;

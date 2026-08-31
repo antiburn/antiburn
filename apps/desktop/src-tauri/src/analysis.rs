@@ -9,7 +9,7 @@
 //! never on a runtime worker, where a multi-megabyte transcript would stall
 //! every other command.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Read;
 use std::sync::{
     Arc,
@@ -18,12 +18,13 @@ use std::sync::{
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, ActiveSessionsSummary, CompositeSink, EVIDENCE_SCHEMA_REVISION,
-    EfficiencyTotals, EvidenceSource, METRICS_SCHEMA_REVISION, ModelRun, NormalizedSession,
-    PARSER_REVISION, RawSource, SessionCost, SessionEvidence, SessionEvidenceAccumulator,
-    SessionInput, SessionMetrics, SessionMetricsAccumulator, SkillUse, SourceCapabilities,
-    SourceClaim, SourceKind, TurnRowSink, TurnRowStore, TurnScope, VisitOutcome, adapter_for,
-    aggregate_metrics, analyze_session, analyze_sources_with, append_only_guarantee, merge_metrics,
-    merge_subagent_events, normalize_source, price_breakdown, pricing_generation,
+    EfficiencyTotals, EvidenceSource, InitialContextBreakdown, METRICS_SCHEMA_REVISION, ModelRun,
+    NormalizedSession, PARSER_REVISION, RawSource, SessionCost, SessionEvidence,
+    SessionEvidenceAccumulator, SessionInput, SessionMetrics, SessionMetricsAccumulator,
+    SessionSummary, SkillUse, SourceCapabilities, SourceClaim, SourceKind, TurnRow, TurnRowSink,
+    TurnRowStore, TurnScope, VisitOutcome, adapter_for, aggregate_metrics, analyze_session,
+    analyze_sources_with, append_only_guarantee, merge_metrics, merge_subagent_events,
+    metrics_by_source, metrics_from_rows, normalize_source, price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
@@ -41,7 +42,7 @@ use antiburn_local::insights::{DetectorId, clean_facts_complete, eligible};
 
 use crate::agents::{supports_analysis, vendor_label};
 use crate::dto::{BillableTokens, OrchestrationStatus, SubagentMember};
-use crate::store::{AnalysisRecord, ProjectionRevisions, SessionKey};
+use crate::store::{AnalysisRecord, ProjectionRevisions, RelationKind, SessionKey, Store};
 
 /// Minimum sub-agents before a session reads as an orchestrator. One delegated
 /// task is ordinary; two or more is genuine fan-out. Mirrors the webview's
@@ -149,6 +150,10 @@ pub struct StreamedSession {
     /// rows instead of the accumulator. `Some` only when this pass had a
     /// `turn_row_store` — see [`RowProjections`].
     pub row_projections: Option<RowProjections>,
+    /// Each source's own `SessionSummary`, keyed by `source_key`. `Some`
+    /// only when this pass had a `turn_row_store` — see
+    /// [`stream_vendor_with_hooks`].
+    pub source_summaries: Option<BTreeMap<String, SessionSummary>>,
 }
 
 /// `inclusive_model_breakdown` and `model_runs`, derived from published
@@ -187,6 +192,7 @@ enum ComputedAnalysis {
         parent_fingerprint: Option<String>,
         evidence: Box<Option<SessionEvidence>>,
         row_projections: Option<RowProjections>,
+        source_summaries: Option<BTreeMap<String, SessionSummary>>,
     },
     SourceChanged,
     Missing,
@@ -276,6 +282,13 @@ pub struct SessionAnalysis {
     pub analyzed_generation: i64,
     pub started_at_epoch: Option<i64>,
     pub source_changed: bool,
+    /// Each source's own `SessionSummary`, keyed by `source_key`. `Some`
+    /// only for a worker pass (one with a `turn_row_store`) over an
+    /// evidence-cohort agent — see [`stream_vendor_with_hooks`]. The
+    /// drilldown's rows-replay path reads this back (persisted as
+    /// `source_summaries_json`) to rebuild per-source metrics without a
+    /// transcript.
+    pub source_summaries: Option<BTreeMap<String, SessionSummary>>,
 }
 
 impl SessionAnalysis {
@@ -302,6 +315,7 @@ impl SessionAnalysis {
             analyzed_generation: 0,
             started_at_epoch: None,
             source_changed: false,
+            source_summaries: None,
         }
     }
 
@@ -315,12 +329,17 @@ impl SessionAnalysis {
         // `initial_context` sits on `metrics` (see `analyze_for_evidence`,
         // which grafts the parent's own breakdown onto the merged pass), so
         // this reads the same value on both the worker and legacy paths.
-        // Nothing reads this field back yet — seam R3 does.
         let initial_context_json = self
             .metrics
             .as_ref()
             .and_then(|metrics| metrics.initial_context.as_ref())
             .and_then(|breakdown| serde_json::to_string(breakdown).ok());
+        // `None` on every path except a worker pass over an evidence-cohort
+        // agent — see `Self::source_summaries`'s doc comment.
+        let source_summaries_json = self
+            .source_summaries
+            .as_ref()
+            .and_then(|summaries| serde_json::to_string(summaries).ok());
         Some(AnalysisRecord {
             key: key.clone(),
             model_breakdown_json: serde_json::to_string(&self.inclusive_model_breakdown)
@@ -328,6 +347,7 @@ impl SessionAnalysis {
             inclusive_models_json: serde_json::to_string(&self.model_runs)
                 .unwrap_or_else(|_| "[]".to_string()),
             initial_context_json,
+            source_summaries_json,
             source_fingerprint: self.fingerprint.clone(),
             pricing_generation: pricing_generation() as i64,
             analyzed_generation: self.analyzed_generation,
@@ -583,6 +603,10 @@ fn stream_vendor_with_hooks(
     // per-index accumulator the loop below builds.
     let mut parent_residual: Option<SessionEvidenceAccumulator> = None;
     let mut parent_fingerprint = None;
+    // Captured only for a worker pass (a `turn_row_store` is given): the
+    // point of persisting these is to replay rows later, so a pass with no
+    // rows to replay skips the clone. See `SessionAnalysis::source_summaries`.
+    let mut source_summaries: BTreeMap<String, SessionSummary> = BTreeMap::new();
     for (index, input) in inputs.iter().enumerate() {
         if cancelled() {
             return StreamOutcome::ParentUnreadable;
@@ -691,6 +715,11 @@ fn stream_vendor_with_hooks(
                 if accumulator.turn_row_write_failed() {
                     return StreamOutcome::ParentUnreadable;
                 }
+                if turn_row_store.is_some()
+                    && let Some(summary) = accumulator.summary()
+                {
+                    source_summaries.insert(input.session_id.clone(), summary.clone());
+                }
                 let Some((metrics, residual)) = accumulator.into_parts() else {
                     if index == 0 {
                         return StreamOutcome::ParentUnreadable;
@@ -764,6 +793,11 @@ fn stream_vendor_with_hooks(
         }
         None => (None, None),
     };
+    // `row_projections` is `Some` exactly when this pass had a
+    // `turn_row_store` — the same condition that gates the capture loop
+    // above — so it doubles as the flag for whether to keep the captured
+    // summaries rather than discard them.
+    let source_summaries = row_projections.is_some().then_some(source_summaries);
     StreamOutcome::Published {
         session: Box::new(StreamedSession {
             parent: parent_metrics,
@@ -772,6 +806,7 @@ fn stream_vendor_with_hooks(
             started_at_epoch,
             evidence,
             row_projections,
+            source_summaries,
         }),
         parent_fingerprint,
     }
@@ -968,6 +1003,7 @@ pub async fn analyze_for_evidence(
                     parent_fingerprint,
                     evidence: Box::new(session.evidence),
                     row_projections: session.row_projections,
+                    source_summaries: session.source_summaries,
                 },
                 StreamOutcome::SourceChanged => ComputedAnalysis::SourceChanged,
                 StreamOutcome::ParentMissing => ComputedAnalysis::Missing,
@@ -1003,6 +1039,7 @@ pub async fn analyze_for_evidence(
             parent_fingerprint: None,
             evidence: Box::new(None),
             row_projections: None,
+            source_summaries: None,
         }
     })
     .await;
@@ -1019,6 +1056,7 @@ pub async fn analyze_for_evidence(
         parent_fingerprint,
         evidence,
         row_projections,
+        source_summaries,
     ) = match computed {
         ComputedAnalysis::Published {
             parent,
@@ -1028,6 +1066,7 @@ pub async fn analyze_for_evidence(
             parent_fingerprint,
             evidence,
             row_projections,
+            source_summaries,
         } => (
             *parent,
             *merged,
@@ -1036,6 +1075,7 @@ pub async fn analyze_for_evidence(
             parent_fingerprint,
             *evidence,
             row_projections,
+            source_summaries,
         ),
         ComputedAnalysis::SourceChanged => {
             return EvidencePass {
@@ -1078,6 +1118,72 @@ pub async fn analyze_for_evidence(
             (metrics.session_id.clone(), (metrics, started_at_epoch))
         })
         .collect();
+    let analysis = assemble_session_analysis(AssembledMetrics {
+        parent_metrics,
+        merged,
+        by_id,
+        roster,
+        row_projections,
+        agent_slug,
+        parent_session_id,
+        source_path,
+        fingerprint,
+        analyzed_generation,
+        started_at_epoch,
+        source_summaries,
+    });
+    EvidencePass {
+        analysis,
+        evidence,
+        outcome: PassOutcome::Published,
+    }
+}
+
+/// Everything [`assemble_session_analysis`] needs to build one
+/// [`SessionAnalysis`] from a parent's and every sub-agent's own metrics —
+/// whether they came from a live streaming pass ([`analyze_for_evidence`])
+/// or the drilldown's rows-replay path ([`analysis_from_rows`]).
+struct AssembledMetrics {
+    parent_metrics: SessionMetrics,
+    /// The parent's and every sub-agent's events, merged and time-aligned —
+    /// see `merge_metrics`/`metrics_from_rows`.
+    merged: SessionMetrics,
+    /// Each sub-agent's own metrics, paired with the unix-second timestamp
+    /// of its earliest transcript event, keyed by its own session id.
+    by_id: HashMap<String, (SessionMetrics, Option<i64>)>,
+    /// `(subagent_id, label)` for every sub-agent this session's roster
+    /// names, in no particular order — `sort_members` orders the result.
+    roster: Vec<(String, String)>,
+    row_projections: Option<RowProjections>,
+    agent_slug: String,
+    parent_session_id: String,
+    source_path: Option<String>,
+    fingerprint: String,
+    analyzed_generation: i64,
+    started_at_epoch: Option<i64>,
+    source_summaries: Option<BTreeMap<String, SessionSummary>>,
+}
+
+/// Builds the session-detail [`SessionAnalysis`] from a parent's and every
+/// sub-agent's own metrics. Shared by the live streaming pass
+/// ([`analyze_for_evidence`]) and the drilldown's rows-replay path
+/// ([`analysis_from_rows`]), so the two build the identical DTO shape from
+/// whichever source supplied the metrics.
+fn assemble_session_analysis(input: AssembledMetrics) -> SessionAnalysis {
+    let AssembledMetrics {
+        parent_metrics,
+        merged,
+        by_id,
+        roster,
+        row_projections,
+        agent_slug,
+        parent_session_id,
+        source_path,
+        fingerprint,
+        analyzed_generation,
+        started_at_epoch,
+        source_summaries,
+    } = input;
 
     // `metrics` is the session's headline view: buckets, token totals, and
     // tool mix summed across the parent and every sub-agent, time-aligned.
@@ -1179,30 +1285,149 @@ pub async fn analyze_for_evidence(
     let skills = metrics.skill_uses.clone();
     let summary = aggregate_metrics(vec![metrics.clone()]);
 
-    EvidencePass {
-        analysis: SessionAnalysis {
-            efficiency: Some(metrics.efficiency),
-            metrics: Some(metrics),
-            summary: Some(summary),
-            cost,
-            top_level_cost,
-            subagents_cost,
-            inclusive_tokens,
-            subagents_tokens,
-            models,
-            model_runs,
-            inclusive_model_breakdown,
-            skills,
-            orchestration,
-            source_path,
-            fingerprint,
-            analyzed_generation,
-            started_at_epoch,
-            source_changed: false,
-        },
-        evidence,
-        outcome: PassOutcome::Published,
+    SessionAnalysis {
+        efficiency: Some(metrics.efficiency),
+        metrics: Some(metrics),
+        summary: Some(summary),
+        cost,
+        top_level_cost,
+        subagents_cost,
+        inclusive_tokens,
+        subagents_tokens,
+        models,
+        model_runs,
+        inclusive_model_breakdown,
+        skills,
+        orchestration,
+        source_path,
+        fingerprint,
+        analyzed_generation,
+        started_at_epoch,
+        source_changed: false,
+        source_summaries,
     }
+}
+
+/// Rebuilds one session's `SessionAnalysis` from its last-published turn
+/// rows and the per-source summaries a worker pass persisted alongside
+/// them — seam R3c. Touches no transcript: every input comes from `store`.
+///
+/// Returns `None` when replay cannot proceed, which the caller (the
+/// `get_session_analysis` command switch) reads as "fall back to the live
+/// parse": no published rows yet (evidence not `ready`), no cached
+/// analysis record, no `source_summaries_json` on that record (a legacy or
+/// scan-triggered pass, never a worker one, wrote it), that JSON failing to
+/// parse, or [`metrics_from_rows`] finding no row group for the session's
+/// own id ([`antiburn_local::analysis::MissingParentRows`] — the same
+/// "rows exist but look wrong" signal a live production command must not
+/// panic on).
+pub fn analysis_from_rows(
+    store: &Store,
+    key: &SessionKey,
+    session_id: &str,
+    agent_slug: &str,
+) -> Option<SessionAnalysis> {
+    let rows = store.published_turn_rows(key).ok().flatten()?;
+    let record = store.analysis(key).ok().flatten()?;
+    let source_summaries_json = record.source_summaries_json.as_deref()?;
+    let source_summaries: BTreeMap<String, SessionSummary> =
+        serde_json::from_str(source_summaries_json).ok()?;
+    let initial_context: Option<InitialContextBreakdown> = record
+        .initial_context_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str(json).ok());
+
+    let summary_for = |source_key: &str| {
+        source_summaries
+            .get(source_key)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut by_source = metrics_by_source(agent_slug, session_id, &rows, summary_for);
+    let mut parent_metrics = by_source.remove(session_id)?;
+    // `metrics_by_source` replays each source's own tool-call history from
+    // its rows' last-tool-only summary (`replay.rs`'s module doc comment),
+    // so the `initial_context` it projects is not the live pass's own — the
+    // R3b parity harness excludes it from comparison for the same reason.
+    // The persisted `initial_context_json` (seam R3) is the live pass's own
+    // value; grafting it here is exactly what the live path's own
+    // `assemble_session_analysis` graft step already does downstream, from
+    // whichever `parent_metrics.initial_context` this function hands it.
+    if let Some(initial_context) = initial_context {
+        parent_metrics.initial_context = Some(initial_context);
+    }
+    let merged = metrics_from_rows(agent_slug, session_id, &rows, summary_for).ok()?;
+
+    let by_id: HashMap<String, (SessionMetrics, Option<i64>)> = by_source
+        .into_iter()
+        .map(|(source_key, metrics)| {
+            let started_at_epoch = source_started_at_epoch(&source_summaries, &rows, &source_key);
+            (source_key, (metrics, started_at_epoch))
+        })
+        .collect();
+
+    // The roster's labels come from the last worker pass's own discovery,
+    // not from rows (a row carries no label) — `publish_projections`
+    // persists them as `session_relation` rows in the same transaction
+    // that publishes these turn rows, so the two are never out of step.
+    let roster = store
+        .relations(key)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|relation| relation.kind == RelationKind::Subagent)
+        .map(|relation| {
+            let label = relation.label.unwrap_or_else(|| "Sub-agent".to_string());
+            (relation.related_id, label)
+        })
+        .collect();
+
+    let started_at_epoch = source_started_at_epoch(&source_summaries, &rows, session_id);
+
+    Some(assemble_session_analysis(AssembledMetrics {
+        parent_metrics,
+        merged,
+        by_id,
+        roster,
+        // The accumulator's own model breakdown and runs are what
+        // `metrics_by_source`/`metrics_from_rows` just derived — there is
+        // no separate row-store query to reconcile against here, unlike
+        // the worker pass's own `RowProjections`.
+        row_projections: None,
+        agent_slug: agent_slug.to_string(),
+        parent_session_id: session_id.to_string(),
+        // Rows carry no file path; the drilldown's reveal action stays
+        // unavailable for a replayed view. `get_session_analysis_fingerprint`
+        // still resolves the live path independently for the freshness poll.
+        source_path: None,
+        fingerprint: record.source_fingerprint,
+        analyzed_generation: record.analyzed_generation,
+        started_at_epoch,
+        // Nothing new to persist: this call reads the cache, it does not
+        // extend it, and `cache_detail_analysis` skips evidence-cohort
+        // agents anyway.
+        source_summaries: None,
+    }))
+}
+
+/// One source's started-at time, unix seconds: the persisted summary's own
+/// `started_at_ms` when it has one, else the earliest `ts_ms` among that
+/// source's own rows — the same two-step fallback
+/// `SessionMetricsAccumulator::started_at_ms` uses live.
+fn source_started_at_epoch(
+    source_summaries: &BTreeMap<String, SessionSummary>,
+    rows: &[TurnRow],
+    source_key: &str,
+) -> Option<i64> {
+    source_summaries
+        .get(source_key)
+        .and_then(|summary| summary.started_at_ms)
+        .or_else(|| {
+            rows.iter()
+                .filter(|row| row.source_key == source_key)
+                .filter_map(|row| row.ts_ms)
+                .min()
+        })
+        .map(|ms| ms / 1000)
 }
 
 pub(crate) fn unsupported_evidence_pass() -> EvidencePass {
@@ -1261,12 +1486,14 @@ fn evidence_pass_with_hook(
                 merged,
                 evidence,
                 started_at_epoch,
+                source_summaries,
                 ..
             } = *session;
             EvidencePass {
                 analysis: SessionAnalysis {
                     metrics: Some(merged),
                     started_at_epoch,
+                    source_summaries,
                     ..SessionAnalysis::unavailable()
                 },
                 evidence,
@@ -1347,19 +1574,38 @@ pub async fn analyze_subagent(
             .map(|metrics| (metrics, None))
     })
     .await;
-    let Ok(Some((mut metrics, started_at_epoch))) = computed else {
+    let Ok(Some((metrics, started_at_epoch))) = computed else {
         return SessionAnalysis {
             source_path,
             fingerprint,
             ..SessionAnalysis::unavailable()
         };
     };
+    standalone_session_analysis(
+        metrics,
+        agent_slug,
+        source_path,
+        fingerprint,
+        started_at_epoch,
+    )
+}
+
+/// Builds the session-detail [`SessionAnalysis`] for a transcript with no
+/// sub-agent split of its own — a sub-agent viewed on its own, whether from
+/// a live parse ([`analyze_subagent`]) or the drilldown's rows-replay path
+/// ([`subagent_analysis_from_rows`]). `cost` and `top_level_cost` name the
+/// same figure: a sub-agent launches no sub-agent of its own, so its own
+/// transcript is the whole story.
+fn standalone_session_analysis(
+    mut metrics: SessionMetrics,
+    agent_slug: String,
+    source_path: Option<String>,
+    fingerprint: String,
+    started_at_epoch: Option<i64>,
+) -> SessionAnalysis {
     metrics.agent = agent_slug;
     cap_skill_descriptions(&mut metrics.skill_uses);
 
-    // A sub-agent launches no sub-agent of its own. Its own transcript is
-    // the whole story. `cost` and `top_level_cost` name the same figure
-    // here.
     let cost = price_breakdown(&metrics.model_breakdown);
     let models = sorted_models(&metrics.model_breakdown);
     let model_runs = model_runs_for_metrics(&metrics);
@@ -1387,7 +1633,49 @@ pub async fn analyze_subagent(
         analyzed_generation: 0,
         started_at_epoch,
         source_changed: false,
+        source_summaries: None,
     }
+}
+
+/// Rebuilds one sub-agent's `SessionAnalysis` from the parent session's
+/// last-published turn rows and persisted per-source summaries — the same
+/// data [`analysis_from_rows`] reads, assembled as a standalone view of
+/// just that sub-agent's own rows (`source_key == subagent_id`).
+///
+/// Returns `None` under the same conditions [`analysis_from_rows`] does,
+/// plus one more: no row group in `rows` carries `subagent_id` as its own
+/// `source_key` (the child transcript's rows are not among what this pass
+/// published — a session with sub-agents this worker pass could not read).
+pub fn subagent_analysis_from_rows(
+    store: &Store,
+    parent_key: &SessionKey,
+    parent_session_id: &str,
+    subagent_id: &str,
+    agent_slug: &str,
+) -> Option<SessionAnalysis> {
+    let rows = store.published_turn_rows(parent_key).ok().flatten()?;
+    let record = store.analysis(parent_key).ok().flatten()?;
+    let source_summaries_json = record.source_summaries_json.as_deref()?;
+    let source_summaries: BTreeMap<String, SessionSummary> =
+        serde_json::from_str(source_summaries_json).ok()?;
+
+    let summary_for = |source_key: &str| {
+        source_summaries
+            .get(source_key)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut by_source = metrics_by_source(agent_slug, parent_session_id, &rows, summary_for);
+    let metrics = by_source.remove(subagent_id)?;
+    let started_at_epoch = source_started_at_epoch(&source_summaries, &rows, subagent_id);
+
+    Some(standalone_session_analysis(
+        metrics,
+        agent_slug.to_string(),
+        None,
+        record.source_fingerprint,
+        started_at_epoch,
+    ))
 }
 
 async fn locate_subagent_source(
@@ -2826,6 +3114,7 @@ mod tests {
             model_breakdown_json: "{}".into(),
             inclusive_models_json: "[]".into(),
             initial_context_json: None,
+            source_summaries_json: None,
             source_fingerprint: MISSING_FINGERPRINT.into(),
             pricing_generation: pricing_generation() as i64,
             analyzed_generation: 0,
@@ -2850,6 +3139,7 @@ mod tests {
             model_breakdown_json: "{}".into(),
             inclusive_models_json: "[]".into(),
             initial_context_json: None,
+            source_summaries_json: None,
             source_fingerprint: "123:456".into(),
             pricing_generation: pricing_generation() as i64 - 1,
             analyzed_generation: 0,
