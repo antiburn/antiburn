@@ -507,10 +507,12 @@ async fn discover_recent_including_subagent_parents(
 
     let manifest_dirs = desktop_manifest_dirs_in(home).await;
     for manifest in recent_files_with_exts(&manifest_dirs, now, since_secs, &["json"]).await {
-        let log =
+        if let Some(log) =
             desktop_manifest_session_log(home, &project_dirs, manifest.path, manifest.mtime_epoch)
-                .await;
-        merge_session_log(&mut discovered, log);
+                .await
+        {
+            merge_session_log(&mut discovered, log);
+        }
     }
 
     for log in interactive_fork_job_logs(home, &project_dirs, now - since_secs).await {
@@ -632,25 +634,36 @@ async fn interactive_fork_job_logs(
     logs
 }
 
+/// Build a session from one Claude desktop session manifest.
+///
+/// The manifest must be a JSON object that names a CLI transcript in
+/// `cliSessionId`. The `claude-code-sessions` tree also holds sidecar files
+/// that are not sessions, such as the `scheduled-tasks.json` task
+/// configuration. A manifest without `cliSessionId` has no transcript and
+/// therefore no token records. Both give a session that analysis can never
+/// assess, so this function returns `None` for them.
 async fn desktop_manifest_session_log(
     home: &Path,
     project_dirs: &[PathBuf],
     manifest_path: PathBuf,
     manifest_mtime_epoch: i64,
-) -> SessionLog {
-    let content = tokio::fs::read_to_string(&manifest_path)
-        .await
-        .unwrap_or_default();
-    if let Some(cli_session_id) = parse_cli_session_id(&content)
-        && let Some(transcript_path) =
-            resolve_cli_transcript_path(project_dirs, &cli_session_id).await
+) -> Option<SessionLog> {
+    let content = tokio::fs::read_to_string(&manifest_path).await.ok()?;
+    let mut manifest = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+    let cli_session_id = manifest
+        .get("cliSessionId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())?
+        .to_owned();
+
+    if let Some(transcript_path) = resolve_cli_transcript_path(project_dirs, &cli_session_id).await
     {
-        return SessionLog {
+        return Some(SessionLog {
             environment: Default::default(),
             agent_type: AgentKind::Claude,
             source: SessionSource::File(transcript_path),
             updated_at: Some(manifest_mtime_epoch),
-        };
+        });
     }
 
     let label = format!(
@@ -660,15 +673,23 @@ async fn desktop_manifest_session_log(
             .unwrap_or(&manifest_path)
             .display()
     );
-    SessionLog {
+    // The transcript is not on disk yet. Name the session by the CLI session
+    // id so a later scan that finds the transcript maps to the same session.
+    if let Some(object) = manifest.as_object_mut() {
+        object.insert(
+            "sessionId".to_string(),
+            serde_json::Value::String(cli_session_id),
+        );
+    }
+    Some(SessionLog {
         environment: Default::default(),
         agent_type: AgentKind::Claude,
         source: SessionSource::Inline {
             label,
-            content: fallback_manifest_content(&content),
+            content: manifest.to_string(),
         },
         updated_at: Some(manifest_mtime_epoch),
-    }
+    })
 }
 
 /// Resolve the on-disk path for a Claude CLI transcript by `(project_dirs,
@@ -700,37 +721,6 @@ async fn resolve_cli_transcript_path(
     .await
     .ok()
     .flatten()
-}
-
-fn parse_cli_session_id(content: &str) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(content)
-        .ok()?
-        .get("cliSessionId")?
-        .as_str()
-        .map(ToOwned::to_owned)
-}
-
-fn fallback_manifest_content(content: &str) -> String {
-    let mut value = match serde_json::from_str::<serde_json::Value>(content) {
-        Ok(value) => value,
-        Err(_) => return content.to_string(),
-    };
-
-    let cli_session_id = value
-        .get("cliSessionId")
-        .and_then(|candidate| candidate.as_str())
-        .map(ToOwned::to_owned);
-
-    if let Some(cli_session_id) = cli_session_id
-        && let Some(object) = value.as_object_mut()
-    {
-        object.insert(
-            "sessionId".to_string(),
-            serde_json::Value::String(cli_session_id),
-        );
-    }
-
-    value.to_string()
 }
 
 fn merge_session_log(discovered: &mut HashMap<String, SessionLog>, incoming: SessionLog) {
@@ -977,6 +967,57 @@ mod tests {
                 assert!(content.contains("\"sessionId\":\"cli-session\""));
             }
             SessionSource::File(path) => panic!("unexpected file source: {}", path.display()),
+            SessionSource::ProviderDb { .. } => panic!("unexpected provider db source"),
+        }
+        assert_eq!(logs[0].updated_at, Some(now - 5));
+    }
+
+    #[tokio::test]
+    async fn test_discover_recent_skips_desktop_session_sidecar_files() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "tests/fixtures/claude-desktop-session-sidecars.json"
+        ))
+        .unwrap();
+        let home = TempDir::new().unwrap();
+        let now: i64 = 1_700_000_000;
+        let since_secs: i64 = 86_400;
+
+        let project_dir = home
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join("-home-avery-projects-demo-app");
+        tokio::fs::create_dir_all(&project_dir).await.unwrap();
+
+        // The transcript is older than the cutoff. Only the manifest can
+        // promote it, so this also proves the manifest scan still works.
+        let cli_session_id = fixture["manifest"]["cliSessionId"].as_str().unwrap();
+        let transcript = project_dir.join(format!("{cli_session_id}.jsonl"));
+        tokio::fs::write(&transcript, "{}\n").await.unwrap();
+        set_file_mtime(&transcript, now - (since_secs + 10));
+
+        let manifest_dir = app_config_dir_in("Claude", home.path())
+            .join("claude-code-sessions")
+            .join("workspace")
+            .join("window");
+        tokio::fs::create_dir_all(&manifest_dir).await.unwrap();
+        for (file_name, fixture_key) in [
+            ("local_session.json", "manifest"),
+            ("local_no_cli_session.json", "manifest_without_cli_session"),
+            ("scheduled-tasks.json", "scheduled_tasks_sidecar"),
+        ] {
+            let path = manifest_dir.join(file_name);
+            tokio::fs::write(&path, fixture[fixture_key].to_string())
+                .await
+                .unwrap();
+            set_file_mtime(&path, now - 5);
+        }
+
+        let logs = discover_recent_in(home.path(), now, since_secs).await;
+        assert_eq!(logs.len(), 1);
+        match &logs[0].source {
+            SessionSource::File(path) => assert_eq!(path, &transcript),
+            SessionSource::Inline { label, .. } => panic!("unexpected inline source: {label}"),
             SessionSource::ProviderDb { .. } => panic!("unexpected provider db source"),
         }
         assert_eq!(logs[0].updated_at, Some(now - 5));

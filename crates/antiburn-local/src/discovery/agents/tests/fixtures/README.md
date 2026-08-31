@@ -10,6 +10,7 @@ from the test that consumes it, so it must stay inside this crate.
 | `cursor-cli-store-fork.json` | **Synthetic**, authored from the contract |
 | `cursor-cli-agent-fork.json` | **Synthetic**, authored from the contract |
 | `claude-cli-job-fork.json` | **Synthetic**, authored from the contract |
+| `claude-desktop-session-sidecars.json` | **Synthetic**, authored from the contract |
 | `opencode-cli-production-db.json` | Re-homed from `crates/analysis`, explicitly authorized |
 
 "Authored from the contract" means the values were derived from the parser code
@@ -70,6 +71,22 @@ Consumed by `claude::tests::interactive_fork_job_enriches_waiting_child_with_par
 - `child_transcript` — the child's `~/.claude/projects/-repo/<child>.jsonl`
   records, which discovery appends to the synthesized header. They repeat the
   state's `cwd` so the scanner's last-cwd-wins rule agrees with the header.
+
+### `claude-desktop-session-sidecars.json`
+
+Consumed by `claude::tests::test_discover_recent_skips_desktop_session_sidecar_files`.
+
+Three files that all sit in one `claude-code-sessions/<workspace>/<window>/`
+directory, covering each arm of `desktop_manifest_session_log`:
+
+- `manifest` — a desktop session manifest with `cliSessionId`. This is the only
+  admitted file, and it promotes the CLI transcript named by that id.
+- `manifest_without_cli_session` — a manifest with `sessionId` but no
+  `cliSessionId`. It names no transcript, so it holds no token records and must
+  be skipped.
+- `scheduled_tasks_sidecar` — the `scheduled-tasks.json` task configuration that
+  the desktop app writes beside the manifests. It is not a session at all and
+  must be skipped.
 
 ### `opencode-cli-production-db.json`
 
