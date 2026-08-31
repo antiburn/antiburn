@@ -198,7 +198,17 @@ pub fn end_popover_hold(app: tauri::AppHandle) {
 /// Open or re-show the always-on-top usage HUD.
 #[tauri::command]
 pub async fn open_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
-    antiburn_hud::open(&app).map_err(fail)
+    let entries = crate::hud::load_placements(&app.state::<Store>());
+    antiburn_hud::open(&app, &entries).map_err(fail)
+}
+
+/// Remember where the HUD is, after a drag moved it.
+///
+/// No argument: the webview knows a drag ended, the shell knows where the
+/// window is, and that split keeps geometry out of the IPC payload.
+#[tauri::command]
+pub fn record_hud_position(app: tauri::AppHandle) {
+    crate::hud::record_position(&app);
 }
 
 /// Hide the usage HUD and cancel any pending reveal.

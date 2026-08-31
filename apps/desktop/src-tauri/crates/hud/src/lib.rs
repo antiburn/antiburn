@@ -3,6 +3,10 @@
 //! The crate creates, positions, sizes, reuses, and shows the transparent
 //! macOS window. It also reports cursor edges to the webview and owns the hover
 //! detail window. The desktop shell owns IPC policy and session discovery.
+//!
+//! The HUD remembers where a reader put it. The crate supplies the geometry of
+//! that memory — [`Placement`], [`current_placement`], and [`apply_placement`]
+//! — and the shell supplies the storage.
 
 use std::sync::Mutex;
 #[cfg(target_os = "macos")]
@@ -14,10 +18,12 @@ use std::time::Duration;
 
 #[cfg(target_os = "macos")]
 use objc2_app_kit::NSWindow;
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 #[cfg(target_os = "macos")]
 use tauri::{
-    Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    Emitter, LogicalPosition, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder,
 };
 
 /// The floating HUD window label.
@@ -144,15 +150,210 @@ fn contains_point(x: f64, y: f64, width: f64, height: f64, point_x: f64, point_y
     point_x >= x && point_x < x + width && point_y >= y && point_y < y + height
 }
 
-/// Open or re-show the floating HUD.
+/* -------------------------------------------------------------------------
+ * Remembered position
+ * ---------------------------------------------------------------------- */
+
+/// Where the HUD sits on one display.
+///
+/// `x` and `y` are logical pixels from that display's own top-left corner, not
+/// from the desktop origin. A display keeps its offset when a new arrangement
+/// moves the display itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Placement {
+    /// The display this position belongs to. See [`monitor_keys`].
+    pub monitor: String,
+    /// Distance from the display's left edge, in logical pixels.
+    pub x: f64,
+    /// Distance from the display's top edge, in logical pixels.
+    pub y: f64,
+}
+
+/// The logical size of one display.
+#[cfg(any(target_os = "macos", test))]
+struct LogicalFrame {
+    width: f64,
+    height: f64,
+}
+
+/// An identity for one display.
+///
+/// The name alone is not enough, and the position must take no part: the
+/// position is the value that changes when a reader rearranges displays. Two
+/// identical monitors of one model still make the same key.
 #[cfg(target_os = "macos")]
-pub fn open(app: &AppHandle) -> tauri::Result<()> {
+fn monitor_key(monitor: &Monitor) -> String {
+    let name = monitor.name().map_or("display", String::as_str);
+    let size = monitor.size();
+    format!(
+        "{name}|{}x{}@{}",
+        size.width,
+        size.height,
+        monitor.scale_factor()
+    )
+}
+
+/// Keys for every connected display.
+#[cfg(target_os = "macos")]
+pub fn monitor_keys(app: &AppHandle) -> Vec<String> {
+    app.available_monitors()
+        .map(|monitors| monitors.iter().map(monitor_key).collect())
+        .unwrap_or_default()
+}
+
+/// Keep display identity unavailable where the HUD is unavailable.
+#[cfg(not(target_os = "macos"))]
+pub fn monitor_keys(_app: &AppHandle) -> Vec<String> {
+    Vec::new()
+}
+
+/// Where the HUD is now, as a display and an offset inside it.
+#[cfg(target_os = "macos")]
+pub fn current_placement(app: &AppHandle) -> Option<Placement> {
+    let window = app.get_webview_window(OVERLAY_LABEL)?;
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())?;
+    let scale = monitor.scale_factor();
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let position = window.outer_position().ok()?;
+    let origin = monitor.position();
+    // Both frames are physical and share the desktop origin, so the offset is
+    // one subtraction. Only the result becomes logical.
+    Some(Placement {
+        monitor: monitor_key(&monitor),
+        x: f64::from(position.x - origin.x) / scale,
+        y: f64::from(position.y - origin.y) / scale,
+    })
+}
+
+/// Keep the remembered position unavailable where the HUD is unavailable.
+#[cfg(not(target_os = "macos"))]
+pub fn current_placement(_app: &AppHandle) -> Option<Placement> {
+    None
+}
+
+/// Move the HUD to the first remembered display that is connected.
+#[cfg(target_os = "macos")]
+pub fn apply_placement(app: &AppHandle, entries: &[Placement]) -> tauri::Result<()> {
+    let Some(window) = app.get_webview_window(OVERLAY_LABEL) else {
+        return Ok(());
+    };
+    place(&window, entries)
+}
+
+/// Keep placement unavailable where the HUD is unavailable.
+#[cfg(not(target_os = "macos"))]
+pub fn apply_placement(_app: &AppHandle, _entries: &[Placement]) -> tauri::Result<()> {
+    Ok(())
+}
+
+/// Put the HUD where the entries ask, or at the default place.
+///
+/// The default is the one the HUD has always had: centered across the top of
+/// the primary display. A display that cannot be read leaves the window where
+/// it is, because a window at its old position beats a window at (0,0).
+#[cfg(target_os = "macos")]
+fn place(window: &WebviewWindow, entries: &[Placement]) -> tauri::Result<()> {
+    let Ok(monitors) = window.available_monitors() else {
+        return Ok(());
+    };
+    // The same lock the animated resize holds: a placement and a resize frame
+    // must not write the window position at the same time.
+    let _guard = resize_apply_guard();
+    let height = RESIZE_STATE.height();
+    let keys: Vec<String> = monitors.iter().map(monitor_key).collect();
+
+    if let Some(placement) = resolve(entries, &keys)
+        && let Some(index) = keys.iter().position(|key| key == &placement.monitor)
+        && let Some(frame) = logical_frame(&monitors[index])
+    {
+        let (x, y) = clamp_into(placement.x, placement.y, OVERLAY_WIDTH, height, &frame);
+        return set_on_monitor(window, &monitors[index], x, y);
+    }
+
+    let Some(monitor) = window.primary_monitor()? else {
+        return Ok(());
+    };
+    let Some(frame) = logical_frame(&monitor) else {
+        return Ok(());
+    };
+    let x = (frame.width - OVERLAY_WIDTH) / 2.0;
+    set_on_monitor(window, &monitor, x, OVERLAY_TOP_INSET)
+}
+
+/// The display's own size in logical pixels. `None` for an unusable scale.
+#[cfg(target_os = "macos")]
+fn logical_frame(monitor: &Monitor) -> Option<LogicalFrame> {
+    let scale = monitor.scale_factor();
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    Some(LogicalFrame {
+        width: f64::from(monitor.size().width) / scale,
+        height: f64::from(monitor.size().height) / scale,
+    })
+}
+
+/// Move the window to a logical offset inside one display.
+///
+/// Physical throughout: the display's origin is physical, and the offset
+/// scales by that display's own factor rather than the window's current one.
+#[cfg(target_os = "macos")]
+fn set_on_monitor(window: &WebviewWindow, monitor: &Monitor, x: f64, y: f64) -> tauri::Result<()> {
+    let scale = monitor.scale_factor();
+    let origin = monitor.position();
+    window.set_position(PhysicalPosition::new(
+        f64::from(origin.x) + x * scale,
+        f64::from(origin.y) + y * scale,
+    ))
+}
+
+/// The first remembered placement whose display is connected.
+///
+/// The list is ordered by recency, so the head is the display the reader chose
+/// last. A disconnected display is skipped and its entry stays where it is: a
+/// fallback borrows a display, it does not claim it. That is what sends the
+/// HUD back to the external display when the reader connects it again.
+#[cfg(any(target_os = "macos", test))]
+fn resolve<'a>(entries: &'a [Placement], connected: &[String]) -> Option<&'a Placement> {
+    entries
+        .iter()
+        .find(|placement| connected.iter().any(|key| key == &placement.monitor))
+}
+
+/// A remembered offset held inside the display it lands on.
+///
+/// A display can come back at a lower resolution, and the HUD frame grows with
+/// its content. Both can put a remembered offset off the screen.
+#[cfg(any(target_os = "macos", test))]
+fn clamp_into(x: f64, y: f64, width: f64, height: f64, frame: &LogicalFrame) -> (f64, f64) {
+    (
+        clamp_within(x, 0.0, frame.width - width),
+        clamp_within(y, 0.0, frame.height - height),
+    )
+}
+
+/// Open or re-show the floating HUD.
+///
+/// `entries` are the remembered placements, newest display first. The window
+/// reaches its position before the renderer reveals it, so a restored HUD
+/// never appears in one place and jumps to another.
+#[cfg(target_os = "macos")]
+pub fn open(app: &AppHandle, entries: &[Placement]) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
         let measured = {
             let _guard = resize_apply_guard();
             RESIZE_STATE.request_open();
             RESIZE_STATE.is_measured()
         };
+        // Displays can connect or disconnect while the HUD is off, so the
+        // reopen resolves the remembered position again before it shows.
+        place(&window, entries)?;
         if measured {
             show_without_activation(&window)?;
         }
@@ -183,16 +384,7 @@ pub fn open(app: &AppHandle) -> tauri::Result<()> {
     .build()?;
 
     spawn_hover_watcher(window.clone());
-
-    if let Ok(Some(monitor)) = window.primary_monitor() {
-        let scale = monitor.scale_factor();
-        let monitor_x = monitor.position().x as f64 / scale;
-        let monitor_y = monitor.position().y as f64 / scale;
-        let monitor_width = monitor.size().width as f64 / scale;
-        let x = monitor_x + (monitor_width - OVERLAY_WIDTH) / 2.0;
-        let y = monitor_y + OVERLAY_TOP_INSET;
-        window.set_position(LogicalPosition::new(x, y))?;
-    }
+    place(&window, entries)?;
 
     // The renderer reveals the window after it reports the first content height.
     Ok(())
@@ -200,7 +392,7 @@ pub fn open(app: &AppHandle) -> tauri::Result<()> {
 
 /// Keep the HUD unavailable on platforms whose behavior is not tuned.
 #[cfg(not(target_os = "macos"))]
-pub fn open(_app: &AppHandle) -> tauri::Result<()> {
+pub fn open(_app: &AppHandle, _entries: &[Placement]) -> tauri::Result<()> {
     Ok(())
 }
 
@@ -703,12 +895,12 @@ fn compute_detail_position(
         if y + height > frame.bottom - DETAIL_SCREEN_MARGIN {
             y = anchor.top - DETAIL_GAP - height;
         }
-        x = clamp_detail(
+        x = clamp_within(
             x,
             frame.left + DETAIL_SCREEN_MARGIN,
             frame.right - width - DETAIL_SCREEN_MARGIN,
         );
-        y = clamp_detail(
+        y = clamp_within(
             y,
             frame.top + DETAIL_SCREEN_MARGIN,
             frame.bottom - height - DETAIL_SCREEN_MARGIN,
@@ -726,11 +918,12 @@ fn clamp_detail_height(height: f64) -> f64 {
     height.clamp(DETAIL_MIN_HEIGHT, DETAIL_MAX_HEIGHT)
 }
 
-/// `f64::clamp` panics when `max < min`, which happens on displays narrower
-/// than the detail window. Prefer the low edge there.
+/// `f64::clamp` panics when `max < min`, which happens on a display narrower
+/// than the window it must hold. Prefer the low edge there, and for a value
+/// that is not a real number.
 #[cfg(any(target_os = "macos", test))]
-fn clamp_detail(value: f64, min: f64, max: f64) -> f64 {
-    if max < min {
+fn clamp_within(value: f64, min: f64, max: f64) -> f64 {
+    if max < min || !value.is_finite() {
         return min;
     }
     value.clamp(min, max)
@@ -879,5 +1072,87 @@ mod tests {
     #[test]
     fn before_the_first_show_the_detail_state_is_null() {
         assert_eq!(detail_state(), serde_json::Value::Null);
+    }
+
+    fn placement(monitor: &str, x: f64, y: f64) -> Placement {
+        Placement {
+            monitor: monitor.to_string(),
+            x,
+            y,
+        }
+    }
+
+    fn keys(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn the_newest_display_wins_while_it_stays_connected() {
+        let entries = vec![
+            placement("external", 100.0, 40.0),
+            placement("laptop", 8.0, 8.0),
+        ];
+        let chosen = resolve(&entries, &keys(&["laptop", "external"]));
+        assert_eq!(chosen, Some(&entries[0]));
+    }
+
+    #[test]
+    fn a_disconnected_display_falls_back_to_the_next_one_remembered() {
+        let entries = vec![
+            placement("external", 100.0, 40.0),
+            placement("laptop", 8.0, 8.0),
+        ];
+        let chosen = resolve(&entries, &keys(&["laptop"]));
+        assert_eq!(chosen, Some(&entries[1]));
+    }
+
+    /// The fallback reads the list and never writes it, so the external display
+    /// is still the head when it comes back.
+    #[test]
+    fn the_fallback_leaves_the_preferred_display_at_the_head() {
+        let entries = vec![
+            placement("external", 100.0, 40.0),
+            placement("laptop", 8.0, 8.0),
+        ];
+        assert_eq!(resolve(&entries, &keys(&["laptop"])), Some(&entries[1]));
+        assert_eq!(
+            resolve(&entries, &keys(&["laptop", "external"])),
+            Some(&entries[0])
+        );
+    }
+
+    #[test]
+    fn an_unknown_display_set_has_no_remembered_placement() {
+        let entries = vec![placement("external", 100.0, 40.0)];
+        assert_eq!(resolve(&entries, &keys(&["laptop"])), None);
+        assert_eq!(resolve(&[], &keys(&["laptop"])), None);
+    }
+
+    #[test]
+    fn a_remembered_offset_stays_inside_a_display_that_came_back_smaller() {
+        let frame = LogicalFrame {
+            width: 1280.0,
+            height: 800.0,
+        };
+        let (x, y) = clamp_into(2_800.0, 1_600.0, 176.0, 30.0, &frame);
+        assert_eq!((x, y), (1_280.0 - 176.0, 800.0 - 30.0));
+    }
+
+    #[test]
+    fn a_display_narrower_than_the_hud_prefers_the_low_edge() {
+        let frame = LogicalFrame {
+            width: 120.0,
+            height: 20.0,
+        };
+        assert_eq!(clamp_into(60.0, 10.0, 176.0, 30.0, &frame), (0.0, 0.0));
+    }
+
+    #[test]
+    fn an_offset_that_still_fits_is_left_alone() {
+        let frame = LogicalFrame {
+            width: 1512.0,
+            height: 982.0,
+        };
+        assert_eq!(clamp_into(668.0, 32.0, 176.0, 30.0, &frame), (668.0, 32.0));
     }
 }
