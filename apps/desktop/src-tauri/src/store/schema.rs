@@ -12,6 +12,7 @@
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
+    V22,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -447,4 +448,14 @@ ON CONFLICT(environment_key, agent, session_id) DO NOTHING;
 const V21: &str = r#"
 ALTER TABLE session_evidence ADD COLUMN published_fence INTEGER;
 UPDATE session_evidence SET published_fence = claim_fence WHERE status IN ('ready','unsupported');
+"#;
+
+/// v22 — drop `session_evidence.diagnostics_json`.
+///
+/// [`V11`] added this column to hold a serialized diagnostics snapshot from
+/// each analyzed pass. Every pass wrote it and [`super::model::EvidenceRow`]
+/// read it back, but no caller ever used the value: only round-trip test
+/// assertions did. Nothing reads it, so this drops it.
+const V22: &str = r#"
+ALTER TABLE session_evidence DROP COLUMN diagnostics_json;
 "#;

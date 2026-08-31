@@ -198,9 +198,6 @@ fn ingest_and_publish(store: &Store, kind: AgentKind, session_id: &str, source: 
         status: PublishedEvidence::Ready,
         evidence_schema_revision: evidence.schema_revision,
         evidence_json: serde_json::to_string(&evidence).expect("serialize evidence"),
-        diagnostics_json: Some(
-            serde_json::to_string(&evidence.diagnostics).expect("serialize diagnostics"),
-        ),
     };
     let published = store
         .publish_projections(

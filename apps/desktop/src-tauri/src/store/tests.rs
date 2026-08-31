@@ -95,7 +95,6 @@ fn evidence_completion(
         status,
         evidence_schema_revision: 1,
         evidence_json,
-        diagnostics_json: Some("[]".into()),
     }
 }
 
@@ -119,7 +118,7 @@ fn seed_ready_evidence_row(store: &Store, session_id: &str) -> SessionRecord {
                 SET status = 'ready', analyzed_generation = 1,
                     processed_fingerprint = 'sv1:current', parser_revision = 1,
                     analyzer_revision = 1, evidence_schema_revision = 1,
-                    evidence_json = '{\"groups\":[]}', diagnostics_json = '[]',
+                    evidence_json = '{\"groups\":[]}',
                     retry_count = 0, claim_fence = 4, analyzed_at_epoch = 900
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
             params![
@@ -149,8 +148,7 @@ fn seed_revision_one_placeholder(store: &Store, session_id: &str) -> SessionReco
         .lock()
         .execute(
             "UPDATE session_evidence
-                SET evidence_json = '{\"state\":\"unimplemented\"}',
-                    diagnostics_json = '[\"stale\"]'
+                SET evidence_json = '{\"state\":\"unimplemented\"}'
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
             params![
                 record.key.environment_key,
@@ -629,7 +627,6 @@ fn session_evidence_table_shape_is_stable() {
             "analyzer_revision",
             "evidence_schema_revision",
             "evidence_json",
-            "diagnostics_json",
             "retry_count",
             "claim_fence",
             "claimed_at_epoch",
@@ -1899,6 +1896,16 @@ fn migrating_from_every_prior_schema_version_reaches_the_current_head() {
             .unwrap();
         assert_eq!(added_columns, 3, "start version {start}");
         assert_eq!(projection_columns, 4, "start version {start}");
+
+        let diagnostics_column: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session_evidence')
+                   WHERE name = 'diagnostics_json'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(diagnostics_column, 0, "start version {start}");
     }
 }
 
@@ -2019,7 +2026,6 @@ fn marking_session_evidence_pending_keeps_the_last_completed_payload() {
     let after = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(after.status, EvidenceStatus::Pending);
     assert_eq!(after.evidence_json, before.evidence_json);
-    assert_eq!(after.diagnostics_json, before.diagnostics_json);
     assert_eq!(after.analyzed_generation, before.analyzed_generation);
     assert_eq!(after.processed_fingerprint, before.processed_fingerprint);
     assert_eq!(after.parser_revision, before.parser_revision);
@@ -2464,7 +2470,6 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
     assert_eq!(failed.status, EvidenceStatus::Failed);
     assert_eq!(failed.evidence_schema_revision, Some(12));
     assert!(failed.evidence_json.is_none());
-    assert!(failed.diagnostics_json.is_none());
 }
 
 #[test]
@@ -3355,10 +3360,10 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 21);
+    assert_eq!(super::schema::MIGRATIONS.len(), 22);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 21);
+    assert_eq!(store.schema_version().unwrap(), 22);
 }
 
 #[test]
