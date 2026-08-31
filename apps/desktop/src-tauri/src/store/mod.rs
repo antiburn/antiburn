@@ -132,6 +132,24 @@ pub struct Store {
     state_dir: PathBuf,
 }
 
+/// [`Store::recent_sessions`]'s query, pulled out to a shared constant so a
+/// schema test can run `EXPLAIN QUERY PLAN` against the exact SQL the method
+/// runs, instead of a copy that could drift from it.
+const RECENT_SESSIONS_SQL: &str = "SELECT environment_key, agent, session_id, source_kind,
+            source_label, wsl_distro, title, title_source, cwd, surface, updated_at_epoch,
+            activity_cursor, activity_source, subagent_count,
+            (SELECT related_id FROM session_relation r
+               WHERE r.environment_key = s.environment_key
+                 AND r.agent = s.agent
+                 AND r.session_id = s.session_id
+                 AND r.kind = 'forkParent'
+               LIMIT 1),
+            s.source_fingerprint
+       FROM session s
+      WHERE COALESCE(updated_at_epoch, 0) >= ?1
+      ORDER BY COALESCE(updated_at_epoch, 0) DESC, session_id DESC
+      LIMIT ?2";
+
 impl Store {
     /// Open (creating if absent) and migrate the database under `data_dir`.
     pub fn open(data_dir: &Path) -> Result<Store> {
@@ -588,22 +606,7 @@ impl Store {
     /// Sessions whose activity falls at or after `since_epoch`, newest first.
     pub fn recent_sessions(&self, since_epoch: i64, limit: usize) -> Result<Vec<SessionRecord>> {
         let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT environment_key, agent, session_id, source_kind, source_label, wsl_distro,
-                    title, title_source, cwd, surface, updated_at_epoch,
-                    activity_cursor, activity_source, subagent_count,
-                    (SELECT related_id FROM session_relation r
-                       WHERE r.environment_key = s.environment_key
-                         AND r.agent = s.agent
-                         AND r.session_id = s.session_id
-                         AND r.kind = 'forkParent'
-                       LIMIT 1),
-                    s.source_fingerprint
-               FROM session s
-              WHERE COALESCE(updated_at_epoch, 0) >= ?1
-              ORDER BY COALESCE(updated_at_epoch, 0) DESC, session_id DESC
-              LIMIT ?2",
-        )?;
+        let mut statement = connection.prepare(RECENT_SESSIONS_SQL)?;
         let rows = statement.query_map(params![since_epoch, limit as i64], session_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }

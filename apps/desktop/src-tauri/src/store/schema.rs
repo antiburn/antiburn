@@ -12,7 +12,7 @@
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
-    V22,
+    V22, V23,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -458,4 +458,22 @@ UPDATE session_evidence SET published_fence = claim_fence WHERE status IN ('read
 /// assertions did. Nothing reads it, so this drops it.
 const V22: &str = r#"
 ALTER TABLE session_evidence DROP COLUMN diagnostics_json;
+"#;
+
+/// v23 — an expression index for [`super::Store::recent_sessions`].
+///
+/// That query wraps the indexed column in `COALESCE(updated_at_epoch, 0)`,
+/// in the `WHERE` clause and the `ORDER BY`, so it cannot use [`V1`]'s plain
+/// `session_recency` index — SQLite only matches an index to an expression
+/// it names verbatim. This index names the same `COALESCE` expression, plus
+/// `session_id DESC` as a second key, matching `recent_sessions`'s full
+/// `ORDER BY` exactly.
+///
+/// No other query in this crate orders or filters on a bare
+/// `updated_at_epoch`, so `session_recency` now serves no query and this
+/// migration drops it too.
+const V23: &str = r#"
+DROP INDEX session_recency;
+CREATE INDEX session_recency_coalesced
+    ON session (COALESCE(updated_at_epoch, 0) DESC, session_id DESC);
 "#;

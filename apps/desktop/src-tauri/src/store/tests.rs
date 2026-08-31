@@ -1291,6 +1291,25 @@ fn recent_sessions_are_windowed_and_ordered_newest_first() {
 }
 
 #[test]
+fn recent_sessions_query_plan_uses_the_coalesced_recency_index() {
+    let store = store();
+    let connection = store.lock();
+    let mut statement = connection
+        .prepare(&format!("EXPLAIN QUERY PLAN {RECENT_SESSIONS_SQL}"))
+        .unwrap();
+    let plan_lines: Vec<String> = statement
+        .query_map(params![0_i64, 100_i64], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    let plan = plan_lines.join("\n");
+    assert!(
+        plan.contains("session_recency_coalesced"),
+        "query plan did not use the coalesced index: {plan}"
+    );
+}
+
+#[test]
 fn a_fork_parent_rides_with_the_session_and_resolves_children_back() {
     let store = store();
     store
@@ -1906,6 +1925,24 @@ fn migrating_from_every_prior_schema_version_reaches_the_current_head() {
             )
             .unwrap();
         assert_eq!(diagnostics_column, 0, "start version {start}");
+
+        let index_names: Vec<String> = connection
+            .prepare("SELECT name FROM pragma_index_list('session')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            index_names
+                .iter()
+                .any(|name| name == "session_recency_coalesced"),
+            "start version {start}: {index_names:?}"
+        );
+        assert!(
+            !index_names.iter().any(|name| name == "session_recency"),
+            "start version {start}: {index_names:?}"
+        );
     }
 }
 
@@ -3360,10 +3397,10 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 22);
+    assert_eq!(super::schema::MIGRATIONS.len(), 23);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 22);
+    assert_eq!(store.schema_version().unwrap(), 23);
 }
 
 #[test]
