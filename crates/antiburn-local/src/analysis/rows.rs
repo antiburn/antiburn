@@ -23,7 +23,7 @@ use crate::analysis::model::{CompactionTrigger, EventSource, NormalizedEvent, Ro
 /// `turn` rowid and part index (one turn has several parts: text,
 /// thinking, each tool input, each tool result), in a separate table so
 /// the hot `turn` table stays narrow.
-/// `turn_content` is created now; a later change writes to it.
+/// `insert_turn_rows` writes both tables for every row.
 ///
 /// The caller applies this DDL after its own `session` table exists — the
 /// foreign key references `session (environment_key, agent, session_id)`.
@@ -325,7 +325,7 @@ pub trait TurnRowStore: Send + Sync {
 /// (unwritten) so its `TurnContent` record — which the adapter contract
 /// promises arrives right after the `MetricsEvent` it belongs to — can still
 /// attach before that row is written. The first write error is kept and
-/// stops further writes; [`Self::into_error`] lets the caller surface it.
+/// stops further writes; [`Self::has_error`] lets the caller detect it.
 pub struct TurnRowSink {
     store: Arc<dyn TurnRowStore>,
     source_key: String,
@@ -371,11 +371,6 @@ impl TurnRowSink {
     /// this, but rows already accepted before the failure stay written.
     pub fn has_error(&self) -> bool {
         self.error.is_some()
-    }
-
-    /// Consumes the sink and returns the write error, if one occurred.
-    pub fn into_error(self) -> Option<TurnRowError> {
-        self.error
     }
 
     /// Folds one record without taking it. A `MetricsEvent` becomes a
@@ -1166,7 +1161,7 @@ mod tests {
         assert!(sink.has_error());
         sink.observe(&metric_record(Role::Assistant));
 
-        let error = sink.into_error().expect("error must surface");
+        let error = sink.error.as_ref().expect("error must surface");
         assert_eq!(error.0, "boom");
     }
 

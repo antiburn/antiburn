@@ -32,7 +32,6 @@ pub struct TurnFacts {
     pub eligibility: EligibilityEvidence,
     pub max_request_context_tokens: u64,
     pub top_depth_examples: Vec<DepthExample>,
-    pub depth_examples_capped: bool,
     pub time_range: SessionTimeRange,
     pub by_model: BTreeMap<String, ModelTokens>,
     pub models_capped: bool,
@@ -88,8 +87,7 @@ pub fn query_turn_facts(
     let mut diagnostics = ParseDiagnostics::new();
 
     let core = query_core(conn, key, claim_fence)?;
-    let (top_depth_examples, depth_examples_capped) =
-        query_top_depth_examples(conn, key, claim_fence, &mut diagnostics)?;
+    let top_depth_examples = query_top_depth_examples(conn, key, claim_fence, &mut diagnostics)?;
     let (by_model, models_capped) = query_by_model(conn, key, claim_fence, &mut diagnostics)?;
     let dominant_main_model = query_dominant_main_model(conn, key, claim_fence, &mut diagnostics)?;
     let (effort_tiers, effort_capped) = query_tier_map(
@@ -123,7 +121,6 @@ pub fn query_turn_facts(
         eligibility: core.eligibility,
         max_request_context_tokens: core.max_request_context_tokens,
         top_depth_examples,
-        depth_examples_capped,
         time_range: core.time_range,
         by_model,
         models_capped,
@@ -362,7 +359,7 @@ fn query_top_depth_examples(
     key: &TurnSessionKey<'_>,
     claim_fence: i64,
     diagnostics: &mut ParseDiagnostics,
-) -> rusqlite::Result<(Vec<DepthExample>, bool)> {
+) -> rusqlite::Result<Vec<DepthExample>> {
     // One row past the cap tells us whether more qualifying rows exist,
     // without a second COUNT query.
     let limit = (MAX_EVIDENCE_EXAMPLES + 1) as i64;
@@ -387,12 +384,11 @@ fn query_top_depth_examples(
             model,
         });
     }
-    let capped = examples.len() > MAX_EVIDENCE_EXAMPLES;
-    if capped {
+    if examples.len() > MAX_EVIDENCE_EXAMPLES {
         examples.truncate(MAX_EVIDENCE_EXAMPLES);
         note_collection_cap(diagnostics, "context.top_depth_examples");
     }
-    Ok((examples, capped))
+    Ok(examples)
 }
 
 /* --------------------------------------------------------------------
@@ -1332,7 +1328,6 @@ mod tests {
         insert(&conn, &rows);
         let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
         assert_eq!(facts.top_depth_examples.len(), MAX_EVIDENCE_EXAMPLES);
-        assert!(facts.depth_examples_capped);
         // The deepest example is kept; depth is `input_tokens` here since
         // every other component of depth is zero.
         assert_eq!(

@@ -27,8 +27,9 @@ requirements. Do not paste in a captured transcript.
 These built-in-tool fixtures are read against the *committed fixture tool
 catalogue* (`tests/fixtures/tool_catalog.json`, via `ToolCatalog::from_json`),
 not the catalogue embedded in the binary — so their expected token counts stay
-fixed regardless of what a local build or CI run happens to regenerate at
-`src/analysis/tool_catalog.json`. See that file's own README for the
+fixed regardless of what a local build or CI run happens to regenerate.
+`build.rs` embeds this fixture, at build time, into `$OUT_DIR/tool_catalog.json`
+when `ANTIBURN_TOOL_CATALOG` is not set. See `tests/fixtures/README.md` for the
 catalogue's shape and regeneration.
 
 Numeric expectations in the tests are derived from these files, so a change here

@@ -29,4 +29,6 @@ Each subdirectory below holds its own fixtures with its own README:
 | Directory | Fixtures for |
 | --- | --- |
 | `claude_characterization/` | The Claude JSONL normalization and analysis integration test. |
+| `codex_characterization/` | The Codex rollout normalization and analysis integration test. |
 | `initial_context/` | The initial-context attribution pass in `src/analysis/initial_context.rs`. |
+| `pi_characterization/` | The Pi record normalization and analysis integration test. |

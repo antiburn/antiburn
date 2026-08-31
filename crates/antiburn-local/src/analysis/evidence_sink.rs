@@ -1309,10 +1309,7 @@ mod tests {
     #[test]
     fn context_top_depth_examples_cap_keeps_the_group_complete() {
         let accumulator = accumulator(true);
-        let facts = TurnFacts {
-            depth_examples_capped: true,
-            ..TurnFacts::default()
-        };
+        let facts = TurnFacts::default();
         let evidence = accumulator.evidence(&facts);
         assert!(
             matches!(evidence.context, EvidenceValue::Complete(_)),
