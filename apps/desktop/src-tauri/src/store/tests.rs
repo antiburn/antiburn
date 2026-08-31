@@ -45,6 +45,7 @@ fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> Ana
         key,
         model_breakdown_json: "{}".into(),
         inclusive_models_json: "[]".into(),
+        initial_context_json: None,
         source_fingerprint: fingerprint.into(),
         pricing_generation: 1,
         analyzed_generation: generation,
@@ -293,6 +294,7 @@ fn session_analysis_holds_the_cache_values_and_the_projection_revisions() {
             "parser_revision",
             "analyzer_revision",
             "metrics_schema_revision",
+            "initial_context_json",
         ]
     );
 }
@@ -739,6 +741,7 @@ fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
                 key: SessionKey::new("native", "claude-code", "abc"),
                 model_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
+                initial_context_json: None,
                 source_fingerprint: "1:1".into(),
                 pricing_generation: 0,
                 analyzed_generation: 0,
@@ -1101,6 +1104,7 @@ fn analysis_round_trips_and_is_replaced_rather_than_duplicated() {
         inclusive_models_json:
             r#"[{"model":"claude-haiku-4-5"},{"model":"claude-opus-4-6","thinkingMode":"high"}]"#
                 .into(),
+        initial_context_json: None,
         source_fingerprint: "1700000000:4096".into(),
         pricing_generation: 0,
         analyzed_generation: 7,
@@ -1134,6 +1138,7 @@ fn save_analysis_writes_the_generation_and_revision_columns() {
         key: key.clone(),
         model_breakdown_json: "{}".into(),
         inclusive_models_json: "[]".into(),
+        initial_context_json: None,
         source_fingerprint: "sv1:source".into(),
         pricing_generation: 3,
         analyzed_generation: 8,
@@ -1155,6 +1160,61 @@ fn save_analysis_writes_the_generation_and_revision_columns() {
     );
 }
 
+/// V17 adds `initial_context_json`. `save_analysis` and `publish_projections`
+/// both round-trip it through `analysis()`, the same as every other column.
+#[test]
+fn save_analysis_round_trips_initial_context_json() {
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "initial-context");
+    store
+        .upsert_sessions(
+            &[session("initial-context", 1_000)],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let record = AnalysisRecord {
+        key: key.clone(),
+        model_breakdown_json: "{}".into(),
+        inclusive_models_json: "[]".into(),
+        initial_context_json: Some(r#"{"sources":[]}"#.into()),
+        source_fingerprint: "sv1:source".into(),
+        pricing_generation: 1,
+        analyzed_generation: 1,
+        parser_revision: 1,
+        analyzer_revision: 1,
+        metrics_schema_revision: 1,
+    };
+
+    store.save_analysis(&record, None).unwrap();
+
+    assert_eq!(store.analysis(&key).unwrap(), Some(record));
+}
+
+#[test]
+fn publish_projections_round_trips_initial_context_json() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "publish-initial-context", 100, 60);
+    let record = AnalysisRecord {
+        initial_context_json: Some(r#"{"sources":[{"name":"CLAUDE.md","tokens":120}]}"#.into()),
+        ..record
+    };
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+
+    assert_eq!(
+        store
+            .analysis(&record.key)
+            .unwrap()
+            .and_then(|stored| stored.initial_context_json),
+        record.initial_context_json
+    );
+}
+
 #[test]
 fn save_analysis_never_clears_a_known_start_time() {
     let store = store();
@@ -1169,6 +1229,7 @@ fn save_analysis_never_clears_a_known_start_time() {
         key: key.clone(),
         model_breakdown_json: "{}".into(),
         inclusive_models_json: "[]".into(),
+        initial_context_json: None,
         source_fingerprint: "sv1:source".into(),
         pricing_generation: 0,
         analyzed_generation: 1,
@@ -1248,6 +1309,7 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
                 key: key.clone(),
                 model_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
+                initial_context_json: None,
                 source_fingerprint: "x".into(),
                 pricing_generation: 0,
                 analyzed_generation: 0,
@@ -1391,6 +1453,7 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
                 model_breakdown_json: r#"{"claude-opus-4-6":{"input_tokens":10}}"#.into(),
                 inclusive_models_json: r#"[{"model":"claude-opus-4-6","thinkingMode":"high"}]"#
                     .into(),
+                initial_context_json: None,
                 source_fingerprint: "1:1".into(),
                 pricing_generation: 0,
                 analyzed_generation: 0,
@@ -2012,7 +2075,7 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
         ProjectionRevisions {
             parser_revision: 15,
             analyzer_revision: 15,
-            metrics_schema_revision: 1,
+            metrics_schema_revision: 2,
             evidence_schema_revision: 11,
         }
     );
@@ -2158,6 +2221,7 @@ fn a_catalog_change_requeues_no_session_evidence() {
                 key: record.key.clone(),
                 model_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
+                initial_context_json: None,
                 source_fingerprint: "sv1:current".into(),
                 pricing_generation: 2,
                 analyzed_generation: 1,
@@ -3022,10 +3086,10 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 16);
+    assert_eq!(super::schema::MIGRATIONS.len(), 17);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 16);
+    assert_eq!(store.schema_version().unwrap(), 17);
 }
 
 #[test]

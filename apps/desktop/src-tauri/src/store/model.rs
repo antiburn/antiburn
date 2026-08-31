@@ -135,6 +135,9 @@ pub struct AnalysisRecord {
     pub model_breakdown_json: String,
     /// This JSON array puts parent model runs before sub-agent-only runs.
     pub inclusive_models_json: String,
+    /// Serialized `InitialContextBreakdown`. `None` until an analysis pass
+    /// fills it in; nothing reads this back yet.
+    pub initial_context_json: Option<String>,
     /// This fingerprint covers the parent transcript and its sub-agent transcripts.
     pub source_fingerprint: String,
     /// `antiburn_local::analysis::pricing_generation()` at the time of writing.

@@ -18,7 +18,8 @@ use crate::analysis::evidence::{
     ModelTokens, ModelTransition, ParseDiagnostics, SessionTimeRange, SignalCoverage, TurnCounts,
     cap_string, insert_diagnostic_field, record_diagnostic_set_cap,
 };
-use crate::analysis::model::CompactionTrigger;
+use crate::analysis::model::{CompactionTrigger, ModelRun};
+use crate::analysis::pricing::strip_window_tag;
 use crate::analysis::rows::{TurnRow, TurnScope, TurnSessionKey, parse_role};
 
 /// The row-derived facts for one session, at one claim fence.
@@ -473,6 +474,155 @@ fn add_model_tokens(
         }
         tokens.last_ts_ms = tokens.last_ts_ms.max(ts_ms);
     }
+}
+
+/* --------------------------------------------------------------------
+ * Model breakdown and model runs (seam R2).
+ *
+ * `query_model_breakdown` and `query_model_runs` derive the two fields
+ * `SessionMetricsAccumulator` computes for `SessionAnalysis`'s
+ * `inclusive_model_breakdown` and `model_runs`
+ * (`apps/desktop/src-tauri/src/analysis.rs`). They read the same `turn`
+ * rows as `query_by_model` above, but with the `pricing`/`model` shapes
+ * the desktop layer expects, and with no `MAX_MODELS`/`MAX_MODEL_RUNS`
+ * cap: the accumulator caps each source file's own tally at that
+ * constant, a limit no characterization fixture approaches, so this
+ * reads every distinct row instead of replicating the cap.
+ * ----------------------------------------------------------------- */
+
+const MODEL_BREAKDOWN_SQL: &str = "SELECT model, input_tokens, output_tokens,
+        cache_read_tokens, cache_write_tokens
+   FROM turn
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+    AND role = 'assistant' AND model IS NOT NULL
+    AND (input_tokens != 0 OR output_tokens != 0
+         OR cache_read_tokens != 0 OR cache_write_tokens != 0)";
+
+/// Per-model billable token totals over every assistant row with a model,
+/// at both scopes — the row-derived equivalent of
+/// `SessionMetricsAccumulator::model_breakdown_map`, merged across the
+/// parent transcript and every sub-agent the same way
+/// `merge_model_breakdowns` (`apps/desktop/src-tauri/src/analysis.rs`)
+/// does: by simple per-field sum.
+///
+/// A row's `model` is stripped of its window tag and trimmed the same way
+/// `SessionMetricsAccumulator::observe_model_usage` does before it is used
+/// as a map key; a row whose model is blank after that is dropped, since
+/// the accumulator drops it too instead of folding it in unattributed.
+///
+/// `cache_creation_1h_tokens` always stays `0`. No vendor adapter
+/// populates a 1h split on the events `add_usage`
+/// (`crates/antiburn-local/src/analysis/metrics_sink/tally.rs`) folds into
+/// `SessionMetricsAccumulator::model_breakdown` — that function only ever
+/// touches `input_tokens`, `output_tokens`, `cache_read_tokens`, and
+/// `cache_creation_tokens` — so the accumulator path stores `0` there too,
+/// and parity holds.
+pub fn query_model_breakdown(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+) -> rusqlite::Result<BTreeMap<String, crate::pricing::ModelTokens>> {
+    let mut statement = conn.prepare(MODEL_BREAKDOWN_SQL)?;
+    let mut rows = statement.query(params![
+        key.environment_key,
+        key.agent,
+        key.session_id,
+        claim_fence
+    ])?;
+    let mut breakdown: BTreeMap<String, crate::pricing::ModelTokens> = BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        let model: String = row.get(0)?;
+        let model = strip_window_tag(&model).trim();
+        if model.is_empty() {
+            continue;
+        }
+        let input: i64 = row.get(1)?;
+        let output: i64 = row.get(2)?;
+        let cache_read: i64 = row.get(3)?;
+        let cache_write: i64 = row.get(4)?;
+        let entry = breakdown.entry(model.to_string()).or_default();
+        entry.input_tokens = entry.input_tokens.saturating_add(as_u64(input));
+        entry.output_tokens = entry.output_tokens.saturating_add(as_u64(output));
+        entry.cache_read_tokens = entry.cache_read_tokens.saturating_add(as_u64(cache_read));
+        entry.cache_creation_tokens = entry
+            .cache_creation_tokens
+            .saturating_add(as_u64(cache_write));
+    }
+    Ok(breakdown)
+}
+
+const MODEL_RUNS_SQL: &str = "SELECT source_key, model, effort
+   FROM turn
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+    AND role = 'assistant' AND model IS NOT NULL
+    AND (input_tokens != 0 OR output_tokens != 0
+         OR cache_read_tokens != 0 OR cache_write_tokens != 0)";
+
+/// Distinct `(model, effort)` pairs that produced billable tokens, parent
+/// runs first — the row-derived equivalent of
+/// `apps/desktop/src-tauri/src/analysis.rs`'s `model_runs_parent_first`.
+///
+/// A row qualifies the same way a turn qualifies for
+/// `SessionMetricsAccumulator::observe_model_usage`'s `ModelRunMark`: an
+/// assistant row with a model and at least one billable token field set.
+/// The row's own `effort` column already holds `event.thinking_mode`
+/// verbatim (`turn_row_from_event`), so no further mapping is needed there.
+///
+/// `model_runs_for_metrics` (`apps/desktop/src-tauri/src/analysis.rs`)
+/// discards the accumulator's first-appearance mark order at the end of
+/// each source file's own pass, collecting into a `BTreeSet` and back —
+/// so only the *set* of distinct pairs a source file contributes
+/// determines the output, not the order its turns arrived in. This
+/// mirrors that: rows whose `source_key` is the session's own id (the
+/// parent transcript) are grouped and sorted first; every other row's
+/// `source_key` names a sub-agent transcript, and those pairs are
+/// grouped, sorted, and appended afterward, minus any pair the parent
+/// group already contributed — exactly `model_runs_parent_first_lists`'s
+/// merge rule.
+pub fn query_model_runs(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+) -> rusqlite::Result<Vec<ModelRun>> {
+    let mut statement = conn.prepare(MODEL_RUNS_SQL)?;
+    let mut rows = statement.query(params![
+        key.environment_key,
+        key.agent,
+        key.session_id,
+        claim_fence
+    ])?;
+    let mut parent_runs: BTreeSet<ModelRun> = BTreeSet::new();
+    let mut child_runs: BTreeSet<ModelRun> = BTreeSet::new();
+    while let Some(row) = rows.next()? {
+        let source_key: String = row.get(0)?;
+        let model: String = row.get(1)?;
+        let model = strip_window_tag(&model).trim();
+        if model.is_empty() {
+            continue;
+        }
+        let effort: Option<String> = row.get(2)?;
+        let thinking_mode = effort
+            .as_deref()
+            .map(str::trim)
+            .filter(|mode| !mode.is_empty())
+            .map(str::to_string);
+        let run = ModelRun {
+            model: model.to_string(),
+            thinking_mode,
+        };
+        if source_key == key.session_id {
+            parent_runs.insert(run);
+        } else {
+            child_runs.insert(run);
+        }
+    }
+    let mut result: Vec<ModelRun> = parent_runs.iter().cloned().collect();
+    result.extend(
+        child_runs
+            .into_iter()
+            .filter(|run| !parent_runs.contains(run)),
+    );
+    Ok(result)
 }
 
 /* --------------------------------------------------------------------

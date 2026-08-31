@@ -148,6 +148,19 @@ impl TurnRowStore for CountingWriter {
     fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
         Err(TurnRowError("not readable".to_owned()))
     }
+
+    fn query_model_breakdown(
+        &self,
+    ) -> Result<
+        std::collections::BTreeMap<String, antiburn_local::pricing::ModelTokens>,
+        TurnRowError,
+    > {
+        Err(TurnRowError("not readable".to_owned()))
+    }
+
+    fn query_model_runs(&self) -> Result<Vec<antiburn_local::analysis::ModelRun>, TurnRowError> {
+        Err(TurnRowError("not readable".to_owned()))
+    }
 }
 
 #[test]
@@ -418,6 +431,19 @@ impl TurnRowStore for CountingRealStore {
 
     fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
         self.inner.query_turn_facts()
+    }
+
+    fn query_model_breakdown(
+        &self,
+    ) -> Result<
+        std::collections::BTreeMap<String, antiburn_local::pricing::ModelTokens>,
+        TurnRowError,
+    > {
+        self.inner.query_model_breakdown()
+    }
+
+    fn query_model_runs(&self) -> Result<Vec<antiburn_local::analysis::ModelRun>, TurnRowError> {
+        self.inner.query_model_runs()
     }
 }
 

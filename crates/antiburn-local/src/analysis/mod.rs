@@ -62,7 +62,9 @@ pub use evidence::{
     SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass, ToolEvidence, ToolUse,
     TurnCounts,
 };
-pub use evidence_query::{TurnFacts, query_turn_facts, query_turn_rows};
+pub use evidence_query::{
+    TurnFacts, query_model_breakdown, query_model_runs, query_turn_facts, query_turn_rows,
+};
 pub use evidence_sink::{CompositeSink, RETAINED_EVIDENCE_BYTES_BOUND, SessionEvidenceAccumulator};
 pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
@@ -118,7 +120,12 @@ pub const PARSER_REVISION: i64 = 15;
 // value, instead of demanding every eligible turn carry one. A session
 // with subagent work is no longer always `SignalMissing`.
 pub const ANALYZER_REVISION: i64 = 15;
-pub const METRICS_SCHEMA_REVISION: i64 = 1;
+// +1 for seam R2: the worker path now derives `inclusive_model_breakdown`
+// and `model_runs` from published turn rows instead of the accumulator
+// (`query_model_breakdown`, `query_model_runs`), so every session in the
+// durable evidence queue must requeue into the new shape
+// (`reconcile_evidence_revisions`).
+pub const METRICS_SCHEMA_REVISION: i64 = 2;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
 // +1 more for `RepeatedContext::paid_tokens` (part F).
 pub const EVIDENCE_SCHEMA_REVISION: i64 = 11;

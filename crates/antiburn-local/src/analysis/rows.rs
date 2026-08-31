@@ -267,6 +267,18 @@ pub trait TurnRowStore: Send + Sync {
     /// Reads the facts for every row this store wrote under its own session
     /// key and fence.
     fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError>;
+
+    /// Reads the per-model billable token breakdown for every row this
+    /// store wrote under its own session key and fence. See
+    /// [`crate::analysis::query_model_breakdown`].
+    fn query_model_breakdown(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, crate::pricing::ModelTokens>, TurnRowError>;
+
+    /// Reads the distinct model runs for every row this store wrote under
+    /// its own session key and fence, parent runs first. See
+    /// [`crate::analysis::query_model_runs`].
+    fn query_model_runs(&self) -> Result<Vec<crate::analysis::model::ModelRun>, TurnRowError>;
 }
 
 /// A [`RecordSink`] that turns `MetricsEvent` records into [`TurnRow`]s,
@@ -681,6 +693,28 @@ impl TurnRowStore for MemoryTurnRowStore {
         let connection = self.connection.lock().expect("lock");
         query_turn_facts(&connection, &self.key(), self.claim_fence).map_err(TurnRowError::from)
     }
+
+    fn query_model_breakdown(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, crate::pricing::ModelTokens>, TurnRowError> {
+        let connection = self.connection.lock().expect("lock");
+        crate::analysis::evidence_query::query_model_breakdown(
+            &connection,
+            &self.key(),
+            self.claim_fence,
+        )
+        .map_err(TurnRowError::from)
+    }
+
+    fn query_model_runs(&self) -> Result<Vec<crate::analysis::model::ModelRun>, TurnRowError> {
+        let connection = self.connection.lock().expect("lock");
+        crate::analysis::evidence_query::query_model_runs(
+            &connection,
+            &self.key(),
+            self.claim_fence,
+        )
+        .map_err(TurnRowError::from)
+    }
 }
 
 #[cfg(test)]
@@ -883,6 +917,17 @@ mod tests {
         fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
             Err(TurnRowError("not readable".to_owned()))
         }
+
+        fn query_model_breakdown(
+            &self,
+        ) -> Result<std::collections::BTreeMap<String, crate::pricing::ModelTokens>, TurnRowError>
+        {
+            Err(TurnRowError("not readable".to_owned()))
+        }
+
+        fn query_model_runs(&self) -> Result<Vec<crate::analysis::model::ModelRun>, TurnRowError> {
+            Err(TurnRowError("not readable".to_owned()))
+        }
     }
 
     /// A store over a real connection, so batching tests can assert on rows
@@ -974,6 +1019,37 @@ mod tests {
         fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
             let conn = self.conn.lock().expect("lock");
             query_turn_facts(
+                &conn,
+                &TurnSessionKey {
+                    environment_key: "native",
+                    agent: "claude",
+                    session_id: &self.key,
+                },
+                1,
+            )
+            .map_err(TurnRowError::from)
+        }
+
+        fn query_model_breakdown(
+            &self,
+        ) -> Result<std::collections::BTreeMap<String, crate::pricing::ModelTokens>, TurnRowError>
+        {
+            let conn = self.conn.lock().expect("lock");
+            crate::analysis::evidence_query::query_model_breakdown(
+                &conn,
+                &TurnSessionKey {
+                    environment_key: "native",
+                    agent: "claude",
+                    session_id: &self.key,
+                },
+                1,
+            )
+            .map_err(TurnRowError::from)
+        }
+
+        fn query_model_runs(&self) -> Result<Vec<crate::analysis::model::ModelRun>, TurnRowError> {
+            let conn = self.conn.lock().expect("lock");
+            crate::analysis::evidence_query::query_model_runs(
                 &conn,
                 &TurnSessionKey {
                     environment_key: "native",
