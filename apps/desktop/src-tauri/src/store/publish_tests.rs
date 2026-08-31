@@ -275,7 +275,7 @@ fn a_won_race_removes_turn_rows_from_every_superseded_fence_and_keeps_only_its_o
 
 /* R1: `Store::published_turn_rows` only exposes a complete, published
  * fence — never a claim in flight, never a superseded fence, and never a
- * status other than `ready`. */
+ * status other than `ready` or `unsupported`. */
 
 fn revisions() -> ProjectionRevisions {
     ProjectionRevisions {
@@ -384,11 +384,19 @@ fn published_turn_rows_is_none_when_failed() {
     assert_eq!(store.published_turn_rows(&key).unwrap(), None);
 }
 
+/// `Unsupported` is an insights verdict, not a parse-quality one: no
+/// detector was eligible for this source, but the rows and the
+/// `session_analysis` record a winning pass wrote are still complete.
+/// `published_turn_rows` must serve them exactly as it would for `Ready`,
+/// so the drilldown's rows-first read never falls back to a live parse for
+/// a session this terminal.
 #[test]
-fn published_turn_rows_is_none_when_unsupported() {
+fn published_turn_rows_serves_rows_when_unsupported() {
     let store = store();
     let (record, claim) = claimed_projection(&store, "unsupported-status", 100, 60);
     let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
     let completion = evidence_completion(&claim, PublishedEvidence::Unsupported, "{}".into());
     assert!(
         store
@@ -398,8 +406,8 @@ fn published_turn_rows_is_none_when_unsupported() {
     );
     assert_eq!(
         store.published_turn_rows(&key).unwrap(),
-        None,
-        "only status `ready` names a complete row projection"
+        Some(vec![turn_row(0), turn_row(1)]),
+        "status `unsupported` names a complete row projection, same as `ready`"
     );
 }
 

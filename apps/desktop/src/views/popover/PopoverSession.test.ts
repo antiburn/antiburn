@@ -122,6 +122,7 @@ describe("PopoverSession live analysis poll", () => {
     relations: null,
     sourcePath: null,
     startedAtEpoch: null,
+    analysisPending: false,
     ...overrides,
   })
 
@@ -195,6 +196,58 @@ describe("PopoverSession live analysis poll", () => {
     await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
 
     expect(getSessionAnalysis).toHaveBeenCalledTimes(2)
+    unsubscribe()
+  })
+
+  it("re-loads on every tick while the drilldown is pending, fingerprint unchanged", async () => {
+    getSessionAnalysis.mockResolvedValue(analysisPayload({ analysisPending: true }))
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subject)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 5)
+
+    // Unbounded, unlike the unavailable-analysis retry budget below: a
+    // pending drilldown keeps refetching every tick until the worker
+    // actually publishes something, however many ticks that takes.
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(6)
+    unsubscribe()
+  })
+
+  it("stops re-loading once a pending drilldown resolves", async () => {
+    getSessionAnalysis
+      .mockResolvedValueOnce(analysisPayload({ analysisPending: true }))
+      .mockResolvedValueOnce(analysisPayload({ analysisPending: true }))
+      .mockResolvedValue(usableAnalysis())
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subject)
+    await vi.advanceTimersByTimeAsync(0)
+
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 5)
+
+    // 1 initial load + 2 pending re-loads, then the third re-load lands
+    // usable and the poll goes back to comparing fingerprints alone.
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(3)
+    unsubscribe()
+  })
+
+  it("re-loads a pending sub-agent drilldown too, unlike the unavailable-analysis retry", async () => {
+    getSubagentAnalysis.mockResolvedValue(analysisPayload({ analysisPending: true }))
+    const subagent: SessionSubject = {
+      ...subject,
+      subagent: { parentSessionId: subject.sessionId, subagentId: "subagent-1" },
+    }
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    session.openSession(subagent)
+    await vi.advanceTimersByTimeAsync(0)
+
+    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 2)
+
+    expect(getSubagentAnalysis).toHaveBeenCalledTimes(3)
     unsubscribe()
   })
 

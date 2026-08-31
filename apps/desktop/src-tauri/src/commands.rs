@@ -831,45 +831,34 @@ pub async fn get_session_analysis(
     };
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
     let store = app.state::<Store>();
-    let claimed = store
-        .session_source_state(&key)
-        .ok()
-        .flatten()
-        .map(|state| analysis::ClaimedSource {
-            fingerprint: state.source_fingerprint,
-            generation: state.source_generation,
-        })
-        .unwrap_or(analysis::ClaimedSource {
-            fingerprint: None,
-            generation: 0,
-        });
 
-    // Rows first: every agent is in the evidence cohort, so the drilldown
-    // always serves the worker's last published pass instead of re-parsing
-    // the transcript inline. A fresh transcript replays cheaply; a missing
-    // or not-ready row set falls back to the live parse, and nudges the
-    // worker so the gap closes for next time. Publishing a fresh live parse
-    // is the worker's job now — see its announce callback in
-    // `insights_worker::spawn` — so this command no longer caches one itself
-    // or emits `SESSION_ENTRY_CHANGED_EVENT` for it.
-    let analysis = match analysis::analysis_from_rows(&store, &key, &session_id, &agent) {
-        Some(replayed) => {
-            nudge_if_evidence_stale(&app, &store, kind, &key, &session_id, wsl_distro.as_deref())
+    // Rows are the only way this command computes an analysis: every agent
+    // is in the evidence cohort, so this always serves the worker's last
+    // published pass. A missing or not-yet-published row set reports a
+    // pending payload instead of re-parsing the transcript in-process, and
+    // nudges the worker so the gap closes on its own. Publishing a fresh
+    // pass is the worker's job — see its announce callback in
+    // `insights_worker::spawn` — so this command never caches one itself or
+    // emits `SESSION_ENTRY_CHANGED_EVENT` for it.
+    let (analysis, analysis_pending) =
+        match analysis::analysis_from_rows(&store, &key, &session_id, &agent) {
+            Some(replayed) => {
+                nudge_if_evidence_stale(
+                    &app,
+                    &store,
+                    kind,
+                    &key,
+                    &session_id,
+                    wsl_distro.as_deref(),
+                )
                 .await;
-            replayed
-        }
-        None => {
-            requeue_and_wake_worker(&app, &store, &key);
-            analysis::analyze(
-                kind,
-                &session_id,
-                wsl_distro.as_deref(),
-                claimed,
-                analysis::CancelFlag::never(),
-            )
-            .await
-        }
-    };
+                (replayed, false)
+            }
+            None => {
+                requeue_and_wake_worker(&app, &store, &key);
+                (analysis::SessionAnalysis::unavailable(), true)
+            }
+        };
     let relations = resolve_lineage(&app, kind, &key, wsl_distro.as_deref()).await;
 
     let stored = store.session(&key).ok().flatten();
@@ -903,6 +892,7 @@ pub async fn get_session_analysis(
         relations: (!relations.is_empty()).then_some(relations),
         started_at_epoch: analysis.started_at_epoch,
         source_path: analysis.source_path.clone(),
+        analysis_pending,
     })
 }
 
@@ -941,29 +931,23 @@ pub async fn get_subagent_analysis(
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
-    // Every agent is in the evidence cohort, so this always tries the
-    // worker's last published pass before falling back to a live parse —
-    // see the matching comment in `get_session_analysis`.
+    // Rows are the only way this command computes an analysis — see the
+    // matching comment in `get_session_analysis`. A missing or not-yet-
+    // published row set reports a pending payload and nudges the worker,
+    // instead of re-parsing the sub-agent's own transcript in-process.
     let store = app.state::<Store>();
     let parent_key = SessionKey::for_session(&agent, &parent_session_id, wsl_distro.as_deref());
-    let analysis = match analysis::subagent_analysis_from_rows(
+    let (analysis, analysis_pending) = match analysis::subagent_analysis_from_rows(
         &store,
         &parent_key,
         &parent_session_id,
         &subagent_id,
         &agent,
     ) {
-        Some(replayed) => replayed,
+        Some(replayed) => (replayed, false),
         None => {
             requeue_and_wake_worker(&app, &store, &parent_key);
-            analysis::analyze_subagent(
-                kind,
-                &parent_session_id,
-                &subagent_id,
-                wsl_distro.as_deref(),
-                analysis::CancelFlag::never(),
-            )
-            .await
+            (analysis::SessionAnalysis::unavailable(), true)
         }
     };
     Ok(SessionAnalysis {
@@ -984,6 +968,7 @@ pub async fn get_subagent_analysis(
         relations: None,
         started_at_epoch: analysis.started_at_epoch,
         source_path: analysis.source_path.clone(),
+        analysis_pending,
     })
 }
 

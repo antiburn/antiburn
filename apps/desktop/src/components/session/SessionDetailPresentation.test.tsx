@@ -125,6 +125,7 @@ function presentationProps(
       wslDistro: null,
     },
     supportsAnalysis: true,
+    analysisPending: false,
     cost: null,
     costSplit: null,
     efficiency: null,
@@ -385,6 +386,15 @@ describe("SessionDetailPresentation — states", () => {
       session: { agent: "kiro", sessionId: "s1", wslDistro: null },
     })
     expect(screen.getByText(/Session analysis for Kiro sessions/)).toBeTruthy()
+  })
+
+  it("shows an indexing message while the drilldown is pending, not the empty-transcript copy", () => {
+    view({ summary: null, analysisPending: true })
+    expect(screen.getByText("Analyzing this session…")).toBeTruthy()
+    expect(screen.queryByText("No session analysis available")).toBeNull()
+    expect(
+      screen.queryByText("This session has no analyzable messages in its local transcript."),
+    ).toBeNull()
   })
 
   it("renders supported Pi analysis instead of the generic unsupported state", () => {

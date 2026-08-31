@@ -516,36 +516,25 @@ fn inline_fingerprint(content: &str) -> String {
     .fingerprint()
 }
 
-fn stream_vendor(inputs: &[SessionInput], cancel: &CancelFlag) -> StreamOutcome {
-    stream_vendor_with_claim_hook(inputs, cancel, &test_subagent_after_claim)
-}
+/// No-op `after_claim` hook for [`stream_vendor_with_hooks`]. Production
+/// callers (`analyze_for_evidence`) have no reason to observe a source's
+/// claim as it streams; a test that does inject its own hook directly
+/// instead, through [`stream_vendor_with_claim_hook`].
+fn no_after_claim(_: usize, _: &std::path::Path) {}
 
-#[cfg(not(test))]
-fn test_subagent_after_claim(_: usize, _: &std::path::Path) {}
+// `stream_vendor` and `stream_vendor_with_claim_hook` have no production
+// caller left: the drilldown's live-parse fallback (`analyze_subagent`) is
+// gone, and every remaining caller is test scaffolding for
+// `stream_vendor_with_hooks`'s streaming contract — see the `save_analysis`
+// precedent for the same treatment. `stream_vendor_with_hooks` itself stays
+// outside `#[cfg(test)]`: `analyze_for_evidence` still calls it directly in
+// production.
+#[cfg(test)]
+fn stream_vendor(inputs: &[SessionInput], cancel: &CancelFlag) -> StreamOutcome {
+    stream_vendor_with_claim_hook(inputs, cancel, &no_after_claim)
+}
 
 #[cfg(test)]
-fn test_subagent_after_claim(_: usize, path: &std::path::Path) {
-    use std::io::Write;
-
-    let append = {
-        let mut override_ = subagent_test_override()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        override_
-            .as_mut()
-            .filter(|override_| override_.source_path == path)
-            .and_then(|override_| override_.append_after_claim.take())
-    };
-    if let Some(append) = append {
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(path)
-            .expect("open changed sub-agent source")
-            .write_all(append.as_bytes())
-            .expect("append changed sub-agent source");
-    }
-}
-
 fn stream_vendor_with_claim_hook(
     inputs: &[SessionInput],
     cancel: &CancelFlag,
@@ -836,6 +825,11 @@ fn sort_members(members: &mut [SubagentMember]) {
 /// session's own headline metrics — buckets, token totals, tool mix — so the
 /// detail view's chart and header sum a sub-agent's activity into the same
 /// session instead of hiding it.
+///
+/// `export_session` (`commands.rs`) is this function's only caller now. The
+/// drilldown itself reads rows instead — see `analysis_from_rows` — because
+/// export wants a live parse: a fresh fingerprint and a `source_path` an
+/// exported document can point to, neither of which a row replay carries.
 pub async fn analyze(
     agent: AgentKind,
     session_id: &str,
@@ -952,7 +946,7 @@ pub async fn analyze_for_evidence(
         match stream_vendor_with_hooks(
             &inputs,
             &cancelled,
-            &test_subagent_after_claim,
+            &no_after_claim,
             database_claim.as_deref(),
             turn_row_store,
         ) {
@@ -1384,7 +1378,7 @@ fn unavailable_evidence_pass(
 
 #[cfg(test)]
 pub(crate) fn evidence_pass(inputs: &[SessionInput], cancelled: &dyn Fn() -> bool) -> EvidencePass {
-    evidence_pass_with_hook(inputs, cancelled, &test_subagent_after_claim, None)
+    evidence_pass_with_hook(inputs, cancelled, &no_after_claim, None)
 }
 
 /// Like [`evidence_pass`], with a [`TurnRowStore`] fanned out through the
@@ -1397,12 +1391,7 @@ pub(crate) fn evidence_pass_with_turn_rows(
     cancelled: &dyn Fn() -> bool,
     turn_row_store: Option<Arc<dyn TurnRowStore>>,
 ) -> EvidencePass {
-    evidence_pass_with_hook(
-        inputs,
-        cancelled,
-        &test_subagent_after_claim,
-        turn_row_store,
-    )
+    evidence_pass_with_hook(inputs, cancelled, &no_after_claim, turn_row_store)
 }
 
 #[cfg(test)]
@@ -1456,72 +1445,11 @@ pub fn projection_revisions() -> ProjectionRevisions {
     }
 }
 
-/// Analyze one sub-agent transcript on its own.
-///
-/// A sub-agent is a session in its own right. The analysis surface opens its
-/// transcript like any other session. Vendors do not nest orchestration, so
-/// this path analyzes one input.
-pub async fn analyze_subagent(
-    agent: AgentKind,
-    parent_session_id: &str,
-    subagent_id: &str,
-    wsl_distro: Option<&str>,
-    cancel: CancelFlag,
-) -> SessionAnalysis {
-    let Some(source) =
-        locate_subagent_source(agent, parent_session_id, subagent_id, wsl_distro).await
-    else {
-        return SessionAnalysis::unavailable();
-    };
-    let Some(raw) = raw_source(&source).await else {
-        return SessionAnalysis::unavailable();
-    };
-
-    let input = SessionInput {
-        agent: vendor_label(agent).to_string(),
-        session_id: subagent_id.to_string(),
-        source: raw,
-    };
-    let fingerprint = fingerprint_of(&source);
-    let source_path = source_path(&source);
-    let agent_slug = agent.slug().to_string();
-
-    // Every vendor now has a real `SourceCapabilities` profile (see
-    // `capabilities_for_vendor`), so this always streams — there is no
-    // separate, uncharacterized-vendor fallback pass any more.
-    let computed =
-        tauri::async_runtime::spawn_blocking(move || match stream_vendor(&[input], &cancel) {
-            StreamOutcome::Published { session, .. } => {
-                Some((session.parent, session.started_at_epoch))
-            }
-            StreamOutcome::SourceChanged
-            | StreamOutcome::ParentMissing
-            | StreamOutcome::ParentUnsupported
-            | StreamOutcome::ParentUnreadable => None,
-        })
-        .await;
-    let Ok(Some((metrics, started_at_epoch))) = computed else {
-        return SessionAnalysis {
-            source_path,
-            fingerprint,
-            ..SessionAnalysis::unavailable()
-        };
-    };
-    standalone_session_analysis(
-        metrics,
-        agent_slug,
-        source_path,
-        fingerprint,
-        started_at_epoch,
-    )
-}
-
 /// Builds the session-detail [`SessionAnalysis`] for a transcript with no
-/// sub-agent split of its own — a sub-agent viewed on its own, whether from
-/// a live parse ([`analyze_subagent`]) or the drilldown's rows-replay path
-/// ([`subagent_analysis_from_rows`]). `cost` and `top_level_cost` name the
-/// same figure: a sub-agent launches no sub-agent of its own, so its own
-/// transcript is the whole story.
+/// sub-agent split of its own — a sub-agent viewed on its own, from the
+/// drilldown's rows-replay path ([`subagent_analysis_from_rows`]). `cost` and
+/// `top_level_cost` name the same figure: a sub-agent launches no sub-agent
+/// of its own, so its own transcript is the whole story.
 fn standalone_session_analysis(
     mut metrics: SessionMetrics,
     agent_slug: String,
@@ -1602,44 +1530,6 @@ pub fn subagent_analysis_from_rows(
         record.source_fingerprint,
         started_at_epoch,
     ))
-}
-
-async fn locate_subagent_source(
-    agent: AgentKind,
-    parent_session_id: &str,
-    subagent_id: &str,
-    wsl_distro: Option<&str>,
-) -> Option<SessionSource> {
-    #[cfg(test)]
-    {
-        let override_ = subagent_test_override()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(override_) = override_.as_ref()
-            && override_.parent_session_id == parent_session_id
-            && override_.subagent_id == subagent_id
-        {
-            return Some(SessionSource::File(override_.source_path.clone()));
-        }
-    }
-    Explorers::DISK
-        .locate_subagent_source_in_environment(&agent, parent_session_id, subagent_id, wsl_distro)
-        .await
-}
-
-#[cfg(test)]
-struct SubagentTestOverride {
-    parent_session_id: String,
-    subagent_id: String,
-    source_path: std::path::PathBuf,
-    append_after_claim: Option<String>,
-}
-
-#[cfg(test)]
-fn subagent_test_override() -> &'static std::sync::Mutex<Option<SubagentTestOverride>> {
-    static OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<SubagentTestOverride>>> =
-        std::sync::OnceLock::new();
-    OVERRIDE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
 /// Whether analysis of this agent's transcripts is more than a generic parse.
@@ -2102,16 +1992,6 @@ mod tests {
         ]
         .join("\n")
             + "\n"
-    }
-
-    struct SubagentOverrideGuard;
-
-    impl Drop for SubagentOverrideGuard {
-        fn drop(&mut self) {
-            *subagent_test_override()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        }
     }
 
     #[test]
@@ -2864,44 +2744,6 @@ mod tests {
         assert!(first.observe());
         assert!(!second.observe());
         assert_eq!(second.progress(), 1);
-    }
-
-    #[tokio::test]
-    async fn a_changed_subagent_source_rejects_the_direct_subagent_view() {
-        let directory = tempfile::TempDir::new().expect("tempdir");
-        let path = directory.path().join("agent-review-gap.jsonl");
-        std::fs::write(&path, claude_record("before-change", 1_760_000_000))
-            .expect("write sub-agent");
-        let parent_session_id = "review-gap-parent";
-        let subagent_id = "review-gap-child";
-        {
-            let mut override_ = subagent_test_override()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            assert!(override_.is_none());
-            *override_ = Some(SubagentTestOverride {
-                parent_session_id: parent_session_id.to_string(),
-                subagent_id: subagent_id.to_string(),
-                source_path: path,
-                append_after_claim: Some(claude_record("after-change", 1_760_000_001)),
-            });
-        }
-        let _guard = SubagentOverrideGuard;
-
-        let analysis = analyze_subagent(
-            AgentKind::Claude,
-            parent_session_id,
-            subagent_id,
-            None,
-            CancelFlag::never(),
-        )
-        .await;
-
-        assert!(analysis.metrics.is_none());
-        assert!(analysis.summary.is_none());
-        assert!(analysis.cost.is_none());
-        assert!(analysis.inclusive_tokens.is_none());
-        assert!(analysis.inclusive_model_breakdown.is_empty());
     }
 
     #[test]
