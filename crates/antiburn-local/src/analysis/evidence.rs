@@ -543,6 +543,123 @@ impl SourceCapabilities {
             harness_version: false,
         }
     }
+
+    /// Cursor's shared JSON record shape (`RecordShape::Cursor`) never reads
+    /// `message.usage`, an effort field, or a top-level thread-identity pair
+    /// (`uuid`/`parentUuid`), so this profile carries no token-class, cache,
+    /// reasoning-tier, or thread/record identity claim.
+    ///
+    /// `timestamps_and_order` is set: every record shape reads a top-level
+    /// `timestamp`. `model_identity` is set: the model comes from
+    /// `message.model` or a top-level `model` key, tried in that order.
+    ///
+    /// `tool_invocations` is set: `message.content`/top-level content blocks
+    /// and a top-level `tool_calls[]` array both feed the shared content and
+    /// tool-call parsing. `tool_definitions` stays unset — neither shape
+    /// carries a tool catalog.
+    ///
+    /// The adapter emits no `SubagentSpawn`, `ThreadLink`, or `ContextSource`
+    /// observation (those come from `evidence_observations`, which only the
+    /// Claude adapter calls), so `subagent_relationships`, `subagent_models`,
+    /// and `skill_mcp_attribution` stay unset. Cursor writes no compaction,
+    /// quota, or harness-version record either.
+    pub fn cursor() -> Self {
+        Self {
+            request_context_tokens: false,
+            cache_write_tokens: false,
+            timestamps_and_order: true,
+            tool_invocations: true,
+            skill_mcp_attribution: false,
+            tool_definitions: false,
+            model_identity: true,
+            token_classes: false,
+            reasoning_effort_tier: false,
+            fast_tier: false,
+            service_tier: false,
+            subagent_relationships: false,
+            subagent_models: false,
+            compaction_boundaries: false,
+            thread_identity: false,
+            record_identity: false,
+            quota_incidents: false,
+            harness_version: false,
+        }
+    }
+
+    /// Antigravity's own module documents its token-usage and tool-name
+    /// field locations as undocumented by the vendor: the adapter reads
+    /// likely containers (`usage`/`tokenUsage`/`tokens`) and leaves missing
+    /// values empty rather than reading a confirmed contract. That
+    /// uncertainty keeps `request_context_tokens`, `cache_write_tokens`, and
+    /// `token_classes` unset.
+    ///
+    /// `timestamps_and_order` is set: the step timestamp locations
+    /// (`created_at`/`timestamp`/`createdAt`, plus the API-cascade
+    /// `metadata.createdAt`/`metadata.startedAt` fallback) are confirmed
+    /// against real captures, not guessed.
+    ///
+    /// `tool_invocations` is set: the adapter reads a step's `tool_calls[]`
+    /// array by name, a documented, load-bearing shape (`PLANNER_RESPONSE`
+    /// steps carry it), plus a same-step fallback for a tool-role step that
+    /// names its tool inline. `tool_definitions` stays unset — neither path
+    /// carries a tool catalog.
+    ///
+    /// Every other field stays unset: the adapter never sets `NormalizedSession.model`
+    /// or an event's model (so `model_identity` is unset), and emits no
+    /// thread-identity, subagent, compaction, quota, or harness-version
+    /// signal at all.
+    pub fn antigravity() -> Self {
+        Self {
+            request_context_tokens: false,
+            cache_write_tokens: false,
+            timestamps_and_order: true,
+            tool_invocations: true,
+            skill_mcp_attribution: false,
+            tool_definitions: false,
+            model_identity: false,
+            token_classes: false,
+            reasoning_effort_tier: false,
+            fast_tier: false,
+            service_tier: false,
+            subagent_relationships: false,
+            subagent_models: false,
+            compaction_boundaries: false,
+            thread_identity: false,
+            record_identity: false,
+            quota_incidents: false,
+            harness_version: false,
+        }
+    }
+
+    /// The generic JSONL fallback's profile: every field unset.
+    ///
+    /// An unknown vendor's transcript proves no vendor-specific contract —
+    /// the same reasoning `GenericJsonlAdapter::normalize` already applies to
+    /// `cache_write_tokens_available` (see `vendors/generic_jsonl.rs`). This
+    /// adapter cannot vouch for any evidence contract, so every detector that
+    /// needs one reads this source as unsupported rather than guessing.
+    pub fn generic() -> Self {
+        Self {
+            request_context_tokens: false,
+            cache_write_tokens: false,
+            timestamps_and_order: false,
+            tool_invocations: false,
+            skill_mcp_attribution: false,
+            tool_definitions: false,
+            model_identity: false,
+            token_classes: false,
+            reasoning_effort_tier: false,
+            fast_tier: false,
+            service_tier: false,
+            subagent_relationships: false,
+            subagent_models: false,
+            compaction_boundaries: false,
+            thread_identity: false,
+            record_identity: false,
+            quota_incidents: false,
+            harness_version: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -898,6 +1015,116 @@ mod tests {
                 "identity.agent".to_owned(),
                 "identity.session_id".to_owned()
             ])
+        );
+    }
+
+    /// Pins `SourceCapabilities::cursor()` against what the Cursor adapter
+    /// actually emits: every claimed-true signal (timestamps, model, tool
+    /// invocations) appears, and every claimed-false one (usage-derived
+    /// token classes, thread identity) never does.
+    #[test]
+    fn cursor_capabilities_match_what_the_adapter_actually_emits() {
+        use crate::analysis::interface::SessionInput;
+        use crate::analysis::model::Usage;
+        use crate::analysis::vendors::adapter_for;
+
+        let input = SessionInput {
+            agent: "cursor".to_owned(),
+            session_id: "cursor-probe".to_owned(),
+            source: RawSource::Jsonl(
+                r#"{"role":"user","content":"hi","timestamp":"2026-01-01T00:00:00.000Z"}
+{"role":"assistant","model":"gpt-5","content":"working on it","tool_calls":[{"name":"read_file","arguments":"{}"}],"timestamp":"2026-01-01T00:00:05.000Z"}
+"#
+                .to_owned(),
+            ),
+        };
+        let session = adapter_for("cursor")
+            .normalize(&input)
+            .expect("a synthetic Cursor session normalizes");
+        let caps = SourceCapabilities::cursor();
+
+        assert!(caps.timestamps_and_order);
+        assert!(session.events.iter().all(|event| event.ts_ms.is_some()));
+
+        assert!(caps.model_identity);
+        assert!(session.events.iter().any(|event| event.model.is_some()));
+
+        assert!(caps.tool_invocations);
+        assert!(session.events.iter().any(|event| !event.tools.is_empty()));
+
+        assert!(!caps.token_classes);
+        assert!(
+            session
+                .events
+                .iter()
+                .all(|event| event.usage == Usage::default())
+        );
+
+        assert!(!caps.thread_identity);
+        assert!(session.events.iter().all(|event| event.uuid.is_none()));
+    }
+
+    /// Pins `SourceCapabilities::antigravity()` against the adapter: the
+    /// step timestamp and `tool_calls[]` locations it claims are confirmed
+    /// really do populate events, while it never claims a model, since the
+    /// adapter sets none.
+    #[test]
+    fn antigravity_capabilities_match_what_the_adapter_actually_emits() {
+        use crate::analysis::interface::SessionInput;
+        use crate::analysis::vendors::adapter_for;
+
+        let input = SessionInput {
+            agent: "antigravity".to_owned(),
+            session_id: "antigravity-probe".to_owned(),
+            source: RawSource::Jsonl(
+                r#"{"type":"USER_INPUT","created_at":"2026-01-01T00:00:00.000Z","content":"hi"}
+{"type":"PLANNER_RESPONSE","created_at":"2026-01-01T00:00:05.000Z","content":"working on it","tool_calls":[{"name":"read_file"}]}
+"#
+                .to_owned(),
+            ),
+        };
+        let session = adapter_for("antigravity")
+            .normalize(&input)
+            .expect("a synthetic Antigravity session normalizes");
+        let caps = SourceCapabilities::antigravity();
+
+        assert!(caps.timestamps_and_order);
+        assert!(session.events.iter().all(|event| event.ts_ms.is_some()));
+
+        assert!(caps.tool_invocations);
+        assert!(session.events.iter().any(|event| !event.tools.is_empty()));
+
+        assert!(!caps.model_identity);
+        assert!(session.events.iter().all(|event| event.model.is_none()));
+        assert!(session.model.is_none());
+    }
+
+    /// The generic fallback vouches for nothing: every capability is unset.
+    #[test]
+    fn generic_capabilities_are_all_unset() {
+        let caps = SourceCapabilities::generic();
+        assert_eq!(
+            caps,
+            SourceCapabilities {
+                request_context_tokens: false,
+                cache_write_tokens: false,
+                timestamps_and_order: false,
+                tool_invocations: false,
+                skill_mcp_attribution: false,
+                tool_definitions: false,
+                model_identity: false,
+                token_classes: false,
+                reasoning_effort_tier: false,
+                fast_tier: false,
+                service_tier: false,
+                subagent_relationships: false,
+                subagent_models: false,
+                compaction_boundaries: false,
+                thread_identity: false,
+                record_identity: false,
+                quota_incidents: false,
+                harness_version: false,
+            }
         );
     }
 }
