@@ -11,14 +11,16 @@
 //! never labels.
 
 use antiburn_local::analysis::{
-    ActiveSessionsSummary, EfficiencyTotals, EvidenceValue, ModelRun, QuotaLimitKind,
-    RepeatedContextAccounting, SessionCost, SessionEvidence,
+    ActiveSessionsSummary, EfficiencyTotals, EvidenceValue, FAST_SPEED_KEY, ModelRun,
+    QuotaLimitKind, RepeatedContextAccounting, SessionCost, SessionEvidence,
 };
 use antiburn_local::insights::{
     BadgeId, BadgeStatus, DetectorId, DetectorStatus, EfficiencyReport, NotAssessedReason,
-    QuotaPressureSection, SessionBadge,
+    QuotaPressureSection, ReportCatalogs, SessionBadge, model_family,
 };
+use antiburn_local::pricing::canonical_model_key;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 /// One row of the popover's activity list.
 ///
@@ -548,8 +550,55 @@ pub enum SessionHygieneStatus {
     NotAssessed,
 }
 
-/// One session hygiene badge with identifiers only.
-#[derive(Debug, Clone, Copy, Serialize)]
+/// The stored facts that caused one session hygiene finding.
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum SessionHygieneFindingEvidencePayload {
+    SessionOverdepth {
+        max_request_context_tokens: u64,
+        depth_cap_tokens: u64,
+    },
+    ModelOverthinking {
+        tiers: Vec<HygieneEffortTierPayload>,
+    },
+    OverpoweredSubagents {
+        main_models: Vec<String>,
+        delegated_models: Vec<String>,
+    },
+    ObsoleteModel {
+        models: Vec<HygieneObsoleteModelPayload>,
+    },
+    FastModeOveruse {
+        delegated_turns: u64,
+    },
+    ExcessCacheRehydration {
+        repeated_tokens: u64,
+        paid_tokens: u64,
+        threshold_multiple: f64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HygieneEffortTierPayload {
+    pub tier: String,
+    pub main_loop_turns: u64,
+    pub delegated_turns: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HygieneObsoleteModelPayload {
+    pub model: String,
+    pub replacement: String,
+}
+
+/// One session hygiene badge with the facts behind a finding.
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionHygieneBadgePayload {
     pub id: &'static str,
@@ -560,6 +609,9 @@ pub struct SessionHygieneBadgePayload {
     /// `repeated_context` marker.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accounting: Option<&'static str>,
+    /// Present only when stored evidence explains a finding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finding_evidence: Option<SessionHygieneFindingEvidencePayload>,
 }
 
 /// The session badge set and its stored evidence state.
@@ -582,7 +634,11 @@ fn badge_id_str(id: BadgeId) -> &'static str {
 }
 
 impl SessionHygieneBadgePayload {
-    fn from_badge(badge: SessionBadge, accounting: Option<&'static str>) -> Self {
+    fn from_badge(
+        badge: SessionBadge,
+        accounting: Option<&'static str>,
+        finding_evidence: Option<SessionHygieneFindingEvidencePayload>,
+    ) -> Self {
         let (status, not_assessed_reason) = match badge.status {
             BadgeStatus::Finding => (SessionHygieneStatus::Finding, None),
             BadgeStatus::Clean => (SessionHygieneStatus::Clean, None),
@@ -603,6 +659,145 @@ impl SessionHygieneBadgePayload {
             status,
             not_assessed_reason,
             accounting,
+            finding_evidence,
+        }
+    }
+}
+
+fn observed<T>(evidence: &EvidenceValue<T>) -> Option<&T> {
+    match evidence {
+        EvidenceValue::Complete(observed) | EvidenceValue::Partial { observed, .. } => {
+            Some(observed)
+        }
+        EvidenceValue::Unsupported => None,
+    }
+}
+
+fn model_is_premium(model: &str, catalogs: &ReportCatalogs) -> bool {
+    let Some(policy) = catalogs.families.get(&model_family(model)) else {
+        return false;
+    };
+    policy.premium.reviewed && policy.premium.is_premium(&canonical_model_key(model))
+}
+
+fn finding_evidence(
+    id: BadgeId,
+    evidence: &SessionEvidence,
+    catalogs: &ReportCatalogs,
+) -> Option<SessionHygieneFindingEvidencePayload> {
+    match id {
+        BadgeId::SessionOverdepth => {
+            let context = observed(&evidence.context)?;
+            Some(SessionHygieneFindingEvidencePayload::SessionOverdepth {
+                max_request_context_tokens: context.max_request_context_tokens,
+                depth_cap_tokens: catalogs.depth_cap_tokens,
+            })
+        }
+        BadgeId::ModelOverthinking => {
+            let models = observed(&evidence.models)?;
+            let families = models
+                .by_model
+                .keys()
+                .map(|model| model_family(model))
+                .collect::<BTreeSet<_>>();
+            let tiers = models
+                .effort_tiers
+                .iter()
+                .filter_map(|(tier, turns)| {
+                    let normalized = tier.trim().to_lowercase();
+                    let above_cap = families.iter().any(|family| {
+                        catalogs
+                            .families
+                            .get(family)
+                            .is_some_and(|policy| policy.effort.above_cap.contains(&normalized))
+                    });
+                    above_cap.then(|| HygieneEffortTierPayload {
+                        tier: tier.clone(),
+                        main_loop_turns: turns.main_loop,
+                        delegated_turns: turns.delegated,
+                    })
+                })
+                .collect();
+            Some(SessionHygieneFindingEvidencePayload::ModelOverthinking { tiers })
+        }
+        BadgeId::OverpoweredSubagents => {
+            let subagents = observed(&evidence.subagents)?;
+            let models = observed(&evidence.models);
+            let main_models = models
+                .and_then(|models| models.dominant_main_model.as_ref())
+                .filter(|model| model_is_premium(model, catalogs))
+                .cloned()
+                .into_iter()
+                .chain(
+                    subagents
+                        .children
+                        .iter()
+                        .filter_map(|child| child.parent_model.as_ref())
+                        .filter(|model| model_is_premium(model, catalogs))
+                        .cloned(),
+                )
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let delegated_models = subagents
+                .delegated_models
+                .iter()
+                .filter(|model| model_is_premium(model, catalogs))
+                .cloned()
+                .collect();
+            Some(SessionHygieneFindingEvidencePayload::OverpoweredSubagents {
+                main_models,
+                delegated_models,
+            })
+        }
+        BadgeId::ObsoleteModel => {
+            let models = observed(&evidence.models)?;
+            let models = models
+                .by_model
+                .iter()
+                .filter_map(|(model, tokens)| {
+                    let replacement = catalogs.model_replacements.lookup(model)?;
+                    (tokens.turns > 0 && tokens.last_ts_ms >= replacement.available_since_ts_ms)
+                        .then(|| HygieneObsoleteModelPayload {
+                            model: model.clone(),
+                            replacement: replacement.replacement.clone(),
+                        })
+                })
+                .collect();
+            Some(SessionHygieneFindingEvidencePayload::ObsoleteModel { models })
+        }
+        BadgeId::FastModeOveruse => {
+            let models = observed(&evidence.models)?;
+            let delegated_turns = models
+                .fast_modes
+                .iter()
+                .filter(|(label, turns)| {
+                    label.trim().eq_ignore_ascii_case(FAST_SPEED_KEY)
+                        && turns.delegated >= catalogs.fast_mode_delegated_turns_threshold
+                })
+                .map(|(_, turns)| turns.delegated)
+                .sum();
+            Some(SessionHygieneFindingEvidencePayload::FastModeOveruse { delegated_turns })
+        }
+        BadgeId::ExcessCacheRehydration => {
+            let cache = observed(&evidence.cache)?;
+            let repeated_context = observed(&cache.repeated_context)?;
+            let models = observed(&evidence.models)?;
+            let model = models
+                .dominant_main_model
+                .as_ref()
+                .or_else(|| models.by_model.keys().next())?;
+            let threshold_multiple = catalogs
+                .families
+                .get(&model_family(model))?
+                .cache_overpay_multiple_threshold;
+            Some(
+                SessionHygieneFindingEvidencePayload::ExcessCacheRehydration {
+                    repeated_tokens: repeated_context.repeated_tokens,
+                    paid_tokens: repeated_context.paid_tokens,
+                    threshold_multiple,
+                },
+            )
         }
     }
 }
@@ -637,7 +832,7 @@ impl SessionHygienePayload {
         Self {
             badges: badges
                 .into_iter()
-                .map(|badge| SessionHygieneBadgePayload::from_badge(badge, accounting))
+                .map(|badge| SessionHygieneBadgePayload::from_badge(badge, accounting, None))
                 .collect(),
             evidence_state,
         }
@@ -646,13 +841,24 @@ impl SessionHygienePayload {
     pub fn for_evidence(
         badges: [SessionBadge; 6],
         evidence: &SessionEvidence,
+        catalogs: &ReportCatalogs,
         evidence_state: &'static str,
     ) -> Self {
-        Self::from_badges(
-            badges,
-            repeated_context_accounting_str(evidence),
+        let accounting = repeated_context_accounting_str(evidence);
+        Self {
+            badges: badges
+                .into_iter()
+                .map(|badge| {
+                    let details = if matches!(badge.status, BadgeStatus::Finding) {
+                        finding_evidence(badge.id, evidence, catalogs)
+                    } else {
+                        None
+                    };
+                    SessionHygieneBadgePayload::from_badge(badge, accounting, details)
+                })
+                .collect(),
             evidence_state,
-        )
+        }
     }
 
     pub fn not_assessed(evidence_state: &'static str, reason: NotAssessedReason) -> Self {
@@ -1050,9 +1256,14 @@ mod tests {
     mod insights {
         use std::collections::{BTreeMap, BTreeSet};
 
+        use antiburn_local::analysis::{
+            ContextEvidence, EvidenceSource, ModelTokens, RelationConfidence, RelationProvenance,
+            RepeatedContext, SessionEvidenceAccumulator, SourceCapabilities, SourceKind,
+            SubagentChild, TurnCounts, TurnFacts,
+        };
         use antiburn_local::insights::{
             CoverageCounts, DetectorFindings, EfficiencyReportAccumulator, QuotaPressureFindings,
-            ReportContext, ReportWindow,
+            ReportContext, ReportWindow, session_badges,
         };
 
         use super::*;
@@ -1292,6 +1503,123 @@ mod tests {
                         {"id": "excessCacheRehydration", "status": "clean", "notAssessedReason": null}
                     ],
                     "evidenceState": "ready"
+                })
+            );
+        }
+
+        #[test]
+        fn the_session_hygiene_payload_serializes_finding_evidence() {
+            let mut evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+                agent: "claude-code".to_owned(),
+                session_id: "finding-details".to_owned(),
+                kind: SourceKind::File,
+                capabilities: SourceCapabilities::claude(),
+            })
+            .evidence(&TurnFacts::default());
+            let catalogs = ReportCatalogs::default();
+
+            evidence.context = EvidenceValue::Complete(ContextEvidence {
+                max_request_context_tokens: catalogs.depth_cap_tokens + 50_000,
+                top_depth_examples: Vec::new(),
+            });
+            let EvidenceValue::Complete(models) = &mut evidence.models else {
+                panic!("synthetic model evidence must be complete");
+            };
+            models.dominant_main_model = Some("claude-opus-4-6".to_owned());
+            models.by_model.insert(
+                "claude-opus-4-6".to_owned(),
+                ModelTokens {
+                    turns: 2,
+                    last_ts_ms: i64::MAX,
+                    ..ModelTokens::default()
+                },
+            );
+            models.effort_tiers.insert(
+                "max".to_owned(),
+                TurnCounts {
+                    main_loop: 2,
+                    delegated: 0,
+                },
+            );
+            models.fast_modes.insert(
+                FAST_SPEED_KEY.to_owned(),
+                TurnCounts {
+                    main_loop: 0,
+                    delegated: 2,
+                },
+            );
+
+            let EvidenceValue::Complete(subagents) = &mut evidence.subagents else {
+                panic!("synthetic subagent evidence must be complete");
+            };
+            subagents.spawn_count = 1;
+            subagents.delegated_turns = 2;
+            subagents
+                .delegated_models
+                .insert("claude-opus-4-6".to_owned());
+            subagents.children.push(SubagentChild {
+                ordinal: 1,
+                parent_model: Some("claude-opus-4-6".to_owned()),
+                child_model: EvidenceValue::Unsupported,
+                confidence: RelationConfidence::Observed,
+                provenance: RelationProvenance::TaskToolUse,
+            });
+
+            let EvidenceValue::Complete(cache) = &mut evidence.cache else {
+                panic!("synthetic cache evidence must be complete");
+            };
+            cache.repeated_context = EvidenceValue::Complete(RepeatedContext {
+                accounting: RepeatedContextAccounting::CacheWrite,
+                repeated_tokens: 135,
+                paid_tokens: 235,
+                pairs_considered: 1,
+                pairs_skipped: 0,
+            });
+
+            let payload = SessionHygienePayload::for_evidence(
+                session_badges(&evidence, &catalogs),
+                &evidence,
+                &catalogs,
+                "ready",
+            );
+            let value = serde_json::to_value(payload).unwrap();
+
+            assert_eq!(
+                value["badges"][0]["findingEvidence"],
+                serde_json::json!({
+                    "kind": "sessionOverdepth",
+                    "maxRequestContextTokens": 450_000,
+                    "depthCapTokens": 400_000
+                })
+            );
+            assert_eq!(
+                value["badges"][1]["findingEvidence"]["kind"],
+                "modelOverthinking"
+            );
+            assert_eq!(
+                value["badges"][1]["findingEvidence"]["tiers"][0]["tier"],
+                "max"
+            );
+            assert_eq!(
+                value["badges"][2]["findingEvidence"]["kind"],
+                "overpoweredSubagents"
+            );
+            assert_eq!(
+                value["badges"][3]["findingEvidence"]["kind"],
+                "obsoleteModel"
+            );
+            assert_eq!(
+                value["badges"][3]["findingEvidence"]["models"][0]["replacement"],
+                "claude-opus-5"
+            );
+            assert_eq!(value["badges"][4]["findingEvidence"]["delegatedTurns"], 2);
+            assert_eq!(
+                value["badges"][5]["findingEvidence"],
+                serde_json::json!({
+                    "kind": "excessCacheRehydration",
+                    "repeatedTokens": 135,
+                    "paidTokens": 235,
+                    "thresholdMultiple": 2.35
                 })
             );
         }

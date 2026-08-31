@@ -50,6 +50,7 @@ import { Skeleton } from "../ui/Skeleton"
 import { CostBreakdown } from "./analysis/CostBreakdown"
 import { ContextTokensChart } from "./analysis/ContextTokensChart"
 import { EfficiencyBreakdown } from "./analysis/EfficiencyBreakdown"
+import { HygieneBreakdown } from "./analysis/HygieneBreakdown"
 import { SkillsMcpChart } from "./analysis/SkillsMcpChart"
 import { SessionCostBadge } from "./metrics/SessionCostBadge"
 import type { AgentIconRenderer } from "./orchestration/SubagentRosterRow"
@@ -629,7 +630,6 @@ export function SessionDetailPresentation({
 
         {ready && !error && !empty && summary && (
           <>
-            {/* Header */}
             <div className="w-full flex flex-col gap-y-2 px-4 pb-3">
               <div className="flex items-center gap-x-2" aria-label="Session summary">
                 <span className="shrink-0">{renderAgentIcon(session.agent, 20)}</span>
@@ -739,34 +739,8 @@ export function SessionDetailPresentation({
                   lines={3}
                 />
               </div>
-
-              <div className="flex items-center gap-x-2">
-                <span className="type-footnote text-label-tertiary">
-                  Hygiene checks{hygieneStateLabel ? ` · ${hygieneStateLabel}` : ""}:
-                </span>
-                <div className="flex items-center gap-x-2" aria-label="Session hygiene checks">
-                  {hygieneChecks.map((check) => (
-                    <span
-                      key={check.id}
-                      className={cn(
-                        "inline-flex size-5 items-center justify-center rounded-control bg-surface-secondary type-footnote leading-none transition-opacity duration-[var(--duration-fast)] hover:opacity-80",
-                        check.status === "clean" && "text-system-green opacity-50",
-                        check.status === "finding" && "text-system-red-text opacity-70",
-                        check.status === "notAssessed" &&
-                          "border border-dashed border-separator text-label-tertiary opacity-70",
-                      )}
-                      title={check.title}
-                      aria-label={check.title}
-                    >
-                      {check.status === "clean" ? "✓" : check.status === "finding" ? "×" : "?"}
-                    </span>
-                  ))}
-                </div>
-              </div>
             </div>
 
-            {/* Provenance: mark a sub-agent view as an autonomous worker and
-                link up to the orchestrator that launched it. */}
             {subagent && (
               <SubagentBadge
                 parentAgent={session.agent}
@@ -784,6 +758,13 @@ export function SessionDetailPresentation({
                 <EfficiencyBreakdown metrics={efficiencyCard} />
               </Card>
             )}
+
+            <Card
+              title="Burn Checks"
+              {...(hygieneStateLabel ? { hint: hygieneStateLabel } : {})}
+            >
+              <HygieneBreakdown checks={hygieneChecks} />
+            </Card>
 
             {tokensCard && (
               <Card title="Context" subtitle={tokensCard.hint}>

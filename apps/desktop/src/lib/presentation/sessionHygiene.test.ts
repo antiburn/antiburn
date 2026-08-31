@@ -5,6 +5,7 @@ import {
   INITIAL_SESSION_HYGIENE,
   notAssessedReasonLabel,
   sessionHygieneChecks,
+  sessionHygieneDocumentation,
   sessionHygieneStateLabel,
 } from "./sessionHygiene"
 
@@ -27,17 +28,17 @@ const PAYLOAD: SessionHygienePayload = {
 describe("sessionHygieneChecks", () => {
   it("maps every engine identifier to reader copy in a stable order", () => {
     expect(sessionHygieneChecks(PAYLOAD).map(({ id, title }) => ({ id, title }))).toEqual([
-      { id: "sessionOverdepth", title: "Session overdepth detected" },
-      { id: "modelOverthinking", title: "No model overthinking detected" },
+      { id: "sessionOverdepth", title: "Session went too deep" },
+      { id: "modelOverthinking", title: "Thinking/reasoning modes ok" },
       {
         id: "overpoweredSubagents",
-        title: "Overpowered subagents not assessed",
+        title: "Subagent models not assessed",
       },
-      { id: "obsoleteModel", title: "No obsolete model detected" },
-      { id: "fastModeOveruse", title: "No fast mode overuse detected" },
+      { id: "obsoleteModel", title: "All models up to date" },
+      { id: "fastModeOveruse", title: "Fast mode not overused" },
       {
         id: "excessCacheRehydration",
-        title: "No excess cache rehydration detected",
+        title: "Cache rehydration under control",
       },
     ])
   })
@@ -48,8 +49,8 @@ describe("sessionHygieneChecks", () => {
       "Model overthinking",
       "Overpowered subagents",
       "Obsolete model",
-      "Fast-mode overuse",
-      "Excess context reprocessing",
+      "Fast mode overuse",
+      "Excess cache rehydration",
     ])
   })
 
@@ -58,6 +59,65 @@ describe("sessionHygieneChecks", () => {
       expect(check.name.toLowerCase()).not.toContain("detected")
       expect(check.name.toLowerCase()).not.toContain("not assessed")
     }
+  })
+
+  it("provides an explanation and guidance for every check", () => {
+    for (const check of sessionHygieneChecks(PAYLOAD)) {
+      const documentation = sessionHygieneDocumentation(check)
+      expect(documentation.summary.length).toBeGreaterThan(0)
+      expect(documentation.guidance.length).toBeGreaterThan(0)
+    }
+  })
+
+  it("describes the stored evidence that caused a finding", () => {
+    const payload: SessionHygienePayload = {
+      ...PAYLOAD,
+      badges: PAYLOAD.badges.map((badge) =>
+        badge.id === "modelOverthinking"
+          ? {
+              ...badge,
+              status: "finding" as const,
+              findingEvidence: {
+                kind: "modelOverthinking" as const,
+                tiers: [{ tier: "max", mainLoopTurns: 2, delegatedTurns: 1 }],
+              },
+            }
+          : badge,
+      ),
+    }
+    const check = sessionHygieneChecks(payload).find(
+      (candidate) => candidate.id === "modelOverthinking",
+    )!
+
+    expect(sessionHygieneDocumentation(check).findingDetails).toEqual([
+      "The session used max reasoning for 3 turns.",
+    ])
+  })
+
+  it("uses concise model names in finding details", () => {
+    const payload: SessionHygienePayload = {
+      ...PAYLOAD,
+      badges: PAYLOAD.badges.map((badge) =>
+        badge.id === "overpoweredSubagents"
+          ? {
+              ...badge,
+              status: "finding" as const,
+              findingEvidence: {
+                kind: "overpoweredSubagents" as const,
+                mainModels: ["claude-fable-5"],
+                delegatedModels: ["claude-fable-5", "claude-opus-5"],
+              },
+            }
+          : badge,
+      ),
+    }
+    const check = sessionHygieneChecks(payload).find(
+      (candidate) => candidate.id === "overpoweredSubagents",
+    )!
+
+    expect(sessionHygieneDocumentation(check).findingDetails).toEqual([
+      "fable-5 used premium subagents (fable-5 and opus-5).",
+    ])
   })
 
   it("names the not-assessed obsolete-model check without its verdict", () => {
@@ -108,6 +168,9 @@ describe("sessionHygieneChecks", () => {
       (candidate) => candidate.id === "excessCacheRehydration",
     )
     expect(check?.detail).toBe("Reduce repeated cache writes")
+    expect(check && sessionHygieneDocumentation(check).guidance[0]).toBe(
+      "Reduce repeated cache writes",
+    )
   })
 
   it("names the accounting-specific detail copy for an uncached-input finding", () => {

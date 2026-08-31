@@ -155,7 +155,7 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.getByText("Cost")).toBeTruthy()
   })
 
-  it("renders a distinct not-assessed hygiene pip with an accessible label", () => {
+  it("renders every hygiene check with a distinct verdict", () => {
     view({
       hygiene: {
         badges: [
@@ -194,12 +194,35 @@ describe("SessionDetailPresentation — chrome", () => {
       },
     })
 
-    const pip = screen.getByLabelText("Session overdepth not assessed")
-    expect(pip.textContent).toBe("?")
-    expect(pip.className).toContain("border-dashed")
-    expect(pip.className).toContain("text-label-tertiary")
-    expect(screen.getByLabelText("No model overthinking detected").textContent).toBe("✓")
-    expect(screen.getByLabelText("Overpowered subagents detected").textContent).toBe("×")
+    const hygiene = screen.getByLabelText("Session hygiene checks")
+    expect(hygiene.children).toHaveLength(2)
+    const summary = screen.getByRole("button", {
+      name: "4/5 passing, 1 not assessed",
+    })
+    expect(
+      screen.getByRole("button", { name: "Overpowered subagents details" }),
+    ).toHaveTextContent("failing")
+
+    fireEvent.click(summary)
+
+    expect(screen.getByRole("button", { name: "Session overdepth details" })).toHaveTextContent(
+      "not assessed",
+    )
+    expect(
+      screen.getByRole("button", { name: "Model overthinking details" }),
+    ).toHaveTextContent("passing")
+  })
+
+  it("shows the hygiene evidence state in the card header", () => {
+    view({
+      hygiene: {
+        ...INITIAL_SESSION_HYGIENE,
+        evidenceState: "stale",
+      },
+    })
+
+    expect(screen.getByText("Burn Checks")).toBeTruthy()
+    expect(screen.getByText("Refreshing")).toBeTruthy()
   })
 
   it("adds the routing-miss count from the session metrics to the Context hint", () => {
@@ -288,13 +311,16 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(detailRow).toHaveTextContent("last 11m ago")
     expect(detailRow).toHaveTextContent("5.6-sol/high")
     const hygiene = screen.getByLabelText("Session hygiene checks")
-    expect(hygiene.children).toHaveLength(6)
-    expect(screen.getByLabelText("No session overdepth detected")).toBeTruthy()
-    expect(screen.getByLabelText("No model overthinking detected")).toBeTruthy()
-    expect(screen.getByLabelText("No overpowered subagents detected")).toBeTruthy()
-    expect(screen.getByLabelText("No obsolete model detected")).toBeTruthy()
-    expect(screen.getByLabelText("No fast mode overuse detected")).toBeTruthy()
-    expect(screen.getByLabelText("No excess cache rehydration detected")).toBeTruthy()
+    expect(hygiene.children).toHaveLength(1)
+    fireEvent.click(screen.getByRole("button", { name: "6/6 passing" }))
+    expect(screen.getByRole("button", { name: "Session overdepth details" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Model overthinking details" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Overpowered subagents details" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Obsolete model details" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Fast mode overuse details" })).toBeTruthy()
+    expect(
+      screen.getByRole("button", { name: "Excess cache rehydration details" }),
+    ).toBeTruthy()
   })
 
   it("names the back control for what it does, not for the view it leaves", () => {
