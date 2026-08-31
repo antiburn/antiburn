@@ -146,7 +146,8 @@ fn run_fixture_and_replay(
                  ({source_key:?}), but every fixture here streams through one source"
             )
         })
-    });
+    })
+    .unwrap_or_else(|error| panic!("fixture {fixture}: metrics_from_rows failed: {error}"));
 
     (live, replayed)
 }

@@ -59,13 +59,14 @@ fn synthesize_tools(row: &TurnRow) -> Vec<ToolCall> {
 /// `event.source` mirrors the row's own [`TurnRow::scope`] directly
 /// (`Main` → `Parent`, `Delegated` → `Subagent`). This is correct for a row
 /// whose accumulator processes it inline, mixed with the rest of its
-/// source's rows — every row in the parity test's fixtures. A source whose
-/// rows are *all* `Delegated` with `child_id` equal to their own
-/// `source_key` is instead an external child transcript: the live pipeline
-/// drives such a source through its own dedicated accumulator, which still
-/// sees its own events as `Parent`, and only `merge_metrics` folds it in as
-/// a sub-agent stream. [`metrics_from_rows`] applies that override itself,
-/// after calling this function, for exactly that case.
+/// source's rows — every row in the parity test's fixtures. A row from a
+/// discovered child transcript (see [`is_parent_group`]'s doc comment for
+/// how [`metrics_from_rows`] tells one from the parent's own rows) is
+/// different: the live pipeline drives such a source through its own
+/// dedicated accumulator, which still sees its own events as `Parent`, and
+/// only `merge_metrics` folds it in as a sub-agent stream.
+/// [`metrics_from_rows`] applies that override itself, after calling this
+/// function, for exactly that case.
 pub fn event_from_row(row: &TurnRow) -> NormalizedEvent {
     let role = match row.role {
         "user" => Role::User,
@@ -127,20 +128,27 @@ fn group_by_source<'a>(rows: &'a [TurnRow]) -> Vec<SourceGroup<'a>> {
     groups
 }
 
-/// True when every row in `group` carries the shape [`TurnRowSink`]'s
-/// `forced_scope` always writes for an external child transcript: `Delegated`
-/// scope with `child_id` equal to the group's own `source_key`. A parent
-/// source's rows never carry this shape uniformly — a genuine inline
-/// sub-agent turn's `child_id` is its own thread, not the parent file's
-/// `source_key` (see `turn_row_from_event`'s doc comment), and a parent
-/// source that launches no inline sub-agent has some `Main`-scope row.
+/// True when `group` is the parent transcript's own rows, among possibly
+/// several sources.
+///
+/// The live pipeline gives every source's [`TurnRowSink`] the same
+/// [`crate::analysis::TurnRowStore`], fenced to one fixed session key for
+/// the whole pass (`FencedTurnRowStore`, `apps/desktop/src-tauri/src/store/
+/// mod.rs`), but a distinct `source_key` per input
+/// (`TurnRowSink::new(store, input.session_id.clone(), scope)`,
+/// `stream_vendor_with_hooks`). For the parent input (index 0),
+/// `input.session_id` is that same session's own id — the parent
+/// transcript *is* the session — so its rows' `source_key` equals
+/// `session_id`. A discovered child transcript's `input.session_id` is that
+/// child's own, distinct id, so its rows' `source_key` never does. This is
+/// the same rule `query_model_runs` (`evidence_query.rs`) already uses to
+/// split parent runs from child runs. It needs no row shape (`scope`,
+/// `child_id`): those still round-trip through [`event_from_row`], but
+/// `metrics_from_rows` never inspects them to tell sources apart.
 ///
 /// [`TurnRowSink`]: crate::analysis::rows::TurnRowSink
-fn is_external_child_group(group: &SourceGroup<'_>) -> bool {
-    !group.rows.is_empty()
-        && group.rows.iter().all(|row| {
-            row.scope == TurnScope::Delegated && row.child_id.as_deref() == Some(group.source_key)
-        })
+fn is_parent_group(group: &SourceGroup<'_>, session_id: &str) -> bool {
+    group.source_key == session_id
 }
 
 /// Builds one [`SessionMetricsAccumulator`] from one source's rows.
@@ -166,6 +174,26 @@ fn accumulator_from_group(
     accumulator
 }
 
+/// [`metrics_from_rows`] found no source group whose `source_key` equals
+/// the session's own id, so it could not tell which source is the parent
+/// transcript — see [`is_parent_group`]'s doc comment for that rule. A row
+/// set should never actually have this shape; the caller should fall back
+/// to the live parse path rather than trust a rebuild that cannot find its
+/// own parent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingParentRows;
+
+impl std::fmt::Display for MissingParentRows {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "metrics_from_rows: no source group's source_key equals the session id"
+        )
+    }
+}
+
+impl std::error::Error for MissingParentRows {}
+
 /// Rebuilds `SessionMetrics` by replaying `rows` through
 /// [`SessionMetricsAccumulator`], the same way the live pipeline drives it
 /// from a normalized event stream.
@@ -188,51 +216,40 @@ fn accumulator_from_group(
 /// Every parity-tested fixture streams through one source, so `summary_for`
 /// runs once; a session with discovered child transcripts calls it once per
 /// `source_key`, parent first, each call's row group passed for context.
+///
+/// Returns [`MissingParentRows`] when no source group's `source_key` equals
+/// `session_id` — this rebuild is meant to back a live production command,
+/// so an unexpected row shape returns an error the caller can fall back on
+/// instead of panicking. Because [`group_by_source`] partitions rows into
+/// groups with distinct `source_key`s, at most one group can ever match, so
+/// there is no corresponding "more than one parent" case to handle.
 pub fn metrics_from_rows(
     agent: impl Into<String>,
     session_id: impl Into<String>,
     rows: &[TurnRow],
     mut summary_for: impl FnMut(&str) -> SessionSummary,
-) -> SessionMetrics {
+) -> Result<SessionMetrics, MissingParentRows> {
     let agent = agent.into();
     let session_id = session_id.into();
     let groups = group_by_source(rows);
     if groups.is_empty() {
         let mut accumulator = SessionMetricsAccumulator::new(agent, session_id);
         accumulator.finish(summary_for(""));
-        return accumulator.metrics();
+        return Ok(accumulator.metrics());
     }
-    // A single source is always the parent, with no other group to weigh it
-    // against — `is_external_child_group`'s shape test only makes sense to
-    // disambiguate among several groups. Deciding this way also sidesteps a
-    // real ambiguity in that test: an inline sub-agent turn whose adapter
-    // derives no thread ID falls back to the parent's own `source_key`
-    // (`turn_row_from_event`'s doc comment), so a source made up entirely of
-    // such turns can carry the external-child shape by coincidence even
-    // though it is the (only) parent.
+    // A single source needs no parent/child call: there is no other group
+    // to fold it in as a sub-agent stream of, so it is the parent
+    // regardless of its own `source_key`.
     if groups.len() == 1 {
         let group = &groups[0];
         let summary = summary_for(group.source_key);
         let parent = accumulator_from_group(&agent, &session_id, group, false, summary);
-        return parent.metrics();
+        return Ok(parent.metrics());
     }
-    let mut parent_index: Option<usize> = None;
-    for (index, group) in groups.iter().enumerate() {
-        if !is_external_child_group(group) {
-            assert!(
-                parent_index.is_none(),
-                "metrics_from_rows: more than one source group looks like the parent \
-                 (source_key {:?} and {:?} both carry a non-uniformly-delegated shape)",
-                groups[parent_index.unwrap()].source_key,
-                group.source_key,
-            );
-            parent_index = Some(index);
-        }
-    }
-    let parent_index = parent_index.expect(
-        "metrics_from_rows: every source group looks like an external child transcript; \
-         exactly one must be the parent",
-    );
+    let parent_index = groups
+        .iter()
+        .position(|group| is_parent_group(group, &session_id))
+        .ok_or(MissingParentRows)?;
     let parent_group = &groups[parent_index];
     let parent_summary = summary_for(parent_group.source_key);
     let parent = accumulator_from_group(&agent, &session_id, parent_group, false, parent_summary);
@@ -245,7 +262,7 @@ pub fn metrics_from_rows(
             accumulator_from_group(&agent, &session_id, group, true, summary)
         })
         .collect();
-    merge_metrics(&parent, &children)
+    Ok(merge_metrics(&parent, &children))
 }
 
 #[cfg(test)]
@@ -427,7 +444,8 @@ mod tests {
             cache_write_tokens_available: summary.cache_write_tokens_available,
             model: summary.model.clone(),
             ..SessionSummary::default()
-        });
+        })
+        .expect("a single source group needs no parent lookup");
 
         assert_eq!(replayed.tokens_in, live.metrics().tokens_in);
         assert_eq!(replayed.tokens_out, live.metrics().tokens_out);
@@ -437,10 +455,15 @@ mod tests {
 
     #[test]
     fn metrics_from_rows_drives_an_external_child_source_as_parent_then_merges() {
-        // The parent file has one plain turn. The child file (its own
-        // `source_key`, forced `Delegated` scope with `child_id` equal to
-        // its own key — the shape `TurnRowSink` writes for a discovered
-        // sub-agent transcript) has one turn of its own.
+        // The parent file's own rows carry `source_key == session_id`
+        // ("parent-1" — the live pipeline's own `SessionInput.session_id`
+        // for the parent input is the session's own id). The child file's
+        // rows carry a distinct `source_key` ("child-1"), with `Delegated`
+        // scope and `child_id` equal to that same key — the shape
+        // `TurnRowSink` writes for a discovered sub-agent transcript. Only
+        // the `source_key` difference decides which group is the parent;
+        // the `scope`/`child_id` shape here just matches what production
+        // actually writes.
         let mut parent_event = NormalizedEvent::new(Role::Assistant);
         parent_event.ts_ms = Some(1_000);
         parent_event.model = Some("claude-opus-4-6".to_owned());
@@ -468,13 +491,13 @@ mod tests {
         // Build the same two accumulators by hand, from the original
         // events (not rows), and merge them the way the live pipeline
         // does: this is the reference this test compares against.
-        let mut expected_parent = SessionMetricsAccumulator::new("claude", "s1");
+        let mut expected_parent = SessionMetricsAccumulator::new("claude", "parent-1");
         expected_parent.record(NormalizedRecord::MetricsEvent(Box::new(parent_event)));
         expected_parent.finish(SessionSummary {
             model: Some("claude-opus-4-6".to_owned()),
             ..SessionSummary::default()
         });
-        let mut expected_child = SessionMetricsAccumulator::new("claude", "s1");
+        let mut expected_child = SessionMetricsAccumulator::new("claude", "parent-1");
         expected_child.record(NormalizedRecord::MetricsEvent(Box::new(child_event)));
         expected_child.finish(SessionSummary {
             model: Some("claude-haiku-4-6".to_owned()),
@@ -482,18 +505,46 @@ mod tests {
         });
         let expected = merge_metrics(&expected_parent, &[expected_child]);
 
-        let replayed = metrics_from_rows("claude", "s1", &rows, |source_key| SessionSummary {
-            model: Some(if source_key == "parent-1" {
-                "claude-opus-4-6".to_owned()
-            } else {
-                "claude-haiku-4-6".to_owned()
-            }),
-            ..SessionSummary::default()
-        });
+        let replayed =
+            metrics_from_rows("claude", "parent-1", &rows, |source_key| SessionSummary {
+                model: Some(if source_key == "parent-1" {
+                    "claude-opus-4-6".to_owned()
+                } else {
+                    "claude-haiku-4-6".to_owned()
+                }),
+                ..SessionSummary::default()
+            })
+            .expect("the parent group's source_key equals the session id");
 
         assert_eq!(replayed.tokens_in, expected.tokens_in);
         assert_eq!(replayed.tokens_out, expected.tokens_out);
         assert_eq!(replayed.model_breakdown, expected.model_breakdown);
         assert_eq!(replayed.buckets, expected.buckets);
+    }
+
+    #[test]
+    fn metrics_from_rows_reports_a_missing_parent_instead_of_panicking() {
+        // Neither source's `source_key` equals the session id passed in, so
+        // there is no row group `metrics_from_rows` can call the parent.
+        let mut event_a = NormalizedEvent::new(Role::Assistant);
+        event_a.usage = Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+            ..Usage::default()
+        };
+        let row_a = turn_row_from_event(&event_a, "source-a", 0);
+        let mut event_b = NormalizedEvent::new(Role::Assistant);
+        event_b.usage = Usage {
+            input_tokens: 1,
+            output_tokens: 1,
+            ..Usage::default()
+        };
+        let row_b = turn_row_from_event(&event_b, "source-b", 0);
+
+        let result = metrics_from_rows("claude", "neither-source-key", &[row_a, row_b], |_| {
+            SessionSummary::default()
+        });
+
+        assert_eq!(result, Err(MissingParentRows));
     }
 }
