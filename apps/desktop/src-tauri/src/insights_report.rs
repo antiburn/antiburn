@@ -436,6 +436,17 @@ mod tests {
     mod population {
         use super::*;
 
+        // The evidence cohort now covers every AgentKind
+        // (crate::agents::evidence_cohort), so a real scan never leaves a
+        // session with no session_evidence row: `awaiting_provider_support`
+        // trends to zero once the widened-cohort migration backfills every
+        // existing session. The tests below still exercise DENOMINATOR_SQL's
+        // partitioning directly, by passing a literal `evidence_agents` list
+        // (`&[]` or `&["claude-code"]`) to `upsert_sessions`/`change_source`
+        // rather than the real `evidence_cohort()`, so they stay a synthetic,
+        // SQL-level pin of the bucket rather than a claim that production
+        // still produces that row shape.
+
         #[test]
         fn denominator_partitions_non_cohort_rows_by_reason() {
             let data_dir = TempDir::new().unwrap();
@@ -579,6 +590,13 @@ mod tests {
             );
         }
 
+        // Pi names the fixture agent, not a Pi-specific behavior:
+        // `reconcile_evidence_revisions(&crate::agents::evidence_cohort(), ..)`
+        // now enrolls every agent's late-joining session the same way, since
+        // the cohort covers all of them. This still exercises the real
+        // `evidence_cohort()` (unlike the other `population` tests above),
+        // so it pins that the widened cohort keeps moving a session with no
+        // evidence row out of `awaiting_provider_support`.
         #[test]
         fn pi_backfill_moves_awaiting_support_into_the_pending_queue() {
             let data_dir = TempDir::new().unwrap();
