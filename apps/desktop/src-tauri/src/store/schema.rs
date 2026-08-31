@@ -367,8 +367,10 @@ ON CONFLICT(environment_key, agent, session_id) DO NOTHING;
 /// # Data policy (schema-level contract)
 ///
 /// `turn` stores one row per parsed turn: identity, thread and scope facts,
-/// and token accounting derived from a transcript. `turn_content` exists for
-/// a later change to store the turn's text; nothing writes to it yet.
+/// and token accounting derived from a transcript. `turn_content` stores the
+/// turn's text: `FencedTurnRowStore::write_turn_rows` writes it for every row
+/// with captured content. No production code reads it yet; a later change
+/// adds the drilldown's content read.
 ///
 /// Session deletion and clear-local-session-data remove these rows
 /// explicitly, the same way [`V11`]'s `session_evidence` does — the FK
