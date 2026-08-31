@@ -5,7 +5,9 @@ use antiburn_local::analysis::{
     count_turn_rows,
 };
 
-use super::model::PublishedEvidence;
+use super::model::{
+    PublishedEvidence, SESSION_DATA_RETENTION_DAYS_30, SESSION_DATA_RETENTION_DAYS_90,
+};
 use super::*;
 
 fn store() -> Store {
@@ -413,6 +415,10 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // Open by default, same reasoning: a reader who has limits to see should
     // see them without an extra click the first time they notice the section.
     assert!(defaults.overview_limits_expanded);
+    assert_eq!(
+        defaults.session_data_retention_days,
+        RETAIN_SESSION_DATA_FOREVER
+    );
 
     // Notifications default on, both kinds with them, so the two per-kind
     // preferences below are a real change rather than a re-statement.
@@ -424,6 +430,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
         .save_settings(&AppSettings {
             theme: ThemePreference::Dark,
             activity_window_days: 14,
+            session_data_retention_days: SESSION_DATA_RETENTION_DAYS_90,
             onboarding_completed: true,
             launch_at_login: true,
             auto_update: false,
@@ -448,6 +455,10 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert_eq!(store.settings().unwrap(), saved);
     assert_eq!(saved.theme, ThemePreference::Dark);
     assert_eq!(saved.activity_window_days, 14);
+    assert_eq!(
+        saved.session_data_retention_days,
+        SESSION_DATA_RETENTION_DAYS_90
+    );
     assert_eq!(saved.nudge_placement, NudgePlacement::TopRight);
     assert_eq!(saved.nudge_auto_dismiss_secs, 25);
     assert_eq!(saved.disk_space_display, DiskSpaceDisplay::Always);
@@ -823,6 +834,232 @@ fn clearing_an_already_empty_index_is_a_no_op() {
     let store = store();
     assert_eq!(store.clear_local_session_data().unwrap(), 0);
     assert_eq!(store.clear_local_session_data().unwrap(), 0);
+}
+
+#[test]
+fn session_retention_removes_only_sessions_before_the_cutoff() {
+    const NOW: i64 = 2_000_000_000;
+    const DAY: i64 = 86_400;
+    let store = store();
+    store
+        .upsert_sessions(
+            &[
+                session("expired", NOW - 30 * DAY - 1),
+                session("boundary", NOW - 30 * DAY),
+                session("recent", NOW - DAY),
+            ],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    store
+        .save_settings(&AppSettings {
+            session_data_retention_days: SESSION_DATA_RETENTION_DAYS_30,
+            ..AppSettings::default()
+        })
+        .unwrap();
+
+    assert_eq!(store.apply_session_retention(NOW).unwrap(), 1);
+    let remaining = store.recent_sessions(0, 100).unwrap();
+    assert_eq!(remaining.len(), 2);
+    assert!(
+        remaining
+            .iter()
+            .any(|record| record.key.session_id == "boundary")
+    );
+    assert!(
+        remaining
+            .iter()
+            .any(|record| record.key.session_id == "recent")
+    );
+}
+
+#[test]
+fn session_retention_uses_last_seen_when_activity_time_is_unknown() {
+    let store = store();
+    store
+        .upsert_sessions(
+            &[session("unknown-time", 1_000)],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    store
+        .lock()
+        .execute(
+            "UPDATE session
+                SET updated_at_epoch = NULL, last_seen_at = '2020-01-01T00:00:00Z'
+              WHERE session_id = 'unknown-time'",
+            [],
+        )
+        .unwrap();
+    store
+        .save_settings(&AppSettings {
+            session_data_retention_days: SESSION_DATA_RETENTION_DAYS_90,
+            ..AppSettings::default()
+        })
+        .unwrap();
+
+    assert_eq!(store.apply_session_retention(2_000_000_000).unwrap(), 1);
+    assert_eq!(store.session_count().unwrap(), 0);
+}
+
+#[test]
+fn session_retention_removes_all_derived_session_data() {
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "expired-derived");
+    store
+        .upsert_sessions(
+            &[session("expired-derived", 1_000)],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    store
+        .save_analysis(
+            &AnalysisRecord {
+                key: key.clone(),
+                model_breakdown_json: "{}".into(),
+                inclusive_models_json: "[]".into(),
+                source_fingerprint: "1:1".into(),
+                pricing_generation: 0,
+                analyzed_generation: 0,
+                parser_revision: 0,
+                analyzer_revision: 0,
+                metrics_schema_revision: 0,
+            },
+            None,
+        )
+        .unwrap();
+    store
+        .replace_relations(
+            &key,
+            RelationKind::Subagent,
+            &[RelationRecord {
+                kind: RelationKind::Subagent,
+                related_id: "child".into(),
+                label: None,
+            }],
+        )
+        .unwrap();
+    {
+        let connection = store.lock();
+        insert_turn_rows(&connection, &turn_session_key(&key), 1, &[turn_row(0)]).unwrap();
+    }
+    store
+        .save_settings(&AppSettings {
+            session_data_retention_days: SESSION_DATA_RETENTION_DAYS_30,
+            ..AppSettings::default()
+        })
+        .unwrap();
+
+    assert_eq!(store.apply_session_retention(2_000_000_000).unwrap(), 1);
+    assert!(store.analysis(&key).unwrap().is_none());
+    assert!(store.evidence(&key).unwrap().is_none());
+    assert!(store.relations(&key).unwrap().is_empty());
+    assert_eq!(
+        count_turn_rows(&store.lock(), &turn_session_key(&key), 1).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn forever_retention_is_a_no_op() {
+    let store = store();
+    store
+        .upsert_sessions(&[session("kept", 1)], &crate::agents::evidence_cohort())
+        .unwrap();
+
+    assert_eq!(store.apply_session_retention(2_000_000_000).unwrap(), 0);
+    assert_eq!(store.session_count().unwrap(), 1);
+}
+
+#[test]
+fn saving_retention_and_removing_expired_sessions_is_one_store_operation() {
+    let store = store();
+    store
+        .upsert_sessions(&[session("expired", 1)], &crate::agents::evidence_cohort())
+        .unwrap();
+
+    let (_, saved, removed) = store
+        .replace_settings_and_apply_retention(
+            &AppSettings {
+                session_data_retention_days: SESSION_DATA_RETENTION_DAYS_30,
+                ..AppSettings::default()
+            },
+            2_000_000_000,
+        )
+        .unwrap();
+
+    assert_eq!(removed, 1);
+    assert_eq!(
+        saved.session_data_retention_days,
+        SESSION_DATA_RETENTION_DAYS_30
+    );
+    assert_eq!(store.settings().unwrap(), saved);
+}
+
+#[test]
+fn unsupported_session_retention_values_normalize_to_forever() {
+    let store = store();
+    for value in [0, 60, -2] {
+        let saved = store
+            .save_settings(&AppSettings {
+                session_data_retention_days: value,
+                ..AppSettings::default()
+            })
+            .unwrap();
+        assert_eq!(
+            saved.session_data_retention_days,
+            RETAIN_SESSION_DATA_FOREVER
+        );
+    }
+
+    store
+        .lock()
+        .execute(
+            "UPDATE setting SET value = 'not-a-number' WHERE key = 'sessionDataRetentionDays'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        store.settings().unwrap().session_data_retention_days,
+        RETAIN_SESSION_DATA_FOREVER
+    );
+}
+
+#[test]
+fn repository_counts_can_be_refreshed_after_retention_cleanup() {
+    const NOW: i64 = 2_000_000_000;
+    let store = store();
+    store
+        .upsert_sessions(
+            &[session("expired", 1), session("recent", NOW - 1)],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    store
+        .replace_repositories(&[RepositoryRecord {
+            key: "widgets".into(),
+            repo_name: "widgets".into(),
+            full_name: "avery/widgets".into(),
+            status: "accessible".into(),
+            repo_root: Some("/home/avery/code/widgets".into()),
+            suspected_path: None,
+            worktree_count: 1,
+            session_count: 2,
+            wsl_distro: None,
+            enabled: true,
+        }])
+        .unwrap();
+    store
+        .save_settings(&AppSettings {
+            session_data_retention_days: SESSION_DATA_RETENTION_DAYS_30,
+            ..AppSettings::default()
+        })
+        .unwrap();
+
+    assert_eq!(store.apply_session_retention(NOW).unwrap(), 1);
+    crate::repositories::refresh_session_counts(&store).unwrap();
+
+    assert_eq!(store.repositories().unwrap()[0].session_count, 1);
 }
 
 #[test]

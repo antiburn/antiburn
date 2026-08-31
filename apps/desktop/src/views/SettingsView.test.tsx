@@ -49,6 +49,7 @@ function emit(name: string, payload: unknown) {
 const SETTINGS = {
   theme: "system" as const,
   activityWindowDays: 7,
+  sessionDataRetentionDays: -1,
   onboardingCompleted: true,
   launchAtLogin: false,
   autoUpdate: true,
@@ -65,7 +66,9 @@ const SETTINGS = {
   milestones5h: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   milestonesWeekly: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   liveUsageEnabled: false,
+  liveUsageHiddenProviders: [],
   analyticsEnabled: true,
+  overviewLimitsExpanded: true,
 }
 
 const INFO = {
@@ -278,6 +281,42 @@ describe("SettingsView", () => {
         settings: { ...SETTINGS, activityWindowDays: 14 },
       }),
     )
+  })
+
+  it("does not let an older failed write replace a newer saved value", async () => {
+    let rejectFirst: (error: Error) => void = () => {}
+    let resolveSecond: (settings: typeof SETTINGS) => void = () => {}
+    let write = 0
+    mockCommands({
+      set_settings: () => {
+        write += 1
+        if (write === 1) {
+          return new Promise((_, reject) => {
+            rejectFirst = reject
+          })
+        }
+        return new Promise((resolve) => {
+          resolveSecond = resolve
+        })
+      },
+    })
+    render(<SettingsView />)
+
+    const slider = await screen.findByRole("slider", { name: "Days of activity to show" })
+    const toggle = screen.getByRole("switch", { name: "Keep looking for new sessions" })
+    fireEvent.change(slider, { target: { value: "14" } })
+    fireEvent.click(toggle)
+    await waitFor(() => expect(write).toBe(2))
+
+    await act(async () => {
+      resolveSecond({ ...SETTINGS, activityWindowDays: 14, discoveryPaused: true })
+    })
+    await act(async () => {
+      rejectFirst(new Error("disk full"))
+    })
+
+    expect(slider).toHaveValue("14")
+    expect(toggle).not.toBeChecked()
   })
 
   it("is honest that updates are unavailable in a build without the updater", async () => {
@@ -601,6 +640,66 @@ describe("SettingsView", () => {
     expect(invoke).not.toHaveBeenCalledWith("clear_local_index")
   })
 
+  it("defaults session retention to forever and confirms a shorter period", async () => {
+    confirmDialog.mockResolvedValue(true)
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
+    const retention = await screen.findByRole("radiogroup", { name: "Session data retention" })
+    emit("settings:changed", SETTINGS)
+    expect(within(retention).getByRole("radio", { name: "Forever" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    )
+
+    fireEvent.click(within(retention).getByRole("radio", { name: "30 days" }))
+
+    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
+    const [message] = confirmDialog.mock.calls[0] as [string]
+    expect(message).toMatch(/providers retain session history for only 30 days/i)
+    expect(message).toMatch(/transcript files are not touched/i)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_settings", {
+        settings: { ...SETTINGS, sessionDataRetentionDays: 30 },
+      }),
+    )
+  })
+
+  it("keeps retention unchanged when shortening is declined", async () => {
+    confirmDialog.mockResolvedValue(false)
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
+    const retention = await screen.findByRole("radiogroup", { name: "Session data retention" })
+    emit("settings:changed", SETTINGS)
+    invoke.mockClear()
+    fireEvent.click(within(retention).getByRole("radio", { name: "90 days" }))
+
+    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
+    expect(invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
+    expect(within(retention).getByRole("radio", { name: "Forever" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    )
+  })
+
+  it("widens retention to 90 days without confirmation", async () => {
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
+    const retention = await screen.findByRole("radiogroup", { name: "Session data retention" })
+    emit("settings:changed", { ...SETTINGS, sessionDataRetentionDays: 30 })
+    invoke.mockClear()
+    fireEvent.click(within(retention).getByRole("radio", { name: "90 days" }))
+
+    expect(confirmDialog).not.toHaveBeenCalled()
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_settings", {
+        settings: { ...SETTINGS, sessionDataRetentionDays: 90 },
+      }),
+    )
+  })
+
   it("states the local data-handling contract", async () => {
     render(<SettingsView />)
 
@@ -624,6 +723,7 @@ describe("SettingsView", () => {
     // Deleting a provider's own files is named as a non-feature rather than
     // left as a silence a reader would have to test for.
     expect(screen.getByText(/antiburn cannot do this, by design/i)).toBeInTheDocument()
+    expect(screen.getByText(/shorter period keeps antiburn’s local index lighter/i)).toBeInTheDocument()
   })
 
   /// The analytics section is the one place this pane describes something

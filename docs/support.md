@@ -90,11 +90,12 @@ device and is never uploaded.
 The coding agents' source transcripts remain their files. antiburn may copy data from
 them into its own local store, but it never modifies or deletes the source files.
 
-**There is no age-based retention limit.** Once a session is indexed, antiburn keeps
-its local data until the reader explicitly clears it. Deleting a transcript from disk
-does not delete what antiburn derived from it: that data stays until the session is
-deleted in antiburn or the local index is cleared. The agents' own files are never
-touched. Settings → Privacy clears all locally stored session data at once.
+**Session retention is configurable.** Settings → Privacy can keep antiburn's local
+session data for 30 days, 90 days, or forever. Forever is the default and can preserve
+history after providers' 30-day retention window. A shorter period keeps the local
+index lighter. Deleting a transcript from disk does not immediately delete what
+antiburn derived from it; that data follows the selected retention period unless the
+session or local index is deleted first. The agents' own files are never touched.
 
 **Deletion.** antiburn removes only records it created itself. It cannot and will not
 delete a coding agent's own transcript — that is the agent's file, and removing a

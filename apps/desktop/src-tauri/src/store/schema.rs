@@ -27,8 +27,8 @@ pub const MIGRATIONS: &[&str] = &[
 /// derived metrics, a session title, and capped skill descriptions. That is its
 /// current shape, not a prohibition on future migrations storing messages,
 /// tool activity, or file content recorded in a transcript. Any such migration
-/// must still be deliberate, bounded, covered by the local-data clear/delete
-/// paths, and must not create a network or logging path for the content.
+/// must still be deliberate, bounded, covered by the local-data
+/// clear/delete/retention paths, and must not create a network or logging path.
 const V1: &str = r#"
 -- App settings, one row per key. Values are JSON scalars so a new preference
 -- is additive and needs no migration.

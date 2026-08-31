@@ -56,9 +56,9 @@
 //! Every pass is bounded: discovery is windowed to the widest activity view, the
 //! per-session metadata reads run at a fixed concurrency, and analysis is
 //! capped at [`MAX_ANALYSES_PER_PASS`] sessions so one pass cannot grow with
-//! the size of the machine. Sessions already indexed are retained until the
-//! reader explicitly clears them; the bounded discovery window is not a data
-//! expiry policy. The scheduler is a single task whose handle the app aborts on
+//! the size of the machine. The separate retention policy expires indexed
+//! sessions; the bounded discovery window does not. The scheduler is a single
+//! task whose handle the app aborts on
 //! exit, so nothing outlives the process.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -289,8 +289,7 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
     let settings = store.settings()?;
     let now = unix_now();
     // Discovery always covers the widest list the UI can request, so changing
-    // the display window is instant. Previously indexed sessions outside this
-    // lookback remain in the store indefinitely.
+    // the display window is instant. The retention setting controls older rows.
     let window_days = i64::from(crate::store::MAX_ACTIVITY_DAYS);
     let since_secs = window_days * 86_400;
 

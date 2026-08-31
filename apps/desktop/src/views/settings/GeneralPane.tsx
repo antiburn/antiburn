@@ -166,7 +166,7 @@ export function GeneralPane({ settings, update, info }: GeneralPaneProps) {
         <Card>
           <Row
             label="Indexed sessions"
-            description="What antiburn currently has on this machine. Indexed sessions do not expire based on age; Settings → Privacy can clear them. Your agents' own files are never touched."
+            description="What antiburn currently has on this machine. Settings → Privacy controls how long indexed session data stays. Your agents' own files are never touched."
             trailing={
               <span className="type-body tabular-nums text-label-secondary">
                 {info ? `${info.indexedSessions} · ${byteLabel(info.databaseBytes)}` : "—"}

@@ -3,15 +3,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { SettingsWindowSession } from "./SettingsWindowSession"
 
 const appInfo = vi.hoisted(() => vi.fn())
+const onSessionsInvalidated = vi.hoisted(() => vi.fn())
 const onSettingsPaneRequest = vi.hoisted(() => vi.fn())
 const takeSettingsPane = vi.hoisted(() => vi.fn())
 
-vi.mock("../../lib/ipc", () => ({ appInfo, onSettingsPaneRequest, takeSettingsPane }))
+vi.mock("../../lib/ipc", () => ({
+  appInfo,
+  onSessionsInvalidated,
+  onSettingsPaneRequest,
+  takeSettingsPane,
+}))
 
 describe("SettingsWindowSession", () => {
   beforeEach(() => {
     appInfo.mockReset()
     appInfo.mockResolvedValue(null)
+    onSessionsInvalidated.mockReset()
+    onSessionsInvalidated.mockResolvedValue(() => {})
     onSettingsPaneRequest.mockReset()
     takeSettingsPane.mockReset()
   })
@@ -88,6 +96,28 @@ describe("SettingsWindowSession", () => {
     await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("sources"))
 
     expect(takeSettingsPane).toHaveBeenCalledTimes(1)
+    unsubscribe()
+  })
+
+  it("refreshes app info after sessions are invalidated", async () => {
+    const invalidation: { current: (() => void) | null } = { current: null }
+    onSessionsInvalidated.mockImplementation(async (handler: () => void) => {
+      invalidation.current = handler
+      return () => {}
+    })
+    onSettingsPaneRequest.mockResolvedValue(() => {})
+    takeSettingsPane.mockResolvedValue(null)
+    appInfo
+      .mockResolvedValueOnce({ indexedSessions: 42 })
+      .mockResolvedValueOnce({ indexedSessions: 7 })
+    const session = new SettingsWindowSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.waitFor(() => expect(session.getSnapshot().info?.indexedSessions).toBe(42))
+
+    invalidation.current?.()
+
+    await vi.waitFor(() => expect(session.getSnapshot().info?.indexedSessions).toBe(7))
+    expect(appInfo).toHaveBeenCalledTimes(2)
     unsubscribe()
   })
 })

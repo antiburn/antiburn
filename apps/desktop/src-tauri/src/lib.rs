@@ -66,6 +66,7 @@ mod onboarding;
 mod popover;
 mod provider_usage;
 mod repositories;
+mod retention;
 mod scan;
 mod settings;
 mod startup_registration;
@@ -315,6 +316,7 @@ pub fn run() {
             app.manage(live_usage);
             if let Some(schedulers) = app.try_state::<Schedulers>() {
                 schedulers.push(scan::spawn_scheduler(app.handle()));
+                schedulers.push(retention::spawn_scheduler(app.handle()));
                 schedulers.push(insights_worker::spawn(app.handle()));
                 schedulers.push(updates::spawn_scheduler(app.handle()));
                 schedulers.push(usage_alerts::spawn_scheduler(app.handle()));

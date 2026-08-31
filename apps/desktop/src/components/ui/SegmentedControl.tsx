@@ -26,6 +26,7 @@ export function SegmentedControl<T extends string>({
   semantics = "radio",
   idPrefix,
   variant = "segmented",
+  disabled = false,
 }: {
   options: ReadonlyArray<SegmentedOption<T>>
   value: T
@@ -37,6 +38,7 @@ export function SegmentedControl<T extends string>({
   semantics?: "radio" | "tabs"
   idPrefix?: string
   variant?: SegmentedControlVariant
+  disabled?: boolean
 }) {
   const textTabs = variant === "text-tabs"
   const showAnimatedIndicator = animatedIndicator && !textTabs
@@ -99,6 +101,7 @@ export function SegmentedControl<T extends string>({
             key={option.value}
             id={optionId}
             type="button"
+            disabled={disabled}
             role={semantics === "tabs" ? "tab" : "radio"}
             aria-checked={semantics === "radio" ? selected : undefined}
             aria-selected={semantics === "tabs" ? selected : undefined}
@@ -123,7 +126,7 @@ export function SegmentedControl<T extends string>({
             className={
               textTabs
                 ? cn(
-                    "type-footnote relative flex h-full items-center whitespace-nowrap px-0 transition-colors duration-[var(--duration-quick)] ease-out-quart",
+                    "type-footnote relative flex h-full items-center whitespace-nowrap px-0 transition-colors duration-[var(--duration-quick)] ease-out-quart disabled:opacity-50",
                     selected
                       ? "font-medium text-label"
                       : "text-label-tertiary hover:text-label-secondary",
@@ -131,7 +134,7 @@ export function SegmentedControl<T extends string>({
                 : cn(
                     showAnimatedIndicator && "relative",
                     equalWidth && "min-w-0",
-                    "type-footnote px-2",
+                    "type-footnote px-2 disabled:opacity-50",
                     selected && !showAnimatedIndicator && "bg-accent-fill",
                     selected ? "text-white" : "text-label-secondary hover:bg-surface-hover",
                   )

@@ -56,6 +56,25 @@ describe("SegmentedControl", () => {
     expect(onChange).toHaveBeenCalledWith("d")
   })
 
+  it("disables every option", () => {
+    const onChange = vi.fn()
+    render(
+      <SegmentedControl
+        options={TWO}
+        value="left"
+        onChange={onChange}
+        ariaLabel="Placement"
+        disabled
+      />,
+    )
+
+    for (const option of screen.getAllByRole("radio")) {
+      expect(option).toBeDisabled()
+      fireEvent.click(option)
+    }
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it("supports arrow-key navigation with roving focus", () => {
     const onChange = vi.fn()
     render(<SegmentedControl options={FOUR} value="b" onChange={onChange} ariaLabel="Mode" />)

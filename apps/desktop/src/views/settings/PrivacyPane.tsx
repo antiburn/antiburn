@@ -7,6 +7,7 @@ import { Pane } from "../../components/ui/Pane"
 import { PushButton } from "../../components/ui/PushButton"
 import { Row } from "../../components/ui/Row"
 import { SectionGroup } from "../../components/ui/SectionGroup"
+import { SegmentedControl } from "../../components/ui/SegmentedControl"
 import { StatusText } from "../../components/ui/StatusText"
 import { ToggleRow } from "../../components/ui/ToggleRow"
 import {
@@ -22,8 +23,8 @@ import type { AppSettingsController } from "./useAppSettings"
  * to make it forget.
  *
  * This pane is the long form of a promise the rest of the app only has room to
- * gesture at. It is deliberately specific — naming what can be stored, the
- * absence of automatic expiry, and exactly what goes online and why — because
+ * gesture at. It is deliberately specific — naming what can be stored, its
+ * configurable retention, and exactly what goes online and why — because
  * a local-first app's privacy page is worth nothing if it is written in the
  * same reassuring generalities as everyone else's. antiburn goes online as
  * the reader's own agent, with the reader's own credentials. What it never
@@ -38,6 +39,18 @@ type ClearState =
   | { kind: "cleared"; sessions: number }
   | { kind: "failed" }
 
+type RetentionValue = "30" | "90" | "-1"
+
+const RETENTION_OPTIONS: ReadonlyArray<{ value: RetentionValue; label: string }> = [
+  { value: "30", label: "30 days" },
+  { value: "90", label: "90 days" },
+  { value: "-1", label: "Forever" },
+]
+
+function retentionLength(days: number): number {
+  return days === -1 ? Number.POSITIVE_INFINITY : days
+}
+
 export type PrivacyPaneProps = AppSettingsController & { info: AppInfo | null }
 
 export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps) {
@@ -48,6 +61,23 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
   const analyticsSupported = info?.analyticsSupported ?? false
   const analyticsEnvironmentDisabled = info?.analyticsEnvironmentDisabled ?? false
   const operator = info?.analyticsOperator ?? null
+
+  async function handleRetentionChange(value: RetentionValue) {
+    const days = Number(value)
+    if (retentionLength(days) < retentionLength(settings.sessionDataRetentionDays)) {
+      const period = days === 30 ? "30 days" : "90 days"
+      const proceed = await confirm(
+        `This immediately removes antiburn’s local data for sessions whose last activity is older than ${period}. Providers retain session history for only 30 days, so antiburn may hold the only remaining history. Your coding agents’ transcript files are not touched.`,
+        {
+          title: `Keep session data for ${period}?`,
+          kind: "warning",
+          okLabel: "Change retention",
+        },
+      )
+      if (!proceed) return
+    }
+    await update({ sessionDataRetentionDays: days })
+  }
 
   /**
    * Clearing the index is confirmed first, and the confirmation says the two
@@ -102,10 +132,11 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             activity, file content recorded in a transcript, identities, paths, counts,
             durations, token totals, and cost estimates. Nothing in this store is uploaded.
           </Disclosure>
-          <Disclosure label="History stays until you clear it">
-            Indexed sessions do not expire based on age. antiburn keeps its local session data
-            until you clear it; the agents&rsquo; own source files are left exactly where they
-            are.
+          <Disclosure label="You control how long history stays">
+            antiburn keeps indexed session data for the period you select below. The default is
+            forever, which can preserve history after a provider&rsquo;s 30-day retention window.
+            Shorter periods keep the local index lighter. The agents&rsquo; own source files are
+            left exactly where they are.
           </Disclosure>
           <Disclosure label="Your work is never uploaded">
             There is no antiburn account, and nothing of ours you have to reach for the app to
@@ -277,6 +308,19 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
 
       <SectionGroup title="Local data">
         <Card>
+          <Row
+            label="Keep session data"
+            description="All session data stays on this machine. Keeping it longer preserves history after providers’ 30-day retention window; a shorter period keeps antiburn’s local index lighter."
+            trailing={
+              <SegmentedControl
+                options={RETENTION_OPTIONS}
+                value={String(settings.sessionDataRetentionDays) as RetentionValue}
+                ariaLabel="Session data retention"
+                onChange={(value) => void handleRetentionChange(value)}
+                disabled={!loaded}
+              />
+            }
+          />
           <Row
             label="Clear the local index"
             description="Forget every session, analysis, evidence, and scan record antiburn has stored. Your agents’ transcripts are untouched, so a later scan finds them again. Your preferences, scan folders, and repository choices are kept."

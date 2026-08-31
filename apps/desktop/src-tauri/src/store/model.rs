@@ -525,11 +525,17 @@ impl HiddenMeters {
 
 /// Narrowest and widest activity windows the settings pane offers, in days.
 /// These control presentation and recent discovery, not storage: sessions
-/// already indexed remain until the reader clears them.
+/// already indexed follow the separate retention setting.
 pub const MIN_ACTIVITY_DAYS: u32 = 1;
 pub const MAX_ACTIVITY_DAYS: u32 = 14;
 /// Days of activity a fresh install shows.
 pub const DEFAULT_ACTIVITY_DAYS: u32 = 7;
+
+/// Supported local session-data retention periods, in days.
+pub const SESSION_DATA_RETENTION_DAYS_30: i32 = 30;
+pub const SESSION_DATA_RETENTION_DAYS_90: i32 = 90;
+/// Keep local session data until the reader deletes it.
+pub const RETAIN_SESSION_DATA_FOREVER: i32 = -1;
 
 /// Bounds for how long a nudge stays on screen before it dismisses itself.
 pub const MIN_NUDGE_AUTO_DISMISS_SECS: u32 = 3;
@@ -552,6 +558,8 @@ pub struct AppSettings {
     pub theme: ThemePreference,
     /// Calendar days of activity the popover list shows.
     pub activity_window_days: u32,
+    /// Days to keep local session data. `-1` keeps it until explicit deletion.
+    pub session_data_retention_days: i32,
     /// False until the first-run flow finishes; gates onboarding and the
     /// automatic first scan.
     pub onboarding_completed: bool,
@@ -621,6 +629,7 @@ impl Default for AppSettings {
         Self {
             theme: ThemePreference::System,
             activity_window_days: DEFAULT_ACTIVITY_DAYS,
+            session_data_retention_days: RETAIN_SESSION_DATA_FOREVER,
             onboarding_completed: false,
             launch_at_login: true,
             auto_update: true,
@@ -682,6 +691,14 @@ impl AppSettings {
         self.activity_window_days = self
             .activity_window_days
             .clamp(MIN_ACTIVITY_DAYS, MAX_ACTIVITY_DAYS);
+        if !matches!(
+            self.session_data_retention_days,
+            SESSION_DATA_RETENTION_DAYS_30
+                | SESSION_DATA_RETENTION_DAYS_90
+                | RETAIN_SESSION_DATA_FOREVER
+        ) {
+            self.session_data_retention_days = RETAIN_SESSION_DATA_FOREVER;
+        }
         self.nudge_auto_dismiss_secs = self
             .nudge_auto_dismiss_secs
             .clamp(MIN_NUDGE_AUTO_DISMISS_SECS, MAX_NUDGE_AUTO_DISMISS_SECS);

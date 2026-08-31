@@ -31,6 +31,9 @@ export interface AppSettingsController {
 
 type SettingsSnapshot = { settings: AppSettings; loaded: boolean }
 
+// Only the newest optimistic write or shell event can replace the visible settings.
+let settingsRevision = 0
+
 // Module-level: every window that mounts this hook shares one read and one
 // subscription to the broadcast, rather than each racing its own.
 const settingsStore = createExternalStore<SettingsSnapshot>({
@@ -49,6 +52,7 @@ const settingsStore = createExternalStore<SettingsSnapshot>({
   // theme — current too.
   subscribe: (set) =>
     onSettingsChanged((stored) => {
+      settingsRevision += 1
       applyTheme(stored.theme)
       set({ settings: stored, loaded: true })
     }),
@@ -67,11 +71,19 @@ export function useAppSettings(): AppSettingsController {
     // callback stays referentially stable across every settings change.
     const current = settingsStore.getSnapshot().settings
     const next = { ...current, ...change }
+    const revision = ++settingsRevision
     applyTheme(next.theme)
     settingsStore.set({ settings: next, loaded: true })
-    const saved = await setSettings(next).catch(() => next)
-    applyTheme(saved.theme)
-    settingsStore.set({ settings: saved, loaded: true })
+    try {
+      const saved = await setSettings(next)
+      if (revision !== settingsRevision) return
+      applyTheme(saved.theme)
+      settingsStore.set({ settings: saved, loaded: true })
+    } catch {
+      if (revision !== settingsRevision) return
+      applyTheme(current.theme)
+      settingsStore.set({ settings: current, loaded: true })
+    }
   }, [])
 
   return { settings, loaded, update }
