@@ -21,6 +21,7 @@
 //!   thread. A sidechain turn never forms a transition or a gap with a
 //!   main-loop turn.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
@@ -28,6 +29,8 @@ use antiburn_local::analysis::{
     SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SourceCapabilities,
     SourceKind, TurnFacts, TurnRowSink, TurnRowStore, adapter_for,
 };
+use rusqlite::{Connection, params};
+use tempfile::TempDir;
 
 /// Reads the value out of an `EvidenceValue`, for `Complete` and `Partial`
 /// alike. Returns `None` for `Unsupported`, so the caller skips a group the
@@ -614,4 +617,307 @@ fn pi_facts_match_evidence_for_every_fixture() {
         compare_fixture(&mut mismatches, name, &evidence, &facts);
     }
     assert_no_mismatches("pi", mismatches);
+}
+
+/* --------------------------------------------------------------------
+ * OpenCode fixtures. OpenCode has no `fixtures/opencode_characterization`
+ * directory: `opencode_characterization.rs` builds every session inline,
+ * either from an in-memory SQLite database or from an inline export-JSONL
+ * string. This section mirrors that suite's own `create_database` /
+ * `insert_session` / `insert_message` / `insert_part` helpers, and copies
+ * the minimal synthetic content of two of its scenarios, in miniature
+ * here, so `opencode_characterization.rs` itself stays untouched. The
+ * content is synthetic test fixture data, so this duplication is
+ * acceptable.
+ * ----------------------------------------------------------------- */
+
+fn opencode_create_database() -> (TempDir, std::path::PathBuf) {
+    let directory = TempDir::new().expect("tempdir");
+    let path = directory.path().join("opencode.db");
+    let connection = Connection::open(&path).expect("database");
+    connection
+        .execute_batch(
+            "CREATE TABLE session (
+                 id TEXT PRIMARY KEY, parent_id TEXT, title TEXT,
+                 time_created INTEGER, time_updated INTEGER
+             );
+             CREATE TABLE message (
+                 id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+                 time_updated INTEGER, data TEXT
+             );
+             CREATE TABLE part (
+                 id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+                 time_created INTEGER, time_updated INTEGER, data TEXT
+             );",
+        )
+        .expect("schema");
+    drop(connection);
+    (directory, path)
+}
+
+fn opencode_insert_session(
+    connection: &Connection,
+    id: &str,
+    parent: Option<&str>,
+    timestamp: i64,
+) {
+    connection
+        .execute(
+            "INSERT INTO session (id, parent_id, title, time_created, time_updated)
+             VALUES (?1, ?2, NULL, ?3, ?3)",
+            params![id, parent, timestamp],
+        )
+        .expect("session");
+}
+
+fn opencode_insert_message(
+    connection: &Connection,
+    id: &str,
+    session_id: &str,
+    timestamp: i64,
+    data: &str,
+) {
+    connection
+        .execute(
+            "INSERT INTO message VALUES (?1, ?2, ?3, ?3, ?4)",
+            params![id, session_id, timestamp, data],
+        )
+        .expect("message");
+}
+
+fn opencode_insert_part(
+    connection: &Connection,
+    id: &str,
+    message_id: &str,
+    session_id: &str,
+    timestamp: i64,
+    data: &str,
+) {
+    connection
+        .execute(
+            "INSERT INTO part VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+            params![id, message_id, session_id, timestamp, data],
+        )
+        .expect("part");
+}
+
+fn opencode_sqlite_input(path: &Path, session_id: &str) -> SessionInput {
+    SessionInput {
+        agent: "opencode".to_owned(),
+        session_id: session_id.to_owned(),
+        source: RawSource::Sqlite(path.to_owned()),
+    }
+}
+
+/// Streams one OpenCode `SessionInput` through the real adapter and the
+/// real evidence and turn-row pipeline, the same path production uses.
+fn run_opencode_fixture(fixture: &str, input: &SessionInput) -> (SessionEvidence, TurnFacts) {
+    let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: input.agent.clone(),
+        session_id: input.session_id.clone(),
+        kind: SourceKind::from(&input.source),
+        capabilities: SourceCapabilities::opencode(),
+    });
+    let store = MemoryTurnRowStore::new(input.agent.clone(), input.session_id.clone());
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        None,
+    );
+    let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
+    let outcome = adapter_for("opencode")
+        .visit(input, &mut composite)
+        .expect("fixture must stream");
+    composite.observe_source_outcome(outcome);
+    assert!(
+        !composite.turn_row_write_failed(),
+        "fixture {fixture}: turn row write must not fail"
+    );
+
+    let evidence = composite
+        .evidence()
+        .expect("finished source must publish evidence");
+    let facts = store.query_turn_facts().expect("facts query must succeed");
+    (evidence, facts)
+}
+
+/// A root session with one assistant message carrying a model, an effort
+/// variant, and cache read/write and reasoning tokens. Exercises the
+/// `models` and `cache` evidence groups.
+fn opencode_fixture_messages_with_cache_and_reasoning() -> (TempDir, SessionInput) {
+    let (directory, path) = opencode_create_database();
+    let connection = Connection::open(&path).expect("database");
+    opencode_insert_session(&connection, "root", None, 10);
+    opencode_insert_message(
+        &connection,
+        "m1",
+        "root",
+        20,
+        r#"{"role":"assistant","modelID":"model-a","variant":"high","tokens":{"input":100,"output":20,"reasoning":5,"cache":{"read":30,"write":40}}}"#,
+    );
+    drop(connection);
+    let input = opencode_sqlite_input(&path, "root");
+    (directory, input)
+}
+
+/// A root session with two assistant messages under different models
+/// (a model transition) and a delegated child session with its own
+/// model. Exercises `subagents`, `models.byModel`, and the cache group's
+/// model-transition and idle-gap fields.
+fn opencode_fixture_subagent_delegation_with_model_transition() -> (TempDir, SessionInput) {
+    let (directory, path) = opencode_create_database();
+    let connection = Connection::open(&path).expect("database");
+    opencode_insert_session(&connection, "root", None, 10);
+    opencode_insert_message(
+        &connection,
+        "r1",
+        "root",
+        10,
+        r#"{"role":"assistant","modelID":"model-a","tokens":{"input":1,"output":1}}"#,
+    );
+    opencode_insert_session(&connection, "child", Some("root"), 20);
+    opencode_insert_message(
+        &connection,
+        "c1",
+        "child",
+        20,
+        r#"{"role":"assistant","modelID":"model-b","tokens":{"input":2,"output":2}}"#,
+    );
+    opencode_insert_message(
+        &connection,
+        "r2",
+        "root",
+        60,
+        r#"{"role":"assistant","modelID":"model-c","tokens":{"input":1,"output":1}}"#,
+    );
+    drop(connection);
+    let input = opencode_sqlite_input(&path, "root");
+    (directory, input)
+}
+
+/// A malformed message row between two valid ones. Exercises the
+/// `eligibility` group and the partial-coverage path every other group
+/// carries when the session-wide claim is incomplete.
+fn opencode_fixture_malformed_between_valid() -> (TempDir, SessionInput) {
+    let (directory, path) = opencode_create_database();
+    let connection = Connection::open(&path).expect("database");
+    opencode_insert_session(&connection, "root", None, 10);
+    opencode_insert_message(
+        &connection,
+        "m1",
+        "root",
+        20,
+        r#"{"role":"assistant","modelID":"model-a","tokens":{"input":40,"output":8}}"#,
+    );
+    opencode_insert_message(&connection, "m2", "root", 30, "{not-json");
+    opencode_insert_message(
+        &connection,
+        "m3",
+        "root",
+        40,
+        r#"{"role":"assistant","modelID":"model-a","tokens":{"input":10,"output":2}}"#,
+    );
+    drop(connection);
+    let input = opencode_sqlite_input(&path, "root");
+    (directory, input)
+}
+
+/// One assistant message that carries a compaction part. Exercises the
+/// `compactions` evidence group.
+fn opencode_fixture_compaction_boundary() -> (TempDir, SessionInput) {
+    let (directory, path) = opencode_create_database();
+    let connection = Connection::open(&path).expect("database");
+    opencode_insert_session(&connection, "root", None, 10);
+    opencode_insert_message(
+        &connection,
+        "m1",
+        "root",
+        20,
+        r#"{"role":"assistant","modelID":"model-a","tokens":{"input":40,"output":8}}"#,
+    );
+    opencode_insert_part(
+        &connection,
+        "compaction",
+        "m1",
+        "root",
+        21,
+        r#"{"type":"compaction","auto":true,"snapshot":"snapshot"}"#,
+    );
+    drop(connection);
+    let input = opencode_sqlite_input(&path, "root");
+    (directory, input)
+}
+
+/// The export-JSONL format (`session_meta` / `session_member` / `message`
+/// records), copied from `opencode_characterization.rs`'s
+/// `export_stream_marks_a_child_message_as_delegated_with_one_spawn`.
+/// Exercises the JSONL source path, distinct from the SQLite path every
+/// other OpenCode fixture in this file uses.
+fn opencode_fixture_export_jsonl_child_delegation() -> SessionInput {
+    let jsonl = concat!(
+        r#"{"type":"session_meta","sessionID":"root","sessionRole":"root","time":{"created":1000},"payload":{"id":"root","title":"Root session"}}"#,
+        "\n",
+        r#"{"type":"session_member","rootSessionID":"root","originSessionID":"child","sessionRole":"child","parentSessionID":"root","time":{"created":1500},"payload":{"id":"child","title":"Child session"}}"#,
+        "\n",
+        r#"{"type":"message","rootSessionID":"root","sessionID":"root","sessionRole":"root","messageID":"m1","time":{"created":1000},"payload":{"role":"assistant","modelID":"model-a","tokens":{"input":1,"output":1}}}"#,
+        "\n",
+        r#"{"type":"message","rootSessionID":"root","sessionID":"child","sessionRole":"child","parentSessionID":"root","messageID":"m2","time":{"created":1600},"payload":{"role":"user"}}"#,
+        "\n",
+    );
+    SessionInput {
+        agent: "opencode".to_owned(),
+        session_id: "root".to_owned(),
+        source: RawSource::Jsonl(jsonl.to_owned()),
+    }
+}
+
+#[test]
+fn opencode_facts_match_evidence_for_every_fixture() {
+    let mut mismatches = Vec::new();
+
+    let (_messages_dir, messages_input) = opencode_fixture_messages_with_cache_and_reasoning();
+    let (evidence, facts) =
+        run_opencode_fixture("messages_with_cache_and_reasoning", &messages_input);
+    compare_fixture(
+        &mut mismatches,
+        "messages_with_cache_and_reasoning",
+        &evidence,
+        &facts,
+    );
+
+    let (_subagent_dir, subagent_input) =
+        opencode_fixture_subagent_delegation_with_model_transition();
+    let (evidence, facts) =
+        run_opencode_fixture("subagent_delegation_with_model_transition", &subagent_input);
+    compare_fixture(
+        &mut mismatches,
+        "subagent_delegation_with_model_transition",
+        &evidence,
+        &facts,
+    );
+
+    let (_malformed_dir, malformed_input) = opencode_fixture_malformed_between_valid();
+    let (evidence, facts) = run_opencode_fixture("malformed_between_valid", &malformed_input);
+    compare_fixture(
+        &mut mismatches,
+        "malformed_between_valid",
+        &evidence,
+        &facts,
+    );
+
+    let (_compaction_dir, compaction_input) = opencode_fixture_compaction_boundary();
+    let (evidence, facts) = run_opencode_fixture("compaction_boundary", &compaction_input);
+    compare_fixture(&mut mismatches, "compaction_boundary", &evidence, &facts);
+
+    let export_input = opencode_fixture_export_jsonl_child_delegation();
+    let (evidence, facts) = run_opencode_fixture("export_jsonl_child_delegation", &export_input);
+    compare_fixture(
+        &mut mismatches,
+        "export_jsonl_child_delegation",
+        &evidence,
+        &facts,
+    );
+
+    assert_no_mismatches("opencode", mismatches);
 }
