@@ -126,7 +126,11 @@ pub const PARSER_REVISION: i64 = 16;
 // Overthinking now assess only the turns that report a speed or effort
 // value, instead of demanding every eligible turn carry one. A session
 // with subagent work is no longer always `SignalMissing`.
-pub const ANALYZER_REVISION: i64 = 15;
+// +1 for `linear_record_order`: `previous_turn` now also attests complete
+// from line order alone, for a source with no per-record id
+// (`evidence_sink::SessionEvidenceAccumulator::evidence`), so a Codex
+// session already assessed as `CapabilityMissing` may now assess clean.
+pub const ANALYZER_REVISION: i64 = 16;
 // +1 for seam R2: the worker path now derives `inclusive_model_breakdown`
 // and `model_runs` from published turn rows instead of the accumulator
 // (`query_model_breakdown`, `query_model_runs`), so every session in the
@@ -135,7 +139,8 @@ pub const ANALYZER_REVISION: i64 = 15;
 pub const METRICS_SCHEMA_REVISION: i64 = 2;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
 // +1 more for `RepeatedContext::paid_tokens` (part F).
-pub const EVIDENCE_SCHEMA_REVISION: i64 = 11;
+// +1 more for `SourceCapabilities::linear_record_order`.
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 12;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

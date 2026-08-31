@@ -642,15 +642,17 @@ fn matrix() -> Vec<Row> {
         Row {
             // Codex has no `cache_write_tokens`, but `repeated_context`
             // resolves to uncached-input accounting from `token_classes`
-            // and `request_context_tokens`, so the badge is eligible; it
-            // never reads clean, because Codex has no `record_identity`
-            // (the matrix's "Conditional using uncached-input accounting").
-            // The unsupported `RecordLinkage` clean fact reports the
-            // capability gap, not the coverage.
+            // and `request_context_tokens`, so the badge is eligible. Codex
+            // has no `record_identity`, but it does have
+            // `linear_record_order`: one rollout is one append-only thread,
+            // so `previous_turn` attests linkage from line order alone.
+            // This fixture carries no record loss, so `RecordLinkage`
+            // reads complete and the badge now reads clean (the matrix's
+            // "Conditional using uncached-input accounting").
             harness: "codex",
             fixture: "records_all_kinds",
             badge: ExcessCacheRehydration,
-            expected: NotAssessed(CapabilityMissing),
+            expected: Clean,
         },
         Row {
             harness: "codex",

@@ -1034,6 +1034,7 @@ mod tests {
             compaction_boundaries: true,
             thread_identity: true,
             record_identity: true,
+            linear_record_order: true,
             quota_incidents: true,
             harness_version: true,
         };

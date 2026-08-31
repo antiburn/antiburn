@@ -2118,10 +2118,12 @@ mod tests {
 
     /// Seam 5a: a Codex rollout is one thread, but its records carry no
     /// per-record id. `thread_identity` stays set and unblocks
-    /// SessionsOverDepth; `record_identity` stays unset and blocks
-    /// CacheChurn.
+    /// SessionsOverDepth; `record_identity` stays unset, but Codex's own
+    /// `linear_record_order` (one rollout, one append-only stream) attests
+    /// `RecordLinkage` from line order instead, so CacheChurn can read
+    /// clean once more.
     #[test]
-    fn codex_thread_identity_without_record_identity_supports_overdepth_and_a_never_clean_cache_churn()
+    fn codex_thread_identity_without_record_identity_still_attests_linkage_from_order_for_cache_churn()
      {
         let input = SessionInput {
             agent: "codex".to_owned(),
@@ -2139,6 +2141,7 @@ mod tests {
 
         assert!(evidence.capabilities.thread_identity);
         assert!(!evidence.capabilities.record_identity);
+        assert!(evidence.capabilities.linear_record_order);
 
         assert!(
             eligible(DetectorId::SessionsOverDepth, &evidence),
@@ -2146,16 +2149,16 @@ mod tests {
         );
         // Codex reports `token_classes` and `request_context_tokens` but no
         // `cache_write_tokens`, so `repeated_context` resolves to
-        // uncached-input accounting: Cache Churn is eligible. It can never
-        // read clean, though, because Codex has no `record_identity` and
-        // `RecordLinkage` stays unsupported.
+        // uncached-input accounting: Cache Churn is eligible. This fixture
+        // carries no record loss, so the order route reads `RecordLinkage`
+        // complete, and Cache Churn now reads clean for Codex.
         assert!(
             eligible(DetectorId::CacheChurn, &evidence),
             "CacheChurn must be eligible for Codex under uncached-input accounting"
         );
         assert!(
-            !clean_facts_complete(DetectorId::CacheChurn, &evidence),
-            "CacheChurn must never read clean for Codex"
+            clean_facts_complete(DetectorId::CacheChurn, &evidence),
+            "CacheChurn must read clean for Codex once linear record order attests linkage"
         );
     }
 

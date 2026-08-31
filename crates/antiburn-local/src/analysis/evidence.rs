@@ -381,6 +381,11 @@ pub struct SourceCapabilities {
     /// Every counted row carries its own record id (`uuid`) and its parent
     /// link (`parent_uuid`) resolves to an id this source declared earlier.
     pub record_identity: bool,
+    /// The source writes records of one thread to one append-only stream.
+    /// Line order is the turn chain. A turn's predecessor is always the
+    /// counted record immediately before it, with no id needed to prove it.
+    #[serde(default)]
+    pub linear_record_order: bool,
     pub quota_incidents: bool,
     pub harness_version: bool,
 }
@@ -408,6 +413,7 @@ impl SourceCapabilities {
             compaction_boundaries: true,
             thread_identity: true,
             record_identity: true,
+            linear_record_order: false,
             quota_incidents: false,
             harness_version: false,
         }
@@ -433,7 +439,13 @@ impl SourceCapabilities {
     /// discovered child rollout streams with `Delegated` scope, so a
     /// child thread never merges into the parent's main-scope facts.
     /// `record_identity` stays unset: Codex records carry no per-record
-    /// id, so `previous_turn` stays unsupported.
+    /// id, so the id-based `previous_turn` route never applies.
+    ///
+    /// `linear_record_order` is set: a Codex rollout is one append-only
+    /// file that holds exactly one thread, so a counted turn's predecessor
+    /// is always the counted record immediately before it in the file.
+    /// This lets `previous_turn` attest linkage structurally, from order
+    /// alone, in place of the id-based route.
     pub fn codex() -> Self {
         Self {
             request_context_tokens: true,
@@ -452,6 +464,7 @@ impl SourceCapabilities {
             compaction_boundaries: true,
             thread_identity: true,
             record_identity: false,
+            linear_record_order: true,
             quota_incidents: false,
             harness_version: false,
         }
@@ -494,6 +507,7 @@ impl SourceCapabilities {
             compaction_boundaries: true,
             thread_identity: true,
             record_identity: true,
+            linear_record_order: false,
             quota_incidents: false,
             harness_version: false,
         }
@@ -539,6 +553,7 @@ impl SourceCapabilities {
             compaction_boundaries: true,
             thread_identity: true,
             record_identity: true,
+            linear_record_order: false,
             quota_incidents: false,
             harness_version: false,
         }
@@ -581,6 +596,7 @@ impl SourceCapabilities {
             compaction_boundaries: false,
             thread_identity: false,
             record_identity: false,
+            linear_record_order: false,
             quota_incidents: false,
             harness_version: false,
         }
@@ -626,6 +642,7 @@ impl SourceCapabilities {
             compaction_boundaries: false,
             thread_identity: false,
             record_identity: false,
+            linear_record_order: false,
             quota_incidents: false,
             harness_version: false,
         }
@@ -656,6 +673,7 @@ impl SourceCapabilities {
             compaction_boundaries: false,
             thread_identity: false,
             record_identity: false,
+            linear_record_order: false,
             quota_incidents: false,
             harness_version: false,
         }
@@ -880,7 +898,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 11,
+            "schemaRevision": 12,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -900,14 +918,15 @@ mod tests {
                 "compactionBoundaries": true,
                 "threadIdentity": true,
                 "recordIdentity": true,
+                "linearRecordOrder": false,
                 "quotaIncidents": false,
                 "harnessVersion": false
             },
             "coverage": coverage,
             "provenance": {
                 "parserRevision": 16,
-                "analyzerRevision": 15,
-                "evidenceSchemaRevision": 11,
+                "analyzerRevision": 16,
+                "evidenceSchemaRevision": 12,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",
@@ -1122,6 +1141,7 @@ mod tests {
                 compaction_boundaries: false,
                 thread_identity: false,
                 record_identity: false,
+                linear_record_order: false,
                 quota_incidents: false,
                 harness_version: false,
             }

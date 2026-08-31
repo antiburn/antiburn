@@ -2499,7 +2499,7 @@ async fn reprocessing_a_revision_one_row_leaves_no_placeholder_in_stored_evidenc
 
     let ready = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(ready.status, EvidenceStatus::Ready);
-    assert_eq!(ready.evidence_schema_revision, Some(11));
+    assert_eq!(ready.evidence_schema_revision, Some(12));
     assert!(!ready.evidence_json.unwrap().contains("unimplemented"));
 }
 
@@ -2540,7 +2540,7 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
 
     let failed = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(failed.status, EvidenceStatus::Failed);
-    assert_eq!(failed.evidence_schema_revision, Some(11));
+    assert_eq!(failed.evidence_schema_revision, Some(12));
     assert!(failed.evidence_json.is_none());
     assert!(failed.diagnostics_json.is_none());
 }

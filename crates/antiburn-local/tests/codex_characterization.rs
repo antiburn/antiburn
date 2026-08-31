@@ -290,6 +290,7 @@ fn codex_capabilities_match_published_evidence() {
     assert!(capabilities.subagent_models);
     assert!(capabilities.thread_identity);
     assert!(!capabilities.record_identity);
+    assert!(capabilities.linear_record_order);
     assert!(!capabilities.quota_incidents);
     assert!(!capabilities.harness_version);
     assert!(matches!(
@@ -308,7 +309,8 @@ fn codex_capabilities_match_published_evidence() {
         panic!("the supported cache fields must remain available");
     };
     assert_eq!(cache.cache_creation_tokens, 0);
-    assert!(matches!(cache.previous_turn, EvidenceValue::Unsupported));
+    // No record loss in this fixture: the order route attests linkage complete.
+    assert!(matches!(cache.previous_turn, EvidenceValue::Complete(())));
     let EvidenceValue::Complete(models) = evidence.models else {
         panic!("model evidence must be complete");
     };
