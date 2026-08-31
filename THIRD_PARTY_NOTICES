@@ -687,7 +687,7 @@ untrusted@0.9.0 | ISC | https://github.com/briansmith/untrusted
 url@2.5.8 | MIT OR Apache-2.0 | https://github.com/servo/rust-url
 urlpattern@0.3.0 | MIT | https://github.com/denoland/rust-urlpattern
 utf8_iter@1.0.4 | Apache-2.0 OR MIT | https://github.com/hsivonen/utf8_iter
-uuid@1.24.1 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid
+uuid@1.26.0 | Apache-2.0 OR MIT | https://github.com/uuid-rs/uuid
 vcpkg@0.2.15 | MIT OR Apache-2.0 | https://github.com/mcgoo/vcpkg-rs
 version-compare@0.2.1 | MIT | https://gitlab.com/timvisee/version-compare
 version_check@0.9.5 | MIT OR Apache-2.0 | https://github.com/SergioBenitez/version_check
@@ -10039,7 +10039,7 @@ SOFTWARE.
 ========================================
 
 Used by:
-  uuid@1.24.1
+  uuid@1.26.0
 
 Copyright (c) 2014 The Rust Project Developers
 Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon
