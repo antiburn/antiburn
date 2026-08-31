@@ -321,7 +321,7 @@ Notes for what isn't expressible as a token:
   `html[data-keyboard]`, which `src/lib/focusModality.ts` sets on Tab and clears on any pointer
   press. This is deliberate — webviews paint `:focus-visible` for programmatic and
   window-activation focus too, which would put a ring on a window that simply reopened. Buttons use
-  the arrow cursor everywhere.
+  the arrow cursor by default. A full-row disclosure can use `cursor-pointer!` as a click affordance.
 - **Motion** — `prefers-reduced-motion: reduce` clamps every animation and transition globally
   (`src/styles/motion.css`). A surface that still needs a hint of movement re-states a short
   duration there, with the reason; today the only such exception is the segmented control's

@@ -215,7 +215,7 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.queryByText("Cost")).toBeNull()
   })
 
-  it("shows the Efficiency card under the Cost card with a definition", () => {
+  it("shows the Efficiency card above the Cost card with a definition", () => {
     view({
       cost: cost(),
       efficiency: {
@@ -232,7 +232,11 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.getByText("Efficiency")).toBeTruthy()
     expect(screen.getByText("$/MTok")).toBeTruthy()
     expect(
-      screen.getByText("Relative to real work: context growth and output tokens."),
+      screen.getByText("Cost for real work: context growth and output tokens."),
+    ).toBeTruthy()
+    expect(
+      screen.getByText("Efficiency").compareDocumentPosition(screen.getByText("Cost")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
   })
 

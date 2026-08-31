@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { efficiencyMetrics } from "../../../lib/presentation/sessionEfficiency"
@@ -22,36 +22,53 @@ function totals(over: Partial<SessionEfficiency> = {}): SessionEfficiency {
 }
 
 describe("EfficiencyBreakdown", () => {
-  it("renders the three rows with their values and band words", () => {
+  it("renders the headline and three spend rows with their values", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
     expect(screen.getByText("$/MTok")).toBeTruthy()
     expect(screen.getByText("Real Work %")).toBeTruthy()
     expect(screen.getByText("Rewrite Waste %")).toBeTruthy()
+    expect(screen.getByText("Carry %")).toBeTruthy()
     expect(screen.getByText("$40.00")).toBeTruthy()
     expect(screen.getByText("34%")).toBeTruthy()
     expect(screen.getByText("12%")).toBeTruthy()
-    expect(screen.getAllByText("ok")).toHaveLength(3)
+    expect(screen.getByText("54%")).toBeTruthy()
+    expect(screen.getAllByText("ok")).toHaveLength(4)
   })
 
-  it("draws a thermometer per row with the mark where the session sits", () => {
+  it("shows the cost bands and aligns the three spend components below them", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
-    // $40 per MTok sits inside the ok band, which runs from $33 to $80.
     const cost = screen.getByTestId("thermometer-costPerMTok")
-    expect(cost.getAttribute("data-position")).toBe("0.383")
+    expect(cost.dataset.position).toBe("0.383")
     expect(cost.children).toHaveLength(4)
     expect(cost.children[0]?.getAttribute("class")).toContain("bg-system-green")
+    expect(cost.children[1]?.getAttribute("class")).toContain("bg-separator")
     expect(cost.children[2]?.getAttribute("class")).toContain("bg-system-orange")
-    // Real work reads higher-is-better, so its good segment sits on the right.
-    const realWork = screen.getByTestId("thermometer-realWorkShare")
-    expect(realWork.children[0]?.getAttribute("class")).toContain("bg-system-orange")
-    expect(realWork.children[2]?.getAttribute("class")).toContain("bg-system-green")
+
+    const realWork = screen.getByTestId("share-segment-realWorkShare")
+    expect(realWork.dataset).toMatchObject({
+      start: "0.000",
+      width: "0.340",
+    })
+    expect(realWork.children[0]?.getAttribute("class")).toContain("bg-system-blue")
+    const rewrite = screen.getByTestId("share-segment-rewriteShare")
+    expect(rewrite.dataset).toMatchObject({
+      start: "0.340",
+      width: "0.120",
+    })
+    expect(rewrite.children[1]?.getAttribute("class")).toContain("bg-system-indigo")
+    const carry = screen.getByTestId("share-segment-carryShare")
+    expect(carry.dataset).toMatchObject({
+      start: "0.460",
+      width: "0.540",
+    })
+    expect(carry.children[1]?.getAttribute("class")).toContain("bg-system-gold")
   })
 
   it("colours a good reading green and names a bad one by direction", () => {
     render(
       <EfficiencyBreakdown
         metrics={efficiencyMetrics(
-          totals({ totalUsd: 25, newWorkUsd: 4, rewriteUsd: 7 }),
+          totals({ totalUsd: 25, newWorkUsd: 4, carryUsd: 14, rewriteUsd: 7 }),
           "claude-code",
         )}
       />,
@@ -66,7 +83,7 @@ describe("EfficiencyBreakdown", () => {
     render(
       <EfficiencyBreakdown
         metrics={efficiencyMetrics(
-          totals({ totalUsd: 5, newWorkUsd: 4, rewriteUsd: 0.2 }),
+          totals({ totalUsd: 5, newWorkUsd: 4, carryUsd: 0.8, rewriteUsd: 0.2 }),
           "codex",
         )}
       />,
@@ -76,8 +93,8 @@ describe("EfficiencyBreakdown", () => {
     }
   })
 
-  it("shows a dash and no band when there is no spend", () => {
-    render(
+  it("renders nothing when there is no spend", () => {
+    const { container } = render(
       <EfficiencyBreakdown
         metrics={efficiencyMetrics(
           totals({ totalUsd: 0, newWorkUsd: 0, rewriteUsd: 0 }),
@@ -85,15 +102,33 @@ describe("EfficiencyBreakdown", () => {
         )}
       />,
     )
-    expect(screen.getAllByText("—")).toHaveLength(3)
-    expect(screen.queryByText("ok")).toBeNull()
-    expect(screen.queryByTestId("thermometer-costPerMTok")).toBeNull()
+    expect(container).toBeEmptyDOMElement()
   })
 
-  it("gives each row its own info mark", () => {
+  it("opens one metric explanation at a time", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "codex")} />)
-    expect(screen.getByLabelText("About $/MTok")).toBeTruthy()
-    expect(screen.getByLabelText("About Real Work %")).toBeTruthy()
-    expect(screen.getByLabelText("About Rewrite Waste %")).toBeTruthy()
+    const cost = screen.getByRole("button", { name: "$/MTok details" })
+    const realWork = screen.getByRole("button", { name: "Real Work % details" })
+    const rewrite = screen.getByRole("button", { name: "Rewrite Waste % details" })
+    const carry = screen.getByRole("button", { name: "Carry % details" })
+
+    for (const row of [cost, realWork, rewrite, carry]) {
+      expect(row.classList).toContain("cursor-pointer!")
+      expect(row.getAttribute("aria-expanded")).toBe("false")
+    }
+
+    fireEvent.click(cost)
+    expect(cost.getAttribute("aria-expanded")).toBe("true")
+    expect(screen.getByText(/avg cost for each million tokens/)).toBeTruthy()
+
+    fireEvent.click(realWork)
+    expect(cost.getAttribute("aria-expanded")).toBe("false")
+    expect(realWork.getAttribute("aria-expanded")).toBe("true")
+    expect(screen.queryByText(/avg cost for each million tokens/)).toBeNull()
+    expect(screen.getByText(/fresh input and output/)).toBeTruthy()
+    expect(screen.getByText("For Codex, aim for above 33%. Below 17% is too low.")).toBeTruthy()
+
+    fireEvent.click(realWork)
+    expect(realWork.getAttribute("aria-expanded")).toBe("false")
   })
 })

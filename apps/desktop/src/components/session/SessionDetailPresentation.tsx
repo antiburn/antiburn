@@ -776,6 +776,15 @@ export function SessionDetailPresentation({
               />
             )}
 
+            {efficiencyCard && (
+              <Card
+                title="Efficiency"
+                subtitle="Cost for real work: context growth and output tokens."
+              >
+                <EfficiencyBreakdown metrics={efficiencyCard} />
+              </Card>
+            )}
+
             {tokensCard && (
               <Card title="Context" subtitle={tokensCard.hint}>
                 <ContextTokensChart
@@ -796,15 +805,6 @@ export function SessionDetailPresentation({
                   split={tokensCard.split}
                   onOpenSubagent={onOpenSubagent}
                 />
-              </Card>
-            )}
-
-            {cost && tokensCard && efficiencyCard && (
-              <Card
-                title="Efficiency"
-                subtitle="Relative to real work: context growth and output tokens."
-              >
-                <EfficiencyBreakdown metrics={efficiencyCard} />
               </Card>
             )}
 
