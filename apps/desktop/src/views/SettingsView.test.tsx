@@ -723,7 +723,9 @@ describe("SettingsView", () => {
     // Deleting a provider's own files is named as a non-feature rather than
     // left as a silence a reader would have to test for.
     expect(screen.getByText(/antiburn cannot do this, by design/i)).toBeInTheDocument()
-    expect(screen.getByText(/shorter period keeps antiburn’s local index lighter/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/shorter period keeps antiburn’s local index lighter/i),
+    ).toBeInTheDocument()
   })
 
   /// The analytics section is the one place this pane describes something

@@ -134,9 +134,9 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
           </Disclosure>
           <Disclosure label="You control how long history stays">
             antiburn keeps indexed session data for the period you select below. The default is
-            forever, which can preserve history after a provider&rsquo;s 30-day retention window.
-            Shorter periods keep the local index lighter. The agents&rsquo; own source files are
-            left exactly where they are.
+            forever, which can preserve history after a provider&rsquo;s 30-day retention
+            window. Shorter periods keep the local index lighter. The agents&rsquo; own source
+            files are left exactly where they are.
           </Disclosure>
           <Disclosure label="Your work is never uploaded">
             There is no antiburn account, and nothing of ours you have to reach for the app to
