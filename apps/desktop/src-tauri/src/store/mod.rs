@@ -1229,13 +1229,17 @@ impl Store {
     /// A claim bumps `session_evidence.claim_fence` and writes new rows
     /// under that fence while the last published pass's rows still sit
     /// under the old fence. A publish that wins deletes every other
-    /// fence's rows and sets status `ready`; a publish that loses its race
-    /// deletes only its own fence's rows and leaves the earlier published
-    /// fence in place. So `claim_fence` names a complete set of rows only
-    /// when status is `ready` — with status `pending`, `processing`,
-    /// `failed`, or `unsupported`, `claim_fence` may point at partial or
-    /// missing rows, and this method returns `None` for all of them. The
-    /// evidence lookup and the row query run under one lock, so a claim
+    /// fence's rows and sets status `ready` or `unsupported`; a publish
+    /// that loses its race deletes only its own fence's rows and leaves the
+    /// earlier published fence in place. So `claim_fence` names a complete
+    /// set of rows when status is `ready` or `unsupported` — both are
+    /// terminal states a winning publish reached, so both name a complete
+    /// fence. `unsupported` means no detector was eligible for this source,
+    /// an insights verdict, not a parse-quality one; the rows and the
+    /// session_analysis record are still complete for it. With status
+    /// `pending`, `processing`, or `failed`, `claim_fence` may point at
+    /// partial or missing rows, and this method returns `None` for those.
+    /// The evidence lookup and the row query run under one lock, so a claim
     /// racing this read cannot swap the fence in between them.
     pub fn published_turn_rows(&self, key: &SessionKey) -> Result<Option<Vec<TurnRow>>> {
         let connection = self.lock();
@@ -1249,7 +1253,10 @@ impl Store {
         else {
             return Ok(None);
         };
-        if evidence.status != EvidenceStatus::Ready {
+        if !matches!(
+            evidence.status,
+            EvidenceStatus::Ready | EvidenceStatus::Unsupported
+        ) {
             return Ok(None);
         }
         Ok(Some(query_turn_rows(

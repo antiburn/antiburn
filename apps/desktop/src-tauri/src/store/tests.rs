@@ -2218,8 +2218,10 @@ async fn analysis_from_rows_serves_a_published_pass_without_reading_a_transcript
 }
 
 /// Before a worker pass has published anything, `analysis_from_rows` finds
-/// no ready row set and returns `None` — the command switch's own signal to
-/// fall back to a live parse.
+/// no complete row set and returns `None` — the command switch's own signal
+/// that this session's drilldown is still pending. The worker fills the gap
+/// on its own next pass; the command no longer re-parses the transcript
+/// in-process to answer this call.
 #[test]
 fn analysis_from_rows_returns_none_before_rows_are_ready() {
     let store = store();
@@ -2238,6 +2240,40 @@ fn analysis_from_rows_returns_none_before_rows_are_ready() {
         )
         .is_none()
     );
+}
+
+/// `published_turn_rows`' widening (R5 part 1) reaches `analysis_from_rows`
+/// too: a pass published with status `unsupported` is exactly as replayable
+/// as one published `ready`, because `Unsupported` is an insights verdict
+/// (no detector was eligible), not a parse-quality one — the rows and the
+/// `session_analysis` record a winning pass wrote are complete either way.
+#[test]
+fn analysis_from_rows_serves_a_pass_published_unsupported() {
+    let store = store();
+    let (mut record, claim) = claimed_projection(&store, "s1", 100, 60);
+    // A row whose own `source_key` names the parent session, so
+    // `metrics_by_source` groups it under `record.key.session_id` the way
+    // `analysis_from_rows` expects for the parent entry.
+    record.source_summaries_json = Some("{}".into());
+    let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    writer.write_turn_rows(&[turn_row(0)]).unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Unsupported, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+    assert_eq!(
+        store.evidence(&key).unwrap().unwrap().status,
+        EvidenceStatus::Unsupported
+    );
+
+    let replayed =
+        crate::analysis::analysis_from_rows(&store, &key, &key.session_id, "claude-code")
+            .expect("an unsupported, published pass still replays from rows");
+
+    assert!(replayed.metrics.is_some());
 }
 
 /// The drilldown's rows-replay path requeues a session whose stored
