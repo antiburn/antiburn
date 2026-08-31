@@ -21,14 +21,17 @@
 //!   thread. A sidechain turn never forms a transition or a gap with a
 //!   main-loop turn.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    CompositeSink, EvidenceSource, EvidenceValue, MemoryTurnRowStore, RawSource, SessionEvidence,
-    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SourceCapabilities,
-    SourceKind, TurnFacts, TurnRowSink, TurnRowStore, adapter_for,
+    CompositeSink, EvidenceSource, EvidenceValue, MemoryTurnRowStore, ModelRun, RawSource,
+    SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
+    SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnFacts, TurnRowSink,
+    TurnRowStore, adapter_for,
 };
+use antiburn_local::pricing::ModelTokens;
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 
@@ -73,11 +76,38 @@ fn run_fixture(
     jsonl: &str,
     capabilities: SourceCapabilities,
 ) -> (SessionEvidence, TurnFacts) {
-    let input = SessionInput {
-        agent: agent.to_owned(),
-        session_id: fixture.to_owned(),
-        source: RawSource::Jsonl(jsonl.to_owned()),
-    };
+    let (evidence, facts, _, _, _) = run_fixture_with_row_projections(
+        agent,
+        fixture,
+        &SessionInput {
+            agent: agent.to_owned(),
+            session_id: fixture.to_owned(),
+            source: RawSource::Jsonl(jsonl.to_owned()),
+        },
+        capabilities,
+    );
+    (evidence, facts)
+}
+
+/// Like [`run_fixture`], but also returns the accumulator's own
+/// `SessionMetrics` alongside the row-derived `query_model_breakdown`/
+/// `query_model_runs` projections the seam R2 parity tests
+/// (`model_breakdown_and_model_runs_match_the_accumulator_for_every_fixture`)
+/// compare against it. Takes a built `SessionInput` rather than raw
+/// `jsonl` so the OpenCode fixtures below, which build a `SessionInput`
+/// straight from a database, share this same streaming setup.
+fn run_fixture_with_row_projections(
+    agent: &str,
+    fixture: &str,
+    input: &SessionInput,
+    capabilities: SourceCapabilities,
+) -> (
+    SessionEvidence,
+    TurnFacts,
+    SessionMetrics,
+    BTreeMap<String, ModelTokens>,
+    Vec<ModelRun>,
+) {
     let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
         agent: input.agent.clone(),
@@ -93,7 +123,7 @@ fn run_fixture(
     );
     let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
     let outcome = adapter_for(agent)
-        .visit(&input, &mut composite)
+        .visit(input, &mut composite)
         .expect("fixture must stream");
     composite.observe_source_outcome(outcome);
     assert!(
@@ -104,8 +134,23 @@ fn run_fixture(
     let evidence = composite
         .evidence()
         .expect("finished source must publish evidence");
+    let session_metrics = composite
+        .metrics()
+        .expect("finished source must publish metrics");
     let facts = store.query_turn_facts().expect("facts query must succeed");
-    (evidence, facts)
+    let model_breakdown = store
+        .query_model_breakdown()
+        .expect("model breakdown query must succeed");
+    let model_runs = store
+        .query_model_runs()
+        .expect("model runs query must succeed");
+    (
+        evidence,
+        facts,
+        session_metrics,
+        model_breakdown,
+        model_runs,
+    )
 }
 
 /// Compares every group both projections produce, for one fixture, pushing
@@ -272,6 +317,94 @@ fn compare_fixture(
     }
 }
 
+/// Seam R2: `query_model_breakdown` and `query_model_runs`
+/// (`analysis/evidence_query.rs`) must equal what
+/// `SessionMetricsAccumulator` itself computed for this fixture —
+/// `metrics.model_breakdown` and, once normalized the same way
+/// `apps/desktop/src-tauri/src/analysis.rs`'s `model_runs_for_metrics`
+/// does, `metrics.model_runs`. Every fixture here streams through one
+/// `CompositeSink` with no sub-agent transcript of its own, so there is
+/// no parent/child file split for `query_model_runs`'s merge rule to
+/// exercise — every row's `source_key` equals the session id, so the
+/// query's own "parent" bucket already holds every row. The OpenCode
+/// `subagent_delegation_with_model_transition` fixture below is the
+/// exception: its child session's rows share the parent's `source_key`
+/// too (one `SessionInput` reads the whole OpenCode session tree), so it
+/// exercises the same flat-set shape, not the multi-file merge — that
+/// merge is desktop-only (`model_runs_parent_first`), assembled from
+/// several passes' own metrics, and has no engine-level equivalent to
+/// compare against.
+fn compare_model_projections(
+    mismatches: &mut Vec<Mismatch>,
+    fixture: &str,
+    metrics: &SessionMetrics,
+    model_breakdown: &BTreeMap<String, ModelTokens>,
+    model_runs: &[ModelRun],
+) {
+    let expected_breakdown: BTreeMap<String, ModelTokens> = metrics
+        .model_breakdown
+        .iter()
+        .map(|(model, tokens)| (model.clone(), tokens.clone()))
+        .collect();
+    diff(
+        mismatches,
+        fixture,
+        "model_breakdown",
+        model_breakdown.clone(),
+        expected_breakdown,
+    );
+    diff(
+        mismatches,
+        fixture,
+        "model_runs",
+        model_runs.to_vec(),
+        expected_model_runs(metrics),
+    );
+}
+
+/// Mirrors `apps/desktop/src-tauri/src/analysis.rs`'s
+/// `model_runs_for_metrics`: trims each run's model and thinking mode,
+/// drops a run whose model is empty after trimming, then collects into a
+/// `BTreeSet` so only the set of distinct pairs decides the result, not
+/// the accumulator's mark order. Falls back to one run per breakdown
+/// model, with no thinking mode, when the accumulator recorded no mark at
+/// all.
+fn expected_model_runs(metrics: &SessionMetrics) -> Vec<ModelRun> {
+    if metrics.model_runs.is_empty() {
+        let mut models: Vec<String> = metrics.model_breakdown.keys().cloned().collect();
+        models.sort();
+        return models
+            .into_iter()
+            .map(|model| ModelRun {
+                model,
+                thinking_mode: None,
+            })
+            .collect();
+    }
+    metrics
+        .model_runs
+        .iter()
+        .filter_map(|run| {
+            let model = run.model.trim();
+            if model.is_empty() {
+                return None;
+            }
+            let thinking_mode = run
+                .thinking_mode
+                .as_deref()
+                .map(str::trim)
+                .filter(|mode| !mode.is_empty())
+                .map(str::to_string);
+            Some(ModelRun {
+                model: model.to_string(),
+                thinking_mode,
+            })
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 /// Asserts every fixture's published `SessionEvidence` groups carry the
 /// queried `TurnFacts` values through with no change. `evidence()` builds
 /// each group straight from `facts`, so any mismatch here is a bug in that
@@ -431,6 +564,53 @@ fn claude_facts_match_evidence_for_every_fixture() {
     assert_no_mismatches("claude", mismatches);
 }
 
+#[test]
+fn claude_model_projections_match_the_accumulator_for_every_fixture() {
+    let mut mismatches = Vec::new();
+    for name in claude_fixture_names() {
+        let input = SessionInput {
+            agent: "claude".to_owned(),
+            session_id: name.to_owned(),
+            source: RawSource::Jsonl(claude_fixture(name).to_owned()),
+        };
+        let (_, _, metrics, model_breakdown, model_runs) =
+            run_fixture_with_row_projections("claude", name, &input, SourceCapabilities::claude());
+        // `delegated_model_missing` carries an assistant turn with billable
+        // tokens and no model. `SessionMetricsAccumulator` folds such a
+        // turn's tokens into the transcript's own primary model
+        // (`summary.model`, the parent's `claude-opus-4-6`) — see
+        // `model_breakdown_map`'s `unattributed_model_tokens` fold in
+        // `metrics_sink/mod.rs`. `query_model_breakdown` filters to
+        // `model IS NOT NULL` rows only, per this seam's design, and reads
+        // no session-level primary model to fold an unattributed turn's
+        // tokens into instead, so its total for `claude-opus-4-6` on this
+        // one fixture is short by that turn's 12 input / 3 output tokens.
+        // This is the one documented parity gap this seam accepts — see
+        // the PR description — so `model_breakdown` is excluded from this
+        // fixture's comparison; `model_runs` still holds, since the
+        // model-less turn's resolved run (`claude-opus-4-6`, same effort)
+        // duplicates one the modeled turn already contributes.
+        if name == "delegated_model_missing" {
+            diff(
+                &mut mismatches,
+                name,
+                "model_runs",
+                model_runs,
+                expected_model_runs(&metrics),
+            );
+            continue;
+        }
+        compare_model_projections(
+            &mut mismatches,
+            name,
+            &metrics,
+            &model_breakdown,
+            &model_runs,
+        );
+    }
+    assert_no_mismatches("claude", mismatches);
+}
+
 /* --------------------------------------------------------------------
  * Codex fixtures. Reuses the fixture set `codex_characterization.rs`
  * streams through `composite`.
@@ -492,6 +672,28 @@ fn codex_facts_match_evidence_for_every_fixture() {
             SourceCapabilities::codex(),
         );
         compare_fixture(&mut mismatches, name, &evidence, &facts);
+    }
+    assert_no_mismatches("codex", mismatches);
+}
+
+#[test]
+fn codex_model_projections_match_the_accumulator_for_every_fixture() {
+    let mut mismatches = Vec::new();
+    for name in codex_fixture_names() {
+        let input = SessionInput {
+            agent: "codex".to_owned(),
+            session_id: name.to_owned(),
+            source: RawSource::Jsonl(codex_fixture(name).to_owned()),
+        };
+        let (_, _, metrics, model_breakdown, model_runs) =
+            run_fixture_with_row_projections("codex", name, &input, SourceCapabilities::codex());
+        compare_model_projections(
+            &mut mismatches,
+            name,
+            &metrics,
+            &model_breakdown,
+            &model_runs,
+        );
     }
     assert_no_mismatches("codex", mismatches);
 }
@@ -619,6 +821,28 @@ fn pi_facts_match_evidence_for_every_fixture() {
     assert_no_mismatches("pi", mismatches);
 }
 
+#[test]
+fn pi_model_projections_match_the_accumulator_for_every_fixture() {
+    let mut mismatches = Vec::new();
+    for name in pi_fixture_names() {
+        let input = SessionInput {
+            agent: "pi".to_owned(),
+            session_id: name.to_owned(),
+            source: RawSource::Jsonl(pi_fixture(name).to_owned()),
+        };
+        let (_, _, metrics, model_breakdown, model_runs) =
+            run_fixture_with_row_projections("pi", name, &input, SourceCapabilities::pi());
+        compare_model_projections(
+            &mut mismatches,
+            name,
+            &metrics,
+            &model_breakdown,
+            &model_runs,
+        );
+    }
+    assert_no_mismatches("pi", mismatches);
+}
+
 /* --------------------------------------------------------------------
  * OpenCode fixtures. OpenCode has no `fixtures/opencode_characterization`
  * directory: `opencode_characterization.rs` builds every session inline,
@@ -712,33 +936,12 @@ fn opencode_sqlite_input(path: &Path, session_id: &str) -> SessionInput {
 /// Streams one OpenCode `SessionInput` through the real adapter and the
 /// real evidence and turn-row pipeline, the same path production uses.
 fn run_opencode_fixture(fixture: &str, input: &SessionInput) -> (SessionEvidence, TurnFacts) {
-    let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
-    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
-        agent: input.agent.clone(),
-        session_id: input.session_id.clone(),
-        kind: SourceKind::from(&input.source),
-        capabilities: SourceCapabilities::opencode(),
-    });
-    let store = MemoryTurnRowStore::new(input.agent.clone(), input.session_id.clone());
-    let turn_rows = TurnRowSink::new(
-        Arc::clone(&store) as Arc<dyn TurnRowStore>,
-        input.session_id.clone(),
-        None,
+    let (evidence, facts, _, _, _) = run_fixture_with_row_projections(
+        "opencode",
+        fixture,
+        input,
+        SourceCapabilities::opencode(),
     );
-    let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for("opencode")
-        .visit(input, &mut composite)
-        .expect("fixture must stream");
-    composite.observe_source_outcome(outcome);
-    assert!(
-        !composite.turn_row_write_failed(),
-        "fixture {fixture}: turn row write must not fail"
-    );
-
-    let evidence = composite
-        .evidence()
-        .expect("finished source must publish evidence");
-    let facts = store.query_turn_facts().expect("facts query must succeed");
     (evidence, facts)
 }
 
@@ -917,6 +1120,89 @@ fn opencode_facts_match_evidence_for_every_fixture() {
         "export_jsonl_child_delegation",
         &evidence,
         &facts,
+    );
+
+    assert_no_mismatches("opencode", mismatches);
+}
+
+#[test]
+fn opencode_model_projections_match_the_accumulator_for_every_fixture() {
+    let mut mismatches = Vec::new();
+
+    let (_messages_dir, messages_input) = opencode_fixture_messages_with_cache_and_reasoning();
+    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
+        "opencode",
+        "messages_with_cache_and_reasoning",
+        &messages_input,
+        SourceCapabilities::opencode(),
+    );
+    compare_model_projections(
+        &mut mismatches,
+        "messages_with_cache_and_reasoning",
+        &metrics,
+        &model_breakdown,
+        &model_runs,
+    );
+
+    let (_subagent_dir, subagent_input) =
+        opencode_fixture_subagent_delegation_with_model_transition();
+    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
+        "opencode",
+        "subagent_delegation_with_model_transition",
+        &subagent_input,
+        SourceCapabilities::opencode(),
+    );
+    compare_model_projections(
+        &mut mismatches,
+        "subagent_delegation_with_model_transition",
+        &metrics,
+        &model_breakdown,
+        &model_runs,
+    );
+
+    let (_malformed_dir, malformed_input) = opencode_fixture_malformed_between_valid();
+    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
+        "opencode",
+        "malformed_between_valid",
+        &malformed_input,
+        SourceCapabilities::opencode(),
+    );
+    compare_model_projections(
+        &mut mismatches,
+        "malformed_between_valid",
+        &metrics,
+        &model_breakdown,
+        &model_runs,
+    );
+
+    let (_compaction_dir, compaction_input) = opencode_fixture_compaction_boundary();
+    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
+        "opencode",
+        "compaction_boundary",
+        &compaction_input,
+        SourceCapabilities::opencode(),
+    );
+    compare_model_projections(
+        &mut mismatches,
+        "compaction_boundary",
+        &metrics,
+        &model_breakdown,
+        &model_runs,
+    );
+
+    let export_input = opencode_fixture_export_jsonl_child_delegation();
+    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
+        "opencode",
+        "export_jsonl_child_delegation",
+        &export_input,
+        SourceCapabilities::opencode(),
+    );
+    compare_model_projections(
+        &mut mismatches,
+        "export_jsonl_child_delegation",
+        &metrics,
+        &model_breakdown,
+        &model_runs,
     );
 
     assert_no_mismatches("opencode", mismatches);

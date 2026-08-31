@@ -145,6 +145,26 @@ pub struct StreamedSession {
     pub subagents: Vec<(SessionMetrics, Option<i64>)>,
     pub started_at_epoch: Option<i64>,
     pub evidence: Option<SessionEvidence>,
+    /// `inclusive_model_breakdown` and `model_runs`, read back from turn
+    /// rows instead of the accumulator. `Some` only when this pass had a
+    /// `turn_row_store` — see [`RowProjections`].
+    pub row_projections: Option<RowProjections>,
+}
+
+/// `inclusive_model_breakdown` and `model_runs`, derived from published
+/// turn rows instead of `SessionMetricsAccumulator`.
+///
+/// A pass with a `turn_row_store` (the durable evidence worker) computes
+/// these from `query_model_breakdown`/`query_model_runs` instead of the
+/// accumulator's own tally, proving the two agree over every
+/// characterization fixture — see the engine crate's
+/// `tests/turn_facts_parity.rs`, the `*_model_projections_match_the_
+/// accumulator_for_every_fixture` tests. A pass with no row store (an
+/// on-demand view, or a non-evidence-cohort agent) keeps the accumulator's
+/// values — see `analyze_for_evidence`.
+pub struct RowProjections {
+    pub model_breakdown: std::collections::BTreeMap<String, ModelTokens>,
+    pub model_runs: Vec<ModelRun>,
 }
 
 enum StreamOutcome {
@@ -166,6 +186,7 @@ enum ComputedAnalysis {
         started_at_epoch: Option<i64>,
         parent_fingerprint: Option<String>,
         evidence: Box<Option<SessionEvidence>>,
+        row_projections: Option<RowProjections>,
     },
     SourceChanged,
     Missing,
@@ -291,12 +312,22 @@ impl SessionAnalysis {
             return None;
         }
         let revisions = projection_revisions();
+        // `initial_context` sits on `metrics` (see `analyze_for_evidence`,
+        // which grafts the parent's own breakdown onto the merged pass), so
+        // this reads the same value on both the worker and legacy paths.
+        // Nothing reads this field back yet — seam R3 does.
+        let initial_context_json = self
+            .metrics
+            .as_ref()
+            .and_then(|metrics| metrics.initial_context.as_ref())
+            .and_then(|breakdown| serde_json::to_string(breakdown).ok());
         Some(AnalysisRecord {
             key: key.clone(),
             model_breakdown_json: serde_json::to_string(&self.inclusive_model_breakdown)
                 .unwrap_or_else(|_| "{}".to_string()),
             inclusive_models_json: serde_json::to_string(&self.model_runs)
                 .unwrap_or_else(|_| "[]".to_string()),
+            initial_context_json,
             source_fingerprint: self.fingerprint.clone(),
             pricing_generation: pricing_generation() as i64,
             analyzed_generation: self.analyzed_generation,
@@ -704,13 +735,34 @@ fn stream_vendor_with_hooks(
     // cannot build a `SessionEvidence`, since every row-derived group comes
     // from `TurnFacts`. A row query failure fails the whole pass, the same
     // way a turn-row write failure does above — published metrics must
-    // never disagree with rows this pass could not read back.
-    let evidence = match turn_row_store {
-        Some(store) => match store.query_turn_facts() {
-            Ok(facts) => parent_residual.map(|residual| residual.evidence(&facts)),
-            Err(_) => return StreamOutcome::ParentUnreadable,
-        },
-        None => None,
+    // never disagree with rows this pass could not read back. The same
+    // fail-the-pass rule covers `row_projections`: `inclusive_model_breakdown`
+    // and `model_runs` must never publish out of step with the rows this
+    // pass itself wrote.
+    let (evidence, row_projections) = match turn_row_store {
+        Some(store) => {
+            let facts = match store.query_turn_facts() {
+                Ok(facts) => facts,
+                Err(_) => return StreamOutcome::ParentUnreadable,
+            };
+            let evidence = parent_residual.map(|residual| residual.evidence(&facts));
+            let model_breakdown = match store.query_model_breakdown() {
+                Ok(model_breakdown) => model_breakdown,
+                Err(_) => return StreamOutcome::ParentUnreadable,
+            };
+            let model_runs = match store.query_model_runs() {
+                Ok(model_runs) => model_runs,
+                Err(_) => return StreamOutcome::ParentUnreadable,
+            };
+            (
+                evidence,
+                Some(RowProjections {
+                    model_breakdown,
+                    model_runs,
+                }),
+            )
+        }
+        None => (None, None),
     };
     StreamOutcome::Published {
         session: Box::new(StreamedSession {
@@ -719,6 +771,7 @@ fn stream_vendor_with_hooks(
             subagents,
             started_at_epoch,
             evidence,
+            row_projections,
         }),
         parent_fingerprint,
     }
@@ -914,6 +967,7 @@ pub async fn analyze_for_evidence(
                     started_at_epoch: session.started_at_epoch,
                     parent_fingerprint,
                     evidence: Box::new(session.evidence),
+                    row_projections: session.row_projections,
                 },
                 StreamOutcome::SourceChanged => ComputedAnalysis::SourceChanged,
                 StreamOutcome::ParentMissing => ComputedAnalysis::Missing,
@@ -948,6 +1002,7 @@ pub async fn analyze_for_evidence(
             started_at_epoch: None,
             parent_fingerprint: None,
             evidence: Box::new(None),
+            row_projections: None,
         }
     })
     .await;
@@ -956,57 +1011,66 @@ pub async fn analyze_for_evidence(
     let Ok(computed) = computed else {
         return unavailable_evidence_pass(PassOutcome::Unreadable, source_path, Some(fingerprint));
     };
-    let (parent_metrics, merged, subagents, started_at_epoch, parent_fingerprint, evidence) =
-        match computed {
-            ComputedAnalysis::Published {
-                parent,
-                merged,
-                subagents,
-                started_at_epoch,
-                parent_fingerprint,
-                evidence,
-            } => (
-                *parent,
-                *merged,
-                subagents,
-                started_at_epoch,
-                parent_fingerprint,
-                *evidence,
-            ),
-            ComputedAnalysis::SourceChanged => {
-                return EvidencePass {
-                    analysis: SessionAnalysis {
-                        source_path,
-                        fingerprint,
-                        source_changed: true,
-                        ..SessionAnalysis::unavailable()
-                    },
-                    evidence: None,
-                    outcome: PassOutcome::SourceChanged,
-                };
-            }
-            ComputedAnalysis::Missing => {
-                return unavailable_evidence_pass(
-                    PassOutcome::SourceMissing,
+    let (
+        parent_metrics,
+        merged,
+        subagents,
+        started_at_epoch,
+        parent_fingerprint,
+        evidence,
+        row_projections,
+    ) = match computed {
+        ComputedAnalysis::Published {
+            parent,
+            merged,
+            subagents,
+            started_at_epoch,
+            parent_fingerprint,
+            evidence,
+            row_projections,
+        } => (
+            *parent,
+            *merged,
+            subagents,
+            started_at_epoch,
+            parent_fingerprint,
+            *evidence,
+            row_projections,
+        ),
+        ComputedAnalysis::SourceChanged => {
+            return EvidencePass {
+                analysis: SessionAnalysis {
                     source_path,
-                    Some(fingerprint),
-                );
-            }
-            ComputedAnalysis::Unsupported => {
-                return unavailable_evidence_pass(
-                    PassOutcome::Unsupported,
-                    source_path,
-                    Some(fingerprint),
-                );
-            }
-            ComputedAnalysis::Unavailable => {
-                return unavailable_evidence_pass(
-                    PassOutcome::Unreadable,
-                    source_path,
-                    Some(fingerprint),
-                );
-            }
-        };
+                    fingerprint,
+                    source_changed: true,
+                    ..SessionAnalysis::unavailable()
+                },
+                evidence: None,
+                outcome: PassOutcome::SourceChanged,
+            };
+        }
+        ComputedAnalysis::Missing => {
+            return unavailable_evidence_pass(
+                PassOutcome::SourceMissing,
+                source_path,
+                Some(fingerprint),
+            );
+        }
+        ComputedAnalysis::Unsupported => {
+            return unavailable_evidence_pass(
+                PassOutcome::Unsupported,
+                source_path,
+                Some(fingerprint),
+            );
+        }
+        ComputedAnalysis::Unavailable => {
+            return unavailable_evidence_pass(
+                PassOutcome::Unreadable,
+                source_path,
+                Some(fingerprint),
+            );
+        }
+    };
     let analyzed_generation = attributed_generation(&claimed, parent_fingerprint.as_deref());
     let by_id: HashMap<String, (SessionMetrics, Option<i64>)> = subagents
         .into_iter()
@@ -1091,14 +1155,25 @@ pub async fn analyze_for_evidence(
         .collect();
     let has_subagents = !subagent_breakdowns.is_empty();
     let subagents_model_breakdown = merge_model_breakdowns(subagent_breakdowns.iter().copied());
-    let inclusive_model_breakdown = metrics.model_breakdown.clone();
+    let accumulator_model_breakdown = metrics.model_breakdown.clone();
+    let accumulator_model_runs =
+        model_runs_parent_first(&parent_metrics, by_id.values().map(|(child, _)| child));
+    // The worker path (`row_projections` is `Some`) reads
+    // `inclusive_model_breakdown` and `model_runs` back from published turn
+    // rows instead of the accumulator — see `RowProjections`. Every other
+    // caller keeps the accumulator's own values.
+    let (inclusive_model_breakdown, model_runs) = match row_projections {
+        Some(RowProjections {
+            model_breakdown,
+            model_runs,
+        }) => (model_breakdown.into_iter().collect(), model_runs),
+        None => (accumulator_model_breakdown, accumulator_model_runs),
+    };
 
     let top_level_cost = price_breakdown(&parent_metrics.model_breakdown);
     let subagents_cost = price_breakdown(&subagents_model_breakdown);
     let cost = metrics.cost;
     let models = sorted_models(&inclusive_model_breakdown);
-    let model_runs =
-        model_runs_parent_first(&parent_metrics, by_id.values().map(|(child, _)| child));
     let inclusive_tokens = Some(sum_billable_tokens(&inclusive_model_breakdown));
     let subagents_tokens = has_subagents.then(|| sum_billable_tokens(&subagents_model_breakdown));
     let skills = metrics.skill_uses.clone();
@@ -2750,6 +2825,7 @@ mod tests {
             key: SessionKey::new("native", "claude-code", "abc"),
             model_breakdown_json: "{}".into(),
             inclusive_models_json: "[]".into(),
+            initial_context_json: None,
             source_fingerprint: MISSING_FINGERPRINT.into(),
             pricing_generation: pricing_generation() as i64,
             analyzed_generation: 0,
@@ -2773,6 +2849,7 @@ mod tests {
             key: SessionKey::new("native", "claude-code", "abc"),
             model_breakdown_json: "{}".into(),
             inclusive_models_json: "[]".into(),
+            initial_context_json: None,
             source_fingerprint: "123:456".into(),
             pricing_generation: pricing_generation() as i64 - 1,
             analyzed_generation: 0,

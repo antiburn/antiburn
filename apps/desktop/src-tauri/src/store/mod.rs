@@ -37,9 +37,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use antiburn_local::analysis::{
-    TurnFacts, TurnRow, TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows,
+    ModelRun, TurnFacts, TurnRow, TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows,
     delete_turn_rows, delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_turn_rows,
-    query_turn_facts, query_turn_rows,
+    query_model_breakdown, query_model_runs, query_turn_facts, query_turn_rows,
 };
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -1083,13 +1083,14 @@ impl Store {
         transaction.execute(
             "INSERT INTO session_analysis (
                  environment_key, agent, session_id, model_breakdown_json,
-                 inclusive_models_json, source_fingerprint, pricing_generation,
-                 analyzed_generation, parser_revision, analyzer_revision,
-                 metrics_schema_revision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 inclusive_models_json, initial_context_json, source_fingerprint,
+                 pricing_generation, analyzed_generation, parser_revision,
+                 analyzer_revision, metrics_schema_revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
                  model_breakdown_json = excluded.model_breakdown_json,
                  inclusive_models_json = excluded.inclusive_models_json,
+                 initial_context_json = excluded.initial_context_json,
                  source_fingerprint = excluded.source_fingerprint,
                  pricing_generation = excluded.pricing_generation,
                  analyzed_generation = excluded.analyzed_generation,
@@ -1102,6 +1103,7 @@ impl Store {
                 record.key.session_id,
                 record.model_breakdown_json,
                 record.inclusive_models_json,
+                record.initial_context_json,
                 record.source_fingerprint,
                 record.pricing_generation,
                 record.analyzed_generation,
@@ -1253,13 +1255,14 @@ impl Store {
         transaction.execute(
             "INSERT INTO session_analysis (
                  environment_key, agent, session_id, model_breakdown_json,
-                 inclusive_models_json, source_fingerprint, pricing_generation,
-                 analyzed_generation, parser_revision, analyzer_revision,
-                 metrics_schema_revision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 inclusive_models_json, initial_context_json, source_fingerprint,
+                 pricing_generation, analyzed_generation, parser_revision,
+                 analyzer_revision, metrics_schema_revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
                  model_breakdown_json = excluded.model_breakdown_json,
                  inclusive_models_json = excluded.inclusive_models_json,
+                 initial_context_json = excluded.initial_context_json,
                  source_fingerprint = excluded.source_fingerprint,
                  pricing_generation = excluded.pricing_generation,
                  analyzed_generation = excluded.analyzed_generation,
@@ -1272,6 +1275,7 @@ impl Store {
                 record.key.session_id,
                 record.model_breakdown_json,
                 record.inclusive_models_json,
+                record.initial_context_json,
                 record.source_fingerprint,
                 record.pricing_generation,
                 record.analyzed_generation,
@@ -1301,9 +1305,9 @@ impl Store {
         let connection = self.lock();
         let mut statement = connection.prepare(
             "SELECT environment_key, agent, session_id, model_breakdown_json,
-                    inclusive_models_json, source_fingerprint, pricing_generation,
-                    analyzed_generation, parser_revision, analyzer_revision,
-                    metrics_schema_revision
+                    inclusive_models_json, initial_context_json, source_fingerprint,
+                    pricing_generation, analyzed_generation, parser_revision,
+                    analyzer_revision, metrics_schema_revision
                FROM session_analysis
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         )?;
@@ -1319,12 +1323,13 @@ impl Store {
                         ),
                         model_breakdown_json: row.get(3)?,
                         inclusive_models_json: row.get(4)?,
-                        source_fingerprint: row.get(5)?,
-                        pricing_generation: row.get(6)?,
-                        analyzed_generation: row.get(7)?,
-                        parser_revision: row.get(8)?,
-                        analyzer_revision: row.get(9)?,
-                        metrics_schema_revision: row.get(10)?,
+                        initial_context_json: row.get(5)?,
+                        source_fingerprint: row.get(6)?,
+                        pricing_generation: row.get(7)?,
+                        analyzed_generation: row.get(8)?,
+                        parser_revision: row.get(9)?,
+                        analyzer_revision: row.get(10)?,
+                        metrics_schema_revision: row.get(11)?,
                     })
                 },
             )
@@ -2088,6 +2093,29 @@ impl TurnRowStore for FencedTurnRowStore {
     fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
         let connection = self.store.lock();
         Ok(query_turn_facts(
+            &connection,
+            &turn_session_key(&self.key),
+            self.claim_fence,
+        )?)
+    }
+
+    fn query_model_breakdown(
+        &self,
+    ) -> Result<
+        std::collections::BTreeMap<String, antiburn_local::pricing::ModelTokens>,
+        TurnRowError,
+    > {
+        let connection = self.store.lock();
+        Ok(query_model_breakdown(
+            &connection,
+            &turn_session_key(&self.key),
+            self.claim_fence,
+        )?)
+    }
+
+    fn query_model_runs(&self) -> Result<Vec<ModelRun>, TurnRowError> {
+        let connection = self.store.lock();
+        Ok(query_model_runs(
             &connection,
             &turn_session_key(&self.key),
             self.claim_fence,

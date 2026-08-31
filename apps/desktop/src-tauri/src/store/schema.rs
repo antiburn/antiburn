@@ -11,7 +11,7 @@
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -387,3 +387,12 @@ const V15: &str = antiburn_local::analysis::TURN_SCHEMA_SQL;
 /// the same reason [`V15`] re-exports `TURN_SCHEMA_SQL` instead of stating
 /// its own DDL.
 const V16: &str = antiburn_local::analysis::TURN_SCHEMA_V2_SQL;
+
+/// v17 adds `initial_context_json` to `session_analysis`: the serialized
+/// initial-context breakdown a later change (seam R3) reads back. Nullable,
+/// with no default, because an existing row's initial context is unknown
+/// until the next analysis pass fills it in — unlike [`V7`]'s
+/// `inclusive_models_json`, there is no empty-but-valid value to backfill.
+const V17: &str = r#"
+ALTER TABLE session_analysis ADD COLUMN initial_context_json TEXT;
+"#;
