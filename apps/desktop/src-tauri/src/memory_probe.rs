@@ -32,7 +32,7 @@ pub fn synthetic_sessions() -> Result<Option<Vec<ActivityEntry>>, String> {
         .transpose()
         .map_err(|error| format!("invalid {FIXTURE_SEED_ENV}: {error}"))?
         .unwrap_or(0);
-    generate_sessions(count, seed).map(Some)
+    generate_sessions(count, seed, time::OffsetDateTime::now_utc()).map(Some)
 }
 
 #[cfg(target_os = "macos")]
@@ -80,10 +80,18 @@ fn web_content_event(generation: u64, pid: u32) -> String {
     .expect("the WebContent diagnostic is serializable")
 }
 
-fn generate_sessions(count: usize, seed: u64) -> Result<Vec<ActivityEntry>, String> {
+fn generate_sessions(
+    count: usize,
+    seed: u64,
+    now: time::OffsetDateTime,
+) -> Result<Vec<ActivityEntry>, String> {
     if count > MAX_SESSIONS {
         return Err(format!("{SESSIONS_ENV} must not exceed {MAX_SESSIONS}"));
     }
+    let now = now
+        .replace_second(0)
+        .and_then(|value| value.replace_nanosecond(0))
+        .expect("zero is a valid second and nanosecond");
     let agents = ["claude-code", "codex", "gemini-cli"];
     let models = ["claude-opus-4-1", "gpt-5", "gemini-2.5-pro"];
     Ok((0..count)
@@ -91,8 +99,7 @@ fn generate_sessions(count: usize, seed: u64) -> Result<Vec<ActivityEntry>, Stri
             let shape = (index as u64).wrapping_add(seed) as usize;
             let agent = agents[shape % agents.len()];
             let model = models[shape % models.len()];
-            let day = (index / 40).min(13);
-            let hour = 23 - (index % 20);
+            let timestamp = now - time::Duration::minutes(index as i64 * 15);
             ActivityEntry {
                 agent: agent.to_string(),
                 session_id: format!("probe-{seed:08x}-{index:04}"),
@@ -101,7 +108,9 @@ fn generate_sessions(count: usize, seed: u64) -> Result<Vec<ActivityEntry>, Stri
                 } else {
                     format!("synthetic-repo-{}", shape % 7)
                 },
-                timestamp: format!("2026-08-{:02}T{:02}:00:00Z", 31 - day, hour),
+                timestamp: timestamp
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .expect("OffsetDateTime supports RFC 3339"),
                 is_active: index < 3,
                 surface: if shape.is_multiple_of(4) {
                     "ide_desktop"
@@ -142,16 +151,23 @@ mod tests {
 
     #[test]
     fn synthetic_rows_are_deterministic_full_shape_and_bounded() {
+        let now = time::OffsetDateTime::from_unix_timestamp(1_788_192_000).unwrap();
         assert_eq!(
-            serde_json::to_value(generate_sessions(225, 42).unwrap()).unwrap(),
-            serde_json::to_value(generate_sessions(225, 42).unwrap()).unwrap()
+            serde_json::to_value(generate_sessions(225, 42, now).unwrap()).unwrap(),
+            serde_json::to_value(generate_sessions(225, 42, now).unwrap()).unwrap()
         );
-        let rows = generate_sessions(225, 42).unwrap();
-        assert_eq!(rows.len(), 225);
+        let rows = generate_sessions(500, 42, now).unwrap();
+        let oldest = time::OffsetDateTime::parse(
+            &rows.last().unwrap().timestamp,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 500);
+        assert!(now - oldest < time::Duration::days(7));
         assert!(rows.iter().any(|row| row.wsl_distro.is_some()));
         assert!(rows.iter().any(|row| row.has_fork_parent));
         assert!(rows.iter().all(|row| row.cost.is_some()));
-        assert!(generate_sessions(501, 0).is_err());
+        assert!(generate_sessions(501, 0, now).is_err());
     }
 
     #[test]

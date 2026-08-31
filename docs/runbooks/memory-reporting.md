@@ -38,6 +38,7 @@ Run the standard release measurement from the repository root:
 
 ```bash
 node scripts/mem-report.mjs --release \
+  --format json \
   --output /tmp/antiburn-memory.json \
   --summary /tmp/antiburn-memory-summary.json
 ```
