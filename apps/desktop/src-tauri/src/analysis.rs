@@ -58,10 +58,6 @@ pub struct ClaimedSource {
 pub struct CancelFlag(Arc<AtomicBool>);
 
 impl CancelFlag {
-    pub fn from_flag(flag: Arc<AtomicBool>) -> Self {
-        Self(flag)
-    }
-
     pub fn never() -> Self {
         Self(Arc::new(AtomicBool::new(false)))
     }
@@ -452,16 +448,6 @@ fn combined_fingerprint(source: &SessionSource, subagent_paths: &[std::path::Pat
     serde_json::to_string(&parts.collect::<Vec<_>>())
         .map(|fingerprint| format!("v{ANALYSIS_FINGERPRINT_VERSION}:{fingerprint}"))
         .unwrap_or_else(|_| MISSING_FINGERPRINT.to_string())
-}
-
-/// Whether a cached analysis is still good for `source`.
-///
-/// A cache entry is stale when the transcript changed or when a newer pricing
-/// snapshot was installed, since cost is baked into the cached record.
-pub fn cache_is_fresh(cached: &AnalysisRecord, fingerprint: &str) -> bool {
-    fingerprint != MISSING_FINGERPRINT
-        && cached.source_fingerprint == fingerprint
-        && cached.pricing_generation == pricing_generation() as i64
 }
 
 /// The path of a file-backed source.
@@ -1349,9 +1335,8 @@ pub fn analysis_from_rows(
         fingerprint: record.source_fingerprint,
         analyzed_generation: record.analyzed_generation,
         started_at_epoch,
-        // Nothing new to persist: this call reads the cache, it does not
-        // extend it, and `cache_detail_analysis` skips evidence-cohort
-        // agents anyway.
+        // Nothing new to persist: this call replays the worker's own
+        // published rows, it does not write anything.
         source_summaries: None,
     }))
 }
@@ -3031,10 +3016,10 @@ mod tests {
         let directory = tempfile::TempDir::new().expect("tempdir");
         let path = directory.path().join("parent.jsonl");
         std::fs::write(&path, claude_record("parent", 1_760_000_000)).expect("write parent");
-        let flag = Arc::new(AtomicBool::new(true));
+        let flag = CancelFlag(Arc::new(AtomicBool::new(true)));
 
         assert!(matches!(
-            stream_vendor(&[file_input(&path, "parent")], &CancelFlag::from_flag(flag),),
+            stream_vendor(&[file_input(&path, "parent")], &flag),
             StreamOutcome::ParentUnreadable
         ));
     }
@@ -3046,49 +3031,6 @@ mod tests {
         assert!(is_active(Some(now), now));
         assert!(!is_active(Some(now - ACTIVE_SESSION_WINDOW_SECS - 1), now));
         assert!(!is_active(None, now));
-    }
-
-    #[test]
-    fn a_source_with_no_file_behind_it_never_satisfies_the_cache() {
-        let cached = AnalysisRecord {
-            key: SessionKey::new("native", "claude-code", "abc"),
-            model_breakdown_json: "{}".into(),
-            inclusive_models_json: "[]".into(),
-            initial_context_json: None,
-            source_summaries_json: None,
-            source_fingerprint: MISSING_FINGERPRINT.into(),
-            pricing_generation: pricing_generation() as i64,
-            analyzed_generation: 0,
-            parser_revision: 0,
-            analyzer_revision: 0,
-            metrics_schema_revision: 0,
-        };
-        assert!(!cache_is_fresh(&cached, MISSING_FINGERPRINT));
-
-        let cached = AnalysisRecord {
-            source_fingerprint: "123:456".into(),
-            ..cached
-        };
-        assert!(cache_is_fresh(&cached, "123:456"));
-        assert!(!cache_is_fresh(&cached, "123:999"));
-    }
-
-    #[test]
-    fn a_stale_pricing_generation_invalidates_a_matching_fingerprint() {
-        let cached = AnalysisRecord {
-            key: SessionKey::new("native", "claude-code", "abc"),
-            model_breakdown_json: "{}".into(),
-            inclusive_models_json: "[]".into(),
-            initial_context_json: None,
-            source_summaries_json: None,
-            source_fingerprint: "123:456".into(),
-            pricing_generation: pricing_generation() as i64 - 1,
-            analyzed_generation: 0,
-            parser_revision: 0,
-            analyzer_revision: 0,
-            metrics_schema_revision: 0,
-        };
-        assert!(!cache_is_fresh(&cached, "123:456"));
     }
 
     #[test]

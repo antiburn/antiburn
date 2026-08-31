@@ -1259,7 +1259,14 @@ impl Store {
         )?))
     }
 
-    /// Cache one session's derived analysis.
+    /// Write one session's analysis columns directly, without the evidence
+    /// claim `publish_projections` requires.
+    ///
+    /// Test scaffolding only. Every production write goes through
+    /// `publish_projections`, which also settles the session's evidence
+    /// claim; this method exists so fixture setup can seed
+    /// `session_analysis` without first driving a claim through the worker.
+    #[cfg(test)]
     pub fn save_analysis(
         &self,
         record: &AnalysisRecord,
