@@ -1128,72 +1128,37 @@ fn analysis_round_trips_and_is_replaced_rather_than_duplicated() {
     assert_eq!(stored.source_fingerprint, "1700000900:8192");
 }
 
+/// `publish_projections` is the worker's own write path (`save_analysis` is
+/// test scaffolding only), so this pins the generation and revision columns
+/// against the path production actually uses.
 #[test]
-fn save_analysis_writes_the_generation_and_revision_columns() {
+fn publish_projections_writes_the_generation_and_revision_columns() {
     let store = store();
-    let key = SessionKey::new("native", "claude-code", "revisions");
-    store
-        .upsert_sessions(
-            &[session("revisions", 1_000)],
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
+    let (record, claim) = claimed_projection(&store, "revisions", 100, 60);
     let record = AnalysisRecord {
-        key: key.clone(),
-        model_breakdown_json: "{}".into(),
-        inclusive_models_json: "[]".into(),
-        initial_context_json: None,
-        source_summaries_json: None,
-        source_fingerprint: "sv1:source".into(),
         pricing_generation: 3,
-        analyzed_generation: 8,
         parser_revision: 1,
         analyzer_revision: 2,
         metrics_schema_revision: 3,
+        ..record
     };
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
 
-    store.save_analysis(&record, Some(900)).unwrap();
+    assert!(
+        store
+            .publish_projections(&record, Some(900), &completion, &[])
+            .unwrap()
+    );
 
-    assert_eq!(store.analysis(&key).unwrap(), Some(record));
+    assert_eq!(store.analysis(&record.key).unwrap(), Some(record.clone()));
     assert_eq!(
         store
-            .session_source_state(&key)
+            .session_source_state(&record.key)
             .unwrap()
             .expect("source state")
             .started_at_epoch,
         Some(900)
     );
-}
-
-/// V17 adds `initial_context_json`. `save_analysis` and `publish_projections`
-/// both round-trip it through `analysis()`, the same as every other column.
-#[test]
-fn save_analysis_round_trips_initial_context_json() {
-    let store = store();
-    let key = SessionKey::new("native", "claude-code", "initial-context");
-    store
-        .upsert_sessions(
-            &[session("initial-context", 1_000)],
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
-    let record = AnalysisRecord {
-        key: key.clone(),
-        model_breakdown_json: "{}".into(),
-        inclusive_models_json: "[]".into(),
-        initial_context_json: Some(r#"{"sources":[]}"#.into()),
-        source_summaries_json: None,
-        source_fingerprint: "sv1:source".into(),
-        pricing_generation: 1,
-        analyzed_generation: 1,
-        parser_revision: 1,
-        analyzer_revision: 1,
-        metrics_schema_revision: 1,
-    };
-
-    store.save_analysis(&record, None).unwrap();
-
-    assert_eq!(store.analysis(&key).unwrap(), Some(record));
 }
 
 #[test]
@@ -1253,36 +1218,40 @@ fn publish_projections_round_trips_source_summaries_json() {
     );
 }
 
+/// A later publish with no `started_at_epoch` (the common case: the worker
+/// already learned the start time on an earlier pass) must not clear it.
 #[test]
-fn save_analysis_never_clears_a_known_start_time() {
+fn publish_projections_never_clears_a_known_start_time() {
     let store = store();
-    let key = SessionKey::new("native", "claude-code", "known-start");
-    store
-        .upsert_sessions(
-            &[session("known-start", 1_000)],
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
-    let record = AnalysisRecord {
-        key: key.clone(),
-        model_breakdown_json: "{}".into(),
-        inclusive_models_json: "[]".into(),
-        initial_context_json: None,
-        source_summaries_json: None,
-        source_fingerprint: "sv1:source".into(),
-        pricing_generation: 0,
-        analyzed_generation: 1,
-        parser_revision: 1,
-        analyzer_revision: 1,
-        metrics_schema_revision: 1,
-    };
+    let (record, claim) = claimed_projection(&store, "known-start", 100, 60);
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, Some(800), &completion, &[])
+            .unwrap()
+    );
 
-    store.save_analysis(&record, Some(800)).unwrap();
-    store.save_analysis(&record, None).unwrap();
+    // Requeue and reclaim, mirroring a second worker pass over the same
+    // session, then publish again with no start time.
+    store.requeue_session_evidence(&record.key).unwrap();
+    let claim = store
+        .claim_next_evidence(&["claude-code"], 200, 60)
+        .unwrap()
+        .expect("requeued session is claimable");
+    let record = AnalysisRecord {
+        analyzed_generation: claim.source_generation,
+        ..record
+    };
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
 
     assert_eq!(
         store
-            .session_source_state(&key)
+            .session_source_state(&record.key)
             .unwrap()
             .expect("source state")
             .started_at_epoch,
@@ -2439,21 +2408,30 @@ fn reconciling_session_evidence_skips_a_disabled_agent() {
 }
 
 #[test]
-fn a_session_outside_the_evidence_cohort_gets_no_row() {
+fn every_agent_kind_is_in_the_evidence_cohort_and_gets_a_row() {
+    // The cohort now covers every AgentKind (crate::agents::evidence_cohort
+    // derives from AgentKind::ALL), so upserting a session for any slug
+    // queues an evidence row. No agent is outside the cohort any more.
     let store = store();
-    let claude = session("cohort-claude", 1_000);
-    let mut cursor = session("cohort-cursor", 1_000);
-    cursor.key.agent = "cursor".to_string();
+    let cohort = crate::agents::evidence_cohort();
+    let sessions: Vec<SessionRecord> = cohort
+        .iter()
+        .map(|slug| {
+            let mut record = session(&format!("cohort-{slug}"), 1_000);
+            record.key.agent = (*slug).to_string();
+            record
+        })
+        .collect();
 
-    store
-        .upsert_sessions(
-            &[claude.clone(), cursor.clone()],
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
+    store.upsert_sessions(&sessions, &cohort).unwrap();
 
-    assert!(store.evidence(&claude.key).unwrap().is_some());
-    assert!(store.evidence(&cursor.key).unwrap().is_none());
+    for record in &sessions {
+        assert!(
+            store.evidence(&record.key).unwrap().is_some(),
+            "{} should get an evidence row",
+            record.key.agent
+        );
+    }
 }
 
 #[test]
@@ -3257,10 +3235,10 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 19);
+    assert_eq!(super::schema::MIGRATIONS.len(), 20);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 19);
+    assert_eq!(store.schema_version().unwrap(), 20);
 }
 
 #[test]

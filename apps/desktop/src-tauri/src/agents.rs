@@ -44,13 +44,11 @@ pub fn kind_from_slug(slug: &str) -> Option<AgentKind> {
 }
 
 /// Return the agents that use the durable evidence queue.
-pub fn evidence_cohort() -> [&'static str; 4] {
-    [
-        AgentKind::Claude.slug(),
-        AgentKind::Codex.slug(),
-        AgentKind::OpenCode.slug(),
-        AgentKind::Pi.slug(),
-    ]
+///
+/// Every supported [`AgentKind`] is in the cohort, so this can never drift
+/// from the engine's discovery matrix.
+pub fn evidence_cohort() -> Vec<&'static str> {
+    AgentKind::ALL.iter().map(|kind| kind.slug()).collect()
 }
 
 #[cfg(test)]
@@ -106,13 +104,21 @@ mod tests {
     fn the_evidence_cohort_uses_the_discovery_slug() {
         assert_eq!(
             evidence_cohort(),
-            [
-                AgentKind::Claude.slug(),
-                AgentKind::Codex.slug(),
-                AgentKind::OpenCode.slug(),
-                AgentKind::Pi.slug(),
+            vec![
+                "claude-code",
+                "codex",
+                "cursor",
+                "copilot",
+                "cline",
+                "opencode",
+                "kiro",
+                "amp-code",
+                "antigravity",
+                "windsurf",
+                "pi",
             ]
         );
+        assert_eq!(evidence_cohort().len(), AgentKind::ALL.len());
         assert_eq!(AgentKind::Codex.slug(), vendor_label(AgentKind::Codex));
         assert_eq!(
             AgentKind::OpenCode.slug(),

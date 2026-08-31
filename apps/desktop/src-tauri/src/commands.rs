@@ -46,8 +46,8 @@ use crate::scan::{self, ScanController};
 use crate::settings;
 use crate::store::model::environment_key;
 use crate::store::{
-    AnalysisRecord, AppSettings, RelationKind, RelationRecord, RepositoryRecord, SessionKey,
-    SessionRecord, Store, iso_from_epoch,
+    AppSettings, RelationKind, RelationRecord, RepositoryRecord, SessionKey, SessionRecord, Store,
+    iso_from_epoch,
 };
 
 /// Anything that goes wrong becomes a string the webview can show.
@@ -613,36 +613,6 @@ fn repository_label(repositories: &[RepositoryRecord], cwd: Option<&str>) -> Str
     }
 }
 
-/// Whether `next` carries model data the popover list would render
-/// differently from `previous`.
-///
-/// Compares only the two fields the list reads (`model_breakdown_json` for
-/// cost, `inclusive_models_json` for the model pills). The fingerprint and
-/// pricing generation can change on every re-analysis without moving either
-/// figure, and an event for that would be noise the popover cannot show.
-fn analysis_changed(previous: Option<&AnalysisRecord>, next: &AnalysisRecord) -> bool {
-    match previous {
-        None => true,
-        Some(previous) => {
-            previous.model_breakdown_json != next.model_breakdown_json
-                || previous.inclusive_models_json != next.inclusive_models_json
-        }
-    }
-}
-
-fn cache_detail_analysis(
-    store: &Store,
-    record: &AnalysisRecord,
-    started_at_epoch: Option<i64>,
-) -> bool {
-    if crate::agents::evidence_cohort().contains(&record.key.agent.as_str()) {
-        return false;
-    }
-    let previous = store.analysis(&record.key).ok().flatten();
-    store.save_analysis(record, started_at_epoch).is_ok()
-        && analysis_changed(previous.as_ref(), record)
-}
-
 /// Requeues one session's evidence row and wakes the durable worker, so a
 /// gap the drilldown just found (rows not ready, or ready but stale) closes
 /// on its own without the caller waiting on it. Errors are swallowed: this
@@ -690,15 +660,6 @@ async fn nudge_if_evidence_stale(
 /// comparison itself is testable without a located source or an app handle.
 fn evidence_is_stale(stored_fingerprint: Option<&str>, live_fingerprint: &str) -> bool {
     stored_fingerprint != Some(live_fingerprint)
-}
-
-fn cache_detail_relations(store: &Store, key: &SessionKey, members: &[RelationRecord]) -> bool {
-    if crate::agents::evidence_cohort().contains(&key.agent.as_str()) {
-        return false;
-    }
-    store
-        .replace_relations(key, RelationKind::Subagent, members)
-        .is_ok()
 }
 
 fn path_is_under(path: &str, root: &str) -> bool {
@@ -883,75 +844,38 @@ pub async fn get_session_analysis(
             generation: 0,
         });
 
-    // Rows first, for an evidence-cohort agent: the drilldown serves the
-    // worker's last published pass instead of re-parsing the transcript
-    // inline. A fresh transcript replays cheaply; a missing or not-ready
-    // row set falls back to the live parse exactly as before, and nudges
-    // the worker so the gap closes for next time.
-    let analysis = if crate::agents::evidence_cohort().contains(&agent.as_str()) {
-        match analysis::analysis_from_rows(&store, &key, &session_id, &agent) {
-            Some(replayed) => {
-                nudge_if_evidence_stale(
-                    &app,
-                    &store,
-                    kind,
-                    &key,
-                    &session_id,
-                    wsl_distro.as_deref(),
-                )
+    // Rows first: every agent is in the evidence cohort, so the drilldown
+    // always serves the worker's last published pass instead of re-parsing
+    // the transcript inline. A fresh transcript replays cheaply; a missing
+    // or not-ready row set falls back to the live parse, and nudges the
+    // worker so the gap closes for next time. Publishing a fresh live parse
+    // is the worker's job now — see its announce callback in
+    // `insights_worker::spawn` — so this command no longer caches one itself
+    // or emits `SESSION_ENTRY_CHANGED_EVENT` for it.
+    let analysis = match analysis::analysis_from_rows(&store, &key, &session_id, &agent) {
+        Some(replayed) => {
+            nudge_if_evidence_stale(&app, &store, kind, &key, &session_id, wsl_distro.as_deref())
                 .await;
-                replayed
-            }
-            None => {
-                requeue_and_wake_worker(&app, &store, &key);
-                analysis::analyze(
-                    kind,
-                    &session_id,
-                    wsl_distro.as_deref(),
-                    claimed,
-                    analysis::CancelFlag::never(),
-                )
-                .await
-            }
+            replayed
         }
-    } else {
-        analysis::analyze(
-            kind,
-            &session_id,
-            wsl_distro.as_deref(),
-            claimed,
-            analysis::CancelFlag::never(),
-        )
-        .await
+        None => {
+            requeue_and_wake_worker(&app, &store, &key);
+            analysis::analyze(
+                kind,
+                &session_id,
+                wsl_distro.as_deref(),
+                claimed,
+                analysis::CancelFlag::never(),
+            )
+            .await
+        }
     };
     let relations = resolve_lineage(&app, kind, &key, wsl_distro.as_deref()).await;
 
     let stored = store.session(&key).ok().flatten();
 
-    if let Some(record) = analysis.record(&key)
-        && cache_detail_analysis(&store, &record, analysis.started_at_epoch)
-        && let Some(session_record) = stored.clone()
-    {
-        let repositories = store.repositories().unwrap_or_default();
-        let now = scan::unix_now();
-        if let Ok(entry) = activity_entry(&store, &repositories, session_record, now) {
-            let _ = app.emit(SESSION_ENTRY_CHANGED_EVENT, &entry);
-        }
-    }
     let orchestration = match &analysis.orchestration {
-        Some(orchestration) => {
-            let members: Vec<RelationRecord> = orchestration
-                .members
-                .iter()
-                .map(|member| RelationRecord {
-                    kind: RelationKind::Subagent,
-                    related_id: member.subagent_id.clone(),
-                    label: Some(member.label.clone()),
-                })
-                .collect();
-            cache_detail_relations(&store, &key, &members);
-            Some(orchestration.clone())
-        }
+        Some(orchestration) => Some(orchestration.clone()),
         // The listing came back empty. That is usually the truth, but it is
         // also what a momentarily unreadable transcript looks like, so a roster
         // the store already recorded is shown rather than silently dropped.
@@ -1017,38 +941,30 @@ pub async fn get_subagent_analysis(
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
-    let analysis = if crate::agents::evidence_cohort().contains(&agent.as_str()) {
-        let store = app.state::<Store>();
-        let parent_key = SessionKey::for_session(&agent, &parent_session_id, wsl_distro.as_deref());
-        match analysis::subagent_analysis_from_rows(
-            &store,
-            &parent_key,
-            &parent_session_id,
-            &subagent_id,
-            &agent,
-        ) {
-            Some(replayed) => replayed,
-            None => {
-                requeue_and_wake_worker(&app, &store, &parent_key);
-                analysis::analyze_subagent(
-                    kind,
-                    &parent_session_id,
-                    &subagent_id,
-                    wsl_distro.as_deref(),
-                    analysis::CancelFlag::never(),
-                )
-                .await
-            }
+    // Every agent is in the evidence cohort, so this always tries the
+    // worker's last published pass before falling back to a live parse —
+    // see the matching comment in `get_session_analysis`.
+    let store = app.state::<Store>();
+    let parent_key = SessionKey::for_session(&agent, &parent_session_id, wsl_distro.as_deref());
+    let analysis = match analysis::subagent_analysis_from_rows(
+        &store,
+        &parent_key,
+        &parent_session_id,
+        &subagent_id,
+        &agent,
+    ) {
+        Some(replayed) => replayed,
+        None => {
+            requeue_and_wake_worker(&app, &store, &parent_key);
+            analysis::analyze_subagent(
+                kind,
+                &parent_session_id,
+                &subagent_id,
+                wsl_distro.as_deref(),
+                analysis::CancelFlag::never(),
+            )
+            .await
         }
-    } else {
-        analysis::analyze_subagent(
-            kind,
-            &parent_session_id,
-            &subagent_id,
-            wsl_distro.as_deref(),
-            analysis::CancelFlag::never(),
-        )
-        .await
     };
     Ok(SessionAnalysis {
         summary: analysis.summary.clone(),
@@ -1987,151 +1903,6 @@ mod tests {
         // A session with no activity still yields a parseable stamp rather
         // than an empty string the list would drop.
         assert_eq!(iso_from_epoch(None), "1970-01-01T00:00:00Z");
-    }
-
-    fn analysis_record(model_breakdown_json: &str, inclusive_models_json: &str) -> AnalysisRecord {
-        AnalysisRecord {
-            key: SessionKey::new("env", "claude-code", "session-1"),
-            model_breakdown_json: model_breakdown_json.into(),
-            inclusive_models_json: inclusive_models_json.into(),
-            initial_context_json: None,
-            source_summaries_json: None,
-            source_fingerprint: "fingerprint".into(),
-            pricing_generation: 1,
-            analyzed_generation: 1,
-            parser_revision: 1,
-            analyzer_revision: 1,
-            metrics_schema_revision: 1,
-        }
-    }
-
-    #[test]
-    fn a_first_analysis_always_counts_as_changed() {
-        let next = analysis_record("{}", "[]");
-        assert!(analysis_changed(None, &next));
-    }
-
-    #[test]
-    fn identical_model_data_is_not_a_change() {
-        let previous = analysis_record(
-            r#"{"claude-fable-5":{}}"#,
-            r#"[{"model":"claude-fable-5"}]"#,
-        );
-        let next = analysis_record(
-            r#"{"claude-fable-5":{}}"#,
-            r#"[{"model":"claude-fable-5"}]"#,
-        );
-        assert!(!analysis_changed(Some(&previous), &next));
-    }
-
-    #[test]
-    fn a_new_model_in_either_field_counts_as_changed() {
-        let previous = analysis_record("{}", "[]");
-        let breakdown_changed = analysis_record(r#"{"claude-fable-5":{}}"#, "[]");
-        let models_changed = analysis_record("{}", r#"[{"model":"claude-fable-5"}]"#);
-        assert!(analysis_changed(Some(&previous), &breakdown_changed));
-        assert!(analysis_changed(Some(&previous), &models_changed));
-    }
-
-    #[test]
-    fn the_detail_path_does_not_persist_evidence_cohort_projections() {
-        let directory = tempfile::TempDir::new().unwrap();
-        let store = Store::open_in_memory(directory.path()).unwrap();
-        let session = |agent: &str, id: &str| SessionRecord {
-            key: SessionKey::new("native", agent, id),
-            source_kind: "file".into(),
-            source_label: format!("/tmp/{id}.jsonl"),
-            wsl_distro: None,
-            title: None,
-            title_source: None,
-            cwd: None,
-            surface: "cli".into(),
-            updated_at_epoch: Some(100),
-            activity_cursor: String::new(),
-            activity_source: "event".into(),
-            subagent_count: 0,
-            fork_parent_session_id: None,
-            source_fingerprint: Some(format!("sv1:{id}")),
-        };
-        let claude = session("claude-code", "claude-detail");
-        let codex = session("codex", "codex-detail");
-        store
-            .upsert_sessions(
-                &[claude.clone(), codex.clone()],
-                &crate::agents::evidence_cohort(),
-            )
-            .unwrap();
-        let _claim = store
-            .claim_next_evidence(&crate::agents::evidence_cohort(), 100, 300)
-            .unwrap()
-            .unwrap();
-        let sentinel = AnalysisRecord {
-            key: claude.key.clone(),
-            model_breakdown_json: r#"{"sentinel":{}}"#.into(),
-            inclusive_models_json: "[]".into(),
-            initial_context_json: None,
-            source_summaries_json: None,
-            source_fingerprint: "sv1:sentinel".into(),
-            pricing_generation: 1,
-            analyzed_generation: 0,
-            parser_revision: 1,
-            analyzer_revision: 1,
-            metrics_schema_revision: 1,
-        };
-        store.save_analysis(&sentinel, None).unwrap();
-        let sentinel_relation = RelationRecord {
-            kind: RelationKind::Subagent,
-            related_id: "sentinel-child".into(),
-            label: None,
-        };
-        store
-            .replace_relations(
-                &claude.key,
-                RelationKind::Subagent,
-                std::slice::from_ref(&sentinel_relation),
-            )
-            .unwrap();
-        let mut claude_next = sentinel.clone();
-        claude_next.model_breakdown_json = r#"{"replacement":{}}"#.into();
-        let replacement = RelationRecord {
-            kind: RelationKind::Subagent,
-            related_id: "replacement-child".into(),
-            label: None,
-        };
-
-        assert!(!cache_detail_analysis(&store, &claude_next, None));
-        assert!(!cache_detail_relations(
-            &store,
-            &claude.key,
-            std::slice::from_ref(&replacement),
-        ));
-        assert_eq!(store.analysis(&claude.key).unwrap(), Some(sentinel));
-        assert_eq!(
-            store.relations(&claude.key).unwrap(),
-            vec![sentinel_relation]
-        );
-
-        let codex_analysis = AnalysisRecord {
-            key: codex.key.clone(),
-            model_breakdown_json: r#"{"codex":{}}"#.into(),
-            inclusive_models_json: "[]".into(),
-            initial_context_json: None,
-            source_summaries_json: None,
-            source_fingerprint: "sv1:codex-detail".into(),
-            pricing_generation: 1,
-            analyzed_generation: 1,
-            parser_revision: 1,
-            analyzer_revision: 1,
-            metrics_schema_revision: 1,
-        };
-        assert!(!cache_detail_analysis(&store, &codex_analysis, None));
-        assert!(!cache_detail_relations(
-            &store,
-            &codex.key,
-            std::slice::from_ref(&replacement),
-        ));
-        assert_eq!(store.analysis(&codex.key).unwrap(), None);
-        assert!(store.relations(&codex.key).unwrap().is_empty());
     }
 
     #[test]

@@ -53,13 +53,12 @@
 //! a retry), and [`crate::notifications`] once per run of the app, for someone
 //! who is not looking at antiburn at all.
 //!
-//! Every pass is bounded: discovery is windowed to the widest activity view, the
-//! per-session metadata reads run at a fixed concurrency, and analysis is
-//! capped at [`MAX_ANALYSES_PER_PASS`] sessions so one pass cannot grow with
-//! the size of the machine. Sessions already indexed are retained until the
-//! reader explicitly clears them; the bounded discovery window is not a data
-//! expiry policy. The scheduler is a single task whose handle the app aborts on
-//! exit, so nothing outlives the process.
+//! Every pass is bounded: discovery is windowed to the widest activity view,
+//! and the per-session metadata reads run at a fixed concurrency, so one pass
+//! cannot grow with the size of the machine. Sessions already indexed are
+//! retained until the reader explicitly clears them; the bounded discovery
+//! window is not a data expiry policy. The scheduler is a single task whose
+//! handle the app aborts on exit, so nothing outlives the process.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -89,12 +88,6 @@ pub const TICK: Duration = Duration::from_secs(60);
 /// How many session logs have their metadata read at once. Bounds open files
 /// and blocking-pool pressure during a whole-machine pass.
 const METADATA_CONCURRENCY: usize = 16;
-
-/// Sessions analyzed per pass. Analysis reads whole transcripts, so a machine
-/// with hundreds of recent sessions catches up over several passes rather than
-/// spending one very long pass on all of them. Newest first, so the rows a
-/// reader actually sees are the ones that fill in first.
-const MAX_ANALYSES_PER_PASS: usize = 60;
 
 /// Scope key for the engine's ignored-path store. The engine namespaces opt-outs
 /// so one machine can hold several independent sets; this app keeps one.
@@ -142,10 +135,6 @@ impl ScanController {
 
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
-    }
-
-    pub fn cancel_flag(&self) -> analysis::CancelFlag {
-        analysis::CancelFlag::from_flag(Arc::clone(&self.cancel))
     }
 
     /// The current or last pass.
@@ -284,9 +273,8 @@ pub async fn run_pass(app: &AppHandle, activity_window_days: Option<u32>) -> Sca
 
 /// The body of one pass. Split out so [`run_pass`] owns only the in-flight
 /// bookkeeping and the events.
-async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Result<usize> {
+async fn pass(app: &AppHandle, _activity_window_days: Option<u32>) -> anyhow::Result<usize> {
     let store = app.state::<Store>();
-    let settings = store.settings()?;
     let now = unix_now();
     // Discovery always covers the widest list the UI can request, so changing
     // the display window is instant. Previously indexed sessions outside this
@@ -350,35 +338,6 @@ async fn pass(app: &AppHandle, activity_window_days: Option<u32>) -> anyhow::Res
     // Everything discovered so far is already persisted, so a cancel here keeps
     // the reader's results and only skips the work still ahead.
     let controller = app.state::<ScanController>();
-    if controller.cancelled() {
-        return Ok(records.len());
-    }
-
-    // Derived analysis for the newest sessions in the visible window, so the
-    // list's cost and time pills are populated without opening every row.
-    let activity_window_days = activity_window_days
-        .unwrap_or(settings.activity_window_days)
-        .clamp(
-            crate::store::MIN_ACTIVITY_DAYS,
-            crate::store::MAX_ACTIVITY_DAYS,
-        );
-    top_up_analysis(
-        &store,
-        &controller,
-        TopUpScope {
-            now,
-            activity_days: i64::from(activity_window_days),
-            evidence_agents: &agents::evidence_cohort(),
-        },
-        |agent, session_id, wsl_distro| async move {
-            analysis::locate(agent, &session_id, wsl_distro.as_deref()).await
-        },
-        |agent, session_id, wsl_distro, claimed, cancel| async move {
-            analysis::analyze(agent, &session_id, wsl_distro.as_deref(), claimed, cancel).await
-        },
-    )
-    .await?;
-
     if controller.cancelled() {
         return Ok(records.len());
     }
@@ -897,115 +856,6 @@ fn per_agent_totals(records: &[SessionRecord]) -> Vec<(String, i64, Option<i64>)
         .into_iter()
         .map(|(agent, (seen, cursor))| (agent, seen, cursor))
         .collect()
-}
-
-struct TopUpScope<'a> {
-    now: i64,
-    activity_days: i64,
-    evidence_agents: &'a [&'a str],
-}
-
-/// Analyze the newest sessions whose cached analysis is missing or stale.
-async fn top_up_analysis<F, Fut, A, AFut>(
-    store: &Store,
-    controller: &ScanController,
-    scope: TopUpScope<'_>,
-    mut locate: F,
-    mut analyze: A,
-) -> anyhow::Result<()>
-where
-    F: FnMut(AgentKind, String, Option<String>) -> Fut,
-    Fut: std::future::Future<Output = Option<SessionSource>>,
-    A: FnMut(
-        AgentKind,
-        String,
-        Option<String>,
-        analysis::ClaimedSource,
-        analysis::CancelFlag,
-    ) -> AFut,
-    AFut: std::future::Future<Output = analysis::SessionAnalysis>,
-{
-    let since = scope.now - scope.activity_days.max(1) * 86_400;
-    let candidates = store.recent_sessions(since, MAX_ANALYSES_PER_PASS)?;
-
-    for record in candidates {
-        if scope.evidence_agents.contains(&record.key.agent.as_str()) {
-            continue;
-        }
-        // Analysis is the long tail of a pass — one whole transcript read per
-        // session — so this is where a cancel is felt.
-        if controller.cancelled() {
-            return Ok(());
-        }
-        let Some(agent) = crate::agents::kind_from_slug(&record.key.agent) else {
-            continue;
-        };
-        if !analysis::analysis_supported(agent) {
-            // A generically-parsed transcript would produce a half-confident
-            // metric; the view says so instead of showing one.
-            continue;
-        }
-        let Some(source) = locate(
-            agent,
-            record.key.session_id.clone(),
-            record.wsl_distro.clone(),
-        )
-        .await
-        else {
-            continue;
-        };
-        let fingerprint = analysis::fingerprint_with_subagents(
-            agent,
-            &record.key.session_id,
-            record.wsl_distro.as_deref(),
-            &source,
-        )
-        .await;
-        if let Some(cached) = store.analysis(&record.key)?
-            && analysis::cache_is_fresh(&cached, &fingerprint)
-        {
-            continue;
-        }
-
-        let source_state = store.session_source_state(&record.key)?;
-        let claimed = source_state
-            .map(|state| analysis::ClaimedSource {
-                fingerprint: state.source_fingerprint,
-                generation: state.source_generation,
-            })
-            .unwrap_or(analysis::ClaimedSource {
-                fingerprint: None,
-                generation: 0,
-            });
-        let analysis = analyze(
-            agent,
-            record.key.session_id.clone(),
-            record.wsl_distro.clone(),
-            claimed,
-            controller.cancel_flag(),
-        )
-        .await;
-        if let Some(cache) = analysis.record(&record.key) {
-            store.save_analysis(&cache, analysis.started_at_epoch)?;
-        }
-        if let Some(orchestration) = &analysis.orchestration {
-            let relations: Vec<_> = orchestration
-                .members
-                .iter()
-                .map(|member| crate::store::RelationRecord {
-                    kind: crate::store::RelationKind::Subagent,
-                    related_id: member.subagent_id.clone(),
-                    label: Some(member.label.clone()),
-                })
-                .collect();
-            store.replace_relations(
-                &record.key,
-                crate::store::RelationKind::Subagent,
-                &relations,
-            )?;
-        }
-    }
-    Ok(())
 }
 
 /// The current time in unix seconds.
@@ -1626,178 +1476,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cache_freshness_ignores_the_session_source_fingerprint() {
-        let home = tempfile::TempDir::new().unwrap();
-        let session_id = "cache-contract-session";
-        let source = SessionSource::File(write_claude_session(home.path(), session_id));
-        let mut session = record("claude-code", session_id, Some(100));
-        session.source_fingerprint = Some("sv1:session-source".to_string());
-        let SessionSource::File(source_path) = &source else {
-            unreachable!("the fixture uses a file source");
-        };
-        session.source_label = source_path.to_string_lossy().into_owned();
-        let store = Store::open_in_memory(home.path()).unwrap();
-        store
-            .upsert_sessions(std::slice::from_ref(&session), &agents::evidence_cohort())
-            .unwrap();
-
-        let legacy_fingerprint =
-            analysis::fingerprint_with_subagents(AgentKind::Claude, session_id, None, &source)
-                .await;
-        let cached = crate::store::AnalysisRecord {
-            key: session.key.clone(),
-            model_breakdown_json: r#"{"cached":true}"#.to_string(),
-            inclusive_models_json: "[]".to_string(),
-            initial_context_json: None,
-            source_summaries_json: None,
-            source_fingerprint: legacy_fingerprint.clone(),
-            pricing_generation: antiburn_local::analysis::pricing_generation() as i64,
-            analyzed_generation: 0,
-            parser_revision: 0,
-            analyzer_revision: 0,
-            metrics_schema_revision: 0,
-        };
-        store.save_analysis(&cached, None).unwrap();
-
-        let persisted_session = store
-            .session(&session.key)
-            .unwrap()
-            .expect("persisted session");
-        assert_eq!(
-            persisted_session.source_fingerprint.as_deref(),
-            Some("sv1:session-source")
-        );
-        assert!(analysis::cache_is_fresh(
-            &store
-                .analysis(&session.key)
-                .unwrap()
-                .expect("persisted analysis"),
-            &legacy_fingerprint
-        ));
-
-        let locate_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let observed_locates = locate_calls.clone();
-        let analysis_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let observed_analyses = analysis_calls.clone();
-        let located_source = source.clone();
-        let expected_id = session_id.to_string();
-        top_up_analysis(
-            &store,
-            &ScanController::default(),
-            TopUpScope {
-                now: 200,
-                activity_days: 1,
-                evidence_agents: &[],
-            },
-            move |agent, candidate_id, wsl_distro| {
-                observed_locates.fetch_add(1, Ordering::SeqCst);
-                let source = located_source.clone();
-                let matches = agent == AgentKind::Claude
-                    && candidate_id == expected_id
-                    && wsl_distro.is_none();
-                async move { matches.then_some(source) }
-            },
-            move |_, _, _, _, _| {
-                observed_analyses.fetch_add(1, Ordering::SeqCst);
-                async { analysis::SessionAnalysis::unavailable() }
-            },
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(locate_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(analysis_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            store.analysis(&session.key).unwrap().as_ref(),
-            Some(&cached)
-        );
-    }
-
-    #[tokio::test]
-    async fn top_up_analysis_analyzes_a_candidate_whose_source_changed_one_second_ago() {
-        let home = tempfile::TempDir::new().unwrap();
-        let store = Store::open_in_memory(home.path()).unwrap();
-        let mut session = record("claude-code", "recent-change", Some(100));
-        session.source_fingerprint = Some("sv1:recent".to_string());
-        store
-            .upsert_sessions(&[session], &agents::evidence_cohort())
-            .unwrap();
-        let analysis_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let observed = Arc::clone(&analysis_calls);
-
-        top_up_analysis(
-            &store,
-            &ScanController::default(),
-            TopUpScope {
-                now: 101,
-                activity_days: 1,
-                evidence_agents: &[],
-            },
-            |_, _, _| async {
-                Some(SessionSource::Inline {
-                    label: "recent-change".to_string(),
-                    content: String::new(),
-                })
-            },
-            move |_, _, _, _, _| {
-                observed.fetch_add(1, Ordering::SeqCst);
-                async { analysis::SessionAnalysis::unavailable() }
-            },
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(analysis_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn top_up_analysis_skips_the_evidence_cohort() {
-        let home = tempfile::TempDir::new().unwrap();
-        let store = Store::open_in_memory(home.path()).unwrap();
-        store
-            .upsert_sessions(
-                &[
-                    record("claude-code", "queued", Some(100)),
-                    record("codex", "direct", Some(99)),
-                ],
-                &agents::evidence_cohort(),
-            )
-            .unwrap();
-        let located = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let located_by_pass = Arc::clone(&located);
-        let analyzed = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let analyzed_by_pass = Arc::clone(&analyzed);
-
-        top_up_analysis(
-            &store,
-            &ScanController::default(),
-            TopUpScope {
-                now: 101,
-                activity_days: 1,
-                evidence_agents: &agents::evidence_cohort(),
-            },
-            move |agent, session_id, _| {
-                located_by_pass.lock().unwrap().push(session_id);
-                async move {
-                    Some(SessionSource::Inline {
-                        label: agent.slug().to_string(),
-                        content: String::new(),
-                    })
-                }
-            },
-            move |_, session_id, _, _, _| {
-                analyzed_by_pass.lock().unwrap().push(session_id);
-                async { analysis::SessionAnalysis::unavailable() }
-            },
-        )
-        .await
-        .unwrap();
-
-        assert!(located.lock().unwrap().is_empty());
-        assert!(analyzed.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
     async fn an_opted_out_working_directory_never_reaches_the_store() {
         let home = tempfile::TempDir::new().unwrap();
         let claude = write_claude_session(home.path(), "aaaa-bbbb");
@@ -2397,19 +2075,6 @@ mod tests {
         assert!(!on_demand_start(&controller));
         controller.running.store(false, Ordering::SeqCst);
         assert!(on_demand_start(&controller));
-    }
-
-    #[test]
-    fn a_cloned_cancel_flag_observes_request_cancel_and_the_pass_reset() {
-        let controller = ScanController::default();
-        let flag = controller.cancel_flag();
-        controller.running.store(true, Ordering::SeqCst);
-        controller.request_cancel();
-        controller.running.store(false, Ordering::SeqCst);
-        assert!(flag.cancelled());
-
-        assert!(on_demand_start(&controller));
-        assert!(!flag.cancelled());
     }
 
     #[test]

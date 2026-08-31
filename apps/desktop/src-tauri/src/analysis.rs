@@ -19,12 +19,11 @@ use std::sync::{
 use antiburn_local::analysis::{
     ANALYZER_REVISION, ActiveSessionsSummary, CompositeSink, EVIDENCE_SCHEMA_REVISION,
     EfficiencyTotals, EvidenceSource, InitialContextBreakdown, METRICS_SCHEMA_REVISION, ModelRun,
-    NormalizedSession, PARSER_REVISION, RawSource, SessionCost, SessionEvidence,
-    SessionEvidenceAccumulator, SessionInput, SessionMetrics, SessionMetricsAccumulator,
-    SessionSummary, SkillUse, SourceCapabilities, SourceClaim, SourceKind, TurnRow, TurnRowSink,
-    TurnRowStore, TurnScope, VisitOutcome, adapter_for, aggregate_metrics, analyze_session,
-    analyze_sources_with, append_only_guarantee, merge_metrics, merge_subagent_events,
-    metrics_by_source, metrics_from_rows, normalize_source, price_breakdown, pricing_generation,
+    PARSER_REVISION, RawSource, SessionCost, SessionEvidence, SessionEvidenceAccumulator,
+    SessionInput, SessionMetrics, SessionMetricsAccumulator, SessionSummary, SkillUse,
+    SourceCapabilities, SourceClaim, SourceKind, TurnRow, TurnRowSink, TurnRowStore, TurnScope,
+    VisitOutcome, adapter_for, aggregate_metrics, append_only_guarantee, merge_metrics,
+    metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
@@ -35,7 +34,8 @@ use antiburn_local::pricing::ModelTokens;
 
 #[cfg(test)]
 use antiburn_local::analysis::{
-    ClaudeAdapter, CoverageReason, EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore, VendorAdapter,
+    ClaudeAdapter, CoverageReason, EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore,
+    VendorAdapter, analyze_sources_with,
 };
 #[cfg(test)]
 use antiburn_local::insights::{DetectorId, clean_facts_complete, eligible};
@@ -58,10 +58,6 @@ pub struct ClaimedSource {
 pub struct CancelFlag(Arc<AtomicBool>);
 
 impl CancelFlag {
-    pub fn from_flag(flag: Arc<AtomicBool>) -> Self {
-        Self(flag)
-    }
-
     pub fn never() -> Self {
         Self(Arc::new(AtomicBool::new(false)))
     }
@@ -454,16 +450,6 @@ fn combined_fingerprint(source: &SessionSource, subagent_paths: &[std::path::Pat
         .unwrap_or_else(|_| MISSING_FINGERPRINT.to_string())
 }
 
-/// Whether a cached analysis is still good for `source`.
-///
-/// A cache entry is stale when the transcript changed or when a newer pricing
-/// snapshot was installed, since cost is baked into the cached record.
-pub fn cache_is_fresh(cached: &AnalysisRecord, fingerprint: &str) -> bool {
-    fingerprint != MISSING_FINGERPRINT
-        && cached.source_fingerprint == fingerprint
-        && cached.pricing_generation == pricing_generation() as i64
-}
-
 /// The path of a file-backed source.
 pub fn source_path(source: &SessionSource) -> Option<String> {
     match source {
@@ -568,13 +554,23 @@ fn stream_vendor_with_claim_hook(
     stream_vendor_with_hooks(inputs, &|| cancel.cancelled(), after_claim, None, None)
 }
 
-fn capabilities_for_vendor(agent: &str) -> Option<SourceCapabilities> {
+/// Every vendor label's evidence-streaming contract. Total: an
+/// uncharacterized vendor (Cursor, Antigravity, or any generic-JSONL agent)
+/// still gets a real `SourceCapabilities` profile — an honest, mostly- or
+/// fully-unset one — so it takes the same streaming path as every other
+/// vendor instead of a separate, uncharacterized fallback. `published_status`
+/// (insights_worker.rs) is what turns an unset profile into the terminal
+/// `Unsupported` state; this function's job is only to describe the source,
+/// never to decide whether it is good enough.
+fn capabilities_for_vendor(agent: &str) -> SourceCapabilities {
     match agent {
-        "claude" => Some(SourceCapabilities::claude()),
-        "codex" => Some(SourceCapabilities::codex()),
-        "opencode" => Some(SourceCapabilities::opencode()),
-        "pi" => Some(SourceCapabilities::pi()),
-        _ => None,
+        "claude" => SourceCapabilities::claude(),
+        "codex" => SourceCapabilities::codex(),
+        "opencode" => SourceCapabilities::opencode(),
+        "pi" => SourceCapabilities::pi(),
+        "cursor" => SourceCapabilities::cursor(),
+        "antigravity" => SourceCapabilities::antigravity(),
+        _ => SourceCapabilities::generic(),
     }
 }
 
@@ -611,12 +607,12 @@ fn stream_vendor_with_hooks(
         if cancelled() {
             return StreamOutcome::ParentUnreadable;
         }
-        let Some(capabilities) = capabilities_for_vendor(&input.agent) else {
-            if index == 0 {
-                return StreamOutcome::ParentUnsupported;
-            }
-            continue;
-        };
+        // Every vendor label now resolves to a real (possibly all-unset)
+        // capability profile, so this can never fall through to
+        // `StreamOutcome::ParentUnsupported` the way an unrecognized vendor
+        // used to; a Sqlite source from a non-OpenCode vendor is the one
+        // remaining path that outcome still covers, further down.
+        let capabilities = capabilities_for_vendor(&input.agent);
         let adapter = adapter_for(&input.agent);
         let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
         let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
@@ -812,37 +808,11 @@ fn stream_vendor_with_hooks(
     }
 }
 
-/// Normalize the parent and every sub-agent input, then merge their events
-/// into one time-aligned session via [`merge_subagent_events`].
-///
-/// Matches inputs to the parent by `session_id` rather than by position, so
-/// this stays correct even if a vendor adapter fails to read one input (the
-/// same tolerance [`analyze_sources_with`] gives the per-source batch).
-/// `None` when the parent itself could not be normalized.
 fn attributed_generation(claimed: &ClaimedSource, actual_fingerprint: Option<&str>) -> i64 {
     match (claimed.fingerprint.as_deref(), actual_fingerprint) {
         (Some(expected), Some(actual)) if expected == actual => claimed.generation,
         _ => 0,
     }
-}
-
-fn merge_parent_and_subagents(
-    inputs: &[SessionInput],
-    parent_session_id: &str,
-) -> Option<NormalizedSession> {
-    let mut parent = None;
-    let mut subagents = Vec::new();
-    for input in inputs {
-        let Ok(normalized) = normalize_source(input) else {
-            continue;
-        };
-        if normalized.session_id == parent_session_id {
-            parent = Some(normalized);
-        } else {
-            subagents.push(normalized);
-        }
-    }
-    Some(merge_subagent_events(parent?, subagents))
 }
 
 /// Order the sub-agent roster earliest-first.
@@ -882,11 +852,7 @@ pub async fn analyze(
         None,
     )
     .await;
-    debug_assert!(
-        pass.evidence.is_none()
-            || (capabilities_for_vendor(vendor_label(agent)).is_some()
-                && pass.outcome == PassOutcome::Published)
-    );
+    debug_assert!(pass.evidence.is_none() || pass.outcome == PassOutcome::Published);
     pass.analysis
 }
 
@@ -975,76 +941,43 @@ pub async fn analyze_for_evidence(
         .map(|(id, label, _)| (id, label))
         .collect();
 
-    let inputs_for_merge = inputs.clone();
-    let parent_session_id_for_merge = parent_session_id.clone();
-    let streams_evidence = capabilities_for_vendor(label).is_some();
-
     // The engine's analysis is synchronous and CPU-bound; keep it off the
-    // runtime's worker threads.
+    // runtime's worker threads. Every vendor now has a real (possibly
+    // all-unset) `SourceCapabilities` profile, so every session streams
+    // through `stream_vendor_with_hooks` — there is no separate,
+    // uncharacterized-vendor fallback pass any more.
     let signal_for_pass = signal.clone();
     let computed = tauri::async_runtime::spawn_blocking(move || {
-        if streams_evidence {
-            let cancelled = || signal_for_pass.observe();
-            return match stream_vendor_with_hooks(
-                &inputs,
-                &cancelled,
-                &test_subagent_after_claim,
-                database_claim.as_deref(),
-                turn_row_store,
-            ) {
-                StreamOutcome::Published {
-                    session,
-                    parent_fingerprint,
-                } => ComputedAnalysis::Published {
-                    parent: Box::new(session.parent),
-                    merged: Box::new(session.merged),
-                    subagents: session.subagents,
-                    started_at_epoch: session.started_at_epoch,
-                    parent_fingerprint,
-                    evidence: Box::new(session.evidence),
-                    row_projections: session.row_projections,
-                    source_summaries: session.source_summaries,
-                },
-                StreamOutcome::SourceChanged => ComputedAnalysis::SourceChanged,
-                StreamOutcome::ParentMissing => ComputedAnalysis::Missing,
-                StreamOutcome::ParentUnsupported => ComputedAnalysis::Unsupported,
-                StreamOutcome::ParentUnreadable => ComputedAnalysis::Unavailable,
-            };
-        }
-        let batch = analyze_sources_with(inputs, true);
-        let Some(merged) =
-            merge_parent_and_subagents(&inputs_for_merge, &parent_session_id_for_merge)
-                .map(|session| analyze_session(&session))
-        else {
-            return ComputedAnalysis::Unavailable;
-        };
-        let mut sessions = batch.sessions;
-        let Some(parent_index) = sessions
-            .iter()
-            .position(|metrics| metrics.session_id == parent_session_id_for_merge)
-        else {
-            return ComputedAnalysis::Unavailable;
-        };
-        let parent = sessions.remove(parent_index);
-        ComputedAnalysis::Published {
-            parent: Box::new(parent),
-            merged: Box::new(merged),
-            // This path has no per-event accumulator to read a child's
-            // earliest timestamp from, so every child's start stays unknown.
-            subagents: sessions
-                .into_iter()
-                .map(|metrics| (metrics, None))
-                .collect(),
-            started_at_epoch: None,
-            parent_fingerprint: None,
-            evidence: Box::new(None),
-            row_projections: None,
-            source_summaries: None,
+        let cancelled = || signal_for_pass.observe();
+        match stream_vendor_with_hooks(
+            &inputs,
+            &cancelled,
+            &test_subagent_after_claim,
+            database_claim.as_deref(),
+            turn_row_store,
+        ) {
+            StreamOutcome::Published {
+                session,
+                parent_fingerprint,
+            } => ComputedAnalysis::Published {
+                parent: Box::new(session.parent),
+                merged: Box::new(session.merged),
+                subagents: session.subagents,
+                started_at_epoch: session.started_at_epoch,
+                parent_fingerprint,
+                evidence: Box::new(session.evidence),
+                row_projections: session.row_projections,
+                source_summaries: session.source_summaries,
+            },
+            StreamOutcome::SourceChanged => ComputedAnalysis::SourceChanged,
+            StreamOutcome::ParentMissing => ComputedAnalysis::Missing,
+            StreamOutcome::ParentUnsupported => ComputedAnalysis::Unsupported,
+            StreamOutcome::ParentUnreadable => ComputedAnalysis::Unavailable,
         }
     })
     .await;
 
-    debug_assert!(capabilities_for_vendor(vendor_label(agent)).is_none() || signal.progress() > 0);
+    debug_assert!(signal.progress() > 0);
     let Ok(computed) = computed else {
         return unavailable_evidence_pass(PassOutcome::Unreadable, source_path, Some(fingerprint));
     };
@@ -1402,9 +1335,8 @@ pub fn analysis_from_rows(
         fingerprint: record.source_fingerprint,
         analyzed_generation: record.analyzed_generation,
         started_at_epoch,
-        // Nothing new to persist: this call reads the cache, it does not
-        // extend it, and `cache_detail_analysis` skips evidence-cohort
-        // agents anyway.
+        // Nothing new to persist: this call replays the worker's own
+        // published rows, it does not write anything.
         source_summaries: None,
     }))
 }
@@ -1554,26 +1486,20 @@ pub async fn analyze_subagent(
     let source_path = source_path(&source);
     let agent_slug = agent.slug().to_string();
 
-    let streams_evidence = capabilities_for_vendor(vendor_label(agent)).is_some();
-    let computed = tauri::async_runtime::spawn_blocking(move || {
-        if streams_evidence {
-            return match stream_vendor(&[input], &cancel) {
-                StreamOutcome::Published { session, .. } => {
-                    Some((session.parent, session.started_at_epoch))
-                }
-                StreamOutcome::SourceChanged
-                | StreamOutcome::ParentMissing
-                | StreamOutcome::ParentUnsupported
-                | StreamOutcome::ParentUnreadable => None,
-            };
-        }
-        analyze_sources_with(vec![input], true)
-            .sessions
-            .into_iter()
-            .next()
-            .map(|metrics| (metrics, None))
-    })
-    .await;
+    // Every vendor now has a real `SourceCapabilities` profile (see
+    // `capabilities_for_vendor`), so this always streams — there is no
+    // separate, uncharacterized-vendor fallback pass any more.
+    let computed =
+        tauri::async_runtime::spawn_blocking(move || match stream_vendor(&[input], &cancel) {
+            StreamOutcome::Published { session, .. } => {
+                Some((session.parent, session.started_at_epoch))
+            }
+            StreamOutcome::SourceChanged
+            | StreamOutcome::ParentMissing
+            | StreamOutcome::ParentUnsupported
+            | StreamOutcome::ParentUnreadable => None,
+        })
+        .await;
     let Ok(Some((metrics, started_at_epoch))) = computed else {
         return SessionAnalysis {
             source_path,
@@ -3090,10 +3016,10 @@ mod tests {
         let directory = tempfile::TempDir::new().expect("tempdir");
         let path = directory.path().join("parent.jsonl");
         std::fs::write(&path, claude_record("parent", 1_760_000_000)).expect("write parent");
-        let flag = Arc::new(AtomicBool::new(true));
+        let flag = CancelFlag(Arc::new(AtomicBool::new(true)));
 
         assert!(matches!(
-            stream_vendor(&[file_input(&path, "parent")], &CancelFlag::from_flag(flag),),
+            stream_vendor(&[file_input(&path, "parent")], &flag),
             StreamOutcome::ParentUnreadable
         ));
     }
@@ -3105,49 +3031,6 @@ mod tests {
         assert!(is_active(Some(now), now));
         assert!(!is_active(Some(now - ACTIVE_SESSION_WINDOW_SECS - 1), now));
         assert!(!is_active(None, now));
-    }
-
-    #[test]
-    fn a_source_with_no_file_behind_it_never_satisfies_the_cache() {
-        let cached = AnalysisRecord {
-            key: SessionKey::new("native", "claude-code", "abc"),
-            model_breakdown_json: "{}".into(),
-            inclusive_models_json: "[]".into(),
-            initial_context_json: None,
-            source_summaries_json: None,
-            source_fingerprint: MISSING_FINGERPRINT.into(),
-            pricing_generation: pricing_generation() as i64,
-            analyzed_generation: 0,
-            parser_revision: 0,
-            analyzer_revision: 0,
-            metrics_schema_revision: 0,
-        };
-        assert!(!cache_is_fresh(&cached, MISSING_FINGERPRINT));
-
-        let cached = AnalysisRecord {
-            source_fingerprint: "123:456".into(),
-            ..cached
-        };
-        assert!(cache_is_fresh(&cached, "123:456"));
-        assert!(!cache_is_fresh(&cached, "123:999"));
-    }
-
-    #[test]
-    fn a_stale_pricing_generation_invalidates_a_matching_fingerprint() {
-        let cached = AnalysisRecord {
-            key: SessionKey::new("native", "claude-code", "abc"),
-            model_breakdown_json: "{}".into(),
-            inclusive_models_json: "[]".into(),
-            initial_context_json: None,
-            source_summaries_json: None,
-            source_fingerprint: "123:456".into(),
-            pricing_generation: pricing_generation() as i64 - 1,
-            analyzed_generation: 0,
-            parser_revision: 0,
-            analyzer_revision: 0,
-            metrics_schema_revision: 0,
-        };
-        assert!(!cache_is_fresh(&cached, "123:456"));
     }
 
     #[test]
