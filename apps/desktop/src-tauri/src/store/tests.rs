@@ -5,8 +5,12 @@ use antiburn_local::analysis::{
     count_turn_rows,
 };
 
-use super::model::PublishedEvidence;
+use super::model::{
+    PublishedEvidence, SESSION_DATA_RETENTION_DAYS_30, SESSION_DATA_RETENTION_DAYS_90,
+};
 use super::*;
+
+mod reconcile_tests;
 
 fn store() -> Store {
     Store::open_in_memory(Path::new("/tmp/antiburn-test-state")).expect("in-memory store")
@@ -416,6 +420,10 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // Open by default, same reasoning: a reader who has limits to see should
     // see them without an extra click the first time they notice the section.
     assert!(defaults.overview_limits_expanded);
+    assert_eq!(
+        defaults.session_data_retention_days,
+        RETAIN_SESSION_DATA_FOREVER
+    );
 
     // Notifications default on, both kinds with them, so the two per-kind
     // preferences below are a real change rather than a re-statement.
@@ -427,6 +435,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
         .save_settings(&AppSettings {
             theme: ThemePreference::Dark,
             activity_window_days: 14,
+            session_data_retention_days: SESSION_DATA_RETENTION_DAYS_90,
             onboarding_completed: true,
             launch_at_login: true,
             auto_update: false,
@@ -451,6 +460,10 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert_eq!(store.settings().unwrap(), saved);
     assert_eq!(saved.theme, ThemePreference::Dark);
     assert_eq!(saved.activity_window_days, 14);
+    assert_eq!(
+        saved.session_data_retention_days,
+        SESSION_DATA_RETENTION_DAYS_90
+    );
     assert_eq!(saved.nudge_placement, NudgePlacement::TopRight);
     assert_eq!(saved.nudge_auto_dismiss_secs, 25);
     assert_eq!(saved.disk_space_display, DiskSpaceDisplay::Always);
@@ -828,6 +841,236 @@ fn clearing_an_already_empty_index_is_a_no_op() {
     let store = store();
     assert_eq!(store.clear_local_session_data().unwrap(), 0);
     assert_eq!(store.clear_local_session_data().unwrap(), 0);
+}
+
+#[test]
+fn session_retention_removes_only_sessions_before_the_cutoff() {
+    const NOW: i64 = 2_000_000_000;
+    const DAY: i64 = 86_400;
+    let store = store();
+    store
+        .upsert_sessions(
+            &[
+                session("expired", NOW - 30 * DAY - 1),
+                session("boundary", NOW - 30 * DAY),
+                session("recent", NOW - DAY),
+            ],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    store
+        .save_settings(&AppSettings {
+            session_data_retention_days: SESSION_DATA_RETENTION_DAYS_30,
+            ..AppSettings::default()
+        })
+        .unwrap();
+
+    assert_eq!(store.apply_session_retention(NOW).unwrap(), 1);
+    let remaining = store.recent_sessions(0, 100).unwrap();
+    assert_eq!(remaining.len(), 2);
+    assert!(
+        remaining
+            .iter()
+            .any(|record| record.key.session_id == "boundary")
+    );
+    assert!(
+        remaining
+            .iter()
+            .any(|record| record.key.session_id == "recent")
+    );
+}
+
+#[test]
+fn session_retention_uses_last_seen_when_activity_time_is_unknown() {
+    let store = store();
+    store
+        .upsert_sessions(
+            &[session("unknown-time", 1_000)],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    store
+        .lock()
+        .execute(
+            "UPDATE session
+                SET updated_at_epoch = NULL, last_seen_at = '2020-01-01T00:00:00Z'
+              WHERE session_id = 'unknown-time'",
+            [],
+        )
+        .unwrap();
+    store
+        .save_settings(&AppSettings {
+            session_data_retention_days: SESSION_DATA_RETENTION_DAYS_90,
+            ..AppSettings::default()
+        })
+        .unwrap();
+
+    assert_eq!(store.apply_session_retention(2_000_000_000).unwrap(), 1);
+    assert_eq!(store.session_count().unwrap(), 0);
+}
+
+#[test]
+fn session_retention_removes_all_derived_session_data() {
+    let store = store();
+    let key = SessionKey::new("native", "claude-code", "expired-derived");
+    store
+        .upsert_sessions(
+            &[session("expired-derived", 1_000)],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    store
+        .save_analysis(
+            &AnalysisRecord {
+                key: key.clone(),
+                model_breakdown_json: "{}".into(),
+                inclusive_models_json: "[]".into(),
+                initial_context_json: None,
+                source_summaries_json: None,
+                source_fingerprint: "1:1".into(),
+                pricing_generation: 0,
+                analyzed_generation: 0,
+                parser_revision: 0,
+                analyzer_revision: 0,
+                metrics_schema_revision: 0,
+            },
+            None,
+        )
+        .unwrap();
+    store
+        .replace_relations(
+            &key,
+            RelationKind::Subagent,
+            &[RelationRecord {
+                kind: RelationKind::Subagent,
+                related_id: "child".into(),
+                label: None,
+            }],
+        )
+        .unwrap();
+    {
+        let connection = store.lock();
+        insert_turn_rows(&connection, &turn_session_key(&key), 1, &[turn_row(0)]).unwrap();
+    }
+    store
+        .save_settings(&AppSettings {
+            session_data_retention_days: SESSION_DATA_RETENTION_DAYS_30,
+            ..AppSettings::default()
+        })
+        .unwrap();
+
+    assert_eq!(store.apply_session_retention(2_000_000_000).unwrap(), 1);
+    assert!(store.analysis(&key).unwrap().is_none());
+    assert!(store.evidence(&key).unwrap().is_none());
+    assert!(store.relations(&key).unwrap().is_empty());
+    assert_eq!(
+        count_turn_rows(&store.lock(), &turn_session_key(&key), 1).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn forever_retention_is_a_no_op() {
+    let store = store();
+    store
+        .upsert_sessions(&[session("kept", 1)], &crate::agents::evidence_cohort())
+        .unwrap();
+
+    assert_eq!(store.apply_session_retention(2_000_000_000).unwrap(), 0);
+    assert_eq!(store.session_count().unwrap(), 1);
+}
+
+#[test]
+fn saving_retention_and_removing_expired_sessions_is_one_store_operation() {
+    let store = store();
+    store
+        .upsert_sessions(&[session("expired", 1)], &crate::agents::evidence_cohort())
+        .unwrap();
+
+    let (_, saved, removed) = store
+        .replace_settings_with(
+            &AppSettings {
+                session_data_retention_days: SESSION_DATA_RETENTION_DAYS_30,
+                ..AppSettings::default()
+            },
+            |tx, saved| {
+                apply_session_retention_in(tx, saved.session_data_retention_days, 2_000_000_000)
+            },
+        )
+        .unwrap();
+
+    assert_eq!(removed, 1);
+    assert_eq!(
+        saved.session_data_retention_days,
+        SESSION_DATA_RETENTION_DAYS_30
+    );
+    assert_eq!(store.settings().unwrap(), saved);
+}
+
+#[test]
+fn unsupported_session_retention_values_normalize_to_forever() {
+    let store = store();
+    for value in [0, 60, -2] {
+        let saved = store
+            .save_settings(&AppSettings {
+                session_data_retention_days: value,
+                ..AppSettings::default()
+            })
+            .unwrap();
+        assert_eq!(
+            saved.session_data_retention_days,
+            RETAIN_SESSION_DATA_FOREVER
+        );
+    }
+
+    store
+        .lock()
+        .execute(
+            "UPDATE setting SET value = 'not-a-number' WHERE key = 'sessionDataRetentionDays'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        store.settings().unwrap().session_data_retention_days,
+        RETAIN_SESSION_DATA_FOREVER
+    );
+}
+
+#[test]
+fn repository_counts_can_be_refreshed_after_retention_cleanup() {
+    const NOW: i64 = 2_000_000_000;
+    let store = store();
+    store
+        .upsert_sessions(
+            &[session("expired", 1), session("recent", NOW - 1)],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    store
+        .replace_repositories(&[RepositoryRecord {
+            key: "widgets".into(),
+            repo_name: "widgets".into(),
+            full_name: "avery/widgets".into(),
+            status: "accessible".into(),
+            repo_root: Some("/home/avery/code/widgets".into()),
+            suspected_path: None,
+            worktree_count: 1,
+            session_count: 2,
+            wsl_distro: None,
+            enabled: true,
+        }])
+        .unwrap();
+    store
+        .save_settings(&AppSettings {
+            session_data_retention_days: SESSION_DATA_RETENTION_DAYS_30,
+            ..AppSettings::default()
+        })
+        .unwrap();
+
+    assert_eq!(store.apply_session_retention(NOW).unwrap(), 1);
+    crate::repositories::refresh_session_counts(&store).unwrap();
+
+    assert_eq!(store.repositories().unwrap()[0].session_count, 1);
 }
 
 #[test]
@@ -2052,87 +2295,6 @@ fn reconciling_enrolls_a_session_evidence_row_for_an_upgraded_session() {
             .unwrap()
             .key,
         record.key
-    );
-}
-
-#[test]
-fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
-    let store = store();
-    let mut pi = session("pi-upgrade-enrollment", 1_000);
-    pi.key.agent = "pi".to_owned();
-    pi.source_label = "/synthetic/pi-upgrade-enrollment.jsonl".to_owned();
-    pi.source_fingerprint = Some("sv1:synthetic".to_owned());
-    store
-        .upsert_sessions(std::slice::from_ref(&pi), &[])
-        .unwrap();
-    assert!(store.evidence(&pi.key).unwrap().is_none());
-
-    assert_eq!(
-        store
-            .reconcile_evidence_revisions(
-                &crate::agents::evidence_cohort(),
-                crate::analysis::projection_revisions(),
-            )
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        store.evidence(&pi.key).unwrap().unwrap().status,
-        EvidenceStatus::Pending
-    );
-    assert_eq!(
-        crate::analysis::projection_revisions(),
-        ProjectionRevisions {
-            parser_revision: 16,
-            analyzer_revision: 15,
-            metrics_schema_revision: 2,
-            evidence_schema_revision: 11,
-        }
-    );
-}
-
-#[test]
-fn a_revision_change_requeues_session_evidence_without_touching_the_generation() {
-    let store = store();
-    let record = seed_current_session_evidence(&store, "revision-requeue");
-    // Set nonzero retry state first. Then the test can show that
-    // reconcile resets the state, not that it was already zero.
-    store
-        .lock()
-        .execute(
-            "UPDATE session_evidence
-                SET retry_count = 3, last_error = 'stale attempt',
-                    next_attempt_at_epoch = 500
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-            params![
-                record.key.environment_key,
-                record.key.agent,
-                record.key.session_id
-            ],
-        )
-        .unwrap();
-    let before = store.session_source_state(&record.key).unwrap().unwrap();
-    let revisions = ProjectionRevisions {
-        evidence_schema_revision: 2,
-        ..projection_revisions()
-    };
-
-    assert_eq!(
-        store
-            .reconcile_evidence_revisions(&["claude-code"], revisions)
-            .unwrap(),
-        1
-    );
-
-    let evidence = store.evidence(&record.key).unwrap().unwrap();
-    assert_eq!(evidence.status, EvidenceStatus::Pending);
-    assert_eq!(evidence.evidence_json.as_deref(), Some("{\"groups\":[]}"));
-    assert_eq!(evidence.retry_count, 0);
-    assert_eq!(evidence.last_error, None);
-    assert_eq!(evidence.next_attempt_at_epoch, None);
-    assert_eq!(
-        store.session_source_state(&record.key).unwrap().unwrap(),
-        before
     );
 }
 
@@ -3558,379 +3720,4 @@ fn clearing_local_session_data_removes_turn_content_written_through_the_fenced_w
         .query_row("SELECT COUNT(*) FROM turn_content", [], |row| row.get(0))
         .unwrap();
     assert_eq!(remaining, 0);
-}
-
-// The tests below pin `reconcile_evidence_revisions`'s individual requeue
-// decisions. Each test isolates one arm of its SQL. A future edit that
-// changes requeue behavior then fails one named test.
-
-#[test]
-fn a_parser_revision_mismatch_alone_requeues_and_resets_retry_state() {
-    let store = store();
-    let record = seed_current_session_evidence(&store, "parser-revision-requeue");
-    // Set nonzero retry state first. Then the test can show that
-    // reconcile resets the state, not that it was already zero.
-    store
-        .lock()
-        .execute(
-            "UPDATE session_evidence
-                SET retry_count = 3, last_error = 'stale attempt',
-                    next_attempt_at_epoch = 500
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-            params![
-                record.key.environment_key,
-                record.key.agent,
-                record.key.session_id
-            ],
-        )
-        .unwrap();
-    let before = store.session_source_state(&record.key).unwrap().unwrap();
-    let revisions = ProjectionRevisions {
-        parser_revision: 2,
-        ..projection_revisions()
-    };
-
-    assert_eq!(
-        store
-            .reconcile_evidence_revisions(&["claude-code"], revisions)
-            .unwrap(),
-        1
-    );
-
-    let evidence = store.evidence(&record.key).unwrap().unwrap();
-    assert_eq!(evidence.status, EvidenceStatus::Pending);
-    assert_eq!(evidence.retry_count, 0);
-    assert_eq!(evidence.last_error, None);
-    assert_eq!(evidence.next_attempt_at_epoch, None);
-    assert_eq!(
-        store.session_source_state(&record.key).unwrap().unwrap(),
-        before
-    );
-}
-
-#[test]
-fn an_analyzer_revision_mismatch_alone_requeues_session_evidence() {
-    let store = store();
-    let record = seed_current_session_evidence(&store, "analyzer-revision-requeue");
-    let before = store.session_source_state(&record.key).unwrap().unwrap();
-    let revisions = ProjectionRevisions {
-        analyzer_revision: 2,
-        ..projection_revisions()
-    };
-
-    assert_eq!(
-        store
-            .reconcile_evidence_revisions(&["claude-code"], revisions)
-            .unwrap(),
-        1
-    );
-
-    let evidence = store.evidence(&record.key).unwrap().unwrap();
-    assert_eq!(evidence.status, EvidenceStatus::Pending);
-    assert_eq!(evidence.evidence_json.as_deref(), Some("{\"groups\":[]}"));
-    assert_eq!(
-        store.session_source_state(&record.key).unwrap().unwrap(),
-        before
-    );
-}
-
-#[test]
-fn a_stale_metrics_schema_revision_in_session_analysis_requeues_a_current_row() {
-    let store = store();
-    let record = seed_current_session_evidence(&store, "metrics-stale-requeue");
-    // The evidence row's own columns, and `analyzed_generation`, are current.
-    // Only the joined `session_analysis` row's `metrics_schema_revision` is
-    // stale, so this isolates the missing-analysis requeue arm.
-    store
-        .lock()
-        .execute(
-            "UPDATE session_analysis SET metrics_schema_revision = 0
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-            params![
-                record.key.environment_key,
-                record.key.agent,
-                record.key.session_id
-            ],
-        )
-        .unwrap();
-
-    assert_eq!(
-        store
-            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
-            .unwrap(),
-        1
-    );
-
-    assert_eq!(
-        store.evidence(&record.key).unwrap().unwrap().status,
-        EvidenceStatus::Pending
-    );
-}
-
-#[test]
-fn a_missing_session_analysis_row_requeues_an_otherwise_current_evidence_row() {
-    let store = store();
-    let record = seed_ready_evidence_row(&store, "metrics-missing-requeue");
-
-    assert_eq!(
-        store
-            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
-            .unwrap(),
-        1
-    );
-
-    assert_eq!(
-        store.evidence(&record.key).unwrap().unwrap().status,
-        EvidenceStatus::Pending
-    );
-}
-
-#[test]
-fn an_analyzed_generation_behind_the_session_requeues_even_when_revisions_match() {
-    let store = store();
-    let record = seed_current_session_evidence(&store, "generation-behind-requeue");
-    // Increase the session's generation directly. This bypasses
-    // `upsert_sessions` and tests only the generation check in
-    // `reconcile_evidence_revisions`.
-    store
-        .lock()
-        .execute(
-            "UPDATE session SET source_generation = 2
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-            params![
-                record.key.environment_key,
-                record.key.agent,
-                record.key.session_id
-            ],
-        )
-        .unwrap();
-
-    assert_eq!(
-        store
-            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
-            .unwrap(),
-        1
-    );
-
-    assert_eq!(
-        store.evidence(&record.key).unwrap().unwrap().status,
-        EvidenceStatus::Pending
-    );
-}
-
-#[test]
-fn a_failed_row_with_a_revision_mismatch_requeues_despite_its_status() {
-    let store = store();
-    let record = seed_current_session_evidence(&store, "failed-revision-requeue");
-    store
-        .lock()
-        .execute(
-            "UPDATE session_evidence SET status = 'failed', last_error = 'earlier failure'
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-            params![
-                record.key.environment_key,
-                record.key.agent,
-                record.key.session_id
-            ],
-        )
-        .unwrap();
-    let revisions = ProjectionRevisions {
-        evidence_schema_revision: 2,
-        ..projection_revisions()
-    };
-
-    assert_eq!(
-        store
-            .reconcile_evidence_revisions(&["claude-code"], revisions)
-            .unwrap(),
-        1
-    );
-
-    assert_eq!(
-        store.evidence(&record.key).unwrap().unwrap().status,
-        EvidenceStatus::Pending
-    );
-}
-
-#[test]
-fn a_failed_row_current_except_for_a_missing_analysis_row_does_not_requeue() {
-    let store = store();
-    let record = seed_ready_evidence_row(&store, "failed-missing-analysis-guard");
-    store
-        .lock()
-        .execute(
-            "UPDATE session_evidence SET status = 'failed', last_error = 'earlier failure'
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-            params![
-                record.key.environment_key,
-                record.key.agent,
-                record.key.session_id
-            ],
-        )
-        .unwrap();
-    let before = store.evidence(&record.key).unwrap().unwrap();
-
-    assert_eq!(
-        store
-            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
-            .unwrap(),
-        0
-    );
-
-    assert_eq!(store.evidence(&record.key).unwrap().unwrap(), before);
-}
-
-#[test]
-fn an_unsupported_row_with_a_revision_mismatch_requeues_despite_its_status() {
-    let store = store();
-    let record = seed_current_session_evidence(&store, "unsupported-revision-requeue");
-    store
-        .lock()
-        .execute(
-            "UPDATE session_evidence SET status = 'unsupported'
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-            params![
-                record.key.environment_key,
-                record.key.agent,
-                record.key.session_id
-            ],
-        )
-        .unwrap();
-    let revisions = ProjectionRevisions {
-        evidence_schema_revision: 2,
-        ..projection_revisions()
-    };
-
-    assert_eq!(
-        store
-            .reconcile_evidence_revisions(&["claude-code"], revisions)
-            .unwrap(),
-        1
-    );
-
-    assert_eq!(
-        store.evidence(&record.key).unwrap().unwrap().status,
-        EvidenceStatus::Pending
-    );
-}
-
-#[test]
-fn an_unsupported_row_current_except_for_a_missing_analysis_row_does_not_requeue() {
-    let store = store();
-    let record = seed_ready_evidence_row(&store, "unsupported-missing-analysis-guard");
-    store
-        .lock()
-        .execute(
-            "UPDATE session_evidence SET status = 'unsupported'
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-            params![
-                record.key.environment_key,
-                record.key.agent,
-                record.key.session_id
-            ],
-        )
-        .unwrap();
-    let before = store.evidence(&record.key).unwrap().unwrap();
-
-    assert_eq!(
-        store
-            .reconcile_evidence_revisions(&["claude-code"], projection_revisions())
-            .unwrap(),
-        0
-    );
-
-    assert_eq!(store.evidence(&record.key).unwrap().unwrap(), before);
-}
-
-#[test]
-fn a_stale_row_for_an_agent_outside_the_list_is_neither_enrolled_nor_requeued() {
-    let store = store();
-    let claude = seed_current_session_evidence(&store, "agent-filter-claude");
-    let mut codex = session("agent-filter-codex", 1_000);
-    codex.key.agent = "codex".into();
-    codex.source_fingerprint = Some("sv1:current".into());
-    store
-        .upsert_sessions(
-            std::slice::from_ref(&codex),
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
-    store
-        .save_analysis(
-            &projection_record(codex.key.clone(), "sv1:current", 1),
-            None,
-        )
-        .unwrap();
-    store
-        .lock()
-        .execute(
-            "UPDATE session_evidence
-                SET status = 'ready', analyzed_generation = 1,
-                    processed_fingerprint = 'sv1:current', parser_revision = 1,
-                    analyzer_revision = 1, evidence_schema_revision = 1,
-                    evidence_json = '{\"groups\":[]}', diagnostics_json = '[]',
-                    retry_count = 0, claim_fence = 4, analyzed_at_epoch = 900
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-            params![
-                codex.key.environment_key,
-                codex.key.agent,
-                codex.key.session_id
-            ],
-        )
-        .unwrap();
-    let codex_before = store.evidence(&codex.key).unwrap().unwrap();
-    let mut codex_unseen = session("agent-filter-codex-unseen", 1_000);
-    codex_unseen.key.agent = "codex".into();
-    store
-        .upsert_sessions(std::slice::from_ref(&codex_unseen), &[])
-        .unwrap();
-    // The mismatch spans two revisions, not one. An agent-filter
-    // bug would still requeue this row.
-    let revisions = ProjectionRevisions {
-        evidence_schema_revision: 2,
-        ..projection_revisions()
-    };
-
-    assert_eq!(
-        store
-            .reconcile_evidence_revisions(&["claude-code"], revisions)
-            .unwrap(),
-        1
-    );
-
-    assert_eq!(
-        store.evidence(&claude.key).unwrap().unwrap().status,
-        EvidenceStatus::Pending
-    );
-    assert_eq!(store.evidence(&codex.key).unwrap().unwrap(), codex_before);
-    assert!(store.evidence(&codex_unseen.key).unwrap().is_none());
-}
-
-#[test]
-fn reconcile_counts_enrollment_and_requeue_together_in_one_call() {
-    let store = store();
-    let requeue_target = seed_current_session_evidence(&store, "combined-requeue");
-    let mut new_session = session("combined-enroll", 1_000);
-    new_session.source_fingerprint = Some("sv1:new".into());
-    store
-        .upsert_sessions(std::slice::from_ref(&new_session), &[])
-        .unwrap();
-    assert!(store.evidence(&new_session.key).unwrap().is_none());
-    let revisions = ProjectionRevisions {
-        parser_revision: 2,
-        ..projection_revisions()
-    };
-
-    assert_eq!(
-        store
-            .reconcile_evidence_revisions(&["claude-code"], revisions)
-            .unwrap(),
-        2
-    );
-
-    assert!(store.evidence(&new_session.key).unwrap().is_some());
-    assert_eq!(
-        store.evidence(&requeue_target.key).unwrap().unwrap().status,
-        EvidenceStatus::Pending
-    );
 }

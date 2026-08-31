@@ -66,6 +66,7 @@ function emit(name: string, payload: unknown) {
 const SETTINGS = {
   theme: "system" as const,
   activityWindowDays: 7,
+  sessionDataRetentionDays: -1,
   onboardingCompleted: true,
   launchAtLogin: false,
   autoUpdate: true,

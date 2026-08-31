@@ -53,11 +53,11 @@
 //! a retry), and [`crate::notifications`] once per run of the app, for someone
 //! who is not looking at antiburn at all.
 //!
-//! Every pass is bounded: discovery is windowed to the widest activity view,
-//! and the per-session metadata reads run at a fixed concurrency, so one pass
-//! cannot grow with the size of the machine. Sessions already indexed are
-//! retained until the reader explicitly clears them; the bounded discovery
-//! window is not a data expiry policy. The scheduler is a single task whose
+//! Every pass is bounded: discovery is windowed to the widest activity view, the
+//! per-session metadata reads run at a fixed concurrency, and analysis is
+//! capped at [`MAX_ANALYSES_PER_PASS`] sessions so one pass cannot grow with
+//! the size of the machine. The separate retention policy expires indexed
+//! sessions; the bounded discovery window does not. The scheduler is a single
 //! handle the app aborts on exit, so nothing outlives the process.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -277,8 +277,7 @@ async fn pass(app: &AppHandle, _activity_window_days: Option<u32>) -> anyhow::Re
     let store = app.state::<Store>();
     let now = unix_now();
     // Discovery always covers the widest list the UI can request, so changing
-    // the display window is instant. Previously indexed sessions outside this
-    // lookback remain in the store indefinitely.
+    // the display window is instant. The retention setting controls older rows.
     let window_days = i64::from(crate::store::MAX_ACTIVITY_DAYS);
     let since_secs = window_days * 86_400;
 

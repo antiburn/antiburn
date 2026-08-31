@@ -348,7 +348,16 @@ pub const SETTINGS_CHANGED_EVENT: &str = "settings:changed";
 #[tauri::command]
 pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResult<AppSettings> {
     let store = app.state::<Store>();
-    let (previous, saved) = store.replace_settings(&settings).map_err(fail)?;
+    let (previous, saved, removed) = store
+        .replace_settings_with(&settings, |tx, saved| {
+            crate::store::apply_session_retention_in(
+                tx,
+                saved.session_data_retention_days,
+                crate::retention::unix_now(),
+            )
+        })
+        .map_err(fail)?;
+    crate::retention::note_removed(&app, removed);
     apply_settings_transition(&app, &previous, &saved);
     Ok(saved)
 }
@@ -1075,8 +1084,8 @@ async fn resolve_lineage(
                 wsl_distro: wsl_distro.map(str::to_string),
             },
             title: record.as_ref().and_then(|record| record.title.clone()),
-            // A child we still have a row for is on this machine; the row is
-            // pruned when the transcript ages out.
+            // A child we still have a row for is on this machine. The retention
+            // policy removes the row when its session data expires.
             available: record.is_some(),
         });
     }

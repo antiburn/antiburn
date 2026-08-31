@@ -25,6 +25,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: openDialog }))
 const SETTINGS = {
   theme: "system" as const,
   activityWindowDays: 7,
+  sessionDataRetentionDays: -1,
   onboardingCompleted: false,
   launchAtLogin: true,
   autoUpdate: true,

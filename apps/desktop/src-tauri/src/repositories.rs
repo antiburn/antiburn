@@ -55,8 +55,8 @@ pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
     let store = app.state::<Store>();
     let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
 
-    // Repository counts use the newest bounded slice of everything indexed,
-    // with no age-based expiry. The cap protects an always-running utility
+    // Repository counts use the newest bounded slice of retained sessions.
+    // The cap protects an always-running utility
     // from loading an unbounded history into memory at once.
     let sessions = store.recent_sessions(0, MAX_SESSIONS_CONSIDERED)?;
     let known: Vec<RepositoryRecord> = store.repositories()?;
@@ -100,6 +100,26 @@ pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
     surface_orphaned_opt_outs(&mut records, store.state_dir(), &granted).await;
     store.replace_repositories(&records)?;
     store.set_deferred_permission_dirs(&summarize_deferred(&deferred))?;
+    Ok(())
+}
+
+/// Refresh only the stored session counts after local session deletion.
+pub fn refresh_session_counts(store: &Store) -> anyhow::Result<()> {
+    let sessions = store.recent_sessions(0, MAX_SESSIONS_CONSIDERED)?;
+    let mut repositories = store.repositories()?;
+    for repository in &mut repositories {
+        repository.session_count = repository
+            .repo_root
+            .as_deref()
+            .map(|root| {
+                sessions
+                    .iter()
+                    .filter(|session| session.cwd.as_deref().is_some_and(|cwd| under(cwd, root)))
+                    .count() as u32
+            })
+            .unwrap_or(0);
+    }
+    store.replace_repositories(&repositories)?;
     Ok(())
 }
 

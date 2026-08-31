@@ -47,6 +47,8 @@ export interface AppSettings {
   theme: ThemePreference
   /** Calendar days of activity the popover list shows. */
   activityWindowDays: number
+  /** Days to keep local session data. `-1` keeps it until explicit deletion. */
+  sessionDataRetentionDays: number
   /** False until the first-run flow finishes. */
   onboardingCompleted: boolean
   /** Recorded; applied by the platform at next launch. */
@@ -648,6 +650,7 @@ export function hasShell(): boolean {
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: "system",
   activityWindowDays: 7,
+  sessionDataRetentionDays: -1,
   onboardingCompleted: false,
   launchAtLogin: true,
   autoUpdate: true,
@@ -1413,7 +1416,7 @@ export async function onSettingsChanged(
 
 /**
  * Event the shell emits when stored sessions were removed outside a scan
- * (repository opt-out, index clearing). Mirrors `SESSIONS_INVALIDATED_EVENT`
+ * (repository opt-out, index clearing, retention cleanup). Mirrors `SESSIONS_INVALIDATED_EVENT`
  * in `src-tauri/src/commands.rs`.
  */
 export const SESSIONS_INVALIDATED_EVENT = "sessions:invalidated"

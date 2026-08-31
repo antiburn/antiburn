@@ -9,8 +9,8 @@
 //! visibility and analysis. The current schema stores identities, locations,
 //! derived numbers, a session title, and capped skill descriptions; future
 //! migrations may add transcript content deliberately. All such data remains
-//! app-controlled and on-device, and clear/delete paths apply to it. Provider
-//! source transcripts are never modified or deleted. [`schema`] carries the
+//! app-controlled and on-device, and clear/delete/retention paths apply to it.
+//! Provider source transcripts are never modified or deleted. [`schema`] carries the
 //! detailed contract. Exports have their own, narrower content policy in
 //! [`crate::export`].
 //!
@@ -50,9 +50,9 @@ pub use model::{
     AnalysisRecord, AppSettings, DiskSpaceDisplay, EvidenceClaim, EvidenceCompletion,
     EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters, MAX_ACTIVITY_DAYS,
     MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, ProjectionRevisions,
-    PublishedEvidence, RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey,
-    SessionActivityState, SessionKey, SessionRecord, SourceVersionState, ThemePreference,
-    UsageEvidenceRecord,
+    PublishedEvidence, RETAIN_SESSION_DATA_FOREVER, RelationKind, RelationRecord, RepositoryRecord,
+    SessionActivityKey, SessionActivityState, SessionKey, SessionRecord, SourceVersionState,
+    ThemePreference, UsageEvidenceRecord,
 };
 
 /// Evidence rows that still wait for, or sit in, processing.
@@ -280,7 +280,35 @@ impl Store {
     /// shell side effects a transition owes without another writer changing the
     /// answer between the two operations.
     pub fn replace_settings(&self, settings: &AppSettings) -> Result<(AppSettings, AppSettings)> {
-        self.update_settings(|current| *current = settings.clone())
+        self.replace_settings_with(settings, |_, _| Ok(()))
+            .map(|(previous, saved, ())| (previous, saved))
+    }
+
+    /// Replace preferences and apply another database change in one transaction.
+    pub fn replace_settings_with<T>(
+        &self,
+        settings: &AppSettings,
+        apply: impl FnOnce(&rusqlite::Transaction<'_>, &AppSettings) -> Result<T>,
+    ) -> Result<(AppSettings, AppSettings, T)> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let previous = read_settings(&tx)?;
+        let saved = settings.clone().normalized();
+        write_settings(&tx, &saved)?;
+        let result = apply(&tx, &saved)?;
+        tx.commit()?;
+        Ok((previous, saved, result))
+    }
+
+    /// Apply the stored session-data retention policy.
+    pub fn apply_session_retention(&self, now_epoch: i64) -> Result<usize> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let settings = read_settings(&tx)?;
+        let removed =
+            apply_session_retention_in(&tx, settings.session_data_retention_days, now_epoch)?;
+        tx.commit()?;
+        Ok(removed)
     }
 
     /// Change preferences against the latest stored value in one transaction.
@@ -1609,6 +1637,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("activityWindowDays")
             .and_then(|value| value.parse().ok())
             .unwrap_or(defaults.activity_window_days),
+        session_data_retention_days: stored
+            .get("sessionDataRetentionDays")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(defaults.session_data_retention_days),
         onboarding_completed: stored
             .get("onboardingCompleted")
             .map(|value| value == "true")
@@ -1708,6 +1740,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
     put.execute(params![
         "activityWindowDays",
         settings.activity_window_days.to_string()
+    ])?;
+    put.execute(params![
+        "sessionDataRetentionDays",
+        settings.session_data_retention_days.to_string()
     ])?;
     put.execute(params![
         "onboardingCompleted",
@@ -2016,6 +2052,44 @@ fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<bool> 
         parameters,
     )?;
     Ok(removed > 0)
+}
+
+pub(crate) fn apply_session_retention_in(
+    connection: &Connection,
+    retention_days: i32,
+    now_epoch: i64,
+) -> Result<usize> {
+    if retention_days == RETAIN_SESSION_DATA_FOREVER {
+        return Ok(0);
+    }
+
+    let cutoff = now_epoch.saturating_sub(i64::from(retention_days).saturating_mul(86_400));
+    let mut statement = connection.prepare(
+        "SELECT environment_key, agent, session_id
+           FROM session
+          WHERE COALESCE(
+                    updated_at_epoch,
+                    CAST(strftime('%s', last_seen_at) AS INTEGER)
+                ) < ?1",
+    )?;
+    let keys = statement
+        .query_map([cutoff], |row| {
+            Ok(SessionKey::new(
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+
+    let mut removed = 0;
+    for key in keys {
+        if delete_session_in(connection, &key)? {
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 fn turn_session_key(key: &SessionKey) -> TurnSessionKey<'_> {

@@ -1,4 +1,10 @@
-import { appInfo, onSettingsPaneRequest, takeSettingsPane, type AppInfo } from "../../lib/ipc"
+import {
+  appInfo,
+  onSessionsInvalidated,
+  onSettingsPaneRequest,
+  takeSettingsPane,
+  type AppInfo,
+} from "../../lib/ipc"
 import { isSettingsPane, type SettingsPane } from "../../lib/settingsPanes"
 
 export type SettingsWindowSnapshot = {
@@ -19,7 +25,9 @@ export class SettingsWindowSession {
   private listeners = new Set<() => void>()
   private started = false
   private generation = 0
+  private infoRevision = 0
   private paneEventRevision = 0
+  private stopInvalidationListening: (() => void) | null = null
   private stopPaneListening: (() => void) | null = null
 
   private snapshot: SettingsWindowSnapshot = { info: null, pane: "general" }
@@ -44,15 +52,20 @@ export class SettingsWindowSession {
     this.started = true
     const generation = ++this.generation
 
-    void appInfo()
-      .then((info) => {
-        if (generation !== this.generation) return
-        this.update({ info })
+    this.refreshInfo(generation)
+
+    void onSessionsInvalidated(() => {
+      if (generation !== this.generation) return
+      this.refreshInfo(generation)
+    })
+      .then((stop) => {
+        if (generation !== this.generation) {
+          stop()
+          return
+        }
+        this.stopInvalidationListening = stop
       })
-      .catch(() => {
-        if (generation !== this.generation) return
-        this.update({ info: null })
-      })
+      .catch(() => {})
 
     const stop = await onSettingsPaneRequest((requested) => {
       if (generation !== this.generation) return
@@ -79,8 +92,23 @@ export class SettingsWindowSession {
   private stop(): void {
     this.started = false
     this.generation += 1
+    this.stopInvalidationListening?.()
+    this.stopInvalidationListening = null
     this.stopPaneListening?.()
     this.stopPaneListening = null
+  }
+
+  private refreshInfo(generation: number): void {
+    const revision = ++this.infoRevision
+    void appInfo()
+      .then((info) => {
+        if (generation !== this.generation || revision !== this.infoRevision) return
+        this.update({ info })
+      })
+      .catch(() => {
+        if (generation !== this.generation || revision !== this.infoRevision) return
+        this.update({ info: null })
+      })
   }
 
   private update(change: Partial<SettingsWindowSnapshot>): void {
