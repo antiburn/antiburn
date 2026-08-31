@@ -385,7 +385,10 @@ export function PopoverView() {
           <UsageLimitsBar
             live={state.liveUsage}
             expanded={limitsExpanded}
-            onToggleExpanded={() => session.setOverviewLimitsExpanded(!limitsExpanded)}
+            onToggleExpanded={() => {
+              void peekTriggers.leave()
+              session.setOverviewLimitsExpanded(!limitsExpanded)
+            }}
             refreshing={state.usageRefreshing}
             onViewAll={() => {
               void hidePopoverPeek().catch(() => undefined)

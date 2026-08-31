@@ -76,6 +76,7 @@ export class PopoverPeekController {
   private readyRetryTimer: ReturnType<typeof setTimeout> | null = null
   private rendererGeneration: number | null = null
   private readyGeneration: number | null = null
+  private readyRevision = 0
   private activeLoad: PopoverPeekActiveRequest | null = null
   private pendingLoad: PopoverPeekActiveRequest | null = null
 
@@ -104,6 +105,8 @@ export class PopoverPeekController {
         this.retryTimer = null
         if (this.readyRetryTimer != null) clearTimeout(this.readyRetryTimer)
         this.readyRetryTimer = null
+        this.readyRevision += 1
+        this.readyGeneration = null
         this.stopListening?.()
         this.stopListening = null
       }
@@ -233,11 +236,12 @@ export class PopoverPeekController {
     ) {
       return
     }
+    const readyRevision = ++this.readyRevision
     this.readyGeneration = generation
     try {
       await this.bridge.ready(generation)
     } catch {
-      if (this.readyGeneration !== generation) return
+      if (readyRevision !== this.readyRevision || this.readyGeneration !== generation) return
       this.readyGeneration = null
       if (startGeneration !== this.startGeneration || this.listeners.size === 0) return
       this.readyRetryTimer = setTimeout(() => {

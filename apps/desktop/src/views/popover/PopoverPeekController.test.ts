@@ -131,6 +131,43 @@ describe("PopoverPeekController", () => {
     }
   })
 
+  it("replays readiness after resubscribing around an older pending attempt", async () => {
+    const firstReady = deferred<boolean>()
+    const ready = vi.fn().mockReturnValueOnce(firstReady.promise).mockResolvedValueOnce(true)
+    const controller = new PopoverPeekController({
+      data: vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),
+      listen: vi.fn(async () => () => undefined),
+      ready,
+      state: vi.fn(async () => ({
+        generation: 0,
+        target: null,
+        rendererReady: false,
+        visible: false,
+        awaitingRetargetCommit: false,
+        awaitingPresentation: false,
+        awaitingConcealment: false,
+      })),
+    })
+    Object.defineProperty(window, "__ANTIBURN_WINDOW_GENERATION__", {
+      configurable: true,
+      value: 9,
+    })
+    controller.commitRenderer(document.createElement("div"))
+
+    const unsubscribeFirst = controller.subscribe(() => undefined)
+    await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(1))
+    unsubscribeFirst()
+    const unsubscribeSecond = controller.subscribe(() => undefined)
+    await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(2))
+
+    firstReady.reject(new Error("stale attempt failed"))
+    await firstReady.promise.catch(() => undefined)
+    await Promise.resolve()
+
+    expect(ready).toHaveBeenCalledTimes(2)
+    unsubscribeSecond()
+  })
+
   it("uses an initial presentation immediately without starting another load", () => {
     const data = vi.fn(() => new Promise<PopoverPeekData>(() => undefined))
     const controller = controllerWith(data)

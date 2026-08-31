@@ -618,6 +618,17 @@ describe("PopoverView", () => {
     })
   })
 
+  it("conceals an active provider preview before expanding the limits bar", async () => {
+    render(<PopoverView />)
+
+    const trigger = await screen.findByRole("button", { name: "Codex at 40 percent" })
+    fireEvent.mouseEnter(trigger)
+    fireEvent.click(screen.getByRole("button", { name: "Expand usage limits" }))
+
+    expect(invoke).toHaveBeenCalledWith("hide_popover_peek")
+    expect(screen.getByRole("button", { name: "Collapse usage limits" })).toBeInTheDocument()
+  })
+
   it("shows cached limits and sessions while the provider refresh is still running", async () => {
     let finishRefresh: (() => void) | null = null
     const baseInvoke = invoke.getMockImplementation()!
