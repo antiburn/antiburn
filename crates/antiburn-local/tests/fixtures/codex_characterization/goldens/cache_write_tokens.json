@@ -10,7 +10,8 @@
         "longestIdleGapMs": 600000,
         "modelTransitions": [],
         "previousTurn": {
-          "state": "unsupported"
+          "state": "complete",
+          "value": null
         },
         "providerEviction": {
           "state": "unsupported"
@@ -35,6 +36,7 @@
       "compactionBoundaries": true,
       "fastTier": true,
       "harnessVersion": false,
+      "linearRecordOrder": true,
       "modelIdentity": true,
       "quotaIncidents": false,
       "reasoningEffortTier": true,
@@ -145,8 +147,8 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 15,
-      "evidenceSchemaRevision": 11,
+      "analyzerRevision": 16,
+      "evidenceSchemaRevision": 12,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -158,7 +160,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 11,
+    "schemaRevision": 12,
     "subagents": {
       "state": "complete",
       "value": {

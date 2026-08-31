@@ -45,6 +45,7 @@
       "compactionBoundaries": true,
       "fastTier": false,
       "harnessVersion": false,
+      "linearRecordOrder": false,
       "modelIdentity": true,
       "quotaIncidents": false,
       "reasoningEffortTier": true,
@@ -142,8 +143,8 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 15,
-      "evidenceSchemaRevision": 11,
+      "analyzerRevision": 16,
+      "evidenceSchemaRevision": 12,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -155,7 +156,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 11,
+    "schemaRevision": 12,
     "subagents": {
       "state": "unsupported"
     },

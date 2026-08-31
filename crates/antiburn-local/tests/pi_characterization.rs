@@ -889,6 +889,7 @@ fn pi_capabilities_match_published_evidence_and_session_cache_support() {
         compaction_boundaries: true,
         thread_identity: true,
         record_identity: true,
+        linear_record_order: false,
         quota_incidents: false,
         harness_version: false,
     };

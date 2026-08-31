@@ -523,28 +523,46 @@ impl SessionEvidenceAccumulator {
             examples: self.subagent_examples.clone(),
         };
         let subagents_cap_exceeded = self.subagents_cap_exceeded || facts.delegated_models_capped;
-        // Verified previous-turn linkage: complete only when every counted
-        // turn carried its own identity and every parent link resolved to an
-        // identity this source declared earlier. `provider_eviction` stays
-        // unsupported — no transcript record states an eviction.
+        // Verified previous-turn linkage, attested through either of two
+        // routes. The id route (`record_identity`): complete only when
+        // every counted turn carried its own identity and every parent link
+        // resolved to an identity this source declared earlier.
         // `thread_identity_missing` feeds the record-identity claim here: a
         // row with no `uuid` is a record-identity gap, not a thread-identity
-        // gap.
+        // gap. The order route (`linear_record_order`): a source with no
+        // per-record id but one thread per append-only stream needs none —
+        // a counted turn's predecessor is always the counted record
+        // immediately before it, so linkage is complete whenever this
+        // source lost no record. The id-gap concept does not apply here: an
+        // id-less source never emits `ThreadLink`, so `record_identity_gap`
+        // is gated to the id route and never degrades this one.
+        // `provider_eviction` stays unsupported — no transcript record
+        // states an eviction.
         let record_identity_gap = facts.thread_identity_missing || self.thread_parent_unresolved;
-        let previous_turn = if !self.capabilities.record_identity {
-            EvidenceValue::Unsupported
-        } else if let Some(reason) = self.record_loss_reason {
-            EvidenceValue::Partial {
-                observed: (),
-                reason,
+        let previous_turn = if self.capabilities.record_identity {
+            if let Some(reason) = self.record_loss_reason {
+                EvidenceValue::Partial {
+                    observed: (),
+                    reason,
+                }
+            } else if record_identity_gap {
+                EvidenceValue::Partial {
+                    observed: (),
+                    reason: CoverageReason::AttributionIncomplete,
+                }
+            } else {
+                EvidenceValue::Complete(())
             }
-        } else if record_identity_gap {
-            EvidenceValue::Partial {
-                observed: (),
-                reason: CoverageReason::AttributionIncomplete,
+        } else if self.capabilities.linear_record_order {
+            match self.record_loss_reason {
+                Some(reason) => EvidenceValue::Partial {
+                    observed: (),
+                    reason,
+                },
+                None => EvidenceValue::Complete(()),
             }
         } else {
-            EvidenceValue::Complete(())
+            EvidenceValue::Unsupported
         };
         // The same precedence the `cache` group's own `EvidenceValue` below
         // resolves to: this source's own record loss outranks a lossy
@@ -1989,6 +2007,55 @@ mod tests {
             panic!("cache must stay complete: this source never claimed record identity");
         };
         assert_eq!(cache.previous_turn, EvidenceValue::Unsupported);
+    }
+
+    /// A source with `linear_record_order` but no `record_identity`
+    /// (Codex's shape) attests linkage from line order alone: no counted
+    /// record was lost, so every turn's predecessor is the counted record
+    /// immediately before it.
+    #[test]
+    fn a_linear_order_source_with_no_loss_completes_previous_turn() {
+        let mut accumulator = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "codex".to_owned(),
+            session_id: "s1".to_owned(),
+            kind: SourceKind::Jsonl,
+            capabilities: SourceCapabilities::codex(),
+        });
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(assistant_event(1))));
+        let EvidenceValue::Complete(cache) = accumulator.evidence(&TurnFacts::default()).cache
+        else {
+            panic!("cache must be complete: no record loss and no child");
+        };
+        assert_eq!(cache.previous_turn, EvidenceValue::Complete(()));
+    }
+
+    /// The same linear-order source, but a record was lost: the order
+    /// claim can no longer prove line N-1 is the predecessor of line N, so
+    /// linkage degrades to the same reason the loss itself carries.
+    #[test]
+    fn a_linear_order_source_with_a_record_loss_degrades_previous_turn() {
+        let mut accumulator = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "codex".to_owned(),
+            session_id: "s1".to_owned(),
+            kind: SourceKind::Jsonl,
+            capabilities: SourceCapabilities::codex(),
+        });
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(assistant_event(1))));
+        accumulator.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
+        let cache = match accumulator.evidence(&TurnFacts::default()).cache {
+            EvidenceValue::Complete(cache)
+            | EvidenceValue::Partial {
+                observed: cache, ..
+            } => cache,
+            EvidenceValue::Unsupported => panic!("cache group must stay supported"),
+        };
+        assert_eq!(
+            cache.previous_turn,
+            EvidenceValue::Partial {
+                observed: (),
+                reason: CoverageReason::MalformedRecord,
+            }
+        );
     }
 
     #[test]
