@@ -817,11 +817,12 @@ export async function withPopoverHold<T>(action: () => Promise<T>): Promise<T> {
  *
  * The shell clamps the value, so this is a request rather than an instruction.
  * `animate` is decided here because the reduced-motion preference is a
- * webview-side media query and a height change is motion.
+ * webview-side media query and a height change is motion. The result is true
+ * only when this request reaches its target before a newer request replaces it.
  */
-export async function setPopoverHeight(height: number, animate: boolean): Promise<void> {
-  if (!hasShell()) return
-  await invoke("set_popover_height", { height, animate })
+export async function setPopoverHeight(height: number, animate: boolean): Promise<boolean> {
+  if (!hasShell()) return true
+  return invoke<boolean>("set_popover_height", { height, animate })
 }
 
 /** Resize the floating HUD around its measured panel. */

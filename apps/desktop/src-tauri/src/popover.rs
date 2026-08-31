@@ -328,6 +328,8 @@ pub struct PopoverState {
     /// Bumped by every height request, so an animation still in flight can see
     /// that a newer one superseded it and stop rather than fight it.
     resize_generation: AtomicU64,
+    /// Serializes resize ownership checks and window writes.
+    resize_apply_guard: Mutex<()>,
     /// While positive, losing focus does not hide the popover. Held around
     /// native dialogs (the folder picker) the popover itself opens: the dialog
     /// takes focus by design, and hiding would tear down the surface the
@@ -357,6 +359,7 @@ impl Default for PopoverState {
             anchor: Mutex::new(None),
             height: Mutex::new(DEFAULT_HEIGHT),
             resize_generation: AtomicU64::new(0),
+            resize_apply_guard: Mutex::new(()),
             focus_hold: AtomicU64::new(0),
             pinned: AtomicBool::new(false),
             renderer_generation: AtomicU64::new(0),
@@ -588,7 +591,13 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
         .skip_taskbar(true)
         .visible(false)
         .focused(false)
-        .on_page_load(|window, payload| {
+        .on_page_load(move |window, payload| {
+            #[cfg(feature = "memory-probe")]
+            let finished = matches!(payload.event(), tauri::webview::PageLoadEvent::Finished);
+            #[cfg(feature = "memory-probe")]
+            if finished {
+                crate::memory_probe::report_web_content(&window, generation);
+            }
             window_lifecycle::trace_page_load::<PopoverState>(window, payload, LABEL);
         });
 
@@ -1161,66 +1170,83 @@ fn evict_if_due(app: &AppHandle, token: EvictionToken) {
 ///
 /// Clamped to [`MIN_HEIGHT`]..=[`MAX_HEIGHT`], animated unless the caller says
 /// otherwise, and re-anchored on the way so a popover hanging off a
-/// bottom-of-screen panel grows upward instead of off the display.
-pub fn set_height(app: &AppHandle, requested: f64, animate: bool) {
+/// bottom-of-screen panel grows upward instead of off the display. Returns
+/// `true` only when this request still owns the resize at its target.
+pub async fn set_height(app: &AppHandle, requested: f64, animate: bool) -> bool {
     let Some(state) = app.try_state::<PopoverState>() else {
-        return;
+        return false;
     };
-    let Some(window) = app.get_webview_window(LABEL) else {
-        return;
-    };
+    if app.get_webview_window(LABEL).is_none() {
+        return false;
+    }
 
     let target = clamp_height(requested);
-    let from = state.height();
-    // Sub-pixel requests are the view re-reporting the height it already has.
-    if (from - target).abs() < 1.0 {
-        return;
-    }
-
-    let generation = state.begin_resize();
-    if !animate {
-        state.set_height(target);
-        apply_height(&window, target);
-        return;
-    }
-
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let step = RESIZE_DURATION / RESIZE_STEPS;
-        for frame in 1..=RESIZE_STEPS {
-            tokio::time::sleep(step).await;
-            let Some(state) = app.try_state::<PopoverState>() else {
-                return;
-            };
-            // A newer request owns the window now.
-            if !state.resize_is_current(generation) {
-                return;
-            }
-            let progress = f64::from(frame) / f64::from(RESIZE_STEPS);
-            let height = from + (target - from) * ease_out(progress);
-            state.set_height(height);
-            let Some(window) = app.get_webview_window(LABEL) else {
-                return;
-            };
-            apply_height(&window, height);
+    let (from, generation) = {
+        let Ok(_guard) = state.resize_apply_guard.lock() else {
+            return false;
+        };
+        (state.height(), state.begin_resize())
+    };
+    // Reduced motion and sub-pixel corrections reach the exact target now.
+    if !animate || (from - target).abs() < 1.0 {
+        let Ok(_guard) = state.resize_apply_guard.lock() else {
+            return false;
+        };
+        if !state.resize_is_current(generation) {
+            return false;
         }
-    });
+        let Some(window) = app.get_webview_window(LABEL) else {
+            return false;
+        };
+        if !apply_height(&window, target) {
+            return false;
+        }
+        state.set_height(target);
+        return state.resize_is_current(generation);
+    }
+
+    let step = RESIZE_DURATION / RESIZE_STEPS;
+    for frame in 1..=RESIZE_STEPS {
+        tokio::time::sleep(step).await;
+        let Some(state) = app.try_state::<PopoverState>() else {
+            return false;
+        };
+        let Ok(_guard) = state.resize_apply_guard.lock() else {
+            return false;
+        };
+        // A newer request owns the window now.
+        if !state.resize_is_current(generation) {
+            return false;
+        }
+        let progress = f64::from(frame) / f64::from(RESIZE_STEPS);
+        let height = from + (target - from) * ease_out(progress);
+        let Some(window) = app.get_webview_window(LABEL) else {
+            return false;
+        };
+        if !apply_height(&window, height) {
+            return false;
+        }
+        state.set_height(height);
+    }
+    app.try_state::<PopoverState>()
+        .is_some_and(|state| state.resize_is_current(generation))
 }
 
 /// Size the window and put it back where its anchor says it belongs.
-fn apply_height(window: &WebviewWindow, height: f64) {
+fn apply_height(window: &WebviewWindow, height: f64) -> bool {
     if window.set_size(LogicalSize::new(WIDTH, height)).is_err() {
-        return;
+        return false;
     }
     let Some(state) = window.app_handle().try_state::<PopoverState>() else {
-        return;
+        return true;
     };
     let Some(anchor) = state.anchor() else {
         // Never opened, so there is nothing to anchor to yet; the next open
         // places it.
-        return;
+        return true;
     };
     let _ = place(window, anchor, WIDTH, height);
+    true
 }
 
 /// Hides the popover after it loses focus, remembering when it happened.
@@ -2001,7 +2027,7 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_height_request_invalidates_the_animation_already_running() {
+    fn only_the_newest_height_request_can_report_completion() {
         let state = PopoverState::default();
         let first = state.begin_resize();
         assert!(state.resize_is_current(first));
@@ -2010,7 +2036,7 @@ mod tests {
         assert!(state.resize_is_current(second));
         assert!(
             !state.resize_is_current(first),
-            "the superseded animation must stop rather than fight the new one"
+            "a superseded request must report that it did not reach the target"
         );
     }
 
