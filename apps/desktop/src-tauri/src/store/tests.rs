@@ -2073,7 +2073,7 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
     assert_eq!(
         crate::analysis::projection_revisions(),
         ProjectionRevisions {
-            parser_revision: 15,
+            parser_revision: 16,
             analyzer_revision: 15,
             metrics_schema_revision: 2,
             evidence_schema_revision: 11,
@@ -3077,6 +3077,9 @@ fn turn_row(turn_index: u64) -> TurnRow {
         compaction_trigger: None,
         compaction_pre_tokens: None,
         compaction_post_tokens: None,
+        has_thinking: false,
+        last_tool: None,
+        subagent_launches: 0,
         content: Vec::new(),
     }
 }
@@ -3086,10 +3089,10 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 17);
+    assert_eq!(super::schema::MIGRATIONS.len(), 18);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 17);
+    assert_eq!(store.schema_version().unwrap(), 18);
 }
 
 #[test]

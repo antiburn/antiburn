@@ -11,7 +11,7 @@
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
-    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17,
+    V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -396,3 +396,11 @@ const V16: &str = antiburn_local::analysis::TURN_SCHEMA_V2_SQL;
 const V17: &str = r#"
 ALTER TABLE session_analysis ADD COLUMN initial_context_json TEXT;
 "#;
+
+/// v18 adds the three chart-signal columns `query_turn_rows` reads:
+/// `has_thinking`, `last_tool`, `subagent_launches`.
+///
+/// `antiburn_local::analysis::TURN_SCHEMA_V3_SQL` owns the column list, for
+/// the same reason [`V16`] re-exports `TURN_SCHEMA_V2_SQL` instead of
+/// stating its own DDL.
+const V18: &str = antiburn_local::analysis::TURN_SCHEMA_V3_SQL;

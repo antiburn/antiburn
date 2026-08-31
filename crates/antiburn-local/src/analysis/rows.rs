@@ -87,13 +87,26 @@ ALTER TABLE turn ADD COLUMN compaction_pre_tokens INTEGER;
 ALTER TABLE turn ADD COLUMN compaction_post_tokens INTEGER;
 "#;
 
+/// DDL that adds the chart-signal columns [`TurnRow::has_thinking`],
+/// [`TurnRow::last_tool`], and [`TurnRow::subagent_launches`] to an existing
+/// `turn` table.
+///
+/// These mirror `SessionMetricsAccumulator::observe_parent_fields`'s
+/// per-event derivations, so a later change can rebuild the drilldown's
+/// bucket chart from rows alone instead of from a streamed accumulator.
+pub const TURN_SCHEMA_V3_SQL: &str = r#"
+ALTER TABLE turn ADD COLUMN has_thinking INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE turn ADD COLUMN last_tool TEXT;
+ALTER TABLE turn ADD COLUMN subagent_launches INTEGER NOT NULL DEFAULT 0;
+"#;
+
 /// Every migration that builds the `turn` and `turn_content` schema, in
 /// order. A caller that creates this schema from scratch (a test, an
 /// in-memory store) applies every entry in order; the app applies
-/// [`TURN_SCHEMA_SQL`] and [`TURN_SCHEMA_V2_SQL`] as its own separately
-/// numbered migrations instead, since [`TURN_SCHEMA_SQL`] is already applied
-/// on user machines.
-pub const TURN_MIGRATIONS: &[&str] = &[TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL];
+/// [`TURN_SCHEMA_SQL`], [`TURN_SCHEMA_V2_SQL`], and [`TURN_SCHEMA_V3_SQL`] as
+/// its own separately numbered migrations instead, since [`TURN_SCHEMA_SQL`]
+/// is already applied on user machines.
+pub const TURN_MIGRATIONS: &[&str] = &[TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL, TURN_SCHEMA_V3_SQL];
 
 /// Number of rows a [`TurnRowSink`] buffers before it writes them, unless the
 /// caller picks a different size with [`TurnRowSink::with_batch_size`].
@@ -155,6 +168,16 @@ pub struct TurnRow {
     pub compaction_trigger: Option<CompactionTrigger>,
     pub compaction_pre_tokens: Option<u64>,
     pub compaction_post_tokens: Option<u64>,
+    /// The event's own `has_thinking` flag. Mirrors
+    /// `SessionMetricsAccumulator::observe_parent_fields`.
+    pub has_thinking: bool,
+    /// The name of `event.tools`'s last entry, when the event carries any
+    /// tool call. Mirrors `observe_parent_fields`'s `slot.last_tool`.
+    pub last_tool: Option<String>,
+    /// The count of `event.tools` entries whose name is `"task"`,
+    /// case-insensitive. Mirrors `observe_parent_fields`'s
+    /// `slot.subagent_launches`.
+    pub subagent_launches: u32,
     /// This turn's captured message content, when the source adapter emitted
     /// a `TurnContent` record for it. Attached by [`TurnRowSink`] after
     /// [`turn_row_from_event`] builds the row — an event alone carries none.
@@ -225,6 +248,15 @@ pub fn turn_row_from_event(event: &NormalizedEvent, source_key: &str, turn_index
         compaction_trigger: event.compaction_trigger,
         compaction_pre_tokens: event.compaction_pre_tokens,
         compaction_post_tokens: event.compaction_post_tokens,
+        has_thinking: event.has_thinking,
+        last_tool: event.tools.last().map(|tool| tool.name.clone()),
+        subagent_launches: event
+            .tools
+            .iter()
+            .filter(|tool| tool.name.eq_ignore_ascii_case("task"))
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX),
         content: Vec::new(),
     }
 }
@@ -432,10 +464,11 @@ const INSERT_TURN_SQL: &str = "INSERT INTO turn (
     turn_index, scope, child_id, role, ts_ms, model, effort, speed,
     input_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
     is_compaction_boundary, message_id, uuid, parent_uuid,
-    compaction_trigger, compaction_pre_tokens, compaction_post_tokens
+    compaction_trigger, compaction_pre_tokens, compaction_post_tokens,
+    has_thinking, last_tool, subagent_launches
 ) VALUES (
     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
+    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
 )";
 
 const INSERT_TURN_CONTENT_SQL: &str = "INSERT INTO turn_content (
@@ -483,6 +516,9 @@ pub fn insert_turn_rows(
             row.compaction_trigger.map(CompactionTrigger::as_str),
             row.compaction_pre_tokens.map(|tokens| tokens as i64),
             row.compaction_post_tokens.map(|tokens| tokens as i64),
+            i64::from(row.has_thinking),
+            row.last_tool,
+            row.subagent_launches as i64,
         ])?;
         if !row.content.is_empty() {
             let turn_rowid = conn.last_insert_rowid();
@@ -720,7 +756,7 @@ impl TurnRowStore for MemoryTurnRowStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::model::Usage;
+    use crate::analysis::model::{ToolCall, Usage};
 
     fn test_connection() -> Connection {
         let conn = Connection::open_in_memory().expect("open in-memory connection");
@@ -766,6 +802,9 @@ mod tests {
             compaction_trigger: None,
             compaction_pre_tokens: None,
             compaction_post_tokens: None,
+            has_thinking: false,
+            last_tool: None,
+            subagent_launches: 0,
             content: Vec::new(),
         }
     }
@@ -902,6 +941,27 @@ mod tests {
         let event = NormalizedEvent::new(Role::Assistant);
         let row = turn_row_from_event(&event, "parent-1", 0);
         assert_eq!(row.thread_id, "parent-1");
+    }
+
+    #[test]
+    fn turn_row_from_event_derives_the_chart_signal_columns() {
+        let mut event = NormalizedEvent::new(Role::Assistant);
+        event.has_thinking = true;
+        event.tools = vec![ToolCall::new("Read"), ToolCall::new("Task")];
+
+        let row = turn_row_from_event(&event, "parent-1", 0);
+        assert!(row.has_thinking);
+        assert_eq!(row.last_tool.as_deref(), Some("Task"));
+        assert_eq!(row.subagent_launches, 1);
+    }
+
+    #[test]
+    fn turn_row_from_event_defaults_the_chart_signal_columns_without_tools() {
+        let event = NormalizedEvent::new(Role::Assistant);
+        let row = turn_row_from_event(&event, "parent-1", 0);
+        assert!(!row.has_thinking);
+        assert_eq!(row.last_tool, None);
+        assert_eq!(row.subagent_launches, 0);
     }
 
     /// A store that always fails to write, so the sink's error path can be
