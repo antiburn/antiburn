@@ -2,7 +2,7 @@ use crate::analysis::{EvidenceCoverage, SessionEvidence};
 
 use super::DetectorId;
 use super::detectors::{self, NotAssessedReason, Observation, ReportCatalogs};
-use super::report::{clean_facts_complete, eligible};
+use super::report::{clean_fact_unsupported, clean_facts_complete, eligible};
 
 /// Identifies one session-level hygiene badge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -80,6 +80,11 @@ fn badge_status(
                 && evidence.coverage == EvidenceCoverage::Complete
             {
                 BadgeStatus::Clean
+            } else if clean_fact_unsupported(detector, evidence) {
+                // An `Unsupported` clean fact blocks a clean claim for
+                // every session from this source. Report the capability
+                // gap, not the coverage.
+                BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
             } else {
                 BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
             }
@@ -284,6 +289,24 @@ mod tests {
             BadgeStatus::Clean => Some(DetectorStatus::Clean),
             BadgeStatus::Finding => None,
         }
+    }
+
+    #[test]
+    fn an_unsupported_clean_fact_reads_capability_missing() {
+        // Codex sessions have no record identity, so the `RecordLinkage`
+        // clean fact stays `Unsupported` and cache churn can never read
+        // clean. The badge must report the capability gap, not the
+        // coverage.
+        let mut evidence = claude_evidence("synthetic-unsupported-linkage");
+        let EvidenceValue::Complete(cache) = &mut evidence.cache else {
+            panic!("the synthetic evidence must carry a cache group");
+        };
+        cache.previous_turn = EvidenceValue::Unsupported;
+
+        assert_eq!(
+            badge(&evidence, BadgeId::ExcessCacheRehydration).status,
+            BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
+        );
     }
 
     #[test]

@@ -283,6 +283,15 @@ pub fn clean_facts_complete(detector: DetectorId, evidence: &SessionEvidence) ->
         .all(|fact| fact.state(evidence) == FactState::Complete)
 }
 
+/// A clean claim is out of reach for `detector` when a clean fact is
+/// `Unsupported`. The source does not record what the claim needs.
+pub fn clean_fact_unsupported(detector: DetectorId, evidence: &SessionEvidence) -> bool {
+    requirements(detector)
+        .clean
+        .iter()
+        .any(|fact| fact.state(evidence) == FactState::Unsupported)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CoverageCounts {
     pub discovered: u64,

@@ -644,10 +644,12 @@ fn matrix() -> Vec<Row> {
             // and `request_context_tokens`, so the badge is eligible; it
             // never reads clean, because Codex has no `record_identity`
             // (the matrix's "Conditional using uncached-input accounting").
+            // The unsupported `RecordLinkage` clean fact reports the
+            // capability gap, not the coverage.
             harness: "codex",
             fixture: "records_all_kinds",
             badge: ExcessCacheRehydration,
-            expected: NotAssessed(IncompleteEvidence),
+            expected: NotAssessed(CapabilityMissing),
         },
         Row {
             harness: "codex",
