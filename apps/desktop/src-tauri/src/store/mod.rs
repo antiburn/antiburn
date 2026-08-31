@@ -39,7 +39,7 @@ use std::time::Duration;
 use antiburn_local::analysis::{
     TurnFacts, TurnRow, TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows,
     delete_turn_rows, delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_turn_rows,
-    query_turn_facts,
+    query_turn_facts, query_turn_rows,
 };
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -1204,6 +1204,42 @@ impl Store {
             &turn_session_key(key),
             claim_fence,
         )?)
+    }
+
+    /// One session's published turn rows, or `None` when no complete,
+    /// published set of rows exists to read.
+    ///
+    /// A claim bumps `session_evidence.claim_fence` and writes new rows
+    /// under that fence while the last published pass's rows still sit
+    /// under the old fence. A publish that wins deletes every other
+    /// fence's rows and sets status `ready`; a publish that loses its race
+    /// deletes only its own fence's rows and leaves the earlier published
+    /// fence in place. So `claim_fence` names a complete set of rows only
+    /// when status is `ready` — with status `pending`, `processing`,
+    /// `failed`, or `unsupported`, `claim_fence` may point at partial or
+    /// missing rows, and this method returns `None` for all of them. The
+    /// evidence lookup and the row query run under one lock, so a claim
+    /// racing this read cannot swap the fence in between them.
+    pub fn published_turn_rows(&self, key: &SessionKey) -> Result<Option<Vec<TurnRow>>> {
+        let connection = self.lock();
+        let Some(evidence) = connection
+            .query_row(
+                EVIDENCE_BY_KEY_SQL,
+                params![key.environment_key, key.agent, key.session_id],
+                evidence_from_row,
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        if evidence.status != EvidenceStatus::Ready {
+            return Ok(None);
+        }
+        Ok(Some(query_turn_rows(
+            &connection,
+            &turn_session_key(key),
+            evidence.claim_fence,
+        )?))
     }
 
     /// Cache one session's derived analysis.

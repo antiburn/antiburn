@@ -113,6 +113,18 @@ impl TurnScope {
             TurnScope::Delegated => "delegated",
         }
     }
+
+    /// Reads back a value [`Self::as_str`] wrote. Returns `None` for any
+    /// other text. The `turn` table's `CHECK` constraint keeps this column
+    /// to `'main'` or `'delegated'`, so `None` signals a row this crate did
+    /// not write.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "main" => Some(TurnScope::Main),
+            "delegated" => Some(TurnScope::Delegated),
+            _ => None,
+        }
+    }
 }
 
 /// One parsed turn, ready to become a `turn` row.
@@ -155,6 +167,19 @@ fn role_key(role: Role) -> &'static str {
         Role::Assistant => "assistant",
         Role::System => "system",
         Role::Tool => "tool",
+    }
+}
+
+/// Reads back a value [`role_key`] wrote. Returns `None` for any other
+/// text, so a caller can treat it as a corrupted row instead of guessing a
+/// role.
+pub(crate) fn parse_role(value: &str) -> Option<&'static str> {
+    match value {
+        "user" => Some("user"),
+        "assistant" => Some("assistant"),
+        "system" => Some("system"),
+        "tool" => Some("tool"),
+        _ => None,
     }
 }
 
