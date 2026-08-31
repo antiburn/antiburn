@@ -1296,9 +1296,11 @@ fn hygiene_payload_from_prior_evidence(
 ) -> Option<SessionHygienePayload> {
     let evidence_json = evidence_json?;
     let evidence = serde_json::from_str::<SessionEvidence>(&evidence_json).ok()?;
+    let catalogs = ReportCatalogs::default();
     Some(SessionHygienePayload::for_evidence(
-        session_badges(&evidence, &ReportCatalogs::default()),
+        session_badges(&evidence, &catalogs),
         &evidence,
+        &catalogs,
         evidence_state,
     ))
 }
@@ -1360,9 +1362,11 @@ fn session_hygiene_payload(
             } else {
                 "ready"
             };
+            let catalogs = ReportCatalogs::default();
             SessionHygienePayload::for_evidence(
-                session_badges(&evidence, &ReportCatalogs::default()),
+                session_badges(&evidence, &catalogs),
                 &evidence,
+                &catalogs,
                 evidence_state,
             )
         }

@@ -108,6 +108,43 @@ export type SessionHygieneBadgeId =
   | "fastModeOveruse"
   | "excessCacheRehydration"
 
+export type SessionHygieneFindingEvidence =
+  | {
+      kind: "sessionOverdepth"
+      maxRequestContextTokens: number
+      depthCapTokens: number
+    }
+  | {
+      kind: "modelOverthinking"
+      tiers: Array<{
+        tier: string
+        mainLoopTurns: number
+        delegatedTurns: number
+      }>
+    }
+  | {
+      kind: "overpoweredSubagents"
+      mainModels: string[]
+      delegatedModels: string[]
+    }
+  | {
+      kind: "obsoleteModel"
+      models: Array<{
+        model: string
+        replacement: string
+      }>
+    }
+  | {
+      kind: "fastModeOveruse"
+      delegatedTurns: number
+    }
+  | {
+      kind: "excessCacheRehydration"
+      repeatedTokens: number
+      paidTokens: number
+      thresholdMultiple: number
+    }
+
 export interface SessionHygieneBadgePayload {
   id: SessionHygieneBadgeId
   status: "finding" | "clean" | "notAssessed"
@@ -116,6 +153,8 @@ export interface SessionHygieneBadgePayload {
    *  verdict. Absent for every other badge and for old evidence with no
    *  `repeated_context` marker. */
   accounting?: "cacheWrite" | "uncachedInput"
+  /** The stored facts that caused a finding. Absent for every other status. */
+  findingEvidence?: SessionHygieneFindingEvidence
 }
 
 export type SessionHygieneEvidenceState =
