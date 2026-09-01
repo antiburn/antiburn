@@ -9,7 +9,8 @@
 import { icons as logos } from "@iconify-json/logos"
 import { describe, expect, it } from "vitest"
 
-import { OPENAI_MARK } from "./brandMarks"
+import antigravityAsset from "./fixtures/antigravity-mark.svg?raw"
+import { ANTIGRAVITY_MARK, OPENAI_MARK } from "./brandMarks"
 
 describe("OPENAI_MARK", () => {
   it("matches the path published by its recorded source", () => {
@@ -35,5 +36,23 @@ describe("OPENAI_MARK", () => {
 
   it("draws a single path, so it inherits the theme ink", () => {
     expect(OPENAI_MARK.path).not.toContain("<")
+  })
+})
+
+describe("ANTIGRAVITY_MARK", () => {
+  it("matches the checksummed source fixture", async () => {
+    const path = /<path d="([^"]+)"/.exec(antigravityAsset)?.[1]
+    const viewBox = /viewBox="([^"]+)"/.exec(antigravityAsset)?.[1]
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(antigravityAsset),
+    )
+    const sha256 = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("")
+
+    expect(path).toBe(ANTIGRAVITY_MARK.path)
+    expect(viewBox).toBe(ANTIGRAVITY_MARK.viewBox)
+    expect(sha256).toBe(ANTIGRAVITY_MARK.provenance.assetSha256)
   })
 })

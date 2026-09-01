@@ -38,9 +38,11 @@ use corpus::{
     GeneratedSession, SessionSpec, generate_session, generate_session_of_bytes, write_provider_db,
 };
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
+use rusqlite::{Connection, params};
 use tempfile::TempDir;
 
 const MIB: usize = 1024 * 1024;
+const KIB: usize = 1024;
 
 struct NoopSink;
 
@@ -70,7 +72,7 @@ fn file_input_for(agent: &str, session_id: &str, path: &Path) -> SessionInput {
 }
 
 fn composite_for(input: &SessionInput) -> CompositeSink {
-    let capabilities = match input.agent.as_str() {
+    let mut capabilities = match input.agent.as_str() {
         "claude" => SourceCapabilities::claude(),
         "codex" => SourceCapabilities::codex(),
         "cursor" => SourceCapabilities::cursor(),
@@ -79,6 +81,9 @@ fn composite_for(input: &SessionInput) -> CompositeSink {
         "antigravity" => SourceCapabilities::antigravity(),
         _ => SourceCapabilities::generic(),
     };
+    if input.agent == "antigravity" && matches!(input.source, RawSource::Sqlite(_)) {
+        capabilities.cache_write_tokens = true;
+    }
     let store = MemoryTurnRowStore::new(&input.agent, &input.session_id);
     let turn_rows = TurnRowSink::new(
         Arc::clone(&store) as Arc<dyn TurnRowStore>,
@@ -128,6 +133,182 @@ fn generate_antigravity_cascade(steps: usize) -> String {
     }
     document.push_str("]}}");
     document
+}
+
+fn protobuf_varint(mut value: u64, out: &mut Vec<u8>) {
+    while value >= 0x80 {
+        out.push((value as u8 & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
+}
+
+fn protobuf_field_varint(field: u64, value: u64, out: &mut Vec<u8>) {
+    protobuf_varint(field << 3, out);
+    protobuf_varint(value, out);
+}
+
+fn protobuf_field_bytes(field: u64, value: &[u8], out: &mut Vec<u8>) {
+    protobuf_varint((field << 3) | 2, out);
+    protobuf_varint(value.len() as u64, out);
+    out.extend_from_slice(value);
+}
+
+fn antigravity_usage(identity: &str, input: u64, output: u64) -> Vec<u8> {
+    let thinking = output / 2;
+    let response = output - thinking;
+    let mut usage = Vec::with_capacity(identity.len() + 48);
+    protobuf_field_varint(1, 777, &mut usage);
+    protobuf_field_varint(2, input, &mut usage);
+    protobuf_field_varint(3, output, &mut usage);
+    protobuf_field_varint(4, 7, &mut usage);
+    protobuf_field_varint(5, 31, &mut usage);
+    protobuf_field_varint(9, thinking, &mut usage);
+    protobuf_field_varint(10, response, &mut usage);
+    protobuf_field_bytes(11, identity.as_bytes(), &mut usage);
+    usage
+}
+
+fn antigravity_retry(usage: &[u8]) -> Vec<u8> {
+    let mut retry = Vec::with_capacity(usage.len() + 8);
+    protobuf_field_bytes(2, usage, &mut retry);
+    retry
+}
+
+fn antigravity_generation(primary: &[u8], retries: &[&[u8]], irrelevant_bytes: usize) -> Vec<u8> {
+    let mut chat = Vec::new();
+    protobuf_field_bytes(4, primary, &mut chat);
+    for retry in retries {
+        protobuf_field_bytes(17, &antigravity_retry(retry), &mut chat);
+    }
+    protobuf_field_bytes(19, b"gemini-3.6-flash", &mut chat);
+
+    let before_len = irrelevant_bytes / 2;
+    let after_len = irrelevant_bytes - before_len;
+    let before = vec![0_u8; before_len];
+    let after = vec![0_u8; after_len];
+    let mut outer = Vec::with_capacity(chat.len() + irrelevant_bytes + 24);
+    protobuf_field_bytes(30, &before, &mut outer);
+    protobuf_field_bytes(7, &chat, &mut outer);
+    protobuf_field_bytes(31, &after, &mut outer);
+    outer
+}
+
+fn antigravity_step(seconds: u64, primary: &[u8], retries: &[&[u8]]) -> Vec<u8> {
+    let mut timestamp = Vec::new();
+    protobuf_field_varint(1, seconds, &mut timestamp);
+    protobuf_field_varint(2, 500_000_000, &mut timestamp);
+
+    let mut step = Vec::new();
+    protobuf_field_bytes(1, &timestamp, &mut step);
+    protobuf_field_bytes(9, primary, &mut step);
+    for retry in retries {
+        protobuf_field_bytes(28, &antigravity_retry(retry), &mut step);
+    }
+    step
+}
+
+struct AntigravityNativeLayout {
+    _directory: TempDir,
+    input: SessionInput,
+    row_visits: u64,
+    loaded_blob_bytes: u64,
+}
+
+fn write_antigravity_native_layout(
+    generations: usize,
+    sibling_transcript: bool,
+    padded_generation_bytes: usize,
+) -> AntigravityNativeLayout {
+    let directory = TempDir::new().expect("tempdir");
+    let session_id = format!("native-{generations}-{padded_generation_bytes}");
+    let root = directory.path().join("antigravity-cli");
+    let conversations = root.join("conversations");
+    let transcript_dir = root
+        .join("brain")
+        .join(&session_id)
+        .join(".system_generated")
+        .join("logs");
+    std::fs::create_dir_all(&conversations).expect("create synthetic conversations");
+    std::fs::create_dir_all(&transcript_dir).expect("create synthetic brain logs");
+    let transcript = concat!(
+        r#"{"type":"USER_INPUT","created_at":"2026-01-01T00:00:00Z","content":"Synthetic native request."}"#,
+        "\n",
+        r#"{"type":"PLANNER_RESPONSE","created_at":"2026-01-01T00:00:01Z","content":"Synthetic native response.","tool_calls":[{"name":"read_file"}]}"#,
+        "\n"
+    );
+    if sibling_transcript {
+        std::fs::write(transcript_dir.join("transcript.jsonl"), transcript)
+            .expect("write synthetic sibling transcript");
+    }
+
+    let db_path = conversations.join(format!("{session_id}.db"));
+    let mut connection = Connection::open(&db_path).expect("create synthetic Antigravity DB");
+    connection
+        .execute_batch(
+            "PRAGMA journal_mode = OFF;
+             PRAGMA synchronous = OFF;
+             CREATE TABLE trajectory_meta (trajectory_id TEXT PRIMARY KEY, cascade_id TEXT, trajectory_type INTEGER, source INTEGER);
+             CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER NOT NULL DEFAULT 0, status INTEGER NOT NULL DEFAULT 0, has_subtrajectory NUMERIC NOT NULL DEFAULT false, metadata BLOB, error_details BLOB, permissions BLOB, task_details BLOB, render_info BLOB, step_payload BLOB, step_format INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE executor_metadata (idx INTEGER PRIMARY KEY, data BLOB);
+             CREATE TABLE parent_references (idx INTEGER PRIMARY KEY, data BLOB);
+             CREATE TABLE trajectory_metadata_blob (id TEXT PRIMARY KEY, data BLOB);
+             CREATE TABLE battle_mode_infos (idx INTEGER PRIMARY KEY, data BLOB);",
+        )
+        .expect("create researched Antigravity schema");
+
+    let transaction = connection.transaction().expect("start synthetic DB setup");
+    let mut generation_bytes = 0_u64;
+    let mut step_bytes = 0_u64;
+    {
+        let mut insert_generation = transaction
+            .prepare("INSERT INTO gen_metadata(idx, data, size) VALUES (?1, ?2, ?3)")
+            .expect("prepare generation insert");
+        let mut insert_step = transaction
+            .prepare("INSERT INTO steps(idx, metadata) VALUES (?1, ?2)")
+            .expect("prepare step insert");
+        for index in 0..generations {
+            let primary = antigravity_usage(&format!("generation-{index}"), 101, 13);
+            let failed = antigravity_usage(&format!("failed-retry-{index}"), 17, 0);
+            let padding = usize::from(index == 0) * padded_generation_bytes;
+            let generation =
+                antigravity_generation(&primary, &[primary.as_slice(), failed.as_slice()], padding);
+            generation_bytes += generation.len() as u64;
+            insert_generation
+                .execute(params![index as i64, generation, generation.len() as i64])
+                .expect("insert synthetic generation");
+
+            let (step_primary, step_retries) = if index.is_multiple_of(10) {
+                (
+                    antigravity_usage(&format!("background-{index}"), 23, 5),
+                    Vec::new(),
+                )
+            } else {
+                (primary, vec![failed])
+            };
+            let retry_slices: Vec<&[u8]> = step_retries.iter().map(Vec::as_slice).collect();
+            let step = antigravity_step(1_767_225_600 + index as u64, &step_primary, &retry_slices);
+            step_bytes += step.len() as u64;
+            insert_step
+                .execute(params![index as i64, step])
+                .expect("insert synthetic step");
+        }
+    }
+    transaction.commit().expect("commit synthetic DB setup");
+    drop(connection);
+
+    AntigravityNativeLayout {
+        _directory: directory,
+        input: SessionInput {
+            agent: "antigravity".to_owned(),
+            session_id,
+            source: RawSource::Sqlite(db_path),
+        },
+        // The adapter scans generation rows twice and step rows once.
+        row_visits: generations as u64 * 3,
+        loaded_blob_bytes: generation_bytes * 2 + step_bytes,
+    }
 }
 
 fn generate_pi_session(target_bytes: usize) -> String {
@@ -342,6 +523,65 @@ fn antigravity(criterion: &mut Criterion) {
                 )
                 .expect("Antigravity cascade source must stream");
             assert_eq!(outcome, VisitOutcome::AcceptedFull);
+            composite.observe_source_outcome(outcome);
+            black_box(composite.evidence())
+        });
+    });
+
+    group.finish();
+}
+
+/// Native Antigravity SQLite snapshots with descriptor-backed generation and
+/// step metadata. Synthetic layout creation and insertion stay outside timing.
+fn antigravity_native_db(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("antigravity_native_db");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(12));
+
+    let paired_layouts: Vec<AntigravityNativeLayout> = [100_usize, 1_000, 10_000]
+        .into_iter()
+        .map(|generations| write_antigravity_native_layout(generations, true, 0))
+        .collect();
+    for layout in &paired_layouts {
+        let generations = layout.row_visits / 3;
+        group.throughput(Throughput::Elements(layout.row_visits));
+        group.bench_with_input(
+            BenchmarkId::new("db_plus_sibling_transcript", generations),
+            layout,
+            |bencher, layout| {
+                bencher.iter(|| {
+                    let mut composite = composite_for(&layout.input);
+                    let outcome = adapter_for("antigravity")
+                        .visit(&layout.input, &mut composite)
+                        .expect("synthetic native Antigravity layout must stream");
+                    composite.observe_source_outcome(outcome);
+                    black_box(composite.evidence())
+                });
+            },
+        );
+    }
+
+    let db_only = write_antigravity_native_layout(1_000, false, 0);
+    group.throughput(Throughput::Elements(db_only.row_visits));
+    group.bench_function("db_only_1000_generations", |bencher| {
+        bencher.iter(|| {
+            let mut composite = composite_for(&db_only.input);
+            let outcome = adapter_for("antigravity")
+                .visit(&db_only.input, &mut composite)
+                .expect("synthetic Antigravity DB must stream");
+            composite.observe_source_outcome(outcome);
+            black_box(composite.evidence())
+        });
+    });
+
+    let padded = write_antigravity_native_layout(1, true, 280 * KIB);
+    group.throughput(Throughput::Bytes(padded.loaded_blob_bytes));
+    group.bench_function("generation_with_280KiB_irrelevant_fields", |bencher| {
+        bencher.iter(|| {
+            let mut composite = composite_for(&padded.input);
+            let outcome = adapter_for("antigravity")
+                .visit(&padded.input, &mut composite)
+                .expect("padded Antigravity generation must stream");
             composite.observe_source_outcome(outcome);
             black_box(composite.evidence())
         });
@@ -767,6 +1007,7 @@ fn main() {
     framing(&mut criterion);
     full_reparse(&mut criterion);
     antigravity(&mut criterion);
+    antigravity_native_db(&mut criterion);
     pi(&mut criterion);
     stage_split(&mut criterion);
     materialization(&mut criterion);

@@ -17,6 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use antiburn_local::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SessionEvidence, SourceAcceptance,
 };
+use antiburn_local::discovery::SessionSource;
 use antiburn_local::insights::{NotAssessedReason, ReportCatalogs, session_badges};
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::scan_roots as engine_scan_roots;
@@ -636,12 +637,8 @@ fn requeue_and_wake_worker(app: &tauri::AppHandle, store: &Store, key: &SessionK
 /// published against a transcript that has since changed. Returns whether it
 /// found one — the caller folds that into the payload's `analysisStale` flag.
 ///
-/// Reuses [`analysis::fingerprint_with_subagents`] — the same cheap
-/// `mtime:size` check `get_session_analysis_fingerprint` computes for the
-/// webview's own 10s poll — so a fingerprint mismatch found here is exactly
-/// the mismatch that poll will see next, and the requeue this triggers
-/// covers the gap before then. Does nothing (and requeues nothing) when the
-/// stored and live fingerprints already agree.
+/// This uses the exact ingestion fingerprint. The webview's frequent poll uses
+/// cheaper metadata and only decides whether it must refresh the detail view.
 async fn nudge_if_evidence_stale(
     app: &tauri::AppHandle,
     store: &Store,
@@ -966,9 +963,10 @@ pub async fn get_session_analysis(
 ///
 /// The session-detail popover polls this while it is open, and re-runs the
 /// full analysis only when the value changes. This command reads file
-/// metadata alone, never a transcript, so a poll costs almost nothing.
+/// metadata alone, never a transcript or database row, so a poll costs little.
 #[tauri::command]
 pub async fn get_session_analysis_fingerprint(
+    app: tauri::AppHandle,
     agent: String,
     session_id: String,
     wsl_distro: Option<String>,
@@ -976,12 +974,30 @@ pub async fn get_session_analysis_fingerprint(
     let Some(kind) = kind_from_slug(&agent) else {
         return Err(format!("unknown agent {agent}"));
     };
-    let Some(source) = analysis::locate(kind, &session_id, wsl_distro.as_deref()).await else {
+    let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
+    let stored = app.state::<Store>().session(&key).map_err(fail)?;
+    let source = match stored.as_ref() {
+        Some(record) if record.source_kind == "file" => {
+            Some(SessionSource::File(PathBuf::from(&record.source_label)))
+        }
+        Some(record) if record.source_kind == "providerDb" => Some(SessionSource::ProviderDb {
+            agent: kind,
+            db_path: PathBuf::from(&record.source_label),
+            session_id: session_id.clone(),
+        }),
+        _ => analysis::locate(kind, &session_id, wsl_distro.as_deref()).await,
+    };
+    let Some(source) = source else {
         return Ok(analysis::MISSING_FINGERPRINT.to_string());
     };
     Ok(
-        analysis::fingerprint_with_subagents(kind, &session_id, wsl_distro.as_deref(), &source)
-            .await,
+        analysis::poll_fingerprint_with_subagents(
+            kind,
+            &session_id,
+            wsl_distro.as_deref(),
+            &source,
+        )
+        .await,
     )
 }
 

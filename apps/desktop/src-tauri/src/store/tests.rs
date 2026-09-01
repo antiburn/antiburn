@@ -334,8 +334,41 @@ fn provider_hints_migration_keeps_old_analysis_unknown() {
         .unwrap()
         .expect("legacy analysis survives");
 
-    assert_eq!(store.schema_version().unwrap(), 26);
+    assert_eq!(store.schema_version().unwrap(), 27);
     assert_eq!(analysis.provider_hints_json, None);
+}
+
+#[test]
+fn account_observation_migration_initializes_the_latest_timestamp() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..26] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO provider_account_seen (
+                agent, provider, account_key, first_seen_epoch
+             ) VALUES ('pi', 'anthropic', ?1, 1234)",
+            ["a".repeat(64)],
+        )
+        .unwrap();
+    connection.pragma_update(None, "user_version", 26).unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-account-observation-migration-test").to_path_buf(),
+    )
+    .unwrap();
+    let latest = store
+        .lock()
+        .query_row(
+            "SELECT last_seen_epoch FROM provider_account_seen",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+
+    assert_eq!(latest, 1234);
 }
 
 /// Opting out is a withdrawal, not a pause: nothing queued survives it, and
@@ -1887,38 +1920,59 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
 }
 
 #[test]
-fn account_observations_are_append_only_and_leave_old_sessions_unassigned() {
+fn close_account_switches_keep_completed_sessions_with_the_previous_account() {
     let store = store();
     store.set_internal_value("internal:providerAccountRolloutV1", "1000");
-    let mut recent = session("recent", 2_000);
-    recent.key.agent = "pi".into();
+    let mut completed = session("completed-a", 2_000);
+    completed.key.agent = "pi".into();
+    let mut spanning = session("spanning", 2_000);
+    spanning.key.agent = "pi".into();
     let mut old = session("old", 900);
     old.key.agent = "pi".into();
     store
-        .upsert_sessions(&[recent, old], &crate::agents::evidence_cohort())
+        .upsert_sessions(
+            &[completed, spanning.clone(), old],
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
 
     let first = "a".repeat(64);
     let second = "b".repeat(64);
     store
-        .observe_provider_account("pi", "anthropic", &first, 2_100, "tool_oauth")
+        .observe_provider_account("pi", "anthropic", &first, 2_025, "tool_oauth")
         .unwrap();
     store
-        .observe_provider_account("pi", "anthropic", &second, 2_200, "tool_oauth")
+        .observe_provider_account("pi", "anthropic", &first, 2_050, "tool_oauth")
+        .unwrap();
+    spanning.updated_at_epoch = Some(2_075);
+    let mut new = session("new-b", 2_075);
+    new.key.agent = "pi".into();
+    store
+        .upsert_sessions(&[spanning, new], &crate::agents::evidence_cohort())
+        .unwrap();
+    store
+        .observe_provider_account("pi", "anthropic", &second, 2_100, "tool_oauth")
         .unwrap();
 
-    let evidence = store.usage_evidence(0).unwrap();
-    let recent = evidence
-        .iter()
-        .find(|record| record.updated_at_epoch == 2_000)
-        .unwrap();
-    let accounts: serde_json::Value = serde_json::from_str(&recent.provider_accounts_json).unwrap();
-    assert_eq!(accounts.as_array().unwrap().len(), 2);
-    let old = evidence
-        .iter()
-        .find(|record| record.updated_at_epoch == 900)
-        .unwrap();
-    assert_eq!(old.provider_accounts_json, "[]");
+    let accounts_for = |session_id: &str| {
+        let connection = store.lock();
+        let mut statement = connection
+            .prepare(
+                "SELECT account_key FROM session_provider_account
+                  WHERE agent = 'pi' AND session_id = ?1
+                  ORDER BY account_key",
+            )
+            .unwrap();
+        statement
+            .query_map([session_id], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(accounts_for("completed-a"), vec![first.clone()]);
+    assert_eq!(accounts_for("new-b"), vec![second.clone()]);
+    assert_eq!(accounts_for("spanning"), vec![first, second]);
+    assert!(accounts_for("old").is_empty());
 }
 
 #[test]
@@ -3617,10 +3671,10 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 26);
+    assert_eq!(super::schema::MIGRATIONS.len(), 27);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 26);
+    assert_eq!(store.schema_version().unwrap(), 27);
 }
 
 #[test]

@@ -1,9 +1,9 @@
 # Pipeline measurement baseline (issue #224)
 
 Indicative local baseline from one machine — **not CI-enforced thresholds**.
-Collected with `cargo bench --bench pipeline_baseline` over the deterministic
-synthetic corpus generator in `tests/support/corpus.rs` (seeded, fictional
-content only; nothing reads a real transcript).
+Collected with `cargo bench --bench pipeline_baseline` over deterministic
+synthetic generators in the benchmark and `tests/support/corpus.rs` (seeded,
+fictional content only; nothing reads a real transcript).
 
 ## Machine context
 
@@ -19,9 +19,9 @@ content only; nothing reads a real transcript).
 
 In-crate stages measured: source reading, framing, parsing/normalization,
 metrics accumulation, evidence accumulation, report reduction. Provider-DB-
-backed sources are also in-crate: a raw `RawSource::Sqlite` uses OpenCode's
-native bounded message stream, covered functionally in
-`tests/pipeline_corpus.rs` and timed below over a synthetic seeded database.
+backed sources are also in-crate. Raw `RawSource::Sqlite` inputs cover both
+OpenCode's native bounded message stream and Antigravity's native generation
+and step streams. All benchmark databases are synthetic.
 The remaining stages the master plan
 names (discovery, queue wait, persistence, report query, IPC) live in the
 desktop app (`apps/desktop/src-tauri`) and need a desktop-side harness —
@@ -93,6 +93,33 @@ Measured on the baseline machine:
 The 10 MiB brain reader retained 187 bytes at its framing high-water mark. The
 metrics accumulator retained 232,409 bytes. Throughput stays linear through the
 50 MiB case without retaining the transcript or cascade content bodies.
+
+The benchmark also defines native SQLite scenarios. Results are not recorded in
+this baseline yet:
+
+- Paired native layouts at 100, 1,000, and 10,000 generation rows. Each layout
+  has `conversations/<id>.db` and
+  `brain/<id>/.system_generated/logs/transcript.jsonl` under a synthetic
+  `antigravity-cli` root.
+- A 1,000-generation database-only control, with no sibling transcript.
+- One local-shape generation containing about 280 KiB of irrelevant
+  length-delimited protobuf data around valid chat metadata. This exercises
+  borrowed protobuf slices while the adapter holds one bounded SQLite row.
+
+The native fixtures use the researched seven-table schema. Generation and step
+metadata include descriptor-backed model, timestamp, usage, retry, and identity
+fields. Their mix covers duplicate primary/retry identities, failed retries,
+step-only background usage, and generation-only pruned usage.
+
+Criterion reports `Elements/s` for native row-scaling cases. One element is one
+SQL row visit: generation rows count twice because the adapter performs a model
+pass and an emission pass, while step rows count once. The padded-row case
+reports loaded protobuf bytes and counts the generation blob twice for those two
+passes. Layout creation, protobuf generation, and SQLite insertion occur before
+timed iterations. Every timed iteration opens a fresh read-only snapshot and
+runs the real Antigravity adapter with the composite metrics, evidence, and turn
+row sink. These Criterion cases measure time and throughput only; they do not
+make memory claims.
 
 ### Pi streaming coverage
 

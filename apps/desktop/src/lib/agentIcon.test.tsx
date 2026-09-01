@@ -43,6 +43,13 @@ describe("renderAgentIcon", () => {
     expect(wrapper).toHaveTextContent("K")
   })
 
+  it("draws Antigravity with its monochrome product silhouette", () => {
+    const svg = renderIcon("antigravity", 20).querySelector("svg")
+    expect(svg).not.toBeNull()
+    expect(svg).toHaveAttribute("fill", "currentColor")
+    expect(svg?.querySelector("path")?.getAttribute("d")).toBe(markOf("antigravity").path)
+  })
+
   it.each(["cli", "ide_desktop", "unknown"] as const)(
     "draws a surface glyph for an unknown slug on %s",
     (surface) => {
@@ -114,7 +121,8 @@ describe("BRAND_MARKS", () => {
   it("records provenance for every mark", () => {
     for (const [name, mark] of Object.entries(BRAND_MARKS)) {
       expect(mark.provenance.package, `${name} has no package`).toBeTruthy()
-      expect(mark.provenance.license, `${name} has no licence`).toBe("CC0-1.0")
+      const expectedLicense = name === "antigravity" ? "LicenseRef-Trademark" : "CC0-1.0"
+      expect(mark.provenance.license, `${name} has no licence`).toBe(expectedLicense)
       expect(mark.provenance.source, `${name} has no source`).toMatch(/^https:\/\//)
       expect(mark.viewBox, `${name} has no viewBox`).toMatch(/^0 0 \d+ \d+$/)
     }

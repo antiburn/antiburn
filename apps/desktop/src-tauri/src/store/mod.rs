@@ -1509,16 +1509,27 @@ impl Store {
         }
         let mut connection = self.lock();
         let tx = connection.transaction()?;
-        let inserted = tx.execute(
-            "INSERT OR IGNORE INTO provider_account_seen (
-                agent, provider, account_key, first_seen_epoch
-             )
-             SELECT ?1, ?2, ?3, ?4
-              WHERE (SELECT COUNT(*) FROM provider_account_seen
-                      WHERE agent = ?1 AND provider = ?2) < 32",
+        let updated = tx.execute(
+            "UPDATE provider_account_seen
+                SET last_seen_epoch = MAX(last_seen_epoch, ?4)
+              WHERE agent = ?1 AND provider = ?2 AND account_key = ?3",
             params![agent, provider, account_key, observed_at_epoch],
         )?;
-        if inserted == 0
+        let inserted = if updated == 0 {
+            tx.execute(
+                "INSERT OR IGNORE INTO provider_account_seen (
+                agent, provider, account_key, first_seen_epoch, last_seen_epoch
+             )
+             SELECT ?1, ?2, ?3, ?4, ?4
+               WHERE (SELECT COUNT(*) FROM provider_account_seen
+                       WHERE agent = ?1 AND provider = ?2) < 32",
+                params![agent, provider, account_key, observed_at_epoch],
+            )?
+        } else {
+            0
+        };
+        if updated == 0
+            && inserted == 0
             && !tx.query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM provider_account_seen
@@ -1550,6 +1561,14 @@ impl Store {
               WHERE agent = ?1
                 AND unixepoch(first_seen_at) >= ?5
                 AND COALESCE(updated_at_epoch, 0) BETWEEN MAX(?5, ?6 - 600) AND ?6
+                AND COALESCE(updated_at_epoch, 0) > COALESCE((
+                    SELECT MAX(seen.last_seen_epoch)
+                      FROM provider_account_seen AS seen
+                     WHERE seen.agent = ?1
+                       AND seen.provider = ?2
+                       AND seen.account_key <> ?3
+                       AND seen.last_seen_epoch <= ?6
+                ), ?5 - 1)
                 AND (SELECT COUNT(*) FROM session_provider_account spa
                       WHERE spa.environment_key = session.environment_key
                         AND spa.agent = session.agent

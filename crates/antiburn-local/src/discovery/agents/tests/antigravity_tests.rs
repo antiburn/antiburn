@@ -715,6 +715,307 @@ async fn test_discover_recent_keeps_brain_transcript_as_file() {
     assert!(cwds.iter().any(|cwd| cwd == "/Users/avery/demo-app"));
 }
 
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn test_native_database_replaces_matching_brain_transcript() {
+    use crate::discovery::set_file_mtime;
+
+    let home = TempDir::new().unwrap();
+    let old_home = std::env::var_os("HOME");
+    unsafe {
+        std::env::set_var("HOME", home.path());
+    }
+    let session_id = "database-session";
+    let body = format!(
+        "{}\n",
+        json!({
+            "type": "USER_INPUT",
+            "created_at": "2026-05-25T04:37:50Z",
+            "content": "<USER_REQUEST>\ninspect database\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nActive Document: /tmp/project/main.rs (LANGUAGE_RUST)\n</ADDITIONAL_METADATA>",
+        })
+    );
+    let transcript =
+        write_brain_transcript(home.path(), "antigravity-ide", session_id, &body).await;
+    let conversations = home
+        .path()
+        .join(".gemini")
+        .join("antigravity-ide")
+        .join("conversations");
+    std::fs::create_dir_all(&conversations).unwrap();
+    let db_path = conversations.join(format!("{session_id}.db"));
+    let connection = Connection::open(&db_path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);
+             CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB);",
+        )
+        .unwrap();
+    connection
+        .execute("INSERT INTO steps(idx) VALUES (2), (7)", [])
+        .unwrap();
+    connection
+        .execute("INSERT INTO gen_metadata(idx, data) VALUES (3, X'00')", [])
+        .unwrap();
+    drop(connection);
+    let now = 1_800_000_000;
+    set_file_mtime(&transcript, now - 30);
+    set_file_mtime(&db_path, now - 10);
+
+    let logs = DISK_ANTIGRAVITY.discover_recent(now, 3_600).await;
+
+    assert_eq!(logs.len(), 1);
+    assert!(matches!(
+        &logs[0].source,
+        SessionSource::ProviderDb {
+            agent: AgentKind::Antigravity,
+            db_path: path,
+            session_id: id,
+        } if path == &db_path && id == session_id
+    ));
+    assert_eq!(logs[0].surface_label(home.path()), "ide_desktop");
+    let metadata = crate::discovery::session_log_metadata(&logs[0])
+        .await
+        .unwrap();
+    assert_eq!(metadata.session_id.as_deref(), Some(session_id));
+    assert_eq!(metadata.cwd.as_deref(), Some("/tmp/project"));
+    assert_eq!(metadata.title.as_deref(), Some("inspect database"));
+    let located = crate::discovery::Explorers::DISK
+        .locate_session_source(&AgentKind::Antigravity, session_id)
+        .await;
+    assert!(matches!(
+        located,
+        Some(SessionSource::ProviderDb { db_path: path, .. }) if path == db_path
+    ));
+
+    match old_home {
+        Some(value) => unsafe { std::env::set_var("HOME", value) },
+        None => unsafe { std::env::remove_var("HOME") },
+    }
+}
+
+#[test]
+fn test_database_fingerprint_includes_step_and_generation_state() {
+    let directory = TempDir::new().unwrap();
+    let db_path = directory.path().join("session.db");
+    let connection = Connection::open(&db_path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);
+             CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB);",
+        )
+        .unwrap();
+    let empty = db_fingerprint_connection(&connection).unwrap();
+    connection
+        .execute("INSERT INTO steps(idx) VALUES (4)", [])
+        .unwrap();
+    let step_changed = db_fingerprint_connection(&connection).unwrap();
+    connection.execute("DELETE FROM steps", []).unwrap();
+    connection
+        .execute("INSERT INTO steps(idx) VALUES (7)", [])
+        .unwrap();
+    let step_max_changed = db_fingerprint_connection(&connection).unwrap();
+    connection
+        .execute("INSERT INTO steps(idx) VALUES (2)", [])
+        .unwrap();
+    let step_count_changed = db_fingerprint_connection(&connection).unwrap();
+    connection
+        .execute("UPDATE steps SET metadata = X'00' WHERE idx = 2", [])
+        .unwrap();
+    let step_content_added = db_fingerprint_connection(&connection).unwrap();
+    connection
+        .execute("UPDATE steps SET metadata = X'01' WHERE idx = 2", [])
+        .unwrap();
+    let step_content_changed = db_fingerprint_connection(&connection).unwrap();
+    connection
+        .execute("INSERT INTO gen_metadata(idx, data) VALUES (9, X'00')", [])
+        .unwrap();
+    let generation_changed = db_fingerprint_connection(&connection).unwrap();
+    connection.execute("DELETE FROM gen_metadata", []).unwrap();
+    connection
+        .execute("INSERT INTO gen_metadata(idx, data) VALUES (11, X'00')", [])
+        .unwrap();
+    let generation_max_changed = db_fingerprint_connection(&connection).unwrap();
+    connection
+        .execute("INSERT INTO gen_metadata(idx, data) VALUES (3, X'00')", [])
+        .unwrap();
+    let generation_count_changed = db_fingerprint_connection(&connection).unwrap();
+    connection
+        .execute("UPDATE gen_metadata SET data = X'01' WHERE idx = 3", [])
+        .unwrap();
+    let generation_content_changed = db_fingerprint_connection(&connection).unwrap();
+
+    assert_ne!(empty, step_changed);
+    assert_ne!(step_changed, step_max_changed);
+    assert_ne!(step_max_changed, step_count_changed);
+    assert_ne!(step_count_changed, step_content_added);
+    assert_ne!(step_content_added, step_content_changed);
+    assert_ne!(step_content_changed, generation_changed);
+    assert_ne!(generation_changed, generation_max_changed);
+    assert_ne!(generation_max_changed, generation_count_changed);
+    assert_ne!(generation_count_changed, generation_content_changed);
+}
+
+#[test]
+fn test_database_fingerprint_includes_the_sibling_transcript() {
+    let directory = TempDir::new().unwrap();
+    let session_id = "session";
+    let conversations = directory.path().join("conversations");
+    std::fs::create_dir_all(&conversations).unwrap();
+    let db_path = conversations.join(format!("{session_id}.db"));
+    Connection::open(&db_path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);
+             CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB);",
+        )
+        .unwrap();
+    let transcript = sibling_brain_transcript(&db_path, session_id).unwrap();
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, b"{}\n").unwrap();
+    let before = db_fingerprint(&db_path, session_id).unwrap();
+
+    std::fs::write(&transcript, b"{}\n{}\n").unwrap();
+
+    assert_ne!(before, db_fingerprint(&db_path, session_id).unwrap());
+}
+
+#[test]
+fn test_session_ids_cannot_escape_the_conversations_directory() {
+    assert!(is_safe_session_id("session-123"));
+    for session_id in ["", ".", "..", "../outside", "nested/session", "/absolute"] {
+        assert!(!is_safe_session_id(session_id));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial]
+async fn test_invalid_database_keeps_the_matching_brain_transcript() {
+    use crate::discovery::set_file_mtime;
+
+    let home = TempDir::new().unwrap();
+    let old_home = std::env::var_os("HOME");
+    unsafe {
+        std::env::set_var("HOME", home.path());
+    }
+    let session_id = "usable-transcript";
+    let transcript = write_brain_transcript(
+        home.path(),
+        "antigravity-ide",
+        session_id,
+        "{\"type\":\"USER_INPUT\",\"content\":\"hello\"}\n",
+    )
+    .await;
+    let conversations = home.path().join(".gemini/antigravity-ide/conversations");
+    std::fs::create_dir_all(&conversations).unwrap();
+    let db_path = conversations.join(format!("{session_id}.db"));
+    std::fs::write(&db_path, []).unwrap();
+    let now = 1_800_000_000;
+    set_file_mtime(&transcript, now - 1);
+    set_file_mtime(&db_path, now - 1);
+
+    let logs = DISK_ANTIGRAVITY.discover_recent(now, 60).await;
+
+    assert_eq!(logs.len(), 1);
+    assert!(matches!(&logs[0].source, SessionSource::File(path) if path == &transcript));
+
+    match old_home {
+        Some(value) => unsafe { std::env::set_var("HOME", value) },
+        None => unsafe { std::env::remove_var("HOME") },
+    }
+}
+
+#[test]
+fn test_database_surface_distinguishes_cli_from_ide() {
+    let home = TempDir::new().unwrap();
+    let log = |subroot: &str| SessionLog {
+        environment: Default::default(),
+        agent_type: AgentKind::Antigravity,
+        source: SessionSource::ProviderDb {
+            agent: AgentKind::Antigravity,
+            db_path: home
+                .path()
+                .join(".gemini")
+                .join(subroot)
+                .join("conversations")
+                .join("session.db"),
+            session_id: "session".to_owned(),
+        },
+        updated_at: None,
+    };
+
+    assert_eq!(log("antigravity-cli").surface_label(home.path()), "cli");
+    assert_eq!(
+        log("antigravity-ide").surface_label(home.path()),
+        "ide_desktop"
+    );
+    assert_eq!(log("antigravity").surface_label(home.path()), "ide_desktop");
+}
+
+#[tokio::test]
+async fn test_database_metadata_falls_back_to_the_filename_without_a_transcript() {
+    let directory = TempDir::new().unwrap();
+    let session_id = "database-only";
+    let db_path = directory
+        .path()
+        .join(".gemini")
+        .join("antigravity-ide")
+        .join("conversations")
+        .join(format!("{session_id}.db"));
+
+    let metadata = db_session_metadata(db_path, session_id.to_owned())
+        .await
+        .unwrap();
+
+    assert_eq!(metadata.session_id.as_deref(), Some(session_id));
+    assert_eq!(metadata.agent_type, Some(AgentKind::Antigravity));
+    assert_eq!(metadata.title, None);
+    assert_eq!(metadata.cwd, None);
+}
+
+#[tokio::test]
+async fn test_database_freshness_includes_the_wal() {
+    use crate::discovery::set_file_mtime;
+
+    let directory = TempDir::new().unwrap();
+    let db_path = directory.path().join("session.db");
+    let wal_path = directory.path().join("session.db-wal");
+    std::fs::write(&db_path, []).unwrap();
+    std::fs::write(&wal_path, []).unwrap();
+    set_file_mtime(&db_path, 100);
+    set_file_mtime(&wal_path, 200);
+
+    assert_eq!(database_mtime_epoch(&db_path).await, Some(200));
+}
+
+#[tokio::test]
+async fn test_conversation_database_scan_covers_all_native_roots() {
+    let home = TempDir::new().unwrap();
+    let mut expected = Vec::new();
+    for subroot in ["antigravity-cli", "antigravity-ide", "antigravity"] {
+        let conversations = home
+            .path()
+            .join(".gemini")
+            .join(subroot)
+            .join("conversations");
+        std::fs::create_dir_all(&conversations).unwrap();
+        let path = conversations.join(format!("{subroot}.db"));
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);")
+            .unwrap();
+        expected.push(path);
+    }
+
+    let databases = conversation_databases_in(home.path()).await;
+
+    assert_eq!(databases.len(), 3);
+    assert!(
+        expected
+            .iter()
+            .all(|path| databases.iter().any(|(candidate, _, _)| candidate == path))
+    );
+}
+
 /// Sidecar `.json` artifacts that share a brain `<uuid>/` dir
 /// (`task.md.metadata.json`, plan metadata, …) must NOT be emitted as
 /// session File logs. Otherwise they shadow the real transcript when

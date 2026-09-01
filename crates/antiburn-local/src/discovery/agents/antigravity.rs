@@ -20,7 +20,7 @@
 //!    then walks it like any vendor directory. Discovery itself never
 //!    populates a mirror.
 //!
-//! 3. **Gemini brain memory** — agent session memory and reasoning traces
+//! 3. **Gemini native sessions** — per-session databases and brain traces
 //!    under three sibling roots inside `$GEMINI_HOME` (default `~/.gemini`):
 //!    - `antigravity-cli/brain/<uuid>/` — Antigravity CLI (the Go binary that
 //!      replaced Gemini CLI as of 2026-06-18).
@@ -29,13 +29,14 @@
 //!    - `antigravity/brain/<uuid>/` — legacy single-binary Antigravity layout,
 //!      preserved for back-compat with users on older builds.
 //!
-//!    Each tree is walked layout-tolerantly for `.json` and `.jsonl` files.
-//!    `GEMINI_HOME` overrides the root for all three.
+//!    Each root can hold `conversations/<uuid>.db` and
+//!    `brain/<uuid>/.system_generated/logs/transcript.jsonl`. The database is
+//!    the primary session source. `GEMINI_HOME` overrides all three roots.
 
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::fs::File;
-use std::io::BufReader;
-use std::path::{Path, PathBuf};
+use std::io::{BufReader, Read};
+use std::path::{Component, Path, PathBuf};
 
 use crate::analysis::{BoundedJsonlReader, FramedRecord};
 use crate::discovery::scanner::AgentKind;
@@ -46,6 +47,7 @@ use crate::discovery::{
     home_dir, recent_files_with_exts,
 };
 use async_trait::async_trait;
+use rusqlite::{Connection, OpenFlags};
 
 const SESSION_FILE_EXTS: &[&str] = &["json", "jsonl"];
 
@@ -102,9 +104,36 @@ impl AgentExplorer for AntigravityExplorer {
             None => HashSet::new(),
         };
 
-        let mut logs: Vec<SessionLog> = Vec::with_capacity(files.len());
+        let databases = conversation_databases_in(&home).await;
+        let database_paths: HashSet<PathBuf> =
+            databases.iter().map(|(path, _, _)| path.clone()).collect();
+        let cutoff = now.saturating_sub(since_secs.max(0));
+        let mut logs: Vec<SessionLog> = Vec::with_capacity(files.len() + databases.len());
+        for (db_path, session_id, mtime_epoch) in databases {
+            if mtime_epoch < cutoff {
+                continue;
+            }
+            if child_ids.contains(&session_id) {
+                continue;
+            }
+            logs.push(SessionLog {
+                environment: Default::default(),
+                agent_type: AgentKind::Antigravity,
+                source: SessionSource::ProviderDb {
+                    agent: AgentKind::Antigravity,
+                    db_path,
+                    session_id,
+                },
+                updated_at: Some(mtime_epoch),
+            });
+        }
         for file in files {
             if is_excluded_subagent(&file.path, &child_ids) {
+                continue;
+            }
+            if conversation_database_for_brain_file(&file.path)
+                .is_some_and(|path| database_paths.contains(&path))
+            {
                 continue;
             }
             match classify_session_file(&file.path) {
@@ -118,6 +147,47 @@ impl AgentExplorer for AntigravityExplorer {
             }
         }
         logs
+    }
+
+    async fn direct_session_source(
+        &self,
+        session_id: &str,
+    ) -> crate::discovery::DirectSessionSource {
+        let Some(home) = home_dir() else {
+            return crate::discovery::DirectSessionSource::Unsupported;
+        };
+        if !is_safe_session_id(session_id) {
+            return crate::discovery::DirectSessionSource::Unsupported;
+        }
+        for root in gemini_subroots_in(&home) {
+            let db_path = root.join("conversations").join(format!("{session_id}.db"));
+            let fingerprint_path = db_path.clone();
+            let usable =
+                tokio::task::spawn_blocking(move || database_has_usage_tables(&fingerprint_path))
+                    .await
+                    .unwrap_or(false);
+            if usable {
+                return crate::discovery::DirectSessionSource::Found(SessionSource::ProviderDb {
+                    agent: AgentKind::Antigravity,
+                    db_path,
+                    session_id: session_id.to_owned(),
+                });
+            }
+        }
+        crate::discovery::DirectSessionSource::Unsupported
+    }
+
+    async fn provider_db_fingerprint(
+        &self,
+        db_path: &Path,
+        session_id: &str,
+    ) -> Option<(u64, u64)> {
+        let db_path = db_path.to_owned();
+        let session_id = session_id.to_owned();
+        tokio::task::spawn_blocking(move || db_fingerprint(&db_path, &session_id))
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Owns every Antigravity tree: legacy `/antigravity/` brain + v1 IDE
@@ -148,11 +218,21 @@ impl AgentExplorer for AntigravityExplorer {
         let history = read_cli_history(&gemini_root).await;
         let mut cwds = Vec::new();
         for log in logs {
-            let SessionSource::File(path) = log.source else {
-                continue;
+            let path = match log.source {
+                SessionSource::File(path) => path,
+                SessionSource::ProviderDb {
+                    db_path,
+                    session_id,
+                    ..
+                } => match sibling_brain_transcript(&db_path, &session_id) {
+                    Some(path) => path,
+                    None => continue,
+                },
+                SessionSource::Inline { .. } => continue,
             };
-            let source = SessionSource::File(path.clone());
-            let Some(preview) = crate::discovery::session_source_preview(&source).await else {
+            let Some(preview) =
+                crate::discovery::session_source_preview(&SessionSource::File(path.clone())).await
+            else {
                 continue;
             };
             let mut metadata = crate::discovery::scanner::parse_session_metadata_str(&preview);
@@ -182,10 +262,10 @@ impl AgentExplorer for AntigravityExplorer {
         let gemini_root =
             env_path_when_real_home(home, "GEMINI_HOME").unwrap_or_else(|| home.join(".gemini"));
         SurfacePaths {
-            cli: vec![gemini_root.join("antigravity-cli").join("brain")],
+            cli: vec![gemini_root.join("antigravity-cli")],
             ide_desktop: vec![
-                gemini_root.join("antigravity-ide").join("brain"),
-                gemini_root.join("antigravity").join("brain"),
+                gemini_root.join("antigravity-ide"),
+                gemini_root.join("antigravity"),
                 app_config_dir_in("Antigravity", home)
                     .join("User")
                     .join("workspaceStorage"),
@@ -303,6 +383,277 @@ async fn gemini_brain_dirs_in(home: &Path) -> Vec<PathBuf> {
 }
 
 const GEMINI_BRAIN_SUBROOTS: &[&str] = &["antigravity-cli", "antigravity-ide", "antigravity"];
+const MAX_FINGERPRINT_BLOB_BYTES: usize = 1024 * 1024;
+
+fn gemini_subroots_in(home: &Path) -> Vec<PathBuf> {
+    let gemini_root =
+        env_path_when_real_home(home, "GEMINI_HOME").unwrap_or_else(|| home.join(".gemini"));
+    GEMINI_BRAIN_SUBROOTS
+        .iter()
+        .map(|subroot| gemini_root.join(subroot))
+        .collect()
+}
+
+async fn conversation_databases_in(home: &Path) -> Vec<(PathBuf, String, i64)> {
+    let mut databases = Vec::new();
+    for root in gemini_subroots_in(home) {
+        let Ok(mut entries) = tokio::fs::read_dir(root.join("conversations")).await else {
+            continue;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if !path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("db"))
+            {
+                continue;
+            }
+            let Some(mtime_epoch) = database_mtime_epoch(&path).await else {
+                continue;
+            };
+            let Some(session_id) = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .filter(|value| is_safe_session_id(value))
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            let fingerprint_path = path.clone();
+            if !tokio::task::spawn_blocking(move || database_has_usage_tables(&fingerprint_path))
+                .await
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let transcript_mtime = match sibling_brain_transcript(&path, &session_id) {
+                Some(transcript) => database_mtime_epoch(&transcript)
+                    .await
+                    .unwrap_or(mtime_epoch),
+                None => mtime_epoch,
+            };
+            databases.push((path, session_id, mtime_epoch.max(transcript_mtime)));
+        }
+    }
+    databases.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.0.cmp(&right.0)));
+    databases
+}
+
+fn is_safe_session_id(session_id: &str) -> bool {
+    !session_id.is_empty()
+        && !matches!(session_id, "." | "..")
+        && matches!(
+            Path::new(session_id)
+                .components()
+                .collect::<Vec<_>>()
+                .as_slice(),
+            [Component::Normal(_)]
+        )
+}
+
+async fn database_mtime_epoch(path: &Path) -> Option<i64> {
+    async fn mtime(path: &Path) -> Option<i64> {
+        tokio::fs::metadata(path)
+            .await
+            .ok()?
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_secs() as i64)
+    }
+
+    let main = mtime(path).await?;
+    let mut wal_path = path.as_os_str().to_os_string();
+    wal_path.push("-wal");
+    let wal = mtime(Path::new(&wal_path)).await.unwrap_or(main);
+    Some(main.max(wal))
+}
+
+fn open_database(path: &Path) -> rusqlite::Result<Connection> {
+    Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+}
+
+fn database_has_usage_tables(path: &Path) -> bool {
+    let Ok(connection) = open_database(path) else {
+        return false;
+    };
+    [
+        "SELECT idx, metadata FROM steps LIMIT 0",
+        "SELECT idx, data FROM gen_metadata LIMIT 0",
+    ]
+    .into_iter()
+    .any(|query| connection.prepare(query).is_ok())
+}
+
+pub(crate) fn db_fingerprint(path: &Path, session_id: &str) -> Option<(u64, u64)> {
+    let connection = open_database(path).ok()?;
+    connection.execute_batch("BEGIN").ok()?;
+    let database = db_fingerprint_connection(&connection)?;
+    let transcript =
+        sibling_brain_transcript(path, session_id).and_then(|path| file_fingerprint(&path));
+    Some(combine_db_fingerprint(database, transcript.as_deref()))
+}
+
+pub(crate) fn combine_db_fingerprint(
+    database: (u64, u64),
+    transcript_fingerprint: Option<&str>,
+) -> (u64, u64) {
+    fn mix(hash: u64, value: u64) -> u64 {
+        (hash ^ value).wrapping_mul(0x0000_0100_0000_01b3)
+    }
+
+    let transcript_hash = transcript_fingerprint.map_or(0, |fingerprint| {
+        fingerprint
+            .bytes()
+            .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+                mix(hash, u64::from(byte))
+            })
+    });
+    (
+        mix(database.0, transcript_hash),
+        mix(database.1, u64::from(transcript_fingerprint.is_some())),
+    )
+}
+
+fn file_fingerprint(path: &Path) -> Option<String> {
+    use crate::discovery::source_version::{
+        FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
+    };
+
+    let mut file = File::open(path).ok()?;
+    let stat = SourceStat::from_open_std_file(&file)?;
+    let mut head = Vec::new();
+    file.by_ref()
+        .take(FINGERPRINT_HEAD_BYTES as u64)
+        .read_to_end(&mut head)
+        .ok()?;
+    Some(
+        FingerprintInputs {
+            stat,
+            head_hash: Some(head_hash_of(&head)),
+        }
+        .fingerprint(),
+    )
+}
+
+pub(crate) fn db_fingerprint_connection(connection: &Connection) -> Option<(u64, u64)> {
+    fn mix(hash: u64, value: u64) -> u64 {
+        (hash ^ value).wrapping_mul(0x0000_0100_0000_01b3)
+    }
+
+    fn table_state(connection: &Connection, table: &str, blob: &str) -> Option<[u64; 5]> {
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT idx, length(CAST({blob} AS BLOB)),
+                        CASE WHEN length(CAST({blob} AS BLOB)) <= ?1
+                             THEN CAST({blob} AS BLOB) END
+                   FROM {table}
+                  ORDER BY idx"
+            ))
+            .ok()?;
+        let mut rows = statement.query([MAX_FINGERPRINT_BLOB_BYTES as i64]).ok()?;
+        let mut count = 0_u64;
+        let mut max = u64::MAX;
+        let mut total_bytes = 0_u64;
+        let mut max_bytes = 0_u64;
+        let mut content_hash = 0xcbf2_9ce4_8422_2325;
+        while let Some(row) = rows.next().ok()? {
+            let idx = row.get::<_, i64>(0).ok()? as u64;
+            let length = row.get::<_, Option<i64>>(1).ok()?.unwrap_or(0).max(0) as u64;
+            let data = row.get::<_, Option<Vec<u8>>>(2).ok().flatten();
+            count = count.checked_add(1)?;
+            max = if max == u64::MAX { idx } else { max.max(idx) };
+            total_bytes = total_bytes.checked_add(length)?;
+            max_bytes = max_bytes.max(length);
+            content_hash = mix(mix(content_hash, idx), length);
+            if let Some(data) = data {
+                for byte in data {
+                    content_hash = mix(content_hash, u64::from(byte));
+                }
+            }
+        }
+        Some([count, max, total_bytes, max_bytes, content_hash])
+    }
+
+    fn table_exists(connection: &Connection, table: &str) -> Option<bool> {
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+
+    fn hash(values: impl IntoIterator<Item = u64>) -> u64 {
+        values.into_iter().fold(0xcbf2_9ce4_8422_2325, mix)
+    }
+
+    let has_steps = table_exists(connection, "steps")?;
+    let has_generations = table_exists(connection, "gen_metadata")?;
+    if !has_steps && !has_generations {
+        return None;
+    }
+    let steps = has_steps
+        .then(|| table_state(connection, "steps", "metadata"))
+        .flatten()
+        .unwrap_or([u64::MAX; 5]);
+    let generations = has_generations
+        .then(|| table_state(connection, "gen_metadata", "data"))
+        .flatten()
+        .unwrap_or([u64::MAX; 5]);
+    Some((hash(steps), hash(generations)))
+}
+
+pub(crate) fn sibling_brain_transcript(db_path: &Path, session_id: &str) -> Option<PathBuf> {
+    let subroot = db_path.parent()?.parent()?;
+    Some(
+        subroot
+            .join("brain")
+            .join(session_id)
+            .join(".system_generated")
+            .join("logs")
+            .join("transcript.jsonl"),
+    )
+}
+
+fn conversation_database_for_brain_file(path: &Path) -> Option<PathBuf> {
+    let uuid_dir = brain_uuid_dir(path)?;
+    let session_id = uuid_dir.file_name()?;
+    let subroot = uuid_dir.parent()?.parent()?;
+    Some(
+        subroot
+            .join("conversations")
+            .join(Path::new(session_id).with_extension("db")),
+    )
+}
+
+pub(crate) async fn db_session_metadata(
+    db_path: PathBuf,
+    session_id: String,
+) -> Option<SessionMetadata> {
+    let fallback = || SessionMetadata {
+        session_id: Some(session_id.clone()),
+        agent_type: Some(AgentKind::Antigravity),
+        ..SessionMetadata::default()
+    };
+    let Some(transcript) = sibling_brain_transcript(&db_path, &session_id) else {
+        return Some(fallback());
+    };
+    let Some(preview) =
+        crate::discovery::session_source_preview(&SessionSource::File(transcript.clone())).await
+    else {
+        return Some(fallback());
+    };
+    let mut metadata = crate::discovery::scanner::parse_session_metadata_str(&preview);
+    augment_brain_metadata(&transcript, &preview, &mut metadata).await;
+    Some(metadata)
+}
 
 async fn gemini_brain_dirs_for_overrides(home: &Path, gemini_home: Option<&Path>) -> Vec<PathBuf> {
     let gemini_root = gemini_home

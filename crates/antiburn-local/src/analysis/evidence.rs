@@ -610,8 +610,8 @@ impl SourceCapabilities {
 
     /// Antigravity steps can carry a direct `usage` object and direct `model`
     /// field. This supports request-context depth and model identity. No
-    /// characterized fixture proves cache-write buckets, so cache capabilities
-    /// stay unset.
+    /// characterized file fixture proves cache-write buckets, so cache
+    /// capabilities stay unset. Database callers can enable that capability.
     ///
     /// `timestamps_and_order` is set: the step timestamp locations
     /// (`created_at`/`timestamp`/`createdAt`, plus the API-cascade
@@ -926,7 +926,7 @@ mod tests {
             },
             "coverage": coverage,
             "provenance": {
-                "parserRevision": 17,
+                "parserRevision": 19,
                 "analyzerRevision": 16,
                 "evidenceSchemaRevision": 12,
                 "sourceKind": "file",
@@ -1115,6 +1115,7 @@ mod tests {
         assert!(session.events.iter().any(|event| !event.tools.is_empty()));
 
         assert!(caps.request_context_tokens);
+        assert!(!caps.cache_write_tokens);
         assert_eq!(session.events[1].usage.input_tokens, 10);
         assert!(caps.model_identity);
         assert_eq!(

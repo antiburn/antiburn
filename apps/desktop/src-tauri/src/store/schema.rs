@@ -12,7 +12,7 @@
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
-    V22, V23, V24, V25, V26,
+    V22, V23, V24, V25, V26, V27,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -519,4 +519,12 @@ CREATE TABLE provider_account_seen (
 ) STRICT;
 INSERT OR IGNORE INTO setting (key, value)
 VALUES ('internal:providerAccountRolloutV1', CAST(strftime('%s', 'now') AS TEXT));
+"#;
+
+/// v27 records the latest observation so account switches have a time boundary.
+const V27: &str = r#"
+ALTER TABLE provider_account_seen
+ADD COLUMN last_seen_epoch INTEGER NOT NULL DEFAULT 0;
+UPDATE provider_account_seen
+   SET last_seen_epoch = first_seen_epoch;
 "#;

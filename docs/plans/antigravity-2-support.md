@@ -4,7 +4,8 @@
 
 The implementation is present in the current worktree. The required engine,
 shell, frontend, design, quality, and secret checks are complete. Native Windows
-execution remains unavailable from the macOS development host.
+execution remains unavailable from the macOS development host. The native
+SQLite benchmark harness compiles, but its measurements are not recorded yet.
 
 ## Goal
 
@@ -40,10 +41,16 @@ current implementation status.
 - Process brain JSONL with `BoundedJsonlReader` and emit one record at a time.
 - Process nested cascade steps with a streaming Serde visitor. Do not retain the
   complete steps array.
+- Prefer native `conversations/<uuid>.db` sessions when the database and brain
+  transcript describe the same session.
+- Read `steps.metadata` and `gen_metadata.data` from one SQLite snapshot. Stream
+  one row at a time and reject a blob larger than 1 MiB before loading it.
+- Keep the brain transcript as the activity and tool source. Use the database
+  for token usage, retries, model identity, and generation timestamps.
 - Preserve source claims, cancellation, partial-source evidence, and oversized
   record handling.
-- Remove the incorrect cache-write capability claim unless a fixture proves the
-  field exists.
+- Keep file cache-write capability unset. Enable it for native databases because
+  descriptor field `ModelUsageStats.cache_write_tokens` is present there.
 
 ### 2. Bound Discovery Reads
 
@@ -56,10 +63,22 @@ current implementation status.
 - Support the `antigravity-cli`, `antigravity-ide`, legacy `antigravity`, and
   `GEMINI_HOME` roots.
 - Keep `agy` and the IDE mapped to the stable `AgentKind::Antigravity` identity.
+- Use the database filename stem as the session ID. Fall back to database-only
+  metadata when the optional brain transcript is absent or delayed.
 
 ### 3. Complete Local Usage Evidence
 
-- Parse verified Antigravity model fields and token containers.
+- Parse the descriptor-backed `ModelUsageStats` subset from protobuf wire data:
+  input `#2`, output total `#3`, cache write/read `#4/#5`, output split
+  `#9/#10`, and invocation IDs `#11/#12/#7`.
+- Treat `#1` as the numeric model enum. Never add it to input tokens.
+- Scan top-level length-delimited wrapper fields for `ChatModelMetadata` instead
+  of depending on one wrapper field number.
+- Read primary and retry usage from generation and step metadata. Deduplicate by
+  the bounded invocation identity set before metrics receive an event.
+- Require the output total to equal the output split when both forms are present.
+  Reject inconsistent rows instead of publishing plausible incorrect usage.
+- Reject binary model strings even when their bytes are valid UTF-8.
 - Add model aliases only for observed Antigravity 2 model identifiers.
 - Preserve unknown models as observed and unpriced.
 - Detect explicit quota failures without classifying generic tool failures as
@@ -119,6 +138,11 @@ Use a cloud-first source with a local process fallback.
 
 - Add brain JSONL and nested cascade cases to `pipeline_baseline`.
 - Measure claimed processing at 1 MiB, 10 MiB, and 50 MiB.
+- Add synthetic native SQLite tiers at 100, 1,000, and 10,000 generations.
+- Run each native tier with its sibling brain transcript through the real
+  adapter and composite sink. Keep a database-only control.
+- Include descriptor-backed primary and retry usage, deduplication, failed
+  retries, step-only usage, generation-only usage, and a padded 280 KiB row.
 - Add retained-memory and oversized-record probes.
 - Select evidence capabilities by provider instead of always using Claude.
 - Record the new results in `benches/BASELINE.md`.
@@ -126,8 +150,11 @@ Use a cloud-first source with a local process fallback.
 ## Tests
 
 - Add synthetic fixtures for `agy`, Antigravity IDE 2.0, v1 files, cascades,
-  model usage, subagents, and quota errors.
+  the seven-table SQLite schema, protobuf wrappers, model usage, retries,
+  step-only and generation-only calls, subagents, and quota errors.
 - Test file mutation, cancellation, malformed records, and oversized records.
+- Test malformed and oversized database rows followed by valid rows. Test the
+  bounded identity state and nonzero analyzed input, output, and context.
 - Test plan and quota parsing, credits, account changes, token refresh, HTTP
   failures, and local RPC fallback.
 - Test partial weekly summaries, duplicate semantic buckets, remote model-quota
@@ -147,3 +174,8 @@ Use a cloud-first source with a local process fallback.
   and cooldown.
 - Parsing memory is bounded by one record or one capped provider response, not
   by total transcript size.
+- Native database analysis retains no result set and no complete blob list. It
+  retains one capped row plus bounded invocation-to-model and deduplication maps.
+- The protobuf field subset is reverse-engineered from descriptors embedded in
+  official binaries. Unknown fields are skipped, and malformed wire data stops
+  only the affected row.

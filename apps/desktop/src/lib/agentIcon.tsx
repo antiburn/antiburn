@@ -5,15 +5,16 @@
  * artwork; the registry in `lib/presentation/agents` resolves a slug to an
  * icon *name*, not an asset. This module answers that slot with three tiers:
  *
- * 1. **A brand mark** with recorded provenance — CC0-licensed path data,
+ * 1. **A brand mark** with recorded provenance — licensed path data,
  *    verified against each icon's recorded source so a name collision cannot
  *    smuggle in the wrong brand. `simple-icons` supplies all but one (its
  *    `AMP` is Google's web framework, not the Amp agent, so Amp deliberately
  *    has no entry here, and its only OpenAI-adjacent icon is the discontinued
  *    `OpenAI Gym`); OpenAI's mark comes from `lib/brandMarks`, which carries
- *    its own provenance and a test pinning it to its source.
- * 2. **A letter tile** for known agents without a usable mark (Kiro,
- *    Antigravity, Amp): the display name's initial in a small rounded tile,
+ *    its own provenance and a test pinning it to its source. Antigravity uses
+ *    the monochrome silhouette from its product asset.
+ * 2. **A letter tile** for known agents without a usable mark (Kiro, Amp):
+ *    the display name's initial in a small rounded tile,
  *    the same treatment the provider glyphs use.
  * 3. **A surface glyph** for `generic-agent` — terminal for CLI, editor panel
  *    for IDE, neutral mark otherwise — since an unknown agent has no name to
@@ -39,7 +40,7 @@ import {
   siWindsurf,
 } from "simple-icons"
 
-import { fromSimpleIcons, OPENAI_MARK, type BrandMark } from "./brandMarks"
+import { ANTIGRAVITY_MARK, fromSimpleIcons, OPENAI_MARK, type BrandMark } from "./brandMarks"
 import { agentDisplayName, agentIconName, type AgentSurface } from "./presentation/agents"
 
 /**
@@ -55,6 +56,7 @@ export const BRAND_MARKS: Record<string, BrandMark> = {
   windsurf: fromSimpleIcons(siWindsurf),
   pi: fromSimpleIcons(siPi),
   codex: OPENAI_MARK,
+  antigravity: ANTIGRAVITY_MARK,
 }
 
 /**

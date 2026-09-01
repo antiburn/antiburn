@@ -526,12 +526,7 @@ impl NormalizedPayload {
                 text: normalize_for_matching(label),
                 kind: PayloadKind::InlineLabel,
             },
-            SessionSource::ProviderDb {
-                agent, session_id, ..
-            } => Self {
-                text: normalize_for_matching(&format!("{agent}:{session_id}")),
-                kind: PayloadKind::InlineLabel,
-            },
+            SessionSource::ProviderDb { db_path, .. } => Self::from_path(db_path),
         }
     }
 
@@ -1024,6 +1019,14 @@ pub async fn session_source_content(source: &SessionSource) -> Option<String> {
             agents::opencode::render_db_session(db_path.clone(), session_id.clone()).await
         }
         SessionSource::ProviderDb {
+            agent: AgentKind::Antigravity,
+            db_path,
+            session_id,
+        } => {
+            let transcript = agents::antigravity::sibling_brain_transcript(db_path, session_id)?;
+            tokio::fs::read_to_string(transcript).await.ok()
+        }
+        SessionSource::ProviderDb {
             agent,
             db_path,
             session_id,
@@ -1043,11 +1046,17 @@ pub async fn session_source_content(source: &SessionSource) -> Option<String> {
 /// without materializing an oversized source. Non-file sources retain the
 /// whole-content behavior of [`session_source_content`].
 pub async fn session_source_preview(source: &SessionSource) -> Option<String> {
-    let SessionSource::File(path) = source else {
-        return session_source_content(source).await;
+    let path = match source {
+        SessionSource::File(path) => path.clone(),
+        SessionSource::ProviderDb {
+            agent: AgentKind::Antigravity,
+            db_path,
+            session_id,
+        } => agents::antigravity::sibling_brain_transcript(db_path, session_id)?,
+        _ => return session_source_content(source).await,
     };
     use tokio::io::AsyncReadExt;
-    let file = open_file_for_head_read(path).await?;
+    let file = open_file_for_head_read(&path).await?;
     let mut bytes = Vec::new();
     file.take(SOURCE_PREVIEW_BYTES)
         .read_to_end(&mut bytes)
@@ -1094,11 +1103,17 @@ fn preview_from_owned(bytes: Vec<u8>) -> Option<String> {
 /// intentionally omitted. The scan preserves a previously cached semantic
 /// timestamp in that case; first discovery falls back to the source mtime.
 pub async fn session_source_tail(source: &SessionSource) -> Option<String> {
-    let SessionSource::File(path) = source else {
-        return session_source_content(source).await;
+    let path = match source {
+        SessionSource::File(path) => path.clone(),
+        SessionSource::ProviderDb {
+            agent: AgentKind::Antigravity,
+            db_path,
+            session_id,
+        } => agents::antigravity::sibling_brain_transcript(db_path, session_id)?,
+        _ => return session_source_content(source).await,
     };
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
-    let mut file = tokio::fs::File::open(path).await.ok()?;
+    let mut file = tokio::fs::File::open(&path).await.ok()?;
     let len = file.metadata().await.ok()?.len();
     let start = len.saturating_sub(ACTIVITY_TAIL_BYTES);
     if start > 0 {
@@ -1226,6 +1241,21 @@ async fn session_source_read(
                 stat: None,
                 head_hash: None,
                 content,
+            })
+        }
+        SessionSource::ProviderDb {
+            agent: AgentKind::Antigravity,
+            db_path,
+            session_id,
+        } => {
+            let metadata =
+                agents::antigravity::db_session_metadata(db_path.clone(), session_id.clone())
+                    .await?;
+            Some(SourceRead {
+                metadata,
+                stat: None,
+                head_hash: None,
+                content: None,
             })
         }
         SessionSource::ProviderDb {
@@ -2039,9 +2069,10 @@ impl Explorers {
         if !self.get(agent).supports_subagents() {
             return Vec::new();
         }
-        let Some(SessionSource::File(parent)) =
-            self.locate_session_source(agent, parent_session_id).await
-        else {
+        let Some(source) = self.locate_session_source(agent, parent_session_id).await else {
+            return Vec::new();
+        };
+        let Some(parent) = subagent_parent_transcript(&source) else {
             return Vec::new();
         };
         self.list_subagents_for_transcript(agent, &parent).await
@@ -2059,10 +2090,13 @@ impl Explorers {
         if !self.get(agent).supports_subagents() {
             return Vec::new();
         }
-        let Some(SessionSource::File(parent)) = self
+        let Some(source) = self
             .locate_session_source_in_environment(agent, parent_session_id, wsl_distro)
             .await
         else {
+            return Vec::new();
+        };
+        let Some(parent) = subagent_parent_transcript(&source) else {
             return Vec::new();
         };
         self.list_subagents_for_transcript(agent, &parent).await
@@ -2093,11 +2127,8 @@ impl Explorers {
         if !self.get(agent).supports_subagents() {
             return None;
         }
-        let SessionSource::File(parent) =
-            self.locate_session_source(agent, parent_session_id).await?
-        else {
-            return None;
-        };
+        let source = self.locate_session_source(agent, parent_session_id).await?;
+        let parent = subagent_parent_transcript(&source)?;
         self.get(agent)
             .locate_subagent(&parent, subagent_id)
             .await
@@ -2117,12 +2148,10 @@ impl Explorers {
         if !self.get(agent).supports_subagents() {
             return None;
         }
-        let SessionSource::File(parent) = self
+        let source = self
             .locate_session_source_in_environment(agent, parent_session_id, wsl_distro)
-            .await?
-        else {
-            return None;
-        };
+            .await?;
+        let parent = subagent_parent_transcript(&source)?;
         self.get(agent)
             .locate_subagent(&parent, subagent_id)
             .await
@@ -2144,6 +2173,18 @@ impl Explorers {
     /// explorer.
     pub async fn subagent_meta(&self, agent: &AgentKind, path: &Path) -> Option<SubagentMeta> {
         self.get(agent).subagent_meta(path).await
+    }
+}
+
+fn subagent_parent_transcript(source: &SessionSource) -> Option<PathBuf> {
+    match source {
+        SessionSource::File(path) => Some(path.clone()),
+        SessionSource::ProviderDb {
+            agent: AgentKind::Antigravity,
+            db_path,
+            session_id,
+        } => agents::antigravity::sibling_brain_transcript(db_path, session_id),
+        _ => None,
     }
 }
 

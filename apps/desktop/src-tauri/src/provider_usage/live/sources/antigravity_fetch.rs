@@ -17,7 +17,6 @@
 //! [`super::antigravity_local`] owns the strict process, listener, TLS, timeout,
 //! and response bounds. Its client cannot receive a Google OAuth token.
 
-use std::collections::HashMap;
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -64,6 +63,13 @@ impl Credentials {
     }
 }
 
+struct CachedRefresh {
+    refresh_token: String,
+    credentials: Credentials,
+}
+
+type RefreshCache = Mutex<Option<CachedRefresh>>;
+
 pub struct AntigravityDirectFetch {
     agy_path: Option<PathBuf>,
     ide_paths: Vec<PathBuf>,
@@ -71,7 +77,7 @@ pub struct AntigravityDirectFetch {
     local: Box<dyn LocalUsageTransport>,
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     try_keychain: bool,
-    refreshed: Mutex<HashMap<String, Credentials>>,
+    refreshed: RefreshCache,
     cooldown: Cooldown,
 }
 
@@ -765,9 +771,12 @@ fn fetch_with_refresh_fallback(
     cloud: &dyn AntigravityTransport,
     local: &dyn LocalUsageTransport,
     credentials: Option<&Credentials>,
-    refreshed: &Mutex<HashMap<String, Credentials>>,
+    refreshed: &RefreshCache,
     now: OffsetDateTime,
 ) -> Result<Option<ProviderUsageSnapshot>, ProviderUsageError> {
+    if credentials.is_none() {
+        cached_refresh(refreshed, None, now);
+    }
     let cloud_error = match credentials {
         Some(credentials) => match fetch_cloud_with_refresh(cloud, credentials, refreshed, now) {
             Ok(snapshot) => return Ok(Some(snapshot)),
@@ -792,18 +801,11 @@ fn fetch_with_refresh_fallback(
 fn fetch_cloud_with_refresh(
     transport: &dyn AntigravityTransport,
     credentials: &Credentials,
-    refreshed: &Mutex<HashMap<String, Credentials>>,
+    refreshed: &RefreshCache,
     now: OffsetDateTime,
 ) -> Result<ProviderUsageSnapshot, ProviderUsageError> {
     let mut credentials = credentials.clone();
-    if let Some(refresh_token) = credentials.refresh_token.as_deref()
-        && let Some(cached) = refreshed
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(refresh_token)
-            .filter(|cached| cached.current_at(now))
-            .cloned()
-    {
+    if let Some(cached) = cached_refresh(refreshed, credentials.refresh_token.as_deref(), now) {
         credentials = cached;
     }
 
@@ -821,6 +823,27 @@ fn fetch_cloud_with_refresh(
     }
 }
 
+fn cached_refresh(
+    refreshed: &RefreshCache,
+    refresh_token: Option<&str>,
+    now: OffsetDateTime,
+) -> Option<Credentials> {
+    let mut cached = refreshed
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let applicable = cached.as_ref().is_some_and(|cached| {
+        refresh_token == Some(cached.refresh_token.as_str())
+            && cached
+                .credentials
+                .expires_at
+                .is_some_and(|expiry| expiry > now)
+    });
+    if !applicable {
+        *cached = None;
+    }
+    cached.as_ref().map(|cached| cached.credentials.clone())
+}
+
 fn google_subject(transport: &dyn AntigravityTransport, access_token: &str) -> Option<String> {
     let reply = transport.subject(access_token).ok()?;
     check_status(reply.status).ok()?;
@@ -836,7 +859,7 @@ fn google_subject(transport: &dyn AntigravityTransport, access_token: &str) -> O
 fn refresh_credentials(
     transport: &dyn AntigravityTransport,
     credentials: &Credentials,
-    refreshed: &Mutex<HashMap<String, Credentials>>,
+    refreshed: &RefreshCache,
     now: OffsetDateTime,
 ) -> Result<Credentials, ProviderUsageError> {
     let refresh_token = credentials
@@ -844,10 +867,16 @@ fn refresh_credentials(
         .as_deref()
         .ok_or(ProviderUsageError::Authentication)?;
     let credentials = transport.refresh(refresh_token, now)?;
-    refreshed
+    let cache_entry = credentials
+        .expires_at
+        .filter(|expiry| *expiry > now)
+        .map(|_| CachedRefresh {
+            refresh_token: refresh_token.to_owned(),
+            credentials: credentials.clone(),
+        });
+    *refreshed
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(refresh_token.to_owned(), credentials.clone());
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = cache_entry;
     Ok(credentials)
 }
 
@@ -1178,6 +1207,50 @@ mod tests {
             fake.tokens.lock().unwrap().as_slice(),
             ["refreshed-access", "refreshed-access"]
         );
+    }
+
+    #[test]
+    fn refresh_cache_drops_expired_and_replaced_credentials() {
+        let now = OffsetDateTime::from_unix_timestamp(NOW).unwrap();
+        let cache = Mutex::new(Some(CachedRefresh {
+            refresh_token: "old-refresh".into(),
+            credentials: Credentials {
+                access_token: "old-access".into(),
+                refresh_token: Some("old-refresh".into()),
+                expires_at: Some(now + time::Duration::hours(1)),
+            },
+        }));
+
+        assert!(cached_refresh(&cache, Some("new-refresh"), now).is_none());
+        assert!(cache.lock().unwrap().is_none());
+
+        *cache.lock().unwrap() = Some(CachedRefresh {
+            refresh_token: "new-refresh".into(),
+            credentials: Credentials {
+                access_token: "new-access".into(),
+                refresh_token: Some("new-refresh".into()),
+                expires_at: Some(now),
+            },
+        });
+        assert!(cached_refresh(&cache, Some("new-refresh"), now).is_none());
+        assert!(cache.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn missing_current_credentials_clear_the_refresh_cache() {
+        let now = OffsetDateTime::from_unix_timestamp(NOW).unwrap();
+        let cache = Mutex::new(Some(CachedRefresh {
+            refresh_token: "synthetic-refresh".into(),
+            credentials: Credentials {
+                access_token: "cached-access".into(),
+                refresh_token: Some("synthetic-refresh".into()),
+                expires_at: Some(now + time::Duration::hours(1)),
+            },
+        }));
+
+        cached_refresh(&cache, None, now);
+
+        assert!(cache.lock().unwrap().is_none());
     }
 
     #[test]
