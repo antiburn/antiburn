@@ -77,6 +77,24 @@ pub const NUDGE_HOVER_EVENT: &str = "nudge:hover";
 
 type ActionCallback = Arc<dyn Fn(NudgeActionEvent) + Send + Sync + 'static>;
 type PlacementProvider = Arc<dyn Fn() -> NudgePlacement + Send + Sync + 'static>;
+pub(crate) type KeyCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+
+#[derive(Default)]
+pub(crate) struct ExpectedKeyRelease(AtomicU64);
+
+impl ExpectedKeyRelease {
+    pub(crate) fn arm(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn take(&self) -> bool {
+        self.0
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |pending| {
+                pending.checked_sub(1)
+            })
+            .is_ok()
+    }
+}
 
 /// Leave enough time for a dismissing IPC command to return before destroying
 /// the webview that sent it. A replacement nudge cancels the task.
@@ -109,11 +127,15 @@ pub enum NudgePlacement {
     MenuBarAnchor { rect: tauri::Rect },
 }
 
-/// Owns the notification window and the app's on-action callback. Store one in
-/// Tauri managed state at setup.
+/// Owns the notification window and the app's callbacks. Store one in Tauri
+/// managed state at setup.
 pub struct NudgeManager {
     app: AppHandle,
     on_action: ActionCallback,
+    on_key_acquiring: Option<KeyCallback>,
+    on_key_released: Option<KeyCallback>,
+    on_unexpected_key_lost: Option<KeyCallback>,
+    expected_key_release: Arc<ExpectedKeyRelease>,
     placement: PlacementProvider,
     /// The nudge currently meant to be on screen, if any. Retained so it can be
     /// re-delivered when the notification webview signals it is ready (its
@@ -152,11 +174,48 @@ impl NudgeManager {
         Ok(Self {
             app: app.clone(),
             on_action: Arc::new(on_action),
+            on_key_acquiring: None,
+            on_key_released: None,
+            on_unexpected_key_lost: None,
+            expected_key_release: Arc::new(ExpectedKeyRelease::default()),
             placement: Arc::new(placement),
             pending: Mutex::new(None),
             lifecycle: Mutex::new(()),
             teardown_generation: TeardownGeneration::default(),
         })
+    }
+
+    /// Register a callback that runs before the notification takes key.
+    ///
+    /// The app can record which window is about to yield key before AppKit
+    /// queues that window's focus-loss event. The callback runs on the main
+    /// thread and never runs outside macOS.
+    #[must_use]
+    pub fn on_key_acquiring(mut self, callback: impl Fn() + Send + Sync + 'static) -> Self {
+        self.on_key_acquiring = Some(Arc::new(callback));
+        self
+    }
+
+    /// Register a callback that runs after the notification releases
+    /// key-window status it held — on mouse-leave, or on a hide while it is
+    /// key. `resignKeyWindow` hands key to no other window, so the app must
+    /// decide which of its windows takes key back; the crate stays
+    /// policy-free. The callback runs on the main thread. It never fires
+    /// outside macOS, where the notification never takes key at all.
+    #[must_use]
+    pub fn on_key_released(mut self, callback: impl Fn() + Send + Sync + 'static) -> Self {
+        self.on_key_released = Some(Arc::new(callback));
+        self
+    }
+
+    /// Register a callback for a key loss not initiated by this manager.
+    ///
+    /// The app uses this event to cancel a pending focus restoration when the
+    /// reader changes applications or AppKit selects another key window.
+    #[must_use]
+    pub fn on_unexpected_key_lost(mut self, callback: impl Fn() + Send + Sync + 'static) -> Self {
+        self.on_unexpected_key_lost = Some(Arc::new(callback));
+        self
     }
 
     /// Present `nudge`: position the notification at the OS-native corner,
@@ -176,8 +235,13 @@ impl NudgeManager {
         // when a new nudge replaces one that's still on screen. This is what keeps
         // the notification from visibly resizing (wobbling) on show. The
         // notification is *revealed* via [`Self::reveal`] only after the frontend
-        // sizes it.
-        window::hide(&window);
+        // sizes it. A replaced notification can be key (hovered); this hide
+        // releases that key, so the callback fires.
+        window::hide(
+            &window,
+            Arc::clone(&self.expected_key_release),
+            self.on_key_released.clone(),
+        );
         // Retain the payload so it can be re-delivered if the notification
         // webview's listener wasn't attached yet (see [`Self::on_nudge_ready`]).
         if let Ok(mut pending) = self.pending.lock() {
@@ -263,12 +327,18 @@ impl NudgeManager {
         #[cfg(target_os = "macos")]
         {
             if let Some(window) = self.app.get_webview_window(NUDGE_LABEL) {
-                macos::set_hovered(&window, hovered);
+                macos::set_hovered(
+                    &window,
+                    hovered,
+                    self.on_key_acquiring.clone(),
+                    Arc::clone(&self.expected_key_release),
+                    self.on_key_released.clone(),
+                );
             }
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = hovered;
+            let _ = (hovered, &self.on_key_acquiring);
         }
     }
 
@@ -305,7 +375,11 @@ impl NudgeManager {
             *pending = None;
         }
         if let Some(window) = self.app.get_webview_window(NUDGE_LABEL) {
-            window::hide(&window);
+            window::hide(
+                &window,
+                Arc::clone(&self.expected_key_release),
+                self.on_key_released.clone(),
+            );
         }
         self.schedule_teardown();
     }
@@ -360,6 +434,19 @@ impl NudgeManager {
         self.dismiss();
     }
 
+    /// Handle the native notification window's queued focus-loss event.
+    ///
+    /// Expected events follow this manager's own resign or hide operation and
+    /// need no policy callback. Every other event reports an external key loss.
+    pub fn on_window_focus_lost(&self) {
+        if self.expected_key_release.take() {
+            return;
+        }
+        if let Some(callback) = &self.on_unexpected_key_lost {
+            callback();
+        }
+    }
+
     /// Whether the notification currently holds key-window status (macOS
     /// only; always `false` elsewhere, where the notification never takes
     /// key at all — see [`window::show`]). A live query, not an event or a
@@ -387,7 +474,26 @@ impl NudgeManager {
 
 #[cfg(test)]
 mod tests {
-    use super::TeardownGeneration;
+    use super::{ExpectedKeyRelease, TeardownGeneration};
+
+    #[test]
+    fn an_expected_key_release_matches_exactly_one_focus_loss() {
+        let expected = ExpectedKeyRelease::default();
+        assert!(!expected.take());
+        expected.arm();
+        assert!(expected.take());
+        assert!(!expected.take());
+    }
+
+    #[test]
+    fn repeated_expected_releases_match_repeated_focus_losses() {
+        let expected = ExpectedKeyRelease::default();
+        expected.arm();
+        expected.arm();
+        assert!(expected.take());
+        assert!(expected.take());
+        assert!(!expected.take());
+    }
 
     #[test]
     fn a_replacement_nudge_invalidates_the_pending_teardown() {
