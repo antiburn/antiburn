@@ -279,8 +279,11 @@ function SourcesAndRepos({
     setChoosingRepos(true)
   }
 
+  // The rows are explicit so the heading block keeps its own height. Two
+  // automatic rows share the leftover space instead, which moves the column
+  // headings down whenever the columns hold less.
   return (
-    <div className="grid h-full grid-cols-2 gap-x-8 px-8">
+    <div className="grid h-full grid-cols-2 grid-rows-[auto_minmax(0,1fr)] gap-x-8 px-8">
       <div className="col-span-full mb-4 flex flex-col gap-1.5">
         <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
           Scan Locations: Repos
