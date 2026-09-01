@@ -7,6 +7,7 @@ import { LiveUsageDetail } from "../../components/providerUsage/LiveUsageDetail"
 import { UsageMetricRows } from "../../components/providerUsage/UsageMetricRows"
 import { UsageWindowRows } from "../../components/providerUsage/UsageWindowRows"
 import { useStableAccountNumbers } from "../../components/providerUsage/useStableAccountNumbers"
+import { Disclosure } from "../../components/ui/Disclosure"
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { cn } from "../../lib/cn"
 import type {
@@ -72,6 +73,88 @@ interface UsageCardEntry {
   live: LiveProviderUsagePayload[]
   errors: LiveUsageSourceErrorPayload[]
   key: string
+}
+
+function addWindow(
+  left: ProviderUsagePayload["windows"]["today"],
+  right: ProviderUsagePayload["windows"]["today"],
+) {
+  return {
+    tokensIn: left.tokensIn + right.tokensIn,
+    tokensOut: left.tokensOut + right.tokensOut,
+    cacheRead: left.cacheRead + right.cacheRead,
+    estimatedUsd:
+      left.estimatedUsd == null && right.estimatedUsd == null
+        ? null
+        : (left.estimatedUsd ?? 0) + (right.estimatedUsd ?? 0),
+    sessionCount: left.sessionCount + right.sessionCount,
+  }
+}
+
+function addLocalUsage(
+  account: ProviderUsagePayload,
+  unassigned: ProviderUsagePayload,
+): ProviderUsagePayload {
+  const lastActivityAt = [account.lastActivityAt, unassigned.lastActivityAt]
+    .filter((value): value is string => value != null)
+    .sort()
+    .at(-1)
+  const states = [account.state, unassigned.state]
+  const state = states.includes("observed")
+    ? "observed"
+    : states.includes("estimated")
+      ? "estimated"
+      : states.includes("live")
+        ? "live"
+        : states.includes("detected")
+          ? "detected"
+          : "unknown"
+  const stalenesses = [account.staleness, unassigned.staleness]
+
+  return {
+    ...account,
+    state,
+    staleness: stalenesses.includes("fresh")
+      ? "fresh"
+      : stalenesses.includes("stale")
+        ? "stale"
+        : "unknown",
+    windows: {
+      today: addWindow(account.windows.today, unassigned.windows.today),
+      week: addWindow(account.windows.week, unassigned.windows.week),
+      month: addWindow(account.windows.month, unassigned.windows.month),
+    },
+    agents: [
+      ...new Map(
+        [...account.agents, ...unassigned.agents].map((entry) => [entry.agent, entry]),
+      ).values(),
+    ],
+    lastActivityAt: lastActivityAt ?? null,
+  }
+}
+
+function simplifiedLocalUsage(
+  local: readonly ProviderUsagePayload[],
+  live: readonly LiveProviderUsagePayload[],
+): ProviderUsagePayload[] {
+  const accountKeys = new Set([
+    ...local.flatMap((entry) => (entry.accountKey ? [entry.accountKey] : [])),
+    ...live.flatMap((entry) => (entry.accountKey ? [entry.accountKey] : [])),
+  ])
+  if (accountKeys.size !== 1) return [...local]
+
+  const [accountKey] = accountKeys
+  if (!accountKey) return [...local]
+  const unassigned = local.filter((entry) => entry.accountKey == null)
+  if (unassigned.length === 0) return [...local]
+
+  const matching = local.find((entry) => entry.accountKey === accountKey)
+  const assigned = matching ?? { ...unassigned[0]!, accountKey }
+  const additions = matching ? unassigned : unassigned.slice(1)
+  return [
+    additions.reduce(addLocalUsage, assigned),
+    ...local.filter((entry) => entry.accountKey != null && entry.accountKey !== accountKey),
+  ]
 }
 
 function isUnattributed(card: UsageCardEntry): boolean {
@@ -300,17 +383,23 @@ function ProviderCard({
   errors: readonly LiveUsageSourceErrorPayload[]
   now: number
 }) {
-  const primaryLocal = local[0] ?? null
+  const accounts = orderedLiveAccounts(live)
+  const shownLocal = simplifiedLocalUsage(
+    local,
+    accounts.map(({ reading }) => reading),
+  )
+  const primaryLocal = shownLocal[0] ?? null
   const stale = primaryLocal ? stalenessNote(primaryLocal) : null
   const updated = primaryLocal ? updatedNote(primaryLocal) : null
-  const usedToday = local.some((entry) => windowHasEvidence(providerWindow(entry, "today")))
-  const accounts = orderedLiveAccounts(live)
-  const unmatchedLocal = local.filter(
+  const usedToday = shownLocal.some((entry) =>
+    windowHasEvidence(providerWindow(entry, "today")),
+  )
+  const unmatchedLocal = shownLocal.filter(
     (entry) =>
       entry.accountKey == null ||
       !accounts.some(({ reading }) => reading.accountKey === entry.accountKey),
   )
-  const localAccountIdentities = local.flatMap((entry) =>
+  const localAccountIdentities = shownLocal.flatMap((entry) =>
     entry.accountKey
       ? [{ key: `account:${entry.provider}:${entry.accountKey}`, provider: entry.provider }]
       : [],
@@ -323,11 +412,11 @@ function ProviderCard({
   ])
   const identifiedAccountKeys = new Set([
     ...accounts.flatMap(({ reading }) => (reading.accountKey ? [reading.accountKey] : [])),
-    ...local.flatMap((entry) => (entry.accountKey ? [entry.accountKey] : [])),
+    ...shownLocal.flatMap((entry) => (entry.accountKey ? [entry.accountKey] : [])),
   ])
   const hasUnassignedAccount =
     accounts.some(({ reading }) => reading.accountKey == null) ||
-    local.some((entry) => entry.accountKey == null)
+    shownLocal.some((entry) => entry.accountKey == null)
   const accountGroupCount = identifiedAccountKeys.size + (hasUnassignedAccount ? 1 : 0)
   const accountPlans = accounts.map(({ reading }) => livePlanLabel(reading))
   const plan =
@@ -396,7 +485,7 @@ function ProviderCard({
 
         <div id={bodyId} hidden={!open} className="space-y-2.5 px-3 pb-2.5">
           {accounts.map(({ reading, key }) => {
-            const matchingLocal = local.find(
+            const matchingLocal = shownLocal.find(
               (entry) => entry.accountKey != null && entry.accountKey === reading.accountKey,
             )
             const accountLabel =
@@ -414,7 +503,10 @@ function ProviderCard({
                   {...(accountLabel ? { accountLabel } : {})}
                 />
                 {matchingLocal && (
-                  <LocalUsageDetail provider={matchingLocal} showState={local.length > 1} />
+                  <LocalUsageDetail
+                    provider={matchingLocal}
+                    showState={shownLocal.length > 1}
+                  />
                 )}
               </div>
             )
@@ -436,6 +528,20 @@ function ProviderCard({
               : "unassigned"
             const accountNumber = accountNumbers.get(key)
             const accountLabel = entry.accountKey ? `Account ${accountNumber} usage` : null
+            const detail = (
+              <LocalUsageDetail provider={entry} showState={shownLocal.length > 1} />
+            )
+            if (entry.accountKey == null && identifiedAccountKeys.size > 1) {
+              return (
+                <Disclosure
+                  key={key}
+                  label="Unassigned account"
+                  className="border-t border-b-0"
+                >
+                  {detail}
+                </Disclosure>
+              )
+            }
             return (
               <div
                 key={key}
@@ -448,14 +554,14 @@ function ProviderCard({
                     {entry.accountKey == null ? "Unassigned account" : accountLabel}
                   </p>
                 )}
-                <LocalUsageDetail provider={entry} showState={local.length > 1} />
+                {detail}
               </div>
             )
           })}
         </div>
       </div>
 
-      {primaryLocal && local.length === 1 && (
+      {primaryLocal && shownLocal.length === 1 && (
         <p hidden={!open} className="px-3 type-caption text-pretty text-label-tertiary">
           {usageStateDescription(primaryLocal.state)}
         </p>

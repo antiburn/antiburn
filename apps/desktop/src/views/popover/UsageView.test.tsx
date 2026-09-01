@@ -514,7 +514,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
     expect(within(card).queryByText("Claude Sonnet weekly limit")).not.toBeInTheDocument()
   })
 
-  it("groups multiple live accounts without repeating provider-wide local usage", () => {
+  it("collapses unassigned usage when multiple accounts exist", () => {
     const google: ProviderUsagePayload = {
       ...ANTHROPIC,
       provider: "google",
@@ -556,8 +556,51 @@ describe("UsageView — plan limits layered over local estimates", () => {
     expect(
       within(card).getByRole("region", { name: "Google Account 2 plan limits" }),
     ).toHaveTextContent("Gemini weekly limit")
-    expect(within(card).getByText("Unassigned account")).toBeInTheDocument()
+    const unassigned = within(card).getByRole("button", { name: "Unassigned account" })
+    expect(unassigned).toHaveAttribute("aria-expanded", "false")
+    expect(within(card).queryByText("Last 7 days")).not.toBeInTheDocument()
+
+    fireEvent.click(unassigned)
+    expect(unassigned).toHaveAttribute("aria-expanded", "true")
     expect(within(card).getAllByText("Last 7 days")).toHaveLength(1)
+  })
+
+  it("shows unassigned sessions under the only account", () => {
+    const assigned: ProviderUsagePayload = {
+      ...ANTHROPIC,
+      provider: "google",
+      accountKey: "account-a",
+      displayName: "Google",
+      windows: {
+        today: usageWindow({ estimatedUsd: 1, tokensIn: 500, sessionCount: 1 }),
+        week: usageWindow({ estimatedUsd: 1, tokensIn: 500, sessionCount: 1 }),
+        month: usageWindow({ estimatedUsd: 1, tokensIn: 500, sessionCount: 1 }),
+      },
+    }
+    const unassigned: ProviderUsagePayload = {
+      ...ANTHROPIC,
+      provider: "google",
+      displayName: "Google",
+    }
+    const account = liveProvider({
+      provider: "google",
+      accountKey: "account-a",
+      displayName: "Google",
+    })
+
+    render(
+      <UsageView
+        summary={summary({ providers: [assigned, unassigned] })}
+        live={live({ providers: [account] })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    const card = document.querySelector<HTMLElement>('[data-provider-card="google"]')!
+    expect(within(card).queryByText("Unassigned account")).not.toBeInTheDocument()
+    expect(within(card).getAllByText("$3.50").length).toBeGreaterThan(0)
+    expect(within(card).getByText("2 sessions")).toBeInTheDocument()
   })
 
   it("places identified local usage under only its matching live account", () => {

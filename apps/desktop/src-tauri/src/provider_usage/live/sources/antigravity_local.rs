@@ -481,6 +481,7 @@ fn discover_listeners(candidates: &[Candidate]) -> HashMap<u32, Vec<Listener>> {
     HashMap::new()
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn parse_lsof(output: &str, candidates: &[Candidate]) -> HashMap<u32, Vec<Listener>> {
     let allowed: HashSet<u32> = candidates.iter().map(|candidate| candidate.pid).collect();
     let mut found = HashMap::new();
