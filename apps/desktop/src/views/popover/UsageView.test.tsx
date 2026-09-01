@@ -99,12 +99,28 @@ describe("UsageView", () => {
     expect(screen.getByRole("heading", { name: "Usage" })).toBeInTheDocument()
 
     const recent = within(screen.getByRole("region", { name: "Recently used" }))
+    expect(recent.getByRole("heading", { name: "Recently used" })).toBeInTheDocument()
     expect(recent.getByText("Anthropic")).toBeInTheDocument()
     expect(recent.getByText("Used today")).toBeInTheDocument()
 
     const rest = within(screen.getByRole("region", { name: "All detected" }))
+    expect(rest.getByRole("heading", { name: "All detected" })).toBeInTheDocument()
     expect(rest.getByText("OpenAI")).toBeInTheDocument()
     expect(rest.queryByText("Used today")).not.toBeInTheDocument()
+  })
+
+  it("hides embedded section headings but keeps their accessible regions", () => {
+    render(<UsageView summary={summary()} onBack={vi.fn()} embedded />)
+
+    expect(screen.queryByRole("heading", { name: "Usage" })).not.toBeInTheDocument()
+
+    const recent = within(screen.getByRole("region", { name: "Recently used" }))
+    expect(recent.queryByRole("heading", { name: "Recently used" })).not.toBeInTheDocument()
+    expect(recent.getByText("Anthropic")).toBeInTheDocument()
+
+    const rest = within(screen.getByRole("region", { name: "All detected" }))
+    expect(rest.queryByRole("heading", { name: "All detected" })).not.toBeInTheDocument()
+    expect(rest.getByText("OpenAI")).toBeInTheDocument()
   })
 
   it("shows every window on one card, with sessions beside each figure", () => {
@@ -150,6 +166,20 @@ describe("UsageView", () => {
     expect(
       screen.getByText("Local spend is estimated; plan limits come from your provider."),
     ).toBeInTheDocument()
+  })
+
+  it("places each provider explanation below its inset card", () => {
+    render(<UsageView summary={summary()} onBack={vi.fn()} />)
+
+    const item = screen.getByText("Anthropic").closest("li")
+    const explanation = screen.getByText(
+      "Estimated locally at API rates. Your provider bill may differ.",
+    )
+    expect(item).not.toBeNull()
+    expect(item).toHaveClass("flex", "flex-col", "gap-1")
+    expect(item?.firstElementChild).toHaveClass("bg-surface-card")
+    expect(item?.firstElementChild).not.toContainElement(explanation)
+    expect(explanation.parentElement).toBe(item)
   })
 
   it("is honest when there is nothing to show", () => {

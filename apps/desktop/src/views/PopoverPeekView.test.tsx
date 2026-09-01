@@ -332,6 +332,10 @@ describe("PopoverPeekView", () => {
 
     expect(screen.queryByText("Claude B")).not.toBeInTheDocument()
     expect(screen.getByText("Gemini C")).toBeInTheDocument()
+    expect(screen.getByRole("region", { name: "Recently used" })).toContainElement(
+      screen.getByText("Gemini C"),
+    )
+    expect(screen.queryByRole("heading", { name: "Recently used" })).not.toBeInTheDocument()
     expect(screen.queryByTestId("popover-peek-loading")).not.toBeInTheDocument()
     expect(getPopoverPeekData).toHaveBeenCalledTimes(1)
     act(flushFrames)

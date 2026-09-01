@@ -105,7 +105,7 @@ export function usageStateDescription(state: ProviderUsageState): string {
     case "live":
       return "The provider reported this usage directly."
     case "estimated":
-      return "Priced on this device from the tokens your sessions recorded."
+      return "Estimated locally at API rates. Your provider bill may differ."
     case "observed":
       return "Tokens were counted, but some models have no price, so the cost is a floor rather than a total."
     case "detected":

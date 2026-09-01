@@ -138,8 +138,20 @@ export function UsageView({
           </p>
         ) : (
           <>
-            <UsageSection title="Recently used" providers={recent} live={live} now={at} />
-            <UsageSection title="All detected" providers={rest} live={live} now={at} />
+            <UsageSection
+              title="Recently used"
+              providers={recent}
+              live={live}
+              now={at}
+              showTitle={!embedded}
+            />
+            <UsageSection
+              title="All detected"
+              providers={rest}
+              live={live}
+              now={at}
+              showTitle={!embedded}
+            />
           </>
         )}
       </ScrollPane>
@@ -183,18 +195,22 @@ function UsageSection({
   providers,
   live,
   now,
+  showTitle,
 }: {
   title: string
   providers: readonly ProviderUsagePayload[]
   live: LiveUsageSummaryPayload
   now: number
+  showTitle: boolean
 }) {
   if (providers.length === 0) return null
   return (
     <section aria-label={title} className="pt-2 first:pt-0">
-      <h2 className="px-1 pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary">
-        {title}
-      </h2>
+      {showTitle && (
+        <h2 className="px-1 pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary">
+          {title}
+        </h2>
+      )}
       <ul className="space-y-2">
         {providers.map((provider) => (
           <ProviderCard
@@ -224,46 +240,48 @@ function ProviderCard({
   const plan = live ? livePlanLabel(live) : null
 
   return (
-    <li className="space-y-2.5 rounded-control bg-surface-card px-3 py-2.5">
-      <div className="flex items-start gap-2">
-        <ProviderGlyph
-          displayName={provider.displayName}
-          provider={provider.provider}
-          size={18}
-          className="mt-px"
-        />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <h3 className="truncate type-footnote font-medium text-label">
-              {provider.displayName}
-              {plan && <span className="text-label-secondary"> · {plan}</span>}
-            </h3>
-            {usedToday && (
-              <span className="shrink-0 rounded-full bg-system-green/15 px-1.5 py-px type-caption text-system-green">
-                Used today
-              </span>
+    <li className="flex flex-col gap-1">
+      <div className="space-y-2.5 rounded-control bg-surface-card px-3 py-2.5">
+        <div className="flex items-start gap-2">
+          <ProviderGlyph
+            displayName={provider.displayName}
+            provider={provider.provider}
+            size={18}
+            className="mt-px"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <h3 className="truncate type-footnote font-medium text-label">
+                {provider.displayName}
+                {plan && <span className="text-label-secondary"> · {plan}</span>}
+              </h3>
+              {usedToday && (
+                <span className="shrink-0 rounded-full bg-system-green/15 px-1.5 py-px type-caption text-system-green">
+                  Used today
+                </span>
+              )}
+            </div>
+            {(stale ?? updated) && (
+              <p
+                className={cn(
+                  "type-caption",
+                  stale ? "text-system-orange" : "text-label-tertiary",
+                )}
+              >
+                {stale ?? updated}
+              </p>
             )}
           </div>
-          {(stale ?? updated) && (
-            <p
-              className={cn(
-                "type-caption",
-                stale ? "text-system-orange" : "text-label-tertiary",
-              )}
-            >
-              {stale ?? updated}
-            </p>
-          )}
         </div>
+
+        {live && <LiveUsageDetail live={live} now={now} />}
+
+        <UsageMetricRows provider={provider} />
+
+        <UsageWindowRows provider={provider} className="border-t border-separator pt-2" />
       </div>
 
-      {live && <LiveUsageDetail live={live} now={now} />}
-
-      <UsageMetricRows provider={provider} />
-
-      <UsageWindowRows provider={provider} className="border-t border-separator pt-2" />
-
-      <p className="type-caption text-label-tertiary">
+      <p className="px-3 type-caption text-pretty text-label-tertiary">
         {usageStateDescription(provider.state)}
       </p>
     </li>
