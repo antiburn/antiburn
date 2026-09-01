@@ -4,9 +4,9 @@ _Contributor reference for when desktop webview renderers are created, reused,
 hidden, and destroyed._
 
 The desktop shell stays resident because antiburn is a menu-bar application.
-Its webview renderers do not need the same lifetime. The shell keeps a renderer
-only while it is visible, is likely to be used again soon, or is completing a
-bounded handoff.
+The main popover renderer also stays resident after its first use, so the
+application's primary surface can reopen immediately. Other renderers remain
+bounded by their interaction or handoff.
 
 This document covers the popover, onboarding, and Settings renderers. The HUD
 and nudge windows have separate ownership rules. See [HUD states](hud-states.md)
@@ -86,45 +86,43 @@ releases the old window label. The replacement carries the pending reveal, so
 no two renderers load in parallel.
 
 A second toggle while the active renderer still loads cancels the pending
-reveal. An onboarding prewarm keeps its remaining absolute lease; other loads
-use the normal grace period.
+reveal. An onboarding prewarm keeps its remaining absolute lease. A normal
+popover load stays available for the next open request.
 
 Restarting onboarding cancels and destroys a renderer that still belongs only
 to the onboarding prewarm. This prevents a hidden post-onboarding surface from
 surviving when onboarding becomes the active application surface again.
 
-## Popover idle eviction
+## Popover residency and prewarm eviction
 
-Hiding is useful for a quick reopen, but it is not a long-term ownership model.
-The popover keeps a hidden renderer for 15 seconds after:
+After a normal popover renderer is created, ordinary dismissal only hides it.
+Focus loss, Escape, a tray toggle, reveal cancellation, and unpinning do not
+schedule destruction. The next open reuses the renderer and its loaded state.
+The renderer remains available until application shutdown or an explicit
+lifecycle reset.
 
-- an ordinary dismissal, including focus loss, Escape, or a tray toggle; or
-- cancellation of a non-prewarm reveal while the renderer is still loading.
+The onboarding prewarm keeps its renderer for 60 seconds after readiness. A
+prewarm that never becomes ready has a 65-second loading fail-safe. Cancelling
+a pending reveal does not extend or replace either absolute deadline. The
+first successful reveal consumes the one-shot lease and makes the renderer
+resident.
 
-The onboarding prewarm instead keeps its renderer for 60 seconds after
-readiness. Cancelling a pending reveal does not extend or replace that absolute
-deadline. The first reveal consumes the one-shot lease. A later dismissal uses
-the normal 15-second grace period.
-
-At the end of the grace period, the shell destroys the renderer only when all
-of these conditions still hold:
+At a prewarm deadline, the shell destroys the renderer only when all of these
+conditions still hold:
 
 - the eviction request is the current request;
 - it still names the current renderer generation;
-- the window is hidden; and
-- for the normal 15-second grace period, the popover is not pinned.
+- the window is hidden.
 
 An unrevealed onboarding prewarm expires at its absolute deadline even when
-Pin is enabled. Pin protects a renderer only after the first successful reveal.
+Pin is enabled. After the first successful reveal, there is no eviction
+deadline for Pin to change.
 
 An open request cancels the eviction before it places or reveals the window.
-Starting a newer grace period also invalidates the older timer. A stale timer
-therefore cannot destroy a reopened or replaced renderer.
-
-Pinned popovers are exempt because pinning is an explicit request to keep the
-surface available. Unpinning a hidden popover starts the normal grace period.
-After eviction, the next open starts from `Idle` and creates a fresh renderer
-from native and persisted state.
+Starting a newer prewarm schedule also invalidates the older timer. A stale
+timer therefore cannot destroy a revealed or replaced renderer. After prewarm
+eviction, the next open starts from `Idle` and creates a fresh renderer from
+native and persisted state.
 
 ## Settings teardown
 
@@ -170,15 +168,15 @@ Application shutdown uses the same native cancellation signal.
 | ---------- | ---------------------------------------------------------------------------------------------------- | -------------------------------- |
 | 1 second   | Let onboarding's final IPC response complete before destroying its renderer                          | Onboarding completion            |
 | 5 seconds  | Mark an active renderer load stale; log a warning and permit one replacement on a later open request | Renderer build start             |
-| 15 seconds | Keep a dismissed popover available for a likely near-term reopen, then make it eligible for eviction | Hidden dismissal                 |
 | 60 seconds | Keep the one post-onboarding handoff renderer available for the first menu-bar click                 | Onboarding prewarm readiness     |
 | 65 seconds | Destroy an onboarding prewarm that never reports renderer readiness                                  | Onboarding prewarm build         |
 | 5 seconds  | Refresh Insights processing status only while the pane has subscribers and remains visible           | Insights session start or resume |
 
 These values serve different purposes. The stale threshold is a recovery
-boundary, not an eviction deadline. Each eviction delay is a reuse window, not
-a guarantee that a renderer will remain alive. A lifecycle reset, onboarding
-restart, application shutdown, or build failure can end it earlier.
+boundary, not an eviction deadline. The prewarm eviction delays are bounded
+handoff windows, not guarantees that a renderer will remain alive. A lifecycle
+reset, onboarding restart, application shutdown, or build failure can end one
+earlier.
 
 ## Popover latency evidence
 
@@ -207,14 +205,14 @@ optimization.
 
 Use these principles when adding or changing desktop windows:
 
-1. **Keep the native shell resident, not every renderer.** A hidden webview has
-   a process cost even when it paints nothing.
+1. **Keep repeated primary surfaces ready.** The main popover remains resident
+   after first use; one-shot and explicitly closed renderers do not.
 2. **Create on demand by default.** Prewarm only at a clear handoff where a
    near-term interaction is likely and the work has a bounded lifetime.
 3. **Reuse one generation.** Coalesce repeated requests and turn an existing
    hidden load into a reveal rather than creating parallel renderers.
-4. **Destroy after the interaction ends.** Use a short grace period only when
-   it materially improves the next expected interaction.
+4. **Bound one-shot ownership.** Destroy handoff renderers when their lease
+   ends, and close ordinary windows when their interaction ends.
 5. **Keep durable state outside renderer lifetime.** A fresh renderer must be
    able to reconstruct the surface from native state, the local database, and
    persisted preferences.
@@ -237,7 +235,7 @@ Use these principles when adding or changing desktop windows:
 | Shared phases, generations, stale-load policy                    | [`window_readiness.rs`](../apps/desktop/src-tauri/src/window_readiness.rs)      |
 | Tauri readiness, timing, and trace adapters                      | [`window_lifecycle.rs`](../apps/desktop/src-tauri/src/window_lifecycle.rs)      |
 | Popover facade, first-click reuse, and Tauri window effects      | [`popover.rs`](../apps/desktop/src-tauri/src/popover.rs)                        |
-| Popover leases, eviction tokens, and deadline ownership          | [`retention.rs`](../apps/desktop/src-tauri/src/popover/retention.rs)            |
+| Popover prewarm leases, eviction tokens, and deadline ownership  | [`retention.rs`](../apps/desktop/src-tauri/src/popover/retention.rs)            |
 | Popover latency milestones and structured timing                 | [`timing.rs`](../apps/desktop/src-tauri/src/popover/timing.rs)                  |
 | Onboarding completion and delayed teardown                       | [`onboarding.rs`](../apps/desktop/src-tauri/src/onboarding.rs)                  |
 | Settings creation, destruction, and native Insights cancellation | [`settings.rs`](../apps/desktop/src-tauri/src/settings.rs)                      |
@@ -255,7 +253,8 @@ When a window lifecycle changes, verify all of these together:
 - repeated opens and toggles during a load;
 - a stale generation reporting readiness after replacement;
 - close or hide behavior before and after readiness;
-- delayed eviction after reopen, pin, unpin, or renderer replacement;
+- resident reuse after dismissal, reveal cancellation, and unpinning;
+- prewarm expiry after readiness, reopening, Pin, or renderer replacement;
 - destruction resetting readiness before the next build;
 - cancellation of native work when its final visible owner leaves; and
 - fresh reconstruction without relying on the previous renderer's memory.
