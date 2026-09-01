@@ -115,8 +115,8 @@ export async function popoverPeekConcealed(generation: number): Promise<boolean>
 }
 
 /** Event emitted to the resident renderer for each target or clear generation. */
-export const POPOVER_PEEK_REQUEST_EVENT = "anchored-window-request"
-export const POPOVER_PEEK_STATE_EVENT = "anchored-window-state"
+const POPOVER_PEEK_REQUEST_EVENT = "anchored-window-request"
+const POPOVER_PEEK_STATE_EVENT = "anchored-window-state"
 
 /** Subscribe to typed target generations from the anchored-window manager. */
 export async function onPopoverPeekRequest(

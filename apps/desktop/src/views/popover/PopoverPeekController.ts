@@ -20,12 +20,12 @@ export interface PopoverPeekActiveRequest extends PopoverPeekRequest {
   target: PopoverPeekTarget
 }
 
-export interface PopoverPeekCandidate {
+interface PopoverPeekCandidate {
   request: PopoverPeekActiveRequest
   data: PopoverPeekData
 }
 
-export interface PopoverPeekPresentation {
+interface PopoverPeekPresentation {
   request: PopoverPeekActiveRequest
   data: PopoverPeekData | null
   unavailable: boolean
