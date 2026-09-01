@@ -162,15 +162,14 @@ export function PopoverView() {
     session.getSnapshot,
   )
 
-  const current = state.stack.at(-1) ?? null
+  const current = state.presentedSession
   const windowDays = state.settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays
 
   /* ---------------------------------------------------------------------
    * Window behaviour: which surface is showing, and focus on the way in
    * ------------------------------------------------------------------ */
 
-  const surface: PopoverSurface =
-    state.showUsage && state.usage ? "usage" : current ? "session" : "activity"
+  const surface: PopoverSurface = state.presentedSurface
 
   // Conditional render swaps the whole surface; without this, focus is left
   // on <body> and a keyboard or screen-reader user has to walk back in from
@@ -244,7 +243,7 @@ export function PopoverView() {
   function body() {
     // Usage sits over the list rather than in the session stack: it is a second
     // way of reading the same activity, not a place a session leads to.
-    if (state.showUsage && state.usage) {
+    if (surface === "usage" && state.usage) {
       return (
         <UsageView
           summary={state.usage}
@@ -254,7 +253,7 @@ export function PopoverView() {
       )
     }
 
-    if (current) {
+    if (surface === "session" && current) {
       // Traversal only applies to a session that is actually in the list; a
       // sub-agent or a fork opened from elsewhere has no neighbours.
       const position = current.subagent

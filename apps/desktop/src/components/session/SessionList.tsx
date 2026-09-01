@@ -1,5 +1,6 @@
 import { GitBranchPlus, GitFork, SquareTerminal } from "lucide-react"
-import type { ReactNode } from "react"
+import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual"
+import { useCallback, useRef, useState, type ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
@@ -20,6 +21,7 @@ import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import { SessionStatusBar } from "./SessionStatusBar"
+import { SessionTooltipOwner } from "./SessionTooltipOwner"
 import { type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
 import { ScrollPane } from "../ui/ScrollPane"
 import { countGroupedItems, groupActivityByDay } from "../activity/activityFeedGrouping"
@@ -101,6 +103,36 @@ function EmptySessionList({ title, description }: { title: string; description: 
       </div>
     </div>
   )
+}
+
+type GroupedSessionItem = ReturnType<
+  typeof groupActivityByDay<{
+    entry: SessionListEntry
+    at: string
+    isActive: boolean
+    key: string
+  }>
+>[number]["items"][number]
+
+type VirtualSessionItem =
+  | {
+      type: "heading"
+      key: string
+      groupIndex: number
+      groupLabel: string
+    }
+  | {
+      type: "row"
+      key: string
+      groupIndex: number
+      groupLabel: string
+      itemIndex: number
+      rowPosition: number
+      item: GroupedSessionItem
+    }
+
+function groupHeadingId(label: string): string {
+  return `activity-${label.replaceAll(" ", "-").toLowerCase()}`
 }
 
 interface SessionRowProps {
@@ -302,6 +334,25 @@ export function SessionList({
 
   const groups = groupActivityByDay(items, { days, ...(now ? { now } : {}) })
   const visibleCount = countGroupedItems(groups)
+  let rowPosition = 0
+  const virtualItems: VirtualSessionItem[] = groups.flatMap((group, groupIndex) => [
+    {
+      type: "heading" as const,
+      key: `heading:${group.label}`,
+      groupIndex,
+      groupLabel: group.label,
+    },
+    ...group.items.map((item, itemIndex) => ({
+      type: "row" as const,
+      key: `row:${item.key}`,
+      groupIndex,
+      groupLabel: group.label,
+      itemIndex,
+      rowPosition: ++rowPosition,
+      item,
+    })),
+  ])
+  const rowIndexes = virtualItems.flatMap((item, index) => (item.type === "row" ? [index] : []))
   const hygieneSessions = groups.flatMap((group) =>
     group.items.flatMap(({ entry }) =>
       entry.sessionId
@@ -321,12 +372,93 @@ export function SessionList({
     groups.map((group) => group.label),
     viewportRef,
   )
+  const scrollElementRef = useRef<HTMLDivElement | null>(null)
+  const [pendingFocusIndex, setPendingFocusIndex] = useState<number | null>(null)
+  // TanStack Virtual owns mutable measurement state, so the React Compiler cannot memoize this component.
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: virtualItems.length,
+    getScrollElement: () => scrollElementRef.current,
+    getItemKey: (index) => virtualItems[index]?.key ?? index,
+    estimateSize: (index) => (virtualItems[index]?.type === "heading" ? 28 : 88),
+    // Mount the initial overscan before the viewport ref attaches.
+    initialRect: { width: 0, height: 1 },
+    // Three items keep short wheel and keyboard moves mounted without retaining
+    // a large part of the session list.
+    overscan: 3,
+    rangeExtractor: (range) => {
+      const indexes = new Set(defaultRangeExtractor(range))
+
+      // Keep the few group headings mounted for semantic grouping and pinning.
+      virtualItems.forEach((item, index) => {
+        if (item.type === "heading") indexes.add(index)
+      })
+      if (pendingFocusIndex !== null) indexes.add(pendingFocusIndex)
+
+      const activeElement = document.activeElement
+      if (activeElement && scrollElementRef.current?.contains(activeElement)) {
+        const focusedItem = activeElement.closest<HTMLElement>("[data-index]")
+        const focusedIndex = Number(focusedItem?.dataset.index)
+        if (Number.isInteger(focusedIndex)) indexes.add(focusedIndex)
+      }
+
+      return [...indexes].sort((left, right) => left - right)
+    },
+  })
+  const measuredItems = virtualizer.getVirtualItems()
+  const measureAndRestoreFocus = useCallback(
+    (node: HTMLDivElement | null) => {
+      virtualizer.measureElement(node)
+      if (!node || Number(node.dataset.index) !== pendingFocusIndex) return
+      node.querySelector<HTMLElement>('[role="button"][tabindex="0"]')?.focus()
+      setPendingFocusIndex(null)
+    },
+    [pendingFocusIndex, virtualizer],
+  )
+  const moveVirtualFocus = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) return
+      const target = event.target instanceof Element ? event.target : null
+      const currentItem = target?.closest<HTMLElement>('[data-virtual-kind="row"]')
+      if (!currentItem || !target?.closest('[role="button"][tabindex="0"]')) return
+      const currentPosition = rowIndexes.indexOf(Number(currentItem.dataset.index))
+      const nextIndex = rowIndexes[currentPosition + (event.shiftKey ? -1 : 1)]
+      if (nextIndex === undefined) return
+      const nextRow = scrollElementRef.current?.querySelector<HTMLElement>(
+        `[data-virtual-kind="row"][data-index="${nextIndex}"]`,
+      )
+      event.preventDefault()
+      if (nextRow) {
+        nextRow.querySelector<HTMLElement>('[role="button"][tabindex="0"]')?.focus()
+        return
+      }
+      setPendingFocusIndex(nextIndex)
+      virtualizer.scrollToIndex(nextIndex, { align: "auto" })
+    },
+    [rowIndexes, virtualizer],
+  )
+  const assignVirtualViewportRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      scrollElementRef.current = node
+      const cleanup = assignViewportRef(node)
+      if (!cleanup) return
+      return () => {
+        scrollElementRef.current = null
+        cleanup()
+      }
+    },
+    [assignViewportRef],
+  )
 
   const resolvedEmptyTitle =
     emptyTitle ?? (days === 1 ? "No sessions today" : `No sessions in the last ${days} days`)
 
   return (
-    <section aria-label="Sessions" className="flex h-full min-h-0 flex-col pt-2">
+    <section
+      aria-label="Sessions"
+      className="flex h-full min-h-0 flex-col pt-2"
+      onKeyDownCapture={moveVirtualFocus}
+    >
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {visibleCount === 0 ? resolvedEmptyTitle : ""}
       </span>
@@ -345,53 +477,93 @@ export function SessionList({
 
       <ScrollPane
         topEdgeFade
-        viewportRef={assignViewportRef}
+        viewportRef={assignVirtualViewportRef}
         viewportClassName={cn("px-3", visibleCount === 0 && "[&>div]:h-full")}
       >
         {visibleCount === 0 ? (
           <EmptySessionList title={resolvedEmptyTitle} description={emptyDescription} />
         ) : (
-          <div className="space-y-2 pb-3">
-            {groups.map((group, groupIndex) => {
-              const headingId = `activity-${group.label.replaceAll(" ", "-").toLowerCase()}`
-              return (
-                <section key={group.label} aria-labelledby={headingId}>
-                  <h3
-                    ref={registerHeading(group.label)}
-                    id={headingId}
-                    className={
-                      groupIndex === 0
-                        ? "sr-only"
-                        : "py-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
-                    }
-                  >
-                    {group.label}
-                  </h3>
+          <SessionTooltipOwner>
+            <div>
+              <div
+                role="list"
+                className="relative"
+                style={{ height: virtualizer.getTotalSize() }}
+              >
+                {groups.map((group) => {
+                  const headingId = groupHeadingId(group.label)
+                  return (
+                    <section
+                      key={group.label}
+                      aria-labelledby={headingId}
+                      className="absolute inset-x-0 top-0"
+                    >
+                      {measuredItems.flatMap((measuredItem) => {
+                        const virtualItem = virtualItems[measuredItem.index]
+                        if (!virtualItem || virtualItem.groupLabel !== group.label) return []
 
-                  <div className="space-y-2">
-                    {group.items.map((item) => (
-                      <SessionRow
-                        key={item.key}
-                        entry={item.entry}
-                        hygiene={
-                          item.entry.sessionId
-                            ? sessionHygieneFor(hygieneBySession, {
-                                agent: item.entry.agent,
-                                sessionId: item.entry.sessionId,
-                                wslDistro: item.entry.wslDistro ?? null,
-                              })
-                            : INITIAL_SESSION_HYGIENE
-                        }
-                        {...(onOpenSession ? { onOpen: () => onOpenSession(item.entry) } : {})}
-                        {...(renderAgentIcon ? { renderAgentIcon } : {})}
-                        {...(wslIcon ? { wslIcon } : {})}
-                      />
-                    ))}
-                  </div>
-                </section>
-              )
-            })}
-          </div>
+                        return (
+                          <div
+                            key={virtualItem.key}
+                            ref={measureAndRestoreFocus}
+                            data-index={measuredItem.index}
+                            data-virtual-kind={virtualItem.type}
+                            {...(virtualItem.type === "row"
+                              ? {
+                                  role: "listitem" as const,
+                                  "aria-posinset": virtualItem.rowPosition,
+                                  "aria-setsize": visibleCount,
+                                }
+                              : {})}
+                            className={cn(
+                              "absolute top-0 left-0 w-full",
+                              ((virtualItem.type === "heading" && virtualItem.groupIndex > 0) ||
+                                (virtualItem.type === "row" && virtualItem.itemIndex > 0)) &&
+                                "pt-2",
+                            )}
+                            style={{ transform: `translateY(${measuredItem.start}px)` }}
+                          >
+                            {virtualItem.type === "heading" ? (
+                              <h3
+                                ref={registerHeading(group.label)}
+                                id={headingId}
+                                className={
+                                  virtualItem.groupIndex === 0
+                                    ? "sr-only"
+                                    : "py-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
+                                }
+                              >
+                                {group.label}
+                              </h3>
+                            ) : (
+                              <SessionRow
+                                entry={virtualItem.item.entry}
+                                hygiene={
+                                  virtualItem.item.entry.sessionId
+                                    ? sessionHygieneFor(hygieneBySession, {
+                                        agent: virtualItem.item.entry.agent,
+                                        sessionId: virtualItem.item.entry.sessionId,
+                                        wslDistro: virtualItem.item.entry.wslDistro ?? null,
+                                      })
+                                    : INITIAL_SESSION_HYGIENE
+                                }
+                                {...(onOpenSession
+                                  ? { onOpen: () => onOpenSession(virtualItem.item.entry) }
+                                  : {})}
+                                {...(renderAgentIcon ? { renderAgentIcon } : {})}
+                                {...(wslIcon ? { wslIcon } : {})}
+                              />
+                            )}
+                          </div>
+                        )
+                      })}
+                    </section>
+                  )
+                })}
+              </div>
+              <div className="h-3" aria-hidden="true" />
+            </div>
+          </SessionTooltipOwner>
         )}
       </ScrollPane>
     </section>

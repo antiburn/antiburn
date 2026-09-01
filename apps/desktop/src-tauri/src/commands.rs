@@ -170,9 +170,10 @@ pub fn hide_popover(app: tauri::AppHandle) {
 /// Clamped shell-side, so a webview bug cannot produce a window taller than the
 /// display or shorter than its own chrome. `animate` is the *webview's* call:
 /// the reduced-motion preference lives there, and a height change is motion.
+/// Returns `true` only when this request reaches its target.
 #[tauri::command]
-pub fn set_popover_height(app: tauri::AppHandle, height: f64, animate: Option<bool>) {
-    popover::set_height(&app, height, animate.unwrap_or(true));
+pub async fn set_popover_height(app: tauri::AppHandle, height: f64, animate: Option<bool>) -> bool {
+    popover::set_height(&app, height, animate.unwrap_or(true)).await
 }
 
 /// Keep the popover on screen while a native dialog it opened holds focus.
@@ -533,6 +534,10 @@ pub fn list_recent_sessions(
     app: tauri::AppHandle,
     window_days: Option<u32>,
 ) -> CommandResult<Vec<ActivityEntry>> {
+    #[cfg(feature = "memory-probe")]
+    if let Some(entries) = crate::memory_probe::synthetic_sessions()? {
+        return Ok(entries);
+    }
     let store = app.state::<Store>();
     let days = match window_days {
         Some(days) => days.clamp(

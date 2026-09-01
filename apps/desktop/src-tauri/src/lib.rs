@@ -60,6 +60,8 @@ mod hud;
 mod insights_ipc;
 mod insights_report;
 mod insights_worker;
+#[cfg(feature = "memory-probe")]
+mod memory_probe;
 mod notifications;
 mod nudges;
 mod onboarding;
@@ -90,6 +92,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tauri::{Manager, RunEvent, WindowEvent};
+
+#[cfg(all(feature = "memory-probe", feature = "distribution"))]
+compile_error!("memory-probe and distribution features cannot be enabled together");
 
 /// Handles of the app's background tasks, kept so it can abort them on exit
 /// rather than leaving them running against a store that is going away.
@@ -351,9 +356,11 @@ pub fn run() {
             Ok(())
         });
 
-    let app = builder
-        .build(tauri::generate_context!())
-        .expect("failed to build the antiburn application");
+    #[cfg(not(feature = "memory-probe"))]
+    let app = builder.build(tauri::generate_context!());
+    #[cfg(feature = "memory-probe")]
+    let app = builder.build(tauri::generate_context!("tauri.memory-probe.conf.json"));
+    let app = app.expect("failed to build the antiburn application");
     let mut retention_cleanup = retention_log_dir.map(|log_dir| {
         tauri::async_runtime::spawn_blocking(move || {
             match antiburn_trace::clean_old_logs(&log_dir, antiburn_trace::DEFAULT_LOG_MAX_AGE) {
