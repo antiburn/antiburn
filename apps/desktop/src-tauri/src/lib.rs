@@ -537,6 +537,14 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         WindowEvent::Focused(false) if window.label() == popover::LABEL => {
             popover::hide_on_focus_loss(window);
         }
+        WindowEvent::Focused(false) if window.label() == antiburn_nudge::NUDGE_LABEL => {
+            if let Some(manager) = window
+                .app_handle()
+                .try_state::<antiburn_nudge::NudgeManager>()
+            {
+                manager.on_window_focus_lost();
+            }
+        }
         WindowEvent::CloseRequested { api, .. } => {
             match close_policy(window.label(), onboarding::is_pending(window.app_handle())) {
                 ClosePolicy::Allow => {}

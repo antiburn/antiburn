@@ -61,6 +61,41 @@ use self::retention::{DueEviction, EvictionMode, EvictionSchedule, EvictionToken
 /// Window label. Also listed in `capabilities/default.json`.
 pub const LABEL: &str = "popover";
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct NudgeKeyHandoff {
+    pending_popover_blurs: u64,
+    key_owned: bool,
+}
+
+impl NudgeKeyHandoff {
+    fn begin(&mut self) {
+        self.pending_popover_blurs = self.pending_popover_blurs.saturating_add(1);
+        self.key_owned = true;
+    }
+
+    fn on_popover_blur(&mut self) -> bool {
+        if self.pending_popover_blurs == 0 {
+            return false;
+        }
+        self.pending_popover_blurs -= 1;
+        true
+    }
+
+    fn on_expected_release(&mut self) -> bool {
+        std::mem::take(&mut self.key_owned)
+    }
+
+    fn cancel(&mut self) -> bool {
+        let dismiss_now = self.key_owned && self.pending_popover_blurs == 0;
+        self.clear();
+        dismiss_now
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Emitted the moment the popover reaches the screen, following the same
 /// `module:event` naming [`crate::scan`]'s events use. The webview listens
 /// for this to refresh live usage — see [`note_shown`] for why that refresh
@@ -341,10 +376,8 @@ pub struct PopoverState {
     /// Deliberately not persisted: a pin means "keep this on screen while I
     /// work", and a relaunch is the end of that work.
     pinned: AtomicBool,
-    /// Set when a focus loss is not acted on because the nudge notification
-    /// took key on hover. Consumed when the notification releases key, so the
-    /// popover takes key back for exactly that episode and no other.
-    yielded_key_to_nudge: AtomicBool,
+    /// Tracks one key-window handoff to the nudge notification.
+    nudge_key_handoff: Mutex<NudgeKeyHandoff>,
     /// The generation of the current renderer.
     renderer_generation: AtomicU64,
     /// The bounded onboarding prewarm and its eviction callbacks.
@@ -365,7 +398,7 @@ impl Default for PopoverState {
             resize_apply_guard: Mutex::new(()),
             focus_hold: AtomicU64::new(0),
             pinned: AtomicBool::new(false),
-            yielded_key_to_nudge: AtomicBool::new(false),
+            nudge_key_handoff: Mutex::new(NudgeKeyHandoff::default()),
             renderer_generation: AtomicU64::new(0),
             retention: Mutex::new(Retention::default()),
             timing: timing::PopoverTiming::default(),
@@ -440,17 +473,34 @@ impl PopoverState {
         self.pinned.store(pinned, Ordering::SeqCst);
     }
 
-    fn note_key_yielded_to_nudge(&self) {
-        self.yielded_key_to_nudge.store(true, Ordering::SeqCst);
+    fn begin_nudge_key_handoff(&self) {
+        if let Ok(mut handoff) = self.nudge_key_handoff.lock() {
+            handoff.begin();
+        }
     }
 
-    /// Consume the yield marker. True at most once per yielded episode.
-    fn take_key_yielded_to_nudge(&self) -> bool {
-        self.yielded_key_to_nudge.swap(false, Ordering::SeqCst)
+    fn suppress_blur_for_nudge_handoff(&self) -> bool {
+        self.nudge_key_handoff
+            .lock()
+            .is_ok_and(|mut handoff| handoff.on_popover_blur())
     }
 
-    fn clear_key_yielded_to_nudge(&self) {
-        self.yielded_key_to_nudge.store(false, Ordering::SeqCst);
+    fn release_nudge_key_handoff(&self) -> bool {
+        self.nudge_key_handoff
+            .lock()
+            .is_ok_and(|mut handoff| handoff.on_expected_release())
+    }
+
+    fn cancel_nudge_key_handoff(&self) -> bool {
+        self.nudge_key_handoff
+            .lock()
+            .is_ok_and(|mut handoff| handoff.cancel())
+    }
+
+    fn clear_nudge_key_handoff(&self) {
+        if let Ok(mut handoff) = self.nudge_key_handoff.lock() {
+            handoff.clear();
+        }
     }
 
     fn retention(&self) -> std::sync::MutexGuard<'_, Retention> {
@@ -1109,7 +1159,7 @@ fn hide_window(app: &AppHandle) {
     // A hidden popover has no key to take back: a nudge key release after
     // this point must not resurrect focus.
     if let Some(state) = app.try_state::<PopoverState>() {
-        state.clear_key_yielded_to_nudge();
+        state.clear_nudge_key_handoff();
     }
     let Some(window) = app.get_webview_window(LABEL) else {
         note_hidden(app);
@@ -1276,32 +1326,21 @@ fn apply_height(window: &WebviewWindow, height: f64) -> bool {
 /// about to take (or has taken) focus, and the popover must survive it. Also a
 /// no-op while pinned — looking away is exactly what a pin is for.
 ///
-/// Also a no-op when the nudge notification holds key right now: hovering the
-/// notification takes key for `mouseMoved` delivery (see `antiburn_nudge`),
-/// and that handoff must not read as the reader looking away. The check is a
-/// live key query and must run on the main thread — true here, because the
-/// window-event handler that calls this runs there. A hover so brief that the
-/// notification already resigned key before this queued event runs still
-/// dismisses; `NudgeManager::is_nudge_key` documents that trade.
+/// Also a no-op when the nudge notification caused this focus loss. The nudge
+/// records the handoff before it takes key, so a quick mouse leave cannot make
+/// the queued blur look like an unrelated focus change.
 ///
 /// All cases return *before* recording the dismissal: nothing was dismissed,
 /// so the next tray click is a fresh open and must not be suppressed.
 pub fn hide_on_focus_loss(window: &Window) {
     let app = window.app_handle();
-    if nudge_holds_key(app) {
-        if let Some(state) = app.try_state::<PopoverState>() {
-            state.note_key_yielded_to_nudge();
-        }
+    if app
+        .try_state::<PopoverState>()
+        .is_some_and(|state| state.suppress_blur_for_nudge_handoff())
+    {
         return;
     }
     dismiss(app);
-}
-
-/// Whether the nudge notification is the key window right now. Main thread
-/// only — the check is a live AppKit query.
-fn nudge_holds_key(app: &AppHandle) -> bool {
-    app.try_state::<antiburn_nudge::NudgeManager>()
-        .is_some_and(|manager| manager.is_nudge_key())
 }
 
 /// Hides the popover after a click somewhere else on the desktop.
@@ -1376,20 +1415,28 @@ pub fn end_focus_hold(app: &AppHandle) {
     }
 }
 
-/// Hands key back to the popover after the nudge notification releases it.
+/// Records that the focused popover is about to hand key to the nudge.
 ///
-/// The notification resigns key without giving it to any window (see
-/// `antiburn_nudge`), so without this the popover would sit visible but never
-/// key again: Escape dead, and no later focus change left to dismiss it. Only
-/// acts when [`hide_on_focus_loss`] noted that the popover yielded key to the
-/// notification, so a pinned popover left open while the reader works in
-/// another app is never re-focused over their work. Skips the refocus while a
-/// focus hold is active — a native dialog owns focus then.
+/// The callback runs before AppKit changes key windows. A popover that is only
+/// visible, such as a pinned popover behind another app, records no handoff.
+pub fn begin_nudge_key_handoff(app: &AppHandle) {
+    let focused = app
+        .get_webview_window(LABEL)
+        .is_some_and(|window| window.is_focused().unwrap_or(false));
+    if focused && let Some(state) = app.try_state::<PopoverState>() {
+        state.begin_nudge_key_handoff();
+    }
+}
+
+/// Hands key back to the popover after an expected nudge release.
+///
+/// The state keeps a pending blur after a quick release. That blur is still
+/// suppressed after focus returns, so it cannot dismiss the popover late.
 pub fn refocus_after_nudge(app: &AppHandle) {
     let Some(state) = app.try_state::<PopoverState>() else {
         return;
     };
-    if !state.take_key_yielded_to_nudge() || state.holds_focus() {
+    if !state.release_nudge_key_handoff() || state.holds_focus() {
         return;
     }
     if let Some(window) = app.get_webview_window(LABEL)
@@ -1399,12 +1446,25 @@ pub fn refocus_after_nudge(app: &AppHandle) {
     }
 }
 
+/// Cancels a handoff when AppKit removes nudge key focus unexpectedly.
+///
+/// If the popover blur already arrived, dismiss now. Otherwise, the queued
+/// blur performs the normal dismissal after the handoff marker is cleared.
+pub fn cancel_nudge_key_handoff(app: &AppHandle) {
+    let dismiss_now = app
+        .try_state::<PopoverState>()
+        .is_some_and(|state| state.cancel_nudge_key_handoff());
+    if dismiss_now {
+        dismiss(app);
+    }
+}
+
 /// Forgets that the popover yielded key to the nudge notification. Used by a
 /// notification CTA that opens another window: the key release that follows
 /// the CTA's dismissal must not pull focus back to the popover.
 pub fn clear_nudge_yield(app: &AppHandle) {
     if let Some(state) = app.try_state::<PopoverState>() {
-        state.clear_key_yielded_to_nudge();
+        state.clear_nudge_key_handoff();
     }
 }
 
@@ -2034,29 +2094,60 @@ mod tests {
     }
 
     #[test]
-    fn a_yield_to_the_nudge_is_consumed_exactly_once() {
-        let state = PopoverState::default();
-        assert!(!state.take_key_yielded_to_nudge());
-        state.note_key_yielded_to_nudge();
-        assert!(state.take_key_yielded_to_nudge());
-        assert!(!state.take_key_yielded_to_nudge());
+    fn a_normal_handoff_suppresses_blur_and_restores_focus_once() {
+        let mut handoff = NudgeKeyHandoff::default();
+        handoff.begin();
+        assert!(handoff.on_popover_blur());
+        assert!(handoff.on_expected_release());
+        assert!(!handoff.on_expected_release());
     }
 
     #[test]
-    fn clearing_a_yield_leaves_nothing_to_consume() {
-        let state = PopoverState::default();
-        state.note_key_yielded_to_nudge();
-        state.clear_key_yielded_to_nudge();
-        assert!(!state.take_key_yielded_to_nudge());
+    fn a_release_before_delayed_blur_restores_focus_and_suppresses_that_blur() {
+        let mut handoff = NudgeKeyHandoff::default();
+        handoff.begin();
+        assert!(handoff.on_expected_release());
+        assert!(handoff.on_popover_blur());
+        assert!(!handoff.on_popover_blur());
     }
 
-    /// A suppressed focus loss dismisses nothing, so it must not arm the
-    /// reopen suppression the way a real dismissal does.
     #[test]
-    fn a_yield_to_the_nudge_does_not_suppress_reopening() {
-        let state = PopoverState::default();
-        state.note_key_yielded_to_nudge();
-        assert!(!state.suppresses_reopen());
+    fn an_external_key_loss_cancels_the_handoff_without_restoring_focus() {
+        let mut handoff = NudgeKeyHandoff::default();
+        handoff.begin();
+        assert!(handoff.on_popover_blur());
+        assert!(handoff.cancel());
+        assert!(!handoff.on_expected_release());
+        assert!(!handoff.on_popover_blur());
+    }
+
+    #[test]
+    fn an_external_key_loss_before_blur_leaves_that_blur_to_dismiss() {
+        let mut handoff = NudgeKeyHandoff::default();
+        handoff.begin();
+        assert!(!handoff.cancel());
+        assert!(!handoff.on_popover_blur());
+    }
+
+    #[test]
+    fn repeated_quick_handoffs_preserve_every_queued_blur() {
+        let mut handoff = NudgeKeyHandoff::default();
+        handoff.begin();
+        assert!(handoff.on_expected_release());
+        handoff.begin();
+        assert!(handoff.on_expected_release());
+        assert!(handoff.on_popover_blur());
+        assert!(handoff.on_popover_blur());
+        assert!(!handoff.on_popover_blur());
+    }
+
+    #[test]
+    fn clearing_a_handoff_leaves_no_delayed_focus_work() {
+        let mut handoff = NudgeKeyHandoff::default();
+        handoff.begin();
+        handoff.clear();
+        assert!(!handoff.on_expected_release());
+        assert!(!handoff.on_popover_blur());
     }
 
     #[test]

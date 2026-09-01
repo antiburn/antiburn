@@ -12,6 +12,8 @@
 //! antiburn app, not a general-purpose plugin, so there's no need to be generic
 //! over the runtime.
 
+use std::sync::Arc;
+
 use tauri::{
     AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
@@ -313,15 +315,19 @@ pub(crate) fn resize(window: &WebviewWindow, content_height: f64) {
 /// Hide the notification. On macOS this orders the panel out; elsewhere a plain
 /// hide. `on_key_released` runs when the hide releases key the panel held —
 /// macOS only, because the notification never takes key elsewhere.
-pub(crate) fn hide(window: &WebviewWindow, on_key_released: Option<crate::KeyReleasedCallback>) {
+pub(crate) fn hide(
+    window: &WebviewWindow,
+    expected_key_release: Arc<crate::ExpectedKeyRelease>,
+    on_key_released: Option<crate::KeyCallback>,
+) {
     #[cfg(target_os = "macos")]
     {
         crate::macos::stop_hover_watch();
-        crate::macos::hide(window, on_key_released);
+        crate::macos::hide(window, expected_key_release, on_key_released);
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = on_key_released;
+        let _ = (expected_key_release, on_key_released);
         let _ = window.hide();
     }
 }

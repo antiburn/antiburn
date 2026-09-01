@@ -9,8 +9,8 @@
 //! thread-safe, and [`crate::NudgeManager::reveal`] calls them from the IPC
 //! command thread.
 //!
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use core_foundation::base::TCFType;
@@ -143,12 +143,19 @@ pub(crate) fn show(window: &WebviewWindow) {
 pub(crate) fn set_hovered(
     window: &WebviewWindow,
     hovered: bool,
-    on_key_released: Option<crate::KeyReleasedCallback>,
+    on_key_acquiring: Option<crate::KeyCallback>,
+    expected_key_release: Arc<crate::ExpectedKeyRelease>,
+    on_key_released: Option<crate::KeyCallback>,
 ) {
     let window = window.clone();
     let _ = window.clone().run_on_main_thread(move || {
         if let Ok(panel) = window.get_webview_panel(crate::NUDGE_LABEL) {
             if hovered {
+                if !is_key(&window)
+                    && let Some(on_key_acquiring) = &on_key_acquiring
+                {
+                    on_key_acquiring();
+                }
                 let content_view = panel.content_view();
                 panel.make_first_responder(Some(&content_view));
                 panel.make_key_window();
@@ -160,6 +167,7 @@ pub(crate) fn set_hovered(
                 // responder and post a spurious `DidResignKey` for no reason.
                 // Reachable now that hover can be reported by the cursor watcher
                 // below without the panel ever having taken key.
+                expected_key_release.arm();
                 panel.resign_key_window();
                 // Key now belongs to no window. Tell the app, so it can hand
                 // key back to the window that yielded it.
@@ -339,10 +347,17 @@ pub(crate) fn animate_resize(window: &WebviewWindow, height: f64) {
 /// Hide the notification panel (order out). When the panel holds key at that
 /// moment — a dismissal or replacement while hovered — the hide releases key
 /// to no other window, so `on_key_released` runs after it.
-pub(crate) fn hide(window: &WebviewWindow, on_key_released: Option<crate::KeyReleasedCallback>) {
+pub(crate) fn hide(
+    window: &WebviewWindow,
+    expected_key_release: Arc<crate::ExpectedKeyRelease>,
+    on_key_released: Option<crate::KeyCallback>,
+) {
     let window = window.clone();
     let _ = window.clone().run_on_main_thread(move || {
         let was_key = is_key(&window);
+        if was_key {
+            expected_key_release.arm();
+        }
         match window.get_webview_panel(crate::NUDGE_LABEL) {
             Ok(panel) => panel.hide(),
             Err(_) => {
