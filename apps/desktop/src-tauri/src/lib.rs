@@ -477,19 +477,34 @@ fn close_policy(label: &str, onboarding_pending: bool) -> ClosePolicy {
     }
 }
 
-type WindowRebuild = fn(&tauri::AppHandle);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ManagedWindow {
+    Popover,
+    Settings,
+    Onboarding,
+}
 
-fn rebuild_after_destroy_for_label(label: &str) -> Option<WindowRebuild> {
+impl ManagedWindow {
+    fn rebuild_after_destroy(self, app: &tauri::AppHandle) {
+        match self {
+            Self::Popover => popover::rebuild_after_destroy(app),
+            Self::Settings => settings::rebuild_after_destroy(app),
+            Self::Onboarding => onboarding::rebuild_after_destroy(app),
+        }
+    }
+}
+
+fn rebuild_after_destroy_for_label(label: &str) -> Option<ManagedWindow> {
     match label {
-        popover::LABEL => Some(popover::rebuild_after_destroy),
-        settings::LABEL => Some(settings::rebuild_after_destroy),
-        onboarding::LABEL => Some(onboarding::rebuild_after_destroy),
+        popover::LABEL => Some(ManagedWindow::Popover),
+        settings::LABEL => Some(ManagedWindow::Settings),
+        onboarding::LABEL => Some(ManagedWindow::Onboarding),
         _ => None,
     }
 }
 
 /// Queue a replacement after the current window event returns.
-fn defer_rebuild_after_destroy(app: &tauri::AppHandle, rebuild: WindowRebuild) {
+fn defer_rebuild_after_destroy(app: &tauri::AppHandle, window: ManagedWindow) {
     app.state::<WindowRebuildState>().begin();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -498,7 +513,7 @@ fn defer_rebuild_after_destroy(app: &tauri::AppHandle, rebuild: WindowRebuild) {
         let rebuild_app = app.clone();
         let finish_app = app.clone();
         if let Err(error) = app.run_on_main_thread(move || {
-            rebuild(&rebuild_app);
+            window.rebuild_after_destroy(&rebuild_app);
             finish_app.state::<WindowRebuildState>().finish();
         }) {
             app.state::<WindowRebuildState>().finish();
@@ -762,24 +777,15 @@ mod tests {
     #[test]
     fn only_managed_windows_select_their_deferred_rebuild_handler() {
         let cases = [
-            (
-                super::popover::LABEL,
-                super::popover::rebuild_after_destroy as fn(&tauri::AppHandle),
-            ),
-            (
-                super::settings::LABEL,
-                super::settings::rebuild_after_destroy as fn(&tauri::AppHandle),
-            ),
-            (
-                super::onboarding::LABEL,
-                super::onboarding::rebuild_after_destroy as fn(&tauri::AppHandle),
-            ),
+            (super::popover::LABEL, super::ManagedWindow::Popover),
+            (super::settings::LABEL, super::ManagedWindow::Settings),
+            (super::onboarding::LABEL, super::ManagedWindow::Onboarding),
         ];
 
         for (label, expected) in cases {
             let actual = rebuild_after_destroy_for_label(label)
                 .expect("a managed window selects a rebuild handler");
-            assert!(std::ptr::fn_addr_eq(actual, expected));
+            assert_eq!(actual, expected);
         }
         assert!(rebuild_after_destroy_for_label("unmanaged").is_none());
     }
