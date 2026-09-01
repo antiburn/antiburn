@@ -140,7 +140,11 @@ pub(crate) fn show(window: &WebviewWindow) {
 /// explicit first responder, the window itself absorbs them, and CTA/close
 /// buttons stop responding to Tab/Enter/Space while hovered even though mouse
 /// clicks (hit-testing, independent of first-responder state) keep working.
-pub(crate) fn set_hovered(window: &WebviewWindow, hovered: bool) {
+pub(crate) fn set_hovered(
+    window: &WebviewWindow,
+    hovered: bool,
+    on_key_released: Option<crate::KeyReleasedCallback>,
+) {
     let window = window.clone();
     let _ = window.clone().run_on_main_thread(move || {
         if let Ok(panel) = window.get_webview_panel(crate::NUDGE_LABEL) {
@@ -157,6 +161,11 @@ pub(crate) fn set_hovered(window: &WebviewWindow, hovered: bool) {
                 // Reachable now that hover can be reported by the cursor watcher
                 // below without the panel ever having taken key.
                 panel.resign_key_window();
+                // Key now belongs to no window. Tell the app, so it can hand
+                // key back to the window that yielded it.
+                if let Some(on_key_released) = on_key_released {
+                    on_key_released();
+                }
             }
         }
     });
@@ -327,15 +336,21 @@ pub(crate) fn animate_resize(window: &WebviewWindow, height: f64) {
     });
 }
 
-/// Hide the notification panel (order out).
-pub(crate) fn hide(window: &WebviewWindow) {
+/// Hide the notification panel (order out). When the panel holds key at that
+/// moment — a dismissal or replacement while hovered — the hide releases key
+/// to no other window, so `on_key_released` runs after it.
+pub(crate) fn hide(window: &WebviewWindow, on_key_released: Option<crate::KeyReleasedCallback>) {
     let window = window.clone();
     let _ = window.clone().run_on_main_thread(move || {
+        let was_key = is_key(&window);
         match window.get_webview_panel(crate::NUDGE_LABEL) {
             Ok(panel) => panel.hide(),
             Err(_) => {
                 let _ = window.hide();
             }
+        }
+        if was_key && let Some(on_key_released) = on_key_released {
+            on_key_released();
         }
     });
 }

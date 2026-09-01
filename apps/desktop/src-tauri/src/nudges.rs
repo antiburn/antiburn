@@ -54,11 +54,15 @@ pub fn anchor_next_to_the_tray(app: &AppHandle) {
 pub fn init(app: &AppHandle) -> tauri::Result<()> {
     let action_app = app.clone();
     let placement_app = app.clone();
+    let refocus_app = app.clone();
     let manager = NudgeManager::with_placement(
         app,
         move |event| on_action(&action_app, event),
         move || placement(&placement_app),
-    )?;
+    )?
+    // The notification resigns key without handing it to any window. Give key
+    // back to the popover when the popover yielded it to the notification.
+    .on_key_released(move || crate::popover::refocus_after_nudge(&refocus_app));
     app.manage(manager);
     app.manage(antiburn_sound::SoundPlayer::new());
     Ok(())
@@ -138,6 +142,9 @@ fn on_action(app: &AppHandle, event: NudgeActionEvent) {
     if event.action_id == "dismiss" {
         return;
     }
+    // Every other CTA opens or focuses a different window. The key release
+    // from the CTA's dismissal must not pull focus back to the popover.
+    crate::popover::clear_nudge_yield(app);
     if event.action_id == crate::notifications::NOTIFICATION_SETTINGS_ACTION_ID {
         let _ = crate::settings::open(app, Some("notifications".to_string()));
         return;

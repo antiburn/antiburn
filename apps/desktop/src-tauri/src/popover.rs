@@ -341,6 +341,10 @@ pub struct PopoverState {
     /// Deliberately not persisted: a pin means "keep this on screen while I
     /// work", and a relaunch is the end of that work.
     pinned: AtomicBool,
+    /// Set when a focus loss is not acted on because the nudge notification
+    /// took key on hover. Consumed when the notification releases key, so the
+    /// popover takes key back for exactly that episode and no other.
+    yielded_key_to_nudge: AtomicBool,
     /// The generation of the current renderer.
     renderer_generation: AtomicU64,
     /// The bounded onboarding prewarm and its eviction callbacks.
@@ -361,6 +365,7 @@ impl Default for PopoverState {
             resize_apply_guard: Mutex::new(()),
             focus_hold: AtomicU64::new(0),
             pinned: AtomicBool::new(false),
+            yielded_key_to_nudge: AtomicBool::new(false),
             renderer_generation: AtomicU64::new(0),
             retention: Mutex::new(Retention::default()),
             timing: timing::PopoverTiming::default(),
@@ -433,6 +438,19 @@ impl PopoverState {
 
     fn set_pinned(&self, pinned: bool) {
         self.pinned.store(pinned, Ordering::SeqCst);
+    }
+
+    fn note_key_yielded_to_nudge(&self) {
+        self.yielded_key_to_nudge.store(true, Ordering::SeqCst);
+    }
+
+    /// Consume the yield marker. True at most once per yielded episode.
+    fn take_key_yielded_to_nudge(&self) -> bool {
+        self.yielded_key_to_nudge.swap(false, Ordering::SeqCst)
+    }
+
+    fn clear_key_yielded_to_nudge(&self) {
+        self.yielded_key_to_nudge.store(false, Ordering::SeqCst);
     }
 
     fn retention(&self) -> std::sync::MutexGuard<'_, Retention> {
@@ -1088,6 +1106,11 @@ fn destroy_prewarm(app: &AppHandle) -> bool {
 }
 
 fn hide_window(app: &AppHandle) {
+    // A hidden popover has no key to take back: a nudge key release after
+    // this point must not resurrect focus.
+    if let Some(state) = app.try_state::<PopoverState>() {
+        state.clear_key_yielded_to_nudge();
+    }
     let Some(window) = app.get_webview_window(LABEL) else {
         note_hidden(app);
         return;
@@ -1253,10 +1276,32 @@ fn apply_height(window: &WebviewWindow, height: f64) -> bool {
 /// about to take (or has taken) focus, and the popover must survive it. Also a
 /// no-op while pinned — looking away is exactly what a pin is for.
 ///
-/// Both cases return *before* recording the dismissal: nothing was dismissed,
+/// Also a no-op when the nudge notification holds key right now: hovering the
+/// notification takes key for `mouseMoved` delivery (see `antiburn_nudge`),
+/// and that handoff must not read as the reader looking away. The check is a
+/// live key query and must run on the main thread — true here, because the
+/// window-event handler that calls this runs there. A hover so brief that the
+/// notification already resigned key before this queued event runs still
+/// dismisses; `NudgeManager::is_nudge_key` documents that trade.
+///
+/// All cases return *before* recording the dismissal: nothing was dismissed,
 /// so the next tray click is a fresh open and must not be suppressed.
 pub fn hide_on_focus_loss(window: &Window) {
-    dismiss(window.app_handle());
+    let app = window.app_handle();
+    if nudge_holds_key(app) {
+        if let Some(state) = app.try_state::<PopoverState>() {
+            state.note_key_yielded_to_nudge();
+        }
+        return;
+    }
+    dismiss(app);
+}
+
+/// Whether the nudge notification is the key window right now. Main thread
+/// only — the check is a live AppKit query.
+fn nudge_holds_key(app: &AppHandle) -> bool {
+    app.try_state::<antiburn_nudge::NudgeManager>()
+        .is_some_and(|manager| manager.is_nudge_key())
 }
 
 /// Hides the popover after a click somewhere else on the desktop.
@@ -1328,6 +1373,38 @@ pub fn end_focus_hold(app: &AppHandle) {
         && window.is_visible().unwrap_or(false)
     {
         let _ = window.set_focus();
+    }
+}
+
+/// Hands key back to the popover after the nudge notification releases it.
+///
+/// The notification resigns key without giving it to any window (see
+/// `antiburn_nudge`), so without this the popover would sit visible but never
+/// key again: Escape dead, and no later focus change left to dismiss it. Only
+/// acts when [`hide_on_focus_loss`] noted that the popover yielded key to the
+/// notification, so a pinned popover left open while the reader works in
+/// another app is never re-focused over their work. Skips the refocus while a
+/// focus hold is active — a native dialog owns focus then.
+pub fn refocus_after_nudge(app: &AppHandle) {
+    let Some(state) = app.try_state::<PopoverState>() else {
+        return;
+    };
+    if !state.take_key_yielded_to_nudge() || state.holds_focus() {
+        return;
+    }
+    if let Some(window) = app.get_webview_window(LABEL)
+        && window.is_visible().unwrap_or(false)
+    {
+        let _ = window.set_focus();
+    }
+}
+
+/// Forgets that the popover yielded key to the nudge notification. Used by a
+/// notification CTA that opens another window: the key release that follows
+/// the CTA's dismissal must not pull focus back to the popover.
+pub fn clear_nudge_yield(app: &AppHandle) {
+    if let Some(state) = app.try_state::<PopoverState>() {
+        state.clear_key_yielded_to_nudge();
     }
 }
 
@@ -1954,6 +2031,32 @@ mod tests {
     fn a_fresh_popover_is_not_pinned() {
         let state = PopoverState::default();
         assert!(!state.is_pinned());
+    }
+
+    #[test]
+    fn a_yield_to_the_nudge_is_consumed_exactly_once() {
+        let state = PopoverState::default();
+        assert!(!state.take_key_yielded_to_nudge());
+        state.note_key_yielded_to_nudge();
+        assert!(state.take_key_yielded_to_nudge());
+        assert!(!state.take_key_yielded_to_nudge());
+    }
+
+    #[test]
+    fn clearing_a_yield_leaves_nothing_to_consume() {
+        let state = PopoverState::default();
+        state.note_key_yielded_to_nudge();
+        state.clear_key_yielded_to_nudge();
+        assert!(!state.take_key_yielded_to_nudge());
+    }
+
+    /// A suppressed focus loss dismisses nothing, so it must not arm the
+    /// reopen suppression the way a real dismissal does.
+    #[test]
+    fn a_yield_to_the_nudge_does_not_suppress_reopening() {
+        let state = PopoverState::default();
+        state.note_key_yielded_to_nudge();
+        assert!(!state.suppresses_reopen());
     }
 
     #[test]

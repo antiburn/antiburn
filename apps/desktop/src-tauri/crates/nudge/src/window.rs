@@ -311,15 +311,19 @@ pub(crate) fn resize(window: &WebviewWindow, content_height: f64) {
 }
 
 /// Hide the notification. On macOS this orders the panel out; elsewhere a plain
-/// hide.
-pub(crate) fn hide(window: &WebviewWindow) {
+/// hide. `on_key_released` runs when the hide releases key the panel held —
+/// macOS only, because the notification never takes key elsewhere.
+pub(crate) fn hide(window: &WebviewWindow, on_key_released: Option<crate::KeyReleasedCallback>) {
     #[cfg(target_os = "macos")]
     {
         crate::macos::stop_hover_watch();
-        crate::macos::hide(window);
+        crate::macos::hide(window, on_key_released);
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = window.hide();
+    {
+        let _ = on_key_released;
+        let _ = window.hide();
+    }
 }
 
 /// Retire the hidden notification webview. The next delivery recreates it.
