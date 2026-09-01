@@ -91,6 +91,10 @@ pnpm --filter @antiburn/desktop tauri dev \
 Debug builds load the frontend from the Vite dev server, so `cargo` checks do
 not need a built bundle. Release packaging embeds `apps/desktop/dist`.
 
+The macOS-only [memory reporting runbook](../../docs/runbooks/memory-reporting.md)
+documents the probe-enabled release measurement, Steve setup, and result
+interpretation.
+
 `rusqlite` is compiled from bundled sources, so neither CI nor a checkout needs
 a system SQLite.
 

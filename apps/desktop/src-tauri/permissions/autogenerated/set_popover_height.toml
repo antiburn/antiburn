@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-popover-height"
+description = "Enables the set_popover_height command without any pre-configured scope."
+commands.allow = ["set_popover_height"]
+
+[[permission]]
+identifier = "deny-set-popover-height"
+description = "Denies the set_popover_height command without any pre-configured scope."
+commands.deny = ["set_popover_height"]

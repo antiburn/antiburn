@@ -8,12 +8,107 @@ import type { SessionSubject } from "./SessionPane"
 const getSessionAnalysis = vi.hoisted(() => vi.fn())
 const getSessionAnalysisFingerprint = vi.hoisted(() => vi.fn())
 const getSubagentAnalysis = vi.hoisted(() => vi.fn())
+const setPopoverHeight = vi.hoisted(() => vi.fn())
 
 // The analysis commands are overridden. All other wrappers keep their real
 // no-shell fallback because `hasShell()` is false outside Tauri.
 vi.mock("../../lib/ipc", async (importOriginal) => {
   const actual = await importOriginal<typeof Ipc>()
-  return { ...actual, getSessionAnalysis, getSessionAnalysisFingerprint, getSubagentAnalysis }
+  return {
+    ...actual,
+    getSessionAnalysis,
+    getSessionAnalysisFingerprint,
+    getSubagentAnalysis,
+    setPopoverHeight,
+  }
+})
+
+describe("PopoverSession surface presentation", () => {
+  const subject: SessionSubject = {
+    agent: "claude-code",
+    sessionId: "session-1",
+    wslDistro: null,
+  }
+
+  beforeEach(() => {
+    setPopoverHeight.mockReset()
+    setPopoverHeight.mockResolvedValue(true)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("keeps Usage presented until the winning resize presents the requested session", async () => {
+    const pending: ((completed: boolean) => void)[] = []
+    setPopoverHeight.mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          pending.push(resolve)
+        }),
+    )
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    expect(pending).toHaveLength(1)
+    pending.shift()?.(true)
+    await Promise.resolve()
+
+    session.setShowUsage(true)
+    expect(session.getSnapshot().showUsage).toBe(true)
+    expect(pending).toHaveLength(1)
+    pending.shift()?.(true)
+    await vi.waitFor(() => expect(session.getSnapshot().presentedSurface).toBe("usage"))
+
+    session.setShowUsage(false)
+    session.openSession(subject)
+    expect(session.getSnapshot().presentedSurface).toBe("usage")
+
+    pending.shift()?.(true)
+    await Promise.resolve()
+    expect(session.getSnapshot().presentedSurface).toBe("usage")
+
+    pending.shift()?.(true)
+    await vi.waitFor(() => expect(session.getSnapshot().presentedSurface).toBe("session"))
+    unsubscribe()
+  })
+
+  it("presents equal-height navigation without waiting for native completion", () => {
+    setPopoverHeight.mockImplementation(() => new Promise<boolean>(() => {}))
+    const session = new PopoverSession()
+
+    session.openSession(subject)
+
+    expect(session.getSnapshot().presentedSurface).toBe("session")
+    expect(session.getSnapshot().presentedSession).toEqual(subject)
+  })
+
+  it("does not leave Usage presented after the winning contraction fails", async () => {
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+
+    session.setShowUsage(true)
+    expect(session.getSnapshot().presentedSurface).toBe("usage")
+    setPopoverHeight.mockResolvedValue(false)
+    session.setShowUsage(false)
+    expect(session.getSnapshot().presentedSurface).toBe("usage")
+
+    await vi.waitFor(() => expect(session.getSnapshot().presentedSurface).toBe("activity"))
+    unsubscribe()
+  })
+
+  it("requests an immediate native resize when reduced motion is enabled", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({ matches: true })),
+    )
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+
+    await vi.waitFor(() => expect(setPopoverHeight).toHaveBeenCalledWith(700, false))
+    unsubscribe()
+  })
 })
 
 /**

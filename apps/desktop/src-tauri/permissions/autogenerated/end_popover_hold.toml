@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-end-popover-hold"
+description = "Enables the end_popover_hold command without any pre-configured scope."
+commands.allow = ["end_popover_hold"]
+
+[[permission]]
+identifier = "deny-end-popover-hold"
+description = "Denies the end_popover_hold command without any pre-configured scope."
+commands.deny = ["end_popover_hold"]

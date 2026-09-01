@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-record-hud-position"
+description = "Enables the record_hud_position command without any pre-configured scope."
+commands.allow = ["record_hud_position"]
+
+[[permission]]
+identifier = "deny-record-hud-position"
+description = "Denies the record_hud_position command without any pre-configured scope."
+commands.deny = ["record_hud_position"]

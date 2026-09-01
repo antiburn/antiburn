@@ -18,7 +18,9 @@ use antiburn_local::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SessionEvidence, SourceAcceptance,
 };
 use antiburn_local::discovery::SessionSource;
-use antiburn_local::insights::{NotAssessedReason, ReportCatalogs, session_badges};
+use antiburn_local::insights::{
+    BadgeId, BadgeStatus, NotAssessedReason, ReportCatalogs, session_badges,
+};
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::scan_roots as engine_scan_roots;
 use antiburn_local::paths::{home_dir, protected};
@@ -32,10 +34,10 @@ use crate::agents::kind_from_slug;
 use crate::analysis;
 use crate::consent;
 use crate::dto::{
-    ActivityEntry, AgentScanState, AppInfo, DeferredPermissionDir, InsightsReportPayload,
-    InsightsStatusPayload, LiveUsageSummary, OrchestrationStatus, ProviderUsageSummary,
-    RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload, SessionHygieneRequest,
-    SessionIdentity, SessionRelation, SessionRelations, SubagentMember,
+    ActivityEntry, AgentScanState, AppInfo, DeferredPermissionDir, HygieneSummaryPayload,
+    InsightsReportPayload, InsightsStatusPayload, LiveUsageSummary, OrchestrationStatus,
+    ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload,
+    SessionHygieneRequest, SessionIdentity, SessionRelation, SessionRelations, SubagentMember,
 };
 use crate::export::{ExportedSession, SessionExport};
 use crate::insights_ipc::InsightsController;
@@ -71,7 +73,10 @@ pub fn engine_catalog_version() -> &'static str {
 #[tauri::command]
 pub fn window_ready(window: tauri::WebviewWindow, generation: u64) {
     match window.label() {
-        crate::popover::LABEL => crate::popover::renderer_ready(&window, generation),
+        crate::popover::LABEL => {
+            crate::popover::renderer_ready(&window, generation);
+            crate::popover_peek::prewarm(window.app_handle());
+        }
         crate::settings::LABEL => crate::settings::renderer_ready(&window, generation),
         crate::onboarding::LABEL => crate::onboarding::renderer_ready(&window, generation),
         label => {
@@ -171,9 +176,10 @@ pub fn hide_popover(app: tauri::AppHandle) {
 /// Clamped shell-side, so a webview bug cannot produce a window taller than the
 /// display or shorter than its own chrome. `animate` is the *webview's* call:
 /// the reduced-motion preference lives there, and a height change is motion.
+/// Returns `true` only when this request reaches its target.
 #[tauri::command]
-pub fn set_popover_height(app: tauri::AppHandle, height: f64, animate: Option<bool>) {
-    popover::set_height(&app, height, animate.unwrap_or(true));
+pub async fn set_popover_height(app: tauri::AppHandle, height: f64, animate: Option<bool>) -> bool {
+    popover::set_height(&app, height, animate.unwrap_or(true)).await
 }
 
 /// Keep the popover on screen while a native dialog it opened holds focus.
@@ -393,12 +399,20 @@ pub fn finish_onboarding(
     app: tauri::AppHandle,
     activity_window_days: u32,
     launch_at_login: bool,
+    disabled_agents: Option<Vec<String>>,
+    nudges_respect_dnd: Option<bool>,
 ) -> CommandResult<AppSettings> {
     let store = app.state::<Store>();
     let (previous, saved) = store
         .update_settings(|settings| {
             settings.activity_window_days = activity_window_days;
             settings.launch_at_login = launch_at_login;
+            if let Some(disabled) = disabled_agents {
+                settings.disabled_agents = crate::store::DisabledAgents::selected(disabled);
+            }
+            if let Some(respect) = nudges_respect_dnd {
+                settings.nudges_respect_dnd = respect;
+            }
             settings.onboarding_completed = true;
         })
         .map_err(fail)?;
@@ -472,10 +486,10 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
         crate::disk_monitor::refresh_title(app);
     }
 
-    // On macOS, the Focus-status authorization waits for a completed setup
-    // and the master notification switch. The function checks both itself,
-    // and repeat calls are free (the gate keeps a once-flag), so no
-    // transition edge needs to be computed here.
+    // On macOS, the Focus-status authorization waits for a completed setup,
+    // the master notification switch, and the Do Not Disturb opt-in. The
+    // function checks all three itself, and repeat calls are free (the gate
+    // keeps a once-flag), so no transition edge needs to be computed here.
     crate::notifications::maybe_initialize_authorization(app);
 
     // Consent changing is the queue's business: turning it off withdraws
@@ -534,18 +548,23 @@ pub fn list_recent_sessions(
     app: tauri::AppHandle,
     window_days: Option<u32>,
 ) -> CommandResult<Vec<ActivityEntry>> {
+    #[cfg(feature = "memory-probe")]
+    if let Some(entries) = crate::memory_probe::synthetic_sessions()? {
+        return Ok(entries);
+    }
     let store = app.state::<Store>();
+    let settings = store.settings().map_err(fail)?;
     let days = match window_days {
         Some(days) => days.clamp(
             crate::store::MIN_ACTIVITY_DAYS,
             crate::store::MAX_ACTIVITY_DAYS,
         ),
-        None => store.settings().map_err(fail)?.activity_window_days,
+        None => settings.activity_window_days,
     };
     let now = scan::unix_now();
     let since = now - i64::from(days) * 86_400;
     let sessions = store
-        .recent_sessions(since, MAX_ACTIVITY_ROWS)
+        .recent_sessions_excluding(since, MAX_ACTIVITY_ROWS, &settings.disabled_agents)
         .map_err(fail)?;
     let repositories = store.repositories().map_err(fail)?;
 
@@ -721,6 +740,13 @@ pub fn get_provider_usage(
     app: tauri::AppHandle,
     utc_offset_minutes: Option<i32>,
 ) -> CommandResult<ProviderUsageSummary> {
+    provider_usage_summary(&app, utc_offset_minutes)
+}
+
+pub(crate) fn provider_usage_summary(
+    app: &tauri::AppHandle,
+    utc_offset_minutes: Option<i32>,
+) -> CommandResult<ProviderUsageSummary> {
     let now = scan::unix_now();
     let offset = utc_offset_minutes.unwrap_or(0);
     let since = provider_usage::lookback_start(now, offset);
@@ -786,6 +812,10 @@ pub fn get_live_usage(
     app: tauri::AppHandle,
     _utc_offset_minutes: Option<i32>,
 ) -> CommandResult<LiveUsageSummary> {
+    Ok(cached_live_usage(&app))
+}
+
+pub(crate) fn cached_live_usage(app: &tauri::AppHandle) -> LiveUsageSummary {
     let settings = app
         .try_state::<Store>()
         .and_then(|store| store.settings().ok());
@@ -800,14 +830,14 @@ pub fn get_live_usage(
         let hidden = settings
             .map(|settings| settings.live_usage_hidden_providers)
             .unwrap_or_default();
-        return Ok(LiveUsageSummary {
+        return LiveUsageSummary {
             meters: live
                 .map(|live| provider_usage::live::roster(&live.sources, &hidden))
                 .unwrap_or_default(),
             ..LiveUsageSummary::default()
-        });
+        };
     }
-    Ok(live.map(|live| live.snapshot()).unwrap_or_default())
+    live.map(|live| live.snapshot()).unwrap_or_default()
 }
 
 /// Refresh the provider's own limit figures and publish the new snapshot.
@@ -1291,6 +1321,70 @@ pub fn get_insights_status(app: tauri::AppHandle) -> CommandResult<InsightsStatu
         pending: backlog.pending,
         processing: backlog.processing,
     })
+}
+
+/// The aggregate hygiene numbers for the sessions in the activity window.
+///
+/// Same window and disabled-agent filter as `list_recent_sessions`, so the
+/// summary describes the sessions the list shows.
+#[tauri::command]
+pub async fn get_hygiene_summary(app: tauri::AppHandle) -> CommandResult<HygieneSummaryPayload> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<Store>();
+        let settings = store.settings().map_err(fail)?;
+        let since = scan::unix_now() - i64::from(settings.activity_window_days) * 86_400;
+        let rows = store
+            .hygiene_summary_rows(&environment_key(None), since, &settings.disabled_agents)
+            .map_err(fail)?;
+        Ok(hygiene_summary_payload(rows))
+    })
+    .await
+    .map_err(fail)?
+}
+
+fn hygiene_summary_payload(rows: Vec<crate::store::HygieneSummaryRow>) -> HygieneSummaryPayload {
+    let catalogs = ReportCatalogs::default();
+    let total_sessions = rows.len() as u64;
+    let mut settled_sessions = 0;
+    let mut analyzed_sessions = 0;
+    let mut failing_sessions = 0;
+    let mut finding_counts = [0u64; BadgeId::ALL.len()];
+    for row in rows {
+        if row.settled {
+            settled_sessions += 1;
+        }
+        let Some(evidence_json) = row.evidence_json else {
+            continue;
+        };
+        let Ok(evidence) = serde_json::from_str::<SessionEvidence>(&evidence_json) else {
+            continue;
+        };
+        analyzed_sessions += 1;
+        let mut failed = false;
+        for (index, badge) in session_badges(&evidence, &catalogs).iter().enumerate() {
+            if badge.status == BadgeStatus::Finding {
+                failed = true;
+                finding_counts[index] += 1;
+            }
+        }
+        if failed {
+            failing_sessions += 1;
+        }
+    }
+    // Ties keep the first badge in `BadgeId::ALL` order.
+    let most_common_finding = finding_counts
+        .iter()
+        .enumerate()
+        .filter(|(_, count)| **count > 0)
+        .max_by(|left, right| left.1.cmp(right.1).then(right.0.cmp(&left.0)))
+        .map(|(index, _)| crate::dto::badge_id_str(BadgeId::ALL[index]));
+    HygieneSummaryPayload {
+        total_sessions,
+        settled_sessions,
+        analyzed_sessions,
+        failing_sessions,
+        most_common_finding,
+    }
 }
 
 /// The hygiene badges for a bounded set of stored session evidence rows.

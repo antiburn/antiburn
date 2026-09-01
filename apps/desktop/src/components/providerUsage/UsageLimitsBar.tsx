@@ -1,7 +1,9 @@
 import { BarChartHorizontalBig, LoaderCircle } from "lucide-react"
 import { useId, type ReactNode } from "react"
 
+import type { AnchoredTriggerActivation } from "../../lib/anchoredTrigger"
 import { cn } from "../../lib/cn"
+import { measureAnchorRegion, type AnchorRegion } from "../../lib/anchorRegion"
 import type {
   LiveProviderUsagePayload,
   LiveUsageSummaryPayload,
@@ -47,6 +49,13 @@ export interface UsageLimitsBarProps {
   refreshing: boolean
   /** Open the full Usage view, from a provider pill. */
   onViewAll: () => void
+  /** Report provider hover for a passive companion preview. */
+  onHoverProvider?: (provider: string | null, anchor: AnchorRegion | null) => void
+  /** The provider trigger retained by the active companion lifecycle. */
+  activeProvider?: {
+    provider: string
+    activation: Exclude<AnchoredTriggerActivation, "idle">
+  } | null
 }
 
 /**
@@ -74,6 +83,8 @@ export function UsageLimitsBar({
   onToggleExpanded,
   refreshing,
   onViewAll,
+  onHoverProvider,
+  activeProvider,
 }: UsageLimitsBarProps) {
   const limited = orderedLiveAccounts(live.providers).filter(
     ({ reading }) => liveWindows(reading).length > 0,
@@ -118,6 +129,12 @@ export function UsageLimitsBar({
                 provider={reading}
                 displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
                 onOpen={onViewAll}
+                onHover={onHoverProvider}
+                activation={
+                  activeProvider?.provider === reading.provider
+                    ? activeProvider.activation
+                    : null
+                }
               />
             ))}
             {unavailable.map((entry) => (
@@ -151,6 +168,10 @@ export function UsageLimitsBar({
               displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
               now={at}
               action={reading === firstProvider?.reading ? disclosure(true) : undefined}
+              activation={
+                activeProvider?.provider === reading.provider ? activeProvider.activation : null
+              }
+              {...(onHoverProvider ? { onHover: onHoverProvider } : {})}
             />
           ))}
           {unavailable.map((entry, index) => (
@@ -242,19 +263,28 @@ function ProviderGroup({
   displayName,
   now,
   action,
+  onHover,
+  activation,
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
   now: number
   /** The disclosure, on the topmost group only. */
   action?: ReactNode
+  onHover?: (provider: string | null, anchor: AnchorRegion | null) => void
+  activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
   const plan = livePlanLabel(provider)
   return (
     <div
       role="group"
       aria-label={plan ? `${displayName}, ${plan} plan` : displayName}
-      className="rounded-md px-2 py-2 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08]"
+      data-state={activation ?? "idle"}
+      className="rounded-md px-2 py-2 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08] data-[state=hovered]:bg-brand-tint/[0.08] data-[state=selected]:bg-surface-selected"
+      onMouseEnter={(event) =>
+        onHover?.(provider.provider, measureAnchorRegion(event.currentTarget))
+      }
+      onMouseLeave={() => onHover?.(null, null)}
     >
       {/* The same type size and color as the window labels and figures
           below; the uppercase alone marks the grouping. The plan, when the
@@ -285,10 +315,14 @@ function ProviderRadial({
   provider,
   displayName,
   onOpen,
+  onHover,
+  activation,
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
   onOpen?: (() => void) | undefined
+  onHover?: ((provider: string | null, anchor: AnchorRegion | null) => void) | undefined
+  activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
   const percent = maxLiveUsedPercent(provider)
   const figure = percent != null ? `${Math.round(percent)}%` : "no stated figure"
@@ -296,8 +330,13 @@ function ProviderRadial({
     <button
       type="button"
       onClick={onOpen}
+      onMouseEnter={(event) =>
+        onHover?.(provider.provider, measureAnchorRegion(event.currentTarget))
+      }
+      onMouseLeave={() => onHover?.(null, null)}
+      data-state={activation ?? "idle"}
       title={`${displayName} — ${figure}`}
-      className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08]"
+      className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08] data-[state=hovered]:bg-brand-tint/[0.08] data-[state=selected]:bg-surface-selected"
       aria-label={`${displayName}${
         percent != null ? ` at ${Math.round(percent)} percent` : ", no stated figure"
       }`}

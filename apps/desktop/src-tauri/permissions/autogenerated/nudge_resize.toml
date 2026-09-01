@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-nudge-resize"
+description = "Enables the nudge_resize command without any pre-configured scope."
+commands.allow = ["nudge_resize"]
+
+[[permission]]
+identifier = "deny-nudge-resize"
+description = "Denies the nudge_resize command without any pre-configured scope."
+commands.deny = ["nudge_resize"]

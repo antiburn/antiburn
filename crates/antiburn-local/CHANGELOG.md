@@ -17,6 +17,36 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-01
+
+### Added
+
+- The row pipeline exposes `TurnRow`, `TurnRowSink`, `TurnRowStore`, turn and
+  content schema migrations, bounded batch writes, deletion helpers, and
+  row-derived metrics and evidence queries.
+- `TurnContent`, `ContentPart`, and `ContentKind` carry bounded message text,
+  thinking, tool inputs, and tool results to a separate content table.
+- `TurnFacts`, `metrics_from_rows`, and `metrics_by_source` rebuild projections
+  from a fenced persisted snapshot.
+- `ModelRegistry` and its policy contracts expose model-family, replacement,
+  effort, and speed rules used by Insights.
+
+### Changed
+
+- **Breaking:** `NormalizedRecord` gains `TurnContent`; `NormalizedEvent` gains
+  logical parent and thread identity; and the report requirement contract now
+  uses `Fact` and `FactState` instead of capability and evidence groups.
+- Vendor adapters now derive stable thread relationships for Claude, Codex,
+  OpenCode, and Pi, including delegated and sidechain turns. Codex also reads
+  service tiers and cache-write tokens.
+- Metrics and evidence reducers retain bounded derived state, account for
+  repeated context per thread, and expose row-backed chart and drilldown data.
+- Insights evaluates explicit finding and clean fact sets, preserves the last
+  published verdict during recomputation, and declines clean results when a
+  required fact is incomplete.
+- macOS repository discovery treats `~/Developer` as a common unprotected code
+  directory.
+
 ## [0.3.0-rc.1] - 2026-09-01
 
 ### Added

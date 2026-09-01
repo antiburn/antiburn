@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-refresh-repositories"
+description = "Enables the refresh_repositories command without any pre-configured scope."
+commands.allow = ["refresh_repositories"]
+
+[[permission]]
+identifier = "deny-refresh-repositories"
+description = "Denies the refresh_repositories command without any pre-configured scope."
+commands.deny = ["refresh_repositories"]

@@ -1,9 +1,8 @@
 //! The tray-anchored popover window.
 //!
-//! The popover is created lazily on the first tray click. After dismissal it
-//! stays warm for a short grace period, so a quick reopen is immediate. Once
-//! the grace period ends, the shell destroys the hidden renderer. The next
-//! open creates a new renderer from native state.
+//! The popover is created lazily on the first tray click. After its first
+//! reveal, dismissal hides the renderer but keeps it ready for the process
+//! lifetime. Each later open reuses the same renderer and its loaded state.
 //!
 //! # Geometry
 //!
@@ -38,6 +37,8 @@
 //! Whichever way it goes, it leaves through [`note_hidden`], which is also
 //! where the menu-bar item is unlit; [`note_shown`] is the other half.
 
+#[cfg(target_os = "macos")]
+mod panel;
 mod retention;
 mod timing;
 
@@ -62,6 +63,49 @@ use self::retention::{DueEviction, EvictionMode, EvictionSchedule, EvictionToken
 /// Window label. Also listed in `capabilities/default.json`.
 pub const LABEL: &str = "popover";
 
+#[derive(Debug, Default, PartialEq, Eq)]
+struct NudgeKeyHandoff {
+    pending_popover_blurs: u64,
+    key_owned: bool,
+}
+
+impl NudgeKeyHandoff {
+    fn begin_if_focused(&mut self, popover_focused: bool) -> bool {
+        if !popover_focused {
+            return false;
+        }
+        self.pending_popover_blurs = self.pending_popover_blurs.saturating_add(1);
+        self.key_owned = true;
+        true
+    }
+
+    fn on_popover_blur(&mut self) -> bool {
+        if self.pending_popover_blurs == 0 {
+            return false;
+        }
+        self.pending_popover_blurs -= 1;
+        true
+    }
+
+    fn on_expected_release(&mut self) -> bool {
+        std::mem::take(&mut self.key_owned)
+    }
+
+    fn abandon_restoration(&mut self) {
+        self.key_owned = false;
+    }
+
+    fn cancel(&mut self) -> bool {
+        let dismiss_now = self.key_owned && self.pending_popover_blurs == 0;
+        self.clear();
+        dismiss_now
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Emitted the moment the popover reaches the screen, following the same
 /// `module:event` naming [`crate::scan`]'s events use. The webview listens
 /// for this to refresh live usage — see [`note_shown`] for why that refresh
@@ -77,8 +121,7 @@ const WIDTH: f64 = 380.0;
 /// and the card corners inside it must agree, so change both together.
 /// `scripts/check-design-drift.mjs` reads this constant and fails if the two
 /// numbers differ.
-#[cfg(target_os = "macos")]
-const CORNER_RADIUS: f64 = 10.0;
+pub(crate) const CORNER_RADIUS: f64 = 10.0;
 
 /// Tallest the popover may ever get, in logical pixels.
 ///
@@ -328,6 +371,8 @@ pub struct PopoverState {
     /// Bumped by every height request, so an animation still in flight can see
     /// that a newer one superseded it and stop rather than fight it.
     resize_generation: AtomicU64,
+    /// Serializes resize ownership checks and window writes.
+    resize_apply_guard: Mutex<()>,
     /// While positive, losing focus does not hide the popover. Held around
     /// native dialogs (the folder picker) the popover itself opens: the dialog
     /// takes focus by design, and hiding would tear down the surface the
@@ -340,9 +385,11 @@ pub struct PopoverState {
     /// Deliberately not persisted: a pin means "keep this on screen while I
     /// work", and a relaunch is the end of that work.
     pinned: AtomicBool,
+    /// Tracks one key-window handoff to the nudge notification.
+    nudge_key_handoff: Mutex<NudgeKeyHandoff>,
     /// The generation of the current renderer.
     renderer_generation: AtomicU64,
-    /// The bounded ownership of hidden renderers and eviction callbacks.
+    /// The bounded onboarding prewarm and its eviction callbacks.
     retention: Mutex<Retention>,
     /// Content-free timing for the active menu-bar open request.
     timing: timing::PopoverTiming,
@@ -357,8 +404,10 @@ impl Default for PopoverState {
             anchor: Mutex::new(None),
             height: Mutex::new(DEFAULT_HEIGHT),
             resize_generation: AtomicU64::new(0),
+            resize_apply_guard: Mutex::new(()),
             focus_hold: AtomicU64::new(0),
             pinned: AtomicBool::new(false),
+            nudge_key_handoff: Mutex::new(NudgeKeyHandoff::default()),
             renderer_generation: AtomicU64::new(0),
             retention: Mutex::new(Retention::default()),
             timing: timing::PopoverTiming::default(),
@@ -433,19 +482,54 @@ impl PopoverState {
         self.pinned.store(pinned, Ordering::SeqCst);
     }
 
+    fn begin_nudge_key_handoff(&self, popover_focused: bool) {
+        if let Ok(mut handoff) = self.nudge_key_handoff.lock() {
+            handoff.begin_if_focused(popover_focused);
+        }
+    }
+
+    fn suppress_blur_for_nudge_handoff(&self) -> bool {
+        self.nudge_key_handoff
+            .lock()
+            .is_ok_and(|mut handoff| handoff.on_popover_blur())
+    }
+
+    fn release_nudge_key_handoff(&self) -> bool {
+        self.nudge_key_handoff
+            .lock()
+            .is_ok_and(|mut handoff| handoff.on_expected_release())
+    }
+
+    fn abandon_nudge_key_restoration(&self) {
+        if let Ok(mut handoff) = self.nudge_key_handoff.lock() {
+            handoff.abandon_restoration();
+        }
+    }
+
+    fn cancel_nudge_key_handoff(&self) -> bool {
+        self.nudge_key_handoff
+            .lock()
+            .is_ok_and(|mut handoff| handoff.cancel())
+    }
+
+    fn clear_nudge_key_handoff(&self) {
+        if let Ok(mut handoff) = self.nudge_key_handoff.lock() {
+            handoff.clear();
+        }
+    }
+
     fn retention(&self) -> std::sync::MutexGuard<'_, Retention> {
         self.retention
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn arm_hidden_retention(
+    fn arm_prewarm_retention(
         &self,
         renderer_generation: u64,
         now: Instant,
     ) -> Option<EvictionSchedule> {
-        self.retention()
-            .arm_hidden(renderer_generation, now, self.is_pinned())
+        self.retention().arm_hidden(renderer_generation, now)
     }
 
     fn arm_eviction_retry(&self, renderer_generation: u64, mode: EvictionMode) -> EvictionSchedule {
@@ -467,7 +551,7 @@ impl PopoverState {
     fn take_eviction_if_due(&self, token: EvictionToken, visible: bool) -> Option<DueEviction> {
         let renderer_generation = self.renderer_generation.load(Ordering::SeqCst);
         self.retention()
-            .take_due(token, renderer_generation, visible, self.is_pinned())
+            .take_due(token, renderer_generation, visible)
     }
 
     fn mark_prewarm(&self, generation: u64, now: Instant) {
@@ -588,7 +672,13 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
         .skip_taskbar(true)
         .visible(false)
         .focused(false)
-        .on_page_load(|window, payload| {
+        .on_page_load(move |window, payload| {
+            #[cfg(feature = "memory-probe")]
+            let finished = matches!(payload.event(), tauri::webview::PageLoadEvent::Finished);
+            #[cfg(feature = "memory-probe")]
+            if finished {
+                crate::memory_probe::report_web_content(&window, generation);
+            }
             window_lifecycle::trace_page_load::<PopoverState>(window, payload, LABEL);
         });
 
@@ -611,12 +701,17 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
 
     match builder.build() {
         Ok(window) => {
+            // Non-activating panel: opening the popover must not deactivate
+            // the frontmost application. Applied here so a rebuild after a
+            // destroy converts again.
+            #[cfg(target_os = "macos")]
+            panel::to_nonactivating_panel(&window);
             let state = app.state::<PopoverState>();
             state
                 .renderer_generation
                 .store(generation, Ordering::SeqCst);
             if state.is_prewarm(generation) {
-                schedule_idle_eviction(app);
+                schedule_prewarm_eviction(app);
             }
             Ok(window)
         }
@@ -631,6 +726,36 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
             Err(error)
         }
     }
+}
+
+/// Give the popover keyboard focus.
+///
+/// On macOS this goes through the non-activating panel, so the frontmost
+/// application stays active and keeps its full visual state. The plain
+/// `set_focus` fallback covers a window the panel plugin never converted.
+fn focus_popover(window: &WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    if panel::focus_without_activation(window) {
+        return;
+    }
+    if let Err(error) = window.set_focus() {
+        ::tracing::warn!(event = "window_focus_failed", window = LABEL, error = %error);
+    }
+}
+
+/// Destroy the popover window.
+///
+/// On macOS the panel class must return to its original window class first
+/// (see [`panel::prepare_for_destroy`]); a failed restore aborts the destroy,
+/// and the caller's existing error path keeps the window and retries.
+fn destroy_window(window: &WebviewWindow) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    if !panel::prepare_for_destroy(window) {
+        return Err(tauri::Error::Io(std::io::Error::other(
+            "the popover panel could not be restored to a window before destroy",
+        )));
+    }
+    window.destroy()
 }
 
 enum WindowRequest {
@@ -702,10 +827,10 @@ fn replace_expired_prewarm(
     };
 
     state.readiness().defer_build_until_destroyed(generation);
-    if let Err(error) = existing.destroy() {
+    if let Err(error) = destroy_window(&existing) {
         window_lifecycle::cancel_load::<PopoverState>(app, generation);
         let retry = state.arm_eviction_retry(expired_generation, expired.mode());
-        arm_idle_eviction(app, retry);
+        arm_prewarm_eviction(app, retry);
         return Err(error);
     }
     state.clear_prewarm_generation(expired_generation);
@@ -780,11 +905,11 @@ fn request_open_window(
             if !state.readiness().defer_build_until_destroyed(generation) {
                 return Ok(WindowRequest::AwaitingBuild);
             }
-            if let Err(error) = existing.destroy() {
+            if let Err(error) = destroy_window(&existing) {
                 window_lifecycle::cancel_load::<PopoverState>(app, generation);
                 if prewarmed && let Some(prewarm_generation) = prewarm_generation {
                     state.transfer_prewarm(generation, prewarm_generation);
-                    schedule_idle_eviction(app);
+                    schedule_prewarm_eviction(app);
                 }
                 return Err(error);
             }
@@ -892,11 +1017,11 @@ fn request_toggle_window(app: &AppHandle, requested_at: Instant) -> tauri::Resul
             if !state.readiness().defer_build_until_destroyed(generation) {
                 return Ok(WindowRequest::AwaitingBuild);
             }
-            if let Err(error) = existing.destroy() {
+            if let Err(error) = destroy_window(&existing) {
                 window_lifecycle::cancel_load::<PopoverState>(app, generation);
                 if prewarmed && let Some(prewarm_generation) = prewarm_generation {
                     state.transfer_prewarm(generation, prewarm_generation);
-                    schedule_idle_eviction(app);
+                    schedule_prewarm_eviction(app);
                 }
                 return Err(error);
             }
@@ -980,7 +1105,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
             if let Err(error) = anchor_to(&window, anchor) {
                 ::tracing::warn!(event = "popover_anchor_failed", error = %error);
             }
-            let _ = window.set_focus();
+            focus_popover(&window);
             return;
         }
         hide_window(app);
@@ -1006,7 +1131,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
         WindowRequest::AwaitingBuild => return,
         WindowRequest::Cancelled => {
             note_hidden(app);
-            schedule_idle_eviction(app);
+            schedule_prewarm_eviction(app);
             return;
         }
     };
@@ -1071,7 +1196,7 @@ fn destroy_prewarm(app: &AppHandle) -> bool {
     let Some(window) = app.get_webview_window(LABEL) else {
         return true;
     };
-    match window.destroy() {
+    match destroy_window(&window) {
         Ok(()) => true,
         Err(error) => {
             ::tracing::warn!(event = "popover_prewarm_cancel_failed", error = %error);
@@ -1081,29 +1206,34 @@ fn destroy_prewarm(app: &AppHandle) -> bool {
 }
 
 fn hide_window(app: &AppHandle) {
+    // A hidden popover cannot take key back. Keep queued nudge blurs so delayed events stay suppressed.
+    if let Some(state) = app.try_state::<PopoverState>() {
+        state.abandon_nudge_key_restoration();
+    }
+    crate::popover_peek::conceal_now(app);
     let Some(window) = app.get_webview_window(LABEL) else {
         note_hidden(app);
         return;
     };
     let _ = window.hide();
     note_hidden(app);
-    schedule_idle_eviction(app);
+    schedule_prewarm_eviction(app);
 }
 
-fn schedule_idle_eviction(app: &AppHandle) {
+fn schedule_prewarm_eviction(app: &AppHandle) {
     let Some(state) = app.try_state::<PopoverState>() else {
         return;
     };
     let loading_generation = state.readiness().loading_generation();
     let renderer_generation =
         loading_generation.unwrap_or_else(|| state.renderer_generation.load(Ordering::SeqCst));
-    let Some(schedule) = state.arm_hidden_retention(renderer_generation, Instant::now()) else {
+    let Some(schedule) = state.arm_prewarm_retention(renderer_generation, Instant::now()) else {
         return;
     };
-    arm_idle_eviction(app, schedule);
+    arm_prewarm_eviction(app, schedule);
 }
 
-fn arm_idle_eviction(app: &AppHandle, schedule: EvictionSchedule) {
+fn arm_prewarm_eviction(app: &AppHandle, schedule: EvictionSchedule) {
     let Some(state) = app.try_state::<PopoverState>() else {
         return;
     };
@@ -1140,7 +1270,7 @@ fn evict_if_due(app: &AppHandle, token: EvictionToken) {
     let Some(due) = state.take_eviction_if_due(token, visible) else {
         return;
     };
-    match window.destroy() {
+    match destroy_window(&window) {
         Ok(()) => {
             state.clear_prewarm_generation(due.renderer_generation());
             ::tracing::info!(event = "window_renderer_evicted", window = LABEL);
@@ -1152,7 +1282,7 @@ fn evict_if_due(app: &AppHandle, token: EvictionToken) {
                 error = %error
             );
             let retry = state.arm_eviction_retry(due.renderer_generation(), due.mode());
-            arm_idle_eviction(app, retry);
+            arm_prewarm_eviction(app, retry);
         }
     }
 }
@@ -1161,66 +1291,83 @@ fn evict_if_due(app: &AppHandle, token: EvictionToken) {
 ///
 /// Clamped to [`MIN_HEIGHT`]..=[`MAX_HEIGHT`], animated unless the caller says
 /// otherwise, and re-anchored on the way so a popover hanging off a
-/// bottom-of-screen panel grows upward instead of off the display.
-pub fn set_height(app: &AppHandle, requested: f64, animate: bool) {
+/// bottom-of-screen panel grows upward instead of off the display. Returns
+/// `true` only when this request still owns the resize at its target.
+pub async fn set_height(app: &AppHandle, requested: f64, animate: bool) -> bool {
     let Some(state) = app.try_state::<PopoverState>() else {
-        return;
+        return false;
     };
-    let Some(window) = app.get_webview_window(LABEL) else {
-        return;
-    };
+    if app.get_webview_window(LABEL).is_none() {
+        return false;
+    }
 
     let target = clamp_height(requested);
-    let from = state.height();
-    // Sub-pixel requests are the view re-reporting the height it already has.
-    if (from - target).abs() < 1.0 {
-        return;
-    }
-
-    let generation = state.begin_resize();
-    if !animate {
-        state.set_height(target);
-        apply_height(&window, target);
-        return;
-    }
-
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let step = RESIZE_DURATION / RESIZE_STEPS;
-        for frame in 1..=RESIZE_STEPS {
-            tokio::time::sleep(step).await;
-            let Some(state) = app.try_state::<PopoverState>() else {
-                return;
-            };
-            // A newer request owns the window now.
-            if !state.resize_is_current(generation) {
-                return;
-            }
-            let progress = f64::from(frame) / f64::from(RESIZE_STEPS);
-            let height = from + (target - from) * ease_out(progress);
-            state.set_height(height);
-            let Some(window) = app.get_webview_window(LABEL) else {
-                return;
-            };
-            apply_height(&window, height);
+    let (from, generation) = {
+        let Ok(_guard) = state.resize_apply_guard.lock() else {
+            return false;
+        };
+        (state.height(), state.begin_resize())
+    };
+    // Reduced motion and sub-pixel corrections reach the exact target now.
+    if !animate || (from - target).abs() < 1.0 {
+        let Ok(_guard) = state.resize_apply_guard.lock() else {
+            return false;
+        };
+        if !state.resize_is_current(generation) {
+            return false;
         }
-    });
+        let Some(window) = app.get_webview_window(LABEL) else {
+            return false;
+        };
+        if !apply_height(&window, target) {
+            return false;
+        }
+        state.set_height(target);
+        return state.resize_is_current(generation);
+    }
+
+    let step = RESIZE_DURATION / RESIZE_STEPS;
+    for frame in 1..=RESIZE_STEPS {
+        tokio::time::sleep(step).await;
+        let Some(state) = app.try_state::<PopoverState>() else {
+            return false;
+        };
+        let Ok(_guard) = state.resize_apply_guard.lock() else {
+            return false;
+        };
+        // A newer request owns the window now.
+        if !state.resize_is_current(generation) {
+            return false;
+        }
+        let progress = f64::from(frame) / f64::from(RESIZE_STEPS);
+        let height = from + (target - from) * ease_out(progress);
+        let Some(window) = app.get_webview_window(LABEL) else {
+            return false;
+        };
+        if !apply_height(&window, height) {
+            return false;
+        }
+        state.set_height(height);
+    }
+    app.try_state::<PopoverState>()
+        .is_some_and(|state| state.resize_is_current(generation))
 }
 
 /// Size the window and put it back where its anchor says it belongs.
-fn apply_height(window: &WebviewWindow, height: f64) {
+fn apply_height(window: &WebviewWindow, height: f64) -> bool {
     if window.set_size(LogicalSize::new(WIDTH, height)).is_err() {
-        return;
+        return false;
     }
     let Some(state) = window.app_handle().try_state::<PopoverState>() else {
-        return;
+        return true;
     };
     let Some(anchor) = state.anchor() else {
         // Never opened, so there is nothing to anchor to yet; the next open
         // places it.
-        return;
+        return true;
     };
     let _ = place(window, anchor, WIDTH, height);
+    true
 }
 
 /// Hides the popover after it loses focus, remembering when it happened.
@@ -1229,10 +1376,21 @@ fn apply_height(window: &WebviewWindow, height: f64) {
 /// about to take (or has taken) focus, and the popover must survive it. Also a
 /// no-op while pinned — looking away is exactly what a pin is for.
 ///
-/// Both cases return *before* recording the dismissal: nothing was dismissed,
+/// Also a no-op when the nudge notification caused this focus loss. The nudge
+/// records the handoff before it takes key, so a quick mouse leave cannot make
+/// the queued blur look like an unrelated focus change.
+///
+/// All cases return *before* recording the dismissal: nothing was dismissed,
 /// so the next tray click is a fresh open and must not be suppressed.
 pub fn hide_on_focus_loss(window: &Window) {
-    dismiss(window.app_handle());
+    let app = window.app_handle();
+    if app
+        .try_state::<PopoverState>()
+        .is_some_and(|state| state.suppress_blur_for_nudge_handoff())
+    {
+        return;
+    }
+    dismiss(app);
 }
 
 /// Hides the popover after a click somewhere else on the desktop.
@@ -1303,7 +1461,69 @@ pub fn end_focus_hold(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(LABEL)
         && window.is_visible().unwrap_or(false)
     {
+        focus_popover(&window);
+    }
+}
+
+/// Records that the focused popover is about to hand key to the nudge.
+///
+/// The callback runs before AppKit changes key windows. A popover that is only
+/// visible, such as a pinned popover behind another app, records no handoff.
+pub fn begin_nudge_key_handoff(app: &AppHandle) {
+    let focused = app
+        .get_webview_window(LABEL)
+        .is_some_and(|window| window.is_focused().unwrap_or(false));
+    if let Some(state) = app.try_state::<PopoverState>() {
+        state.begin_nudge_key_handoff(focused);
+    }
+}
+
+/// Hands key back to the popover after an expected nudge release.
+///
+/// The state keeps a pending blur after a quick release. That blur is still
+/// suppressed after focus returns, so it cannot dismiss the popover late.
+pub fn refocus_after_nudge(app: &AppHandle) {
+    let Some(state) = app.try_state::<PopoverState>() else {
+        return;
+    };
+    if !state.release_nudge_key_handoff() || state.holds_focus() {
+        return;
+    }
+    if let Some(window) = app.get_webview_window(LABEL)
+        && window.is_visible().unwrap_or(false)
+    {
         let _ = window.set_focus();
+    }
+}
+
+/// Prevent a nudge release from refocusing the popover.
+///
+/// Keep queued popover blurs so delayed events remain part of the same handoff.
+pub fn abandon_nudge_key_restoration(app: &AppHandle) {
+    if let Some(state) = app.try_state::<PopoverState>() {
+        state.abandon_nudge_key_restoration();
+    }
+}
+
+/// Cancels a handoff when AppKit removes nudge key focus unexpectedly.
+///
+/// If the popover blur already arrived, dismiss now. Otherwise, the queued
+/// blur performs the normal dismissal after the handoff marker is cleared.
+pub fn cancel_nudge_key_handoff(app: &AppHandle) {
+    let dismiss_now = app
+        .try_state::<PopoverState>()
+        .is_some_and(|state| state.cancel_nudge_key_handoff());
+    if dismiss_now {
+        dismiss(app);
+    }
+}
+
+/// Forgets that the popover yielded key to the nudge notification. Used by a
+/// notification CTA that opens another window: the key release that follows
+/// the CTA's dismissal must not pull focus back to the popover.
+pub fn clear_nudge_yield(app: &AppHandle) {
+    if let Some(state) = app.try_state::<PopoverState>() {
+        state.clear_nudge_key_handoff();
     }
 }
 
@@ -1341,9 +1561,9 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
         if let Some(window) = app.get_webview_window(LABEL)
             && window.is_visible().unwrap_or(false)
         {
-            let _ = window.set_focus();
+            focus_popover(&window);
         } else {
-            schedule_idle_eviction(app);
+            schedule_prewarm_eviction(app);
         }
         return;
     }
@@ -1400,7 +1620,7 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
     // Guarded exactly as `end_focus_hold` is: focusing a hidden window would
     // order it front, and an unpin is not a request to open anything.
     if window.is_visible().unwrap_or(false) {
-        let _ = window.set_focus();
+        focus_popover(&window);
     }
 }
 
@@ -1414,7 +1634,7 @@ pub fn renderer_ready(window: &WebviewWindow, generation: u64) {
     {
         state.cancel_eviction();
         prepare_expired_renderer_retirement(&state, generation, now);
-        match window.destroy() {
+        match destroy_window(window) {
             Ok(()) => {
                 state.clear_prewarm_generation(generation);
                 ::tracing::info!(event = "window_renderer_evicted", window = LABEL);
@@ -1426,7 +1646,7 @@ pub fn renderer_ready(window: &WebviewWindow, generation: u64) {
                     error = %error
                 );
                 let retry = state.arm_eviction_retry(generation, expired.mode());
-                arm_idle_eviction(app, retry);
+                arm_prewarm_eviction(app, retry);
             }
         }
         return;
@@ -1441,7 +1661,7 @@ pub fn renderer_ready(window: &WebviewWindow, generation: u64) {
     if window_lifecycle::renderer_ready::<PopoverState>(app, LABEL, generation, now) {
         reveal(window);
     } else if prewarm_became_ready {
-        schedule_idle_eviction(app);
+        schedule_prewarm_eviction(app);
     }
 }
 
@@ -1485,7 +1705,7 @@ fn reveal(window: &WebviewWindow) {
     }
     if let Err(error) = window.show() {
         ::tracing::error!(event = "window_reveal_failed", window = LABEL, error = %error);
-        schedule_idle_eviction(app);
+        schedule_prewarm_eviction(app);
         return;
     }
     let revealed_at = Instant::now();
@@ -1494,9 +1714,7 @@ fn reveal(window: &WebviewWindow) {
         state.timing.revealed(generation, revealed_at);
     }
     ::tracing::info!(event = "window_revealed", window = LABEL, generation);
-    if let Err(error) = window.set_focus() {
-        ::tracing::warn!(event = "window_focus_failed", window = LABEL, error = %error);
-    }
+    focus_popover(window);
     note_shown(app);
 }
 
@@ -1933,6 +2151,82 @@ mod tests {
     }
 
     #[test]
+    fn hovering_and_leaving_a_nudge_restores_the_open_popover() {
+        let mut handoff = NudgeKeyHandoff::default();
+        assert!(handoff.begin_if_focused(true));
+        assert!(handoff.on_popover_blur());
+        assert!(handoff.on_expected_release());
+        assert!(!handoff.on_expected_release());
+    }
+
+    #[test]
+    fn a_release_before_delayed_blur_restores_focus_and_suppresses_that_blur() {
+        let mut handoff = NudgeKeyHandoff::default();
+        assert!(handoff.begin_if_focused(true));
+        assert!(handoff.on_expected_release());
+        assert!(handoff.on_popover_blur());
+        assert!(!handoff.on_popover_blur());
+    }
+
+    #[test]
+    fn a_tray_click_abandons_refocus_but_still_suppresses_the_queued_blur() {
+        let mut handoff = NudgeKeyHandoff::default();
+        assert!(handoff.begin_if_focused(true));
+        handoff.abandon_restoration();
+        assert!(!handoff.on_expected_release());
+        assert!(handoff.on_popover_blur());
+        assert!(!handoff.on_popover_blur());
+    }
+
+    #[test]
+    fn changing_applications_while_nudge_key_dismisses_without_refocus() {
+        let mut handoff = NudgeKeyHandoff::default();
+        assert!(handoff.begin_if_focused(true));
+        assert!(handoff.on_popover_blur());
+        assert!(handoff.cancel());
+        assert!(!handoff.on_expected_release());
+        assert!(!handoff.on_popover_blur());
+    }
+
+    #[test]
+    fn an_external_key_loss_before_blur_leaves_that_blur_to_dismiss() {
+        let mut handoff = NudgeKeyHandoff::default();
+        assert!(handoff.begin_if_focused(true));
+        assert!(!handoff.cancel());
+        assert!(!handoff.on_popover_blur());
+    }
+
+    #[test]
+    fn rapid_nudge_boundary_crossings_preserve_every_queued_blur() {
+        let mut handoff = NudgeKeyHandoff::default();
+        assert!(handoff.begin_if_focused(true));
+        assert!(handoff.on_expected_release());
+        assert!(handoff.begin_if_focused(true));
+        assert!(handoff.on_expected_release());
+        assert!(handoff.on_popover_blur());
+        assert!(handoff.on_popover_blur());
+        assert!(!handoff.on_popover_blur());
+    }
+
+    #[test]
+    fn clearing_a_handoff_leaves_no_delayed_focus_work() {
+        let mut handoff = NudgeKeyHandoff::default();
+        assert!(handoff.begin_if_focused(true));
+        handoff.clear();
+        assert!(!handoff.on_expected_release());
+        assert!(!handoff.on_popover_blur());
+    }
+
+    #[test]
+    fn a_pinned_unfocused_popover_is_never_pulled_forward() {
+        let state = PopoverState::default();
+        state.set_pinned(true);
+        state.begin_nudge_key_handoff(false);
+        assert!(state.is_pinned());
+        assert!(!state.release_nudge_key_handoff());
+    }
+
+    #[test]
     fn a_prewarm_marker_belongs_to_one_renderer_generation() {
         let state = PopoverState::default();
 
@@ -1963,7 +2257,7 @@ mod tests {
         assert!(!state.is_prewarm(4));
         assert!(state.is_prewarm(5));
         let schedule = state
-            .arm_hidden_retention(5, started_at + Duration::from_secs(10))
+            .arm_prewarm_retention(5, started_at + Duration::from_secs(10))
             .expect("the transferred prewarm remains retained");
         assert_eq!(schedule.delay(), Duration::from_secs(55));
         assert_eq!(schedule.mode(), EvictionMode::PrewarmLoading);
@@ -2001,7 +2295,7 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_height_request_invalidates_the_animation_already_running() {
+    fn only_the_newest_height_request_can_report_completion() {
         let state = PopoverState::default();
         let first = state.begin_resize();
         assert!(state.resize_is_current(first));
@@ -2010,7 +2304,7 @@ mod tests {
         assert!(state.resize_is_current(second));
         assert!(
             !state.resize_is_current(first),
-            "the superseded animation must stop rather than fight the new one"
+            "a superseded request must report that it did not reach the target"
         );
     }
 

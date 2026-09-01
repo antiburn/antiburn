@@ -544,6 +544,57 @@ impl HiddenMeters {
     }
 }
 
+/// The coding agents whose sessions the reader turned off, by discovery slug.
+///
+/// Stores the *disabled* set, not the enabled set. An agent a later build
+/// adds shows by default, and a slug an older build wrote stays harmless.
+///
+/// Disabled is a display filter: the agent's sessions stay indexed and
+/// analyzed, but the session list does not show them. The reader can turn
+/// the agent back on and see everything the index kept.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DisabledAgents(Vec<String>);
+
+impl DisabledAgents {
+    pub fn selected(values: impl IntoIterator<Item = String>) -> Self {
+        Self(values.into_iter().collect()).normalized()
+    }
+
+    pub fn as_str(&self) -> String {
+        self.0.join(",")
+    }
+
+    pub fn parse(value: &str) -> Self {
+        Self::selected(value.split(',').map(str::to_string))
+    }
+
+    pub fn contains(&self, agent: &str) -> bool {
+        let agent = agent.trim().to_ascii_lowercase();
+        self.0.binary_search(&agent).is_ok()
+    }
+
+    pub fn slugs(&self) -> &[String] {
+        &self.0
+    }
+
+    pub fn any(&self) -> bool {
+        !self.0.is_empty()
+    }
+
+    fn normalized(mut self) -> Self {
+        for value in &mut self.0 {
+            *value = value.trim().to_ascii_lowercase();
+        }
+        // An empty slug matches no agent and would hide nothing. Drop it, so
+        // that a stray comma in the stored value cannot survive a round trip.
+        self.0.retain(|value| !value.is_empty());
+        self.0.sort_unstable();
+        self.0.dedup();
+        self
+    }
+}
+
 /// Narrowest and widest activity windows the settings pane offers, in days.
 /// These control presentation and recent discovery, not storage: sessions
 /// already indexed follow the separate retention setting.
@@ -608,6 +659,12 @@ pub struct AppSettings {
     pub nudge_auto_dismiss_secs: u32,
     /// Whether a nudge may play the notification chime.
     pub notification_sound: bool,
+    /// Whether Focus and Do Not Disturb suppress automated nudges.
+    ///
+    /// Off by default: the OS Focus-status check needs its own macOS
+    /// authorization prompt, so the check is an opt-in. Off means an
+    /// automated nudge shows even while Focus is on.
+    pub nudges_respect_dnd: bool,
     /// When the menu bar shows the free-disk-space number.
     pub disk_space_display: DiskSpaceDisplay,
     /// Free space, in binary GB, below which the disk counts as low.
@@ -635,6 +692,10 @@ pub struct AppSettings {
     /// provider, this one stops the named provider. Both stop requests, so a
     /// hidden provider also stops its milestone notifications.
     pub live_usage_hidden_providers: HiddenMeters,
+    /// The coding agents whose sessions the reader turned off. See
+    /// [`DisabledAgents`]. A display filter only: indexing and analysis
+    /// continue for a disabled agent.
+    pub disabled_agents: DisabledAgents,
     /// The analytics opt-out. On by default for a new install and preserved
     /// when an existing install has explicitly disabled it.
     pub analytics_enabled: bool,
@@ -665,6 +726,9 @@ impl Default for AppSettings {
             nudge_placement: NudgePlacement::default(),
             nudge_auto_dismiss_secs: DEFAULT_NUDGE_AUTO_DISMISS_SECS,
             notification_sound: true,
+            // Off: honoring Focus needs a macOS authorization prompt, and
+            // that prompt should follow a choice the reader made.
+            nudges_respect_dnd: false,
             disk_space_display: DiskSpaceDisplay::default(),
             disk_space_threshold_gb: DEFAULT_DISK_THRESHOLD_GB,
             notify_disk_space_low: true,
@@ -679,6 +743,9 @@ impl Default for AppSettings {
             // Empty: every provider antiburn can meter is metered. A reader
             // who wants fewer meters says so one provider at a time.
             live_usage_hidden_providers: HiddenMeters::default(),
+            // Empty: every agent with sessions shows. Onboarding and the
+            // Sources pane write slugs here when the reader turns one off.
+            disabled_agents: DisabledAgents::default(),
             // Official analytics-capable builds start enabled. Source builds
             // omit the client unless the builder selects its Cargo feature.
             // `settings_from` keeps older completed installs disabled.
@@ -772,6 +839,33 @@ mod tests {
         // A provider a later build adds must be metered without the reader
         // asking. Storing the hidden set is what makes that true.
         assert!(!AppSettings::default().live_usage_hidden_providers.any());
+    }
+
+    #[test]
+    fn disabled_agents_survive_a_round_trip_through_their_stored_text() {
+        let disabled = DisabledAgents::parse("windsurf,kiro");
+        assert_eq!(disabled.as_str(), "kiro,windsurf");
+        assert!(disabled.contains("windsurf"));
+        assert_eq!(disabled.slugs(), ["kiro", "windsurf"]);
+        assert!(disabled.any());
+    }
+
+    #[test]
+    fn disabled_agents_tolerate_what_a_hand_edited_database_can_hold() {
+        // Whitespace, case, duplicates, and a stray comma. Each one must
+        // resolve to the same set rather than to a row that hides nothing.
+        let disabled = DisabledAgents::parse(" Kiro , kiro,, ");
+        assert_eq!(disabled.as_str(), "kiro");
+        assert!(disabled.contains("KIRO"));
+        assert!(!DisabledAgents::parse("").any());
+    }
+
+    #[test]
+    fn every_agent_is_shown_by_default() {
+        // An agent a later build detects must surface without the reader
+        // asking. Storing the disabled set is what makes that true.
+        assert!(!AppSettings::default().disabled_agents.any());
+        assert!(!DisabledAgents::parse("some-future-agent").contains("claude-code"));
     }
 
     #[test]

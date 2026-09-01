@@ -37,8 +37,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use antiburn_local::analysis::{
-    ModelRun, TurnFacts, TurnRow, TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows,
-    delete_turn_rows, delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_turn_rows,
+    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, ModelRun, PARSER_REVISION, TurnFacts, TurnRow,
+    TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows, delete_turn_rows,
+    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_turn_rows,
     query_model_breakdown, query_model_runs, query_turn_facts, query_turn_rows,
 };
 use anyhow::{Context, Result};
@@ -47,12 +48,12 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use crate::dto::DeferredPermissionDir;
 
 pub use model::{
-    AnalysisRecord, AppSettings, DiskSpaceDisplay, EvidenceClaim, EvidenceCompletion,
-    EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters, MAX_ACTIVITY_DAYS,
-    MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement, ProjectionRevisions,
-    PublishedEvidence, RETAIN_SESSION_DATA_FOREVER, RelationKind, RelationRecord, RepositoryRecord,
-    SessionActivityKey, SessionActivityState, SessionKey, SessionRecord, SourceVersionState,
-    ThemePreference, UsageEvidenceRecord,
+    AnalysisRecord, AppSettings, DisabledAgents, DiskSpaceDisplay, EvidenceClaim,
+    EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters,
+    MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement,
+    ProjectionRevisions, PublishedEvidence, RETAIN_SESSION_DATA_FOREVER, RelationKind,
+    RelationRecord, RepositoryRecord, SessionActivityKey, SessionActivityState, SessionKey,
+    SessionRecord, SourceVersionState, ThemePreference, UsageEvidenceRecord,
 };
 
 /// Evidence rows that still wait for, or sit in, processing.
@@ -652,9 +653,116 @@ impl Store {
 
     /// Sessions whose activity falls at or after `since_epoch`, newest first.
     pub fn recent_sessions(&self, since_epoch: i64, limit: usize) -> Result<Vec<SessionRecord>> {
+        self.recent_sessions_excluding(since_epoch, limit, &DisabledAgents::default())
+    }
+
+    /// [`Self::recent_sessions`], without the sessions of the excluded agents.
+    ///
+    /// This is the display filter for [`DisabledAgents`]. Scan and analysis
+    /// callers use [`Self::recent_sessions`], because a disabled agent stays
+    /// indexed and analyzed.
+    pub fn recent_sessions_excluding(
+        &self,
+        since_epoch: i64,
+        limit: usize,
+        excluded_agents: &DisabledAgents,
+    ) -> Result<Vec<SessionRecord>> {
+        let excluded = excluded_agents.slugs();
+        let exclusion_predicate = if excluded.is_empty() {
+            String::new()
+        } else {
+            // Parameters 1 and 2 are the window and the limit, so the agent
+            // list binds from parameter 3.
+            let placeholders = (0..excluded.len())
+                .map(|index| format!("?{}", index + 3))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(" AND agent NOT IN ({placeholders})")
+        };
         let connection = self.lock();
-        let mut statement = connection.prepare(RECENT_SESSIONS_SQL)?;
-        let rows = statement.query_map(params![since_epoch, limit as i64], session_from_row)?;
+        // Splice the agent exclusion into the shared SQL. The base query and
+        // the plan test keep one constant.
+        let sql = RECENT_SESSIONS_SQL.replace(
+            "WHERE COALESCE(updated_at_epoch, 0) >= ?1",
+            &format!("WHERE COALESCE(updated_at_epoch, 0) >= ?1{exclusion_predicate}"),
+        );
+        let mut statement = connection.prepare(&sql)?;
+        let mut values: Vec<rusqlite::types::Value> = vec![
+            rusqlite::types::Value::Integer(since_epoch),
+            rusqlite::types::Value::Integer(limit as i64),
+        ];
+        values.extend(
+            excluded
+                .iter()
+                .map(|agent| rusqlite::types::Value::Text(agent.clone())),
+        );
+        let rows =
+            statement.query_map(rusqlite::params_from_iter(values.iter()), session_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// The analysis state of every session in the activity window, for the
+    /// aggregate hygiene summary.
+    ///
+    /// The window and the agent exclusion match
+    /// [`Self::recent_sessions_excluding`], so the summary describes the
+    /// same sessions the list shows. A row carries its evidence JSON only
+    /// when the evidence is `ready` for the current source generation and
+    /// revisions — the same currency rule `insights_report.rs` applies.
+    pub fn hygiene_summary_rows(
+        &self,
+        environment_key: &str,
+        since_epoch: i64,
+        excluded_agents: &DisabledAgents,
+    ) -> Result<Vec<HygieneSummaryRow>> {
+        let excluded = excluded_agents.slugs();
+        let exclusion_predicate = if excluded.is_empty() {
+            String::new()
+        } else {
+            // Parameters 1-5 are the scope, window and revisions, so the
+            // agent list binds from parameter 6.
+            let placeholders = (0..excluded.len())
+                .map(|index| format!("?{}", index + 6))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(" AND s.agent NOT IN ({placeholders})")
+        };
+        let current_ready = "e.status = 'ready'
+                 AND NOT (e.analyzed_generation IS NOT s.source_generation)
+                 AND NOT (e.parser_revision IS NOT ?3)
+                 AND NOT (e.analyzer_revision IS NOT ?4)
+                 AND NOT (e.evidence_schema_revision IS NOT ?5)";
+        let connection = self.lock();
+        let mut statement = connection.prepare(&format!(
+            "SELECT COALESCE(e.status IN ('failed', 'unsupported')
+                             OR ({current_ready}), 0),
+                    CASE WHEN {current_ready} THEN e.evidence_json END
+               FROM session s
+               LEFT JOIN session_evidence e
+                 ON e.environment_key = s.environment_key
+                AND e.agent = s.agent
+                AND e.session_id = s.session_id
+              WHERE s.environment_key = ?1
+                AND COALESCE(s.updated_at_epoch, 0) >= ?2{exclusion_predicate}",
+        ))?;
+        let mut values: Vec<rusqlite::types::Value> = vec![
+            rusqlite::types::Value::Text(environment_key.to_owned()),
+            rusqlite::types::Value::Integer(since_epoch),
+            rusqlite::types::Value::Integer(PARSER_REVISION),
+            rusqlite::types::Value::Integer(ANALYZER_REVISION),
+            rusqlite::types::Value::Integer(EVIDENCE_SCHEMA_REVISION),
+        ];
+        values.extend(
+            excluded
+                .iter()
+                .map(|agent| rusqlite::types::Value::Text(agent.clone())),
+        );
+        let rows = statement.query_map(rusqlite::params_from_iter(values.iter()), |row| {
+            Ok(HygieneSummaryRow {
+                settled: row.get::<_, bool>(0)?,
+                evidence_json: row.get::<_, Option<String>>(1)?,
+            })
+        })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -1776,6 +1884,15 @@ impl Store {
 }
 
 /// Read every preference through one already-held connection or transaction.
+/// One session's analysis state, as [`Store::hygiene_summary_rows`] reads it.
+#[derive(Debug, Clone)]
+pub struct HygieneSummaryRow {
+    /// True when analysis reached a terminal state for the current source.
+    pub settled: bool,
+    /// Current ready evidence JSON, when the session has one.
+    pub evidence_json: Option<String>,
+}
+
 fn read_settings(connection: &Connection) -> Result<AppSettings> {
     let mut statement = connection.prepare("SELECT key, value FROM setting")?;
     let rows = statement.query_map([], |row| {
@@ -1841,6 +1958,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("notificationSound")
             .map(|value| value == "true")
             .unwrap_or(defaults.notification_sound),
+        nudges_respect_dnd: stored
+            .get("nudgesRespectDnd")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.nudges_respect_dnd),
         disk_space_display: stored
             .get("diskSpaceDisplay")
             .and_then(|value| DiskSpaceDisplay::parse(value))
@@ -1869,6 +1990,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("liveUsageHiddenProviders")
             .map(|value| HiddenMeters::parse(value))
             .unwrap_or(defaults.live_usage_hidden_providers.clone()),
+        disabled_agents: stored
+            .get("disabledAgents")
+            .map(|value| DisabledAgents::parse(value))
+            .unwrap_or(defaults.disabled_agents.clone()),
         // No stored answer means this database predates the setting. A fresh
         // install takes the default. An install that already finished setup
         // stays off until the reader enables it.
@@ -1940,6 +2065,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
         bool_text(settings.notification_sound)
     ])?;
     put.execute(params![
+        "nudgesRespectDnd",
+        bool_text(settings.nudges_respect_dnd)
+    ])?;
+    put.execute(params![
         "diskSpaceDisplay",
         settings.disk_space_display.as_str()
     ])?;
@@ -1967,6 +2096,7 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
         "liveUsageHiddenProviders",
         settings.live_usage_hidden_providers.as_str()
     ])?;
+    put.execute(params!["disabledAgents", settings.disabled_agents.as_str()])?;
     put.execute(params![
         "analyticsEnabled",
         bool_text(settings.analytics_enabled)

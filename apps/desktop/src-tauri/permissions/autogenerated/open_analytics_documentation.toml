@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-analytics-documentation"
+description = "Enables the open_analytics_documentation command without any pre-configured scope."
+commands.allow = ["open_analytics_documentation"]
+
+[[permission]]
+identifier = "deny-open-analytics-documentation"
+description = "Denies the open_analytics_documentation command without any pre-configured scope."
+commands.deny = ["open_analytics_documentation"]

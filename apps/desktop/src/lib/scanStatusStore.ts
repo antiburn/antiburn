@@ -14,5 +14,16 @@ import { getScanStatus, onScanEvent, type ScanStatus } from "./ipc"
 export const scanStatusStore = createExternalStore<ScanStatus | null>({
   initial: null,
   load: () => getScanStatus().catch(() => null),
-  subscribe: (set) => onScanEvent((status) => set(status)),
+  subscribe: (set) => onScanEvent((status) => set(withKnownAgents(status))),
 })
+
+/**
+ * Keep the per-agent list across updates that do not carry one. Scan events
+ * and `scan_now` return an empty `agents` array by design; only
+ * `get_scan_status` fills it. Use for every write into `scanStatusStore`.
+ */
+export function withKnownAgents(status: ScanStatus): ScanStatus {
+  const previous = scanStatusStore.getSnapshot()
+  if (status.agents.length > 0 || !previous || previous.agents.length === 0) return status
+  return { ...status, agents: previous.agents }
+}

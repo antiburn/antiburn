@@ -14,6 +14,32 @@ function Write-InstallerInfo {
     Write-Information "antiburn: $Message" -InformationAction Continue
 }
 
+# Print the wordmark and a product summary.
+# Show the art and color only on an interactive host that permits color.
+function Write-InstallerBanner {
+    if ($env:NO_COLOR -or [Console]::IsOutputRedirected) {
+        Write-InstallerInfo 'Stop hitting your token limits - antiburn finds what burns tokens in your coding agent sessions.'
+        return
+    }
+    $lowerHalfBlock = [char]0x2584
+    $fullBlock = [char]0x2588
+    $upperHalfBlock = [char]0x2580
+    $wordmark = @(
+        " ${lowerHalfBlock}${lowerHalfBlock}        ${fullBlock}  ${upperHalfBlock} ${fullBlock}"
+        " ${lowerHalfBlock}${lowerHalfBlock}${fullBlock} ${fullBlock}${upperHalfBlock}${upperHalfBlock}${lowerHalfBlock} ${upperHalfBlock}${fullBlock}${upperHalfBlock} ${fullBlock} ${fullBlock}${upperHalfBlock}${upperHalfBlock}${lowerHalfBlock} ${fullBlock}  ${fullBlock} ${fullBlock}${lowerHalfBlock}${upperHalfBlock}${upperHalfBlock} ${fullBlock}${upperHalfBlock}${upperHalfBlock}${lowerHalfBlock}"
+        "${upperHalfBlock}${lowerHalfBlock}${lowerHalfBlock}${fullBlock} ${fullBlock}  ${fullBlock}  ${fullBlock}${lowerHalfBlock} ${fullBlock} ${fullBlock}${lowerHalfBlock}${lowerHalfBlock}${upperHalfBlock} ${upperHalfBlock}${lowerHalfBlock}${lowerHalfBlock}${fullBlock} ${fullBlock}    ${fullBlock} ${fullBlock}  ${fullBlock}"
+    )
+    $Host.UI.WriteLine('')
+    foreach ($line in $wordmark) {
+        $Host.UI.WriteLine([ConsoleColor]::DarkYellow, $Host.UI.RawUI.BackgroundColor, $line)
+    }
+    $Host.UI.WriteLine('')
+    $Host.UI.WriteLine('Stop hitting your token limits.')
+    $Host.UI.WriteLine('antiburn reads your coding agent sessions locally, finds what')
+    $Host.UI.WriteLine('burns tokens, and nudges you before you hit a limit.')
+    $Host.UI.WriteLine('')
+}
+
 function Get-AntiburnRelease {
     param([string] $RequestedVersion)
 
@@ -129,6 +155,7 @@ function Invoke-AntiburnInstall {
         [Net.ServicePointManager]::SecurityProtocol = $protocol -bor [Net.SecurityProtocolType]::Tls12
     }
 
+    Write-InstallerBanner
     Test-WindowsArchitecture
     $release = Get-AntiburnRelease -RequestedVersion $RequestedVersion
     $assetName = "antiburn_$($release.Version)_x64-setup.exe"
@@ -167,6 +194,7 @@ function Invoke-AntiburnInstall {
             throw "The installer completed, but antiburn was not found at $installedApplication."
         }
         Write-InstallerInfo "Installed antiburn $($release.Version)"
+        Write-InstallerInfo 'Open antiburn - it lives in your menu bar.'
     }
     finally {
         Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force -ErrorAction SilentlyContinue

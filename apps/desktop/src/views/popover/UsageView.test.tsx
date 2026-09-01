@@ -103,10 +103,12 @@ describe("UsageView", () => {
     expect(screen.getByRole("heading", { name: "Usage" })).toBeInTheDocument()
 
     const recent = within(screen.getByRole("region", { name: "Recently used" }))
+    expect(recent.getByRole("heading", { name: "Recently used" })).toBeInTheDocument()
     expect(recent.getByText("Anthropic")).toBeInTheDocument()
     expect(recent.getByText("Used today")).toBeInTheDocument()
 
     const rest = within(screen.getByRole("region", { name: "All detected" }))
+    expect(rest.getByRole("heading", { name: "All detected" })).toBeInTheDocument()
     expect(rest.getByText("OpenAI")).toBeInTheDocument()
     expect(rest.queryByText("Used today")).not.toBeInTheDocument()
   })
@@ -147,6 +149,20 @@ describe("UsageView", () => {
     expect(within(cards[2]!).getByText("Today's spend")).toBeInTheDocument()
   })
 
+  it("hides embedded section headings but keeps their accessible regions", () => {
+    render(<UsageView summary={summary()} onBack={vi.fn()} embedded />)
+
+    expect(screen.queryByRole("heading", { name: "Usage" })).not.toBeInTheDocument()
+
+    const recent = within(screen.getByRole("region", { name: "Recently used" }))
+    expect(recent.queryByRole("heading", { name: "Recently used" })).not.toBeInTheDocument()
+    expect(recent.getByText("Anthropic")).toBeInTheDocument()
+
+    const rest = within(screen.getByRole("region", { name: "All detected" }))
+    expect(rest.queryByRole("heading", { name: "All detected" })).not.toBeInTheDocument()
+    expect(rest.getByText("OpenAI")).toBeInTheDocument()
+  })
+
   it("shows every window on one card, with sessions beside each figure", () => {
     render(<UsageView summary={summary()} onBack={vi.fn()} />)
 
@@ -184,11 +200,26 @@ describe("UsageView", () => {
     expect(within(card!).getByText(/Easing · <0\.1×/)).toBeInTheDocument()
   })
 
-  it("explains how local spend estimates are calculated", () => {
+  it("explains local spend and provider limits", () => {
     render(<UsageView summary={summary()} onBack={vi.fn()} />)
 
-    expect(screen.getByText(/window of its most recent activity/)).toBeInTheDocument()
-    expect(screen.getByText(/Not a bill/)).toBeInTheDocument()
+    expect(
+      screen.getByText("Local spend is estimated; plan limits come from your provider."),
+    ).toBeInTheDocument()
+  })
+
+  it("places each provider explanation below its inset card", () => {
+    render(<UsageView summary={summary()} onBack={vi.fn()} />)
+
+    const item = screen.getByText("Anthropic").closest("li")
+    const explanation = screen.getByText(
+      "Estimated locally at API rates. Your provider bill may differ.",
+    )
+    expect(item).not.toBeNull()
+    expect(item).toHaveClass("flex", "flex-col", "gap-1")
+    expect(item?.firstElementChild).toHaveClass("bg-surface-card")
+    expect(item?.firstElementChild).not.toContainElement(explanation)
+    expect(explanation.parentElement).toBe(item)
   })
 
   it("is honest when there is nothing to show", () => {
@@ -1056,11 +1087,12 @@ describe("UsageView — plan limits layered over local estimates", () => {
     ).toBeInTheDocument()
   })
 
-  it("separates the two halves in the footer, so neither claim covers the other", () => {
+  it("shows the usage disclaimer in the footer", () => {
     render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />)
 
-    expect(screen.getByText(/Spend figures are local estimates/)).toBeInTheDocument()
-    expect(screen.getByText(/Plan limits are your provider.s own figures/)).toBeInTheDocument()
+    expect(
+      screen.getByText("Local spend is estimated; plan limits come from your provider."),
+    ).toBeInTheDocument()
   })
 })
 

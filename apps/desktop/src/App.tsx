@@ -12,6 +12,9 @@ const HudDetailView = lazy(() =>
     default: view,
   })),
 )
+const PopoverPeekView = lazy(() =>
+  import("./views/PopoverPeekView").then(({ PopoverPeekView: view }) => ({ default: view })),
+)
 
 function RouteLoading() {
   return <div className="h-full" aria-busy="true" data-testid="route-loading" />
@@ -31,6 +34,13 @@ export function App() {
     return (
       <Suspense fallback={<RouteLoading />}>
         <HudDetailView />
+      </Suspense>
+    )
+  }
+  if (route === "popover-peek") {
+    return (
+      <Suspense fallback={<RouteLoading />}>
+        <PopoverPeekView />
       </Suspense>
     )
   }

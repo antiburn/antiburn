@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-provider-usage"
+description = "Enables the get_provider_usage command without any pre-configured scope."
+commands.allow = ["get_provider_usage"]
+
+[[permission]]
+identifier = "deny-get-provider-usage"
+description = "Denies the get_provider_usage command without any pre-configured scope."
+commands.deny = ["get_provider_usage"]

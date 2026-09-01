@@ -60,10 +60,13 @@ mod hud;
 mod insights_ipc;
 mod insights_report;
 mod insights_worker;
+#[cfg(feature = "memory-probe")]
+mod memory_probe;
 mod notifications;
 mod nudges;
 mod onboarding;
 mod popover;
+mod popover_peek;
 mod provider_accounts;
 mod provider_usage;
 mod repositories;
@@ -87,14 +90,37 @@ mod window_lifecycle;
 mod window_placement;
 mod window_readiness;
 
+include!("app_commands.rs");
+
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tauri::{Manager, RunEvent, WindowEvent};
+
+#[cfg(all(feature = "memory-probe", feature = "distribution"))]
+compile_error!("memory-probe and distribution features cannot be enabled together");
 
 /// Handles of the app's background tasks, kept so it can abort them on exit
 /// rather than leaving them running against a store that is going away.
 #[derive(Default)]
 pub(crate) struct Schedulers(Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>);
+
+#[derive(Default)]
+struct WindowRebuildState(AtomicUsize);
+
+impl WindowRebuildState {
+    fn begin(&self) {
+        self.0.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn finish(&self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    fn is_pending(&self) -> bool {
+        self.0.load(Ordering::Acquire) != 0
+    }
+}
 
 impl Schedulers {
     fn push(&self, handle: tauri::async_runtime::JoinHandle<()>) {
@@ -112,6 +138,12 @@ impl Schedulers {
 /// created. None has a meaningful degraded mode. The shell opens onboarding
 /// when required. Other windows load when the first interaction requests them.
 pub fn run() {
+    macro_rules! command_handlers {
+        ($( $handler:path => $name:literal, )*) => {
+            tauri::generate_handler![$($handler),*]
+        };
+    }
+
     let log_directory_name = if cfg!(debug_assertions) {
         "antiburn-debug"
     } else {
@@ -131,81 +163,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(webview_defaults::plugin())
-        .invoke_handler(tauri::generate_handler![
-            commands::add_scan_root,
-            commands::app_info,
-            commands::begin_popover_hold,
-            commands::cancel_scan,
-            commands::check_for_updates,
-            commands::clear_local_index,
-            commands::default_scan_roots,
-            commands::delete_session_data,
-            commands::engine_catalog_version,
-            commands::end_popover_hold,
-            commands::export_session,
-            commands::get_provider_usage,
-            commands::get_live_usage,
-            commands::get_latest_session_activity,
-            commands::refresh_live_usage,
-            commands::get_scan_status,
-            commands::get_insights_report,
-            commands::get_insights_status,
-            commands::get_session_hygiene,
-            commands::cancel_insights_report,
-            commands::get_folder_permissions,
-            commands::request_folder_access,
-            commands::restart_onboarding,
-            commands::open_folder_access_settings,
-            commands::open_github_repo,
-            commands::open_analytics_documentation,
-            commands::open_privacy_policy,
-            commands::open_overlay_window,
-            commands::hide_overlay_window,
-            commands::record_hud_position,
-            commands::install_update,
-            commands::show_hud_detail,
-            commands::hide_hud_detail,
-            commands::conceal_hud_detail,
-            commands::get_hud_detail_state,
-            commands::set_hud_detail_size,
-            commands::get_consent_diagnostics,
-            commands::recheck_folder_permissions,
-            commands::restart_to_update,
-            commands::get_session_analysis,
-            commands::get_session_analysis_fingerprint,
-            commands::get_settings,
-            commands::get_storage_health,
-            commands::get_subagent_analysis,
-            commands::get_update_status,
-            commands::hide_popover,
-            commands::finish_onboarding,
-            commands::note_interaction,
-            commands::list_recent_sessions,
-            commands::list_repositories,
-            commands::list_scan_roots,
-            commands::open_settings_window,
-            commands::popover_content_ready,
-            commands::post_test_notification,
-            commands::post_sample_notification,
-            commands::quit_app,
-            commands::refresh_repositories,
-            commands::remove_scan_root,
-            commands::reveal_source,
-            commands::scan_now,
-            commands::set_popover_height,
-            commands::resize_overlay_window,
-            commands::set_repository_enabled,
-            commands::set_settings,
-            commands::start_update_simulation,
-            commands::take_settings_pane,
-            commands::window_ready,
-            antiburn_nudge::commands::nudge_action,
-            antiburn_nudge::commands::nudge_dismiss,
-            antiburn_nudge::commands::nudge_ready,
-            antiburn_nudge::commands::nudge_resize,
-            antiburn_nudge::commands::nudge_reveal,
-            antiburn_nudge::commands::nudge_set_hovered,
-        ])
+        .invoke_handler(with_app_commands!(command_handlers))
         .on_window_event(on_window_event)
         .setup(|app| {
             // A menu-bar app owns no Dock icon and no application menu. The
@@ -249,14 +207,19 @@ pub fn run() {
             app.manage(scan::ScanController::default());
             app.manage(Schedulers::default());
             app.manage(popover::PopoverState::default());
+            app.manage(popover_peek::manager());
             app.manage(updates::UpdaterState::default());
             app.manage(notifications::NotificationState::default());
             app.manage(storage_health::StorageHealth::default());
             app.manage(settings::PendingPane::default());
             app.manage(settings::SettingsWindowState::default());
             app.manage(onboarding::OnboardingWindowState::default());
+            app.manage(WindowRebuildState::default());
             app.manage(nudges::AnchorOverride::default());
             app.manage(antiburn_nudge::NotificationGate::default());
+
+            // Build the resident placeholder before any hover can request it.
+            popover_peek::prewarm(app.handle());
 
             tray::create(app.handle())?;
             // After the tray, and on the main thread: the monitor reaches the
@@ -333,9 +296,11 @@ pub fn run() {
             Ok(())
         });
 
-    let app = builder
-        .build(tauri::generate_context!())
-        .expect("failed to build the antiburn application");
+    #[cfg(not(feature = "memory-probe"))]
+    let app = builder.build(tauri::generate_context!());
+    #[cfg(feature = "memory-probe")]
+    let app = builder.build(tauri::generate_context!("tauri.memory-probe.conf.json"));
+    let app = app.expect("failed to build the antiburn application");
     let mut retention_cleanup = retention_log_dir.map(|log_dir| {
         tauri::async_runtime::spawn_blocking(move || {
             match antiburn_trace::clean_old_logs(&log_dir, antiburn_trace::DEFAULT_LOG_MAX_AGE) {
@@ -346,7 +311,11 @@ pub fn run() {
     });
     app.run(move |app, event| match event {
         RunEvent::ExitRequested { api, code, .. }
-            if should_prevent_exit(onboarding::is_pending(app), code) =>
+            if should_prevent_exit(
+                onboarding::is_pending(app),
+                app.state::<WindowRebuildState>().is_pending(),
+                code,
+            ) =>
         {
             api.prevent_exit();
         }
@@ -401,8 +370,12 @@ pub fn run() {
 /// silently does nothing at the one moment they have no other way to get rid of
 /// the app. During the first run it quits like the ordinary application it is
 /// pretending to be.
-fn should_prevent_exit(onboarding_pending: bool, code: Option<i32>) -> bool {
-    code.is_none() && !onboarding_pending
+fn should_prevent_exit(
+    onboarding_pending: bool,
+    window_rebuild_pending: bool,
+    code: Option<i32>,
+) -> bool {
+    code.is_none() && (!onboarding_pending || window_rebuild_pending)
 }
 
 /// Stop every background task. Safe to call when none ever started.
@@ -451,13 +424,80 @@ fn close_policy(label: &str, onboarding_pending: bool) -> ClosePolicy {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ManagedWindow {
+    Popover,
+    Settings,
+    Onboarding,
+}
+
+impl ManagedWindow {
+    fn rebuild_after_destroy(self, app: &tauri::AppHandle) {
+        match self {
+            Self::Popover => popover::rebuild_after_destroy(app),
+            Self::Settings => settings::rebuild_after_destroy(app),
+            Self::Onboarding => onboarding::rebuild_after_destroy(app),
+        }
+    }
+}
+
+fn rebuild_after_destroy_for_label(label: &str) -> Option<ManagedWindow> {
+    match label {
+        popover::LABEL => Some(ManagedWindow::Popover),
+        settings::LABEL => Some(ManagedWindow::Settings),
+        onboarding::LABEL => Some(ManagedWindow::Onboarding),
+        _ => None,
+    }
+}
+
+/// Queue a replacement after the current window event returns.
+fn defer_rebuild_after_destroy(app: &tauri::AppHandle, window: ManagedWindow) {
+    app.state::<WindowRebuildState>().begin();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // `run_on_main_thread` runs inline when called from the main thread.
+        // The async task forces the rebuild onto a later event-loop turn.
+        let rebuild_app = app.clone();
+        let finish_app = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            window.rebuild_after_destroy(&rebuild_app);
+            finish_app.state::<WindowRebuildState>().finish();
+        }) {
+            app.state::<WindowRebuildState>().finish();
+            ::tracing::error!(event = "window_rebuild_schedule_failed", error = %error);
+        }
+    });
+}
+
 /// Window policy shared by every window the shell creates.
 fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
+    if let Some(manager) = window
+        .app_handle()
+        .try_state::<popover_peek::PopoverPeekManager>()
+    {
+        manager.handle_anchor_event(window, event);
+        if window.label() == popover_peek::LABEL && matches!(event, WindowEvent::Destroyed) {
+            manager.handle_companion_destroyed();
+            let app = window.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::task::yield_now().await;
+                popover_peek::prewarm(&app);
+            });
+        }
+    }
     match event {
         // A popover is dismissed by looking away from it. Anything else that
         // takes focus — another app, the settings window — closes it.
         WindowEvent::Focused(false) if window.label() == popover::LABEL => {
             popover::hide_on_focus_loss(window);
+        }
+        WindowEvent::Focused(false) if window.label() == antiburn_nudge::NUDGE_LABEL => {
+            if let Some(manager) = window
+                .app_handle()
+                .try_state::<antiburn_nudge::NudgeManager>()
+            {
+                manager.on_window_focus_lost();
+            }
         }
         WindowEvent::CloseRequested { api, .. } => {
             match close_policy(window.label(), onboarding::is_pending(window.app_handle())) {
@@ -485,12 +525,11 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                 }
             }
         }
-        WindowEvent::Destroyed => match window.label() {
-            popover::LABEL => popover::rebuild_after_destroy(window.app_handle()),
-            settings::LABEL => settings::rebuild_after_destroy(window.app_handle()),
-            onboarding::LABEL => onboarding::rebuild_after_destroy(window.app_handle()),
-            _ => {}
-        },
+        WindowEvent::Destroyed => {
+            if let Some(rebuild) = rebuild_after_destroy_for_label(window.label()) {
+                defer_rebuild_after_destroy(window.app_handle(), rebuild);
+            }
+        }
         _ => {}
     }
 }
@@ -536,7 +575,7 @@ fn install_updater(app: &tauri::AppHandle) {
 mod tests {
     use super::{
         ClosePolicy, Schedulers, abort_schedulers, close_policy, finish_retention_cleanup,
-        should_prevent_exit,
+        rebuild_after_destroy_for_label, should_prevent_exit,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -545,10 +584,10 @@ mod tests {
     fn a_window_close_never_quits_the_finished_menu_bar_app() {
         // Settings and the popover both close with no exit code, and the tray
         // item is the app's real lifetime.
-        assert!(should_prevent_exit(false, None));
+        assert!(should_prevent_exit(false, false, None));
         // The shell's own `exit(0)` is the deliberate quit and always lands.
-        assert!(!should_prevent_exit(false, Some(0)));
-        assert!(!should_prevent_exit(true, Some(0)));
+        assert!(!should_prevent_exit(false, false, Some(0)));
+        assert!(!should_prevent_exit(true, true, Some(0)));
     }
 
     #[test]
@@ -556,7 +595,12 @@ mod tests {
         // The case that matters. A Regular app's application menu and Dock
         // context menu both offer Quit and both arrive with no code; swallowing
         // them would ship a Quit item that does nothing.
-        assert!(!should_prevent_exit(true, None));
+        assert!(!should_prevent_exit(true, false, None));
+    }
+
+    #[test]
+    fn a_pending_rebuild_keeps_the_first_run_alive() {
+        assert!(should_prevent_exit(true, true, None));
     }
 
     #[test]
@@ -697,5 +741,21 @@ mod tests {
             close_policy(antiburn_nudge::NUDGE_LABEL, false),
             ClosePolicy::HideNudge
         );
+    }
+
+    #[test]
+    fn only_managed_windows_select_their_deferred_rebuild_handler() {
+        let cases = [
+            (super::popover::LABEL, super::ManagedWindow::Popover),
+            (super::settings::LABEL, super::ManagedWindow::Settings),
+            (super::onboarding::LABEL, super::ManagedWindow::Onboarding),
+        ];
+
+        for (label, expected) in cases {
+            let actual = rebuild_after_destroy_for_label(label)
+                .expect("a managed window selects a rebuild handler");
+            assert_eq!(actual, expected);
+        }
+        assert!(rebuild_after_destroy_for_label("unmanaged").is_none());
     }
 }

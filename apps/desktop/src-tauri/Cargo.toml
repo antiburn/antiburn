@@ -10,11 +10,11 @@
 # neither member nor excluded aborts resolution outright ("multiple workspace
 # roots found in the same workspace").
 [workspace]
-exclude = ["crates/hud", "crates/nudge", "crates/sound", "crates/trace"]
+exclude = ["crates/anchored-window", "crates/hud", "crates/nudge", "crates/sound", "crates/trace"]
 
 [package]
 name = "antiburn"
-version = "0.3.0-rc.1"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.97"
 description = "antiburn desktop application: a tray/menu-bar shell over the local antiburn engine."
@@ -34,6 +34,8 @@ distribution = []
 # Include the first-party analytics client. Source builds omit it unless the
 # builder selects this feature explicitly.
 analytics = []
+# Add local memory fixtures and WebContent PID diagnostics.
+memory-probe = []
 
 [[bin]]
 name = "antiburn"
@@ -52,6 +54,8 @@ antiburn-nudge = { path = "crates/nudge" }
 # The floating usage HUD window: mechanism only. The shell owns its session
 # activity policy and IPC commands.
 antiburn-hud = { path = "crates/hud" }
+# Reusable anchored companion window mechanism. The shell owns targets and IPC policy.
+antiburn-anchored-window = { path = "crates/anchored-window" }
 # The notification chime uses samples synthesized in-process. It has no audio
 # assets or decoders.
 antiburn-sound = { path = "crates/sound" }
@@ -149,6 +153,10 @@ objc2 = "0.6"
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSCell", "NSControl", "NSView", "NSResponder", "NSColor", "NSFont", "NSFontDescriptor", "NSAttributedString", "NSEvent", "block2"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAttributedString", "NSDictionary", "NSValue", "NSObject", "NSURL", "NSError", "NSNotification", "NSOperation", "block2"] }
+# Subclasses the popover into a non-activating NSPanel (`src/popover/panel.rs`),
+# so opening it does not deactivate the frontmost application. The rev must
+# match the nudge crate's pin so both share one plugin registration.
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Per-user Run-key registration. Kept in Rust so executable paths are quoted

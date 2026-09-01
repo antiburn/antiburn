@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-add-scan-root"
+description = "Enables the add_scan_root command without any pre-configured scope."
+commands.allow = ["add_scan_root"]
+
+[[permission]]
+identifier = "deny-add-scan-root"
+description = "Denies the add_scan_root command without any pre-configured scope."
+commands.deny = ["add_scan_root"]

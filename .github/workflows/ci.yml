@@ -50,7 +50,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test the CI control plane
-        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/third-party-notices.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs
+        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/mem-report.test.mjs scripts/third-party-notices.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs
 
       # The drift guard runs here, not in a classified job. It reads the
       # contract, the stylesheets, and the popover window's own corner

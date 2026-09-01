@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-popover-peek-concealed"
+description = "Enables the popover_peek_concealed command without any pre-configured scope."
+commands.allow = ["popover_peek_concealed"]
+
+[[permission]]
+identifier = "deny-popover-peek-concealed"
+description = "Denies the popover_peek_concealed command without any pre-configured scope."
+commands.deny = ["popover_peek_concealed"]

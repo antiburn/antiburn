@@ -1,4 +1,4 @@
-import { AlertTriangle, Check, Copy, FolderPlus, Lock, X } from "lucide-react"
+import { AlertTriangle, Check, FolderPlus, Lock, X } from "lucide-react"
 
 import appIcon from "../../assets/app-icon.png"
 import { useState } from "react"
@@ -10,10 +10,13 @@ import { FolderPermissionNotice } from "../../components/repositories/FolderPerm
 import { LocalRepositoryList } from "../../components/repositories/LocalRepositoryList"
 import { Card } from "../../components/ui/Card"
 import { PushButton } from "../../components/ui/PushButton"
-import { Row } from "../../components/ui/Row"
 import { ScrollPane } from "../../components/ui/ScrollPane"
-import { ToggleRow } from "../../components/ui/ToggleRow"
+import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
+import { renderAgentIcon } from "../../lib/agentIcon"
+import { AGENT_SLUGS, agentDisplayName } from "../../lib/presentation/agents"
+import { sessionHygieneCheckName } from "../../lib/presentation/sessionHygiene"
 import { getConsentDiagnostics, openFolderAccessSettings, type ScanStatus } from "../../lib/ipc"
+import type { HygieneSummary } from "../../lib/insightsIpc"
 import type { FolderPermissions, LocalRepositoryItem } from "../../lib/types/repository"
 import type { FolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
 import type { OnboardingStep } from "./OnboardingSession"
@@ -47,14 +50,23 @@ export interface OnboardingFlowProps {
   onDiscover: () => void
   /** The shell's scan status, or null before the first read. */
   scanStatus: ScanStatus | null
+  /** Draft of the disabled-agent display filter. Persisted on finish. */
+  disabledAgents: readonly string[]
+  /** Show or hide one agent's sessions. Sessions stay indexed either way. */
+  onAgentEnabledChange: (slug: string, enabled: boolean) => void
   /** Whether the installed app should start after the reader signs in. */
   launchAtLogin: boolean
   onLaunchAtLoginChange: (enabled: boolean) => void
-  /** Whether this build can send analytics at all. False in development and
-   *  in any build from a clean checkout. */
-  analyticsSupported: boolean
-  /** Whether the process environment disables analytics for this launch. */
-  analyticsEnvironmentDisabled: boolean
+  /** Draft of the Do Not Disturb opt-in. Persisted on finish. */
+  nudgesRespectDnd: boolean
+  onNudgesRespectDndChange: (enabled: boolean) => void
+  /** The activity window, in days, that scopes the session numbers. */
+  activityWindowDays: number
+  /** Aggregate analysis numbers for the Ready step, or null before the
+   *  first read. */
+  hygieneSummary: HygieneSummary | null
+  /** The Ready step is now visible. The session starts summary polling. */
+  onReadyEntered: () => void
   /** Count one step. The session deduplicates repeated navigation. */
   onStepViewed: (step: OnboardingStep) => void
   /** Finish: records the flag and enters the activity view. */
@@ -63,17 +75,15 @@ export interface OnboardingFlowProps {
   finishError: string | null
 }
 
-const STEPS = ["welcome", "sourcesAndRepos", "ready"] as const
+const STEPS = ["welcome", "agentsDetected", "sourcesAndRepos", "ready"] as const
 type Step = (typeof STEPS)[number]
 
 const ANALYTICS_STEP: Record<Step, OnboardingStep> = {
   welcome: "welcome",
+  agentsDetected: "agents_detected",
   sourcesAndRepos: "sources_and_repos",
   ready: "ready",
 }
-
-const PRIVACY_REVIEW_PROMPT =
-  "Review Antiburn's public source code: https://github.com/antiburn/antiburn. Explain in plain language what stays on my computer, what data leaves it, when analytics starts, and how I can turn analytics off. Cite the files that support each answer."
 
 function focusHeading(heading: HTMLHeadingElement | null): void {
   heading?.focus()
@@ -98,21 +108,7 @@ function StepDots({ step }: { step: Step }) {
 
 const CENTRED_COLUMN = "mx-auto flex max-w-[440px] flex-col items-center"
 
-function Welcome({
-  analyticsSupported,
-  analyticsEnvironmentDisabled,
-}: {
-  analyticsSupported: boolean
-  analyticsEnvironmentDisabled: boolean
-}) {
-  // This sentence is part of the network surface. A new outbound call means
-  // a change here. Settings → Privacy is the long form.
-  const networkCopy = !analyticsSupported
-    ? "It only goes online for your provider’s usage figures and a version check. This build has no analytics endpoint, so it sends nothing about itself."
-    : analyticsEnvironmentDisabled
-      ? "It only goes online for your provider’s usage figures and a version check. Analytics is disabled for this launch by ANTIBURN_ANALYTICS_ENABLED=false."
-      : "It only goes online for your provider’s usage figures, a version check, and anonymised analytics about the app. You can opt out of the analytics."
-
+function Welcome() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center overflow-y-auto">
       <div className={CENTRED_COLUMN}>
@@ -125,17 +121,106 @@ function Welcome({
           className="mb-5 h-24 w-24 select-none drop-shadow-md"
           draggable={false}
         />
-        <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
+        <h2 ref={focusHeading} tabIndex={-1} className="type-title-1 text-label outline-none">
           Stop hitting your token limits.
         </h2>
-        <p className="mt-2 text-balance type-callout text-label-secondary">
+        <p className="mt-2.5 text-balance type-body text-label-secondary">
           antiburn reads your coding agent session logs and analyses them locally.
         </p>
-        <p className="mt-2 text-balance type-callout text-label-secondary">
+        <p className="mt-2 text-balance type-body text-label-secondary">
           No account needed, and nothing from your sessions is ever uploaded.
         </p>
-        <p className="mt-2 text-balance type-callout text-label-secondary">{networkCopy}</p>
       </div>
+    </div>
+  )
+}
+
+function AgentsDetected({
+  scanStatus,
+  disabledAgents,
+  onAgentEnabledChange,
+}: {
+  scanStatus: ScanStatus | null
+  disabledAgents: readonly string[]
+  onAgentEnabledChange: (slug: string, enabled: boolean) => void
+}) {
+  const detected = (scanStatus?.agents ?? [])
+    .filter((entry) => entry.sessionsSeen > 0)
+    .sort((a, b) => b.sessionsSeen - a.sessionsSeen)
+  const detectedSlugs = new Set(detected.map((entry) => entry.agent))
+  const quiet = AGENT_SLUGS.filter((slug) => !detectedSlugs.has(slug))
+  const isEnabled = (slug: string) => !disabledAgents.includes(slug)
+
+  return (
+    <div className="flex h-full min-h-0 flex-col px-8">
+      <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
+        Scan Locations: Agents
+      </h2>
+      <p className="mt-1.5 type-callout text-label-secondary">
+        antiburn does constant background session scans from agents you enable.
+      </p>
+
+      <ScrollPane className="mt-3" viewportClassName="pr-1">
+        {detected.length > 0 ? (
+          <Card>
+            {detected.map((entry) => (
+              <div key={entry.agent} className="flex items-center gap-2.5 px-3 py-1.5">
+                <span className="flex w-5 shrink-0 justify-center">
+                  {renderAgentIcon(entry.agent, 16)}
+                </span>
+                <span className="type-callout font-semibold! text-label">
+                  {agentDisplayName(entry.agent)}
+                </span>
+                <span className="flex-1 type-footnote text-label-tertiary">
+                  {entry.sessionsSeen} {entry.sessionsSeen === 1 ? "session" : "sessions"}
+                </span>
+                <ToggleSwitch
+                  checked={isEnabled(entry.agent)}
+                  onCheckedChange={(next) => onAgentEnabledChange(entry.agent, next)}
+                  aria-label={`Show ${agentDisplayName(entry.agent)} sessions`}
+                />
+              </div>
+            ))}
+          </Card>
+        ) : null}
+
+        {quiet.length > 0 ? (
+          <>
+            <p
+              className={cn(
+                "pb-1.5 type-footnote font-semibold! text-label-tertiary",
+                detected.length > 0 ? "mt-3.5" : "mt-1",
+              )}
+            >
+              No sessions found
+            </p>
+            <Card className="grid grid-cols-2 divide-y-0">
+              {quiet.map((slug, position) => (
+                <div
+                  key={slug}
+                  className={cn(
+                    "flex items-center gap-2.5 border-separator px-3 py-1",
+                    position >= 2 && "border-t",
+                    position % 2 === 0 && "border-r",
+                  )}
+                >
+                  <span className="flex w-5 shrink-0 justify-center">
+                    {renderAgentIcon(slug, 14)}
+                  </span>
+                  <span className="flex-1 truncate type-footnote text-label-secondary">
+                    {agentDisplayName(slug)}
+                  </span>
+                  <ToggleSwitch
+                    checked={isEnabled(slug)}
+                    onCheckedChange={(next) => onAgentEnabledChange(slug, next)}
+                    aria-label={`Show ${agentDisplayName(slug)} sessions`}
+                  />
+                </div>
+              ))}
+            </Card>
+          </>
+        ) : null}
+      </ScrollPane>
     </div>
   )
 }
@@ -172,14 +257,49 @@ function SourcesAndRepos({
 }) {
   const scanFailed = !scanning && scanError !== null
 
+  // A repository that is not on this machine carries no switch, so "all" means
+  // the repositories the reader can actually turn on.
+  const toggleable = repositories.filter((item) => item.status !== "not_cloned")
+  const allEnabled = toggleable.length > 0 && toggleable.every((item) => item.enabled)
+  const [choosingRepos, setChoosingRepos] = useState(false)
+  // Every repository is on and the reader has not asked to see them, so the
+  // list stays closed.
+  const scanningAll = allEnabled && !choosingRepos
+
+  function handleScanAllRepos(next: boolean): void {
+    if (next) {
+      // Turn each repository back on, then close the list again.
+      for (const item of toggleable) {
+        if (!item.enabled) onToggleRepository(item, true)
+      }
+      setChoosingRepos(false)
+      return
+    }
+    // Turning this off opens the list. It disables no repository.
+    setChoosingRepos(true)
+  }
+
+  // The rows are explicit so the heading block keeps its own height. Two
+  // automatic rows share the leftover space instead, which moves the column
+  // headings down whenever the columns hold less.
   return (
-    <div className="grid grid-cols-2 h-full">
-      <div className="flex min-h-0 flex-col px-8">
+    <div className="grid h-full grid-cols-2 grid-rows-[auto_minmax(0,1fr)] gap-x-8 px-8">
+      <div className="col-span-full mb-4 flex flex-col gap-1.5">
         <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
-          Repo search locations
+          Scan Locations: Repos
         </h2>
 
-        <ScrollPane className="mt-3" viewportClassName="pr-1">
+        <p className="type-callout text-label-secondary">
+          antiburn will only scan sessions from repos enabled here.
+        </p>
+      </div>
+
+      <div className="flex min-h-0 flex-col">
+        <h3 className="border-b border-separator pb-1 type-body-large" tabIndex={-1}>
+          Folders to scan
+        </h3>
+
+        <ScrollPane className="mt-2.5" viewportClassName="pr-1">
           {defaultRoots.length > 0 && (
             <>
               <p className="pb-1 type-footnote font-semibold! text-label-tertiary">Defaults</p>
@@ -228,7 +348,7 @@ function SourcesAndRepos({
 
             <PushButton className="gap-1.5" onClick={onAddScanRoot}>
               <FolderPlus size={12} aria-hidden="true" />
-              Add a folder…
+              Add Locations…
             </PushButton>
           </div>
           {scanRoots.length === 0 ? (
@@ -260,8 +380,11 @@ function SourcesAndRepos({
         </ScrollPane>
       </div>
 
-      <div className="flex min-h-0 flex-col px-8">
-        <h2 className="type-title-3 text-label">Repos found</h2>
+      <div className="flex min-h-0 flex-col">
+        <h3 className="border-b border-separator pb-1 type-body-large" tabIndex={-1}>
+          Repos found
+        </h3>
+
         {permissions.supported && permissions.deferred.length > 0 ? (
           <div className="mt-2">
             <FolderPermissionNotice
@@ -308,8 +431,25 @@ function SourcesAndRepos({
             </div>
           </Card>
         ) : null}
+        {toggleable.length > 0 ? (
+          <div className="mt-2 flex items-center gap-3 border-b border-separator pb-2">
+            <div className="min-w-0 flex-1">
+              <p className="type-callout text-label">All repos</p>
+              <p className="type-caption text-label-tertiary">
+                {scanningAll
+                  ? `antiburn scans each of the ${toggleable.length} repos it found.`
+                  : "Choose the repos antiburn scans."}
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={scanningAll}
+              onCheckedChange={handleScanAllRepos}
+              aria-label="Scan all repos"
+            />
+          </div>
+        ) : null}
         <div className="mt-2 min-h-0 flex-1">
-          {scanFailed && repositories.length === 0 ? (
+          {scanningAll ? null : scanFailed && repositories.length === 0 ? (
             <div className="flex h-full items-center justify-center px-6 text-center">
               <p className="type-footnote text-label-tertiary">
                 Check the scan folders and folder access, then try again.
@@ -330,86 +470,135 @@ function SourcesAndRepos({
   )
 }
 
+/** "Claude Code, Codex and Cursor" from a display-name list. */
+function joinNames(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? ""
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`
+}
+
+/**
+ * The fixed-height slot between the Ready sentence and the toggle rows.
+ *
+ * The results card and the analyzing bar render at the same height, so the
+ * heading and the toggles never move when analysis finishes.
+ */
+function ReadyStatSlot({ summary }: { summary: HygieneSummary | null }) {
+  const content = () => {
+    if (summary === null || summary.totalSessions === 0) return null
+    if (summary.settledSessions < summary.totalSessions) {
+      const progress = Math.round((summary.settledSessions / summary.totalSessions) * 100)
+      return (
+        <div className="mx-auto w-full max-w-[300px]">
+          <div className="flex items-baseline gap-2">
+            <p className="type-footnote text-label-secondary">Analyzing sessions</p>
+            <span className="flex-1" />
+            <p className="font-mono type-footnote text-label-tertiary">
+              {summary.settledSessions} of {summary.totalSessions}
+            </p>
+          </div>
+          <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-surface-secondary">
+            <div
+              className="h-full rounded-full bg-accent-fill"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        </div>
+      )
+    }
+    const passing =
+      summary.analyzedSessions > 0
+        ? Math.round(
+            ((summary.analyzedSessions - summary.failingSessions) / summary.analyzedSessions) *
+              100,
+          )
+        : null
+    return (
+      <Card className="grid w-full grid-cols-[1fr_1fr_1.5fr] divide-x divide-y-0 divide-separator">
+        <div className="flex flex-col items-center justify-center px-3 py-2.5">
+          <p className="font-mono type-title-2 text-label">{summary.analyzedSessions}</p>
+          <p className="mt-0.5 type-footnote text-label-tertiary">sessions analyzed</p>
+        </div>
+        <div className="flex flex-col items-center justify-center px-3 py-2.5">
+          <p className="font-mono type-title-2 text-accent">
+            {passing === null ? "–" : `${passing}%`}
+          </p>
+          <p className="mt-0.5 type-footnote text-label-tertiary">pass the session checks</p>
+        </div>
+        <div className="flex flex-col items-center justify-center px-3 py-2.5">
+          <p className="text-balance type-headline text-label">
+            {summary.mostCommonFinding === null
+              ? "None"
+              : sessionHygieneCheckName(summary.mostCommonFinding)}
+          </p>
+          <p className="mt-0.5 type-footnote text-label-tertiary">most common failure</p>
+        </div>
+      </Card>
+    )
+  }
+  return <div className="mt-4 flex h-[88px] w-full items-center">{content()}</div>
+}
+
 function Ready({
   sessions,
+  windowDays,
+  agentNames,
+  hygieneSummary,
   launchAtLogin,
   onLaunchAtLoginChange,
-  analyticsSupported,
-  analyticsEnvironmentDisabled,
+  nudgesRespectDnd,
+  onNudgesRespectDndChange,
   finishError,
 }: {
   sessions: number
+  windowDays: number
+  agentNames: readonly string[]
+  hygieneSummary: HygieneSummary | null
   launchAtLogin: boolean
   onLaunchAtLoginChange: (enabled: boolean) => void
-  analyticsSupported: boolean
-  analyticsEnvironmentDisabled: boolean
+  nudgesRespectDnd: boolean
+  onNudgesRespectDndChange: (enabled: boolean) => void
   finishError: string | null
 }) {
-  const [copied, setCopied] = useState(false)
-
-  const copyReviewPrompt = () => {
-    void navigator.clipboard
-      .writeText(PRIVACY_REVIEW_PROMPT)
-      .then(() => {
-        setCopied(true)
-        window.setTimeout(() => setCopied(false), 2_000)
-      })
-      .catch(() => setCopied(false))
-  }
+  const dayClause = windowDays === 1 ? "the last day" : `the last ${windowDays} days`
+  const agentClause = agentNames.length > 0 ? ` across ${joinNames(agentNames)}` : ""
+  const sentence =
+    sessions > 0
+      ? `${sessions} ${sessions === 1 ? "session" : "sessions"} from ${dayClause}${agentClause} ${
+          sessions === 1 ? "is" : "are"
+        } indexed and waiting in the menu bar.`
+      : "Looking for coding sessions…"
 
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
-      <div className={CENTRED_COLUMN}>
-        <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-secondary text-label-secondary">
+      <div className={cn(CENTRED_COLUMN, "w-full")}>
+        <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-surface-secondary text-label-secondary">
           <Check size={22} strokeWidth={2} aria-hidden="true" />
         </div>
-        <h2
-          ref={focusHeading}
-          tabIndex={-1}
-          className="type-title-3 text-label outline-none mt-1"
-        >
+        <h2 ref={focusHeading} tabIndex={-1} className="type-title-1 text-label outline-none">
           Ready
         </h2>
-        <p className="mt-2 text-balance type-callout text-label-secondary">
-          {sessions > 0
-            ? `${sessions} ${sessions === 1 ? "session is" : "sessions are"} indexed and waiting in the menu bar.`
-            : "Nothing is indexed yet — antiburn keeps looking in the background as you work."}
-        </p>
-        <p className="mt-2 text-balance type-footnote text-label-tertiary">
-          Session files are read only; your repositories are never modified.
-        </p>
-        <Card className="mt-12 w-full text-left">
-          <ToggleRow
-            label="Launch antiburn on startup"
-            description="Starts automatically in the menu bar. Change anytime in Settings."
-            checked={launchAtLogin}
-            onChange={onLaunchAtLoginChange}
-          />
-        </Card>
-        {analyticsSupported ? (
-          <Card className="mt-3 w-full text-left">
-            <Row
-              label="Anonymised analytics"
-              description={
-                analyticsEnvironmentDisabled
-                  ? "Off for this launch because ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use the setting in Settings → Privacy."
-                  : "Sends app launches, onboarding progress, feature use, and error categories. Never prompts, sessions, source code, filenames, or paths. Turn it off in Settings → Privacy."
-              }
+        <p className="mt-2.5 text-balance type-body text-label-secondary">{sentence}</p>
+        <ReadyStatSlot summary={hygieneSummary} />
+        <div className="mt-4 flex w-full flex-col gap-2 text-left">
+          <div className="flex items-center gap-3">
+            <span className="type-callout text-label">Launch antiburn on startup</span>
+            <span className="flex-1" />
+            <ToggleSwitch
+              checked={launchAtLogin}
+              onCheckedChange={onLaunchAtLoginChange}
+              aria-label="Launch antiburn on startup"
             />
-            <Row
-              label="Review the source code"
-              trailing={
-                <PushButton onClick={copyReviewPrompt} trailingIcon={Copy} disabled={copied}>
-                  {copied ? "Copied" : "Copy prompt"}
-                </PushButton>
-              }
-            >
-              <p className="mt-1 type-footnote text-label-secondary">
-                Copy a prompt for your AI agent to check what leaves your computer.
-              </p>
-            </Row>
-          </Card>
-        ) : null}
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="type-callout text-label">Nudges respect Do Not Disturb</span>
+            <span className="flex-1" />
+            <ToggleSwitch
+              checked={nudgesRespectDnd}
+              onCheckedChange={onNudgesRespectDndChange}
+              aria-label="Nudges respect Do Not Disturb"
+            />
+          </div>
+        </div>
         {finishError ? (
           <p className="mt-3 type-footnote text-system-red" role="alert">
             {finishError}
@@ -434,10 +623,15 @@ export function OnboardingFlow({
   onToggleRepository,
   onDiscover,
   scanStatus,
+  disabledAgents,
+  onAgentEnabledChange,
   launchAtLogin,
   onLaunchAtLoginChange,
-  analyticsSupported,
-  analyticsEnvironmentDisabled,
+  nudgesRespectDnd,
+  onNudgesRespectDndChange,
+  activityWindowDays,
+  hygieneSummary,
+  onReadyEntered,
   onStepViewed,
   onFinish,
   finishing,
@@ -453,10 +647,11 @@ export function OnboardingFlow({
 
   const advance = () => {
     const next = STEPS[index + 1] ?? "ready"
-    if (next === "sourcesAndRepos" && !scanSucceeded && !running && !discoveryRequested) {
+    if (next === "agentsDetected" && !scanSucceeded && !running && !discoveryRequested) {
       setDiscoveryRequested(true)
       onDiscover()
     }
+    if (next === "ready") onReadyEntered()
     onStepViewed(ANALYTICS_STEP[next])
     setStep(next)
   }
@@ -500,11 +695,13 @@ export function OnboardingFlow({
         </p>
       </header>
 
-      <div className={cn("min-h-0", step != "sourcesAndRepos" && "self-center")}>
-        {step === "welcome" && (
-          <Welcome
-            analyticsSupported={analyticsSupported}
-            analyticsEnvironmentDisabled={analyticsEnvironmentDisabled}
+      <div className={cn("min-h-0", (step === "welcome" || step === "ready") && "self-center")}>
+        {step === "welcome" && <Welcome />}
+        {step === "agentsDetected" && (
+          <AgentsDetected
+            scanStatus={scanStatus}
+            disabledAgents={disabledAgents}
+            onAgentEnabledChange={onAgentEnabledChange}
           />
         )}
         {step === "sourcesAndRepos" && (
@@ -530,9 +727,15 @@ export function OnboardingFlow({
             finishError={finishError}
             launchAtLogin={launchAtLogin}
             sessions={scanStatus?.sessions ?? 0}
+            windowDays={activityWindowDays}
+            agentNames={(scanStatus?.agents ?? [])
+              .filter((entry) => entry.sessionsSeen > 0)
+              .sort((a, b) => b.sessionsSeen - a.sessionsSeen)
+              .map((entry) => agentDisplayName(entry.agent))}
+            hygieneSummary={hygieneSummary}
             onLaunchAtLoginChange={onLaunchAtLoginChange}
-            analyticsSupported={analyticsSupported}
-            analyticsEnvironmentDisabled={analyticsEnvironmentDisabled}
+            nudgesRespectDnd={nudgesRespectDnd}
+            onNudgesRespectDndChange={onNudgesRespectDndChange}
           />
         )}
       </div>

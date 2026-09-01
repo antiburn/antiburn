@@ -73,6 +73,12 @@ also runs `pnpm run slop` against the changed files. See
 [docs/debugging.md](docs/debugging.md) for isolated desktop profiles, logs, and
 developer tools.
 
+Popover memory changes also need a local macOS report. Follow
+[docs/runbooks/memory-reporting.md](docs/runbooks/memory-reporting.md). The live
+report requires macOS 13+, a logged-in GUI session, Steve 0.5.1 with
+Accessibility permission, and no other antiburn instance. CI runs only the pure
+Node report tests.
+
 ### Optional Antigravity usage credentials
 
 The Google installed-app client ID and secret are optional for local

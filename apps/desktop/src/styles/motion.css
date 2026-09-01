@@ -6,6 +6,12 @@
    still needs a hint of movement re-states a short duration below.
    ========================================================================== */
 
+.ui-anchored-content-transition {
+  transition-property: opacity;
+  transition-duration: var(--duration-quick);
+  transition-timing-function: var(--ease-out-quart);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -23,6 +29,12 @@
      to stay well inside "no motion" while keeping the change legible: it is a
      color change, not movement. */
   .ui-segmented-reduced-fill {
+    transition-duration: 60ms !important;
+  }
+
+  /* The anchored presenter must distinguish old and new content. This short
+     opacity change prevents a flicker and does not move content. */
+  .ui-anchored-content-transition {
     transition-duration: 60ms !important;
   }
 }

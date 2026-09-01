@@ -75,9 +75,20 @@ describe("capability labels", () => {
     expect(usageStateLabel("unknown")).toBe("No estimate")
   })
 
-  it("describes what an observed figure actually is", () => {
-    expect(usageStateDescription("observed")).toMatch(/floor rather than a total/i)
-    expect(usageStateDescription("estimated")).toMatch(/priced on this device/i)
+  it("describes each provider-state figure without overstating it", () => {
+    expect(usageStateDescription("live")).toBe("The provider reported this usage directly.")
+    expect(usageStateDescription("estimated")).toBe(
+      "Estimated locally at API rates. Your provider bill may differ.",
+    )
+    expect(usageStateDescription("observed")).toBe(
+      "Tokens were counted, but some models have no price, so the cost is a floor rather than a total.",
+    )
+    expect(usageStateDescription("detected")).toBe(
+      "This provider was detected without any usage figures.",
+    )
+    expect(usageStateDescription("unknown")).toBe(
+      "Sessions were attributed to this provider, but none of them carries token evidence yet.",
+    )
   })
 
   it("never promises an allowance, a percentage, or a reset", () => {

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-restart-to-update"
+description = "Enables the restart_to_update command without any pre-configured scope."
+commands.allow = ["restart_to_update"]
+
+[[permission]]
+identifier = "deny-restart-to-update"
+description = "Denies the restart_to_update command without any pre-configured scope."
+commands.deny = ["restart_to_update"]

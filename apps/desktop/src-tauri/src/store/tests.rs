@@ -496,6 +496,9 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert!(defaults.notifications_enabled);
     assert!(defaults.notify_update_available);
     assert!(defaults.notify_scan_failure);
+    // Off by default: the Focus-status check needs its own macOS
+    // authorization prompt, so the reader opts in first.
+    assert!(!defaults.nudges_respect_dnd);
 
     let saved = store
         .save_settings(&AppSettings {
@@ -512,6 +515,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             nudge_placement: NudgePlacement::TopRight,
             nudge_auto_dismiss_secs: 25,
             notification_sound: false,
+            nudges_respect_dnd: true,
             disk_space_display: DiskSpaceDisplay::Always,
             disk_space_threshold_gb: 100,
             notify_disk_space_low: false,
@@ -519,6 +523,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             milestones_weekly: Milestones::none(),
             live_usage_enabled: true,
             live_usage_hidden_providers: HiddenMeters::default(),
+            disabled_agents: DisabledAgents::parse("windsurf,kiro"),
             analytics_enabled: false,
             overview_limits_expanded: false,
         })
@@ -539,6 +544,8 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     assert!(!saved.milestones_weekly.any());
     assert!(saved.milestones_5h.contains(75) && !saved.milestones_5h.contains(50));
     assert!(saved.live_usage_enabled);
+    // The disabled-agent set survives normalized to sorted slugs.
+    assert_eq!(saved.disabled_agents.as_str(), "kiro,windsurf");
     assert!(!saved.overview_limits_expanded);
     assert!(saved.onboarding_completed);
     assert!(saved.discovery_paused);
@@ -1436,6 +1443,37 @@ fn recent_sessions_query_plan_uses_the_coalesced_recency_index() {
         plan.contains("session_recency_coalesced"),
         "query plan did not use the coalesced index: {plan}"
     );
+}
+
+#[test]
+fn a_disabled_agent_leaves_the_recent_list_but_not_the_index() {
+    let store = store();
+    let mut codex = session("codex-session", 2_000);
+    codex.key = SessionKey::new("native", "codex", "codex-session");
+    store
+        .upsert_sessions(
+            &[session("claude-session", 3_000), codex],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    let disabled = DisabledAgents::parse("codex");
+    let shown = store.recent_sessions_excluding(0, 100, &disabled).unwrap();
+    let ids: Vec<_> = shown
+        .iter()
+        .map(|record| record.key.agent.as_str())
+        .collect();
+    assert_eq!(ids, vec!["claude-code"], "the disabled agent is filtered");
+
+    // The filter is display-only: the unfiltered read still sees both, so
+    // re-enabling the agent brings its sessions straight back.
+    assert_eq!(store.recent_sessions(0, 100).unwrap().len(), 2);
+
+    // An empty set filters nothing.
+    let all = store
+        .recent_sessions_excluding(0, 100, &DisabledAgents::default())
+        .unwrap();
+    assert_eq!(all.len(), 2);
 }
 
 #[test]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-hud-detail-size"
+description = "Enables the set_hud_detail_size command without any pre-configured scope."
+commands.allow = ["set_hud_detail_size"]
+
+[[permission]]
+identifier = "deny-set-hud-detail-size"
+description = "Denies the set_hud_detail_size command without any pre-configured scope."
+commands.deny = ["set_hud_detail_size"]
