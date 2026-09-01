@@ -8,10 +8,9 @@ use super::PlatformDiscovery;
 
 const MACOS_CODE_DIRS: &[&str] = &[
     "dev",
-    "Developer",
-    "Documents/GitHub",
     // Xcode clones into ~/Developer by default, and TCC does not guard it.
     "Developer",
+    "Documents/GitHub",
     "src",
     "code",
     "Projects",
@@ -67,6 +66,15 @@ mod tests {
     #[test]
     fn common_dirs_not_empty() {
         assert!(!MacOsPlatform.common_code_dirs().is_empty());
+    }
+
+    /// A repeated directory shows twice in the setup list and breaks the keys
+    /// the list is drawn from.
+    #[test]
+    fn common_dirs_have_no_duplicates() {
+        let dirs = MacOsPlatform.common_code_dirs();
+        let unique: std::collections::BTreeSet<&str> = dirs.iter().copied().collect();
+        assert_eq!(unique.len(), dirs.len(), "duplicate entry in {dirs:?}");
     }
 
     #[test]

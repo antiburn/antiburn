@@ -11,8 +11,8 @@ Branch: `claude/onboarding-improvements-8f6140` · Status: planning
 | Feature 1: Agents detected step | Built 2026-08-31 — `DisabledAgents` setting + `recent_sessions_excluding` filter (Rust), `agentsDetected` step second in the flow, Settings → Sources mirror, popover re-query, tests green. Zero-session agents seed OFF and the whole set persists (Option 1); the later-install question is still open with Keith |
 | Feature 2: Ready page stats | Built 2026-08-31 — `get_hygiene_summary` command (window + disabled-agent filter mirrors the session list; only current ready evidence counts analyzed), Ready rebuilt per v5 proto (title-1 heading, richer sentence with window + agent names, 88px slot with stats card / progress bar, plain toggle rows), `nudges_respect_dnd` setting end-to-end with the OS Focus gate now opt-in, Settings → Notifications mirror row, analytics/review-source card and read-only footnote removed from Ready. Rust 658 + frontend 938 tests green |
 | Feature 3: Nudges explained | Not started — surface confirmed: Settings → Notifications (discuss, 2026-08-31) |
-| Quick win: add `~/Developer` to `MACOS_CODE_DIRS` | Done 2026-08-31 — line + test in `crates/antiburn-local/src/repositories/platform/macos.rs`, 6/6 pass. Rides in the Feature 1 PR |
-| Feature 4: sourcesAndRepos step redesign | Design settled via proto 2026-08-31 (see section below); own PR |
+| Quick win: add `~/Developer` to `MACOS_CODE_DIRS` | Done 2026-08-31 — line + test in `crates/antiburn-local/src/repositories/platform/macos.rs`. Fixed 2026-09-01: the entry was added a second time, so the setup list drew `~/Developer` twice and React reported a duplicate key. Duplicate removed, `common_dirs_have_no_duplicates` guards it, 7/7 pass |
+| Feature 4: sourcesAndRepos step redesign | Partly built, and it diverged from the proto — see section below. Dave's `8307613` kept the two columns and added a step title and subtitle; the single vertical column and the question heading were not built |
 | Tests + manual test + screenshot | Not started |
 | PR | Not started — one PR per feature (now four); 2 stacks on 1, and 4 also touches `OnboardingFlow.tsx` so it joins that stack |
 
@@ -211,6 +211,27 @@ vertical column:
   "Nothing found yet" illustration, no explainer sentence.
 - Off-macOS the locked row and permission card never render (no consent
   concept on Windows/Linux), so the step is just summary row + results.
+
+### What is built (2026-09-01)
+
+The step keeps its two columns. Dave's `8307613` put a step title and a
+subtitle above them and made "Folders to scan" and "Repos found" the column
+headings. The single vertical column and the question heading above are **not
+built**, so the rest of this section is still a proposal.
+
+Built on top of it, from Keith's review of that screen:
+
+- Subtitle says what antiburn does, not what it refuses to do: "antiburn will
+  only scan sessions from repos enabled here."
+- **"All repos" switch** heads the "Repos found" column and hides the
+  per-repository rows while every repository is on — which is the state of a
+  fresh install, since inclusion is opt-out. Turning it off reveals the rows
+  and **disables nothing**; turning it back on re-enables each row and closes
+  the list. The list also opens on its own whenever a repository is off, so a
+  reader who returns sees their choices.
+- The switch is a `ToggleSwitch` because the app has no checkbox primitive and
+  the rows it heads are switches. Keith asked for a "check control"; revisit if
+  the switch reads wrong next to the rows.
 
 ## Locked design decisions
 

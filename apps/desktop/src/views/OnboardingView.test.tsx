@@ -472,6 +472,49 @@ describe("OnboardingView", () => {
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
   })
 
+  it("keeps the repository list closed while every repository is on", async () => {
+    mockCommands({ list_repositories: [REPOSITORY] })
+    render(<OnboardingView />)
+
+    await advanceToSources()
+
+    const all = await screen.findByRole("switch", { name: "Scan all repos" })
+    expect(all).toBeChecked()
+    expect(screen.queryByText("avery/widgets")).not.toBeInTheDocument()
+
+    // Opening the list is a display change. It disables no repository.
+    fireEvent.click(all)
+    expect(await screen.findByText("avery/widgets")).toBeInTheDocument()
+    expect(screen.getByRole("switch", { name: "Scan all repos" })).not.toBeChecked()
+    expect(invoke).not.toHaveBeenCalledWith("set_repository_enabled", expect.anything())
+  })
+
+  it("turns every repository back on from the All repos switch", async () => {
+    const disabled = { ...REPOSITORY, enabled: false }
+    mockCommands({
+      list_repositories: [disabled],
+      set_repository_enabled: [REPOSITORY],
+    })
+    render(<OnboardingView />)
+
+    await advanceToSources()
+
+    // One repository is off, so the list opens without being asked.
+    expect(await screen.findByText("avery/widgets")).toBeInTheDocument()
+    const all = screen.getByRole("switch", { name: "Scan all repos" })
+    expect(all).not.toBeChecked()
+
+    fireEvent.click(all)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_repository_enabled", {
+        key: REPOSITORY.key,
+        enabled: true,
+      }),
+    )
+    // The list closes again once every repository is on.
+    await waitFor(() => expect(screen.queryByText("avery/widgets")).not.toBeInTheDocument())
+  })
+
   it("keeps repository rows after failure and hides retry while scanning", async () => {
     let attempts = 0
     let resolveRetry!: (status: typeof SCAN_STATUS) => void
@@ -489,6 +532,9 @@ describe("OnboardingView", () => {
 
     await advanceToSources()
     expect(await screen.findByRole("alert")).toHaveTextContent("Scan did not finish")
+    // Every repository is on, so the list starts closed. Open it to watch the
+    // rows across the retry.
+    fireEvent.click(await screen.findByRole("switch", { name: "Scan all repos" }))
     expect(screen.getByText("avery/widgets")).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Try again" }))

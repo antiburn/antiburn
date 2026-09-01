@@ -257,15 +257,40 @@ function SourcesAndRepos({
 }) {
   const scanFailed = !scanning && scanError !== null
 
+  // A repository that is not on this machine carries no switch, so "all" means
+  // the repositories the reader can actually turn on.
+  const toggleable = repositories.filter((item) => item.status !== "not_cloned")
+  const allEnabled = toggleable.length > 0 && toggleable.every((item) => item.enabled)
+  const [choosingRepos, setChoosingRepos] = useState(false)
+  // Every repository is on and the reader has not asked to see them, so the
+  // list stays closed.
+  const scanningAll = allEnabled && !choosingRepos
+
+  function handleScanAllRepos(next: boolean): void {
+    if (next) {
+      // Turn each repository back on, then close the list again.
+      for (const item of toggleable) {
+        if (!item.enabled) onToggleRepository(item, true)
+      }
+      setChoosingRepos(false)
+      return
+    }
+    // Turning this off opens the list. It disables no repository.
+    setChoosingRepos(true)
+  }
+
+  // The rows are explicit so the heading block keeps its own height. Two
+  // automatic rows share the leftover space instead, which moves the column
+  // headings down whenever the columns hold less.
   return (
-    <div className="grid h-full grid-cols-2 gap-x-8 px-8">
+    <div className="grid h-full grid-cols-2 grid-rows-[auto_minmax(0,1fr)] gap-x-8 px-8">
       <div className="col-span-full mb-4 flex flex-col gap-1.5">
         <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
           Scan Locations: Repos
         </h2>
 
         <p className="type-callout text-label-secondary">
-          antiburn won't scan sessions for any repos not enabled here.
+          antiburn will only scan sessions from repos enabled here.
         </p>
       </div>
 
@@ -406,8 +431,25 @@ function SourcesAndRepos({
             </div>
           </Card>
         ) : null}
+        {toggleable.length > 0 ? (
+          <div className="mt-2 flex items-center gap-3 border-b border-separator pb-2">
+            <div className="min-w-0 flex-1">
+              <p className="type-callout text-label">All repos</p>
+              <p className="type-caption text-label-tertiary">
+                {scanningAll
+                  ? `antiburn scans each of the ${toggleable.length} repos it found.`
+                  : "Choose the repos antiburn scans."}
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={scanningAll}
+              onCheckedChange={handleScanAllRepos}
+              aria-label="Scan all repos"
+            />
+          </div>
+        ) : null}
         <div className="mt-2 min-h-0 flex-1">
-          {scanFailed && repositories.length === 0 ? (
+          {scanningAll ? null : scanFailed && repositories.length === 0 ? (
             <div className="flex h-full items-center justify-center px-6 text-center">
               <p className="type-footnote text-label-tertiary">
                 Check the scan folders and folder access, then try again.
