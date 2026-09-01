@@ -137,12 +137,10 @@ function Welcome() {
 
 function AgentsDetected({
   scanStatus,
-  scanning,
   disabledAgents,
   onAgentEnabledChange,
 }: {
   scanStatus: ScanStatus | null
-  scanning: boolean
   disabledAgents: readonly string[]
   onAgentEnabledChange: (slug: string, enabled: boolean) => void
 }) {
@@ -153,21 +151,14 @@ function AgentsDetected({
   const quiet = AGENT_SLUGS.filter((slug) => !detectedSlugs.has(slug))
   const isEnabled = (slug: string) => !disabledAgents.includes(slug)
 
-  const summary =
-    detected.length > 0
-      ? `antiburn found sessions from ${detected.length} coding ${
-          detected.length === 1 ? "agent" : "agents"
-        }.`
-      : scanning
-        ? "Looking for coding agent sessions…"
-        : "No agent sessions found yet — antiburn keeps looking as you work."
-
   return (
     <div className="flex h-full min-h-0 flex-col px-8">
       <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
-        Tell us about your Coding agents
+        Scan Locations: Agents
       </h2>
-      <p className="mt-1.5 type-callout text-label-secondary">{summary}</p>
+      <p className="mt-1.5 type-callout text-label-secondary">
+        antiburn does constant background session scans from agents you enable.
+      </p>
 
       <ScrollPane className="mt-3" viewportClassName="pr-1">
         {detected.length > 0 ? (
@@ -267,13 +258,23 @@ function SourcesAndRepos({
   const scanFailed = !scanning && scanError !== null
 
   return (
-    <div className="grid grid-cols-2 h-full">
-      <div className="flex min-h-0 flex-col px-8">
+    <div className="grid h-full grid-cols-2 gap-x-8 px-8">
+      <div className="col-span-full mb-4 flex flex-col gap-1.5">
         <h2 ref={focusHeading} tabIndex={-1} className="type-title-3 text-label outline-none">
-          Repo search locations
+          Scan Locations: Repos
         </h2>
 
-        <ScrollPane className="mt-3" viewportClassName="pr-1">
+        <p className="type-callout text-label-secondary">
+          antiburn won't scan sessions for any repos not enabled here.
+        </p>
+      </div>
+
+      <div className="flex min-h-0 flex-col">
+        <h3 className="border-b border-separator pb-1 type-body-large" tabIndex={-1}>
+          Folders to scan
+        </h3>
+
+        <ScrollPane className="mt-2.5" viewportClassName="pr-1">
           {defaultRoots.length > 0 && (
             <>
               <p className="pb-1 type-footnote font-semibold! text-label-tertiary">Defaults</p>
@@ -354,8 +355,11 @@ function SourcesAndRepos({
         </ScrollPane>
       </div>
 
-      <div className="flex min-h-0 flex-col px-8">
-        <h2 className="type-title-3 text-label">Repos found</h2>
+      <div className="flex min-h-0 flex-col">
+        <h3 className="border-b border-separator pb-1 type-body-large" tabIndex={-1}>
+          Repos found
+        </h3>
+
         {permissions.supported && permissions.deferred.length > 0 ? (
           <div className="mt-2">
             <FolderPermissionNotice
@@ -654,7 +658,6 @@ export function OnboardingFlow({
         {step === "agentsDetected" && (
           <AgentsDetected
             scanStatus={scanStatus}
-            scanning={running}
             disabledAgents={disabledAgents}
             onAgentEnabledChange={onAgentEnabledChange}
           />

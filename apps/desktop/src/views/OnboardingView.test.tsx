@@ -137,9 +137,9 @@ async function advanceToReady() {
 /** Move from Welcome past the agents step to the search-locations step. */
 async function advanceToSources() {
   fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
-  await screen.findByRole("heading", { name: "Tell us about your Coding agents" })
+  await screen.findByRole("heading", { name: "Scan Locations: Agents" })
   fireEvent.click(screen.getByRole("button", { name: "Continue" }))
-  await screen.findByRole("heading", { name: "Repo search locations" })
+  await screen.findByRole("heading", { name: "Scan Locations: Repos" })
 }
 
 describe("OnboardingView", () => {
@@ -200,7 +200,7 @@ describe("OnboardingView", () => {
 
     // 2 — Coding agents. Discovery starts on leaving Welcome.
     expect(
-      await screen.findByRole("heading", { name: "Tell us about your Coding agents" }),
+      await screen.findByRole("heading", { name: "Scan Locations: Agents" }),
     ).toBeInTheDocument()
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("scan_now", { activityWindowDays: 7 }),
@@ -209,7 +209,7 @@ describe("OnboardingView", () => {
 
     // 3 — Search locations and repositories share the discovery pass.
     expect(
-      await screen.findByRole("heading", { name: "Repo search locations" }),
+      await screen.findByRole("heading", { name: "Scan Locations: Repos" }),
     ).toBeInTheDocument()
     expect(screen.getByRole("heading", { name: "Repos found" })).toBeInTheDocument()
     expect(screen.getByText("/home/avery/code")).toBeInTheDocument()
@@ -255,7 +255,7 @@ describe("OnboardingView", () => {
     render(<OnboardingView />)
 
     fireEvent.click(await screen.findByRole("button", { name: "Continue" }))
-    await screen.findByRole("heading", { name: "Tell us about your Coding agents" })
+    await screen.findByRole("heading", { name: "Scan Locations: Agents" })
 
     // Detected agents lead with their evidence and start switched on.
     expect(screen.getByText("304 sessions")).toBeInTheDocument()
@@ -266,7 +266,7 @@ describe("OnboardingView", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Show Codex sessions" }))
 
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
-    await screen.findByRole("heading", { name: "Repo search locations" })
+    await screen.findByRole("heading", { name: "Scan Locations: Repos" })
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
     await screen.findByRole("heading", { name: "Ready" })
     fireEvent.click(screen.getByRole("button", { name: "Start using antiburn" }))
@@ -297,7 +297,7 @@ describe("OnboardingView", () => {
     render(<OnboardingView />)
     await advanceToReady()
     fireEvent.click(screen.getByRole("button", { name: "Back" }))
-    await screen.findByRole("heading", { name: "Repo search locations" })
+    await screen.findByRole("heading", { name: "Scan Locations: Repos" })
 
     for (const step of ["welcome", "agents_detected", "sources_and_repos", "ready"]) {
       expect(invoke).toHaveBeenCalledWith("note_interaction", {
@@ -414,14 +414,14 @@ describe("OnboardingView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 
     const agents = await screen.findByRole("heading", {
-      name: "Tell us about your Coding agents",
+      name: "Scan Locations: Agents",
     })
     await waitFor(() => expect(agents).toHaveFocus())
     expect(screen.getByText("Step 2 of 4")).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 
-    const locations = await screen.findByRole("heading", { name: "Repo search locations" })
+    const locations = await screen.findByRole("heading", { name: "Scan Locations: Repos" })
     await waitFor(() => expect(locations).toHaveFocus())
     expect(screen.getByText("Step 3 of 4")).toBeInTheDocument()
   })
