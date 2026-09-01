@@ -87,6 +87,7 @@ mod window_placement;
 mod window_readiness;
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tauri::{Manager, RunEvent, WindowEvent};
 
@@ -94,6 +95,23 @@ use tauri::{Manager, RunEvent, WindowEvent};
 /// rather than leaving them running against a store that is going away.
 #[derive(Default)]
 pub(crate) struct Schedulers(Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>);
+
+#[derive(Default)]
+struct WindowRebuildState(AtomicUsize);
+
+impl WindowRebuildState {
+    fn begin(&self) {
+        self.0.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn finish(&self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    fn is_pending(&self) -> bool {
+        self.0.load(Ordering::Acquire) != 0
+    }
+}
 
 impl Schedulers {
     fn push(&self, handle: tauri::async_runtime::JoinHandle<()>) {
@@ -254,6 +272,7 @@ pub fn run() {
             app.manage(settings::PendingPane::default());
             app.manage(settings::SettingsWindowState::default());
             app.manage(onboarding::OnboardingWindowState::default());
+            app.manage(WindowRebuildState::default());
             app.manage(nudges::AnchorOverride::default());
             app.manage(antiburn_nudge::NotificationGate::default());
 
@@ -345,7 +364,11 @@ pub fn run() {
     });
     app.run(move |app, event| match event {
         RunEvent::ExitRequested { api, code, .. }
-            if should_prevent_exit(onboarding::is_pending(app), code) =>
+            if should_prevent_exit(
+                onboarding::is_pending(app),
+                app.state::<WindowRebuildState>().is_pending(),
+                code,
+            ) =>
         {
             api.prevent_exit();
         }
@@ -400,8 +423,12 @@ pub fn run() {
 /// silently does nothing at the one moment they have no other way to get rid of
 /// the app. During the first run it quits like the ordinary application it is
 /// pretending to be.
-fn should_prevent_exit(onboarding_pending: bool, code: Option<i32>) -> bool {
-    code.is_none() && !onboarding_pending
+fn should_prevent_exit(
+    onboarding_pending: bool,
+    window_rebuild_pending: bool,
+    code: Option<i32>,
+) -> bool {
+    code.is_none() && (!onboarding_pending || window_rebuild_pending)
 }
 
 /// Stop every background task. Safe to call when none ever started.
@@ -450,6 +477,36 @@ fn close_policy(label: &str, onboarding_pending: bool) -> ClosePolicy {
     }
 }
 
+type WindowRebuild = fn(&tauri::AppHandle);
+
+fn rebuild_after_destroy_for_label(label: &str) -> Option<WindowRebuild> {
+    match label {
+        popover::LABEL => Some(popover::rebuild_after_destroy),
+        settings::LABEL => Some(settings::rebuild_after_destroy),
+        onboarding::LABEL => Some(onboarding::rebuild_after_destroy),
+        _ => None,
+    }
+}
+
+/// Queue a replacement after the current window event returns.
+fn defer_rebuild_after_destroy(app: &tauri::AppHandle, rebuild: WindowRebuild) {
+    app.state::<WindowRebuildState>().begin();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // `run_on_main_thread` runs inline when called from the main thread.
+        // The async task forces the rebuild onto a later event-loop turn.
+        let rebuild_app = app.clone();
+        let finish_app = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            rebuild(&rebuild_app);
+            finish_app.state::<WindowRebuildState>().finish();
+        }) {
+            app.state::<WindowRebuildState>().finish();
+            ::tracing::error!(event = "window_rebuild_schedule_failed", error = %error);
+        }
+    });
+}
+
 /// Window policy shared by every window the shell creates.
 fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
     match event {
@@ -484,12 +541,11 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
                 }
             }
         }
-        WindowEvent::Destroyed => match window.label() {
-            popover::LABEL => popover::rebuild_after_destroy(window.app_handle()),
-            settings::LABEL => settings::rebuild_after_destroy(window.app_handle()),
-            onboarding::LABEL => onboarding::rebuild_after_destroy(window.app_handle()),
-            _ => {}
-        },
+        WindowEvent::Destroyed => {
+            if let Some(rebuild) = rebuild_after_destroy_for_label(window.label()) {
+                defer_rebuild_after_destroy(window.app_handle(), rebuild);
+            }
+        }
         _ => {}
     }
 }
@@ -535,7 +591,7 @@ fn install_updater(app: &tauri::AppHandle) {
 mod tests {
     use super::{
         ClosePolicy, Schedulers, abort_schedulers, close_policy, finish_retention_cleanup,
-        should_prevent_exit,
+        rebuild_after_destroy_for_label, should_prevent_exit,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -544,10 +600,10 @@ mod tests {
     fn a_window_close_never_quits_the_finished_menu_bar_app() {
         // Settings and the popover both close with no exit code, and the tray
         // item is the app's real lifetime.
-        assert!(should_prevent_exit(false, None));
+        assert!(should_prevent_exit(false, false, None));
         // The shell's own `exit(0)` is the deliberate quit and always lands.
-        assert!(!should_prevent_exit(false, Some(0)));
-        assert!(!should_prevent_exit(true, Some(0)));
+        assert!(!should_prevent_exit(false, false, Some(0)));
+        assert!(!should_prevent_exit(true, true, Some(0)));
     }
 
     #[test]
@@ -555,7 +611,12 @@ mod tests {
         // The case that matters. A Regular app's application menu and Dock
         // context menu both offer Quit and both arrive with no code; swallowing
         // them would ship a Quit item that does nothing.
-        assert!(!should_prevent_exit(true, None));
+        assert!(!should_prevent_exit(true, false, None));
+    }
+
+    #[test]
+    fn a_pending_rebuild_keeps_the_first_run_alive() {
+        assert!(should_prevent_exit(true, true, None));
     }
 
     #[test]
@@ -696,5 +757,30 @@ mod tests {
             close_policy(antiburn_nudge::NUDGE_LABEL, false),
             ClosePolicy::HideNudge
         );
+    }
+
+    #[test]
+    fn only_managed_windows_select_their_deferred_rebuild_handler() {
+        let cases = [
+            (
+                super::popover::LABEL,
+                super::popover::rebuild_after_destroy as fn(&tauri::AppHandle),
+            ),
+            (
+                super::settings::LABEL,
+                super::settings::rebuild_after_destroy as fn(&tauri::AppHandle),
+            ),
+            (
+                super::onboarding::LABEL,
+                super::onboarding::rebuild_after_destroy as fn(&tauri::AppHandle),
+            ),
+        ];
+
+        for (label, expected) in cases {
+            let actual = rebuild_after_destroy_for_label(label)
+                .expect("a managed window selects a rebuild handler");
+            assert!(std::ptr::fn_addr_eq(actual, expected));
+        }
+        assert!(rebuild_after_destroy_for_label("unmanaged").is_none());
     }
 }
