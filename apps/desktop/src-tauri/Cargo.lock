@@ -106,6 +106,7 @@ dependencies = [
  "smappservice-rs",
  "tauri",
  "tauri-build",
+ "tauri-nspanel",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-prevent-default",
