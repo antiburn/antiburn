@@ -382,10 +382,10 @@ fail() {
 cleanup() {
   fire_show_cursor
   if [ -n "$MACOS_BACKUP" ] && [ -e "$MACOS_BACKUP" ] && [ ! -e "$MACOS_DESTINATION" ]; then
-    as_root mv "$MACOS_BACKUP" "$MACOS_DESTINATION" >/dev/null 2>&1 || true
+    as_root_if_needed /Applications mv "$MACOS_BACKUP" "$MACOS_DESTINATION" >/dev/null 2>&1 || true
   fi
   if [ -n "$MACOS_STAGING_ROOT" ]; then
-    as_root rm -rf "$MACOS_STAGING_ROOT" >/dev/null 2>&1 || true
+    as_root_if_needed /Applications rm -rf "$MACOS_STAGING_ROOT" >/dev/null 2>&1 || true
   fi
   if [ -n "$APPIMAGE_STAGED" ]; then
     rm -f "$APPIMAGE_STAGED"
@@ -420,6 +420,16 @@ as_root() {
   else
     require_command sudo
     sudo "$@"
+  fi
+}
+
+as_root_if_needed() {
+  permission_directory="$1"
+  shift
+  if [ -w "$permission_directory" ]; then
+    "$@"
+  else
+    as_root "$@"
   fi
 }
 
@@ -589,29 +599,30 @@ install_macos() {
   verify_macos_app "$source_app"
 
   MACOS_DESTINATION="/Applications/antiburn.app"
-  if [ "$(id -u)" -ne 0 ]; then
-    info "macOS wants your password to move antiburn into /Applications"
+  if [ "$(id -u)" -ne 0 ] && [ ! -w /Applications ]; then
+    info "Administrator access is required because your account cannot write to /Applications."
+    info "macOS will ask for your password to install antiburn for all users."
   fi
-  MACOS_STAGING_ROOT=$(as_root mktemp -d "/Applications/.antiburn-install.XXXXXX") \
+  MACOS_STAGING_ROOT=$(as_root_if_needed /Applications mktemp -d "/Applications/.antiburn-install.XXXXXX") \
     || fail "Could not create a staging directory in /Applications."
-  as_root chmod 755 "$MACOS_STAGING_ROOT"
+  as_root_if_needed /Applications chmod 755 "$MACOS_STAGING_ROOT"
   staged="${MACOS_STAGING_ROOT}/antiburn.app"
   MACOS_BACKUP="${MACOS_STAGING_ROOT}/previous.app"
   info "Moving antiburn into ${MACOS_DESTINATION}"
-  as_root ditto "$source_app" "$staged"
+  as_root_if_needed /Applications ditto "$source_app" "$staged"
   verify_macos_app "$staged"
   if [ -e "$MACOS_DESTINATION" ]; then
-    as_root mv "$MACOS_DESTINATION" "$MACOS_BACKUP"
+    as_root_if_needed /Applications mv "$MACOS_DESTINATION" "$MACOS_BACKUP"
   fi
-  if ! as_root mv "$staged" "$MACOS_DESTINATION"; then
+  if ! as_root_if_needed /Applications mv "$staged" "$MACOS_DESTINATION"; then
     if [ -e "$MACOS_BACKUP" ]; then
-      as_root mv "$MACOS_BACKUP" "$MACOS_DESTINATION" || true
+      as_root_if_needed /Applications mv "$MACOS_BACKUP" "$MACOS_DESTINATION" || true
     fi
     fail "Could not replace ${MACOS_DESTINATION}."
   fi
-  as_root rm -rf "$MACOS_BACKUP"
+  as_root_if_needed /Applications rm -rf "$MACOS_BACKUP"
   MACOS_BACKUP=""
-  as_root rm -rf "$MACOS_STAGING_ROOT"
+  as_root_if_needed /Applications rm -rf "$MACOS_STAGING_ROOT"
   MACOS_STAGING_ROOT=""
   status_done "Moved in. antiburn ${VERSION} is in /Applications"
 }

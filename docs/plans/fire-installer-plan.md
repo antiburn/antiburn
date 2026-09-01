@@ -85,8 +85,9 @@ New gate: circle mode is 88 columns wide and Terminal.app defaults to 80.
 - Download runs in the background (`curl … & pid=$!`) while the spinner
   animates until `kill -0 $pid` fails; show percent from the growing file
   size when Content-Length is known.
-- The sudo password prompt stays a plain static line. sudo owns the cursor;
-  nothing animates while it waits.
+- When `/Applications` is not writable, explain why administrator access is
+  required before sudo asks for a password. Nothing animates while it waits.
+- When `/Applications` is writable, install directly without sudo.
 - Non-TTY falls back to plain appended lines, same words.
 
 ## Step 5 — Verification before the PR
