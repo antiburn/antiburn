@@ -143,16 +143,19 @@ fn placement(app: &AppHandle) -> NudgePlacement {
 /// the settings pane that can act on the nudge's subject — except the one CTA
 /// whose subject is the menu-bar item itself.
 fn on_action(app: &AppHandle, event: NudgeActionEvent) {
-    if event.action_id == "dismiss" {
+    if let Some(plan) = plan_for_notification_settings_action(&event.action_id) {
+        if plan.focus_policy == NudgeFocusPolicy::AbandonPopover {
+            crate::popover::clear_nudge_yield(app);
+        }
+        let _ = crate::settings::open(app, Some(plan.pane.to_string()));
+        return;
+    }
+    if focus_policy_for_action(&event.action_id) == NudgeFocusPolicy::RestorePopover {
         return;
     }
     // Every other CTA opens or focuses a different window. The key release
     // from the CTA's dismissal must not pull focus back to the popover.
     crate::popover::clear_nudge_yield(app);
-    if event.action_id == crate::notifications::NOTIFICATION_SETTINGS_ACTION_ID {
-        let _ = crate::settings::open(app, Some("notifications".to_string()));
-        return;
-    }
     // "Show me" opens the popover under the glyph the notification is already
     // pointing at, so the reader's first sight of it is the thing the icon
     // does rather than a settings pane about it.
@@ -193,6 +196,37 @@ fn on_action(app: &AppHandle, event: NudgeActionEvent) {
         _ => None,
     };
     let _ = crate::settings::open(app, pane.map(str::to_string));
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum NudgeFocusPolicy {
+    RestorePopover,
+    AbandonPopover,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct NotificationSettingsActionPlan {
+    focus_policy: NudgeFocusPolicy,
+    pane: &'static str,
+}
+
+fn plan_for_notification_settings_action(
+    action_id: &str,
+) -> Option<NotificationSettingsActionPlan> {
+    (action_id == crate::notifications::NOTIFICATION_SETTINGS_ACTION_ID).then_some(
+        NotificationSettingsActionPlan {
+            focus_policy: NudgeFocusPolicy::AbandonPopover,
+            pane: "notifications",
+        },
+    )
+}
+
+fn focus_policy_for_action(action_id: &str) -> NudgeFocusPolicy {
+    if action_id == "dismiss" {
+        NudgeFocusPolicy::RestorePopover
+    } else {
+        NudgeFocusPolicy::AbandonPopover
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -288,5 +322,19 @@ mod tests {
         ] {
             assert_eq!(classify_update_action(&malformed), UpdateAction::OpenAbout);
         }
+    }
+
+    #[test]
+    fn a_settings_cta_opens_settings_without_restoring_popover_focus() {
+        let plan = plan_for_notification_settings_action(
+            crate::notifications::NOTIFICATION_SETTINGS_ACTION_ID,
+        )
+        .expect("the notification settings CTA must have an action plan");
+        assert_eq!(plan.focus_policy, NudgeFocusPolicy::AbandonPopover);
+        assert_eq!(plan.pane, "notifications");
+        assert_eq!(
+            focus_policy_for_action("dismiss"),
+            NudgeFocusPolicy::RestorePopover
+        );
     }
 }

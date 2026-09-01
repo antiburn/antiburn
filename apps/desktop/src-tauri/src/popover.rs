@@ -68,9 +68,13 @@ struct NudgeKeyHandoff {
 }
 
 impl NudgeKeyHandoff {
-    fn begin(&mut self) {
+    fn begin_if_focused(&mut self, popover_focused: bool) -> bool {
+        if !popover_focused {
+            return false;
+        }
         self.pending_popover_blurs = self.pending_popover_blurs.saturating_add(1);
         self.key_owned = true;
+        true
     }
 
     fn on_popover_blur(&mut self) -> bool {
@@ -473,9 +477,9 @@ impl PopoverState {
         self.pinned.store(pinned, Ordering::SeqCst);
     }
 
-    fn begin_nudge_key_handoff(&self) {
+    fn begin_nudge_key_handoff(&self, popover_focused: bool) {
         if let Ok(mut handoff) = self.nudge_key_handoff.lock() {
-            handoff.begin();
+            handoff.begin_if_focused(popover_focused);
         }
     }
 
@@ -1423,8 +1427,8 @@ pub fn begin_nudge_key_handoff(app: &AppHandle) {
     let focused = app
         .get_webview_window(LABEL)
         .is_some_and(|window| window.is_focused().unwrap_or(false));
-    if focused && let Some(state) = app.try_state::<PopoverState>() {
-        state.begin_nudge_key_handoff();
+    if let Some(state) = app.try_state::<PopoverState>() {
+        state.begin_nudge_key_handoff(focused);
     }
 }
 
@@ -2094,9 +2098,9 @@ mod tests {
     }
 
     #[test]
-    fn a_normal_handoff_suppresses_blur_and_restores_focus_once() {
+    fn hovering_and_leaving_a_nudge_restores_the_open_popover() {
         let mut handoff = NudgeKeyHandoff::default();
-        handoff.begin();
+        assert!(handoff.begin_if_focused(true));
         assert!(handoff.on_popover_blur());
         assert!(handoff.on_expected_release());
         assert!(!handoff.on_expected_release());
@@ -2105,16 +2109,16 @@ mod tests {
     #[test]
     fn a_release_before_delayed_blur_restores_focus_and_suppresses_that_blur() {
         let mut handoff = NudgeKeyHandoff::default();
-        handoff.begin();
+        assert!(handoff.begin_if_focused(true));
         assert!(handoff.on_expected_release());
         assert!(handoff.on_popover_blur());
         assert!(!handoff.on_popover_blur());
     }
 
     #[test]
-    fn an_external_key_loss_cancels_the_handoff_without_restoring_focus() {
+    fn changing_applications_while_nudge_key_dismisses_without_refocus() {
         let mut handoff = NudgeKeyHandoff::default();
-        handoff.begin();
+        assert!(handoff.begin_if_focused(true));
         assert!(handoff.on_popover_blur());
         assert!(handoff.cancel());
         assert!(!handoff.on_expected_release());
@@ -2124,17 +2128,17 @@ mod tests {
     #[test]
     fn an_external_key_loss_before_blur_leaves_that_blur_to_dismiss() {
         let mut handoff = NudgeKeyHandoff::default();
-        handoff.begin();
+        assert!(handoff.begin_if_focused(true));
         assert!(!handoff.cancel());
         assert!(!handoff.on_popover_blur());
     }
 
     #[test]
-    fn repeated_quick_handoffs_preserve_every_queued_blur() {
+    fn rapid_nudge_boundary_crossings_preserve_every_queued_blur() {
         let mut handoff = NudgeKeyHandoff::default();
-        handoff.begin();
+        assert!(handoff.begin_if_focused(true));
         assert!(handoff.on_expected_release());
-        handoff.begin();
+        assert!(handoff.begin_if_focused(true));
         assert!(handoff.on_expected_release());
         assert!(handoff.on_popover_blur());
         assert!(handoff.on_popover_blur());
@@ -2144,10 +2148,19 @@ mod tests {
     #[test]
     fn clearing_a_handoff_leaves_no_delayed_focus_work() {
         let mut handoff = NudgeKeyHandoff::default();
-        handoff.begin();
+        assert!(handoff.begin_if_focused(true));
         handoff.clear();
         assert!(!handoff.on_expected_release());
         assert!(!handoff.on_popover_blur());
+    }
+
+    #[test]
+    fn a_pinned_unfocused_popover_is_never_pulled_forward() {
+        let state = PopoverState::default();
+        state.set_pinned(true);
+        state.begin_nudge_key_handoff(false);
+        assert!(state.is_pinned());
+        assert!(!state.release_nudge_key_handoff());
     }
 
     #[test]
