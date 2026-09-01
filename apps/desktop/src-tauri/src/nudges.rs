@@ -72,6 +72,19 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Dismiss the current nudge when the reader acknowledges it through the tray.
+pub fn dismiss(app: &AppHandle) {
+    let Some(manager) = app.try_state::<NudgeManager>() else {
+        return;
+    };
+    // A dismissed nudge can precede reveal. Spend its anchor before another nudge can take it.
+    if let Some(override_) = app.try_state::<AnchorOverride>() {
+        let _ = override_.take();
+    }
+    crate::popover::abandon_nudge_key_restoration(app);
+    manager.dismiss();
+}
+
 /// Deliver a nudge the policy layer already approved.
 ///
 /// Applies the reader's auto-dismiss preference to every nudge (the builder's

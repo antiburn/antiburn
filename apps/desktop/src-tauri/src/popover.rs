@@ -91,6 +91,10 @@ impl NudgeKeyHandoff {
         std::mem::take(&mut self.key_owned)
     }
 
+    fn abandon_restoration(&mut self) {
+        self.key_owned = false;
+    }
+
     fn cancel(&mut self) -> bool {
         let dismiss_now = self.key_owned && self.pending_popover_blurs == 0;
         self.clear();
@@ -494,6 +498,12 @@ impl PopoverState {
         self.nudge_key_handoff
             .lock()
             .is_ok_and(|mut handoff| handoff.on_expected_release())
+    }
+
+    fn abandon_nudge_key_restoration(&self) {
+        if let Ok(mut handoff) = self.nudge_key_handoff.lock() {
+            handoff.abandon_restoration();
+        }
     }
 
     fn cancel_nudge_key_handoff(&self) -> bool {
@@ -1196,10 +1206,9 @@ fn destroy_prewarm(app: &AppHandle) -> bool {
 }
 
 fn hide_window(app: &AppHandle) {
-    // A hidden popover has no key to take back: a nudge key release after
-    // this point must not resurrect focus.
+    // A hidden popover cannot take key back. Keep queued nudge blurs so delayed events stay suppressed.
     if let Some(state) = app.try_state::<PopoverState>() {
-        state.clear_nudge_key_handoff();
+        state.abandon_nudge_key_restoration();
     }
     crate::popover_peek::conceal_now(app);
     let Some(window) = app.get_webview_window(LABEL) else {
@@ -1484,6 +1493,15 @@ pub fn refocus_after_nudge(app: &AppHandle) {
         && window.is_visible().unwrap_or(false)
     {
         let _ = window.set_focus();
+    }
+}
+
+/// Prevent a nudge release from refocusing the popover.
+///
+/// Keep queued popover blurs so delayed events remain part of the same handoff.
+pub fn abandon_nudge_key_restoration(app: &AppHandle) {
+    if let Some(state) = app.try_state::<PopoverState>() {
+        state.abandon_nudge_key_restoration();
     }
 }
 
@@ -2146,6 +2164,16 @@ mod tests {
         let mut handoff = NudgeKeyHandoff::default();
         assert!(handoff.begin_if_focused(true));
         assert!(handoff.on_expected_release());
+        assert!(handoff.on_popover_blur());
+        assert!(!handoff.on_popover_blur());
+    }
+
+    #[test]
+    fn a_tray_click_abandons_refocus_but_still_suppresses_the_queued_blur() {
+        let mut handoff = NudgeKeyHandoff::default();
+        assert!(handoff.begin_if_focused(true));
+        handoff.abandon_restoration();
+        assert!(!handoff.on_expected_release());
         assert!(handoff.on_popover_blur());
         assert!(!handoff.on_popover_blur());
     }

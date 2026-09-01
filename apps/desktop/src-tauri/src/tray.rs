@@ -18,7 +18,7 @@ use tauri::{Manager, Wry};
 
 #[cfg(debug_assertions)]
 use crate::commands;
-use crate::{popover, settings};
+use crate::{nudges, popover, settings};
 
 /// The tray item's id, and how anything else gets a handle back to it.
 pub const TRAY_ID: &str = "antiburn";
@@ -138,6 +138,8 @@ fn on_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
         ..
     } = event
     {
+        // The tray click acknowledges the nudge, even when it closes the popover.
+        nudges::dismiss(tray.app_handle());
         popover::toggle(tray.app_handle(), rect);
     }
 }
