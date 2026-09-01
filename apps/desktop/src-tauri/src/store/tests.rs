@@ -51,6 +51,7 @@ fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> Ana
         inclusive_models_json: "[]".into(),
         initial_context_json: None,
         source_summaries_json: None,
+        provider_hints_json: None,
         source_fingerprint: fingerprint.into(),
         pricing_generation: 1,
         analyzed_generation: generation,
@@ -299,8 +300,75 @@ fn session_analysis_holds_the_cache_values_and_the_projection_revisions() {
             "metrics_schema_revision",
             "initial_context_json",
             "source_summaries_json",
+            "provider_hints_json",
         ]
     );
+}
+
+#[test]
+fn provider_hints_migration_keeps_old_analysis_unknown() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..23] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO session_analysis (
+                 environment_key, agent, session_id, model_breakdown_json,
+                 inclusive_models_json, source_fingerprint, pricing_generation,
+                 analyzed_generation, parser_revision, analyzer_revision,
+                 metrics_schema_revision)
+             VALUES ('native', 'pi', 'legacy', '{}', '[]', 'sv1:legacy', 1, 1, 1, 1, 3)",
+            [],
+        )
+        .unwrap();
+    connection.pragma_update(None, "user_version", 23).unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-provider-hints-migration-test").to_path_buf(),
+    )
+    .expect("V24 migrates the prior schema");
+    let analysis = store
+        .analysis(&SessionKey::new("native", "pi", "legacy"))
+        .unwrap()
+        .expect("legacy analysis survives");
+
+    assert_eq!(store.schema_version().unwrap(), 27);
+    assert_eq!(analysis.provider_hints_json, None);
+}
+
+#[test]
+fn account_observation_migration_initializes_the_latest_timestamp() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..26] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO provider_account_seen (
+                agent, provider, account_key, first_seen_epoch
+             ) VALUES ('pi', 'anthropic', ?1, 1234)",
+            ["a".repeat(64)],
+        )
+        .unwrap();
+    connection.pragma_update(None, "user_version", 26).unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-account-observation-migration-test").to_path_buf(),
+    )
+    .unwrap();
+    let latest = store
+        .lock()
+        .query_row(
+            "SELECT last_seen_epoch FROM provider_account_seen",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap();
+
+    assert_eq!(latest, 1234);
 }
 
 /// Opting out is a withdrawal, not a pause: nothing queued survives it, and
@@ -763,6 +831,7 @@ fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
                 source_summaries_json: None,
+                provider_hints_json: None,
                 source_fingerprint: "1:1".into(),
                 pricing_generation: 0,
                 analyzed_generation: 0,
@@ -849,6 +918,65 @@ fn clearing_an_already_empty_index_is_a_no_op() {
 }
 
 #[test]
+fn clearing_local_data_forgets_account_pseudonyms_and_rotates_the_install_key() {
+    let store = store();
+    let old_secret = store.provider_account_secret().unwrap();
+    store
+        .observe_provider_account("pi", "anthropic", &"a".repeat(64), 2_000, "tool_oauth")
+        .unwrap();
+    store.set_internal_value("internal:liveUsageHistoryV2", "old-account-key");
+    store.set_internal_value("internal:liveUsageSnapshotV2", "old-account-key");
+
+    assert_eq!(
+        store
+            .lock()
+            .query_row("SELECT COUNT(*) FROM provider_account_seen", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        1
+    );
+
+    assert_eq!(store.clear_local_session_data().unwrap(), 0);
+
+    let connection = store.lock();
+    assert_eq!(
+        connection
+            .query_row("SELECT COUNT(*) FROM provider_account_seen", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        0
+    );
+    assert!(
+        connection
+            .query_row(
+                "SELECT value FROM setting WHERE key = 'internal:providerAccountHmacSecretV1'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap()
+            .is_none()
+    );
+    for key in [
+        "internal:liveUsageHistoryV2",
+        "internal:liveUsageSnapshotV2",
+    ] {
+        assert!(
+            connection
+                .query_row("SELECT value FROM setting WHERE key = ?1", [key], |row| row
+                    .get::<_, String>(0),)
+                .optional()
+                .unwrap()
+                .is_none()
+        );
+    }
+    drop(connection);
+    assert_ne!(store.provider_account_secret().unwrap(), old_secret);
+}
+
+#[test]
 fn session_retention_removes_only_sessions_before_the_cutoff() {
     const NOW: i64 = 2_000_000_000;
     const DAY: i64 = 86_400;
@@ -932,6 +1060,7 @@ fn session_retention_removes_all_derived_session_data() {
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
                 source_summaries_json: None,
+                provider_hints_json: None,
                 source_fingerprint: "1:1".into(),
                 pricing_generation: 0,
                 analyzed_generation: 0,
@@ -1407,6 +1536,7 @@ fn analysis_round_trips_and_is_replaced_rather_than_duplicated() {
                 .into(),
         initial_context_json: None,
         source_summaries_json: None,
+        provider_hints_json: None,
         source_fingerprint: "1700000000:4096".into(),
         pricing_generation: 0,
         analyzed_generation: 7,
@@ -1516,6 +1646,31 @@ fn publish_projections_round_trips_source_summaries_json() {
     );
 }
 
+#[test]
+fn publish_projections_round_trips_provider_hints_json() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "publish-provider-hints", 100, 60);
+    let record = AnalysisRecord {
+        provider_hints_json: Some(r#"[{"provider":"anthropic","model":"claude-opus-4-6"}]"#.into()),
+        ..record
+    };
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+
+    assert_eq!(
+        store
+            .analysis(&record.key)
+            .unwrap()
+            .and_then(|stored| stored.provider_hints_json),
+        record.provider_hints_json
+    );
+}
+
 /// A later publish with no `started_at_epoch` (the common case: the worker
 /// already learned the start time on an earlier pass) must not clear it.
 #[test]
@@ -1617,6 +1772,7 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
                 source_summaries_json: None,
+                provider_hints_json: None,
                 source_fingerprint: "x".into(),
                 pricing_generation: 0,
                 analyzed_generation: 0,
@@ -1762,6 +1918,9 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
                     .into(),
                 initial_context_json: None,
                 source_summaries_json: None,
+                provider_hints_json: Some(
+                    r#"[{"provider":"anthropic","model":"claude-opus-4-6"}]"#.into(),
+                ),
                 source_fingerprint: "1:1".into(),
                 pricing_generation: 0,
                 analyzed_generation: 0,
@@ -1782,15 +1941,129 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
             .as_deref()
             .is_some_and(|json| json.contains("claude-opus-4-6"))
     );
+    assert_eq!(
+        evidence[0].provider_hints_json.as_deref(),
+        Some(r#"[{"provider":"anthropic","model":"claude-opus-4-6"}]"#)
+    );
     // A session analysis has not reached yet comes back with no breakdown
     // rather than being dropped: "not measured" is not "measured zero".
     assert_eq!(evidence[1].updated_at_epoch, 1_500);
     assert_eq!(evidence[1].model_breakdown_json, None);
+    assert_eq!(evidence[1].provider_hints_json, None);
     assert_eq!(evidence[1].agent, "claude-code");
 
     // The bound is inclusive and excludes everything below it.
     assert_eq!(store.usage_evidence(2_000).unwrap().len(), 1);
     assert!(store.usage_evidence(2_001).unwrap().is_empty());
+}
+
+#[test]
+fn close_account_switches_keep_completed_sessions_with_the_previous_account() {
+    let store = store();
+    store.set_internal_value("internal:providerAccountRolloutV1", "1000");
+    let mut completed = session("completed-a", 2_000);
+    completed.key.agent = "pi".into();
+    let mut spanning = session("spanning", 2_000);
+    spanning.key.agent = "pi".into();
+    let mut old = session("old", 900);
+    old.key.agent = "pi".into();
+    store
+        .upsert_sessions(
+            &[completed, spanning.clone(), old],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    let first = "a".repeat(64);
+    let second = "b".repeat(64);
+    store
+        .observe_provider_account("pi", "anthropic", &first, 2_025, "tool_oauth")
+        .unwrap();
+    store
+        .observe_provider_account("pi", "anthropic", &first, 2_050, "tool_oauth")
+        .unwrap();
+    spanning.updated_at_epoch = Some(2_075);
+    let mut new = session("new-b", 2_075);
+    new.key.agent = "pi".into();
+    store
+        .upsert_sessions(&[spanning, new], &crate::agents::evidence_cohort())
+        .unwrap();
+    store
+        .observe_provider_account("pi", "anthropic", &second, 2_100, "tool_oauth")
+        .unwrap();
+
+    let accounts_for = |session_id: &str| {
+        let connection = store.lock();
+        let mut statement = connection
+            .prepare(
+                "SELECT account_key FROM session_provider_account
+                  WHERE agent = 'pi' AND session_id = ?1
+                  ORDER BY account_key",
+            )
+            .unwrap();
+        statement
+            .query_map([session_id], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(accounts_for("completed-a"), vec![first.clone()]);
+    assert_eq!(accounts_for("new-b"), vec![second.clone()]);
+    assert_eq!(accounts_for("spanning"), vec![first, second]);
+    assert!(accounts_for("old").is_empty());
+}
+
+#[test]
+fn account_switches_bind_only_sessions_near_each_observation() {
+    let store = store();
+    store.set_internal_value("internal:providerAccountRolloutV1", "0");
+    let mut first = session("account-a-first", 1_000);
+    first.key.agent = "pi".into();
+    let mut middle = session("account-b", 2_000);
+    middle.key.agent = "pi".into();
+    let mut future = session("account-a-return", 3_000);
+    future.key.agent = "pi".into();
+    store
+        .upsert_sessions(&[first, middle, future], &crate::agents::evidence_cohort())
+        .unwrap();
+
+    let account_a = "a".repeat(64);
+    let account_b = "b".repeat(64);
+    store
+        .observe_provider_account("pi", "anthropic", &account_a, 1_050, "tool_oauth")
+        .unwrap();
+    store
+        .observe_provider_account("pi", "anthropic", &account_b, 2_050, "tool_oauth")
+        .unwrap();
+    store
+        .observe_provider_account("pi", "anthropic", &account_a, 3_050, "tool_oauth")
+        .unwrap();
+
+    let evidence = store.usage_evidence(0).unwrap();
+    let accounts_at = |updated_at| {
+        let json = &evidence
+            .iter()
+            .find(|record| record.updated_at_epoch == updated_at)
+            .unwrap()
+            .provider_accounts_json;
+        serde_json::from_str::<Vec<serde_json::Value>>(json)
+            .unwrap()
+            .into_iter()
+            .map(|value| value["accountKey"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        accounts_at(1_000).as_slice(),
+        std::slice::from_ref(&account_a)
+    );
+    assert_eq!(
+        accounts_at(2_000).as_slice(),
+        std::slice::from_ref(&account_b)
+    );
+    assert_eq!(
+        accounts_at(3_000).as_slice(),
+        std::slice::from_ref(&account_a)
+    );
 }
 
 #[test]
@@ -2559,6 +2832,7 @@ fn a_catalog_change_requeues_no_session_evidence() {
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
                 source_summaries_json: None,
+                provider_hints_json: None,
                 source_fingerprint: "sv1:current".into(),
                 pricing_generation: 2,
                 analyzed_generation: 1,
@@ -3435,10 +3709,10 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 23);
+    assert_eq!(super::schema::MIGRATIONS.len(), 27);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 23);
+    assert_eq!(store.schema_version().unwrap(), 27);
 }
 
 #[test]

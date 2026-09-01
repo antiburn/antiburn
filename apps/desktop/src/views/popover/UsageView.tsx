@@ -1,15 +1,18 @@
-import { useState, useSyncExternalStore } from "react"
+import { useId, useState, useSyncExternalStore } from "react"
 
-import { ChevronLeft, PictureInPicture2 } from "lucide-react"
+import { ChevronDown, ChevronLeft, PictureInPicture2 } from "lucide-react"
 
 import { ProviderGlyph } from "../../components/providerUsage"
 import { LiveUsageDetail } from "../../components/providerUsage/LiveUsageDetail"
 import { UsageMetricRows } from "../../components/providerUsage/UsageMetricRows"
 import { UsageWindowRows } from "../../components/providerUsage/UsageWindowRows"
+import { useStableAccountNumbers } from "../../components/providerUsage/useStableAccountNumbers"
+import { Disclosure } from "../../components/ui/Disclosure"
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { cn } from "../../lib/cn"
 import type {
   LiveProviderUsagePayload,
+  LiveUsageSourceErrorPayload,
   LiveUsageSummaryPayload,
   ProviderUsagePayload,
   ProviderUsageSummaryPayload,
@@ -17,7 +20,13 @@ import type {
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
 import { HudVisibilitySession } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
-import { liveAuthNote, liveForProvider, livePlanLabel } from "../../lib/presentation/liveUsage"
+import { agentDisplayName } from "../../lib/presentation/agents"
+import {
+  liveAuthNote,
+  liveErrorNote,
+  livePlanLabel,
+  orderedLiveAccounts,
+} from "../../lib/presentation/liveUsage"
 import { noMeterSelected } from "../../lib/usageBars"
 import {
   providerWindow,
@@ -59,6 +68,145 @@ function sectioned(providers: readonly ProviderUsagePayload[]): {
   return { recent, rest }
 }
 
+interface UsageCardEntry {
+  local: ProviderUsagePayload[]
+  live: LiveProviderUsagePayload[]
+  errors: LiveUsageSourceErrorPayload[]
+  key: string
+}
+
+function addWindow(
+  left: ProviderUsagePayload["windows"]["today"],
+  right: ProviderUsagePayload["windows"]["today"],
+) {
+  return {
+    tokensIn: left.tokensIn + right.tokensIn,
+    tokensOut: left.tokensOut + right.tokensOut,
+    cacheRead: left.cacheRead + right.cacheRead,
+    estimatedUsd:
+      left.estimatedUsd == null && right.estimatedUsd == null
+        ? null
+        : (left.estimatedUsd ?? 0) + (right.estimatedUsd ?? 0),
+    sessionCount: left.sessionCount + right.sessionCount,
+  }
+}
+
+function addLocalUsage(
+  account: ProviderUsagePayload,
+  unassigned: ProviderUsagePayload,
+): ProviderUsagePayload {
+  const lastActivityAt = [account.lastActivityAt, unassigned.lastActivityAt]
+    .filter((value): value is string => value != null)
+    .sort()
+    .at(-1)
+  const states = [account.state, unassigned.state]
+  const state = states.includes("observed")
+    ? "observed"
+    : states.includes("estimated")
+      ? "estimated"
+      : states.includes("live")
+        ? "live"
+        : states.includes("detected")
+          ? "detected"
+          : "unknown"
+  const stalenesses = [account.staleness, unassigned.staleness]
+
+  return {
+    ...account,
+    state,
+    staleness: stalenesses.includes("fresh")
+      ? "fresh"
+      : stalenesses.includes("stale")
+        ? "stale"
+        : "unknown",
+    windows: {
+      today: addWindow(account.windows.today, unassigned.windows.today),
+      week: addWindow(account.windows.week, unassigned.windows.week),
+      month: addWindow(account.windows.month, unassigned.windows.month),
+    },
+    agents: [
+      ...new Map(
+        [...account.agents, ...unassigned.agents].map((entry) => [entry.agent, entry]),
+      ).values(),
+    ],
+    lastActivityAt: lastActivityAt ?? null,
+  }
+}
+
+function simplifiedLocalUsage(
+  local: readonly ProviderUsagePayload[],
+  live: readonly LiveProviderUsagePayload[],
+): ProviderUsagePayload[] {
+  const accountKeys = new Set([
+    ...local.flatMap((entry) => (entry.accountKey ? [entry.accountKey] : [])),
+    ...live.flatMap((entry) => (entry.accountKey ? [entry.accountKey] : [])),
+  ])
+  if (accountKeys.size !== 1) return [...local]
+
+  const [accountKey] = accountKeys
+  if (!accountKey) return [...local]
+  const unassigned = local.filter((entry) => entry.accountKey == null)
+  if (unassigned.length === 0) return [...local]
+
+  const matching = local.find((entry) => entry.accountKey === accountKey)
+  const assigned = matching ?? { ...unassigned[0]!, accountKey }
+  const additions = matching ? unassigned : unassigned.slice(1)
+  return [
+    additions.reduce(addLocalUsage, assigned),
+    ...local.filter((entry) => entry.accountKey != null && entry.accountKey !== accountKey),
+  ]
+}
+
+function isUnattributed(card: UsageCardEntry): boolean {
+  return (
+    card.local[0]?.provider === "unknown" ||
+    card.live[0]?.provider === "unknown" ||
+    card.errors[0]?.provider === "unknown"
+  )
+}
+
+/** Join local evidence to live accounts and keep live-only providers visible. */
+function usageCards(
+  providers: readonly ProviderUsagePayload[],
+  live: LiveUsageSummaryPayload,
+): UsageCardEntry[] {
+  const cards = new Map<string, UsageCardEntry>()
+  for (const local of providers) {
+    const card = cards.get(local.provider) ?? {
+      local: [],
+      live: [],
+      errors: [],
+      key: `provider:${local.provider}`,
+    }
+    card.local.push(local)
+    cards.set(local.provider, card)
+  }
+
+  for (const reading of live.providers) {
+    const card = cards.get(reading.provider) ?? {
+      local: [],
+      live: [],
+      errors: [],
+      key: `provider:${reading.provider}`,
+    }
+    card.live.push(reading)
+    cards.set(reading.provider, card)
+  }
+
+  for (const error of live.errors) {
+    if (!error.provider) continue
+    const card = cards.get(error.provider) ?? {
+      local: [],
+      live: [],
+      errors: [],
+      key: `provider:${error.provider}`,
+    }
+    card.errors.push(error)
+    cards.set(error.provider, card)
+  }
+  return [...cards.values()]
+}
+
 /**
  * Every provider antiburn can attribute local work to.
  *
@@ -90,12 +238,30 @@ export function UsageView({
   // `|| 0` rather than a fallback clock: with no snapshot there is no live
   // section to render, so nothing consumes this.
   const at = now ?? (Date.parse(live.generatedAt) || 0)
-  const { recent, rest } = sectioned(summary.providers)
+  const { recent: recentLocal, rest: restLocal } = sectioned(summary.providers)
+  const cards = usageCards([...recentLocal, ...restLocal], live)
+  const recentProviders = new Set(recentLocal)
+  const recent = cards.filter(
+    (card) =>
+      !isUnattributed(card) &&
+      (card.local.length === 0 || card.local.some((local) => recentProviders.has(local))),
+  )
+  const rest = [
+    ...cards.filter(
+      (card) =>
+        !isUnattributed(card) &&
+        card.local.length > 0 &&
+        !card.local.some((local) => recentProviders.has(local)),
+    ),
+    ...cards.filter(isUnattributed),
+  ]
   const empty = recent.length === 0 && rest.length === 0
   // A reader who turned every meter off gets that sentence instead of an
   // auth note. No source ran, so no failure of theirs is current.
   const noMeter = noMeterSelected(live)
-  const authNote = noMeter ? null : liveAuthNote(live)
+  const providerlessAuthNote = noMeter
+    ? null
+    : liveAuthNote({ ...live, errors: live.errors.filter((error) => !error.provider) })
 
   return (
     <div className="flex h-full flex-col">
@@ -119,12 +285,12 @@ export function UsageView({
       )}
 
       <ScrollPane viewportClassName="px-3 pb-2">
-        {authNote && (
+        {providerlessAuthNote && (
           <p
             role="status"
             className="mb-2 rounded-control bg-system-orange/10 px-3 py-2 type-caption text-system-orange"
           >
-            {authNote}
+            {providerlessAuthNote}
           </p>
         )}
         {noMeter && (
@@ -138,20 +304,8 @@ export function UsageView({
           </p>
         ) : (
           <>
-            <UsageSection
-              title="Recently used"
-              providers={recent}
-              live={live}
-              now={at}
-              showTitle={!embedded}
-            />
-            <UsageSection
-              title="All detected"
-              providers={rest}
-              live={live}
-              now={at}
-              showTitle={!embedded}
-            />
+            <UsageSection title="Recently used" cards={recent} now={at} showTitle={!embedded} />
+            <UsageSection title="All detected" cards={rest} now={at} showTitle={!embedded} />
           </>
         )}
       </ScrollPane>
@@ -192,18 +346,16 @@ function HudPopOutButton() {
 
 function UsageSection({
   title,
-  providers,
-  live,
+  cards,
   now,
   showTitle,
 }: {
   title: string
-  providers: readonly ProviderUsagePayload[]
-  live: LiveUsageSummaryPayload
+  cards: readonly UsageCardEntry[]
   now: number
   showTitle: boolean
 }) {
-  if (providers.length === 0) return null
+  if (cards.length === 0) return null
   return (
     <section aria-label={title} className="pt-2 first:pt-0">
       {showTitle && (
@@ -212,13 +364,8 @@ function UsageSection({
         </h2>
       )}
       <ul className="space-y-2">
-        {providers.map((provider) => (
-          <ProviderCard
-            key={provider.provider}
-            provider={provider}
-            live={liveForProvider(live, provider.provider)}
-            now={now}
-          />
+        {cards.map(({ key, ...card }) => (
+          <ProviderCard key={key} {...card} now={now} />
         ))}
       </ul>
     </section>
@@ -226,33 +373,77 @@ function UsageSection({
 }
 
 function ProviderCard({
-  provider,
+  local,
   live,
+  errors,
   now,
 }: {
-  provider: ProviderUsagePayload
-  live: LiveProviderUsagePayload | null
+  local: readonly ProviderUsagePayload[]
+  live: readonly LiveProviderUsagePayload[]
+  errors: readonly LiveUsageSourceErrorPayload[]
   now: number
 }) {
-  const stale = stalenessNote(provider)
-  const updated = updatedNote(provider)
-  const usedToday = windowHasEvidence(providerWindow(provider, "today"))
-  const plan = live ? livePlanLabel(live) : null
+  const accounts = orderedLiveAccounts(live)
+  const shownLocal = simplifiedLocalUsage(
+    local,
+    accounts.map(({ reading }) => reading),
+  )
+  const primaryLocal = shownLocal[0] ?? null
+  const stale = primaryLocal ? stalenessNote(primaryLocal) : null
+  const updated = primaryLocal ? updatedNote(primaryLocal) : null
+  const usedToday = shownLocal.some((entry) =>
+    windowHasEvidence(providerWindow(entry, "today")),
+  )
+  const unmatchedLocal = shownLocal.filter(
+    (entry) =>
+      entry.accountKey == null ||
+      !accounts.some(({ reading }) => reading.accountKey === entry.accountKey),
+  )
+  const localAccountIdentities = shownLocal.flatMap((entry) =>
+    entry.accountKey
+      ? [{ key: `account:${entry.provider}:${entry.accountKey}`, provider: entry.provider }]
+      : [],
+  )
+  const accountNumbers = useStableAccountNumbers([
+    ...accounts.flatMap(({ key, reading }) =>
+      reading.accountKey ? [{ key, provider: reading.provider }] : [],
+    ),
+    ...localAccountIdentities,
+  ])
+  const identifiedAccountKeys = new Set([
+    ...accounts.flatMap(({ reading }) => (reading.accountKey ? [reading.accountKey] : [])),
+    ...shownLocal.flatMap((entry) => (entry.accountKey ? [entry.accountKey] : [])),
+  ])
+  const hasUnassignedAccount =
+    accounts.some(({ reading }) => reading.accountKey == null) ||
+    shownLocal.some((entry) => entry.accountKey == null)
+  const accountGroupCount = identifiedAccountKeys.size + (hasUnassignedAccount ? 1 : 0)
+  const accountPlans = accounts.map(({ reading }) => livePlanLabel(reading))
+  const plan =
+    accountPlans.length > 0 && accountPlans.every((entry) => entry === accountPlans[0])
+      ? accountPlans[0]
+      : null
+  const showAccountPlans = accountPlans.some((entry) => entry !== plan)
+  const provider = primaryLocal?.provider ?? live[0]?.provider ?? errors[0]?.provider ?? ""
+  const displayName =
+    primaryLocal?.displayName ?? live[0]?.displayName ?? errors[0]?.displayName ?? provider
+  const [open, setOpen] = useState(provider !== "unknown")
+  const bodyId = useId()
 
   return (
-    <li className="flex flex-col gap-1">
-      <div className="space-y-2.5 rounded-control bg-surface-card px-3 py-2.5">
-        <div className="flex items-start gap-2">
+    <li data-provider-card={provider} className="flex flex-col gap-1">
+      <div className="overflow-hidden rounded-control bg-surface-card">
+        <div className="flex items-start gap-2 px-3 py-2.5">
           <ProviderGlyph
-            displayName={provider.displayName}
-            provider={provider.provider}
+            displayName={displayName}
+            provider={provider}
             size={18}
             className="mt-px"
           />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <h3 className="truncate type-footnote font-medium text-label">
-                {provider.displayName}
+                {displayName}
                 {plan && <span className="text-label-secondary"> · {plan}</span>}
               </h3>
               {usedToday && (
@@ -272,18 +463,131 @@ function ProviderCard({
               </p>
             )}
           </div>
+          <button
+            type="button"
+            aria-label={`${open ? "Collapse" : "Expand"} ${displayName} usage`}
+            aria-expanded={open}
+            aria-controls={bodyId}
+            onClick={() => setOpen((value) => !value)}
+            className="-mr-1 inline-flex size-6 shrink-0 cursor-pointer! items-center justify-center rounded-control text-label-secondary transition-colors duration-[var(--duration-fast)] hover:bg-surface-hover hover:text-label"
+          >
+            <ChevronDown
+              size={14}
+              strokeWidth={2}
+              aria-hidden="true"
+              className={cn(
+                "transition-transform duration-[var(--duration-fast)] ease-out-quart",
+                open && "rotate-180",
+              )}
+            />
+          </button>
         </div>
 
-        {live && <LiveUsageDetail live={live} now={now} />}
+        <div id={bodyId} hidden={!open} className="space-y-2.5 px-3 pb-2.5">
+          {accounts.map(({ reading, key }) => {
+            const matchingLocal = shownLocal.find(
+              (entry) => entry.accountKey != null && entry.accountKey === reading.accountKey,
+            )
+            const accountLabel =
+              accountGroupCount > 1
+                ? reading.accountKey
+                  ? `Account ${accountNumbers.get(key)}`
+                  : "Unassigned account"
+                : undefined
+            return (
+              <div key={key} className="space-y-2.5">
+                <LiveUsageDetail
+                  live={reading}
+                  now={now}
+                  showPlan={showAccountPlans}
+                  {...(accountLabel ? { accountLabel } : {})}
+                />
+                {matchingLocal && (
+                  <LocalUsageDetail
+                    provider={matchingLocal}
+                    showState={shownLocal.length > 1}
+                  />
+                )}
+              </div>
+            )
+          })}
 
-        <UsageMetricRows provider={provider} />
+          {errors.map((error, index) => (
+            <p
+              key={`${error.source}:${index}`}
+              role="status"
+              className="rounded-control bg-system-orange/10 px-2 py-1.5 type-caption text-system-orange"
+            >
+              {liveErrorNote(error.category, error.provider)}
+            </p>
+          ))}
 
-        <UsageWindowRows provider={provider} className="border-t border-separator pt-2" />
+          {unmatchedLocal.map((entry) => {
+            const key = entry.accountKey
+              ? `account:${entry.provider}:${entry.accountKey}`
+              : "unassigned"
+            const accountNumber = accountNumbers.get(key)
+            const accountLabel = entry.accountKey ? `Account ${accountNumber} usage` : null
+            const detail = (
+              <LocalUsageDetail provider={entry} showState={shownLocal.length > 1} />
+            )
+            if (entry.accountKey == null && identifiedAccountKeys.size > 1) {
+              return (
+                <Disclosure
+                  key={key}
+                  label="Unassigned account"
+                  className="border-t border-b-0"
+                >
+                  {detail}
+                </Disclosure>
+              )
+            }
+            return (
+              <div
+                key={key}
+                role={accountLabel ? "group" : undefined}
+                aria-label={accountLabel ? `${displayName} ${accountLabel}` : undefined}
+                className="space-y-2"
+              >
+                {accountGroupCount > 1 && (
+                  <p className="type-caption font-medium text-label-secondary">
+                    {entry.accountKey == null ? "Unassigned account" : accountLabel}
+                  </p>
+                )}
+                {detail}
+              </div>
+            )
+          })}
+        </div>
       </div>
 
-      <p className="px-3 type-caption text-pretty text-label-tertiary">
-        {usageStateDescription(provider.state)}
-      </p>
+      {primaryLocal && shownLocal.length === 1 && (
+        <p hidden={!open} className="px-3 type-caption text-pretty text-label-tertiary">
+          {usageStateDescription(primaryLocal.state)}
+        </p>
+      )}
     </li>
+  )
+}
+
+function LocalUsageDetail({
+  provider,
+  showState,
+}: {
+  provider: ProviderUsagePayload
+  showState: boolean
+}) {
+  const sources = provider.agents.map((entry) => agentDisplayName(entry.agent)).join(", ")
+  return (
+    <div className="space-y-2">
+      {sources && <p className="type-caption text-label-tertiary">From {sources}</p>}
+      <UsageMetricRows provider={provider} />
+      <UsageWindowRows provider={provider} className="border-t border-separator pt-2" />
+      {showState && (
+        <p className="type-caption text-label-tertiary">
+          {usageStateDescription(provider.state)}
+        </p>
+      )}
+    </div>
   )
 }

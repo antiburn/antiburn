@@ -19,12 +19,12 @@
 //! # Where the numbers come from
 //!
 //! [`LiveUsageSource`] implementations, registered at startup —
-//! [`sources::anthropic_fetch`] and [`sources::codex_fetch`]. Each asks its
-//! provider's own usage endpoint directly, with a credential the reader's own
-//! CLI already keeps on this machine: the same request that CLI would make of
-//! its own account, made by this application instead, over this
-//! application's own connection. No service of ours sits in between, and
-//! nothing read from a credential file is ever written anywhere new. Fetching
+//! [`sources::anthropic_fetch`], [`sources::codex_fetch`], and
+//! [`sources::antigravity_fetch`]. Each first asks its provider's own usage
+//! endpoint directly, with a credential the reader's own CLI keeps on this
+//! machine. Codex and Antigravity can fall back to bounded local process
+//! protocols when direct retrieval fails. No service of ours sits in between,
+//! and nothing read from a credential file is ever written anywhere new. Fetching
 //! the reader's own usage from a provider they already use, with a
 //! credential they already hold, is ordinary traffic, not a risky one — so it
 //! runs by default rather than behind a first-run choice. Both sources still
@@ -43,6 +43,7 @@
 //! are looking at.
 
 pub mod anthropic;
+pub mod antigravity;
 pub mod codex;
 pub mod history;
 pub mod metrics;
@@ -235,12 +236,64 @@ pub fn roster(
 /// also advances the cached view. It keeps the raw snapshots long enough to
 /// evaluate crossings before this function consumes them.
 pub fn summarize_collected(
-    collected: sources::Collected,
+    mut collected: sources::Collected,
     meters: Vec<LiveUsageMeter>,
     store: Option<&crate::store::Store>,
     now: i64,
     utc_offset_minutes: i32,
 ) -> LiveUsageSummary {
+    let mut observed_tool_providers = Vec::new();
+    for snapshot in &mut collected.snapshots {
+        if let Some(store) = store
+            && !observed_tool_providers.contains(&snapshot.provider)
+        {
+            observed_tool_providers.push(snapshot.provider);
+            crate::provider_accounts::observe_tool_accounts(
+                store,
+                snapshot.provider,
+                snapshot.observed_at.unix_timestamp(),
+            );
+        }
+        let Some(subject) = snapshot.account.take() else {
+            continue;
+        };
+        snapshot.account = store.and_then(|store| {
+            match crate::provider_accounts::opaque_key(store, snapshot.provider, &subject) {
+                Ok(key) => {
+                    if let (Some(account_key), Some(agent)) =
+                        (key.as_deref(), source_agent(snapshot.source.id))
+                        && let Err(error) = store.observe_provider_account(
+                            agent,
+                            snapshot.provider,
+                            account_key,
+                            snapshot.observed_at.unix_timestamp(),
+                            "provider_live",
+                        )
+                    {
+                        ::tracing::warn!(
+                            event = "provider_account_observation_failed",
+                            provider = snapshot.provider,
+                            error = %error
+                        );
+                    }
+                    key
+                }
+                Err(error) => {
+                    ::tracing::warn!(
+                        event = "provider_account_key_failed",
+                        provider = snapshot.provider,
+                        error = %error
+                    );
+                    None
+                }
+            }
+        });
+        ::tracing::debug!(
+            event = "live_provider_account_resolution",
+            provider = snapshot.provider,
+            assigned = snapshot.account.is_some()
+        );
+    }
     let history = store
         .map(|store| history::record(store, &collected.snapshots))
         .unwrap_or_default();
@@ -252,6 +305,7 @@ pub fn summarize_collected(
         .snapshots
         .into_iter()
         .map(|snapshot| LiveProviderUsage {
+            account_key: snapshot.account.clone(),
             display_name: super::providers::display_name(snapshot.provider).to_string(),
             provider: snapshot.provider.to_string(),
             support: LiveUsageSupport::Live,
@@ -305,6 +359,15 @@ pub fn summarize_collected(
             .collect(),
         meters,
         generated_at: crate::store::iso_from_epoch(Some(now)),
+    }
+}
+
+fn source_agent(source: &str) -> Option<&'static str> {
+    match source {
+        "claude-usage-fetch" => Some("claude-code"),
+        "codex-usage-fetch" => Some("codex"),
+        "antigravity-usage-fetch" => Some("antigravity"),
+        _ => None,
     }
 }
 

@@ -36,7 +36,7 @@ use super::model::{Freshness, ProviderUsageSnapshot};
 use crate::store::Store;
 
 /// Where the series live.
-const KEY: &str = "internal:liveUsageHistory";
+const KEY: &str = "internal:liveUsageHistoryV2";
 
 /// A ceiling on the whole forecast cache.
 ///
@@ -92,10 +92,8 @@ impl History {
 
 /// The identity a series is kept under.
 ///
-/// Provider, account, and window, so two accounts at one provider never share
+/// Provider, opaque account key, and window, so two accounts never share
 /// a series and the five-hour window never contaminates the weekly one. The
-/// account is the provider's own local id — nothing is uploaded, so there is
-/// nothing to hash it for — and it never leaves this process.
 pub fn window_key(snapshot: &ProviderUsageSnapshot, window_id: &str) -> String {
     format!(
         "{}:{}:{window_id}",

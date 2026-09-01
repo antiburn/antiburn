@@ -64,6 +64,10 @@ pnpm --filter @antiburn/desktop build        # frontend bundle only
 pnpm --filter @antiburn/desktop icons        # regenerate app and tray icons
 ```
 
+The `dev`, `dev:bundle`, and `tauri` scripts load `apps/desktop/.env` when it
+exists. The shell environment takes precedence. `.env.example` lists the Google
+installed-app variables used only for Antigravity 2.0, its IDE, and `agy`.
+
 And for the shell:
 
 ```bash
@@ -80,7 +84,7 @@ run:
 ```bash
 ANTIBURN_ANALYTICS_URL=http://127.0.0.1:8787 \
 ANTIBURN_ANALYTICS_OPERATOR="Local development" \
-pnpm --filter @antiburn/desktop exec tauri dev \
+pnpm --filter @antiburn/desktop tauri dev \
   --features analytics --config src-tauri/tauri.debug.conf.json
 ```
 

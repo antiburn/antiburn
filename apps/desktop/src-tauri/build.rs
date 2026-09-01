@@ -17,6 +17,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=ANTIBURN_ANALYTICS_URL");
     println!("cargo:rerun-if-env-changed=ANTIBURN_ANALYTICS_OPERATOR");
     println!("cargo:rerun-if-env-changed=ANTIBURN_ANALYTICS_ENABLED");
+    println!("cargo:rerun-if-env-changed=GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_ID");
+    println!("cargo:rerun-if-env-changed=GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_SECRET");
     let attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS));
     tauri_build::try_build(attributes).expect("failed to build the Tauri application");

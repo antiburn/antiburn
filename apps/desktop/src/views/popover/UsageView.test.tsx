@@ -58,6 +58,7 @@ function usageWindow(
 /** Anthropic, busy today; OpenAI, busy only earlier in the week. */
 const ANTHROPIC: ProviderUsagePayload = {
   provider: "anthropic",
+  accountKey: null,
   displayName: "Anthropic",
   state: "estimated",
   staleness: "fresh",
@@ -66,11 +67,13 @@ const ANTHROPIC: ProviderUsagePayload = {
     week: usageWindow({ estimatedUsd: 8, tokensIn: 4_000, sessionCount: 4 }),
     month: usageWindow({ estimatedUsd: 8, tokensIn: 4_000, sessionCount: 4 }),
   },
+  agents: [],
   lastActivityAt: new Date().toISOString(),
 }
 
 const OPENAI: ProviderUsagePayload = {
   provider: "openai",
+  accountKey: null,
   displayName: "OpenAI",
   state: "observed",
   staleness: "stale",
@@ -79,6 +82,7 @@ const OPENAI: ProviderUsagePayload = {
     week: usageWindow({ tokensIn: 20_000, sessionCount: 2 }),
     month: usageWindow({ tokensIn: 20_000, sessionCount: 2 }),
   },
+  agents: [],
   lastActivityAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
 }
 
@@ -107,6 +111,42 @@ describe("UsageView", () => {
     expect(rest.getByRole("heading", { name: "All detected" })).toBeInTheDocument()
     expect(rest.getByText("OpenAI")).toBeInTheDocument()
     expect(rest.queryByText("Used today")).not.toBeInTheDocument()
+  })
+
+  it("puts Unattributed last and starts its card collapsed", () => {
+    const unattributed: ProviderUsagePayload = {
+      ...ANTHROPIC,
+      provider: "unknown",
+      displayName: "Unattributed",
+      windows: {
+        ...ANTHROPIC.windows,
+        today: usageWindow({ tokensIn: 50_000, sessionCount: 3 }),
+      },
+    }
+    render(
+      <UsageView
+        summary={summary({ providers: [unattributed, ANTHROPIC, OPENAI] })}
+        onBack={vi.fn()}
+      />,
+    )
+
+    const cards = [...document.querySelectorAll<HTMLElement>("[data-provider-card]")]
+    expect(cards.map((card) => card.dataset.providerCard)).toEqual([
+      "anthropic",
+      "openai",
+      "unknown",
+    ])
+    const toggle = screen.getByRole("button", { name: "Expand Unattributed usage" })
+    expect(toggle).toHaveAttribute("aria-expanded", "false")
+    const bodyId = toggle.getAttribute("aria-controls")!
+    expect(document.getElementById(bodyId)).toBeInTheDocument()
+    expect(within(cards[2]!).getByText("Today's spend")).not.toBeVisible()
+
+    fireEvent.click(toggle)
+
+    expect(toggle).toHaveAttribute("aria-expanded", "true")
+    expect(toggle).toHaveAccessibleName("Collapse Unattributed usage")
+    expect(within(cards[2]!).getByText("Today's spend")).toBeInTheDocument()
   })
 
   it("hides embedded section headings but keeps their accessible regions", () => {
@@ -241,9 +281,12 @@ function liveWindow(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsageW
   }
 }
 
-function liveProvider(): LiveProviderUsagePayload {
+function liveProvider(
+  overrides: Partial<LiveProviderUsagePayload> = {},
+): LiveProviderUsagePayload {
   return {
     provider: "anthropic",
+    accountKey: null,
     displayName: "Anthropic",
     support: "live",
     freshness: "fresh",
@@ -263,6 +306,7 @@ function liveProvider(): LiveProviderUsagePayload {
     extraUsage: null,
     resetCredits: null,
     plan: null,
+    ...overrides,
   }
 }
 
@@ -316,6 +360,540 @@ describe("UsageView — plan limits layered over local estimates", () => {
     expect(within(card).getByText("1 usage limit reset available.")).toBeInTheDocument()
     expect(within(card).getByText("/usage")).toBeInTheDocument()
     expect(within(card).getByText(/in Codex to use one/)).toBeInTheDocument()
+  })
+
+  it("does not give Google users the Codex reset command", () => {
+    const antigravity = live({
+      providers: [
+        liveProvider({
+          provider: "google",
+          displayName: "Google",
+          sourceLabel: "Asked Antigravity directly",
+          resetCredits: { availableCount: 2 },
+        }),
+      ],
+    })
+    render(
+      <UsageView
+        summary={summary({ providers: [] })}
+        live={antigravity}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText("2 usage limit resets available.")).toBeInTheDocument()
+    expect(screen.getByText(/Use Google to apply one/)).toBeInTheDocument()
+    expect(screen.queryByText("/usage")).not.toBeInTheDocument()
+  })
+
+  it("joins Google live limits to a local Google estimate", () => {
+    const google: ProviderUsagePayload = {
+      ...ANTHROPIC,
+      provider: "google",
+      displayName: "Google",
+    }
+    const antigravity = live({
+      providers: [
+        liveProvider({
+          provider: "google",
+          displayName: "Google",
+          sourceLabel: "Asked Antigravity directly",
+          windows: [
+            liveWindow({
+              id: "antigravity-gemini-5h",
+              scopeModel: "Gemini",
+            }),
+          ],
+        }),
+      ],
+    })
+    render(
+      <UsageView
+        summary={summary({ providers: [google] })}
+        live={antigravity}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    const card = screen.getByText("Google").closest("li")!
+    expect(screen.getAllByRole("listitem")).toHaveLength(1)
+    expect(within(card).getByText("Gemini 5-hour limit")).toBeInTheDocument()
+    expect(within(card).getByText("Last 7 days")).toBeInTheDocument()
+    expect(within(card).getByText(/Asked Antigravity directly · Live/)).toBeInTheDocument()
+  })
+
+  it("creates a Google card when Antigravity has no local estimate", () => {
+    const antigravity = live({
+      providers: [
+        liveProvider({
+          provider: "google",
+          displayName: "Google",
+          sourceLabel: "Asked Antigravity directly",
+          plan: { name: "Google AI Pro", tier: "pro-tier" },
+          windows: [
+            liveWindow({ id: "antigravity-gemini-5h", scopeModel: "Gemini" }),
+            liveWindow({
+              id: "antigravity-gemini-weekly",
+              role: "primaryLong",
+              kind: "weekly",
+              scopeModel: "Gemini",
+            }),
+            liveWindow({
+              id: "antigravity-claude-gpt-5h",
+              role: "supplemental",
+              scopeModel: "Claude + GPT",
+            }),
+            liveWindow({
+              id: "antigravity-claude-gpt-weekly",
+              role: "supplemental",
+              kind: "weekly",
+              scopeModel: "Claude + GPT",
+            }),
+            liveWindow({
+              id: "weekly-gemini-3-pro",
+              role: "supplemental",
+              kind: "weekly",
+              scopeModel: "Gemini 3 Pro",
+              usedPercent: 0,
+            }),
+            liveWindow({
+              id: "weekly-gemini-3-flash",
+              role: "supplemental",
+              kind: "weekly",
+              scopeModel: "Gemini 3 Flash",
+              usedPercent: null,
+            }),
+            liveWindow({
+              id: "weekly-claude-sonnet",
+              role: "supplemental",
+              kind: "weekly",
+              scopeModel: "Claude Sonnet",
+              usedPercent: 0,
+            }),
+          ],
+          extraUsage: {
+            enabled: true,
+            usedPercent: null,
+            used: 250,
+            remaining: 750,
+            limit: 1_000,
+            currency: null,
+          },
+        }),
+      ],
+    })
+    render(
+      <UsageView
+        summary={summary({ providers: [] })}
+        live={antigravity}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    const card = screen.getByText("Google", { selector: "h3" }).closest("li")!
+    expect(within(card).getByRole("region", { name: "Google plan limits" })).toBeInTheDocument()
+    expect(within(card).getByRole("heading", { level: 3 })).toHaveTextContent(
+      "Google · Google AI Pro",
+    )
+    expect(within(card).getByText("AI credits: 750 remaining")).toBeInTheDocument()
+    expect(within(card).queryByText("Last 7 days")).not.toBeInTheDocument()
+    expect(card.querySelector('[data-provider-icon="google"]')).toBeInTheDocument()
+
+    for (const name of [
+      "Gemini 5-hour limit",
+      "Gemini weekly limit",
+      "Claude and GPT 5-hour limit",
+      "Claude and GPT weekly limit",
+    ]) {
+      expect(within(card).getByRole("progressbar", { name })).toBeInTheDocument()
+    }
+    expect(within(card).queryByText("Gemini 3 Pro weekly limit")).not.toBeInTheDocument()
+    expect(within(card).queryByText("Claude Sonnet weekly limit")).not.toBeInTheDocument()
+  })
+
+  it("collapses unassigned usage when multiple accounts exist", () => {
+    const google: ProviderUsagePayload = {
+      ...ANTHROPIC,
+      provider: "google",
+      displayName: "Google",
+    }
+    const first = liveProvider({
+      provider: "google",
+      accountKey: "account-b",
+      displayName: "Google",
+      sourceLabel: "Asked Antigravity directly",
+      windows: [liveWindow({ id: "antigravity-gemini-5h", scopeModel: "Gemini" })],
+    })
+    const second = {
+      ...first,
+      accountKey: "account-a",
+      windows: [
+        liveWindow({
+          id: "antigravity-gemini-weekly",
+          role: "primaryLong",
+          kind: "weekly",
+          scopeModel: "Gemini",
+        }),
+      ],
+    }
+    render(
+      <UsageView
+        summary={summary({ providers: [google] })}
+        live={live({ providers: [first, second] })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    const card = document.querySelector<HTMLElement>('[data-provider-card="google"]')!
+    expect(screen.getAllByRole("listitem")).toHaveLength(1)
+    expect(
+      within(card).getByRole("region", { name: "Google Account 1 plan limits" }),
+    ).toHaveTextContent("Gemini 5-hour limit")
+    expect(
+      within(card).getByRole("region", { name: "Google Account 2 plan limits" }),
+    ).toHaveTextContent("Gemini weekly limit")
+    const unassigned = within(card).getByRole("button", { name: "Unassigned account" })
+    expect(unassigned).toHaveAttribute("aria-expanded", "false")
+    expect(within(card).queryByText("Last 7 days")).not.toBeInTheDocument()
+
+    fireEvent.click(unassigned)
+    expect(unassigned).toHaveAttribute("aria-expanded", "true")
+    expect(within(card).getAllByText("Last 7 days")).toHaveLength(1)
+  })
+
+  it("shows unassigned sessions under the only account", () => {
+    const assigned: ProviderUsagePayload = {
+      ...ANTHROPIC,
+      provider: "google",
+      accountKey: "account-a",
+      displayName: "Google",
+      windows: {
+        today: usageWindow({ estimatedUsd: 1, tokensIn: 500, sessionCount: 1 }),
+        week: usageWindow({ estimatedUsd: 1, tokensIn: 500, sessionCount: 1 }),
+        month: usageWindow({ estimatedUsd: 1, tokensIn: 500, sessionCount: 1 }),
+      },
+    }
+    const unassigned: ProviderUsagePayload = {
+      ...ANTHROPIC,
+      provider: "google",
+      displayName: "Google",
+    }
+    const account = liveProvider({
+      provider: "google",
+      accountKey: "account-a",
+      displayName: "Google",
+    })
+
+    render(
+      <UsageView
+        summary={summary({ providers: [assigned, unassigned] })}
+        live={live({ providers: [account] })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    const card = document.querySelector<HTMLElement>('[data-provider-card="google"]')!
+    expect(within(card).queryByText("Unassigned account")).not.toBeInTheDocument()
+    expect(within(card).getAllByText("$3.50").length).toBeGreaterThan(0)
+    expect(within(card).getByText("2 sessions")).toBeInTheDocument()
+  })
+
+  it("places identified local usage under only its matching live account", () => {
+    const accountA: ProviderUsagePayload = {
+      ...ANTHROPIC,
+      provider: "google",
+      accountKey: "account-a",
+      displayName: "Google",
+      windows: {
+        today: usageWindow({ estimatedUsd: 1, sessionCount: 1 }),
+        week: usageWindow({ estimatedUsd: 1, sessionCount: 1 }),
+        month: usageWindow({ estimatedUsd: 1, sessionCount: 1 }),
+      },
+    }
+    const accountB: ProviderUsagePayload = {
+      ...accountA,
+      accountKey: "account-b",
+      windows: {
+        today: usageWindow({ estimatedUsd: 2, sessionCount: 1 }),
+        week: usageWindow({ estimatedUsd: 2, sessionCount: 1 }),
+        month: usageWindow({ estimatedUsd: 2, sessionCount: 1 }),
+      },
+    }
+    const first = liveProvider({
+      provider: "google",
+      accountKey: "account-b",
+      displayName: "Google",
+      windows: [liveWindow({ id: "account-b-window" })],
+    })
+    const second = liveProvider({
+      provider: "google",
+      accountKey: "account-a",
+      displayName: "Google",
+      windows: [liveWindow({ id: "account-a-window" })],
+    })
+
+    render(
+      <UsageView
+        summary={summary({ providers: [accountA, accountB] })}
+        live={live({ providers: [first, second] })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    const firstGroup = screen.getByRole("region", {
+      name: "Google Account 1 plan limits",
+    }).parentElement!
+    const secondGroup = screen.getByRole("region", {
+      name: "Google Account 2 plan limits",
+    }).parentElement!
+    expect(within(firstGroup).getAllByText("$2.00").length).toBeGreaterThan(0)
+    expect(within(firstGroup).queryByText("$1.00")).not.toBeInTheDocument()
+    expect(within(secondGroup).getAllByText("$1.00").length).toBeGreaterThan(0)
+    expect(within(secondGroup).queryByText("$2.00")).not.toBeInTheDocument()
+  })
+
+  it("keeps account sections mounted through reorder, polling, and removal", () => {
+    const first = liveProvider({
+      provider: "google",
+      accountKey: "account-a",
+      displayName: "Google",
+      sourceLabel: "Asked Antigravity directly",
+      windows: [liveWindow({ id: "antigravity-gemini-5h", scopeModel: "Gemini" })],
+    })
+    const second = {
+      ...first,
+      accountKey: "account-b",
+      windows: [
+        liveWindow({
+          id: "antigravity-gemini-weekly",
+          role: "primaryLong",
+          kind: "weekly",
+          scopeModel: "Gemini",
+        }),
+      ],
+    }
+    const initial = live({ providers: [second, first] })
+    const { rerender } = render(
+      <UsageView
+        summary={summary({ providers: [] })}
+        live={initial}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+    const card = document.querySelector<HTMLElement>('[data-provider-card="google"]')!
+    const accountA = within(card).getByRole("region", { name: "Google Account 2 plan limits" })
+
+    rerender(
+      <UsageView
+        summary={summary({ providers: [] })}
+        live={live({
+          providers: [
+            { ...first, observedAt: "2027-01-15T12:01:00Z" },
+            { ...second, observedAt: "2027-01-15T12:01:00Z" },
+          ],
+        })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    expect(document.querySelector('[data-provider-card="google"]')).toBe(card)
+    expect(within(card).getByRole("region", { name: "Google Account 2 plan limits" })).toBe(
+      accountA,
+    )
+
+    rerender(
+      <UsageView
+        summary={summary({ providers: [] })}
+        live={live({ providers: [{ ...first, observedAt: "2027-01-15T12:02:00Z" }] })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+    expect(within(card).getByRole("region", { name: "Google plan limits" })).toBe(accountA)
+  })
+
+  it("keeps an unassigned live account mounted when its plan and windows change", () => {
+    const initial = liveProvider({
+      provider: "google",
+      displayName: "Google",
+      sourceLabel: "Read from Antigravity IDE",
+      plan: { name: "Google AI Pro", tier: "pro-tier" },
+      windows: [liveWindow({ id: "antigravity-gemini-5h" })],
+    })
+    const { rerender } = render(
+      <UsageView
+        summary={summary({ providers: [] })}
+        live={live({ providers: [initial] })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+    const account = screen.getByRole("region", { name: "Google plan limits" })
+
+    rerender(
+      <UsageView
+        summary={summary({ providers: [] })}
+        live={live({
+          providers: [
+            {
+              ...initial,
+              plan: { name: "Google AI Ultra", tier: "ultra-tier" },
+              windows: [
+                ...initial.windows,
+                liveWindow({ id: "antigravity-gemini-weekly", kind: "weekly" }),
+              ],
+            },
+          ],
+        })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole("region", { name: "Google plan limits" })).toBe(account)
+  })
+
+  it("names multiple local-only accounts without exposing their keys", () => {
+    const accountA: ProviderUsagePayload = {
+      ...ANTHROPIC,
+      accountKey: "opaque-account-a",
+    }
+    const accountB: ProviderUsagePayload = {
+      ...ANTHROPIC,
+      accountKey: "opaque-account-b",
+      windows: {
+        ...ANTHROPIC.windows,
+        today: usageWindow({ estimatedUsd: 2, sessionCount: 1 }),
+      },
+    }
+    render(
+      <UsageView
+        summary={summary({ providers: [accountA, accountB] })}
+        live={live({ providers: [] })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole("group", { name: "Anthropic Account 1 usage" })).toBeInTheDocument()
+    expect(screen.getByRole("group", { name: "Anthropic Account 2 usage" })).toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent("opaque-account-a")
+    expect(document.body).not.toHaveTextContent("opaque-account-b")
+  })
+
+  it("shows different plans inside their account sections", () => {
+    const base = liveProvider({
+      provider: "google",
+      displayName: "Google",
+      sourceLabel: "Asked Antigravity directly",
+      windows: [liveWindow({ id: "antigravity-gemini-5h", scopeModel: "Gemini" })],
+    })
+    render(
+      <UsageView
+        summary={summary({ providers: [] })}
+        live={live({
+          providers: [
+            {
+              ...base,
+              accountKey: "account-b",
+              plan: { name: "Google AI Ultra", tier: "ultra-tier" },
+            },
+            {
+              ...base,
+              accountKey: "account-a",
+              plan: { name: "Google AI Pro", tier: "pro-tier" },
+            },
+          ],
+        })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole("heading", { level: 3, name: "Google" })).not.toHaveTextContent(
+      "Google AI",
+    )
+    expect(
+      screen.getByRole("region", { name: "Google Account 1 plan limits" }),
+    ).toHaveTextContent("Plan · Google AI Ultra")
+    expect(
+      screen.getByRole("region", { name: "Google Account 2 plan limits" }),
+    ).toHaveTextContent("Plan · Google AI Pro")
+  })
+
+  it("shows local Antigravity fallback windows and their provenance at zero and unknown", () => {
+    const fallback = liveProvider({
+      provider: "google",
+      displayName: "Google",
+      sourceLabel: "Read from the Antigravity CLI",
+      windows: [
+        liveWindow({
+          id: "antigravity-model-gemini-3-pro",
+          role: "supplemental",
+          scopeModel: "Gemini 3 Pro",
+          usedPercent: 0,
+        }),
+        liveWindow({
+          id: "antigravity-model-claude-sonnet",
+          role: "supplemental",
+          scopeModel: "Claude Sonnet",
+          usedPercent: null,
+        }),
+      ],
+    })
+    render(
+      <UsageView
+        summary={summary({ providers: [] })}
+        live={live({ providers: [fallback] })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/Read from the Antigravity CLI · Live/)).toBeInTheDocument()
+    expect(screen.getByRole("progressbar", { name: "Gemini 3 Pro limit" })).toHaveAttribute(
+      "aria-valuenow",
+      "0",
+    )
+    expect(
+      screen.getByRole("progressbar", { name: "Claude Sonnet limit" }),
+    ).not.toHaveAttribute("aria-valuenow")
+  })
+
+  it("shows a credits-only Google snapshot with provenance", () => {
+    const credits = liveProvider({
+      provider: "google",
+      displayName: "Google",
+      sourceLabel: "Asked Antigravity directly",
+      windows: [],
+      extraUsage: {
+        enabled: true,
+        usedPercent: null,
+        used: null,
+        remaining: null,
+        limit: 1_000,
+        currency: null,
+      },
+    })
+    render(
+      <UsageView
+        summary={summary({ providers: [] })}
+        live={live({ providers: [credits] })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText("AI credits: 1,000 total")).toBeInTheDocument()
+    expect(screen.getByText(/Asked Antigravity directly · Live/)).toBeInTheDocument()
   })
 
   it("shows the plan as a muted suffix on the provider card heading", () => {
@@ -482,6 +1060,74 @@ describe("UsageView — plan limits layered over local estimates", () => {
       />,
     )
     expect(screen.getByRole("status")).toHaveTextContent(/sign in again/i)
+  })
+
+  it("preserves the legacy provider-less authentication banner", () => {
+    render(
+      <UsageView
+        summary={summary({ providers: [] })}
+        live={live({
+          providers: [],
+          errors: [
+            {
+              source: "legacy-auth",
+              provider: "",
+              displayName: "",
+              category: "authentication",
+            },
+          ],
+        })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole("status")).toHaveTextContent(/sign in again/i)
+  })
+
+  it("shows rate-limit, schema, and unavailable live failures", () => {
+    render(
+      <UsageView
+        summary={summary({ providers: [] })}
+        live={live({
+          providers: [],
+          errors: [
+            {
+              source: "google-rate-limit",
+              provider: "google",
+              displayName: "Antigravity",
+              category: "rateLimited",
+            },
+            {
+              source: "claude-schema",
+              provider: "anthropic",
+              displayName: "Claude",
+              category: "schema",
+            },
+            {
+              source: "codex-unavailable",
+              provider: "openai",
+              displayName: "Codex",
+              category: "unavailable",
+            },
+          ],
+        })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    const statuses = screen.getAllByRole("status")
+    expect(statuses).toHaveLength(3)
+    expect(
+      screen.getByText("Google rate limited usage checks. Wait, then retry."),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("Claude usage changed. Update antiburn, then retry."),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText("Codex usage is unavailable. Check your connection, then retry."),
+    ).toBeInTheDocument()
   })
 
   it("shows the usage disclaimer in the footer", () => {

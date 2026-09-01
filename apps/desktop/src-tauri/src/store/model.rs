@@ -145,6 +145,9 @@ pub struct AnalysisRecord {
     /// path reads it back to rebuild per-source metrics without a
     /// transcript — see `analysis::analysis_from_rows`.
     pub source_summaries_json: Option<String>,
+    /// Serialized bounded `Vec<ProviderHint>` from the parent source summary.
+    /// `None` means the analysis predates this projection or did not observe it.
+    pub provider_hints_json: Option<String>,
     /// This fingerprint covers the parent transcript and its sub-agent transcripts.
     pub source_fingerprint: String,
     /// `antiburn_local::analysis::pricing_generation()` at the time of writing.
@@ -270,7 +273,7 @@ pub struct EvidenceCompletion {
 
 /// One session's token evidence, as the provider-usage aggregation reads it.
 ///
-/// A projection rather than a record: the aggregation needs three columns out
+/// A projection rather than a record: the aggregation needs four columns out
 /// of a two-table join and nothing else, and materializing whole
 /// [`SessionRecord`]s and [`AnalysisRecord`]s to reach them would read
 /// megabytes of metrics JSON per pass.
@@ -284,6 +287,10 @@ pub struct UsageEvidenceRecord {
     /// Billable tokens per normalized model key, or `None` when the session has
     /// not been analyzed. Absence is "we do not know yet", never "zero".
     pub model_breakdown_json: Option<String>,
+    /// Bounded provider hints, or `None` when analysis has not observed them.
+    pub provider_hints_json: Option<String>,
+    /// Opaque account observations keyed by canonical provider.
+    pub provider_accounts_json: String,
 }
 
 /// One local relationship between two sessions.

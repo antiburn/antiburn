@@ -64,6 +64,7 @@ use super::http;
 const MAX_CREDENTIAL_BYTES: u64 = 256 * 1024;
 
 const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
+const PROFILE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/profile";
 
 /// The stable id [`SourceOutcome::error`] and the milestone engine key this
 /// source under.
@@ -318,13 +319,11 @@ fn fetch_live(
     }
     let body = http::read_capped_body(response)?;
     let usage = anthropic::parse_usage(&body)?;
+    let account = fetch_profile_subject(&credentials.access_token);
 
     Ok(ProviderUsageSnapshot {
         provider: crate::provider_usage::providers::ANTHROPIC,
-        // Not disclosed by this endpoint, and there is only ever one
-        // credential to have asked with, so there is nothing to disambiguate
-        // between.
-        account: None,
+        account,
         plan: credentials.subscription_type.clone(),
         plan_tier: credentials.rate_limit_tier.clone(),
         observed_at: now,
@@ -342,6 +341,33 @@ fn fetch_live(
     })
 }
 
+fn fetch_profile_subject(access_token: &str) -> Option<String> {
+    let response = http::client()
+        .get(PROFILE_ENDPOINT)
+        .bearer_auth(access_token)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .send()
+        .ok()?;
+    if http::status_error(response.status()).is_some() {
+        return None;
+    }
+    let body = http::read_capped_body(response).ok()?;
+    profile_subject(&body)
+}
+
+fn profile_subject(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    value
+        .get("account")?
+        .get("uuid")?
+        .as_str()
+        .map(str::trim)
+        .filter(|subject| !subject.is_empty() && subject.len() <= 512)
+        .map(str::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +378,28 @@ mod tests {
     /// whether a reading is found, not how the cooldown's freshness budget
     /// behaves — `cooldown.rs`'s own suite owns that.
     const TEST_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(600);
+
+    #[test]
+    fn profile_identity_uses_only_the_account_uuid() {
+        assert_eq!(
+            profile_subject(
+                r#"{"account":{"uuid":"account-uuid","email":"private@example.test"},"organization":{"uuid":"organization-uuid"}}"#
+            )
+            .as_deref(),
+            Some("account-uuid")
+        );
+        assert_eq!(
+            profile_subject(r#"{"account":{"email":"private@example.test"}}"#),
+            None
+        );
+        assert_eq!(
+            profile_subject(&format!(
+                r#"{{"account":{{"uuid":"{}"}}}}"#,
+                "a".repeat(513)
+            )),
+            None
+        );
+    }
 
     fn credentials_file(expires_at_ms: i64, subscription_type: &str) -> String {
         format!(

@@ -115,7 +115,9 @@ Agent brand marks
 
 Agent rows use path data from simple-icons (https://simpleicons.org), published
 under CC0-1.0, and an OpenAI mark from Gil Barbara's SVG Logos
-(https://github.com/gilbarbara/logos), also published under CC0-1.0. These marks
+(https://github.com/gilbarbara/logos), also published under CC0-1.0. The
+Antigravity silhouette comes from Google's Antigravity product asset
+(https://antigravity.google/) and is used as a trademark identifier. These marks
 remain the trademarks of their respective owners. antiburn uses them only to
 identify the tool that produced a session. Their use does not imply affiliation
 or endorsement.
@@ -390,6 +392,7 @@ hashlink@0.9.1 | MIT OR Apache-2.0 | https://github.com/kyren/hashlink
 heck@0.4.1 | MIT OR Apache-2.0 | https://github.com/withoutboats/heck
 heck@0.5.0 | MIT OR Apache-2.0 | https://github.com/withoutboats/heck
 hex@0.4.3 | MIT OR Apache-2.0 | https://github.com/KokaKiwi/rust-hex
+hmac@0.12.1 | MIT OR Apache-2.0 | https://github.com/RustCrypto/MACs
 html5ever@0.38.0 | MIT OR Apache-2.0 | https://github.com/servo/html5ever
 http-body-util@0.1.5 | MIT | https://github.com/hyperium/http-body
 http-body@1.1.0 | MIT | https://github.com/hyperium/http-body
@@ -3419,6 +3422,7 @@ SOFTWARE.
 
 Used by:
   digest@0.10.7
+  hmac@0.12.1
 
 Copyright (c) 2017 Artyom Pavlov
 

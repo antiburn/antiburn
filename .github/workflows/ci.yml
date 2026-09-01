@@ -638,6 +638,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify Antigravity release credentials
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_ID }}
+          GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_SECRET }}
+        run: |
+          test -n "$GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_ID"
+          test -n "$GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_SECRET"
+
       - name: Scan the tree for secrets
         run: pnpm run secrets
 

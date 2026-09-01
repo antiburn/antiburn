@@ -7,6 +7,7 @@ import {
   liveFreshnessToneClass,
   liveSourceNote,
   liveStalenessNote,
+  livePlanLabel,
   liveWindows,
 } from "../../lib/presentation/liveUsage"
 import { LiveMetricRows } from "./LiveMetricRows"
@@ -28,49 +29,61 @@ import { LiveUsageWindowRows } from "./LiveUsageWindowRows"
 export function LiveUsageDetail({
   live,
   now,
+  accountLabel,
+  showPlan = false,
   className = "",
 }: {
   live: LiveProviderUsagePayload
   /** Injected so the rendered output is a function of its inputs in tests. */
   now: number
+  accountLabel?: string
+  showPlan?: boolean
   className?: string
 }) {
   const staleness = liveStalenessNote(live)
   const extra = liveExtraUsageLabel(live)
   const windows = liveWindows(live)
   const primary = windows[0]
-  if (!primary) return null
+  const plan = livePlanLabel(live)
+  if (!primary && !extra && !live.resetCredits && !live.plan) return null
 
   return (
     <section
-      aria-label={`${live.displayName} plan limits`}
+      aria-label={`${live.displayName}${accountLabel ? ` ${accountLabel}` : ""} plan limits`}
       className={cn("space-y-2", className)}
     >
       <div className="flex items-baseline justify-between gap-2 group">
         <h4 className="type-caption font-medium tracking-wide uppercase text-label-tertiary">
           Plan limits
         </h4>
-        <span
-          className={cn(
-            "type-caption hidden group-hover:inline",
-            liveFreshnessToneClass(live.freshness),
-          )}
-        >
-          {liveSourceNote(live)}
+        <span className={cn("type-caption text-right", liveFreshnessToneClass(live.freshness))}>
+          {[accountLabel, live.sourceLabel, liveSourceNote(live)].filter(Boolean).join(" · ")}
         </span>
       </div>
 
-      <LiveUsageWindowRows provider={live} now={now} />
+      {showPlan && plan && (
+        <p className="type-caption text-label-secondary">
+          Plan · <span className="text-label">{plan}</span>
+        </p>
+      )}
+
+      {windows.length > 0 && <LiveUsageWindowRows provider={live} now={now} />}
 
       {live.resetCredits && live.resetCredits.availableCount > 0 && (
-        <ResetCreditsNotice availableCount={live.resetCredits.availableCount} />
+        <ResetCreditsNotice provider={live} availableCount={live.resetCredits.availableCount} />
       )}
 
       {/* Derived rows for the primary window only. Repeating pace and runway
           under every per-model limit would triple the panel's height to say
           the same thing three ways; the full picture is one tap away in the
           Usage view, which has the room for it. */}
-      <LiveMetricRows window={primary} now={now} className="border-t border-separator pt-1.5" />
+      {primary && (
+        <LiveMetricRows
+          window={primary}
+          now={now}
+          className="border-t border-separator pt-1.5"
+        />
+      )}
 
       {extra && <p className="type-caption text-label-tertiary">{extra}</p>}
       {staleness && <p className="type-caption text-system-orange">{staleness}</p>}
@@ -78,8 +91,22 @@ export function LiveUsageDetail({
   )
 }
 
-function ResetCreditsNotice({ availableCount }: { availableCount: number }) {
+function ResetCreditsNotice({
+  provider,
+  availableCount,
+}: {
+  provider: LiveProviderUsagePayload
+  availableCount: number
+}) {
   const noun = availableCount === 1 ? "reset" : "resets"
+  const action =
+    provider.provider === "openai" ? (
+      <>
+        Run <span className="font-mono">/usage</span> in Codex to use one.
+      </>
+    ) : (
+      <>Use {provider.displayName} to apply one.</>
+    )
   return (
     <div className="flex items-start gap-1.5 rounded-control bg-system-green/10 px-2 py-1.5">
       <RotateCcw
@@ -92,7 +119,7 @@ function ResetCreditsNotice({ availableCount }: { availableCount: number }) {
         <span className="font-medium text-system-green">
           {availableCount} usage limit {noun} available.
         </span>{" "}
-        Run <span className="font-mono">/usage</span> in Codex to use one.
+        {action}
       </p>
     </div>
   )

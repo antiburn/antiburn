@@ -52,12 +52,14 @@ impl super::Explorers {
                     head_hash: read.head_hash,
                 }
                 .fingerprint();
-                let streamability =
-                    if matches!(descriptor.agent, AgentKind::Claude | AgentKind::Codex) {
-                        Streamability::RecordStream
-                    } else {
-                        Streamability::WholeDocumentFallback
-                    };
+                let streamability = if matches!(
+                    descriptor.agent,
+                    AgentKind::Claude | AgentKind::Codex | AgentKind::Pi
+                ) {
+                    Streamability::RecordStream
+                } else {
+                    Streamability::WholeDocumentFallback
+                };
                 Some(SourceVersion {
                     fingerprint,
                     estimated_bytes,

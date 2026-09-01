@@ -1,9 +1,9 @@
 # Pipeline measurement baseline (issue #224)
 
 Indicative local baseline from one machine — **not CI-enforced thresholds**.
-Collected with `cargo bench --bench pipeline_baseline` over the deterministic
-synthetic corpus generator in `tests/support/corpus.rs` (seeded, fictional
-content only; nothing reads a real transcript).
+Collected with `cargo bench --bench pipeline_baseline` over deterministic
+synthetic generators in the benchmark and `tests/support/corpus.rs` (seeded,
+fictional content only; nothing reads a real transcript).
 
 ## Machine context
 
@@ -19,10 +19,10 @@ content only; nothing reads a real transcript).
 
 In-crate stages measured: source reading, framing, parsing/normalization,
 metrics accumulation, evidence accumulation, report reduction. Provider-DB-
-backed sources are also in-crate: a raw `RawSource::Sqlite` resolves to the
-generic schema-agnostic SQLite table walk (`vendors/sqlite.rs`, the OpenCode
-fallback), covered functionally in `tests/pipeline_corpus.rs` and timed
-below over a synthetic seeded database. The remaining stages the master plan
+backed sources are also in-crate. Raw `RawSource::Sqlite` inputs cover both
+OpenCode's native bounded message stream and Antigravity's native generation
+and step streams. All benchmark databases are synthetic.
+The remaining stages the master plan
 names (discovery, queue wait, persistence, report query, IPC) live in the
 desktop app (`apps/desktop/src-tauri`) and need a desktop-side harness —
 those stages (not the provider-DB read path) are the desktop-side half of
@@ -72,6 +72,72 @@ samples. No pre-change isolated row exists, so the required isolated
 before-and-after gate was not evaluated. The full-stage and disorder ratios are
 both below 1.30×, but they do not replace that missing gate.
 
+### Antigravity streaming coverage
+
+`pipeline_baseline` now includes claimed Antigravity brain JSONL at 1 MiB,
+10 MiB, and 50 MiB, plus one nested API cascade document. The brain cases use
+the composite metrics and evidence sink and full source recheck. The cascade
+case uses the capped Serde visitor and emits one nested step at a time.
+The visitor ignores content bodies and caps retained analysis fields at
+256 KiB per step, independent of the 64 MiB document I/O cap.
+
+Measured on the baseline machine:
+
+| Scenario | Time (median) | Throughput |
+|---|---|---|
+| Claimed brain JSONL, 1 MiB | 28.1 ms | ~35.6 MiB/s |
+| Claimed brain JSONL, 10 MiB | 278.7 ms | ~35.9 MiB/s |
+| Claimed brain JSONL, 50 MiB | 1.401 s | ~35.7 MiB/s |
+| Claimed nested cascade | 45.9 ms | ~29.9 MiB/s |
+
+The 10 MiB brain reader retained 187 bytes at its framing high-water mark. The
+metrics accumulator retained 232,409 bytes. Throughput stays linear through the
+50 MiB case without retaining the transcript or cascade content bodies.
+
+The benchmark also defines native SQLite scenarios. Results are not recorded in
+this baseline yet:
+
+- Paired native layouts at 100, 1,000, and 10,000 generation rows. Each layout
+  has `conversations/<id>.db` and
+  `brain/<id>/.system_generated/logs/transcript.jsonl` under a synthetic
+  `antigravity-cli` root.
+- A 1,000-generation database-only control, with no sibling transcript.
+- One local-shape generation containing about 280 KiB of irrelevant
+  length-delimited protobuf data around valid chat metadata. This exercises
+  borrowed protobuf slices while the adapter holds one bounded SQLite row.
+
+The native fixtures use the researched seven-table schema. Generation and step
+metadata include descriptor-backed model, timestamp, usage, retry, and identity
+fields. Their mix covers duplicate primary/retry identities, failed retries,
+step-only background usage, and generation-only pruned usage.
+
+Criterion reports `Elements/s` for native row-scaling cases. One element is one
+SQL row visit: generation rows count twice because the adapter performs a model
+pass and an emission pass, while step rows count once. The padded-row case
+reports loaded protobuf bytes and counts the generation blob twice for those two
+passes. Layout creation, protobuf generation, and SQLite insertion occur before
+timed iterations. Every timed iteration opens a fresh read-only snapshot and
+runs the real Antigravity adapter with the composite metrics, evidence, and turn
+row sink. These Criterion cases measure time and throughput only; they do not
+make memory claims.
+
+### Pi streaming coverage
+
+`pipeline_baseline` includes claimed Pi JSONL at 1 MiB, 10 MiB, and 50 MiB.
+Each synthetic source has a long `id` / `parentId` chain and more unique raw
+provider/model pairs than `MAX_PROVIDER_HINTS`, so the run also checks that the
+summary projection stays capped.
+
+| Scenario | Time (median) | Throughput |
+|---|---|---|
+| Claimed Pi JSONL, 1 MiB | 31.0 ms | ~32.3 MiB/s |
+| Claimed Pi JSONL, 10 MiB | 307.6 ms | ~32.5 MiB/s |
+| Claimed Pi JSONL, 50 MiB | 1.519 s | ~32.9 MiB/s |
+
+Throughput stays linear through the 50 MiB case. The separate Pi peak-memory
+probe exists in `memory_baseline.rs`, but this run did not complete that probe,
+so no Pi memory result is recorded here.
+
 ### Issue #229 remeasurement
 
 The structural unknown-record scan was remeasured before the issue #229 commit.
@@ -90,12 +156,12 @@ pipeline regression.
 Materializing the whole transcript first costs ~1.0 % extra time in this run.
 It also adds one transient full-source allocation (10 MiB here).
 
-### Provider-DB-backed source (generic SQLite walk)
+### Provider-DB-backed source (OpenCode message stream)
 
-Raw `RawSource::Sqlite` through the composite metrics+evidence sink. This
-path is batch, not streaming: the walk materializes every extracted event
-before the bounded metrics accumulator sees them. The batch event vector,
-not the metrics accumulator, retains memory proportional to the session.
+Raw `RawSource::Sqlite` through the OpenCode adapter and composite
+metrics+evidence sink. The adapter streams root and descendant messages from a
+stable SQLite read snapshot. These figures predate the current native-stream
+benchmark and must be remeasured before they are used as a current baseline.
 
 | Rows (records) | DB size | Time (median) | Throughput |
 |---|---|---|---|

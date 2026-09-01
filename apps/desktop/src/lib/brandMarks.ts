@@ -8,10 +8,9 @@
  * sane cost.
  *
  * Vendored artwork must carry source and licence evidence. Each entry below records its
- * collection, author, licence, and upstream icon name, and `brandMarks.test.ts`
- * asserts the inlined path is byte-identical to the one the recorded package
- * publishes. If upstream changes the mark, the test fails rather than letting
- * the recorded provenance quietly stop describing the shipped bytes.
+ * collection or product asset, licence status, and icon name. Package-backed
+ * marks have source-equivalence tests. Product assets record a source checksum
+ * and pin the extracted path in `brandMarks.test.ts`.
  *
  * Inlining rather than importing is deliberate: `@iconify-json/logos` ships a
  * single 7.4 MB `icons.json` with no per-icon entry point, so importing it
@@ -43,7 +42,7 @@ export interface BrandMark {
   hex?: string
   /** Where the artwork came from, for the reader and for the test. */
   provenance: {
-    /** npm package the path data is taken from, with its exact version. */
+    /** Package version or product asset that supplied the path data. */
     package: string
     /** The icon's name within that package. */
     icon: string
@@ -51,6 +50,8 @@ export interface BrandMark {
     license: string
     /** The collection's upstream home. */
     source: string
+    /** SHA-256 of a source asset when no versioned package supplies it. */
+    assetSha256?: string
   }
 }
 
@@ -86,5 +87,23 @@ export const OPENAI_MARK: BrandMark = {
     icon: "openai-icon",
     license: "CC0-1.0",
     source: "https://github.com/gilbarbara/logos",
+  },
+}
+
+/**
+ * Antigravity's monochrome product silhouette.
+ *
+ * The path is the mask from Google's multicolor product asset. The desktop
+ * menu uses the same silhouette as a monochrome mark.
+ */
+export const ANTIGRAVITY_MARK: BrandMark = {
+  path: "m21.751 22.607c1.34 1.005 3.35.335 1.508-1.508-5.529-5.359-4.355-20.099-11.222-20.099s-5.695 14.74-11.222 20.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z",
+  viewBox: "0 0 24 24",
+  provenance: {
+    package: "src/lib/fixtures/antigravity-mark.svg",
+    icon: "Antigravity",
+    license: "LicenseRef-Trademark",
+    source: "https://antigravity.google/",
+    assetSha256: "37bf1d6e27179dcf8b0e46b18bd65a38ff555e58cd6a6156902784a92a905628",
   },
 }

@@ -58,6 +58,8 @@ function providerData(provider: string, displayName: string) {
         {
           provider,
           displayName,
+          accountKey: null,
+          agents: [],
           state: "estimated" as const,
           staleness: "fresh" as const,
           windows: { today: usage, week: usage, month: usage },

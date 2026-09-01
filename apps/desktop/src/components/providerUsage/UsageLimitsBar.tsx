@@ -20,6 +20,7 @@ import {
   liveWindowElapsed,
   liveWindowLabel,
   liveWindows,
+  orderedLiveAccounts,
   maxLiveUsedPercent,
 } from "../../lib/presentation/liveUsage"
 import { providerInitial } from "../../lib/presentation/providerUsage"
@@ -27,6 +28,7 @@ import { SegmentedMeter } from "../ui/SegmentedMeter"
 import { SegmentFigure } from "../ui/SegmentFigure"
 import { providerMark } from "./ProviderUsagePrimitives"
 import { UsageRing } from "./UsageRing"
+import { useStableAccountNumbers } from "./useStableAccountNumbers"
 
 /**
  * The diameter of a provider's ring on the closed bar, in logical pixels.
@@ -84,8 +86,17 @@ export function UsageLimitsBar({
   onHoverProvider,
   activeProvider,
 }: UsageLimitsBarProps) {
-  const limited = live.providers.filter((provider) => liveWindows(provider).length > 0)
+  const limited = orderedLiveAccounts(live.providers).filter(
+    ({ reading }) => liveWindows(reading).length > 0,
+  )
   const unavailable = liveUnavailableProviders(live)
+  const providerCounts = new Map<string, number>()
+  for (const { reading } of limited) {
+    providerCounts.set(reading.provider, (providerCounts.get(reading.provider) ?? 0) + 1)
+  }
+  const accountNumbers = useStableAccountNumbers(
+    limited.map(({ key, reading }) => ({ key, provider: reading.provider })),
+  )
   const regionId = useId()
   // The instant the elapsed notches are measured from: the snapshot's own
   // time, not the wall clock. A render must not read the clock.
@@ -95,7 +106,7 @@ export function UsageLimitsBar({
 
   // The provider whose name line carries the disclosure while the meters are
   // open — the topmost group, whichever list it came from.
-  const firstGroup = limited[0]?.provider ?? unavailable[0]?.provider
+  const firstProvider = limited[0]
 
   const disclosure = (compact: boolean) => (
     <LimitsDisclosure
@@ -112,14 +123,15 @@ export function UsageLimitsBar({
       {!expanded && (
         <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            {limited.map((provider) => (
+            {limited.map(({ reading, key }) => (
               <ProviderRadial
-                key={provider.provider}
-                provider={provider}
+                key={key}
+                provider={reading}
+                displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
                 onOpen={onViewAll}
                 onHover={onHoverProvider}
                 activation={
-                  activeProvider?.provider === provider.provider
+                  activeProvider?.provider === reading.provider
                     ? activeProvider.activation
                     : null
                 }
@@ -149,31 +161,41 @@ export function UsageLimitsBar({
           // the pointer that just clicked it.
           className="space-y-1 px-2 pt-3 pb-2"
         >
-          {limited.map((provider) => (
+          {limited.map(({ reading, key }) => (
             <ProviderGroup
-              key={provider.provider}
-              provider={provider}
+              key={key}
+              provider={reading}
+              displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
               now={at}
-              action={provider.provider === firstGroup ? disclosure(true) : undefined}
+              action={reading === firstProvider?.reading ? disclosure(true) : undefined}
               activation={
-                activeProvider?.provider === provider.provider
-                  ? activeProvider.activation
-                  : null
+                activeProvider?.provider === reading.provider ? activeProvider.activation : null
               }
               {...(onHoverProvider ? { onHover: onHoverProvider } : {})}
             />
           ))}
-          {unavailable.map((entry) => (
+          {unavailable.map((entry, index) => (
             <UnavailableGroup
               key={entry.provider}
               entry={entry}
-              action={entry.provider === firstGroup ? disclosure(true) : undefined}
+              action={!firstProvider && index === 0 ? disclosure(true) : undefined}
             />
           ))}
         </div>
       )}
     </div>
   )
+}
+
+function accountDisplayName(
+  provider: LiveProviderUsagePayload,
+  key: string,
+  accountNumbers: ReadonlyMap<string, number>,
+  counts: ReadonlyMap<string, number>,
+): string {
+  return (counts.get(provider.provider) ?? 0) > 1
+    ? `${provider.displayName} account ${accountNumbers.get(key)}`
+    : provider.displayName
 }
 
 /**
@@ -238,12 +260,14 @@ function LimitsDisclosure({
  */
 function ProviderGroup({
   provider,
+  displayName,
   now,
   action,
   onHover,
   activation,
 }: {
   provider: LiveProviderUsagePayload
+  displayName: string
   now: number
   /** The disclosure, on the topmost group only. */
   action?: ReactNode
@@ -254,7 +278,7 @@ function ProviderGroup({
   return (
     <div
       role="group"
-      aria-label={plan ? `${provider.displayName}, ${plan} plan` : provider.displayName}
+      aria-label={plan ? `${displayName}, ${plan} plan` : displayName}
       data-state={activation ?? "idle"}
       className="rounded-md px-2 py-2 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08] data-[state=hovered]:bg-brand-tint/[0.08] data-[state=selected]:bg-surface-selected"
       onMouseEnter={(event) =>
@@ -268,19 +292,14 @@ function ProviderGroup({
           a second line — it is context for the name, not its own fact. */}
       <div className="flex items-center justify-between gap-2 pb-1.5">
         <h3 className="type-footnote font-medium tracking-wide text-label">
-          <span className="uppercase">{provider.displayName}</span>
+          <span className="uppercase">{displayName}</span>
           {plan && <span className="text-label-secondary"> · {plan}</span>}
         </h3>
         {action}
       </div>
       <div className="space-y-2.5">
         {liveWindows(provider).map((window) => (
-          <WindowMeterRow
-            key={liveWindowLabel(window)}
-            window={window}
-            now={now}
-            resetOnHover
-          />
+          <WindowMeterRow key={window.id} window={window} now={now} resetOnHover />
         ))}
       </div>
     </div>
@@ -294,11 +313,13 @@ function ProviderGroup({
  */
 function ProviderRadial({
   provider,
+  displayName,
   onOpen,
   onHover,
   activation,
 }: {
   provider: LiveProviderUsagePayload
+  displayName: string
   onOpen?: (() => void) | undefined
   onHover?: ((provider: string | null, anchor: AnchorRegion | null) => void) | undefined
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
@@ -314,16 +335,16 @@ function ProviderRadial({
       }
       onMouseLeave={() => onHover?.(null, null)}
       data-state={activation ?? "idle"}
-      title={`${provider.displayName} — ${figure}`}
+      title={`${displayName} — ${figure}`}
       className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08] data-[state=hovered]:bg-brand-tint/[0.08] data-[state=selected]:bg-surface-selected"
-      aria-label={`${provider.displayName}${
+      aria-label={`${displayName}${
         percent != null ? ` at ${Math.round(percent)} percent` : ", no stated figure"
       }`}
     >
       <UsageRing
         percent={percent}
         mark={providerMark(provider.provider)}
-        glyph={providerInitial(provider.displayName)}
+        glyph={providerInitial(displayName)}
         size={RING_SIZE}
         className="block text-label-secondary"
       />
@@ -380,19 +401,15 @@ function UnavailableGroup({
   action?: ReactNode
 }) {
   return (
-    <div role="group" aria-label={entry.displayName} className="rounded-md px-2 py-2">
-      <div className="flex items-center justify-between gap-2 pb-1.5">
-        <h3 className="type-footnote font-medium tracking-wide uppercase text-label">
-          {entry.displayName}
-        </h3>
-        {action}
-      </div>
+    <div
+      role="group"
+      aria-label={entry.displayName}
+      className="flex items-center justify-between gap-2 rounded-md px-2 py-2"
+    >
       <p className="type-footnote text-label-secondary">
-        Usage unavailable — {liveUnavailableReason(entry.category)}.
+        {liveErrorNote(entry.category, entry.provider)}
       </p>
-      <p className="pt-0.5 type-footnote text-label-tertiary">
-        {liveErrorNote(entry.category)}
-      </p>
+      {action}
     </div>
   )
 }

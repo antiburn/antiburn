@@ -53,6 +53,7 @@ const LOG_METADATA_CONCURRENCY: usize = 16;
 /// Metadata, visibility, and lineage all live near the top of a transcript, so
 /// a multi-gigabyte log never needs to be materialized in full to be described.
 const SOURCE_PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
+const WHOLE_DOCUMENT_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Maximum transcript suffix read to recover semantic activity. Activity
 /// records are append-oriented in the JSONL formats we support; a suffix is
@@ -525,12 +526,7 @@ impl NormalizedPayload {
                 text: normalize_for_matching(label),
                 kind: PayloadKind::InlineLabel,
             },
-            SessionSource::ProviderDb {
-                agent, session_id, ..
-            } => Self {
-                text: normalize_for_matching(&format!("{agent}:{session_id}")),
-                kind: PayloadKind::InlineLabel,
-            },
+            SessionSource::ProviderDb { db_path, .. } => Self::from_path(db_path),
         }
     }
 
@@ -663,7 +659,7 @@ pub struct SessionTitleAndSurface {
 const SESSION_TITLE_SCAN_WINDOW_SECS: i64 = 60 * 60 * 24 * 30;
 
 /// Shared default body for `AgentExplorer::session_titles_and_surfaces`.
-/// Reads each `SessionLog`'s content once, parses metadata, and classifies
+/// Reads each `SessionLog`'s bounded preview once, parses metadata, and classifies
 /// surface via `SessionLog::surface_label_with_content` (so Claude
 /// `entrypoint` / Codex `session_meta.source` content peeks still apply).
 async fn default_session_titles_and_surfaces<E: AgentExplorer + ?Sized>(
@@ -682,12 +678,8 @@ async fn default_session_titles_and_surfaces<E: AgentExplorer + ?Sized>(
     bounded_log_tasks(logs, |log| {
         let home = home.clone();
         async move {
-            let content = match &log.source {
-                SessionSource::File(path) => tokio::fs::read_to_string(path).await.ok()?,
-                SessionSource::Inline { content, .. } => content.clone(),
-                SessionSource::ProviderDb { .. } => session_source_content(&log.source).await?,
-            };
-            let metadata = match &log.source {
+            let mut content = session_source_preview(&log.source).await?;
+            let mut metadata = match &log.source {
                 SessionSource::File(path) => {
                     scanner::parse_session_metadata_with_content(path, &content).await
                 }
@@ -696,6 +688,18 @@ async fn default_session_titles_and_surfaces<E: AgentExplorer + ?Sized>(
                     .await
                     .unwrap_or_else(|| scanner::parse_session_metadata_str(&content)),
             };
+            if metadata.session_id.is_none()
+                && let SessionSource::File(path) = &log.source
+                && !path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+                && let Some(full_content) =
+                    bounded_file_content(path, WHOLE_DOCUMENT_METADATA_BYTES).await
+            {
+                metadata = scanner::parse_session_metadata_with_content(path, &full_content).await;
+                content = full_content;
+            }
             let session_id = metadata.session_id?;
             let surface = log.surface_label_with_content(&content, &home);
             Some(SessionTitleAndSurface {
@@ -1015,6 +1019,14 @@ pub async fn session_source_content(source: &SessionSource) -> Option<String> {
             agents::opencode::render_db_session(db_path.clone(), session_id.clone()).await
         }
         SessionSource::ProviderDb {
+            agent: AgentKind::Antigravity,
+            db_path,
+            session_id,
+        } => {
+            let transcript = agents::antigravity::sibling_brain_transcript(db_path, session_id)?;
+            tokio::fs::read_to_string(transcript).await.ok()
+        }
+        SessionSource::ProviderDb {
             agent,
             db_path,
             session_id,
@@ -1034,16 +1046,40 @@ pub async fn session_source_content(source: &SessionSource) -> Option<String> {
 /// without materializing an oversized source. Non-file sources retain the
 /// whole-content behavior of [`session_source_content`].
 pub async fn session_source_preview(source: &SessionSource) -> Option<String> {
-    let SessionSource::File(path) = source else {
-        return session_source_content(source).await;
+    let path = match source {
+        SessionSource::File(path) => path.clone(),
+        SessionSource::ProviderDb {
+            agent: AgentKind::Antigravity,
+            db_path,
+            session_id,
+        } => agents::antigravity::sibling_brain_transcript(db_path, session_id)?,
+        _ => return session_source_content(source).await,
     };
     use tokio::io::AsyncReadExt;
-    let file = open_file_for_head_read(path).await?;
+    let file = open_file_for_head_read(&path).await?;
     let mut bytes = Vec::new();
     file.take(SOURCE_PREVIEW_BYTES)
         .read_to_end(&mut bytes)
         .await
         .ok()?;
+    preview_from_owned(bytes)
+}
+
+async fn bounded_file_content(path: &Path, max_bytes: u64) -> Option<String> {
+    use tokio::io::AsyncReadExt;
+
+    let file = open_file_for_head_read(path).await?;
+    if file.metadata().await.ok()?.len() > max_bytes {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .ok()?;
+    if bytes.len() as u64 > max_bytes {
+        return None;
+    }
     preview_from_owned(bytes)
 }
 
@@ -1067,11 +1103,17 @@ fn preview_from_owned(bytes: Vec<u8>) -> Option<String> {
 /// intentionally omitted. The scan preserves a previously cached semantic
 /// timestamp in that case; first discovery falls back to the source mtime.
 pub async fn session_source_tail(source: &SessionSource) -> Option<String> {
-    let SessionSource::File(path) = source else {
-        return session_source_content(source).await;
+    let path = match source {
+        SessionSource::File(path) => path.clone(),
+        SessionSource::ProviderDb {
+            agent: AgentKind::Antigravity,
+            db_path,
+            session_id,
+        } => agents::antigravity::sibling_brain_transcript(db_path, session_id)?,
+        _ => return session_source_content(source).await,
     };
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
-    let mut file = tokio::fs::File::open(path).await.ok()?;
+    let mut file = tokio::fs::File::open(&path).await.ok()?;
     let len = file.metadata().await.ok()?.len();
     let start = len.saturating_sub(ACTIVITY_TAIL_BYTES);
     if start > 0 {
@@ -1199,6 +1241,21 @@ async fn session_source_read(
                 stat: None,
                 head_hash: None,
                 content,
+            })
+        }
+        SessionSource::ProviderDb {
+            agent: AgentKind::Antigravity,
+            db_path,
+            session_id,
+        } => {
+            let metadata =
+                agents::antigravity::db_session_metadata(db_path.clone(), session_id.clone())
+                    .await?;
+            Some(SourceRead {
+                metadata,
+                stat: None,
+                head_hash: None,
+                content: None,
             })
         }
         SessionSource::ProviderDb {
@@ -2012,9 +2069,10 @@ impl Explorers {
         if !self.get(agent).supports_subagents() {
             return Vec::new();
         }
-        let Some(SessionSource::File(parent)) =
-            self.locate_session_source(agent, parent_session_id).await
-        else {
+        let Some(source) = self.locate_session_source(agent, parent_session_id).await else {
+            return Vec::new();
+        };
+        let Some(parent) = subagent_parent_transcript(&source) else {
             return Vec::new();
         };
         self.list_subagents_for_transcript(agent, &parent).await
@@ -2032,10 +2090,13 @@ impl Explorers {
         if !self.get(agent).supports_subagents() {
             return Vec::new();
         }
-        let Some(SessionSource::File(parent)) = self
+        let Some(source) = self
             .locate_session_source_in_environment(agent, parent_session_id, wsl_distro)
             .await
         else {
+            return Vec::new();
+        };
+        let Some(parent) = subagent_parent_transcript(&source) else {
             return Vec::new();
         };
         self.list_subagents_for_transcript(agent, &parent).await
@@ -2066,11 +2127,8 @@ impl Explorers {
         if !self.get(agent).supports_subagents() {
             return None;
         }
-        let SessionSource::File(parent) =
-            self.locate_session_source(agent, parent_session_id).await?
-        else {
-            return None;
-        };
+        let source = self.locate_session_source(agent, parent_session_id).await?;
+        let parent = subagent_parent_transcript(&source)?;
         self.get(agent)
             .locate_subagent(&parent, subagent_id)
             .await
@@ -2090,12 +2148,10 @@ impl Explorers {
         if !self.get(agent).supports_subagents() {
             return None;
         }
-        let SessionSource::File(parent) = self
+        let source = self
             .locate_session_source_in_environment(agent, parent_session_id, wsl_distro)
-            .await?
-        else {
-            return None;
-        };
+            .await?;
+        let parent = subagent_parent_transcript(&source)?;
         self.get(agent)
             .locate_subagent(&parent, subagent_id)
             .await
@@ -2117,6 +2173,18 @@ impl Explorers {
     /// explorer.
     pub async fn subagent_meta(&self, agent: &AgentKind, path: &Path) -> Option<SubagentMeta> {
         self.get(agent).subagent_meta(path).await
+    }
+}
+
+fn subagent_parent_transcript(source: &SessionSource) -> Option<PathBuf> {
+    match source {
+        SessionSource::File(path) => Some(path.clone()),
+        SessionSource::ProviderDb {
+            agent: AgentKind::Antigravity,
+            db_path,
+            session_id,
+        } => agents::antigravity::sibling_brain_transcript(db_path, session_id),
+        _ => None,
     }
 }
 

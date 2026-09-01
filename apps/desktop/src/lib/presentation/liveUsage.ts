@@ -39,7 +39,18 @@ import { relativeTime } from "./relativeTime"
 
 /** Canonical provider ids, matching the Rust `provider_usage::providers` constants. */
 const ANTHROPIC = "anthropic"
+const GOOGLE = "google"
 const OPENAI = "openai"
+
+/** Provider window ids whose product names carry the clearest label. */
+const WINDOW_LABEL_BY_ID: Readonly<Record<string, string>> = {
+  "five-hour": "5-hour limit",
+  "seven-day": "Weekly limit",
+  "antigravity-gemini-5h": "Gemini 5-hour limit",
+  "antigravity-gemini-weekly": "Gemini weekly limit",
+  "antigravity-claude-gpt-5h": "Claude and GPT 5-hour limit",
+  "antigravity-claude-gpt-weekly": "Claude and GPT weekly limit",
+}
 
 /** Claude plan names that resolve to a fixed label with no tier to read. */
 const CLAUDE_PLAN_NAME_LABELS: Readonly<Record<string, string>> = {
@@ -78,6 +89,21 @@ const CODEX_PLAN_NAME_LABELS: Readonly<Record<string, string>> = {
   edu_pro: "Edu Pro",
 }
 
+const GOOGLE_PLAN_NAME_LABELS: Readonly<Record<string, string>> = {
+  free: "Free",
+  pro: "Pro",
+  ultra: "Ultra",
+  "google ai pro": "Google AI Pro",
+  "google ai ultra": "Google AI Ultra",
+}
+
+const ANTIGRAVITY_PRIMARY_WINDOW_IDS = new Set([
+  "antigravity-gemini-5h",
+  "antigravity-gemini-weekly",
+  "antigravity-claude-gpt-5h",
+  "antigravity-claude-gpt-weekly",
+])
+
 /** Claude's plan label, reading the tier only for the `max` name. */
 function claudePlanLabel(plan: LiveUsagePlanPayload): string {
   if (plan.name === "max") {
@@ -93,10 +119,16 @@ function codexPlanLabel(plan: LiveUsagePlanPayload): string {
   return CODEX_PLAN_NAME_LABELS[plan.name] ?? plan.name
 }
 
+function googlePlanLabel(plan: LiveUsagePlanPayload): string {
+  const name = plan.name.trim()
+  return GOOGLE_PLAN_NAME_LABELS[name.toLocaleLowerCase()] ?? name
+}
+
 /** How to read a plan, keyed by the provider's canonical id. */
 const PLAN_LABEL_BY_PROVIDER: Readonly<Record<string, (plan: LiveUsagePlanPayload) => string>> =
   {
     [ANTHROPIC]: claudePlanLabel,
+    [GOOGLE]: googlePlanLabel,
     [OPENAI]: codexPlanLabel,
   }
 
@@ -118,16 +150,21 @@ export function livePlanLabel(provider: LiveProviderUsagePayload): string | null
 /**
  * The full name of one window.
  *
- * A model-scoped weekly limit is named after its model, because that is the
- * only thing distinguishing it from the account-wide weekly limit sitting
- * directly above it.
+ * Prefer the provider's stable window identity. Roles only state relative
+ * importance, so they must not imply a duration.
  */
 export function liveWindowLabel(window: LiveUsageWindowPayload): string {
-  if (window.scopeModel) return `${window.scopeModel} weekly limit`
-  if (window.role === "primaryShort") return "5-hour limit"
-  if (window.role === "primaryLong") return "Weekly limit"
+  const identified = WINDOW_LABEL_BY_ID[window.id]
+  if (identified) return identified
+  if (window.scopeModel && (window.kind === "weekly" || window.id.startsWith("weekly-"))) {
+    return `${window.scopeModel} weekly limit`
+  }
+  if (window.scopeModel) return `${window.scopeModel} limit`
   if (window.kind === "daily") return "Daily limit"
+  if (window.kind === "weekly") return "Weekly limit"
   if (window.kind === "monthly" || window.kind === "billingCycle") return "Monthly limit"
+  if (window.role === "primaryShort") return "Short-term limit"
+  if (window.role === "primaryLong") return "Long-term limit"
   return "Usage limit"
 }
 
@@ -155,6 +192,8 @@ export function liveWindowValueLabel(window: LiveUsageWindowPayload): string {
  */
 const IMPLIED_PERIOD_MS: Readonly<Record<string, number>> = {
   "five-hour": 5 * 3_600_000,
+  "antigravity-gemini-5h": 5 * 3_600_000,
+  "antigravity-claude-gpt-5h": 5 * 3_600_000,
 }
 
 const DAY_MS = 24 * 3_600_000
@@ -297,6 +336,7 @@ export function isConditionallyVisibleUsageWindow(window: LiveUsageWindowPayload
  * genuinely in use must never look like it vanished.
  */
 export function isUsageWindowVisible(window: LiveUsageWindowPayload): boolean {
+  if (window.id.startsWith("antigravity-")) return true
   return (
     !isConditionallyVisibleUsageWindow(window) ||
     (window.usedPercent ?? 0) > 0 ||
@@ -313,7 +353,17 @@ export function liveWindows(provider: LiveProviderUsagePayload): LiveUsageWindow
   }
   // A stable sort over a copy, so the provider's own order breaks ties and two
   // supplemental windows never swap places between renders.
-  return provider.windows.filter(isUsageWindowVisible).sort((a, b) => rank(a) - rank(b))
+  const localAntigravity = provider.sourceLabel.startsWith("Read from Antigravity")
+  const primaryAntigravity = provider.windows.filter((window) =>
+    ANTIGRAVITY_PRIMARY_WINDOW_IDS.has(window.id),
+  )
+  const candidates = primaryAntigravity.length > 0 ? primaryAntigravity : provider.windows
+  return candidates
+    .filter(
+      (window) =>
+        provider.provider === GOOGLE || localAntigravity || isUsageWindowVisible(window),
+    )
+    .sort((a, b) => rank(a) - rank(b))
 }
 
 /**
@@ -329,6 +379,32 @@ export function maxLiveUsedPercent(provider: LiveProviderUsagePayload): number |
     if (window.usedPercent == null) return max
     return max == null ? window.usedPercent : Math.max(max, window.usedPercent)
   }, null)
+}
+
+export interface LiveAccountEntry {
+  reading: LiveProviderUsagePayload
+  key: string
+}
+
+function liveAccountIdentity(reading: LiveProviderUsagePayload): string {
+  if (reading.accountKey) return `account:${reading.provider}:${reading.accountKey}`
+  return `fallback:${JSON.stringify([reading.provider, reading.sourceLabel])}`
+}
+
+/** Preserve provider first-seen order and derive React identity from opaque keys. */
+export function orderedLiveAccounts(
+  readings: readonly LiveProviderUsagePayload[],
+): LiveAccountEntry[] {
+  const occurrences = new Map<string, number>()
+  return readings.map((reading) => {
+    const identity = liveAccountIdentity(reading)
+    const occurrence = occurrences.get(identity) ?? 0
+    occurrences.set(identity, occurrence + 1)
+    return {
+      reading,
+      key: occurrence === 0 ? identity : `${identity}:duplicate:${occurrence}`,
+    }
+  })
 }
 
 /** The live reading for one provider id, or null when there is none. */
@@ -349,7 +425,7 @@ export function liveForProvider(
 export function liveAuthNote(summary: LiveUsageSummaryPayload): string | null {
   const failed = summary.errors.some((error) => error.category === "authentication")
   if (!failed) return null
-  return "antiburn could not sign in to read your plan usage. Sign in again with your coding tool, then reopen this view."
+  return "Sign in again with your coding tool, then retry."
 }
 
 /**
@@ -399,17 +475,27 @@ export function liveUnavailableReason(category: string): string {
   }
 }
 
-/** What a failed source means, phrased as something a reader could act on. */
-export function liveErrorNote(category: string): string {
+/** One action for a failed source, with the provider name when it is known. */
+export function liveErrorNote(category: string, provider?: string): string {
+  const providerName =
+    provider === GOOGLE
+      ? "Google"
+      : provider === ANTHROPIC
+        ? "Claude"
+        : provider === OPENAI
+          ? "Codex"
+          : null
   switch (category) {
     case "authentication":
-      return "antiburn could not sign in to read your plan usage. Sign in again with your coding tool, then reopen this view."
+      return providerName
+        ? `${providerName} sign-in expired. Sign in again, then retry.`
+        : "Sign in again with your coding tool, then retry."
     case "rateLimited":
-      return "Your provider asked antiburn to slow down. It will try again later."
+      return `${providerName ?? "Your provider"} rate limited usage checks. Wait, then retry.`
     case "schema":
-      return "Your provider reported usage in a shape antiburn does not recognise."
+      return `${providerName ?? "Provider"} usage changed. Update antiburn, then retry.`
     default:
-      return "antiburn could not reach your provider for usage. It will try again later."
+      return `${providerName ?? "Provider"} usage is unavailable. Check your connection, then retry.`
   }
 }
 
@@ -422,7 +508,22 @@ export function liveErrorNote(category: string): string {
  */
 export function liveExtraUsageLabel(provider: LiveProviderUsagePayload): string | null {
   const extra = provider.extraUsage
-  if (!extra?.enabled) return null
+  if (!extra) return null
+  if (provider.provider === GOOGLE) {
+    const amount = (value: number) =>
+      extra.currency
+        ? `${value.toFixed(2)} ${extra.currency}`
+        : new Intl.NumberFormat().format(value)
+    if (extra.remaining != null) return `AI credits: ${amount(extra.remaining)} remaining`
+    if (extra.used != null && extra.limit != null) {
+      return `AI credits: ${amount(extra.used)} of ${amount(extra.limit)} used`
+    }
+    if (extra.used != null) return `AI credits: ${amount(extra.used)} used`
+    if (extra.limit != null) return `AI credits: ${amount(extra.limit)} total`
+    if (extra.usedPercent != null) return `AI credits: ${Math.round(extra.usedPercent)}% used`
+    return null
+  }
+  if (!extra.enabled) return null
   if (extra.usedPercent != null) return `${Math.round(extra.usedPercent)}% of extra usage`
   if (extra.used != null && extra.currency) {
     return `${extra.used.toFixed(2)} ${extra.currency} of extra usage`

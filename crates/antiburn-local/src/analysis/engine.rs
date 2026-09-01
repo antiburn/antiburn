@@ -277,6 +277,7 @@ pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
         cache_write_tokens_available: session.cache_write_tokens_available,
         context_window: session.context_window,
         model: session.model.clone(),
+        provider_hints: Vec::new(),
         started_at_ms: None,
         coverage_gaps: Vec::new(),
         late_tools: Vec::new(),

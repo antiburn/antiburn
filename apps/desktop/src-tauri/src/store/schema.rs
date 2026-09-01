@@ -12,7 +12,7 @@
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
-    V22, V23,
+    V22, V23, V24, V25, V26, V27,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -478,4 +478,53 @@ const V23: &str = r#"
 DROP INDEX session_recency;
 CREATE INDEX session_recency_coalesced
     ON session (COALESCE(updated_at_epoch, 0) DESC, session_id DESC);
+"#;
+
+/// v24 adds the serialized provider hints from the bounded parent
+/// `SessionSummary`. Existing rows stay `NULL` because absence means the
+/// provider observation is unknown, not an observed empty list.
+const V24: &str = r#"
+ALTER TABLE session_analysis ADD COLUMN provider_hints_json TEXT;
+"#;
+
+/// v25 removes cached account identifiers created before install-scoped keys.
+const V25: &str = r#"
+DELETE FROM setting
+ WHERE key IN ('internal:liveUsageHistory', 'internal:liveUsageSnapshot');
+"#;
+
+/// v26 stores only opaque, append-only account observations for a session.
+const V26: &str = r#"
+CREATE TABLE session_provider_account (
+    environment_key TEXT NOT NULL,
+    agent           TEXT NOT NULL,
+    session_id      TEXT NOT NULL,
+    provider        TEXT NOT NULL,
+    account_key     TEXT NOT NULL,
+    provenance      TEXT NOT NULL CHECK(provenance IN ('provider_live', 'tool_oauth')),
+    confidence      TEXT NOT NULL CHECK(confidence = 'direct'),
+    first_seen_at   TEXT NOT NULL,
+    PRIMARY KEY (environment_key, agent, session_id, provider, account_key),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session(environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+CREATE INDEX session_provider_account_lookup
+    ON session_provider_account(environment_key, agent, session_id, provider);
+CREATE TABLE provider_account_seen (
+    agent            TEXT NOT NULL,
+    provider         TEXT NOT NULL,
+    account_key      TEXT NOT NULL,
+    first_seen_epoch INTEGER NOT NULL,
+    PRIMARY KEY (agent, provider, account_key)
+) STRICT;
+INSERT OR IGNORE INTO setting (key, value)
+VALUES ('internal:providerAccountRolloutV1', CAST(strftime('%s', 'now') AS TEXT));
+"#;
+
+/// v27 records the latest observation so account switches have a time boundary.
+const V27: &str = r#"
+ALTER TABLE provider_account_seen
+ADD COLUMN last_seen_epoch INTEGER NOT NULL DEFAULT 0;
+UPDATE provider_account_seen
+   SET last_seen_epoch = first_seen_epoch;
 "#;

@@ -18,16 +18,17 @@ use std::sync::{
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, ActiveSessionsSummary, CompositeSink, EVIDENCE_SCHEMA_REVISION,
-    EfficiencyTotals, EvidenceSource, InitialContextBreakdown, METRICS_SCHEMA_REVISION, ModelRun,
-    PARSER_REVISION, RawSource, SessionCost, SessionEvidence, SessionEvidenceAccumulator,
-    SessionInput, SessionMetrics, SessionMetricsAccumulator, SessionSummary, SkillUse,
-    SourceCapabilities, SourceClaim, SourceKind, TurnRow, TurnRowSink, TurnRowStore, TurnScope,
-    VisitOutcome, adapter_for, aggregate_metrics, append_only_guarantee, merge_metrics,
-    metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation,
+    EfficiencyTotals, EvidenceSource, InitialContextBreakdown, MAX_PROVIDER_HINTS,
+    METRICS_SCHEMA_REVISION, ModelRun, PARSER_REVISION, ProviderHint, RawSource, SessionCost,
+    SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
+    SessionMetricsAccumulator, SessionSummary, SkillUse, SourceCapabilities, SourceClaim,
+    SourceKind, TurnRow, TurnRowSink, TurnRowStore, TurnScope, VisitOutcome, adapter_for,
+    aggregate_metrics, append_only_guarantee, merge_metrics, metrics_by_source, metrics_from_rows,
+    price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
-    ForkObservation, SessionSource, SourceStat, session_source_content,
+    ForkObservation, SessionSource, SourceStat, session_source_content, session_source_preview,
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::pricing::ModelTokens;
@@ -336,6 +337,21 @@ impl SessionAnalysis {
             .source_summaries
             .as_ref()
             .and_then(|summaries| serde_json::to_string(summaries).ok());
+        let provider_hints_json = self.source_summaries.as_ref().and_then(|summaries| {
+            let mut hints: Vec<ProviderHint> = Vec::new();
+            for hint in summaries
+                .values()
+                .flat_map(|summary| &summary.provider_hints)
+            {
+                if hints.len() == MAX_PROVIDER_HINTS {
+                    break;
+                }
+                if !hints.contains(hint) {
+                    hints.push(hint.clone());
+                }
+            }
+            serde_json::to_string(&hints).ok()
+        });
         Some(AnalysisRecord {
             key: key.clone(),
             model_breakdown_json: serde_json::to_string(&self.inclusive_model_breakdown)
@@ -344,6 +360,7 @@ impl SessionAnalysis {
                 .unwrap_or_else(|_| "[]".to_string()),
             initial_context_json,
             source_summaries_json,
+            provider_hints_json,
             source_fingerprint: self.fingerprint.clone(),
             pricing_generation: pricing_generation() as i64,
             analyzed_generation: self.analyzed_generation,
@@ -427,12 +444,113 @@ pub async fn fingerprint_with_subagents(
         .list_subagents_in_environment(&agent, session_id, wsl_distro)
         .await;
     subagent_paths.sort();
-    combined_fingerprint(source, &subagent_paths)
+    let parent_fingerprint = match source {
+        SessionSource::ProviderDb {
+            agent,
+            db_path,
+            session_id,
+        } => Explorers::DISK
+            .provider_db_fingerprint(agent, db_path, session_id)
+            .await
+            .map(|(latest, rows)| format!("sv1:db:{latest}:{rows}"))
+            .unwrap_or_else(|| MISSING_FINGERPRINT.to_string()),
+        _ => fingerprint_of(source),
+    };
+    match source {
+        SessionSource::ProviderDb { .. } if subagent_paths.is_empty() => parent_fingerprint,
+        _ => combined_fingerprint_from_parent(parent_fingerprint, &subagent_paths),
+    }
+}
+
+/// Cheap fingerprint for the open-detail poll.
+///
+/// Antigravity databases use file, WAL, and transcript metadata here. Claimed
+/// ingestion still uses the full row-content fingerprint.
+pub async fn poll_fingerprint_with_subagents(
+    agent: AgentKind,
+    session_id: &str,
+    wsl_distro: Option<&str>,
+    source: &SessionSource,
+) -> String {
+    if let SessionSource::ProviderDb {
+        agent: AgentKind::Antigravity,
+        db_path,
+        session_id,
+    } = source
+    {
+        let mut paths = vec![db_path.clone()];
+        let mut wal = db_path.as_os_str().to_os_string();
+        wal.push("-wal");
+        paths.push(std::path::PathBuf::from(wal));
+        if let Some(transcript) = antigravity_sibling_transcript(db_path, session_id) {
+            paths.push(transcript);
+        }
+        let mut subagent_paths = Explorers::DISK
+            .list_subagents_in_environment(&agent, session_id, wsl_distro)
+            .await;
+        subagent_paths.sort();
+        paths.extend(subagent_paths);
+        return poll_fingerprint_from_paths(paths);
+    }
+    fingerprint_with_subagents(agent, session_id, wsl_distro, source).await
+}
+
+fn poll_fingerprint_from_paths(paths: Vec<std::path::PathBuf>) -> String {
+    let parts = paths
+        .into_iter()
+        .map(|path| {
+            (
+                path.to_string_lossy().into_owned(),
+                fingerprint_of_path(&path),
+            )
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string(&parts)
+        .map(|fingerprint| format!("poll-v1:{fingerprint}"))
+        .unwrap_or_else(|_| MISSING_FINGERPRINT.to_string())
+}
+
+fn fingerprint_of_path(path: &std::path::Path) -> String {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return MISSING_FINGERPRINT.to_string();
+    };
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("{modified}:{}", metadata.len())
+}
+
+fn antigravity_sibling_transcript(
+    db_path: &std::path::Path,
+    session_id: &str,
+) -> Option<std::path::PathBuf> {
+    let conversations = db_path.parent()?;
+    if conversations.file_name()?.to_str()? != "conversations" {
+        return None;
+    }
+    Some(
+        conversations
+            .parent()?
+            .join("brain")
+            .join(session_id)
+            .join(".system_generated")
+            .join("logs")
+            .join("transcript.jsonl"),
+    )
 }
 
 /// Build one stable fingerprint from a parent and its sorted child paths.
 fn combined_fingerprint(source: &SessionSource, subagent_paths: &[std::path::PathBuf]) -> String {
-    let parent_fingerprint = fingerprint_of(source);
+    combined_fingerprint_from_parent(fingerprint_of(source), subagent_paths)
+}
+
+fn combined_fingerprint_from_parent(
+    parent_fingerprint: String,
+    subagent_paths: &[std::path::PathBuf],
+) -> String {
     if parent_fingerprint == MISSING_FINGERPRINT {
         return parent_fingerprint;
     }
@@ -475,7 +593,7 @@ async fn raw_source(source: &SessionSource) -> Option<RawSource> {
         SessionSource::File(path) => Some(RawSource::File(path.clone())),
         SessionSource::Inline { content, .. } => Some(RawSource::Jsonl(content.clone())),
         SessionSource::ProviderDb {
-            agent: AgentKind::OpenCode,
+            agent: AgentKind::OpenCode | AgentKind::Antigravity,
             db_path,
             ..
         } => Some(RawSource::Sqlite(db_path.clone())),
@@ -543,7 +661,7 @@ fn stream_vendor_with_claim_hook(
     stream_vendor_with_hooks(inputs, &|| cancel.cancelled(), after_claim, None, None)
 }
 
-/// Every vendor label's evidence-streaming contract. Total: an
+/// Every source's evidence-streaming contract. Total: an
 /// uncharacterized vendor (Cursor, Antigravity, or any generic-JSONL agent)
 /// still gets a real `SourceCapabilities` profile — an honest, mostly- or
 /// fully-unset one — so it takes the same streaming path as every other
@@ -551,8 +669,8 @@ fn stream_vendor_with_claim_hook(
 /// (insights_worker.rs) is what turns an unset profile into the terminal
 /// `Unsupported` state; this function's job is only to describe the source,
 /// never to decide whether it is good enough.
-fn capabilities_for_vendor(agent: &str) -> SourceCapabilities {
-    match agent {
+fn capabilities_for_source(agent: &str, source: &RawSource) -> SourceCapabilities {
+    let mut capabilities = match agent {
         "claude" => SourceCapabilities::claude(),
         "codex" => SourceCapabilities::codex(),
         "opencode" => SourceCapabilities::opencode(),
@@ -560,7 +678,16 @@ fn capabilities_for_vendor(agent: &str) -> SourceCapabilities {
         "cursor" => SourceCapabilities::cursor(),
         "antigravity" => SourceCapabilities::antigravity(),
         _ => SourceCapabilities::generic(),
+    };
+    if agent == "antigravity" && matches!(source, RawSource::Sqlite(_)) {
+        capabilities.cache_write_tokens = true;
+        capabilities.token_classes = true;
     }
+    capabilities
+}
+
+fn adapter_supports_provider_db(agent: &str) -> bool {
+    matches!(agent, "opencode" | "antigravity")
 }
 
 /// Records one discovered child that this pass could not read. The parent
@@ -599,9 +726,9 @@ fn stream_vendor_with_hooks(
         // Every vendor label now resolves to a real (possibly all-unset)
         // capability profile, so this can never fall through to
         // `StreamOutcome::ParentUnsupported` the way an unrecognized vendor
-        // used to; a Sqlite source from a non-OpenCode vendor is the one
+        // used to; a SQLite source from an adapter without database support is the one
         // remaining path that outcome still covers, further down.
-        let capabilities = capabilities_for_vendor(&input.agent);
+        let capabilities = capabilities_for_source(&input.agent, &input.source);
         let adapter = adapter_for(&input.agent);
         let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
         let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
@@ -666,10 +793,12 @@ fn stream_vendor_with_hooks(
                 }
                 adapter.visit(input, &mut accumulator)
             }
-            RawSource::Sqlite(_) if adapter.agent() != "opencode" && index == 0 => {
+            RawSource::Sqlite(_)
+                if !adapter_supports_provider_db(adapter.agent()) && index == 0 =>
+            {
                 return StreamOutcome::ParentUnsupported;
             }
-            RawSource::Sqlite(_) if adapter.agent() != "opencode" => continue,
+            RawSource::Sqlite(_) if !adapter_supports_provider_db(adapter.agent()) => continue,
             RawSource::Sqlite(_) if index == 0 => {
                 let outcome = match database_claim {
                     Some(fingerprint) => {
@@ -888,20 +1017,19 @@ pub async fn analyze_for_evidence(
         .list_subagents_in_environment(&agent, session_id, wsl_distro)
         .await;
     subagent_paths.sort();
-    let database_claim = matches!(
-        &source,
-        SessionSource::ProviderDb {
-            agent: AgentKind::OpenCode,
-            ..
-        }
-    )
-    .then(|| claimed.fingerprint.clone())
-    .flatten();
+    let database_claim = matches!(&source, SessionSource::ProviderDb { .. })
+        .then(|| claimed.fingerprint.clone())
+        .flatten();
     let fingerprint = if matches!(&source, SessionSource::ProviderDb { .. }) {
-        claimed
+        let parent_fingerprint = claimed
             .fingerprint
             .clone()
-            .unwrap_or_else(|| MISSING_FINGERPRINT.to_string())
+            .unwrap_or_else(|| MISSING_FINGERPRINT.to_string());
+        if subagent_paths.is_empty() {
+            parent_fingerprint
+        } else {
+            combined_fingerprint_from_parent(parent_fingerprint, &subagent_paths)
+        }
     } else {
         combined_fingerprint(&source, &subagent_paths)
     };
@@ -1565,7 +1693,7 @@ pub async fn fork_parent(source: &SessionSource) -> Option<String> {
             )
             .await;
         }
-        SessionSource::ProviderDb { .. } => session_source_content(source).await?,
+        SessionSource::ProviderDb { .. } => session_source_preview(source).await?,
     };
     fork_parent_from_content(&content)
 }
@@ -1855,6 +1983,78 @@ mod tests {
         (directory, path, "sv1:db:120:2".to_owned())
     }
 
+    fn antigravity_database() -> (tempfile::TempDir, std::path::PathBuf) {
+        fn varint(mut value: u64, out: &mut Vec<u8>) {
+            while value >= 0x80 {
+                out.push((value as u8 & 0x7f) | 0x80);
+                value >>= 7;
+            }
+            out.push(value as u8);
+        }
+        fn scalar(field: u64, value: u64, out: &mut Vec<u8>) {
+            varint(field << 3, out);
+            varint(value, out);
+        }
+        fn bytes(field: u64, value: &[u8], out: &mut Vec<u8>) {
+            varint((field << 3) | 2, out);
+            varint(value.len() as u64, out);
+            out.extend_from_slice(value);
+        }
+
+        let mut usage = Vec::new();
+        scalar(1, 777, &mut usage);
+        scalar(2, 30, &mut usage);
+        scalar(3, 50, &mut usage);
+        scalar(4, 7, &mut usage);
+        scalar(5, 800, &mut usage);
+        scalar(9, 40, &mut usage);
+        scalar(10, 10, &mut usage);
+        bytes(11, b"response-1", &mut usage);
+        let mut chat_model = Vec::new();
+        bytes(4, &usage, &mut chat_model);
+        bytes(19, b"gemini-3.6-flash", &mut chat_model);
+        let mut blob = Vec::new();
+        bytes(1, &chat_model, &mut blob);
+
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let subroot = directory.path().join("antigravity-cli");
+        let conversations = subroot.join("conversations");
+        let logs = subroot
+            .join("brain")
+            .join("root")
+            .join(".system_generated")
+            .join("logs");
+        std::fs::create_dir_all(&conversations).unwrap();
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(
+            logs.join("transcript.jsonl"),
+            concat!(
+                r#"{"type":"USER_INPUT","created_at":"2026-01-01T00:00:00Z","content":"hello"}"#,
+                "\n",
+                r#"{"type":"PLANNER_RESPONSE","created_at":"2026-01-01T00:00:01Z","content":"done"}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+        let path = conversations.join("root.db");
+        let connection = rusqlite::Connection::open(&path).expect("database");
+        connection
+            .execute_batch(
+                "CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);
+                 CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO steps(idx) VALUES (0), (1);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO gen_metadata(idx, data, size) VALUES (0, ?1, ?2)",
+                rusqlite::params![blob, blob.len() as i64],
+            )
+            .unwrap();
+        drop(connection);
+        (directory, path)
+    }
+
     #[tokio::test]
     async fn an_opencode_provider_database_stays_native() {
         let (_directory, path, _) = opencode_database();
@@ -1865,6 +2065,100 @@ mod tests {
         };
 
         assert_eq!(raw_source(&source).await, Some(RawSource::Sqlite(path)));
+    }
+
+    #[tokio::test]
+    async fn a_claimed_antigravity_database_stays_native_and_publishes() {
+        let (_directory, path) = antigravity_database();
+        let source = SessionSource::ProviderDb {
+            agent: AgentKind::Antigravity,
+            db_path: path.clone(),
+            session_id: "root".to_owned(),
+        };
+        assert_eq!(
+            raw_source(&source).await,
+            Some(RawSource::Sqlite(path.clone()))
+        );
+        let (latest, rows) = Explorers::DISK
+            .provider_db_fingerprint(&AgentKind::Antigravity, &path, "root")
+            .await
+            .expect("database fingerprint");
+        let fingerprint = format!("sv1:db:{latest}:{rows}");
+        let polled =
+            fingerprint_with_subagents(AgentKind::Antigravity, "root", None, &source).await;
+        assert_eq!(polled, fingerprint);
+        let input = SessionInput {
+            agent: "antigravity".to_owned(),
+            session_id: "root".to_owned(),
+            source: RawSource::Sqlite(path),
+        };
+
+        let outcome = stream_vendor_with_hooks(
+            &[input],
+            &|| false,
+            &|_, _| {},
+            Some(&fingerprint),
+            Some(turn_row_store("antigravity", "root")),
+        );
+
+        let StreamOutcome::Published {
+            session,
+            parent_fingerprint,
+        } = outcome
+        else {
+            panic!("a stable Antigravity database must publish");
+        };
+        assert_eq!(parent_fingerprint.as_deref(), Some(fingerprint.as_str()));
+        assert_eq!(session.parent.billable_input_tokens, 30);
+        assert_eq!(session.parent.billable_output_tokens, 50);
+        assert_eq!(session.parent.peak_context_tokens, 837);
+        assert_eq!(session.parent.billable_cache_creation_tokens, 7);
+        let evidence = session.evidence.expect("database evidence");
+        assert_eq!(evidence.provenance.parser_revision, PARSER_REVISION);
+        assert!(evidence.capabilities.cache_write_tokens);
+        assert!(evidence.capabilities.token_classes);
+        assert_eq!(observed(&evidence.context).max_request_context_tokens, 837);
+        assert_eq!(observed(&evidence.cache).cache_creation_tokens, 7);
+        assert!(!observed(&evidence.models).by_model.is_empty());
+    }
+
+    #[tokio::test]
+    async fn antigravity_poll_fingerprint_tracks_transcript_metadata() {
+        let (_directory, path) = antigravity_database();
+        let source = SessionSource::ProviderDb {
+            agent: AgentKind::Antigravity,
+            db_path: path.clone(),
+            session_id: "root".to_owned(),
+        };
+        let transcript = antigravity_sibling_transcript(&path, "root").unwrap();
+
+        let before =
+            poll_fingerprint_with_subagents(AgentKind::Antigravity, "root", None, &source).await;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(transcript)
+            .unwrap();
+        std::io::Write::write_all(&mut file, b"{}\n").unwrap();
+        let after =
+            poll_fingerprint_with_subagents(AgentKind::Antigravity, "root", None, &source).await;
+
+        assert!(before.starts_with("poll-v1:"));
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn antigravity_poll_fingerprint_tracks_child_only_changes() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let parent = directory.path().join("root.db");
+        let child = directory.path().join("child.jsonl");
+        std::fs::write(&parent, "parent").unwrap();
+        std::fs::write(&child, "child").unwrap();
+        let paths = vec![parent, child.clone()];
+
+        let before = poll_fingerprint_from_paths(paths.clone());
+        std::fs::write(&child, "child changed").unwrap();
+
+        assert_ne!(before, poll_fingerprint_from_paths(paths));
     }
 
     #[test]
@@ -1988,7 +2282,7 @@ mod tests {
         [
             r#"{"type":"session","version":3,"timestamp":"2026-08-01T09:59:58Z"}"#,
             r#"{"type":"thinking_level_change","timestamp":"2026-08-01T10:00:00Z","thinkingLevel":"medium"}"#,
-            r#"{"type":"message","timestamp":"2026-08-01T10:00:01Z","message":{"role":"assistant","api":"anthropic-messages","model":"model-a","usage":{"input":2,"output":3,"cacheRead":5,"cacheWrite":7},"content":[]}}"#,
+            r#"{"type":"message","timestamp":"2026-08-01T10:00:01Z","message":{"role":"assistant","api":"anthropic-messages","provider":"anthropic","model":"model-a","usage":{"input":2,"output":3,"cacheRead":5,"cacheWrite":7},"content":[]}}"#,
         ]
         .join("\n")
             + "\n"
@@ -2068,6 +2362,14 @@ mod tests {
             Some(turn_row_store("pi", "pi-inline")),
         );
         assert_eq!(pass.outcome, PassOutcome::Published);
+        let record = pass
+            .analysis
+            .record(&SessionKey::new("native", "pi", "pi-inline"))
+            .expect("Pi analysis record");
+        assert_eq!(
+            record.provider_hints_json.as_deref(),
+            Some(r#"[{"provider":"anthropic","model":"model-a"}]"#)
+        );
         assert_eq!(
             pass.evidence.unwrap().capabilities,
             SourceCapabilities::pi()

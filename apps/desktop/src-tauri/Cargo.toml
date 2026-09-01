@@ -33,7 +33,7 @@ path = "src/lib.rs"
 distribution = []
 # Include the first-party analytics client. Source builds omit it unless the
 # builder selects this feature explicitly.
-analytics = ["dep:getrandom"]
+analytics = []
 # Add local memory fixtures and WebContent PID diagnostics.
 memory-probe = []
 
@@ -75,6 +75,8 @@ async-trait = "0.1"
 # verifies a signature or should be trusted as anything more than a hint the
 # provider's own response can still reject.
 base64 = "0.23"
+# Derives installation-scoped provider account keys without storing subjects.
+hmac = "0.12"
 # Direct provider usage fetch (`provider_usage::live::sources`): a plain
 # HTTPS request to the provider's own endpoint, with the reader's own
 # credential — a `GET` for the usage reading itself, and, for Codex, the
@@ -99,6 +101,8 @@ rustls = { version = "0.23.43", default-features = false, features = ["ring", "s
 serde = { version = "1", features = ["derive"] }
 # Required by `tauri::generate_context!`, which expands to code in this crate.
 serde_json = "1"
+# Supplies SHA-256 to the provider account HMAC.
+sha2 = "0.10"
 # `tray-icon` gives the menu-bar item; `image-png` lets the tray glyph be
 # decoded from the generated PNG.
 # Three windows need `macos-private-api`. The HUD and nudge crates build
@@ -125,7 +129,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 # Sixteen unpredictable bytes for the rotating installation identifier. Already
 # in the tree via the TLS stack; declared directly so the use is visible.
-getrandom = { version = "0.4", optional = true }
+getrandom = "0.4"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Desktop-only: GitHub Releases update checks. Registered in release builds
@@ -158,6 +162,9 @@ tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e
 # Per-user Run-key registration. Kept in Rust so executable paths are quoted
 # correctly and stale entries can be refreshed after an update.
 winreg = "0.56"
+# Reads the Antigravity CLI credential from the current user's Credential
+# Manager. The source never writes or deletes credentials.
+windows-sys = { version = "0.61", features = ["Win32_Security_Credentials"] }
 
 [dev-dependencies]
 # This dev-dependency resolves the engine counters for test builds only.

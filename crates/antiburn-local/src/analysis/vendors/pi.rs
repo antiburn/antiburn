@@ -22,8 +22,9 @@ use serde_json::Value;
 
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::interface::{
-    ContentPart, EvidenceObservation, NormalizedRecord, RawSource, RecordSink, SessionCollector,
-    SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
+    ContentPart, EvidenceObservation, NormalizedRecord, ProviderHint, RawSource, RecordSink,
+    SessionCollector, SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
+    bounded_provider_hint_value, push_provider_hint,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role};
 use crate::analysis::records::{
@@ -168,6 +169,8 @@ impl PiAdapter {
 struct PiStreamState {
     model: Option<String>,
     current_model: Option<String>,
+    current_provider: Option<String>,
+    provider_hints: Vec<ProviderHint>,
     current_thinking_mode: Option<String>,
     started_at_ms: Option<i64>,
     cache_write_tokens_available: Option<bool>,
@@ -309,6 +312,13 @@ impl PiStreamState {
         if role == "assistant" {
             self.observe_assistant_metadata(value);
             event.model = event.model.or_else(|| self.current_model.clone());
+            if let Some(provider) = value
+                .pointer("/message/provider")
+                .and_then(Value::as_str)
+                .or(self.current_provider.as_deref())
+            {
+                push_provider_hint(&mut self.provider_hints, provider, event.model.as_deref());
+            }
             event.thinking_mode = self.current_thinking_mode.clone();
         }
         for tool in &mut event.tools {
@@ -339,11 +349,19 @@ impl PiStreamState {
         if let Some(model) = value
             .pointer("/message/model")
             .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
-            && self.model.is_none()
+            .and_then(bounded_provider_hint_value)
         {
-            self.model = Some(model.to_owned());
+            if self.model.is_none() {
+                self.model = Some(model.clone());
+            }
+            self.current_model = Some(model);
+        }
+        if let Some(provider) = value
+            .pointer("/message/provider")
+            .and_then(Value::as_str)
+            .and_then(bounded_provider_hint_value)
+        {
+            self.current_provider = Some(provider);
         }
 
         if let Some(api) = value
@@ -363,15 +381,21 @@ impl PiStreamState {
             .get("modelId")
             .or_else(|| value.get("model"))
             .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|model| !model.is_empty())
-            .map(str::to_owned);
+            .and_then(bounded_provider_hint_value);
         if value.get("timestamp").and_then(parse_ts).is_none() || next.is_none() {
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             return;
         }
         if self.model.is_none() {
             self.model = next.clone();
+        }
+        let provider = value
+            .get("provider")
+            .and_then(Value::as_str)
+            .and_then(bounded_provider_hint_value);
+        if let Some(provider) = provider {
+            self.current_provider = Some(provider.clone());
+            push_provider_hint(&mut self.provider_hints, &provider, next.as_deref());
         }
         self.current_model = next;
     }
@@ -443,6 +467,7 @@ impl PiStreamState {
             cache_write_tokens_available: self.cache_write_tokens_available.unwrap_or(true),
             context_window: None,
             model: self.model.or(self.current_model),
+            provider_hints: self.provider_hints,
             started_at_ms: self.started_at_ms,
             coverage_gaps,
             late_tools: Vec::new(),
@@ -589,6 +614,126 @@ mod tests {
     use super::*;
     use crate::analysis::interface::ContentKind;
     use crate::analysis::model::ToolCategory;
+
+    #[derive(Default)]
+    struct SummarySink {
+        summary: Option<SessionSummary>,
+    }
+
+    impl RecordSink for SummarySink {
+        fn record(&mut self, _record: NormalizedRecord) {}
+
+        fn finish(&mut self, summary: SessionSummary) {
+            self.summary = Some(summary);
+        }
+    }
+
+    #[test]
+    fn provider_hints_include_zero_token_messages_and_model_changes() {
+        let content = concat!(
+            r#"{"type":"model_change","timestamp":"2026-01-01T00:00:00Z","provider":"anthropic","modelId":"claude-sonnet"}"#,
+            "\n",
+            r#"{"type":"message","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","model":"claude-sonnet","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"content":[]}}"#,
+            "\n",
+            r#"{"type":"message","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","model":"gpt-5","provider":"openai-codex","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"content":[]}}"#,
+            "\n"
+        );
+        let input = SessionInput {
+            agent: "pi".to_owned(),
+            session_id: "providers".to_owned(),
+            source: RawSource::Jsonl(content.to_owned()),
+        };
+        let mut sink = SummarySink::default();
+
+        PiAdapter.visit(&input, &mut sink).unwrap();
+
+        assert_eq!(
+            sink.summary.unwrap().provider_hints,
+            vec![
+                ProviderHint {
+                    provider: "anthropic".to_owned(),
+                    model: Some("claude-sonnet".to_owned()),
+                },
+                ProviderHint {
+                    provider: "openai-codex".to_owned(),
+                    model: Some("gpt-5".to_owned()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn provider_hints_are_unique_and_bounded() {
+        let long_provider = format!("{}é", "p".repeat(crate::analysis::EVIDENCE_STRING_CAP));
+        let long_model = format!("{}é", "m".repeat(crate::analysis::EVIDENCE_STRING_CAP));
+        let mut content = format!(
+            "{{\"type\":\"model_change\",\"timestamp\":0,\"provider\":\"{long_provider}\",\"modelId\":\"{long_model}\"}}\n"
+        );
+        for index in 0..(crate::analysis::MAX_PROVIDER_HINTS + 10) {
+            content.push_str(&format!(
+                "{{\"type\":\"model_change\",\"timestamp\":{},\"provider\":\"provider-{index}\",\"modelId\":\"model-{index}\"}}\n",
+                index + 1
+            ));
+        }
+        let input = SessionInput {
+            agent: "pi".to_owned(),
+            session_id: "bounded-providers".to_owned(),
+            source: RawSource::Jsonl(content),
+        };
+        let mut sink = SummarySink::default();
+
+        PiAdapter.visit(&input, &mut sink).unwrap();
+
+        let hints = sink.summary.unwrap().provider_hints;
+        assert_eq!(hints.len(), crate::analysis::MAX_PROVIDER_HINTS);
+        assert_eq!(
+            hints[0].provider,
+            "p".repeat(crate::analysis::EVIDENCE_STRING_CAP)
+        );
+        assert_eq!(
+            hints[0].model,
+            Some("m".repeat(crate::analysis::EVIDENCE_STRING_CAP))
+        );
+        assert!(hints.iter().all(|hint| {
+            hint.provider.len() <= crate::analysis::EVIDENCE_STRING_CAP
+                && hint
+                    .model
+                    .as_ref()
+                    .is_none_or(|model| model.len() <= crate::analysis::EVIDENCE_STRING_CAP)
+        }));
+    }
+
+    #[test]
+    fn retained_provider_and_model_state_is_utf8_safely_bounded() {
+        let long_provider = format!("{}é", "p".repeat(crate::analysis::EVIDENCE_STRING_CAP));
+        let long_model = format!("{}é", "m".repeat(crate::analysis::EVIDENCE_STRING_CAP));
+        let mut state = PiStreamState::default();
+        let mut sink = SummarySink::default();
+
+        state.observe(
+            serde_json::json!({
+                "type": "message",
+                "timestamp": 1,
+                "message": {
+                    "role": "assistant",
+                    "provider": long_provider,
+                    "model": long_model,
+                    "usage": {},
+                    "content": []
+                }
+            }),
+            &mut sink,
+        );
+
+        assert_eq!(
+            state.current_provider.as_deref(),
+            Some("p".repeat(crate::analysis::EVIDENCE_STRING_CAP).as_str())
+        );
+        assert_eq!(
+            state.current_model.as_deref(),
+            Some("m".repeat(crate::analysis::EVIDENCE_STRING_CAP).as_str())
+        );
+    }
 
     /// Collects every `TurnContent` record a visit emits, in order.
     #[derive(Default)]

@@ -558,6 +558,7 @@ impl ClaudeStreamState {
             cache_write_tokens_available: true,
             context_window: self.context_window,
             model,
+            provider_hints: Vec::new(),
             started_at_ms: None,
             coverage_gaps,
             late_tools,

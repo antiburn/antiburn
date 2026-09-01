@@ -38,6 +38,8 @@ fn row(agent: &str, at: i64, models: &[(&str, ModelTokens)]) -> UsageEvidenceRec
         agent: agent.to_string(),
         updated_at_epoch: at,
         model_breakdown_json: Some(serde_json::to_string(&breakdown).unwrap()),
+        provider_hints_json: None,
+        provider_accounts_json: "[]".into(),
     }
 }
 
@@ -47,7 +49,31 @@ fn unanalyzed(agent: &str, at: i64) -> UsageEvidenceRecord {
         agent: agent.to_string(),
         updated_at_epoch: at,
         model_breakdown_json: None,
+        provider_hints_json: None,
+        provider_accounts_json: "[]".into(),
     }
+}
+
+fn row_with_hints(
+    agent: &str,
+    at: i64,
+    models: &[(&str, ModelTokens)],
+    hints: &[(&str, Option<&str>)],
+) -> UsageEvidenceRecord {
+    let mut record = row(agent, at, models);
+    record.provider_hints_json = Some(
+        serde_json::to_string(
+            &hints
+                .iter()
+                .map(|(provider, model)| ProviderHint {
+                    provider: (*provider).to_string(),
+                    model: model.map(str::to_string),
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap(),
+    );
+    record
 }
 
 fn find<'a>(summary: &'a ProviderUsageSummary, provider: &str) -> &'a ProviderUsage {
@@ -56,6 +82,21 @@ fn find<'a>(summary: &'a ProviderUsageSummary, provider: &str) -> &'a ProviderUs
         .iter()
         .find(|entry| entry.provider == provider)
         .unwrap_or_else(|| panic!("expected a {provider} row in {:?}", summary.providers))
+}
+
+fn bind(record: &mut UsageEvidenceRecord, provider: &str, accounts: &[&str]) {
+    record.provider_accounts_json = serde_json::to_string(
+        &accounts
+            .iter()
+            .map(|account| {
+                serde_json::json!({
+                    "provider": provider,
+                    "accountKey": account,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
 }
 
 /* -------------------------------------------------------------------------
@@ -184,6 +225,135 @@ fn an_implausible_offset_falls_back_to_utc_rather_than_shifting_wildly() {
  * ---------------------------------------------------------------------- */
 
 #[test]
+fn a_zero_token_pi_request_keeps_its_explicit_provider() {
+    let rows = [row_with_hints(
+        "pi",
+        NOW - 60,
+        &[],
+        &[("anthropic", Some("claude-sonnet-4-6"))],
+    )];
+    let summary = summarize(&rows, NOW, 0);
+    let anthropic = find(&summary, providers::ANTHROPIC);
+
+    assert_eq!(anthropic.state, ProviderUsageState::Detected);
+    assert_eq!(anthropic.windows.today.session_count, 1);
+    assert_eq!(anthropic.windows.today.tokens_in, 0);
+    assert!(
+        summary
+            .providers
+            .iter()
+            .all(|provider| provider.provider != providers::UNKNOWN)
+    );
+}
+
+#[test]
+fn an_explicit_provider_overrides_model_family_inference() {
+    let rows = [row_with_hints(
+        "opencode",
+        NOW - 60,
+        &[("claude-sonnet-4-6", tokens(100, 0, 0, 0))],
+        &[("openrouter", Some("claude-sonnet-4-6"))],
+    )];
+    let summary = summarize(&rows, NOW, 0);
+
+    assert_eq!(
+        find(&summary, providers::OPENROUTER)
+            .windows
+            .today
+            .tokens_in,
+        100
+    );
+    assert!(
+        summary
+            .providers
+            .iter()
+            .all(|provider| provider.provider != providers::ANTHROPIC)
+    );
+}
+
+#[test]
+fn an_unknown_explicit_gateway_does_not_fall_through_to_the_model_family() {
+    let rows = [row_with_hints(
+        "pi",
+        NOW - 60,
+        &[("gpt-5.6", tokens(100, 0, 0, 0))],
+        &[("private-gateway", Some("gpt-5.6"))],
+    )];
+    let summary = summarize(&rows, NOW, 0);
+
+    assert_eq!(
+        find(&summary, providers::UNKNOWN).windows.today.tokens_in,
+        100
+    );
+    assert!(
+        summary
+            .providers
+            .iter()
+            .all(|provider| provider.provider != providers::OPENAI)
+    );
+}
+
+#[test]
+fn conflicting_explicit_hints_do_not_duplicate_tokens() {
+    let rows = [row_with_hints(
+        "opencode",
+        NOW - 60,
+        &[("shared-model", tokens(100, 0, 0, 0))],
+        &[
+            ("anthropic", Some("shared-model")),
+            ("openai", Some("shared-model")),
+        ],
+    )];
+    let summary = summarize(&rows, NOW, 0);
+
+    assert_eq!(
+        find(&summary, providers::UNKNOWN).windows.today.tokens_in,
+        100
+    );
+    assert_eq!(
+        find(&summary, providers::ANTHROPIC).windows.today.tokens_in,
+        0
+    );
+    assert_eq!(find(&summary, providers::OPENAI).windows.today.tokens_in, 0);
+}
+
+#[test]
+fn provider_accounts_split_local_totals_without_duplication() {
+    let account_a = "a".repeat(64);
+    let account_b = "b".repeat(64);
+    let mut first = row("codex", NOW - 60, &[("gpt-5.6", tokens(100, 0, 0, 0))]);
+    bind(&mut first, providers::OPENAI, &[&account_a]);
+    let mut second = row("codex", NOW - 30, &[("gpt-5.6", tokens(200, 0, 0, 0))]);
+    bind(&mut second, providers::OPENAI, &[&account_b]);
+
+    let summary = summarize(&[first, second], NOW, 0);
+    let openai: Vec<_> = summary
+        .providers
+        .iter()
+        .filter(|provider| provider.provider == providers::OPENAI)
+        .collect();
+    assert_eq!(openai.len(), 2);
+    assert_eq!(
+        openai
+            .iter()
+            .map(|provider| provider.windows.today.tokens_in)
+            .sum::<u64>(),
+        300
+    );
+}
+
+#[test]
+fn ambiguous_session_accounts_remain_unassigned() {
+    let account_a = "a".repeat(64);
+    let account_b = "b".repeat(64);
+    let mut record = row("codex", NOW - 60, &[("gpt-5.6", tokens(100, 0, 0, 0))]);
+    bind(&mut record, providers::OPENAI, &[&account_a, &account_b]);
+
+    let summary = summarize(&[record], NOW, 0);
+    assert_eq!(find(&summary, providers::OPENAI).account_key, None);
+}
+
+#[test]
 fn a_fully_priced_provider_is_estimated_and_carries_the_engines_figure() {
     let rows = [row(
         "claude-code",
@@ -288,6 +458,8 @@ fn an_unparseable_cache_row_degrades_to_unknown_rather_than_failing() {
         agent: "claude-code".to_string(),
         updated_at_epoch: NOW - 60,
         model_breakdown_json: Some("not json".to_string()),
+        provider_hints_json: None,
+        provider_accounts_json: "[]".into(),
     }];
     let summary = summarize(&rows, NOW, 0);
     assert_eq!(
@@ -416,6 +588,14 @@ fn sessions_from_different_agents_merge_when_the_same_vendor_is_billed() {
     let anthropic = find(&summary, providers::ANTHROPIC);
     assert_eq!(anthropic.windows.today.tokens_in, 1_500);
     assert_eq!(anthropic.windows.today.session_count, 2);
+    assert_eq!(
+        anthropic
+            .agents
+            .iter()
+            .map(|agent| (agent.agent.as_str(), agent.windows.today.tokens_in))
+            .collect::<Vec<_>>(),
+        [("claude-code", 1_000), ("opencode", 500)]
+    );
 }
 
 #[test]

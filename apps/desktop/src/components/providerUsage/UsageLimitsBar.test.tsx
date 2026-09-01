@@ -42,6 +42,7 @@ function liveProvider(
 ): LiveProviderUsagePayload {
   return {
     provider: "anthropic",
+    accountKey: null,
     displayName: "Claude",
     support: "live",
     freshness: "fresh",
@@ -236,6 +237,48 @@ describe("UsageLimitsBar — the disclosure", () => {
     expect(within(codex).getByText("5-hour limit")).toBeInTheDocument()
   })
 
+  it("distinguishes multiple accounts and keeps their groups mounted across polls", () => {
+    const first = liveProvider({
+      provider: "google",
+      accountKey: "account-a",
+      displayName: "Google",
+    })
+    const second = { ...first, accountKey: "account-b" }
+    const initial = liveSummary({ providers: [second, first] })
+    const { rerender } = bar({ live: initial, expanded: true })
+
+    const accountA = screen.getByRole("group", { name: "Google account 2" })
+    expect(screen.getByRole("group", { name: "Google account 1" })).toBeInTheDocument()
+
+    rerender(
+      <UsageLimitsBar
+        live={liveSummary({
+          providers: [
+            { ...first, observedAt: "2027-01-15T12:01:00Z" },
+            { ...second, observedAt: "2027-01-15T12:01:00Z" },
+          ],
+        })}
+        expanded
+        onToggleExpanded={vi.fn()}
+        refreshing={false}
+        onViewAll={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole("group", { name: "Google account 2" })).toBe(accountA)
+
+    rerender(
+      <UsageLimitsBar
+        live={liveSummary({ providers: [first] })}
+        expanded
+        onToggleExpanded={vi.fn()}
+        refreshing={false}
+        onViewAll={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole("group", { name: "Google" })).toBe(accountA)
+  })
+
   it("shows the plan as a muted suffix on the provider heading", () => {
     bar({
       live: liveSummary({
@@ -354,9 +397,28 @@ describe("UsageLimitsBar — degraded state", () => {
       live: liveSummary({ providers: [], errors: [sourceError()] }),
       expanded: true,
     })
-    expect(screen.getByRole("group", { name: "Claude" })).toBeInTheDocument()
-    expect(screen.getByText(/usage unavailable — rate limited/i)).toBeInTheDocument()
-    expect(screen.getByText(/asked antiburn to slow down/i)).toBeInTheDocument()
+    const failure = screen.getByRole("group", { name: "Claude" })
+    expect(
+      within(failure).getByText("Claude rate limited usage checks. Wait, then retry."),
+    ).toBeInTheDocument()
+    expect(within(failure).queryByRole("heading")).not.toBeInTheDocument()
+    expect(within(failure).getAllByText(/./)).toHaveLength(1)
+  })
+
+  it("tells Google users to update after a usage schema change", () => {
+    bar({
+      live: liveSummary({
+        providers: [],
+        errors: [
+          sourceError({ provider: "google", displayName: "Google", category: "schema" }),
+        ],
+      }),
+      expanded: true,
+    })
+
+    expect(
+      screen.getByText("Google usage changed. Update antiburn, then retry."),
+    ).toBeInTheDocument()
   })
 
   it("shows no degraded pill while the provider still shows cached windows", () => {

@@ -139,10 +139,12 @@ const PROVIDER_USAGE = {
   providers: [
     {
       provider: "anthropic",
+      accountKey: null,
       displayName: "Anthropic",
       state: "estimated",
       staleness: "fresh",
       windows: { today: USAGE_WINDOW, week: USAGE_WINDOW, month: USAGE_WINDOW },
+      agents: [],
       lastActivityAt: "2027-01-15T07:59:00Z",
     },
   ],
@@ -166,6 +168,7 @@ const LIVE_USAGE = {
   providers: [
     {
       provider: "openai",
+      accountKey: null,
       displayName: "Codex",
       support: "live",
       freshness: "fresh",

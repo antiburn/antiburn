@@ -83,7 +83,7 @@ async fn a_non_claude_file_source_uses_whole_document_fallback() {
         .await
         .expect("source version");
 
-    assert_eq!(version.streamability, Streamability::WholeDocumentFallback);
+    assert_eq!(version.streamability, Streamability::RecordStream);
     assert_eq!(version.estimated_bytes, Some(content.len() as u64));
     assert_eq!(version.fingerprint, expected_fingerprint);
 }
@@ -110,6 +110,36 @@ async fn the_preview_output_is_unchanged() {
             .await
             .map(|content| content.len()),
         Some(SOURCE_PREVIEW_BYTES as usize)
+    );
+}
+
+#[tokio::test]
+async fn bounded_whole_document_fallback_reads_past_the_preview() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("large-session.json");
+    let padding = "x".repeat(SOURCE_PREVIEW_BYTES as usize);
+    let content = format!(r#"{{"padding":"{padding}","sessionId":"large-session"}}"#);
+    tokio::fs::write(&path, content)
+        .await
+        .expect("write source");
+
+    let preview = session_source_preview(&SessionSource::File(path.clone()))
+        .await
+        .expect("preview");
+    assert!(
+        scanner::parse_session_metadata_str(&preview)
+            .session_id
+            .is_none()
+    );
+
+    let full = bounded_file_content(&path, WHOLE_DOCUMENT_METADATA_BYTES)
+        .await
+        .expect("bounded document");
+    assert_eq!(
+        scanner::parse_session_metadata_str(&full)
+            .session_id
+            .as_deref(),
+        Some("large-session")
     );
 }
 

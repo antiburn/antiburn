@@ -3,6 +3,9 @@
 node_modules/
 .DS_Store
 .*.sw?
+.env
+.env.*
+!.env.example
 
 # Local agent worktrees and metadata are not repository content, except for
 # the two agent hook settings files below.

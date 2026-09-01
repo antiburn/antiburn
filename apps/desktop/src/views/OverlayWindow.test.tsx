@@ -83,6 +83,7 @@ function summary(): LiveUsageSummaryPayload {
     providers: [
       {
         provider: "anthropic",
+        accountKey: null,
         displayName: "Anthropic",
         support: "live",
         freshness: "fresh",

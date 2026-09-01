@@ -283,6 +283,8 @@ mod tests {
         ProviderUsage {
             provider: provider.to_string(),
             display_name: provider.to_string(),
+            account_key: None,
+            agents: Vec::new(),
             state: ProviderUsageState::Estimated,
             staleness: ProviderUsageStaleness::Fresh,
             windows: ProviderUsageWindows::default(),
@@ -294,6 +296,7 @@ mod tests {
         LiveProviderUsage {
             provider: provider.to_string(),
             display_name: provider.to_string(),
+            account_key: None,
             support: LiveUsageSupport::Live,
             freshness: LiveUsageFreshness::Fresh,
             source_label: "test".to_string(),

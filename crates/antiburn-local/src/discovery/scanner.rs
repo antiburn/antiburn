@@ -187,6 +187,9 @@ pub async fn parse_session_metadata_with_agent_for(
     let agent_type = agent_type.unwrap_or_else(|| explorers.infer_agent_type(file));
 
     apply_metadata_from_path(explorers, &mut metadata, file, &agent_type).await;
+    if agent_type == AgentKind::Antigravity {
+        super::agents::antigravity::augment_brain_metadata(file, content, &mut metadata).await;
+    }
     metadata.agent_type = Some(agent_type);
 
     metadata

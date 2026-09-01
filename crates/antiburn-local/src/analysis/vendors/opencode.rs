@@ -20,9 +20,9 @@ use crate::analysis::framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
 };
 use crate::analysis::interface::{
-    ContentKind, ContentPart, EvidenceObservation, NormalizedRecord, RawSource, RecordSink,
-    RelationProvenance, SessionCollector, SessionInput, SessionSummary, TurnContent, VendorAdapter,
-    VisitOutcome,
+    ContentKind, ContentPart, EvidenceObservation, NormalizedRecord, ProviderHint, RawSource,
+    RecordSink, RelationProvenance, SessionCollector, SessionInput, SessionSummary, TurnContent,
+    VendorAdapter, VisitOutcome, push_provider_hint,
 };
 use crate::analysis::model::{
     CompactionTrigger, EventSource, NormalizedEvent, NormalizedSession, Role, ToolCall,
@@ -227,6 +227,7 @@ fn visit_database_connection(
         // `uuid` as a thread-identity gap and degrades the cache group.
         event.uuid = Some(message_id.clone());
         state.apply_session(&mut event, &session_id, session_id != root_session_id, sink);
+        state.observe_provider_hint(&value, &event);
         state.observe_model(&event);
         let mut pending = PendingMessage {
             id: message_id,
@@ -372,6 +373,7 @@ struct DescendantSessionMeta {
 struct OpenCodeStreamState {
     pending: Option<PendingMessage>,
     model: Option<String>,
+    provider_hints: Vec<ProviderHint>,
     /// The root session id, known from the export's `session_meta` row.
     /// `None` for a synthetic stream with no session wrapper; every message
     /// then stays main-scope, matching the pre-relationship behavior.
@@ -433,6 +435,7 @@ impl OpenCodeStreamState {
                             .is_some_and(|root| root != session_id);
                     self.apply_session(&mut event, session_id, is_child, sink);
                 }
+                self.observe_provider_hint(payload, &event);
                 self.observe_model(&event);
                 self.pending = Some(PendingMessage {
                     id: id.to_owned(),
@@ -573,6 +576,15 @@ impl OpenCodeStreamState {
         }
     }
 
+    fn observe_provider_hint(&mut self, value: &Value, event: &NormalizedEvent) {
+        if event.role != Role::Assistant {
+            return;
+        }
+        if let Some(provider) = value.get("providerID").and_then(Value::as_str) {
+            push_provider_hint(&mut self.provider_hints, provider, event.model.as_deref());
+        }
+    }
+
     fn flush(&mut self, sink: &mut dyn RecordSink) {
         if let Some(pending) = self.pending.take() {
             sink.record(NormalizedRecord::MetricsEvent(Box::new(pending.event)));
@@ -597,6 +609,7 @@ impl OpenCodeStreamState {
             cache_write_tokens_available: true,
             context_window: None,
             model: self.model.clone(),
+            provider_hints: self.provider_hints.clone(),
             started_at_ms: None,
             coverage_gaps,
             late_tools: Vec::new(),
@@ -807,6 +820,35 @@ mod tests {
         }
 
         fn finish(&mut self, _summary: SessionSummary) {}
+    }
+
+    #[test]
+    fn assistant_provider_id_is_retained_without_tokens() {
+        let mut state = OpenCodeStreamState::default();
+        let mut sink = CountingSink(0);
+        state.observe_export(
+            serde_json::json!({
+                "type": "message",
+                "messageID": "m1",
+                "time": {"created": 1000},
+                "payload": {
+                    "role": "assistant",
+                    "modelID": "copilot-model",
+                    "providerID": "github-copilot",
+                    "tokens": {"input": 0, "output": 0}
+                }
+            }),
+            128,
+            &mut sink,
+        );
+
+        assert_eq!(
+            state.finish().provider_hints,
+            vec![ProviderHint {
+                provider: "github-copilot".to_owned(),
+                model: Some("copilot-model".to_owned()),
+            }]
+        );
     }
 
     #[test]

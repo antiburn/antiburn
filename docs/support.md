@@ -32,8 +32,8 @@ described in [Network](#network).
 | Cline | Supported | Not supported | |
 | Kiro | Supported | Not supported | |
 | Amp | Supported | Not supported | |
-| Pi | macOS and Linux only | Not supported | Dedicated session analysis; excluded on Windows |
-| Antigravity | Supported, **disk-only** | Not supported | Documented local files only |
+| Pi | macOS and Linux only | Not supported | Pi v3 CLI sessions only, including `PI_AGENT_DIR`; dedicated analysis and Insights; excluded on native Windows and WSL; no Pi-specific live plan meter |
+| Antigravity | Supported, **disk-only** | Not supported | Native `agy`/IDE SQLite usage plus brain JSONL and saved cascade analysis |
 | Windsurf | Supported, **disk-only** | Not supported | Documented local files only |
 
 **Disk-only** means sessions come from the agent's own documented local files; the

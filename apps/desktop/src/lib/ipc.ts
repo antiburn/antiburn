@@ -288,11 +288,8 @@ export interface SessionAnalysisPayload {
  * How well the app can describe one provider's usage. Mirrors Rust
  * `ProviderUsageState`.
  *
- * `live` and `detected` are part of the contract but are **never** produced by
- * this build: a session transcript records what was spent, not what remains,
- * so neither an allowance nor a bare "signed in" signal can come out of it.
- * They are declared — and rendered — so a later, separately reviewed passive
- * source cannot arrive to a view that has no branch for it.
+ * `live` is reserved for provider-owned allowance data. `detected` means
+ * explicit transcript metadata names a provider but reports no tokens.
  */
 export type ProviderUsageState = "live" | "estimated" | "observed" | "detected" | "unknown"
 
@@ -327,14 +324,23 @@ export interface ProviderUsageWindowsPayload {
   month: ProviderUsageWindowPayload
 }
 
+export interface ProviderAgentUsagePayload {
+  agent: string
+  windows: ProviderUsageWindowsPayload
+}
+
 /** Everything the usage surfaces show about one provider. */
 export interface ProviderUsagePayload {
   /** Canonical id (`anthropic`, `openai`, `unknown`, …) — a key, not copy. */
   provider: string
+  /** Installation-scoped opaque account key, or null when unassigned. */
+  accountKey: string | null
   displayName: string
   state: ProviderUsageState
   staleness: ProviderUsageStaleness
   windows: ProviderUsageWindowsPayload
+  /** Per-agent contributions retained inside this provider account group. */
+  agents: ProviderAgentUsagePayload[]
   lastActivityAt: string | null
 }
 
@@ -448,6 +454,8 @@ export interface LiveUsagePlanPayload {
 export interface LiveProviderUsagePayload {
   /** Canonical id, matching `ProviderUsagePayload.provider` so the two join. */
   provider: string
+  /** Stable opaque account key. Null when the source does not identify an account. */
+  accountKey: string | null
   displayName: string
   support: LiveUsageSupport
   freshness: LiveUsageFreshness

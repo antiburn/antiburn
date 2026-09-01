@@ -16,7 +16,8 @@ use std::time::UNIX_EPOCH;
 
 use crate::discovery::scanner::AgentKind;
 use crate::discovery::{
-    AgentExplorer, SessionLog, SessionSource, SurfacePaths, home_dir, recent_files_with_exts,
+    AgentExplorer, SessionLog, SessionSource, SurfacePaths, env_path_when_real_home, home_dir,
+    recent_files_with_exts,
 };
 use async_trait::async_trait;
 
@@ -64,7 +65,13 @@ impl AgentExplorer for PiExplorer {
     /// CLI-only: `~/.pi/agent/sessions/`. Pi has no IDE companion today.
     fn surface_paths(&self, home: &Path) -> SurfacePaths {
         SurfacePaths {
-            cli: vec![home.join(".pi").join("agent").join("sessions")],
+            cli: vec![
+                agent_dir_in(
+                    home,
+                    env_path_when_real_home(home, "PI_AGENT_DIR").as_deref(),
+                )
+                .join("sessions"),
+            ],
             ide_desktop: Vec::new(),
             mirror: Vec::new(),
         }
@@ -109,54 +116,18 @@ async fn all_log_dirs() -> Vec<PathBuf> {
     log_dirs_in(&home).await
 }
 
-/// Return bounded recent native session payloads, newest first.
-///
-/// Session identity comes from the Pi filename contract, never content. Files
-/// larger than `max_bytes` are skipped rather than truncated.
-pub async fn recent_session_payloads(
-    cutoff: i64,
-    max_files: usize,
-    max_bytes: u64,
-) -> Vec<(String, String)> {
-    let mut candidates = Vec::new();
-    for dir in all_log_dirs().await {
-        let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
-            continue;
-        };
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let Ok(metadata) = entry.metadata().await else {
-                continue;
-            };
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-                .map(|value| value.as_secs() as i64)
-                .unwrap_or_default();
-            if modified >= cutoff && metadata.len() <= max_bytes {
-                candidates.push((modified, path));
-            }
-        }
-    }
-    candidates.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
-    let mut records = Vec::new();
-    for (_, path) in candidates.into_iter().take(max_files) {
-        let Some(session_key) = PiExplorer.recover_session_id_from_path(&path) else {
-            continue;
-        };
-        if let Ok(content) = tokio::fs::read_to_string(path).await {
-            records.push((session_key, content));
-        }
-    }
-    records
+fn agent_dir_in(home: &Path, override_dir: Option<&Path>) -> PathBuf {
+    override_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| home.join(".pi").join("agent"))
 }
 
 async fn log_dirs_in(home: &Path) -> Vec<PathBuf> {
-    let sessions_dir = home.join(".pi").join("agent").join("sessions");
+    let sessions_dir = agent_dir_in(
+        home,
+        env_path_when_real_home(home, "PI_AGENT_DIR").as_deref(),
+    )
+    .join("sessions");
     let mut entries = match tokio::fs::read_dir(&sessions_dir).await {
         Ok(entries) => entries,
         Err(_) => return Vec::new(),
@@ -234,7 +205,9 @@ async fn newest_recent_jsonl(dir: &Path, cutoff: i64) -> Option<PathBuf> {
 /// contribute this directory's CWD to repo discovery, which the upstream
 /// `discover_cwds_in` is designed to tolerate.
 async fn cwd_from_first_line(path: &Path) -> Option<String> {
-    use tokio::io::AsyncBufReadExt;
+    use tokio::io::AsyncReadExt;
+    const MAX_HEADER_BYTES: usize = 64 * 1024;
+
     let file = match tokio::fs::File::open(path).await {
         Ok(f) => f,
         Err(err) => {
@@ -242,13 +215,24 @@ async fn cwd_from_first_line(path: &Path) -> Option<String> {
             return None;
         }
     };
-    let mut reader = tokio::io::BufReader::new(file);
-    let mut line = String::new();
-    if let Err(err) = reader.read_line(&mut line).await {
+    let mut bytes = Vec::with_capacity(MAX_HEADER_BYTES.min(4096));
+    if let Err(err) = file
+        .take((MAX_HEADER_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await
+    {
         ::tracing::trace!(path = %path.display(), error = %err, "pi: cwd_from_first_line read failed");
         return None;
     }
-    let value: serde_json::Value = match serde_json::from_str(&line) {
+    let line_end = bytes
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(bytes.len());
+    if line_end > MAX_HEADER_BYTES || (line_end == bytes.len() && bytes.len() > MAX_HEADER_BYTES) {
+        ::tracing::trace!(path = %path.display(), "pi: cwd_from_first_line record exceeds size cap");
+        return None;
+    }
+    let value: serde_json::Value = match serde_json::from_slice(&bytes[..line_end]) {
         Ok(v) => v,
         Err(err) => {
             ::tracing::trace!(path = %path.display(), error = %err, "pi: cwd_from_first_line json parse failed");

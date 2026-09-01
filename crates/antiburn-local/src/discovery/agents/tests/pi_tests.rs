@@ -6,6 +6,15 @@ fn pi_sessions_dir(home: &Path) -> PathBuf {
     home.join(".pi").join("agent").join("sessions")
 }
 
+#[test]
+fn test_agent_dir_accepts_pi_agent_dir_override() {
+    let home = Path::new("/synthetic/home");
+    let override_dir = Path::new("/synthetic/pi-agent");
+
+    assert_eq!(agent_dir_in(home, Some(override_dir)), override_dir);
+    assert_eq!(agent_dir_in(home, None), home.join(".pi").join("agent"));
+}
+
 #[tokio::test]
 async fn test_log_dirs_finds_subdirs() {
     let home = TempDir::new().unwrap();
@@ -52,34 +61,6 @@ async fn test_discover_recent_finds_jsonl_files() {
 }
 
 #[tokio::test]
-#[serial_test::serial]
-async fn recent_provider_usage_records_preserve_session_identity_and_payload() {
-    let home = TempDir::new().unwrap();
-    let previous_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", home.path()) };
-    let project_dir = pi_sessions_dir(home.path()).join("--Users-test--");
-    tokio::fs::create_dir_all(&project_dir).await.unwrap();
-    let session_id = "019e61cd-aaaa-bbbb-cccc-dddddddddddd";
-    let payload = r#"{"type":"message","message":{"role":"assistant","provider":"openai-codex"}}"#;
-    tokio::fs::write(
-        project_dir.join(format!("2026-05-26T01-02-03-000Z_{session_id}.jsonl")),
-        payload,
-    )
-    .await
-    .unwrap();
-
-    let records = recent_session_payloads(0, 10, 1024).await;
-
-    unsafe {
-        match previous_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
-    }
-    assert_eq!(records, vec![(session_id.to_string(), payload.to_string())]);
-}
-
-#[tokio::test]
 async fn test_discover_cwds_reads_cwd_from_session_record() {
     let home = TempDir::new().unwrap();
     let sessions = pi_sessions_dir(home.path());
@@ -103,6 +84,36 @@ async fn test_discover_cwds_reads_cwd_from_session_record() {
 
     let cwds = discover_cwds_in(home.path(), now, 86_400).await;
     assert_eq!(cwds, vec!["/Users/test/projects/bar".to_string()]);
+}
+
+#[tokio::test]
+async fn test_discover_cwds_skips_oversized_first_records() {
+    let home = TempDir::new().unwrap();
+    let project_dir = pi_sessions_dir(home.path()).join("--Users-test--");
+    tokio::fs::create_dir_all(&project_dir).await.unwrap();
+    let session_file =
+        project_dir.join("2026-05-26T01-02-03-000Z_019e61cd-aaaa-bbbb-cccc-dddddddddddd.jsonl");
+    let oversized = format!(r#"{{"type":"session","cwd":"{}"}}"#, "x".repeat(64 * 1024));
+    tokio::fs::write(&session_file, oversized).await.unwrap();
+
+    assert_eq!(cwd_from_first_line(&session_file).await, None);
+}
+
+#[tokio::test]
+async fn test_discover_cwds_accepts_a_bounded_unterminated_first_record() {
+    let home = TempDir::new().unwrap();
+    let session_file = home.path().join("session.jsonl");
+    tokio::fs::write(
+        &session_file,
+        r#"{"type":"session","cwd":"/synthetic/project"}"#,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        cwd_from_first_line(&session_file).await.as_deref(),
+        Some("/synthetic/project")
+    );
 }
 
 #[tokio::test]

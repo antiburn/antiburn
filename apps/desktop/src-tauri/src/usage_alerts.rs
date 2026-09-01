@@ -28,7 +28,7 @@ use crate::store::Store;
 pub const EVENT_CHANGED: &str = "live-usage:changed";
 
 /// Where the last complete view payload survives an application restart.
-const SNAPSHOT_KEY: &str = "internal:liveUsageSnapshot";
+const SNAPSHOT_KEY: &str = "internal:liveUsageSnapshotV2";
 
 /// The last webview-reported UTC offset used to derive local-day metrics.
 const UTC_OFFSET_KEY: &str = "internal:liveUsageUtcOffsetMinutes";
@@ -396,6 +396,7 @@ mod tests {
             meters: Vec::new(),
             providers: vec![LiveProviderUsage {
                 provider: "openai".into(),
+                account_key: None,
                 display_name: "Codex".into(),
                 support: LiveUsageSupport::Live,
                 freshness: LiveUsageFreshness::Fresh,

@@ -282,11 +282,8 @@ pub struct ScanStatus {
 /// kind of evidence produced the numbers, so a view can never dress a rough
 /// figure up as a precise one.
 ///
-/// Only three of the five are producible from session observations, which is
-/// all v1 has. [`Live`](Self::Live) and [`Detected`](Self::Detected) are
-/// declared because they are part of the ratified presentation contract and a
-/// view must render them correctly the day a separately-approved passive
-/// evidence source starts emitting them — but nothing in this build ever does.
+/// Four states are producible from session observations. [`Live`](Self::Live)
+/// remains reserved for provider-owned allowance data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderUsageState {
@@ -307,10 +304,7 @@ pub enum ProviderUsageState {
     Observed,
     /// The provider is present but nothing is quantified.
     ///
-    /// **Reserved.** Same rationale as [`Live`](Self::Live): distinguishing
-    /// "installed and signed in" from "used" needs evidence beyond a
-    /// transcript.
-    #[allow(dead_code)]
+    /// Explicit transcript metadata names the provider, but reports no tokens.
     Detected,
     /// Sessions were attributed to this provider, but they carry no token
     /// evidence at all — unanalyzed, or analyzed to nothing.
@@ -368,16 +362,27 @@ pub struct ProviderUsageWindows {
     pub month: ProviderUsageWindow,
 }
 
+/// One source agent's contribution to a provider account group.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderAgentUsage {
+    pub agent: String,
+    pub windows: ProviderUsageWindows,
+}
+
 /// Everything the usage surfaces show about one provider.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUsage {
     /// Canonical provider id (`anthropic`, `openai`, `unknown`, …).
     pub provider: String,
+    /// Installation-scoped opaque key, or `None` when the account is unknown.
+    pub account_key: Option<String>,
     pub display_name: String,
     pub state: ProviderUsageState,
     pub staleness: ProviderUsageStaleness,
     pub windows: ProviderUsageWindows,
+    pub agents: Vec<ProviderAgentUsage>,
     /// ISO-8601 stamp of the newest session attributed to this provider.
     pub last_activity_at: Option<String>,
 }
@@ -1150,6 +1155,10 @@ pub struct LiveProviderUsage {
     /// Canonical provider id, matching [`ProviderUsage::provider`] so the
     /// views can join the two payloads without a translation table.
     pub provider: String,
+    /// A stable opaque key for this provider account. This value is `null`
+    /// when the source does not identify an account.
+    #[serde(default)]
+    pub account_key: Option<String>,
     pub display_name: String,
     pub support: LiveUsageSupport,
     pub freshness: LiveUsageFreshness,

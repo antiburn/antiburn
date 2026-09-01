@@ -127,16 +127,6 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
 
       <SectionGroup title="Show Meter">
         <Card>
-          {meters.length === 0 && (
-            <Row
-              label="No plan limits found"
-              description={
-                on
-                  ? "No provider credentials were found on this machine yet. Sign in with a coding tool and this fills in."
-                  : "Turn the switch above back on to ask your providers for current plan limits."
-              }
-            />
-          )}
           {meters.map((meter) => {
             const reading = live.providers.find(
               (provider) => provider.provider === meter.provider,
@@ -186,24 +176,30 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
  * next refresh answers with the real one.
  */
 function roster(live: LiveUsageSummaryPayload): LiveUsageMeterPayload[] {
-  if (live.meters.length > 0) return live.meters
   const named = new Map<string, LiveUsageMeterPayload>()
-  for (const provider of live.providers) {
-    named.set(provider.provider, {
-      provider: provider.provider,
-      displayName: provider.displayName,
-      shown: true,
-    })
+  if (live.meters.length > 0) {
+    for (const meter of live.meters) named.set(meter.provider, meter)
+  } else {
+    for (const provider of live.providers) {
+      named.set(provider.provider, {
+        provider: provider.provider,
+        displayName: provider.displayName,
+        shown: true,
+      })
+    }
+    for (const error of live.errors) {
+      if (named.has(error.provider)) continue
+      named.set(error.provider, {
+        provider: error.provider,
+        displayName: error.displayName || error.provider,
+        shown: true,
+      })
+    }
   }
-  for (const error of live.errors) {
-    if (named.has(error.provider)) continue
-    named.set(error.provider, {
-      provider: error.provider,
-      displayName: error.displayName || error.provider,
-      shown: true,
-    })
+  if (!named.has("google")) {
+    named.set("google", { provider: "google", displayName: "Google", shown: true })
   }
-  return [...named.values()]
+  return [...named.values()].sort((left, right) => left.provider.localeCompare(right.provider))
 }
 
 /**
