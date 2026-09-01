@@ -20,6 +20,11 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Changed
+
+- The main popover now stays ready after its first use, so reopening it reuses
+  the hidden renderer instead of rebuilding the window after 15 seconds.
+
 ## [0.3.0-rc.1] - 2026-09-01
 
 This is a release-candidate rehearsal build for user acceptance testing.

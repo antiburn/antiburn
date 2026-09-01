@@ -1,9 +1,8 @@
 //! The tray-anchored popover window.
 //!
-//! The popover is created lazily on the first tray click. After dismissal it
-//! stays warm for a short grace period, so a quick reopen is immediate. Once
-//! the grace period ends, the shell destroys the hidden renderer. The next
-//! open creates a new renderer from native state.
+//! The popover is created lazily on the first tray click. After its first
+//! reveal, dismissal hides the renderer but keeps it ready for the process
+//! lifetime. Each later open reuses the same renderer and its loaded state.
 //!
 //! # Geometry
 //!
@@ -342,7 +341,7 @@ pub struct PopoverState {
     pinned: AtomicBool,
     /// The generation of the current renderer.
     renderer_generation: AtomicU64,
-    /// The bounded ownership of hidden renderers and eviction callbacks.
+    /// The bounded onboarding prewarm and its eviction callbacks.
     retention: Mutex<Retention>,
     /// Content-free timing for the active menu-bar open request.
     timing: timing::PopoverTiming,
@@ -439,13 +438,12 @@ impl PopoverState {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn arm_hidden_retention(
+    fn arm_prewarm_retention(
         &self,
         renderer_generation: u64,
         now: Instant,
     ) -> Option<EvictionSchedule> {
-        self.retention()
-            .arm_hidden(renderer_generation, now, self.is_pinned())
+        self.retention().arm_hidden(renderer_generation, now)
     }
 
     fn arm_eviction_retry(&self, renderer_generation: u64, mode: EvictionMode) -> EvictionSchedule {
@@ -467,7 +465,7 @@ impl PopoverState {
     fn take_eviction_if_due(&self, token: EvictionToken, visible: bool) -> Option<DueEviction> {
         let renderer_generation = self.renderer_generation.load(Ordering::SeqCst);
         self.retention()
-            .take_due(token, renderer_generation, visible, self.is_pinned())
+            .take_due(token, renderer_generation, visible)
     }
 
     fn mark_prewarm(&self, generation: u64, now: Instant) {
@@ -616,7 +614,7 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
                 .renderer_generation
                 .store(generation, Ordering::SeqCst);
             if state.is_prewarm(generation) {
-                schedule_idle_eviction(app);
+                schedule_prewarm_eviction(app);
             }
             Ok(window)
         }
@@ -705,7 +703,7 @@ fn replace_expired_prewarm(
     if let Err(error) = existing.destroy() {
         window_lifecycle::cancel_load::<PopoverState>(app, generation);
         let retry = state.arm_eviction_retry(expired_generation, expired.mode());
-        arm_idle_eviction(app, retry);
+        arm_prewarm_eviction(app, retry);
         return Err(error);
     }
     state.clear_prewarm_generation(expired_generation);
@@ -784,7 +782,7 @@ fn request_open_window(
                 window_lifecycle::cancel_load::<PopoverState>(app, generation);
                 if prewarmed && let Some(prewarm_generation) = prewarm_generation {
                     state.transfer_prewarm(generation, prewarm_generation);
-                    schedule_idle_eviction(app);
+                    schedule_prewarm_eviction(app);
                 }
                 return Err(error);
             }
@@ -896,7 +894,7 @@ fn request_toggle_window(app: &AppHandle, requested_at: Instant) -> tauri::Resul
                 window_lifecycle::cancel_load::<PopoverState>(app, generation);
                 if prewarmed && let Some(prewarm_generation) = prewarm_generation {
                     state.transfer_prewarm(generation, prewarm_generation);
-                    schedule_idle_eviction(app);
+                    schedule_prewarm_eviction(app);
                 }
                 return Err(error);
             }
@@ -1006,7 +1004,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
         WindowRequest::AwaitingBuild => return,
         WindowRequest::Cancelled => {
             note_hidden(app);
-            schedule_idle_eviction(app);
+            schedule_prewarm_eviction(app);
             return;
         }
     };
@@ -1087,23 +1085,23 @@ fn hide_window(app: &AppHandle) {
     };
     let _ = window.hide();
     note_hidden(app);
-    schedule_idle_eviction(app);
+    schedule_prewarm_eviction(app);
 }
 
-fn schedule_idle_eviction(app: &AppHandle) {
+fn schedule_prewarm_eviction(app: &AppHandle) {
     let Some(state) = app.try_state::<PopoverState>() else {
         return;
     };
     let loading_generation = state.readiness().loading_generation();
     let renderer_generation =
         loading_generation.unwrap_or_else(|| state.renderer_generation.load(Ordering::SeqCst));
-    let Some(schedule) = state.arm_hidden_retention(renderer_generation, Instant::now()) else {
+    let Some(schedule) = state.arm_prewarm_retention(renderer_generation, Instant::now()) else {
         return;
     };
-    arm_idle_eviction(app, schedule);
+    arm_prewarm_eviction(app, schedule);
 }
 
-fn arm_idle_eviction(app: &AppHandle, schedule: EvictionSchedule) {
+fn arm_prewarm_eviction(app: &AppHandle, schedule: EvictionSchedule) {
     let Some(state) = app.try_state::<PopoverState>() else {
         return;
     };
@@ -1152,7 +1150,7 @@ fn evict_if_due(app: &AppHandle, token: EvictionToken) {
                 error = %error
             );
             let retry = state.arm_eviction_retry(due.renderer_generation(), due.mode());
-            arm_idle_eviction(app, retry);
+            arm_prewarm_eviction(app, retry);
         }
     }
 }
@@ -1343,7 +1341,7 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
         {
             let _ = window.set_focus();
         } else {
-            schedule_idle_eviction(app);
+            schedule_prewarm_eviction(app);
         }
         return;
     }
@@ -1426,7 +1424,7 @@ pub fn renderer_ready(window: &WebviewWindow, generation: u64) {
                     error = %error
                 );
                 let retry = state.arm_eviction_retry(generation, expired.mode());
-                arm_idle_eviction(app, retry);
+                arm_prewarm_eviction(app, retry);
             }
         }
         return;
@@ -1441,7 +1439,7 @@ pub fn renderer_ready(window: &WebviewWindow, generation: u64) {
     if window_lifecycle::renderer_ready::<PopoverState>(app, LABEL, generation, now) {
         reveal(window);
     } else if prewarm_became_ready {
-        schedule_idle_eviction(app);
+        schedule_prewarm_eviction(app);
     }
 }
 
@@ -1485,7 +1483,7 @@ fn reveal(window: &WebviewWindow) {
     }
     if let Err(error) = window.show() {
         ::tracing::error!(event = "window_reveal_failed", window = LABEL, error = %error);
-        schedule_idle_eviction(app);
+        schedule_prewarm_eviction(app);
         return;
     }
     let revealed_at = Instant::now();
@@ -1963,7 +1961,7 @@ mod tests {
         assert!(!state.is_prewarm(4));
         assert!(state.is_prewarm(5));
         let schedule = state
-            .arm_hidden_retention(5, started_at + Duration::from_secs(10))
+            .arm_prewarm_retention(5, started_at + Duration::from_secs(10))
             .expect("the transferred prewarm remains retained");
         assert_eq!(schedule.delay(), Duration::from_secs(55));
         assert_eq!(schedule.mode(), EvictionMode::PrewarmLoading);
