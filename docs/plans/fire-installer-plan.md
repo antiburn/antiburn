@@ -14,7 +14,7 @@ install log runs underneath. Spec comes from playground v9, signed off
 | 3. Terminal gating and fallbacks | done |
 | 4. Live-updating log | done |
 | 5. Verification matrix | done, except a real `curl \| sh` against a release (needs release assets; Keith tests) |
-| 6. PR | open |
+| 6. PR | done — [antiburn/antiburn#333](https://github.com/antiburn/antiburn/pull/333) |
 
 Follow-up, not in this change: port the same sim upgrades back to the
 tuning harness in antiburn_assets/fire-term, so the two do not drift.
