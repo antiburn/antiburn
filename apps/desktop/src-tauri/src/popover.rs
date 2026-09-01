@@ -37,6 +37,8 @@
 //! Whichever way it goes, it leaves through [`note_hidden`], which is also
 //! where the menu-bar item is unlit; [`note_shown`] is the other half.
 
+#[cfg(target_os = "macos")]
+mod panel;
 mod retention;
 mod timing;
 
@@ -618,6 +620,11 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
 
     match builder.build() {
         Ok(window) => {
+            // Non-activating panel: opening the popover must not deactivate
+            // the frontmost application. Applied here so a rebuild after a
+            // destroy converts again.
+            #[cfg(target_os = "macos")]
+            panel::to_nonactivating_panel(&window);
             let state = app.state::<PopoverState>();
             state
                 .renderer_generation
@@ -638,6 +645,36 @@ fn build_window(app: &AppHandle, generation: u64) -> tauri::Result<WebviewWindow
             Err(error)
         }
     }
+}
+
+/// Give the popover keyboard focus.
+///
+/// On macOS this goes through the non-activating panel, so the frontmost
+/// application stays active and keeps its full visual state. The plain
+/// `set_focus` fallback covers a window the panel plugin never converted.
+fn focus_popover(window: &WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    if panel::focus_without_activation(window) {
+        return;
+    }
+    if let Err(error) = window.set_focus() {
+        ::tracing::warn!(event = "window_focus_failed", window = LABEL, error = %error);
+    }
+}
+
+/// Destroy the popover window.
+///
+/// On macOS the panel class must return to its original window class first
+/// (see [`panel::prepare_for_destroy`]); a failed restore aborts the destroy,
+/// and the caller's existing error path keeps the window and retries.
+fn destroy_window(window: &WebviewWindow) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    if !panel::prepare_for_destroy(window) {
+        return Err(tauri::Error::Io(std::io::Error::other(
+            "the popover panel could not be restored to a window before destroy",
+        )));
+    }
+    window.destroy()
 }
 
 enum WindowRequest {
@@ -709,7 +746,7 @@ fn replace_expired_prewarm(
     };
 
     state.readiness().defer_build_until_destroyed(generation);
-    if let Err(error) = existing.destroy() {
+    if let Err(error) = destroy_window(&existing) {
         window_lifecycle::cancel_load::<PopoverState>(app, generation);
         let retry = state.arm_eviction_retry(expired_generation, expired.mode());
         arm_prewarm_eviction(app, retry);
@@ -787,7 +824,7 @@ fn request_open_window(
             if !state.readiness().defer_build_until_destroyed(generation) {
                 return Ok(WindowRequest::AwaitingBuild);
             }
-            if let Err(error) = existing.destroy() {
+            if let Err(error) = destroy_window(&existing) {
                 window_lifecycle::cancel_load::<PopoverState>(app, generation);
                 if prewarmed && let Some(prewarm_generation) = prewarm_generation {
                     state.transfer_prewarm(generation, prewarm_generation);
@@ -899,7 +936,7 @@ fn request_toggle_window(app: &AppHandle, requested_at: Instant) -> tauri::Resul
             if !state.readiness().defer_build_until_destroyed(generation) {
                 return Ok(WindowRequest::AwaitingBuild);
             }
-            if let Err(error) = existing.destroy() {
+            if let Err(error) = destroy_window(&existing) {
                 window_lifecycle::cancel_load::<PopoverState>(app, generation);
                 if prewarmed && let Some(prewarm_generation) = prewarm_generation {
                     state.transfer_prewarm(generation, prewarm_generation);
@@ -987,7 +1024,7 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
             if let Err(error) = anchor_to(&window, anchor) {
                 ::tracing::warn!(event = "popover_anchor_failed", error = %error);
             }
-            let _ = window.set_focus();
+            focus_popover(&window);
             return;
         }
         hide_window(app);
@@ -1078,7 +1115,7 @@ fn destroy_prewarm(app: &AppHandle) -> bool {
     let Some(window) = app.get_webview_window(LABEL) else {
         return true;
     };
-    match window.destroy() {
+    match destroy_window(&window) {
         Ok(()) => true,
         Err(error) => {
             ::tracing::warn!(event = "popover_prewarm_cancel_failed", error = %error);
@@ -1147,7 +1184,7 @@ fn evict_if_due(app: &AppHandle, token: EvictionToken) {
     let Some(due) = state.take_eviction_if_due(token, visible) else {
         return;
     };
-    match window.destroy() {
+    match destroy_window(&window) {
         Ok(()) => {
             state.clear_prewarm_generation(due.renderer_generation());
             ::tracing::info!(event = "window_renderer_evicted", window = LABEL);
@@ -1327,7 +1364,7 @@ pub fn end_focus_hold(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(LABEL)
         && window.is_visible().unwrap_or(false)
     {
-        let _ = window.set_focus();
+        focus_popover(&window);
     }
 }
 
@@ -1365,7 +1402,7 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
         if let Some(window) = app.get_webview_window(LABEL)
             && window.is_visible().unwrap_or(false)
         {
-            let _ = window.set_focus();
+            focus_popover(&window);
         } else {
             schedule_prewarm_eviction(app);
         }
@@ -1424,7 +1461,7 @@ pub fn set_pinned(app: &AppHandle, pinned: bool) {
     // Guarded exactly as `end_focus_hold` is: focusing a hidden window would
     // order it front, and an unpin is not a request to open anything.
     if window.is_visible().unwrap_or(false) {
-        let _ = window.set_focus();
+        focus_popover(&window);
     }
 }
 
@@ -1438,7 +1475,7 @@ pub fn renderer_ready(window: &WebviewWindow, generation: u64) {
     {
         state.cancel_eviction();
         prepare_expired_renderer_retirement(&state, generation, now);
-        match window.destroy() {
+        match destroy_window(window) {
             Ok(()) => {
                 state.clear_prewarm_generation(generation);
                 ::tracing::info!(event = "window_renderer_evicted", window = LABEL);
@@ -1518,9 +1555,7 @@ fn reveal(window: &WebviewWindow) {
         state.timing.revealed(generation, revealed_at);
     }
     ::tracing::info!(event = "window_revealed", window = LABEL, generation);
-    if let Err(error) = window.set_focus() {
-        ::tracing::warn!(event = "window_focus_failed", window = LABEL, error = %error);
-    }
+    focus_popover(window);
     note_shown(app);
 }
 

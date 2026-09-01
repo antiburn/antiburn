@@ -147,6 +147,10 @@ objc2 = "0.6"
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSCell", "NSControl", "NSView", "NSResponder", "NSColor", "NSFont", "NSFontDescriptor", "NSAttributedString", "NSEvent", "block2"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAttributedString", "NSDictionary", "NSValue", "NSObject", "NSURL", "NSError", "NSNotification", "NSOperation", "block2"] }
+# Subclasses the popover into a non-activating NSPanel (`src/popover/panel.rs`),
+# so opening it does not deactivate the frontmost application. The rev must
+# match the nudge crate's pin so both share one plugin registration.
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Per-user Run-key registration. Kept in Rust so executable paths are quoted
