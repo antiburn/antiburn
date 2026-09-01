@@ -8,5 +8,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=ANTIBURN_ANALYTICS_URL");
     println!("cargo:rerun-if-env-changed=ANTIBURN_ANALYTICS_OPERATOR");
     println!("cargo:rerun-if-env-changed=ANTIBURN_ANALYTICS_ENABLED");
+    println!("cargo:rerun-if-env-changed=GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_ID");
+    println!("cargo:rerun-if-env-changed=GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_SECRET");
     tauri_build::build();
 }

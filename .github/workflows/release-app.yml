@@ -599,6 +599,9 @@ jobs:
           # Complete and link the public privacy policy before you configure them.
           ANTIBURN_ANALYTICS_URL: ${{ secrets.ANTIBURN_ANALYTICS_URL }}
           ANTIBURN_ANALYTICS_OPERATOR: ${{ secrets.ANTIBURN_ANALYTICS_OPERATOR }}
+          # Google installed-app credentials used only for Antigravity 2.0.
+          GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_ID }}
+          GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_SECRET }}
           # linuxdeploy cannot mount a FUSE filesystem on a GitHub runner.
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
@@ -615,6 +618,11 @@ jobs:
           if { [[ -n "${ANTIBURN_ANALYTICS_URL:-}" ]] && [[ -z "${ANTIBURN_ANALYTICS_OPERATOR:-}" ]]; } || \
              { [[ -z "${ANTIBURN_ANALYTICS_URL:-}" ]] && [[ -n "${ANTIBURN_ANALYTICS_OPERATOR:-}" ]]; }; then
             echo "ANTIBURN_ANALYTICS_URL and ANTIBURN_ANALYTICS_OPERATOR must be configured together." >&2
+            exit 1
+          fi
+          if [[ -z "${GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_ID:-}" ]] || \
+             [[ -z "${GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_SECRET:-}" ]]; then
+            echo "The Antigravity 2.0 OAuth client credentials are required for a release." >&2
             exit 1
           fi
           if [[ -n "${TAURI_SIGNING_CONFIG:-}" ]]; then

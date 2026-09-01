@@ -166,6 +166,46 @@ pub enum RelationProvenance {
     SessionParentLink,
 }
 
+/// One provider name observed with the model it billed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderHint {
+    pub provider: String,
+    pub model: Option<String>,
+}
+
+pub const MAX_PROVIDER_HINTS: usize = crate::analysis::evidence::MAX_MODELS;
+
+pub(crate) fn push_provider_hint(
+    hints: &mut Vec<ProviderHint>,
+    provider: &str,
+    model: Option<&str>,
+) {
+    let Some(provider) = bounded_provider_hint_value(provider) else {
+        return;
+    };
+    let model = model.and_then(bounded_provider_hint_value);
+    let hint = ProviderHint { provider, model };
+    if hints.contains(&hint) || hints.len() >= MAX_PROVIDER_HINTS {
+        return;
+    }
+    hints.push(hint);
+}
+
+pub(crate) fn bounded_provider_hint_value(value: &str) -> Option<String> {
+    use crate::analysis::evidence::EVIDENCE_STRING_CAP;
+
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let mut end = value.len().min(EVIDENCE_STRING_CAP);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(value[..end].to_owned())
+}
+
 /// Session facts that an adapter can state only after the last record.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -174,6 +214,8 @@ pub struct SessionSummary {
     pub cache_write_tokens_available: bool,
     pub context_window: Option<u64>,
     pub model: Option<String>,
+    /// Unique, bounded raw provider and model observations.
+    pub provider_hints: Vec<ProviderHint>,
     /// The provider-declared session start, in Unix milliseconds.
     pub started_at_ms: Option<i64>,
     /// Source gaps that become known only when the stream ends.
@@ -328,6 +370,7 @@ pub trait VendorAdapter: Sync {
             cache_write_tokens_available,
             context_window,
             model,
+            provider_hints: Vec::new(),
             started_at_ms: None,
             coverage_gaps: Vec::new(),
             late_tools: Vec::new(),

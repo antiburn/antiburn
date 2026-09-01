@@ -32,10 +32,14 @@
 //!    Each tree is walked layout-tolerantly for `.json` and `.jsonl` files.
 //!    `GEMINI_HOME` overrides the root for all three.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::fs::File;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
+use crate::analysis::{BoundedJsonlReader, FramedRecord};
 use crate::discovery::scanner::AgentKind;
+use crate::discovery::scanner::{SessionMetadata, TitleSource};
 use crate::discovery::{
     AgentExplorer, SessionLog, SessionMirror, SessionSource, SurfacePaths, app_config_dir_in,
     collect_dirs_with_exts, dir_has_json_files, env_path_when_real_home, find_chat_session_dirs,
@@ -87,13 +91,6 @@ impl AgentExplorer for AntigravityExplorer {
         };
         let dirs = self.log_dirs_in(&home).await;
         let files = recent_files_with_exts(&dirs, now, since_secs, SESSION_FILE_EXTS).await;
-        // Load history.jsonl once per scan; the synthesizer consults it for
-        // CLI-origin brain transcripts. Honors GEMINI_HOME just like the
-        // brain-dir walker does.
-        let gemini_root =
-            env_path_when_real_home(&home, "GEMINI_HOME").unwrap_or_else(|| home.join(".gemini"));
-        let cli_history = read_cli_history(&gemini_root).await;
-
         // Agent-Manager workers are ordinary mirrored cascades (and brain
         // transcripts) in the same trees this walk covers, linked to their
         // orchestrator only by a sidecar edge. Drop them so a worker never
@@ -110,16 +107,7 @@ impl AgentExplorer for AntigravityExplorer {
             if is_excluded_subagent(&file.path, &child_ids) {
                 continue;
             }
-            match classify_session_file(&file.path, cli_history.as_deref()).await {
-                SessionFileDecision::Inline(payload) => logs.push(SessionLog {
-                    environment: Default::default(),
-                    agent_type: AgentKind::Antigravity,
-                    source: SessionSource::Inline {
-                        label: format!("antigravity-brain:{}", file.path.display()),
-                        content: payload,
-                    },
-                    updated_at: Some(file.mtime_epoch),
-                }),
+            match classify_session_file(&file.path) {
                 SessionFileDecision::File => logs.push(SessionLog {
                     environment: Default::default(),
                     agent_type: AgentKind::Antigravity,
@@ -148,22 +136,28 @@ impl AgentExplorer for AntigravityExplorer {
             || self.mirror.owns(path_lower)
     }
 
-    /// Reuses `discover_recent` so brain transcripts go through the same
-    /// Inline-cascade synthesis as the activity-list path.
+    /// Reuses `discover_recent` so brain transcripts use the same file-backed
+    /// metadata path as the activity list.
     async fn discover_cwds(&self, now: i64, since_secs: i64) -> Vec<String> {
         let logs = self.discover_recent(now, since_secs).await;
-        let mut set = tokio::task::JoinSet::new();
-        for log in logs {
-            let source = log.source;
-            set.spawn(async move {
-                crate::discovery::session_source_metadata(&source, None)
-                    .await
-                    .and_then(|metadata| metadata.cwd)
-            });
-        }
+        let Some(home) = home_dir() else {
+            return Vec::new();
+        };
+        let gemini_root =
+            env_path_when_real_home(&home, "GEMINI_HOME").unwrap_or_else(|| home.join(".gemini"));
+        let history = read_cli_history(&gemini_root).await;
         let mut cwds = Vec::new();
-        while let Some(result) = set.join_next().await {
-            if let Ok(Some(cwd)) = result {
+        for log in logs {
+            let SessionSource::File(path) = log.source else {
+                continue;
+            };
+            let source = SessionSource::File(path.clone());
+            let Some(preview) = crate::discovery::session_source_preview(&source).await else {
+                continue;
+            };
+            let mut metadata = crate::discovery::scanner::parse_session_metadata_str(&preview);
+            augment_brain_metadata_with_history(&path, &preview, &mut metadata, history.as_deref());
+            if let Some(cwd) = metadata.cwd {
                 cwds.push(cwd);
             }
         }
@@ -198,6 +192,13 @@ impl AgentExplorer for AntigravityExplorer {
             ],
             mirror: self.mirror.roots_in(home),
         }
+    }
+
+    fn recover_session_id_from_path(&self, file: &Path) -> Option<String> {
+        brain_uuid_dir(file)?
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
     }
 
     // ---- Orchestration: Antigravity's Agent Manager spawns each worker as its
@@ -317,9 +318,6 @@ async fn gemini_brain_dirs_for_overrides(home: &Path, gemini_home: Option<&Path>
 
 /// What `discover_recent` should do with one discovered session file.
 enum SessionFileDecision {
-    /// Surface as a synthesized inline cascade (a brain main transcript whose
-    /// metadata header we could build).
-    Inline(String),
     /// Surface the file as-is.
     File,
     /// Drop it — a brain sidecar / `transcript_full.jsonl` that isn't a session.
@@ -328,23 +326,9 @@ enum SessionFileDecision {
 
 /// Decide how to surface one discovered file. Split out of `discover_recent` so
 /// the brain-transcript fallback is unit-testable without the discovery walk.
-async fn classify_session_file(
-    file: &Path,
-    cli_history: Option<&[CliHistoryEntry]>,
-) -> SessionFileDecision {
-    // Brain transcripts carry no structured cwd/session_id at the JSON level.
-    // Transform the main transcript into the same cascade shape the local-API
-    // probe emits so the agent-agnostic scanner picks up session_id, cwd, and
-    // title via its existing extractors.
+fn classify_session_file(file: &Path) -> SessionFileDecision {
     if is_brain_transcript_main(file) {
-        return match synthesize_brain_inline_payload(file, cli_history).await {
-            Some((_uuid, payload)) => SessionFileDecision::Inline(payload),
-            // Synthesis can fail (the transcript became unreadable, or it lives
-            // under an unrecognized brain subroot). Fall back to surfacing the raw
-            // transcript file rather than dropping the session entirely — `main`
-            // would otherwise have emitted it as a plain `SessionSource::File`.
-            None => SessionFileDecision::File,
-        };
+        return SessionFileDecision::File;
     }
     // Under a brain `<uuid>/` tree the only session is the main transcript
     // (handled above). `transcript_full.jsonl` and the sidecar artifacts that
@@ -471,43 +455,74 @@ struct CliHistoryEntry {
 /// entries. Returns `None` if the file is absent or unreadable; callers
 /// fall back to prose sniffing in that case.
 async fn read_cli_history(gemini_root: &Path) -> Option<Vec<CliHistoryEntry>> {
-    // Cap the in-memory read so a corrupted or maliciously crafted history
-    // file can't balloon the daemon's memory. 16 MiB is ~50k typical entries.
-    const HISTORY_MAX_BYTES: u64 = 16 * 1024 * 1024;
+    const HISTORY_MAX_RECORD_BYTES: usize = 64 * 1024;
+    const HISTORY_MAX_ENTRIES: usize = 4_096;
+    const HISTORY_FIELD_MAX_BYTES: usize = 4 * 1024;
     let path = gemini_root.join("antigravity-cli").join("history.jsonl");
-    if let Ok(meta) = tokio::fs::metadata(&path).await
-        && meta.len() > HISTORY_MAX_BYTES
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    if HISTORY_READ_PATH
+        .lock()
+        .is_ok_and(|watched| watched.as_deref() == Some(path.as_path()))
     {
-        ::tracing::warn!(
-            size = meta.len(),
-            "antigravity-cli history.jsonl exceeds size cap; skipping"
+        HISTORY_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    tokio::task::spawn_blocking(move || {
+        let file = File::open(path).ok()?;
+        let mut reader = BoundedJsonlReader::with_max_record_bytes(
+            BufReader::new(file),
+            HISTORY_MAX_RECORD_BYTES,
         );
-        return None;
-    }
-    let raw = tokio::fs::read_to_string(&path).await.ok()?;
-    let mut out = Vec::new();
-    for line in raw.lines() {
-        let value: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let (Some(display), Some(workspace), Some(timestamp_ms)) = (
-            value.get("display").and_then(|v| v.as_str()),
-            value.get("workspace").and_then(|v| v.as_str()),
-            value.get("timestamp").and_then(|v| v.as_i64()),
-        ) else {
-            // Skip malformed/partial entries (e.g. older schemas, crashed
-            // writes) instead of discarding the whole file.
-            ::tracing::debug!("skipping antigravity-cli history entry with missing/typed fields");
-            continue;
-        };
-        out.push(CliHistoryEntry {
-            display: display.to_string(),
-            workspace: workspace.to_string(),
-            timestamp_secs: timestamp_ms / 1000,
-        });
-    }
-    Some(out)
+        let mut out = VecDeque::with_capacity(HISTORY_MAX_ENTRIES);
+        while let Some(record) = reader.next_record(&|| false) {
+            let FramedRecord::Complete { bytes, .. } = record else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+                continue;
+            };
+            let (Some(display), Some(workspace), Some(timestamp_ms)) = (
+                value.get("display").and_then(|value| value.as_str()),
+                value.get("workspace").and_then(|value| value.as_str()),
+                value.get("timestamp").and_then(|value| value.as_i64()),
+            ) else {
+                continue;
+            };
+            if display.len() > HISTORY_FIELD_MAX_BYTES || workspace.len() > HISTORY_FIELD_MAX_BYTES
+            {
+                continue;
+            }
+            if out.len() == HISTORY_MAX_ENTRIES {
+                out.pop_front();
+            }
+            out.push_back(CliHistoryEntry {
+                display: display.to_owned(),
+                workspace: workspace.to_owned(),
+                timestamp_secs: timestamp_ms / 1000,
+            });
+        }
+        Some(out.into_iter().collect())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+#[cfg(any(test, feature = "test-instrumentation"))]
+static HISTORY_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(any(test, feature = "test-instrumentation"))]
+static HISTORY_READ_PATH: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn watch_history_reads(path: PathBuf) {
+    *HISTORY_READ_PATH.lock().expect("history read path locks") = Some(path);
+    HISTORY_READS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn take_history_reads() -> usize {
+    *HISTORY_READ_PATH.lock().expect("history read path locks") = None;
+    HISTORY_READS.swap(0, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Find the history entry whose `timestamp_secs` matches `created_at_secs`
@@ -520,50 +535,64 @@ fn find_cli_history_entry(
 ) -> Option<&CliHistoryEntry> {
     history
         .iter()
-        .find(|entry| (entry.timestamp_secs - created_at_secs).abs() <= 5)
+        .min_by_key(|entry| entry.timestamp_secs.abs_diff(created_at_secs))
+        .filter(|entry| entry.timestamp_secs.abs_diff(created_at_secs) <= 5)
 }
 
-/// Prepend a one-line JSON metadata header to a brain `transcript.jsonl`
-/// so the agent-agnostic scanner can extract `sessionId`, `cwd`, and
-/// `title` from line 1, then receive the unmodified transcript as the
-/// upload body. The header carries only what the scanner needs; we don't
-/// rebuild the transcript into the API-cache cascade shape.
-///
-/// `cli_history` is the parsed contents of
-/// `~/.gemini/antigravity-cli/history.jsonl` (when available); it is the
-/// authoritative `timestamp → workspace` map for CLI-origin sessions.
-/// Callers load it once per `discover_recent` pass and pass `None` for
-/// non-CLI origins or when the file is missing.
-///
-/// Returns `(uuid, payload_string)` or `None` if the file can't be read
-/// or isn't laid out as expected.
-async fn synthesize_brain_inline_payload(
+/// Add brain metadata from the UUID path, a bounded transcript preview, and
+/// the bounded CLI history stream. The transcript remains a file source.
+pub(crate) async fn augment_brain_metadata(
     file: &Path,
-    cli_history: Option<&[CliHistoryEntry]>,
-) -> Option<(String, String)> {
-    let uuid = brain_uuid_dir(file)?
-        .file_name()
-        .and_then(|n| n.to_str())?
-        .to_string();
-    let origin = brain_origin_of(file)?;
-    let raw = tokio::fs::read_to_string(file).await.ok()?;
+    preview: &str,
+    metadata: &mut SessionMetadata,
+) {
+    let history = if brain_origin_of(file) == Some(BrainOrigin::Cli) {
+        let gemini_root = brain_uuid_dir(file)
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .and_then(Path::parent);
+        match gemini_root {
+            Some(root) => read_cli_history(root).await,
+            None => None,
+        }
+    } else {
+        None
+    };
+    augment_brain_metadata_with_history(file, preview, metadata, history.as_deref());
+}
 
-    let (cwd, title) = match origin {
-        BrainOrigin::Cli => cli_cwd_and_title_from_history(&raw, cli_history),
-        BrainOrigin::Ide | BrainOrigin::Legacy => brain_cwd_and_title_from_prose(&raw),
+fn augment_brain_metadata_with_history(
+    file: &Path,
+    preview: &str,
+    metadata: &mut SessionMetadata,
+    history: Option<&[CliHistoryEntry]>,
+) {
+    let Some(uuid_dir) = brain_uuid_dir(file) else {
+        return;
+    };
+    if metadata.session_id.is_none() {
+        metadata.session_id = uuid_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned);
+    }
+    let Some(origin) = brain_origin_of(file) else {
+        return;
     };
 
-    let mut header = serde_json::Map::new();
-    header.insert("sessionId".to_string(), uuid.clone().into());
-    header.insert("source".to_string(), "antigravity_brain".into());
-    if let Some(cwd) = cwd {
-        header.insert("cwd".to_string(), cwd.into());
+    let (cwd, title) = match origin {
+        BrainOrigin::Cli => cli_cwd_and_title_from_history(preview, history),
+        BrainOrigin::Ide | BrainOrigin::Legacy => brain_cwd_and_title_from_prose(preview),
+    };
+    if metadata.cwd.is_none() {
+        metadata.cwd = cwd;
     }
-    if let Some(title) = title {
-        header.insert("title".to_string(), title.into());
+    if metadata.title.is_none() {
+        metadata.title = title.map(|title| crate::discovery::scanner::normalize_title(&title));
+        if metadata.title.is_some() {
+            metadata.title_source = Some(TitleSource::FirstMessage);
+        }
     }
-    let header_line = serde_json::Value::Object(header).to_string();
-    Some((uuid, format!("{header_line}\n{raw}")))
 }
 
 /// CLI origin: look up the workspace + display in `history.jsonl` by

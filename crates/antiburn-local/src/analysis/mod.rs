@@ -74,8 +74,9 @@ pub use framing::{
 pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, SourceOrigin};
 pub use interface::{
     ContentKind, ContentPart, ContextSourceKind, EvidenceObservation, MAX_CONTENT_PART_BYTES,
-    NormalizedRecord, RawSource, RecordCoverage, RecordSink, RelationProvenance, SessionCollector,
-    SessionInput, SessionSummary, SourceChangedReason, TurnContent, VendorAdapter, VisitOutcome,
+    MAX_PROVIDER_HINTS, NormalizedRecord, ProviderHint, RawSource, RecordCoverage, RecordSink,
+    RelationProvenance, SessionCollector, SessionInput, SessionSummary, SourceChangedReason,
+    TurnContent, VendorAdapter, VisitOutcome,
 };
 pub use merge::merge_subagent_events;
 pub use metrics_sink::{RETAINED_METRICS_BYTES_BOUND, SessionMetricsAccumulator, merge_metrics};
@@ -145,7 +146,9 @@ pub const ANALYZER_REVISION: i64 = 16;
 // (`reconcile_evidence_revisions`).
 // +1 for per-bucket rewrite tokens. The Context chart uses them to show
 // derived rewrite markers. Stored analyses must rerun to populate this field.
-pub const METRICS_SCHEMA_REVISION: i64 = 3;
+// +1 for persisted provider hints. Stored analyses must rerun to populate
+// `session_analysis.provider_hints_json` from the bounded session summary.
+pub const METRICS_SCHEMA_REVISION: i64 = 4;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
 // +1 more for `RepeatedContext::paid_tokens` (part F).
 // +1 more for `SourceCapabilities::linear_record_order`.

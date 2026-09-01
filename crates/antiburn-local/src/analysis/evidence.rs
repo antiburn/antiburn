@@ -608,12 +608,10 @@ impl SourceCapabilities {
         }
     }
 
-    /// Antigravity's own module documents its token-usage and tool-name
-    /// field locations as undocumented by the vendor: the adapter reads
-    /// likely containers (`usage`/`tokenUsage`/`tokens`) and leaves missing
-    /// values empty rather than reading a confirmed contract. That
-    /// uncertainty keeps `request_context_tokens`, `cache_write_tokens`, and
-    /// `token_classes` unset.
+    /// Antigravity steps can carry a direct `usage` object and direct `model`
+    /// field. This supports request-context depth and model identity. No
+    /// characterized fixture proves cache-write buckets, so cache capabilities
+    /// stay unset.
     ///
     /// `timestamps_and_order` is set: the step timestamp locations
     /// (`created_at`/`timestamp`/`createdAt`, plus the API-cascade
@@ -626,19 +624,17 @@ impl SourceCapabilities {
     /// names its tool inline. `tool_definitions` stays unset — neither path
     /// carries a tool catalog.
     ///
-    /// Every other field stays unset: the adapter never sets `NormalizedSession.model`
-    /// or an event's model (so `model_identity` is unset), and emits no
-    /// thread-identity, subagent, compaction, quota, or harness-version
-    /// signal at all.
+    /// Every other field stays unset. The adapter emits no thread identity,
+    /// subagent, compaction, quota, or harness-version signal.
     pub fn antigravity() -> Self {
         Self {
-            request_context_tokens: false,
+            request_context_tokens: true,
             cache_write_tokens: false,
             timestamps_and_order: true,
             tool_invocations: true,
             skill_mcp_attribution: false,
             tool_definitions: false,
-            model_identity: false,
+            model_identity: true,
             token_classes: false,
             reasoning_effort_tier: false,
             fast_tier: false,
@@ -1091,8 +1087,7 @@ mod tests {
 
     /// Pins `SourceCapabilities::antigravity()` against the adapter: the
     /// step timestamp and `tool_calls[]` locations it claims are confirmed
-    /// really do populate events, while it never claims a model, since the
-    /// adapter sets none.
+    /// really do populate events, including direct model and usage fields.
     #[test]
     fn antigravity_capabilities_match_what_the_adapter_actually_emits() {
         use crate::analysis::interface::SessionInput;
@@ -1103,7 +1098,7 @@ mod tests {
             session_id: "antigravity-probe".to_owned(),
             source: RawSource::Jsonl(
                 r#"{"type":"USER_INPUT","created_at":"2026-01-01T00:00:00.000Z","content":"hi"}
-{"type":"PLANNER_RESPONSE","created_at":"2026-01-01T00:00:05.000Z","content":"working on it","tool_calls":[{"name":"read_file"}]}
+{"type":"PLANNER_RESPONSE","created_at":"2026-01-01T00:00:05.000Z","content":"working on it","model":"MODEL_PLACEHOLDER_M35","usage":{"input_tokens":10,"output_tokens":2},"tool_calls":[{"name":"read_file"}]}
 "#
                 .to_owned(),
             ),
@@ -1119,9 +1114,14 @@ mod tests {
         assert!(caps.tool_invocations);
         assert!(session.events.iter().any(|event| !event.tools.is_empty()));
 
-        assert!(!caps.model_identity);
-        assert!(session.events.iter().all(|event| event.model.is_none()));
-        assert!(session.model.is_none());
+        assert!(caps.request_context_tokens);
+        assert_eq!(session.events[1].usage.input_tokens, 10);
+        assert!(caps.model_identity);
+        assert_eq!(
+            session.events[1].model.as_deref(),
+            Some("MODEL_PLACEHOLDER_M35")
+        );
+        assert_eq!(session.model.as_deref(), Some("MODEL_PLACEHOLDER_M35"));
     }
 
     /// The generic fallback vouches for nothing: every capability is unset.

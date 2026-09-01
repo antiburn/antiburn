@@ -64,6 +64,7 @@ mod notifications;
 mod nudges;
 mod onboarding;
 mod popover;
+mod provider_accounts;
 mod provider_usage;
 mod repositories;
 mod retention;

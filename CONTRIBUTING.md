@@ -73,6 +73,41 @@ also runs `pnpm run slop` against the changed files. See
 [docs/debugging.md](docs/debugging.md) for isolated desktop profiles, logs, and
 developer tools.
 
+### Optional Antigravity usage credentials
+
+The Google installed-app client ID and secret are optional for local
+development. They are only required to test refresh of Antigravity 2.0, IDE, or
+`agy` live-usage credentials. Local session analysis and other providers do not
+need them.
+
+Use a current official Antigravity installation as the primary source. Inspect
+the installed `language_server` or `agy` executable for the
+`*.apps.googleusercontent.com` client ID and its `GOCSPX-` client secret. On
+macOS, the standard IDE command is:
+
+```bash
+strings "/Applications/Antigravity.app/Contents/Resources/bin/language_server" \
+  | rg 'apps\.googleusercontent\.com|GOCSPX-'
+```
+
+On Linux or Windows, locate the equivalent executable in the official IDE or
+CLI installation and use the platform's printable-string tool with the same
+patterns. Inspect only the application executable. Do not read or share access
+tokens, refresh tokens, keychain entries, credential databases, or account
+state.
+
+Confirm the pair against a second source before use. The pinned
+[`jcode` Antigravity OAuth implementation](https://github.com/1jehuang/jcode/blob/435fb4a8/crates/jcode-base/src/auth/antigravity.rs)
+records the official desktop-client constants. Google also documents that
+[installed applications cannot keep client credentials confidential](https://developers.google.com/identity/protocols/oauth2/native-app),
+but the values must still stay out of this repository.
+
+Put the values in `apps/desktop/.env` under the names in
+`apps/desktop/.env.example`. The Tauri development scripts load this ignored
+file, and explicit shell variables take precedence. Maintainers store the same
+names as repository secrets for CI and as `release` environment secrets for
+signed builds.
+
 ## Pull requests
 
 Describe the user impact, tests, privacy or performance effects, and any known

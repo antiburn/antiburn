@@ -18,12 +18,13 @@ use std::sync::{
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, ActiveSessionsSummary, CompositeSink, EVIDENCE_SCHEMA_REVISION,
-    EfficiencyTotals, EvidenceSource, InitialContextBreakdown, METRICS_SCHEMA_REVISION, ModelRun,
-    PARSER_REVISION, RawSource, SessionCost, SessionEvidence, SessionEvidenceAccumulator,
-    SessionInput, SessionMetrics, SessionMetricsAccumulator, SessionSummary, SkillUse,
-    SourceCapabilities, SourceClaim, SourceKind, TurnRow, TurnRowSink, TurnRowStore, TurnScope,
-    VisitOutcome, adapter_for, aggregate_metrics, append_only_guarantee, merge_metrics,
-    metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation,
+    EfficiencyTotals, EvidenceSource, InitialContextBreakdown, MAX_PROVIDER_HINTS,
+    METRICS_SCHEMA_REVISION, ModelRun, PARSER_REVISION, ProviderHint, RawSource, SessionCost,
+    SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
+    SessionMetricsAccumulator, SessionSummary, SkillUse, SourceCapabilities, SourceClaim,
+    SourceKind, TurnRow, TurnRowSink, TurnRowStore, TurnScope, VisitOutcome, adapter_for,
+    aggregate_metrics, append_only_guarantee, merge_metrics, metrics_by_source, metrics_from_rows,
+    price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
@@ -336,6 +337,21 @@ impl SessionAnalysis {
             .source_summaries
             .as_ref()
             .and_then(|summaries| serde_json::to_string(summaries).ok());
+        let provider_hints_json = self.source_summaries.as_ref().and_then(|summaries| {
+            let mut hints: Vec<ProviderHint> = Vec::new();
+            for hint in summaries
+                .values()
+                .flat_map(|summary| &summary.provider_hints)
+            {
+                if hints.len() == MAX_PROVIDER_HINTS {
+                    break;
+                }
+                if !hints.contains(hint) {
+                    hints.push(hint.clone());
+                }
+            }
+            serde_json::to_string(&hints).ok()
+        });
         Some(AnalysisRecord {
             key: key.clone(),
             model_breakdown_json: serde_json::to_string(&self.inclusive_model_breakdown)
@@ -344,6 +360,7 @@ impl SessionAnalysis {
                 .unwrap_or_else(|_| "[]".to_string()),
             initial_context_json,
             source_summaries_json,
+            provider_hints_json,
             source_fingerprint: self.fingerprint.clone(),
             pricing_generation: pricing_generation() as i64,
             analyzed_generation: self.analyzed_generation,
@@ -1988,7 +2005,7 @@ mod tests {
         [
             r#"{"type":"session","version":3,"timestamp":"2026-08-01T09:59:58Z"}"#,
             r#"{"type":"thinking_level_change","timestamp":"2026-08-01T10:00:00Z","thinkingLevel":"medium"}"#,
-            r#"{"type":"message","timestamp":"2026-08-01T10:00:01Z","message":{"role":"assistant","api":"anthropic-messages","model":"model-a","usage":{"input":2,"output":3,"cacheRead":5,"cacheWrite":7},"content":[]}}"#,
+            r#"{"type":"message","timestamp":"2026-08-01T10:00:01Z","message":{"role":"assistant","api":"anthropic-messages","provider":"anthropic","model":"model-a","usage":{"input":2,"output":3,"cacheRead":5,"cacheWrite":7},"content":[]}}"#,
         ]
         .join("\n")
             + "\n"
@@ -2068,6 +2085,14 @@ mod tests {
             Some(turn_row_store("pi", "pi-inline")),
         );
         assert_eq!(pass.outcome, PassOutcome::Published);
+        let record = pass
+            .analysis
+            .record(&SessionKey::new("native", "pi", "pi-inline"))
+            .expect("Pi analysis record");
+        assert_eq!(
+            record.provider_hints_json.as_deref(),
+            Some(r#"[{"provider":"anthropic","model":"model-a"}]"#)
+        );
         assert_eq!(
             pass.evidence.unwrap().capabilities,
             SourceCapabilities::pi()

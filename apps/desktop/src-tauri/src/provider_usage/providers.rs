@@ -51,6 +51,36 @@ pub const OPENROUTER: &str = "openrouter";
 pub const XAI: &str = "xai";
 pub const DEEPSEEK: &str = "deepseek";
 pub const MISTRAL: &str = "mistral";
+pub const OPENCODE: &str = "opencode";
+pub const AWS: &str = "aws";
+pub const AZURE: &str = "azure";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HintResolution {
+    Known(&'static str),
+    UnknownExplicit,
+}
+
+pub fn provider_for_hint(provider: &str) -> HintResolution {
+    let provider = provider.trim().to_ascii_lowercase();
+    let provider = provider.replace('_', "-");
+    match provider.as_str() {
+        "anthropic" | "claude" => HintResolution::Known(ANTHROPIC),
+        "openai" | "openai-codex" | "chatgpt" | "codex" => HintResolution::Known(OPENAI),
+        "google" | "google-vertex" | "vertex" | "gemini" | "antigravity" => {
+            HintResolution::Known(GOOGLE)
+        }
+        "github" | "github-copilot" | "copilot" => HintResolution::Known(GITHUB),
+        "openrouter" => HintResolution::Known(OPENROUTER),
+        "opencode" => HintResolution::Known(OPENCODE),
+        "amazon-bedrock" | "aws-bedrock" | "bedrock" => HintResolution::Known(AWS),
+        "azure" | "azure-openai" => HintResolution::Known(AZURE),
+        "x-ai" | "xai" => HintResolution::Known(XAI),
+        "deepseek" => HintResolution::Known(DEEPSEEK),
+        "mistral" | "mistralai" => HintResolution::Known(MISTRAL),
+        _ => HintResolution::UnknownExplicit,
+    }
+}
 
 /// How an agent's tokens reach a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +223,9 @@ pub fn display_name(provider: &str) -> &'static str {
         XAI => "xAI",
         DEEPSEEK => "DeepSeek",
         MISTRAL => "Mistral",
+        OPENCODE => "OpenCode",
+        AWS => "AWS Bedrock",
+        AZURE => "Azure OpenAI",
         _ => "Unattributed",
     }
 }
@@ -241,6 +274,30 @@ mod tests {
         assert_eq!(provider_for_model("google/gemini-3-pro"), GOOGLE);
         assert_eq!(provider_for_model("openrouter/auto"), OPENROUTER);
         assert_eq!(provider_for_model("x-ai/grok-4"), XAI);
+    }
+
+    #[test]
+    fn explicit_provider_aliases_name_the_billing_provider() {
+        assert_eq!(
+            provider_for_hint("github-copilot"),
+            HintResolution::Known(GITHUB)
+        );
+        assert_eq!(
+            provider_for_hint("openai-codex"),
+            HintResolution::Known(OPENAI)
+        );
+        assert_eq!(
+            provider_for_hint("amazon-bedrock"),
+            HintResolution::Known(AWS)
+        );
+        assert_eq!(
+            provider_for_hint("azure_openai"),
+            HintResolution::Known(AZURE)
+        );
+        assert_eq!(
+            provider_for_hint("private-gateway"),
+            HintResolution::UnknownExplicit
+        );
     }
 
     #[test]

@@ -10,7 +10,11 @@
 //! the Claude CLI already keeps on this machine; [`codex_fetch`] does the
 //! same for Codex, retrying once with a token it refreshes itself before
 //! falling back to [`codex_app_server`] — the Codex CLI's own process, asked
-//! over its own protocol — when neither attempt lands. Both are gated behind
+//! over its own protocol — when neither attempt lands. [`antigravity_fetch`]
+//! reads Antigravity's provider-owned access token and asks Google Code Assist
+//! for the managed project and its four shared quota pools. If that path cannot
+//! answer, [`antigravity_local`] probes bounded PID-owned loopback endpoints for
+//! a running `agy` or Antigravity IDE language server. All are gated behind
 //! [`super::LiveUsageSource::requires_online_opt_in`]: [`collect`] never
 //! calls them unless its caller says live usage is active, which folds in
 //! Settings → Usage's switch (on by default) *and* onboarding having
@@ -30,10 +34,12 @@
 //! reading and a cached one — see [`preferred`].
 
 pub mod anthropic_fetch;
+pub mod antigravity_fetch;
+mod antigravity_local;
 mod codex_app_server;
 pub mod codex_fetch;
 mod cooldown;
-mod http;
+pub(crate) mod http;
 
 use std::time::Duration;
 
@@ -44,12 +50,14 @@ use super::model::{Freshness, ProviderUsageSnapshot};
 /// snapshots with. One registered source, two ways of answering for it — the
 /// reader sees one row in the source registry either way.
 const CODEX_SOURCE_ID: &str = "codex-usage-fetch";
+const ANTIGRAVITY_SOURCE_ID: &str = "antigravity-usage-fetch";
 
 /// Every source this build registers, in no particular order — ranking is
 /// [`preferred`]'s job, not registration order's.
 pub fn registered() -> Vec<Box<dyn LiveUsageSource>> {
     vec![
         Box::new(anthropic_fetch::ClaudeDirectFetch::new()),
+        Box::new(antigravity_fetch::AntigravityDirectFetch::new()),
         Box::new(codex_fetch::CodexDirectFetch::new()),
     ]
 }

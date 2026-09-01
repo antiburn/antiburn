@@ -26,10 +26,12 @@ function usageWindow(
 function provider(overrides: Partial<ProviderUsagePayload> = {}): ProviderUsagePayload {
   return {
     provider: "anthropic",
+    accountKey: null,
     displayName: "Anthropic",
     state: "estimated",
     staleness: "fresh",
     windows: { today: usageWindow(), week: usageWindow(), month: usageWindow() },
+    agents: [],
     lastActivityAt: new Date().toISOString(),
     ...overrides,
   }
@@ -65,7 +67,7 @@ describe("usage values", () => {
 })
 
 describe("capability labels", () => {
-  it("names every state, including the two v1 never produces", () => {
+  it("names every state, including provider-owned live readings", () => {
     expect(usageStateLabel("live")).toBe("Live")
     expect(usageStateLabel("estimated")).toBe("Estimated")
     expect(usageStateLabel("observed")).toBe("Observed")
@@ -123,6 +125,7 @@ describe("provider windows and ranking", () => {
   })
   const openai = provider({
     provider: "openai",
+    accountKey: null,
     displayName: "OpenAI",
     windows: {
       today: usageWindow({ estimatedUsd: 4, tokensIn: 10, sessionCount: 2 }),

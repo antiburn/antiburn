@@ -24,10 +24,11 @@ use std::time::Duration;
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, AppendOnlyGuarantee, BoundedJsonlReader, ClaudeAdapter, CompositeSink,
-    EVIDENCE_SCHEMA_REVISION, EvidenceSource, MAX_RECORD_BYTES, NormalizedRecord, PARSER_REVISION,
-    RawSource, RecordSink, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
-    SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceClaim, SourceKind,
-    VisitOutcome, adapter_for, normalize_source,
+    EVIDENCE_SCHEMA_REVISION, EvidenceSource, MAX_RECORD_BYTES, MemoryTurnRowStore,
+    NormalizedRecord, PARSER_REVISION, RawSource, RecordSink, SessionEvidence,
+    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
+    SourceCapabilities, SourceClaim, SourceKind, TurnRowSink, TurnRowStore, VisitOutcome,
+    adapter_for, normalize_source,
 };
 use antiburn_local::discovery::source_version::{FingerprintInputs, SourceStat, head_hash_of};
 use antiburn_local::insights::{
@@ -57,23 +58,94 @@ fn jsonl_input(session: &GeneratedSession) -> SessionInput {
 }
 
 fn file_input(session_id: &str, path: &Path) -> SessionInput {
+    file_input_for("claude", session_id, path)
+}
+
+fn file_input_for(agent: &str, session_id: &str, path: &Path) -> SessionInput {
     SessionInput {
-        agent: "claude".to_string(),
+        agent: agent.to_string(),
         session_id: session_id.to_string(),
         source: RawSource::File(path.to_path_buf()),
     }
 }
 
 fn composite_for(input: &SessionInput) -> CompositeSink {
-    CompositeSink::new(
+    let capabilities = match input.agent.as_str() {
+        "claude" => SourceCapabilities::claude(),
+        "codex" => SourceCapabilities::codex(),
+        "cursor" => SourceCapabilities::cursor(),
+        "opencode" => SourceCapabilities::opencode(),
+        "pi" => SourceCapabilities::pi(),
+        "antigravity" => SourceCapabilities::antigravity(),
+        _ => SourceCapabilities::generic(),
+    };
+    let store = MemoryTurnRowStore::new(&input.agent, &input.session_id);
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        None,
+    );
+    CompositeSink::with_turn_rows(
         SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone()),
         SessionEvidenceAccumulator::new(EvidenceSource {
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             kind: SourceKind::from(&input.source),
-            capabilities: SourceCapabilities::claude(),
+            capabilities,
         }),
+        turn_rows,
     )
+}
+
+fn generate_antigravity_brain(target_bytes: usize) -> String {
+    let mut jsonl = String::with_capacity(target_bytes + 256);
+    let mut index = 0_u64;
+    while jsonl.len() < target_bytes {
+        let kind = if index.is_multiple_of(3) {
+            "USER_INPUT"
+        } else {
+            "PLANNER_RESPONSE"
+        };
+        jsonl.push_str(&format!(
+            "{{\"type\":\"{kind}\",\"created_at\":\"2026-01-01T00:00:00Z\",\"content\":\"Synthetic Antigravity step {index}.\",\"model\":\"MODEL_PLACEHOLDER_M35\",\"usage\":{{\"input_tokens\":13,\"output_tokens\":5}}}}\n"
+        ));
+        index += 1;
+    }
+    jsonl
+}
+
+fn generate_antigravity_cascade(steps: usize) -> String {
+    let mut document = String::from(
+        "{\"source\":\"antigravity_api\",\"model\":\"MODEL_PLACEHOLDER_M35\",\"steps\":{\"steps\":[",
+    );
+    for index in 0..steps {
+        if index > 0 {
+            document.push(',');
+        }
+        document.push_str(&format!(
+            "{{\"type\":\"CORTEX_STEP_TYPE_PLANNER_RESPONSE\",\"content\":\"Synthetic cascade step {index}.\",\"metadata\":{{\"createdAt\":\"2026-01-01T00:00:00Z\"}},\"usage\":{{\"input_tokens\":13,\"output_tokens\":5}}}}"
+        ));
+    }
+    document.push_str("]}}");
+    document
+}
+
+fn generate_pi_session(target_bytes: usize) -> String {
+    let mut jsonl = String::with_capacity(target_bytes + 256);
+    jsonl.push_str("{\"type\":\"session\",\"version\":3,\"timestamp\":\"2026-01-01T00:00:00Z\"}\n");
+    let mut index = 0_u64;
+    while jsonl.len() < target_bytes {
+        let parent = index
+            .checked_sub(1)
+            .map(|value| format!(",\"parentId\":\"m{value}\""));
+        jsonl.push_str(&format!(
+            "{{\"type\":\"message\",\"id\":\"m{index}\"{},\"timestamp\":{},\"message\":{{\"role\":\"assistant\",\"provider\":\"synthetic-provider-{index}\",\"model\":\"synthetic-model-{index}\",\"usage\":{{\"input\":13,\"output\":5,\"cacheRead\":3,\"cacheWrite\":2}},\"content\":[]}}}}\n",
+            parent.as_deref().unwrap_or(""),
+            index.saturating_mul(1_000)
+        ));
+        index += 1;
+    }
+    jsonl
 }
 
 fn write_session(directory: &TempDir, session: &GeneratedSession) -> PathBuf {
@@ -205,6 +277,119 @@ fn full_reparse(criterion: &mut Criterion) {
         );
     }
 
+    group.finish();
+}
+
+/// Antigravity brain JSONL claimed-file cost and nested cascade visitor cost.
+fn antigravity(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("antigravity_pipeline");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(12));
+    let directory = TempDir::new().expect("tempdir");
+
+    for &size in &[MIB, 10 * MIB, 50 * MIB] {
+        let content = generate_antigravity_brain(size);
+        let path = directory
+            .path()
+            .join(format!("brain-{}MiB.jsonl", size / MIB));
+        std::fs::write(&path, content.as_bytes()).expect("write Antigravity brain source");
+        let input = file_input_for("antigravity", "synthetic-antigravity-brain", &path);
+        let claim = claim_for_path(&path);
+        group.throughput(Throughput::Bytes(content.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("brain_claimed", format!("{}MiB", size / MIB)),
+            &size,
+            |bencher, _| {
+                bencher.iter(|| {
+                    let mut composite = composite_for(&input);
+                    let outcome = adapter_for("antigravity")
+                        .visit_claimed(
+                            &input,
+                            &claim,
+                            AppendOnlyGuarantee::Absent,
+                            &|| false,
+                            &mut composite,
+                        )
+                        .expect("Antigravity brain source must stream");
+                    assert_eq!(outcome, VisitOutcome::AcceptedFull);
+                    composite.observe_source_outcome(outcome);
+                    black_box(composite.evidence())
+                });
+            },
+        );
+    }
+
+    let cascade = generate_antigravity_cascade(8_000);
+    let cascade_path = directory.path().join("cascade.json");
+    std::fs::write(&cascade_path, cascade.as_bytes()).expect("write Antigravity cascade source");
+    let input = file_input_for(
+        "antigravity",
+        "synthetic-antigravity-cascade",
+        &cascade_path,
+    );
+    let claim = claim_for_path(&cascade_path);
+    group.throughput(Throughput::Bytes(cascade.len() as u64));
+    group.bench_function("cascade_claimed_nested_steps", |bencher| {
+        bencher.iter(|| {
+            let mut composite = composite_for(&input);
+            let outcome = adapter_for("antigravity")
+                .visit_claimed(
+                    &input,
+                    &claim,
+                    AppendOnlyGuarantee::Absent,
+                    &|| false,
+                    &mut composite,
+                )
+                .expect("Antigravity cascade source must stream");
+            assert_eq!(outcome, VisitOutcome::AcceptedFull);
+            composite.observe_source_outcome(outcome);
+            black_box(composite.evidence())
+        });
+    });
+
+    group.finish();
+}
+
+/// Pi claimed-file cost with a long identity chain and saturated provider hints.
+fn pi(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("pi_pipeline");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(12));
+    let directory = TempDir::new().expect("tempdir");
+
+    for &size in &[MIB, 10 * MIB, 50 * MIB] {
+        let content = generate_pi_session(size);
+        let path = directory.path().join(format!("pi-{}MiB.jsonl", size / MIB));
+        std::fs::write(&path, content.as_bytes()).expect("write Pi source");
+        let input = file_input_for("pi", "synthetic-pi", &path);
+        let claim = claim_for_path(&path);
+        group.throughput(Throughput::Bytes(content.len() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("claimed", format!("{}MiB", size / MIB)),
+            &size,
+            |bencher, _| {
+                bencher.iter(|| {
+                    let mut composite = composite_for(&input);
+                    let outcome = adapter_for("pi")
+                        .visit_claimed(
+                            &input,
+                            &claim,
+                            AppendOnlyGuarantee::Absent,
+                            &|| false,
+                            &mut composite,
+                        )
+                        .expect("Pi source must stream");
+                    assert_eq!(outcome, VisitOutcome::AcceptedFull);
+                    assert_eq!(
+                        composite.summary().unwrap().provider_hints.len(),
+                        antiburn_local::analysis::MAX_PROVIDER_HINTS
+                    );
+                    composite.observe_source_outcome(outcome);
+                    black_box(composite.evidence())
+                });
+            },
+        );
+    }
     group.finish();
 }
 
@@ -483,6 +668,26 @@ fn memory_probes() {
         "serialized evidence for the 10 MiB session (report query row proxy): {} bytes",
         serialized.len()
     );
+
+    let brain = generate_antigravity_brain(10 * MIB);
+    let mut reader = BoundedJsonlReader::new(Cursor::new(brain.as_bytes()));
+    while reader.next_record(&|| false).is_some() {}
+    let framing_high_water = reader.retained_record_bytes_high_water();
+    drop(reader);
+    let input = SessionInput {
+        agent: "antigravity".to_owned(),
+        session_id: "synthetic-antigravity-memory".to_owned(),
+        source: RawSource::Jsonl(brain),
+    };
+    let mut metrics = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
+    adapter_for("antigravity")
+        .visit(&input, &mut metrics)
+        .expect("Antigravity brain source must stream");
+    println!(
+        "Antigravity brain, 10 MiB: {} bytes framing high-water, {} retained metrics bytes",
+        framing_high_water,
+        metrics.retained_bytes()
+    );
 }
 
 /// Active-writer figure: how often the full-reprocess claim is rejected with
@@ -561,6 +766,8 @@ fn main() {
     let mut criterion = Criterion::default().configure_from_args();
     framing(&mut criterion);
     full_reparse(&mut criterion);
+    antigravity(&mut criterion);
+    pi(&mut criterion);
     stage_split(&mut criterion);
     materialization(&mut criterion);
     provider_db(&mut criterion);

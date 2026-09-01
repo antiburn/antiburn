@@ -65,6 +65,30 @@ pub struct EvidenceBacklogCounts {
 /// Internal-scalar key holding the protected directories the last pass declined
 /// to read.
 pub const DEFERRED_PERMISSION_DIRS_KEY: &str = "internal:deferredPermissionDirs";
+const PROVIDER_ACCOUNT_SECRET_KEY: &str = "internal:providerAccountHmacSecretV1";
+
+fn encode_secret(secret: &[u8; 32]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(64);
+    for byte in secret {
+        encoded.push(DIGITS[usize::from(byte >> 4)] as char);
+        encoded.push(DIGITS[usize::from(byte & 0x0f)] as char);
+    }
+    encoded
+}
+
+fn decode_secret(encoded: &str) -> Option<[u8; 32]> {
+    if encoded.len() != 64 || !encoded.is_ascii() {
+        return None;
+    }
+    let mut secret = [0_u8; 32];
+    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+        let high = (pair[0] as char).to_digit(16)? as u8;
+        let low = (pair[1] as char).to_digit(16)? as u8;
+        secret[index] = high << 4 | low;
+    }
+    Some(secret)
+}
 
 const EVIDENCE_BY_KEY_SQL: &str = "SELECT environment_key, agent, session_id, status,
             analyzed_generation, processed_fingerprint,
@@ -284,6 +308,29 @@ impl Store {
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![key, value],
         );
+    }
+
+    /// Return the durable random secret used for provider account keys.
+    pub fn provider_account_secret(&self) -> Result<[u8; 32]> {
+        let connection = self.lock();
+        if let Some(encoded) = connection
+            .query_row(
+                "SELECT value FROM setting WHERE key = ?1",
+                params![PROVIDER_ACCOUNT_SECRET_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            return decode_secret(&encoded).context("invalid provider account secret");
+        }
+
+        let mut secret = [0_u8; 32];
+        getrandom::fill(&mut secret).map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        connection.execute(
+            "INSERT INTO setting (key, value) VALUES (?1, ?2)",
+            params![PROVIDER_ACCOUNT_SECRET_KEY, encode_secret(&secret)],
+        )?;
+        Ok(secret)
     }
 
     /// Every preference, with defaults filled in for keys never written.
@@ -1065,7 +1112,7 @@ impl Store {
     /// configuration rather than indexed session data:
     ///
     /// - `setting` — the reader's preferences, including whether onboarding is
-    ///   done. Clearing the index is not a factory reset.
+    ///   done. The provider account HMAC key is attribution data, so it is cleared.
     /// - `scan_root` — the folders the reader pointed the scanner at.
     /// - `repository` — the include/ignore choices the reader made. Their
     ///   session counts *are* derived, so those are zeroed here and refilled by
@@ -1079,9 +1126,16 @@ impl Store {
         tx.execute("DELETE FROM turn_content", [])?;
         tx.execute("DELETE FROM turn", [])?;
         let sessions = tx.execute("DELETE FROM session", [])?;
+        tx.execute("DELETE FROM provider_account_seen", [])?;
+        tx.execute(
+            "DELETE FROM setting
+              WHERE key IN (?1, 'internal:liveUsageHistoryV2', 'internal:liveUsageSnapshotV2')",
+            params![PROVIDER_ACCOUNT_SECRET_KEY],
+        )?;
         tx.execute("DELETE FROM scan_state", [])?;
         tx.execute("UPDATE repository SET session_count = 0", [])?;
         tx.commit()?;
+        crate::provider_accounts::clear_cache();
         Ok(sessions)
     }
 
@@ -1115,14 +1169,16 @@ impl Store {
             "INSERT INTO session_analysis (
                  environment_key, agent, session_id, model_breakdown_json,
                  inclusive_models_json, initial_context_json, source_summaries_json,
+                 provider_hints_json,
                  source_fingerprint, pricing_generation, analyzed_generation,
                  parser_revision, analyzer_revision, metrics_schema_revision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
                  model_breakdown_json = excluded.model_breakdown_json,
                  inclusive_models_json = excluded.inclusive_models_json,
                  initial_context_json = excluded.initial_context_json,
                  source_summaries_json = excluded.source_summaries_json,
+                 provider_hints_json = excluded.provider_hints_json,
                  source_fingerprint = excluded.source_fingerprint,
                  pricing_generation = excluded.pricing_generation,
                  analyzed_generation = excluded.analyzed_generation,
@@ -1137,6 +1193,7 @@ impl Store {
                 record.inclusive_models_json,
                 record.initial_context_json,
                 record.source_summaries_json,
+                record.provider_hints_json,
                 record.source_fingerprint,
                 record.pricing_generation,
                 record.analyzed_generation,
@@ -1301,14 +1358,16 @@ impl Store {
             "INSERT INTO session_analysis (
                  environment_key, agent, session_id, model_breakdown_json,
                  inclusive_models_json, initial_context_json, source_summaries_json,
+                 provider_hints_json,
                  source_fingerprint, pricing_generation, analyzed_generation,
                  parser_revision, analyzer_revision, metrics_schema_revision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
                  model_breakdown_json = excluded.model_breakdown_json,
                  inclusive_models_json = excluded.inclusive_models_json,
                  initial_context_json = excluded.initial_context_json,
                  source_summaries_json = excluded.source_summaries_json,
+                 provider_hints_json = excluded.provider_hints_json,
                  source_fingerprint = excluded.source_fingerprint,
                  pricing_generation = excluded.pricing_generation,
                  analyzed_generation = excluded.analyzed_generation,
@@ -1323,6 +1382,7 @@ impl Store {
                 record.inclusive_models_json,
                 record.initial_context_json,
                 record.source_summaries_json,
+                record.provider_hints_json,
                 record.source_fingerprint,
                 record.pricing_generation,
                 record.analyzed_generation,
@@ -1353,6 +1413,7 @@ impl Store {
         let mut statement = connection.prepare(
             "SELECT environment_key, agent, session_id, model_breakdown_json,
                     inclusive_models_json, initial_context_json, source_summaries_json,
+                    provider_hints_json,
                     source_fingerprint, pricing_generation, analyzed_generation,
                     parser_revision, analyzer_revision, metrics_schema_revision
                FROM session_analysis
@@ -1372,20 +1433,21 @@ impl Store {
                         inclusive_models_json: row.get(4)?,
                         initial_context_json: row.get(5)?,
                         source_summaries_json: row.get(6)?,
-                        source_fingerprint: row.get(7)?,
-                        pricing_generation: row.get(8)?,
-                        analyzed_generation: row.get(9)?,
-                        parser_revision: row.get(10)?,
-                        analyzer_revision: row.get(11)?,
-                        metrics_schema_revision: row.get(12)?,
+                        provider_hints_json: row.get(7)?,
+                        source_fingerprint: row.get(8)?,
+                        pricing_generation: row.get(9)?,
+                        analyzed_generation: row.get(10)?,
+                        parser_revision: row.get(11)?,
+                        analyzer_revision: row.get(12)?,
+                        metrics_schema_revision: row.get(13)?,
                     })
                 },
             )
             .optional()?)
     }
 
-    /// Agent, activity timestamp, and token breakdown for every session at or after
-    /// `since_epoch`.
+    /// Agent, activity timestamp, token breakdown, and provider hints for every
+    /// session at or after `since_epoch`.
     ///
     /// One join rather than a listing plus a lookup per row: provider usage
     /// walks every retained session, and the N+1 shape would take the
@@ -1397,7 +1459,18 @@ impl Store {
     pub fn usage_evidence(&self, since_epoch: i64) -> Result<Vec<UsageEvidenceRecord>> {
         let connection = self.lock();
         let mut statement = connection.prepare(
-            "SELECT s.agent, COALESCE(s.updated_at_epoch, 0), a.model_breakdown_json
+            "SELECT s.agent, COALESCE(s.updated_at_epoch, 0), a.model_breakdown_json,
+                    a.provider_hints_json,
+                    COALESCE((
+                        SELECT json_group_array(json_object(
+                            'provider', spa.provider,
+                            'accountKey', spa.account_key
+                        ))
+                          FROM session_provider_account spa
+                         WHERE spa.environment_key = s.environment_key
+                           AND spa.agent = s.agent
+                           AND spa.session_id = s.session_id
+                    ), '[]')
                FROM session s
                LEFT JOIN session_analysis a
                  ON a.environment_key = s.environment_key
@@ -1411,9 +1484,89 @@ impl Store {
                 agent: row.get(0)?,
                 updated_at_epoch: row.get(1)?,
                 model_breakdown_json: row.get(2)?,
+                provider_hints_json: row.get(3)?,
+                provider_accounts_json: row.get(4)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Bind recent sessions after the account-attribution rollout.
+    pub fn observe_provider_account(
+        &self,
+        agent: &str,
+        provider: &str,
+        account_key: &str,
+        observed_at_epoch: i64,
+        provenance: &str,
+    ) -> Result<()> {
+        if account_key.len() != 64
+            || provider.is_empty()
+            || agent.is_empty()
+            || !matches!(provenance, "provider_live" | "tool_oauth")
+        {
+            anyhow::bail!("invalid provider account observation");
+        }
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO provider_account_seen (
+                agent, provider, account_key, first_seen_epoch
+             )
+             SELECT ?1, ?2, ?3, ?4
+              WHERE (SELECT COUNT(*) FROM provider_account_seen
+                      WHERE agent = ?1 AND provider = ?2) < 32",
+            params![agent, provider, account_key, observed_at_epoch],
+        )?;
+        if inserted == 0
+            && !tx.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM provider_account_seen
+                     WHERE agent = ?1 AND provider = ?2 AND account_key = ?3
+                 )",
+                params![agent, provider, account_key],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            tx.commit()?;
+            return Ok(());
+        }
+        let rollout: i64 = tx
+            .query_row(
+                "SELECT value FROM setting
+                  WHERE key = 'internal:providerAccountRolloutV1'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?
+            .parse()
+            .context("invalid provider account rollout")?;
+        tx.execute(
+            "INSERT OR IGNORE INTO session_provider_account (
+                environment_key, agent, session_id, provider, account_key,
+                provenance, confidence, first_seen_at
+             )
+             SELECT environment_key, agent, session_id, ?2, ?3, ?7, 'direct', ?4
+               FROM session
+              WHERE agent = ?1
+                AND unixepoch(first_seen_at) >= ?5
+                AND COALESCE(updated_at_epoch, 0) BETWEEN MAX(?5, ?6 - 600) AND ?6
+                AND (SELECT COUNT(*) FROM session_provider_account spa
+                      WHERE spa.environment_key = session.environment_key
+                        AND spa.agent = session.agent
+                        AND spa.session_id = session.session_id
+                        AND spa.provider = ?2) < 8",
+            params![
+                agent,
+                provider,
+                account_key,
+                now_rfc3339(),
+                rollout,
+                observed_at_epoch,
+                provenance
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     /* --------------------------------------------------------------------

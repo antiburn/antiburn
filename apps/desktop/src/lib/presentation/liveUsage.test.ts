@@ -9,6 +9,7 @@ import type {
 } from "../ipc"
 import {
   liveAuthNote,
+  liveErrorNote,
   liveExtraUsageLabel,
   liveForProvider,
   liveFreshnessToneClass,
@@ -21,6 +22,7 @@ import {
   liveWindowLabel,
   livePlanLabel,
   liveMetricRows,
+  orderedLiveAccounts,
   liveWindowValueLabel,
   liveWindows,
   forecastUnavailableNote,
@@ -70,6 +72,7 @@ function window(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsageWindo
 function provider(overrides: Partial<LiveProviderUsagePayload> = {}): LiveProviderUsagePayload {
   return {
     provider: "anthropic",
+    accountKey: null,
     displayName: "Anthropic",
     support: "live",
     freshness: "fresh",
@@ -94,17 +97,52 @@ describe("window labels", () => {
   it("names a model-scoped weekly limit after its model", () => {
     // Otherwise it is indistinguishable from the account-wide weekly limit
     // sitting directly above it.
-    expect(liveWindowLabel(window({ scopeModel: "Some Model", role: "supplemental" }))).toBe(
-      "Some Model weekly limit",
-    )
+    expect(
+      liveWindowLabel(
+        window({
+          id: "weekly-some-model",
+          scopeModel: "Some Model",
+          role: "supplemental",
+          kind: "weekly",
+        }),
+      ),
+    ).toBe("Some Model weekly limit")
     expect(liveWindowLabel(window({ role: "primaryShort" }))).toBe("5-hour limit")
-    expect(liveWindowLabel(window({ role: "primaryLong" }))).toBe("Weekly limit")
+    expect(liveWindowLabel(window({ id: "seven-day", role: "primaryLong" }))).toBe(
+      "Weekly limit",
+    )
   })
 
   it("falls back to a neutral name rather than guessing at an unknown role", () => {
     expect(
-      liveWindowLabel(window({ role: "some_future_limit", kind: "some_future_limit" })),
+      liveWindowLabel(
+        window({
+          id: "some-future-limit",
+          role: "some_future_limit",
+          kind: "some_future_limit",
+        }),
+      ),
     ).toBe("Usage limit")
+  })
+
+  it("names each Antigravity shared quota by its stable id", () => {
+    expect(liveWindowLabel(window({ id: "antigravity-gemini-5h" }))).toBe("Gemini 5-hour limit")
+    expect(liveWindowLabel(window({ id: "antigravity-gemini-weekly" }))).toBe(
+      "Gemini weekly limit",
+    )
+    expect(liveWindowLabel(window({ id: "antigravity-claude-gpt-5h" }))).toBe(
+      "Claude and GPT 5-hour limit",
+    )
+    expect(liveWindowLabel(window({ id: "antigravity-claude-gpt-weekly" }))).toBe(
+      "Claude and GPT weekly limit",
+    )
+  })
+
+  it("does not infer a duration from primary roles", () => {
+    expect(liveWindowLabel(window({ id: "short", role: "primaryShort" }))).toBe(
+      "Short-term limit",
+    )
+    expect(liveWindowLabel(window({ id: "long", role: "primaryLong" }))).toBe("Long-term limit")
   })
 
   it("reads an absent percentage as unknown, never as zero", () => {
@@ -171,6 +209,22 @@ describe("plan labels", () => {
 
   it("reads a missing plan as null, not as a guess", () => {
     expect(livePlanLabel(provider({ plan: null }))).toBeNull()
+  })
+
+  it("normalizes the Google AI plans that Antigravity reports", () => {
+    expect(
+      livePlanLabel(
+        provider({ provider: "google", plan: { name: "Google AI Pro", tier: "pro-tier" } }),
+      ),
+    ).toBe("Google AI Pro")
+    expect(
+      livePlanLabel(
+        provider({
+          provider: "google",
+          plan: { name: " google ai ultra ", tier: "ultra-tier" },
+        }),
+      ),
+    ).toBe("Google AI Ultra")
   })
 })
 
@@ -352,6 +406,47 @@ describe("ordering and lookup", () => {
     expect(liveForProvider(summary(), "anthropic")?.displayName).toBe("Anthropic")
     expect(liveForProvider(summary(), "openai")).toBeNull()
   })
+
+  it("preserves first-seen order and gives null accounts stable fallback keys", () => {
+    const identifiedA = provider({ accountKey: "account-a" })
+    const identifiedB = provider({ accountKey: "account-b" })
+    const fallback = provider({
+      accountKey: null,
+      sourceLabel: "Read from Antigravity IDE",
+      plan: { name: "Google AI Pro", tier: "pro-tier" },
+      windows: [window({ id: "antigravity-model-gemini-3-pro" })],
+    })
+    const first = orderedLiveAccounts([identifiedB, fallback, identifiedA])
+    const second = orderedLiveAccounts([
+      {
+        ...fallback,
+        observedAt: "2027-01-15T12:01:00Z",
+        plan: { name: "Google AI Ultra", tier: "ultra-tier" },
+        windows: [
+          window({ id: "antigravity-model-gemini-3-pro" }),
+          window({ id: "antigravity-model-claude-sonnet" }),
+        ],
+      },
+      identifiedA,
+      identifiedB,
+    ])
+
+    expect(first.map((entry) => entry.reading.accountKey)).toEqual([
+      "account-b",
+      null,
+      "account-a",
+    ])
+    expect(second.map((entry) => entry.reading.accountKey)).toEqual([
+      null,
+      "account-a",
+      "account-b",
+    ])
+    const firstKeys = new Map(first.map((entry) => [entry.reading.accountKey, entry.key]))
+    for (const entry of second) {
+      expect(entry.key).toBe(firstKeys.get(entry.reading.accountKey))
+    }
+    expect(first[1]?.key).not.toContain(fallback.observedAt)
+  })
 })
 
 describe("hiding unused model quota limits", () => {
@@ -401,6 +496,97 @@ describe("hiding unused model quota limits", () => {
   it("never hides a primary window, however empty", () => {
     expect(isUsageWindowVisible(window({ role: "primaryShort", usedPercent: 0 }))).toBe(true)
     expect(isUsageWindowVisible(window({ role: "primaryLong", usedPercent: null }))).toBe(true)
+  })
+
+  it("keeps local Antigravity model windows visible with zero or unknown usage", () => {
+    const local = provider({
+      provider: "google",
+      sourceLabel: "Read from the Antigravity CLI",
+      windows: [
+        window({
+          id: "antigravity-model-gemini-3-pro",
+          role: "supplemental",
+          scopeModel: "Gemini 3 Pro",
+          usedPercent: 0,
+        }),
+        window({
+          id: "antigravity-model-claude-sonnet",
+          role: "supplemental",
+          scopeModel: "Claude Sonnet",
+          usedPercent: null,
+        }),
+      ],
+    })
+    expect(liveWindows(local).map((entry) => entry.id)).toEqual([
+      "antigravity-model-gemini-3-pro",
+      "antigravity-model-claude-sonnet",
+    ])
+  })
+
+  it("keeps all production Antigravity shared windows visible at zero or unknown", () => {
+    const antigravity = provider({
+      provider: "google",
+      windows: [
+        window({ id: "antigravity-gemini-5h", scopeModel: "Gemini", usedPercent: 0 }),
+        window({
+          id: "antigravity-gemini-weekly",
+          scopeModel: "Gemini",
+          role: "primaryLong",
+          kind: "weekly",
+          usedPercent: null,
+        }),
+        window({
+          id: "antigravity-claude-gpt-5h",
+          scopeModel: "Claude + GPT",
+          role: "supplemental",
+          usedPercent: 0,
+        }),
+        window({
+          id: "antigravity-claude-gpt-weekly",
+          scopeModel: "Claude + GPT",
+          role: "supplemental",
+          kind: "weekly",
+          usedPercent: null,
+        }),
+      ],
+    })
+    expect(liveWindows(antigravity)).toHaveLength(4)
+  })
+
+  it("keeps every Google model window supplied by the provider", () => {
+    const google = provider({
+      provider: "google",
+      sourceLabel: "Asked Google directly",
+      windows: [
+        window({
+          id: "weekly-gemini-3-pro",
+          role: "supplemental",
+          kind: "weekly",
+          scopeModel: "Gemini 3 Pro",
+          usedPercent: 0,
+        }),
+        window({
+          id: "weekly-gemini-3-flash",
+          role: "supplemental",
+          kind: "weekly",
+          scopeModel: "Gemini 3 Flash",
+          usedPercent: null,
+        }),
+        window({
+          id: "weekly-claude-sonnet",
+          role: "supplemental",
+          kind: "weekly",
+          scopeModel: "Claude Sonnet",
+          usedPercent: 0,
+        }),
+      ],
+    })
+
+    expect(liveWindows(google).map((entry) => entry.id)).toEqual([
+      "weekly-gemini-3-pro",
+      "weekly-gemini-3-flash",
+      "weekly-claude-sonnet",
+    ])
   })
 
   it("keeps a per-model limit visible for the rest of a period it has already used", () => {
@@ -518,6 +704,21 @@ describe("the failure surface", () => {
     expect(liveUnavailableReason("schema")).toBe("unreadable reply")
     expect(liveUnavailableReason("somethingNew")).toBe("unreachable")
   })
+
+  it("gives each Google failure one concise action", () => {
+    expect(liveErrorNote("authentication", "google")).toBe(
+      "Google sign-in expired. Sign in again, then retry.",
+    )
+    expect(liveErrorNote("rateLimited", "google")).toBe(
+      "Google rate limited usage checks. Wait, then retry.",
+    )
+    expect(liveErrorNote("schema", "google")).toBe(
+      "Google usage changed. Update antiburn, then retry.",
+    )
+    expect(liveErrorNote("unavailable", "google")).toBe(
+      "Google usage is unavailable. Check your connection, then retry.",
+    )
+  })
 })
 
 describe("extra usage", () => {
@@ -557,6 +758,42 @@ describe("extra usage", () => {
         provider({ extraUsage: { ...extra, usedPercent: null, used: null, currency: null } }),
       ),
     ).toBe("Extra usage is on")
+  })
+
+  it("presents Google's supplemental balance as AI credits", () => {
+    expect(
+      liveExtraUsageLabel(
+        provider({
+          provider: "google",
+          extraUsage: {
+            enabled: true,
+            usedPercent: 25,
+            used: 250,
+            remaining: 750,
+            limit: 1_000,
+            currency: null,
+          },
+        }),
+      ),
+    ).toBe("AI credits: 750 remaining")
+  })
+
+  it("labels every Google credit balance fact", () => {
+    const credits: NonNullable<LiveProviderUsagePayload["extraUsage"]> = {
+      enabled: true,
+      usedPercent: null,
+      used: null,
+      remaining: null,
+      limit: null,
+      currency: null,
+    }
+    const label = (extraUsage: typeof credits) =>
+      liveExtraUsageLabel(provider({ provider: "google", extraUsage }))
+
+    expect(label({ ...credits, used: 250, limit: 1_000 })).toBe("AI credits: 250 of 1,000 used")
+    expect(label({ ...credits, used: 250 })).toBe("AI credits: 250 used")
+    expect(label({ ...credits, limit: 1_000 })).toBe("AI credits: 1,000 total")
+    expect(label({ ...credits, usedPercent: 25, enabled: false })).toBe("AI credits: 25% used")
   })
 })
 

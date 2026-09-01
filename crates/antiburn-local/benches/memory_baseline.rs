@@ -13,12 +13,14 @@ mod corpus;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use antiburn_local::analysis::{
-    CompositeSink, EvidenceSource, NormalizedEvent, NormalizedRecord, RawSource, RecordSink, Role,
-    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
-    SourceCapabilities, SourceKind, ToolCall, Usage, adapter_for, merge_metrics,
+    CompositeSink, EvidenceSource, MemoryTurnRowStore, NormalizedEvent, NormalizedRecord,
+    RawSource, RecordSink, Role, SessionEvidenceAccumulator, SessionInput,
+    SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind, ToolCall,
+    TurnRowSink, TurnRowStore, Usage, adapter_for, merge_metrics,
 };
 use corpus::{
     GeneratedSession, SessionSpec, generate_session, generate_session_of_bytes,
@@ -75,25 +77,81 @@ fn measure_peak<T>(work: impl FnOnce() -> T) -> (usize, T) {
 }
 
 fn composite_for(input: &SessionInput) -> CompositeSink {
-    CompositeSink::new(
+    let capabilities = match input.agent.as_str() {
+        "claude" => SourceCapabilities::claude(),
+        "codex" => SourceCapabilities::codex(),
+        "cursor" => SourceCapabilities::cursor(),
+        "opencode" => SourceCapabilities::opencode(),
+        "pi" => SourceCapabilities::pi(),
+        "antigravity" => SourceCapabilities::antigravity(),
+        _ => SourceCapabilities::generic(),
+    };
+    let store = MemoryTurnRowStore::new(&input.agent, &input.session_id);
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        input.session_id.clone(),
+        None,
+    );
+    CompositeSink::with_turn_rows(
         SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone()),
         SessionEvidenceAccumulator::new(EvidenceSource {
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             kind: SourceKind::from(&input.source),
-            capabilities: SourceCapabilities::claude(),
+            capabilities,
         }),
+        turn_rows,
     )
 }
 
 fn run_pipeline(input: &SessionInput) -> String {
     let mut composite = composite_for(input);
-    let outcome = adapter_for("claude")
+    let outcome = adapter_for(&input.agent)
         .visit(input, &mut composite)
         .expect("synthetic source must stream");
     composite.observe_source_outcome(outcome);
     let evidence = composite.evidence().expect("clean session must publish");
     serde_json::to_string(&evidence).expect("evidence serializes")
+}
+
+fn generate_pi_session(target_bytes: usize) -> String {
+    let mut jsonl = String::with_capacity(target_bytes + 256);
+    jsonl.push_str("{\"type\":\"session\",\"version\":3,\"timestamp\":\"2026-01-01T00:00:00Z\"}\n");
+    let mut index = 0_u64;
+    while jsonl.len() < target_bytes {
+        let parent = index
+            .checked_sub(1)
+            .map(|value| format!(",\"parentId\":\"m{value}\""));
+        jsonl.push_str(&format!(
+            "{{\"type\":\"message\",\"id\":\"m{index}\"{},\"timestamp\":{},\"message\":{{\"role\":\"assistant\",\"provider\":\"synthetic-provider-{index}\",\"model\":\"synthetic-model-{index}\",\"usage\":{{\"input\":13,\"output\":5,\"cacheRead\":3,\"cacheWrite\":2}},\"content\":[]}}}}\n",
+            parent.as_deref().unwrap_or(""),
+            index.saturating_mul(1_000)
+        ));
+        index += 1;
+    }
+    jsonl
+}
+
+fn pi_memory_measurement() {
+    println!("\n== Pi claimed stream with long identity chain ==");
+    for size_mib in [1_usize, 10, 50] {
+        let directory = TempDir::new().expect("tempdir");
+        let content = generate_pi_session(size_mib * MIB);
+        let source_bytes = content.len();
+        let path = directory.path().join("pi.jsonl");
+        std::fs::write(&path, content).expect("write Pi source");
+        let input = SessionInput {
+            agent: "pi".to_owned(),
+            session_id: "synthetic-pi-memory".to_owned(),
+            source: RawSource::File(path),
+        };
+        let (peak, evidence) = measure_peak(|| run_pipeline(&input));
+        black_box(evidence);
+        println!(
+            "{size_mib} MiB Pi source ({source_bytes} bytes): streaming peak {peak} bytes ({:.2}x source)",
+            peak as f64 / source_bytes as f64
+        );
+    }
 }
 
 fn write_session(directory: &TempDir, session: &GeneratedSession) -> PathBuf {
@@ -328,4 +386,5 @@ fn main() {
     large_session_split();
     saturation_measurement();
     session_tree_measurement();
+    pi_memory_measurement();
 }

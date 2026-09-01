@@ -25,11 +25,7 @@ static MIRRORED: AntigravityExplorer = AntigravityExplorer {
 };
 
 #[tokio::test]
-async fn test_brain_main_transcript_falls_back_to_file_when_synthesis_fails() {
-    // A path shaped like a brain main transcript but under an *unrecognized*
-    // subroot makes `synthesize_brain_inline_payload` return `None`
-    // (`brain_origin_of` is `None`). The session must still surface as a
-    // `File` rather than being dropped (F9).
+async fn test_brain_main_transcript_under_unknown_root_stays_a_file() {
     let dir = TempDir::new().unwrap();
     let logs_dir = dir
         .path()
@@ -41,19 +37,12 @@ async fn test_brain_main_transcript_falls_back_to_file_when_synthesis_fails() {
     let transcript = logs_dir.join("transcript.jsonl");
     tokio::fs::write(&transcript, "{}\n").await.unwrap();
 
-    // It *is* a brain main transcript, but not under a known subroot, so
-    // synthesis bails before reading.
     assert!(is_brain_transcript_main(&transcript));
     assert!(brain_origin_of(&transcript).is_none());
-    assert!(
-        synthesize_brain_inline_payload(&transcript, None)
-            .await
-            .is_none()
-    );
 
-    match classify_session_file(&transcript, None).await {
+    match classify_session_file(&transcript) {
         SessionFileDecision::File => {}
-        _ => panic!("expected File fallback when synthesis returns None"),
+        _ => panic!("expected a file source"),
     }
 }
 
@@ -341,7 +330,7 @@ fn test_excluded_subagent_matches_api_cache_and_brain_paths() {
 }
 
 // -----------------------------------------------------------------------
-// Brain-transcript -> cascade-shape synthesis
+// Brain transcript metadata
 // -----------------------------------------------------------------------
 
 /// Helper: write a brain transcript at the expected nested path.
@@ -359,35 +348,24 @@ async fn write_brain_transcript(home: &Path, subroot: &str, uuid: &str, body: &s
     path
 }
 
-/// Helper: parse the metadata-header line (line 1) of a synthesized
-/// payload as JSON.
-fn parse_header(payload: &str) -> serde_json::Value {
-    let header_line = payload
-        .lines()
-        .next()
-        .expect("synthesized payload should have at least one line");
-    serde_json::from_str(header_line).expect("synthesized header line should be valid JSON")
+async fn augmented_metadata(path: &Path, preview: &str) -> SessionMetadata {
+    let mut metadata = SessionMetadata::default();
+    augment_brain_metadata(path, preview, &mut metadata).await;
+    metadata
 }
 
 #[tokio::test]
-async fn test_synthesize_brain_inline_payload_session_uuid_from_path() {
+async fn test_brain_metadata_uses_session_uuid_from_path() {
     let home = TempDir::new().unwrap();
     let uuid = "bfc4823e-f866-41cb-99eb-98194e0fea4e";
     let path = write_brain_transcript(home.path(), "antigravity-cli", uuid, "").await;
 
-    let (got_uuid, payload) = synthesize_brain_inline_payload(&path, None).await.unwrap();
-    assert_eq!(got_uuid, uuid);
-
-    let header = parse_header(&payload);
-    assert_eq!(header.get("sessionId").and_then(|v| v.as_str()), Some(uuid));
-    assert_eq!(
-        header.get("source").and_then(|v| v.as_str()),
-        Some("antigravity_brain")
-    );
+    let metadata = augmented_metadata(&path, "").await;
+    assert_eq!(metadata.session_id.as_deref(), Some(uuid));
 }
 
 #[tokio::test]
-async fn test_synthesize_brain_inline_payload_extracts_active_document_cwd() {
+async fn test_brain_metadata_extracts_active_document_cwd() {
     let home = TempDir::new().unwrap();
     let body = json!({
             "step_index": 0,
@@ -400,18 +378,15 @@ async fn test_synthesize_brain_inline_payload_extracts_active_document_cwd() {
         .to_string();
     let path = write_brain_transcript(home.path(), "antigravity-ide", "u1", &body).await;
 
-    let (_uuid, payload) = synthesize_brain_inline_payload(&path, None).await.unwrap();
-    let header = parse_header(&payload);
-    // Active Document gives a file path; synthesizer normalizes to the
-    // parent directory so the scanner's `cwd` consumer gets a dir.
-    assert_eq!(header.get("cwd").and_then(|v| v.as_str()), Some("/tmp/foo"));
+    let metadata = augmented_metadata(&path, &body).await;
+    assert_eq!(metadata.cwd.as_deref(), Some("/tmp/foo"));
 }
 
 /// Legacy `~/.gemini/antigravity/brain/` sessions have no structured
 /// cwd source, so we still prose-sniff `[label](file:///path)` markdown
 /// links from PLANNER_RESPONSE content as a last-resort fallback.
 #[tokio::test]
-async fn test_synthesize_brain_inline_payload_legacy_markdown_link_fallback() {
+async fn test_brain_metadata_legacy_markdown_link_fallback() {
     let home = TempDir::new().unwrap();
     let body = format!(
         "{}\n{}\n",
@@ -433,12 +408,8 @@ async fn test_synthesize_brain_inline_payload_legacy_markdown_link_fallback() {
     // Legacy subroot, NOT antigravity-cli.
     let path = write_brain_transcript(home.path(), "antigravity", "u2", &body).await;
 
-    let (_uuid, payload) = synthesize_brain_inline_payload(&path, None).await.unwrap();
-    let header = parse_header(&payload);
-    assert_eq!(
-        header.get("cwd").and_then(|v| v.as_str()),
-        Some("/Users/avery/demo-app")
-    );
+    let metadata = augmented_metadata(&path, &body).await;
+    assert_eq!(metadata.cwd.as_deref(), Some("/Users/avery/demo-app"));
 }
 
 /// CLI brain transcripts derive cwd and title from
@@ -446,7 +417,7 @@ async fn test_synthesize_brain_inline_payload_legacy_markdown_link_fallback() {
 /// session record), correlated to the brain transcript via the first
 /// step's `created_at` timestamp.
 #[tokio::test]
-async fn test_synthesize_brain_inline_payload_uses_cli_history_jsonl() {
+async fn test_brain_metadata_uses_cli_history_jsonl() {
     let home = TempDir::new().unwrap();
     // 2026-05-25T05:03:48Z = epoch 1779685428
     let body = format!(
@@ -481,18 +452,10 @@ async fn test_synthesize_brain_inline_payload_uses_cli_history_jsonl() {
         .await
         .unwrap();
 
-    let history = read_cli_history(&home.path().join(".gemini")).await;
-    assert!(history.is_some());
-    let (_uuid, payload) = synthesize_brain_inline_payload(&path, history.as_deref())
-        .await
-        .unwrap();
-    let header = parse_header(&payload);
+    let metadata = augmented_metadata(&path, &body).await;
+    assert_eq!(metadata.cwd.as_deref(), Some("/Users/avery/demo-app"));
     assert_eq!(
-        header.get("cwd").and_then(|v| v.as_str()),
-        Some("/Users/avery/demo-app")
-    );
-    assert_eq!(
-        header.get("title").and_then(|v| v.as_str()),
+        metadata.title.as_deref(),
         Some("hello world (test III) from Antigravity CLI")
     );
 }
@@ -540,7 +503,9 @@ async fn test_read_cli_history_skips_malformed_lines() {
     })
     .to_string();
 
-    let contents = format!("{good_a}\n{missing_field}\n{wrong_type}\n{unparseable}\n{good_b}\n");
+    let oversized = "x".repeat(64 * 1024 + 1);
+    let contents =
+        format!("{good_a}\n{missing_field}\n{wrong_type}\n{unparseable}\n{oversized}\n{good_b}\n");
     tokio::fs::write(&history_path, contents).await.unwrap();
 
     let history = read_cli_history(&home.path().join(".gemini"))
@@ -557,10 +522,50 @@ async fn test_read_cli_history_skips_malformed_lines() {
     assert_eq!(history[1].workspace, "/Users/avery/repo-c");
 }
 
+#[tokio::test]
+async fn test_read_cli_history_retains_recent_entries_after_the_limit() {
+    let home = TempDir::new().unwrap();
+    let history_path = home
+        .path()
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("history.jsonl");
+    tokio::fs::create_dir_all(history_path.parent().unwrap())
+        .await
+        .unwrap();
+    let mut contents = String::new();
+    for index in 0..4_100_i64 {
+        contents.push_str(
+            &json!({
+                "display": format!("session {index}"),
+                "timestamp": 1_779_000_000_000_i64 + index * 1_000,
+                "workspace": format!("/tmp/repo-{index}"),
+            })
+            .to_string(),
+        );
+        contents.push('\n');
+    }
+    tokio::fs::write(&history_path, contents).await.unwrap();
+
+    let history = read_cli_history(&home.path().join(".gemini"))
+        .await
+        .expect("history reads");
+
+    assert_eq!(history.len(), 4_096);
+    assert_eq!(history.first().unwrap().display, "session 4");
+    assert_eq!(history.last().unwrap().display, "session 4099");
+    assert_eq!(
+        find_cli_history_entry(&history, 1_779_004_099)
+            .unwrap()
+            .workspace,
+        "/tmp/repo-4099"
+    );
+}
+
 /// CLI brain transcripts without a matching history entry leave both
 /// `cwd` and `title` unset — we do NOT sniff random prose for CLI.
 #[tokio::test]
-async fn test_synthesize_brain_inline_payload_cli_no_history_omits_metadata() {
+async fn test_brain_metadata_cli_no_history_omits_metadata() {
     let home = TempDir::new().unwrap();
     let body = format!(
         "{}\n{}\n",
@@ -583,15 +588,14 @@ async fn test_synthesize_brain_inline_payload_cli_no_history_omits_metadata() {
     );
     let path = write_brain_transcript(home.path(), "antigravity-cli", "u5", &body).await;
 
-    let (_uuid, payload) = synthesize_brain_inline_payload(&path, None).await.unwrap();
-    let header = parse_header(&payload);
-    assert!(header.get("cwd").is_none());
-    assert!(header.get("title").is_none());
+    let metadata = augmented_metadata(&path, &body).await;
+    assert!(metadata.cwd.is_none());
+    assert!(metadata.title.is_none());
 }
 
 /// IDE / legacy USER_INPUT `<USER_REQUEST>` content becomes the title.
 #[tokio::test]
-async fn test_synthesize_brain_inline_payload_title_from_user_request_for_ide() {
+async fn test_brain_metadata_title_from_user_request_for_ide() {
     let home = TempDir::new().unwrap();
     let body = json!({
             "step_index": 0,
@@ -604,40 +608,38 @@ async fn test_synthesize_brain_inline_payload_title_from_user_request_for_ide() 
         .to_string();
     let path = write_brain_transcript(home.path(), "antigravity-ide", "u3", &body).await;
 
-    let (_uuid, payload) = synthesize_brain_inline_payload(&path, None).await.unwrap();
-    let header = parse_header(&payload);
+    let metadata = augmented_metadata(&path, &body).await;
     assert_eq!(
-        header.get("title").and_then(|v| v.as_str()),
+        metadata.title.as_deref(),
         Some("hello world from Antigravity IDE")
     );
 }
 
-/// The raw transcript follows the header verbatim — uploads should
-/// receive the original conversation untouched.
 #[tokio::test]
-async fn test_synthesize_brain_inline_payload_preserves_raw_transcript_body() {
+async fn test_brain_metadata_normalizes_long_multiline_title() {
     let home = TempDir::new().unwrap();
-    let raw_line = json!({
-        "step_index": 0,
+    let words = (0..260).map(|_| "word").collect::<Vec<_>>().join("\n");
+    let body = json!({
         "type": "USER_INPUT",
-        "content": "anything",
         "created_at": "2026-05-25T04:37:50Z",
+        "content": format!("<USER_REQUEST>\n{words}\n</USER_REQUEST>"),
     })
     .to_string();
-    let body = format!("{raw_line}\n");
-    let path = write_brain_transcript(home.path(), "antigravity-ide", "u6", &body).await;
+    let path = write_brain_transcript(home.path(), "antigravity-ide", "long-title", &body).await;
 
-    let (_uuid, payload) = synthesize_brain_inline_payload(&path, None).await.unwrap();
-    let mut lines = payload.lines();
-    let _header = lines.next().unwrap();
-    assert_eq!(lines.next(), Some(raw_line.as_str()));
+    let metadata = augmented_metadata(&path, &body).await;
+    let title = metadata.title.expect("title");
+
+    assert_eq!(title.chars().count(), 200);
+    assert!(!title.contains('\n'));
+    assert!(!title.contains("  "));
 }
 
 // Mutates the global `HOME`; `#[serial]` prevents the discover_recent
 // sibling tests from clobbering each other's temp home under parallel runs.
 #[tokio::test(flavor = "current_thread")]
 #[serial]
-async fn test_discover_recent_emits_inline_for_brain_transcript() {
+async fn test_discover_recent_keeps_brain_transcript_as_file() {
     use crate::discovery::set_file_mtime;
 
     let home = TempDir::new().unwrap();
@@ -689,21 +691,12 @@ async fn test_discover_recent_emits_inline_for_brain_transcript() {
     set_file_mtime(&path, now - 60);
 
     let logs = DISK_ANTIGRAVITY.discover_recent(now, since_secs).await;
-    let inline = logs
+    let file = logs
         .iter()
-        .find(|log| {
-            matches!(
-                &log.source,
-                SessionSource::Inline { label, .. } if label.contains(uuid)
-            )
-        })
-        .expect("expected an Inline SessionLog for the brain transcript");
+        .find(|log| matches!(&log.source, SessionSource::File(candidate) if candidate == &path))
+        .expect("expected a file SessionLog for the brain transcript");
 
-    let content = match &inline.source {
-        SessionSource::Inline { content, .. } => content.clone(),
-        _ => unreachable!(),
-    };
-    let metadata = crate::discovery::scanner::parse_session_metadata_str(&content);
+    let metadata = crate::discovery::session_log_metadata(file).await.unwrap();
     assert_eq!(metadata.session_id.as_deref(), Some(uuid));
     assert_eq!(metadata.cwd.as_deref(), Some("/Users/avery/demo-app"));
     assert_eq!(
@@ -711,14 +704,15 @@ async fn test_discover_recent_emits_inline_for_brain_transcript() {
         Some("hello world from Antigravity CLI")
     );
 
-    // No raw-File SessionLog should remain for the same transcript.
-    let raw_file_for_same = logs
-        .iter()
-        .any(|log| matches!(&log.source, SessionSource::File(p) if p == &path));
-    assert!(
-        !raw_file_for_same,
-        "brain transcript should be emitted only as Inline, not as a raw File source"
+    watch_history_reads(
+        home.path()
+            .join(".gemini")
+            .join("antigravity-cli")
+            .join("history.jsonl"),
     );
+    let cwds = DISK_ANTIGRAVITY.discover_cwds(now, since_secs).await;
+    assert_eq!(take_history_reads(), 1);
+    assert!(cwds.iter().any(|cwd| cwd == "/Users/avery/demo-app"));
 }
 
 /// Sidecar `.json` artifacts that share a brain `<uuid>/` dir
@@ -781,13 +775,13 @@ async fn test_discover_recent_skips_brain_sidecar_artifacts() {
         "brain sidecar artifact must not be emitted as a session File log"
     );
 
-    // locate_session_source must resolve the UUID to the Inline transcript,
+    // locate_session_source must resolve the UUID to the transcript,
     // not the sidecar.
     let located = crate::discovery::Explorers::DISK
         .locate_session_source(&AgentKind::Antigravity, uuid)
         .await;
     assert!(
-        matches!(located, Some(SessionSource::Inline { ref label, .. }) if label.contains(uuid)),
-        "expected the brain transcript Inline source, got {located:?}"
+        matches!(located, Some(SessionSource::File(ref path)) if path == &transcript),
+        "expected the brain transcript file source, got {located:?}"
     );
 }

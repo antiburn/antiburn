@@ -103,11 +103,17 @@ describe("UsagePane", () => {
     await waitFor(() => expect(refreshLiveUsage).toHaveBeenCalled())
   })
 
-  it("distinguishes nothing found from nothing working", async () => {
+  it("always offers the Google meter without a live reading", async () => {
     getLiveUsage.mockResolvedValue(summary())
-    pane()
-    await waitFor(() => expect(screen.getByText("No plan limits found")).toBeInTheDocument())
-    expect(screen.queryByText("Could not read usage")).not.toBeInTheDocument()
+    const update = pane({ liveUsageEnabled: true })
+    await waitFor(() => expect(screen.getByText("Google")).toBeInTheDocument())
+    const toggle = screen.getByRole("switch", { name: "Show Google meter" })
+    expect(toggle).toBeChecked()
+    expect(screen.getByText(/No readings yet\. Sign in with Google/)).toBeInTheDocument()
+
+    fireEvent.click(toggle)
+
+    expect(update).toHaveBeenCalledWith({ liveUsageHiddenProviders: ["google"] })
   })
 
   it("turns each failure into something a reader could act on", async () => {
@@ -129,7 +135,7 @@ describe("UsagePane", () => {
     )
     // And it is not reported as "nothing found", which would send the reader
     // to use their coding tool when the problem is that they are signed out of it.
-    expect(screen.queryByText("No plan limits found")).not.toBeInTheDocument()
+    expect(screen.getByText("Google")).toBeInTheDocument()
   })
 
   it("lists what each source can currently prove", async () => {
@@ -138,6 +144,7 @@ describe("UsagePane", () => {
         providers: [
           {
             provider: "anthropic",
+            accountKey: null,
             displayName: "Anthropic",
             support: "live",
             freshness: "fresh",
@@ -171,7 +178,13 @@ describe("UsagePane", () => {
     pane({ liveUsageEnabled: true })
     await waitFor(() => expect(screen.getByText("Claude")).toBeInTheDocument())
     expect(screen.getByText("Codex")).toBeInTheDocument()
-    expect(screen.queryByText("No plan limits found")).not.toBeInTheDocument()
+    expect(screen.getByText("Google")).toBeInTheDocument()
+    const switches = screen.getAllByRole("switch", { name: /meter$/ })
+    expect(switches.map((entry) => entry.getAttribute("aria-label"))).toEqual([
+      "Show Claude meter",
+      "Show Google meter",
+      "Show Codex meter",
+    ])
   })
 
   it("keeps a hidden provider's row, so the switch can be found again", async () => {
@@ -226,10 +239,10 @@ describe("UsagePane", () => {
     await waitFor(() => expect(refreshLiveUsage).toHaveBeenCalled())
   })
 
-  it("degrades to an empty list rather than throwing when the shell answers with nothing", async () => {
+  it("keeps Google available when the shell request fails", async () => {
     getLiveUsage.mockRejectedValue(new Error("no shell"))
     pane()
-    await waitFor(() => expect(screen.getByText("No plan limits found")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText("Google")).toBeInTheDocument())
   })
 })
 

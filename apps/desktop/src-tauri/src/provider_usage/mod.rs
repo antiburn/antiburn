@@ -38,12 +38,14 @@ use antiburn_local::pricing::ModelTokens;
 use time::{OffsetDateTime, Time, UtcOffset};
 
 use crate::dto::{
-    ProviderUsage, ProviderUsageStaleness, ProviderUsageState, ProviderUsageSummary,
-    ProviderUsageWindow, ProviderUsageWindows,
+    ProviderAgentUsage, ProviderUsage, ProviderUsageStaleness, ProviderUsageState,
+    ProviderUsageSummary, ProviderUsageWindow, ProviderUsageWindows,
 };
 use crate::store::{UsageEvidenceRecord, iso_from_epoch};
 
-use providers::Route;
+use antiburn_local::analysis::ProviderHint;
+use providers::{HintResolution, Route};
+use serde::Deserialize;
 
 /// How old a provider's newest session may be before its totals are marked as
 /// describing the past rather than the present.
@@ -189,6 +191,15 @@ struct Accumulator {
     /// Kept separately because the state describes the provider, not a window.
     all: Bucket,
     last_activity: Option<i64>,
+    explicit_provider_detected: bool,
+    agents: BTreeMap<String, AgentBuckets>,
+}
+
+#[derive(Debug, Default)]
+struct AgentBuckets {
+    today: Bucket,
+    week: Bucket,
+    month: Bucket,
 }
 
 /// What pricing could say about a set of models.
@@ -246,16 +257,29 @@ fn window_of(bucket: &Bucket) -> ProviderUsageWindow {
 }
 
 /// The state the covered evidence supports.
-fn state_of(all: &Bucket) -> ProviderUsageState {
-    if all.models.is_empty() {
-        return ProviderUsageState::Unknown;
+fn state_of(accumulator: &Accumulator) -> ProviderUsageState {
+    let has_nonzero_tokens = accumulator.all.models.values().any(has_tokens);
+    if !has_nonzero_tokens {
+        return if accumulator.explicit_provider_detected {
+            ProviderUsageState::Detected
+        } else {
+            ProviderUsageState::Unknown
+        };
     }
-    let priced = price(&all.models);
+    let priced = price(&accumulator.all.models);
     if priced.any_unpriced || !priced.any_priced {
         ProviderUsageState::Observed
     } else {
         ProviderUsageState::Estimated
     }
+}
+
+fn has_tokens(tokens: &ModelTokens) -> bool {
+    tokens.input_tokens > 0
+        || tokens.output_tokens > 0
+        || tokens.cache_read_tokens > 0
+        || tokens.cache_creation_tokens > 0
+        || tokens.cache_creation_1h_tokens > 0
 }
 
 /// Whether the newest evidence still describes now.
@@ -282,6 +306,69 @@ fn breakdown_of(record: &UsageEvidenceRecord) -> BTreeMap<String, ModelTokens> {
         .collect()
 }
 
+fn provider_hints_of(record: &UsageEvidenceRecord) -> Vec<ProviderHint> {
+    record
+        .provider_hints_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str(json).ok())
+        .unwrap_or_default()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderAccountObservation {
+    provider: String,
+    account_key: String,
+}
+
+fn account_for(record: &UsageEvidenceRecord, provider: &str) -> Option<String> {
+    let observations: Vec<ProviderAccountObservation> =
+        serde_json::from_str(&record.provider_accounts_json).unwrap_or_default();
+    let mut accounts = observations
+        .into_iter()
+        .filter(|observation| observation.provider == provider)
+        .map(|observation| observation.account_key)
+        .filter(|account| account.len() == 64);
+    let first = accounts.next()?;
+    accounts.all(|account| account == first).then_some(first)
+}
+
+#[derive(Debug, Default)]
+struct Attributed {
+    models: BTreeMap<String, ModelTokens>,
+    explicit: bool,
+}
+
+fn hints_for_model<'a>(model: &str, hints: &'a [ProviderHint]) -> Vec<&'a ProviderHint> {
+    let exact: Vec<_> = hints
+        .iter()
+        .filter(|hint| {
+            hint.model
+                .as_deref()
+                .is_some_and(|value| value.eq_ignore_ascii_case(model))
+        })
+        .collect();
+    if exact.is_empty() {
+        hints.iter().filter(|hint| hint.model.is_none()).collect()
+    } else {
+        exact
+    }
+}
+
+fn explicit_providers<'a>(hints: impl IntoIterator<Item = &'a ProviderHint>) -> Vec<&'static str> {
+    let mut providers = Vec::new();
+    for hint in hints {
+        let provider = match providers::provider_for_hint(&hint.provider) {
+            HintResolution::Known(provider) => provider,
+            HintResolution::UnknownExplicit => providers::UNKNOWN,
+        };
+        if !providers.contains(&provider) {
+            providers.push(provider);
+        }
+    }
+    providers
+}
+
 /// Attribute one session's models to providers.
 ///
 /// A fixed-route agent puts every model under its vendor; a bring-your-own
@@ -290,18 +377,36 @@ fn breakdown_of(record: &UsageEvidenceRecord) -> BTreeMap<String, ModelTokens> {
 fn attribute(
     agent: &str,
     breakdown: BTreeMap<String, ModelTokens>,
-) -> BTreeMap<&'static str, BTreeMap<String, ModelTokens>> {
+    hints: &[ProviderHint],
+) -> BTreeMap<&'static str, Attributed> {
     let route = providers::route_for_agent(agent);
-    let mut by_provider: BTreeMap<&'static str, BTreeMap<String, ModelTokens>> = BTreeMap::new();
+    let mut by_provider: BTreeMap<&'static str, Attributed> = BTreeMap::new();
     for (model, tokens) in breakdown {
         let provider = match route {
             Route::Fixed(provider) => provider,
-            Route::ByModel => providers::provider_for_model(&model),
+            Route::ByModel => {
+                let explicit = explicit_providers(hints_for_model(&model, hints));
+                if explicit.len() == 1 {
+                    explicit[0]
+                } else if explicit.len() > 1 {
+                    for provider in explicit {
+                        by_provider.entry(provider).or_default().explicit = true;
+                    }
+                    providers::UNKNOWN
+                } else {
+                    providers::provider_for_model(&model)
+                }
+            }
         };
-        by_provider
-            .entry(provider)
-            .or_default()
-            .insert(model, tokens);
+        let attributed = by_provider.entry(provider).or_default();
+        attributed.explicit |=
+            matches!(route, Route::ByModel) && !hints_for_model(&model, hints).is_empty();
+        attributed.models.insert(model, tokens);
+    }
+    if matches!(route, Route::ByModel) {
+        for provider in explicit_providers(hints) {
+            by_provider.entry(provider).or_default().explicit = true;
+        }
     }
     by_provider
 }
@@ -329,7 +434,7 @@ pub fn summarize(
     utc_offset_minutes: i32,
 ) -> ProviderUsageSummary {
     let bounds = window_bounds(now, utc_offset_minutes);
-    let mut accumulators: BTreeMap<&'static str, Accumulator> = BTreeMap::new();
+    let mut accumulators: BTreeMap<(&'static str, Option<String>), Accumulator> = BTreeMap::new();
 
     for record in rows {
         let membership = Membership::of(record.updated_at_epoch, &bounds);
@@ -338,14 +443,41 @@ pub fn summarize(
         }
 
         let breakdown = breakdown_of(record);
+        let hints = provider_hints_of(record);
         let attributed = if breakdown.is_empty() {
-            BTreeMap::from([(provider_without_models(&record.agent), BTreeMap::new())])
+            match providers::route_for_agent(&record.agent) {
+                Route::Fixed(provider) => BTreeMap::from([(
+                    provider,
+                    Attributed {
+                        explicit: false,
+                        ..Attributed::default()
+                    },
+                )]),
+                Route::ByModel if hints.is_empty() => BTreeMap::from([(
+                    provider_without_models(&record.agent),
+                    Attributed::default(),
+                )]),
+                Route::ByModel => explicit_providers(&hints)
+                    .into_iter()
+                    .map(|provider| {
+                        (
+                            provider,
+                            Attributed {
+                                explicit: true,
+                                ..Attributed::default()
+                            },
+                        )
+                    })
+                    .collect(),
+            }
         } else {
-            attribute(&record.agent, breakdown)
+            attribute(&record.agent, breakdown, &hints)
         };
 
-        for (provider, models) in attributed {
-            let accumulator = accumulators.entry(provider).or_default();
+        for (provider, attributed) in attributed {
+            let account_key = account_for(record, provider);
+            let accumulator = accumulators.entry((provider, account_key)).or_default();
+            accumulator.explicit_provider_detected |= attributed.explicit;
             accumulator.last_activity = Some(
                 accumulator
                     .last_activity
@@ -366,7 +498,25 @@ pub fn summarize(
             }
             for bucket in buckets {
                 bucket.session_count = bucket.session_count.saturating_add(1);
-                for (model, tokens) in &models {
+                for (model, tokens) in &attributed.models {
+                    bucket.add_tokens(model, tokens);
+                }
+            }
+
+            let agent = accumulator.agents.entry(record.agent.clone()).or_default();
+            let mut agent_buckets: Vec<&mut Bucket> = Vec::new();
+            if membership.today {
+                agent_buckets.push(&mut agent.today);
+            }
+            if membership.week {
+                agent_buckets.push(&mut agent.week);
+            }
+            if membership.month {
+                agent_buckets.push(&mut agent.month);
+            }
+            for bucket in agent_buckets {
+                bucket.session_count = bucket.session_count.saturating_add(1);
+                for (model, tokens) in &attributed.models {
                     bucket.add_tokens(model, tokens);
                 }
             }
@@ -375,16 +525,29 @@ pub fn summarize(
 
     let mut providers: Vec<ProviderUsage> = accumulators
         .into_iter()
-        .map(|(provider, accumulator)| ProviderUsage {
+        .map(|((provider, account_key), accumulator)| ProviderUsage {
             provider: provider.to_string(),
+            account_key,
             display_name: providers::display_name(provider).to_string(),
-            state: state_of(&accumulator.all),
+            state: state_of(&accumulator),
             staleness: staleness_of(accumulator.last_activity, now),
             windows: ProviderUsageWindows {
                 today: window_of(&accumulator.today),
                 week: window_of(&accumulator.week),
                 month: window_of(&accumulator.month),
             },
+            agents: accumulator
+                .agents
+                .into_iter()
+                .map(|(agent, buckets)| ProviderAgentUsage {
+                    agent,
+                    windows: ProviderUsageWindows {
+                        today: window_of(&buckets.today),
+                        week: window_of(&buckets.week),
+                        month: window_of(&buckets.month),
+                    },
+                })
+                .collect(),
             last_activity_at: accumulator.last_activity.map(|at| iso_from_epoch(Some(at))),
         })
         .collect();
@@ -396,6 +559,7 @@ pub fn summarize(
         b.last_activity_at
             .cmp(&a.last_activity_at)
             .then_with(|| a.provider.cmp(&b.provider))
+            .then_with(|| a.account_key.cmp(&b.account_key))
     });
 
     ProviderUsageSummary {

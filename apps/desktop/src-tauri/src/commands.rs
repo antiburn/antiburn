@@ -728,7 +728,36 @@ pub fn get_provider_usage(
     let offset = utc_offset_minutes.unwrap_or(0);
     let since = provider_usage::lookback_start(now, offset);
     let evidence = app.state::<Store>().usage_evidence(since).map_err(fail)?;
-    Ok(provider_usage::summarize(&evidence, now, offset))
+    let summary = provider_usage::summarize(&evidence, now, offset);
+    ::tracing::debug!(
+        event = "provider_attribution_summary",
+        sessions = evidence.len(),
+        groups = summary.providers.len(),
+        assigned_groups = summary
+            .providers
+            .iter()
+            .filter(|provider| provider.account_key.is_some())
+            .count(),
+        unassigned_groups = summary
+            .providers
+            .iter()
+            .filter(
+                |provider| provider.provider != provider_usage::providers::UNKNOWN
+                    && provider.account_key.is_none()
+            )
+            .count(),
+        unattributed_groups = summary
+            .providers
+            .iter()
+            .filter(|provider| provider.provider == provider_usage::providers::UNKNOWN)
+            .count(),
+        detected_groups = summary
+            .providers
+            .iter()
+            .filter(|provider| provider.state == crate::dto::ProviderUsageState::Detected)
+            .count(),
+    );
+    Ok(summary)
 }
 
 /// How fresh a reading the refresh command asks each source's cooldown for.

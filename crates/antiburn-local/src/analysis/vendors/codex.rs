@@ -498,6 +498,7 @@ impl CodexStreamState {
             cache_write_tokens_available: self.cache_write_tokens_available,
             context_window: self.context_window,
             model: self.model,
+            provider_hints: Vec::new(),
             started_at_ms: self.started_at_ms,
             coverage_gaps,
             late_tools: Vec::new(),
@@ -1778,7 +1779,7 @@ mod tests {
 
     #[test]
     fn record_to_event_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 14_650_998_214_792_687_338;
+        const EXPECTED_FINGERPRINT: u64 = 1_072_695_791_009_847_341;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();

@@ -53,6 +53,7 @@ const LOG_METADATA_CONCURRENCY: usize = 16;
 /// Metadata, visibility, and lineage all live near the top of a transcript, so
 /// a multi-gigabyte log never needs to be materialized in full to be described.
 const SOURCE_PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
+const WHOLE_DOCUMENT_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Maximum transcript suffix read to recover semantic activity. Activity
 /// records are append-oriented in the JSONL formats we support; a suffix is
@@ -663,7 +664,7 @@ pub struct SessionTitleAndSurface {
 const SESSION_TITLE_SCAN_WINDOW_SECS: i64 = 60 * 60 * 24 * 30;
 
 /// Shared default body for `AgentExplorer::session_titles_and_surfaces`.
-/// Reads each `SessionLog`'s content once, parses metadata, and classifies
+/// Reads each `SessionLog`'s bounded preview once, parses metadata, and classifies
 /// surface via `SessionLog::surface_label_with_content` (so Claude
 /// `entrypoint` / Codex `session_meta.source` content peeks still apply).
 async fn default_session_titles_and_surfaces<E: AgentExplorer + ?Sized>(
@@ -682,12 +683,8 @@ async fn default_session_titles_and_surfaces<E: AgentExplorer + ?Sized>(
     bounded_log_tasks(logs, |log| {
         let home = home.clone();
         async move {
-            let content = match &log.source {
-                SessionSource::File(path) => tokio::fs::read_to_string(path).await.ok()?,
-                SessionSource::Inline { content, .. } => content.clone(),
-                SessionSource::ProviderDb { .. } => session_source_content(&log.source).await?,
-            };
-            let metadata = match &log.source {
+            let mut content = session_source_preview(&log.source).await?;
+            let mut metadata = match &log.source {
                 SessionSource::File(path) => {
                     scanner::parse_session_metadata_with_content(path, &content).await
                 }
@@ -696,6 +693,18 @@ async fn default_session_titles_and_surfaces<E: AgentExplorer + ?Sized>(
                     .await
                     .unwrap_or_else(|| scanner::parse_session_metadata_str(&content)),
             };
+            if metadata.session_id.is_none()
+                && let SessionSource::File(path) = &log.source
+                && !path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
+                && let Some(full_content) =
+                    bounded_file_content(path, WHOLE_DOCUMENT_METADATA_BYTES).await
+            {
+                metadata = scanner::parse_session_metadata_with_content(path, &full_content).await;
+                content = full_content;
+            }
             let session_id = metadata.session_id?;
             let surface = log.surface_label_with_content(&content, &home);
             Some(SessionTitleAndSurface {
@@ -1044,6 +1053,24 @@ pub async fn session_source_preview(source: &SessionSource) -> Option<String> {
         .read_to_end(&mut bytes)
         .await
         .ok()?;
+    preview_from_owned(bytes)
+}
+
+async fn bounded_file_content(path: &Path, max_bytes: u64) -> Option<String> {
+    use tokio::io::AsyncReadExt;
+
+    let file = open_file_for_head_read(path).await?;
+    if file.metadata().await.ok()?.len() > max_bytes {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .await
+        .ok()?;
+    if bytes.len() as u64 > max_bytes {
+        return None;
+    }
     preview_from_owned(bytes)
 }
 

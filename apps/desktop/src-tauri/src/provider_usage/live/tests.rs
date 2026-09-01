@@ -382,17 +382,24 @@ fn a_completed_background_collection_records_history_and_shapes_the_view() {
         "/tmp/antiburn-live-usage-background-collection",
     ))
     .expect("in-memory store");
-    let reading = snapshot(Freshness::Fresh, NOW, 44.0);
-    let key = super::history::window_key(&reading, "five-hour");
+    let mut reading = snapshot(Freshness::Fresh, NOW, 44.0);
     let collected = sources::Collected {
-        snapshots: vec![reading],
+        snapshots: vec![reading.clone()],
         errors: Vec::new(),
     };
 
     let summary = summarize_collected(collected, Vec::new(), Some(&store), NOW, 0);
+    reading.account = summary.providers[0].account_key.clone();
+    let key = super::history::window_key(&reading, "five-hour");
 
     assert_eq!(summary.providers[0].windows[0].used_percent, Some(44.0));
     assert_eq!(super::history::load(&store).samples(&key).len(), 1);
+    assert!(
+        !store
+            .internal_value("internal:liveUsageHistoryV2")
+            .unwrap()
+            .contains("account-a")
+    );
 }
 
 /* -------------------------------------------------------------------------
@@ -414,6 +421,7 @@ fn the_live_payload_states_percentages_and_says_where_they_came_from() {
         "usedPercent",
         "observedAt",
         "sourceLabel",
+        "accountKey",
         "support",
         "freshness",
     ] {
@@ -421,6 +429,64 @@ fn the_live_payload_states_percentages_and_says_where_they_came_from() {
     }
     assert!(json.contains("\"support\":\"live\""));
     assert!(json.contains("\"freshness\":\"fresh\""));
+    assert!(!json.contains("account-a"));
+}
+
+#[test]
+fn account_keys_are_stable_distinct_and_null_without_an_account() {
+    let store = crate::store::Store::open_in_memory(std::path::Path::new(
+        "/tmp/antiburn-live-account-keys",
+    ))
+    .unwrap();
+    let first = summarize(
+        &[Box::new(Fixed(
+            "fixture",
+            vec![snapshot(Freshness::Fresh, NOW, 81.0)],
+        ))],
+        Some(&store),
+        NOW,
+        0,
+        MAX_AGE,
+    );
+    let repeated = summarize(
+        &[Box::new(Fixed(
+            "fixture",
+            vec![snapshot(Freshness::Fresh, NOW, 81.0)],
+        ))],
+        Some(&store),
+        NOW,
+        0,
+        MAX_AGE,
+    );
+    let mut other = snapshot(Freshness::Fresh, NOW, 81.0);
+    other.account = Some("account-b".into());
+    let other = summarize(
+        &[Box::new(Fixed("fixture", vec![other]))],
+        Some(&store),
+        NOW,
+        0,
+        MAX_AGE,
+    );
+    let mut absent = snapshot(Freshness::Fresh, NOW, 81.0);
+    absent.account = None;
+    let absent = summarize(
+        &[Box::new(Fixed("fixture", vec![absent]))],
+        Some(&store),
+        NOW,
+        0,
+        MAX_AGE,
+    );
+
+    assert_eq!(
+        first.providers[0].account_key,
+        repeated.providers[0].account_key
+    );
+    assert_eq!(first.providers[0].account_key.as_ref().unwrap().len(), 64);
+    assert_ne!(
+        first.providers[0].account_key,
+        other.providers[0].account_key
+    );
+    assert_eq!(absent.providers[0].account_key, None);
 }
 
 #[test]
@@ -777,4 +843,23 @@ fn two_sources_for_one_provider_are_one_meter() {
     ];
 
     assert_eq!(roster(&sources, &HiddenMeters::default()).len(), 1);
+}
+
+#[test]
+fn the_registered_google_meter_is_online_gated() {
+    let sources = sources::registered();
+    let google = sources
+        .iter()
+        .find(|source| source.provider() == crate::provider_usage::providers::GOOGLE)
+        .expect("Antigravity is registered for Google");
+    assert_eq!(google.id(), "antigravity-usage-fetch");
+    assert!(google.requires_online_opt_in());
+
+    let hidden = HiddenMeters::parse("google");
+    let meter = roster(&sources, &hidden)
+        .into_iter()
+        .find(|meter| meter.provider == "google")
+        .expect("Google meter");
+    assert_eq!(meter.display_name, "Google");
+    assert!(!meter.shown);
 }

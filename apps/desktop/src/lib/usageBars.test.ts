@@ -35,6 +35,7 @@ function usageWindow(overrides: Partial<LiveUsageWindowPayload> = {}): LiveUsage
 function provider(overrides: Partial<LiveProviderUsagePayload> = {}): LiveProviderUsagePayload {
   return {
     provider: "anthropic",
+    accountKey: null,
     displayName: "Anthropic",
     support: "live",
     freshness: "fresh",

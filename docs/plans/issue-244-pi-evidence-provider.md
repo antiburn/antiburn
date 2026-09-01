@@ -1,5 +1,8 @@
 # Issue #244 — Promote Pi to a dedicated bounded full-evidence provider
 
+> Historical plan. Pi now has a dedicated adapter and Insights support. The
+> current support matrix is in `docs/support.md`.
+
 Implementation plan. Authored against detached head
 `679a5c9662e5a12e86319deb0a6a3c3be896b667` (`refs/heads/feat/227-codex-provider`,
 PR #243).

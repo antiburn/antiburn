@@ -67,12 +67,21 @@ fn write_session(directory: &TempDir, session: &GeneratedSession) -> PathBuf {
 }
 
 fn composite_for(input: &SessionInput) -> CompositeSink {
+    let capabilities = match input.agent.as_str() {
+        "claude" => SourceCapabilities::claude(),
+        "codex" => SourceCapabilities::codex(),
+        "cursor" => SourceCapabilities::cursor(),
+        "opencode" => SourceCapabilities::opencode(),
+        "pi" => SourceCapabilities::pi(),
+        "antigravity" => SourceCapabilities::antigravity(),
+        _ => SourceCapabilities::generic(),
+    };
     let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
         agent: input.agent.clone(),
         session_id: input.session_id.clone(),
         kind: SourceKind::from(&input.source),
-        capabilities: SourceCapabilities::claude(),
+        capabilities,
     });
     let store = MemoryTurnRowStore::new(input.agent.clone(), input.session_id.clone());
     let turn_rows = TurnRowSink::new(
