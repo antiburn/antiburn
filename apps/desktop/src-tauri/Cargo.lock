@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "antiburn"
-version = "0.3.0-rc.1"
+version = "0.3.0"
 dependencies = [
  "antiburn-hud",
  "antiburn-local",
@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "antiburn-local"
-version = "0.3.0-rc.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",

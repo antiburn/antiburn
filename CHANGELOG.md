@@ -20,10 +20,40 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-01
+
+### Added
+
+- Settings now offers configurable session-data retention and removes expired
+  local transcript-derived data automatically.
+- The usage HUD remembers its position on each display.
+- Session detail now expands Efficiency and Hygiene into evidence breakdowns,
+  and its context chart identifies context rewrites.
+- Onboarding now shows agent discovery and analysis progress, previews session
+  hygiene, and explains notification and Do Not Disturb behavior before setup
+  completes.
+- Onboarding repository selection now includes one All repos switch for quickly
+  enabling or disabling every discovered repository.
+- On macOS, source discovery now includes repositories under `~/Developer`.
+
 ### Changed
 
+- Long activity lists now retain less memory while preserving keyboard
+  navigation, grouping, pinned headings, and session tooltips.
+- The app opens its popover without taking focus from the frontmost application.
 - The main popover now stays ready after its first use, so reopening it reuses
   the hidden renderer instead of rebuilding the window after 15 seconds.
+- Signed application updates now download, install, and restart antiburn
+  automatically. The automatic-update setting remains available as an opt-out.
+- Session analysis now persists bounded turn rows and serves the last completed
+  result while a newer pass runs. Drilldowns stay available during refreshes
+  and use less repeated transcript parsing.
+- Insights now recognizes more Claude, Codex, OpenCode, and Pi thread and
+  sub-agent relationships. Model, speed, cache, compaction, and repeated-context
+  findings use the expanded evidence and fail closed when required facts are
+  missing.
+- Codex cache-write usage and service tiers now contribute to the correct
+  efficiency and model-policy results.
 
 ## [0.3.0-rc.1] - 2026-09-01
 
