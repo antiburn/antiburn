@@ -1,0 +1,30 @@
+[workspace]
+
+[package]
+name = "antiburn-anchored-window"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "Reusable anchored companion window mechanism for the antiburn desktop app."
+license = "MIT"
+repository = "https://github.com/antiburn/antiburn"
+publish = false
+
+[lib]
+name = "antiburn_anchored_window"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = ["macos-private-api"] }
+tokio = { version = "1", features = ["sync", "time"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSScreen", "NSWindow"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

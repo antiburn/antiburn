@@ -10,7 +10,7 @@
 # neither member nor excluded aborts resolution outright ("multiple workspace
 # roots found in the same workspace").
 [workspace]
-exclude = ["crates/hud", "crates/nudge", "crates/sound", "crates/trace"]
+exclude = ["crates/anchored-window", "crates/hud", "crates/nudge", "crates/sound", "crates/trace"]
 
 [package]
 name = "antiburn"
@@ -54,6 +54,8 @@ antiburn-nudge = { path = "crates/nudge" }
 # The floating usage HUD window: mechanism only. The shell owns its session
 # activity policy and IPC commands.
 antiburn-hud = { path = "crates/hud" }
+# Reusable anchored companion window mechanism. The shell owns targets and IPC policy.
+antiburn-anchored-window = { path = "crates/anchored-window" }
 # The notification chime uses samples synthesized in-process. It has no audio
 # assets or decoders.
 antiburn-sound = { path = "crates/sound" }

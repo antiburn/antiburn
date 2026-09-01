@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-default-scan-roots"
+description = "Enables the default_scan_roots command without any pre-configured scope."
+commands.allow = ["default_scan_roots"]
+
+[[permission]]
+identifier = "deny-default-scan-roots"
+description = "Denies the default_scan_roots command without any pre-configured scope."
+commands.deny = ["default_scan_roots"]

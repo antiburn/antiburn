@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cancel-scan"
+description = "Enables the cancel_scan command without any pre-configured scope."
+commands.allow = ["cancel_scan"]
+
+[[permission]]
+identifier = "deny-cancel-scan"
+description = "Denies the cancel_scan command without any pre-configured scope."
+commands.deny = ["cancel_scan"]

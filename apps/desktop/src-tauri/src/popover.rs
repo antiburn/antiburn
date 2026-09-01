@@ -117,8 +117,7 @@ const WIDTH: f64 = 380.0;
 /// and the card corners inside it must agree, so change both together.
 /// `scripts/check-design-drift.mjs` reads this constant and fails if the two
 /// numbers differ.
-#[cfg(target_os = "macos")]
-const CORNER_RADIUS: f64 = 10.0;
+pub(crate) const CORNER_RADIUS: f64 = 10.0;
 
 /// Tallest the popover may ever get, in logical pixels.
 ///
@@ -1202,6 +1201,7 @@ fn hide_window(app: &AppHandle) {
     if let Some(state) = app.try_state::<PopoverState>() {
         state.clear_nudge_key_handoff();
     }
+    crate::popover_peek::conceal_now(app);
     let Some(window) = app.get_webview_window(LABEL) else {
         note_hidden(app);
         return;

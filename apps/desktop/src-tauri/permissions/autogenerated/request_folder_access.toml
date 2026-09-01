@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-request-folder-access"
+description = "Enables the request_folder_access command without any pre-configured scope."
+commands.allow = ["request_folder_access"]
+
+[[permission]]
+identifier = "deny-request-folder-access"
+description = "Denies the request_folder_access command without any pre-configured scope."
+commands.deny = ["request_folder_access"]

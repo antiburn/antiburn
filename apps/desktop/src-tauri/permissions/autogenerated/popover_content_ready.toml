@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-popover-content-ready"
+description = "Enables the popover_content_ready command without any pre-configured scope."
+commands.allow = ["popover_content_ready"]
+
+[[permission]]
+identifier = "deny-popover-content-ready"
+description = "Denies the popover_content_ready command without any pre-configured scope."
+commands.deny = ["popover_content_ready"]

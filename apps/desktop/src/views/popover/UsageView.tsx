@@ -41,6 +41,8 @@ export interface UsageViewProps {
    */
   now?: number
   onBack: () => void
+  /** Omit navigation chrome when another surface owns the view context. */
+  embedded?: boolean
 }
 
 /** Providers split the way a reader scans them: current work first. */
@@ -78,7 +80,13 @@ function sectioned(providers: readonly ProviderUsagePayload[]): {
  * commands, so the estimate payload's "no percentage, no allowance, no reset"
  * guarantee survives this feature intact.
  */
-export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: UsageViewProps) {
+export function UsageView({
+  summary,
+  live = EMPTY_LIVE_USAGE,
+  now,
+  onBack,
+  embedded = false,
+}: UsageViewProps) {
   // `|| 0` rather than a fallback clock: with no snapshot there is no live
   // section to render, so nothing consumes this.
   const at = now ?? (Date.parse(live.generatedAt) || 0)
@@ -91,22 +99,24 @@ export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: Usa
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-11 shrink-0 items-center gap-1 px-2">
-        <button
-          type="button"
-          onClick={onBack}
-          aria-label="Back to activity"
-          className="inline-flex h-6 shrink-0 items-center rounded-control px-1 text-label-secondary hover:bg-surface-hover"
-        >
-          <ChevronLeft size={15} strokeWidth={2} aria-hidden="true" />
-        </button>
-        {/* Focused by the popover when this surface takes over, so a keyboard
-            or screen-reader user lands in the view rather than on <body>. */}
-        <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
-          Usage
-        </h1>
-        {isMacOS() && <HudPopOutButton />}
-      </header>
+      {!embedded && (
+        <header className="flex h-11 shrink-0 items-center gap-1 px-2">
+          <button
+            type="button"
+            onClick={onBack}
+            aria-label="Back to activity"
+            className="inline-flex h-6 shrink-0 items-center rounded-control px-1 text-label-secondary hover:bg-surface-hover"
+          >
+            <ChevronLeft size={15} strokeWidth={2} aria-hidden="true" />
+          </button>
+          {/* Focused by the popover when this surface takes over, so a keyboard
+              or screen-reader user lands in the view rather than on <body>. */}
+          <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
+            Usage
+          </h1>
+          {isMacOS() && <HudPopOutButton />}
+        </header>
+      )}
 
       <ScrollPane viewportClassName="px-3 pb-2">
         {authNote && (
@@ -128,25 +138,27 @@ export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now, onBack }: Usa
           </p>
         ) : (
           <>
-            <UsageSection title="Recently used" providers={recent} live={live} now={at} />
-            <UsageSection title="All detected" providers={rest} live={live} now={at} />
+            <UsageSection
+              title="Recently used"
+              providers={recent}
+              live={live}
+              now={at}
+              showTitle={!embedded}
+            />
+            <UsageSection
+              title="All detected"
+              providers={rest}
+              live={live}
+              now={at}
+              showTitle={!embedded}
+            />
           </>
         )}
       </ScrollPane>
 
-      <footer className="shrink-0 space-y-1 border-t border-separator px-4 py-2.5">
-        <p className="type-caption text-label-tertiary">
-          Spend figures are local estimates, priced on this device from the sessions antiburn
-          found here. Not a bill, and not your provider&rsquo;s own figure — work done on
-          another machine is not counted.
-        </p>
-        <p className="type-caption text-label-tertiary">
-          Plan limits are your provider&rsquo;s own figures, fetched directly with your own
-          credentials while Settings &rarr; Usage&rsquo;s switch is on. A limit is only as
-          current as the moment shown beside it.
-        </p>
-        <p className="type-caption text-label-tertiary">
-          Each session counts in the window of its most recent activity.
+      <footer className="shrink-0 overflow-hidden border-t border-separator px-4 py-2.5">
+        <p className="truncate type-caption text-label-tertiary">
+          Local spend is estimated; plan limits come from your provider.
         </p>
       </footer>
     </div>
@@ -183,18 +195,22 @@ function UsageSection({
   providers,
   live,
   now,
+  showTitle,
 }: {
   title: string
   providers: readonly ProviderUsagePayload[]
   live: LiveUsageSummaryPayload
   now: number
+  showTitle: boolean
 }) {
   if (providers.length === 0) return null
   return (
     <section aria-label={title} className="pt-2 first:pt-0">
-      <h2 className="px-1 pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary">
-        {title}
-      </h2>
+      {showTitle && (
+        <h2 className="px-1 pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary">
+          {title}
+        </h2>
+      )}
       <ul className="space-y-2">
         {providers.map((provider) => (
           <ProviderCard
@@ -224,46 +240,48 @@ function ProviderCard({
   const plan = live ? livePlanLabel(live) : null
 
   return (
-    <li className="space-y-2.5 rounded-control bg-surface-card px-3 py-2.5">
-      <div className="flex items-start gap-2">
-        <ProviderGlyph
-          displayName={provider.displayName}
-          provider={provider.provider}
-          size={18}
-          className="mt-px"
-        />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <h3 className="truncate type-footnote font-medium text-label">
-              {provider.displayName}
-              {plan && <span className="text-label-secondary"> · {plan}</span>}
-            </h3>
-            {usedToday && (
-              <span className="shrink-0 rounded-full bg-system-green/15 px-1.5 py-px type-caption text-system-green">
-                Used today
-              </span>
+    <li className="flex flex-col gap-1">
+      <div className="space-y-2.5 rounded-control bg-surface-card px-3 py-2.5">
+        <div className="flex items-start gap-2">
+          <ProviderGlyph
+            displayName={provider.displayName}
+            provider={provider.provider}
+            size={18}
+            className="mt-px"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <h3 className="truncate type-footnote font-medium text-label">
+                {provider.displayName}
+                {plan && <span className="text-label-secondary"> · {plan}</span>}
+              </h3>
+              {usedToday && (
+                <span className="shrink-0 rounded-full bg-system-green/15 px-1.5 py-px type-caption text-system-green">
+                  Used today
+                </span>
+              )}
+            </div>
+            {(stale ?? updated) && (
+              <p
+                className={cn(
+                  "type-caption",
+                  stale ? "text-system-orange" : "text-label-tertiary",
+                )}
+              >
+                {stale ?? updated}
+              </p>
             )}
           </div>
-          {(stale ?? updated) && (
-            <p
-              className={cn(
-                "type-caption",
-                stale ? "text-system-orange" : "text-label-tertiary",
-              )}
-            >
-              {stale ?? updated}
-            </p>
-          )}
         </div>
+
+        {live && <LiveUsageDetail live={live} now={now} />}
+
+        <UsageMetricRows provider={provider} />
+
+        <UsageWindowRows provider={provider} className="border-t border-separator pt-2" />
       </div>
 
-      {live && <LiveUsageDetail live={live} now={now} />}
-
-      <UsageMetricRows provider={provider} />
-
-      <UsageWindowRows provider={provider} className="border-t border-separator pt-2" />
-
-      <p className="type-caption text-label-tertiary">
+      <p className="px-3 type-caption text-pretty text-label-tertiary">
         {usageStateDescription(provider.state)}
       </p>
     </li>

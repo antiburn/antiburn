@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recheck-folder-permissions"
+description = "Enables the recheck_folder_permissions command without any pre-configured scope."
+commands.allow = ["recheck_folder_permissions"]
+
+[[permission]]
+identifier = "deny-recheck-folder-permissions"
+description = "Denies the recheck_folder_permissions command without any pre-configured scope."
+commands.deny = ["recheck_folder_permissions"]

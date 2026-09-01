@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "popover-peek",
+  "description": "Display-only capability for the passive popover companion. Native code owns its size, placement, visibility, and target policy.",
+  "windows": ["popover-peek"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-get-popover-peek-data",
+    "allow-get-popover-peek-state",
+    "allow-popover-peek-concealed",
+    "allow-popover-peek-presented",
+    "allow-popover-peek-ready",
+    "allow-popover-peek-retarget-ready"
+  ]
+}

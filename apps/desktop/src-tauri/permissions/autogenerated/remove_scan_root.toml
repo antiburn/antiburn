@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-remove-scan-root"
+description = "Enables the remove_scan_root command without any pre-configured scope."
+commands.allow = ["remove_scan_root"]
+
+[[permission]]
+identifier = "deny-remove-scan-root"
+description = "Denies the remove_scan_root command without any pre-configured scope."
+commands.deny = ["remove_scan_root"]

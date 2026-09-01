@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities granted to every antiburn window. Deliberately minimal: the shell's own commands carry the privileged work, so the webview needs no direct filesystem, shell, or process access. The nudge window is listed so it can hear its show event and call the nudge_* commands, but a notification still only ever *originates* in Rust — what is worth interrupting a reader for is decided in src/notifications.rs, nowhere a view can reach. The onboarding window needs the same set as settings and no more: dialog for the folder picker, close for ⌘W, and start-dragging for the macOS overlay title bar it paints itself. The antiburn-overlay window needs set-position for its manual drag. The antiburn-hud-detail window is display-only and needs nothing beyond core:default: the shell sizes, places, and shows it.",
+  "description": "Capabilities granted to antiburn's interactive windows. Deliberately minimal: the shell's own commands carry the privileged work, so the webview needs no direct filesystem, shell, or process access. The nudge window is listed so it can hear its show event and call the nudge_* commands, but a notification still only ever *originates* in Rust — what is worth interrupting a reader for is decided in src/notifications.rs, nowhere a view can reach. The onboarding window needs the same set as settings and no more: dialog for the folder picker, close for ⌘W, and start-dragging for the macOS overlay title bar it paints itself. The antiburn-overlay window needs set-position for its manual drag. The antiburn-hud-detail window is display-only but shares this capability for its existing shell integration.",
   "windows": [
     "popover",
     "settings",
@@ -11,6 +11,7 @@
     "antiburn-hud-detail"
   ],
   "permissions": [
+    "default",
     "core:default",
     "core:window:allow-hide",
     "core:window:allow-close",

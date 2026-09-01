@@ -112,6 +112,16 @@ describe("UsageLimitsBar — the ring row", () => {
     expect(onViewAll).toHaveBeenCalledOnce()
   })
 
+  it("renders a controlled companion activation", () => {
+    bar({
+      activeProvider: { provider: "anthropic", activation: "hovered" },
+    })
+
+    const trigger = screen.getByRole("button", { name: "Claude at 42 percent" })
+    expect(trigger).toHaveAttribute("data-state", "hovered")
+    expect(trigger).toHaveClass("data-[state=hovered]:bg-brand-tint/[0.08]")
+  })
+
   it("says so rather than claiming zero when a provider states no figure", () => {
     bar({
       live: liveSummary({

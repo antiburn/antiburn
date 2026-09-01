@@ -287,7 +287,7 @@ pub struct ScanStatus {
 /// declared because they are part of the ratified presentation contract and a
 /// view must render them correctly the day a separately-approved passive
 /// evidence source starts emitting them — but nothing in this build ever does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderUsageState {
     /// The provider itself reported a current allowance and how much of it is
@@ -318,7 +318,7 @@ pub enum ProviderUsageState {
 }
 
 /// Whether a provider's newest local evidence is recent enough to describe now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderUsageStaleness {
     /// Evidence inside the freshness threshold.
@@ -336,7 +336,7 @@ pub enum ProviderUsageStaleness {
 /// field anywhere in this type. Session evidence records what was *spent*; a
 /// denominator would have to be invented, and an invented denominator is the
 /// one thing this surface must never show.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUsageWindow {
     /// Effective input: fresh prompt tokens plus prompt-cache writes, matching
@@ -360,7 +360,7 @@ pub struct ProviderUsageWindow {
 /// Independent, not nested: `week` is the trailing seven calendar days and
 /// `month` starts at the first of the current month, so early in a month the
 /// week reaches back further than the month does.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUsageWindows {
     pub today: ProviderUsageWindow,
@@ -369,7 +369,7 @@ pub struct ProviderUsageWindows {
 }
 
 /// Everything the usage surfaces show about one provider.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUsage {
     /// Canonical provider id (`anthropic`, `openai`, `unknown`, …).
@@ -383,7 +383,7 @@ pub struct ProviderUsage {
 }
 
 /// Local provider usage, as one snapshot.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUsageSummary {
     /// Providers with at least one session in the covered span, newest first.

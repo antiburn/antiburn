@@ -85,6 +85,7 @@ dependencies = [
 name = "antiburn"
 version = "0.3.1"
 dependencies = [
+ "antiburn-anchored-window",
  "antiburn-hud",
  "antiburn-local",
  "antiburn-nudge",
@@ -116,6 +117,19 @@ dependencies = [
  "tokio",
  "tracing",
  "winreg 0.56.0",
+]
+
+[[package]]
+name = "antiburn-anchored-window"
+version = "0.1.0"
+dependencies = [
+ "gtk",
+ "objc2-app-kit",
+ "serde",
+ "tauri",
+ "tokio",
+ "tracing",
+ "windows 0.62.2",
 ]
 
 [[package]]

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest"
 
-import { applyRouteAttribute, NUDGE_FRAGMENT, OVERLAY_FRAGMENT, routeFromHash } from "./route"
+import {
+  applyRouteAttribute,
+  NUDGE_FRAGMENT,
+  OVERLAY_FRAGMENT,
+  POPOVER_PEEK_FRAGMENT,
+  routeFromHash,
+} from "./route"
 
 /**
  * The resident shell uses fragments for auxiliary surfaces. A fragment this
@@ -11,6 +17,7 @@ describe("routeFromHash", () => {
   it("resolves the fragments the shell opens windows with", () => {
     expect(routeFromHash(NUDGE_FRAGMENT)).toBe("nudge")
     expect(routeFromHash(OVERLAY_FRAGMENT)).toBe("overlay")
+    expect(routeFromHash(POPOVER_PEEK_FRAGMENT)).toBe("popover-peek")
   })
 
   it("accepts a fragment with or without the leading slash", () => {

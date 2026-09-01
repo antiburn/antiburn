@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-take-settings-pane"
+description = "Enables the take_settings_pane command without any pre-configured scope."
+commands.allow = ["take_settings_pane"]
+
+[[permission]]
+identifier = "deny-take-settings-pane"
+description = "Denies the take_settings_pane command without any pre-configured scope."
+commands.deny = ["take_settings_pane"]

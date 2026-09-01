@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-live-usage"
+description = "Enables the get_live_usage command without any pre-configured scope."
+commands.allow = ["get_live_usage"]
+
+[[permission]]
+identifier = "deny-get-live-usage"
+description = "Denies the get_live_usage command without any pre-configured scope."
+commands.deny = ["get_live_usage"]
