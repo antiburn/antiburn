@@ -10,6 +10,8 @@ const MACOS_CODE_DIRS: &[&str] = &[
     "dev",
     "Developer",
     "Documents/GitHub",
+    // Xcode clones into ~/Developer by default, and TCC does not guard it.
+    "Developer",
     "src",
     "code",
     "Projects",
@@ -65,6 +67,16 @@ mod tests {
     #[test]
     fn common_dirs_not_empty() {
         assert!(!MacOsPlatform.common_code_dirs().is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn developer_dir_is_searched_and_unprotected() {
+        assert!(MacOsPlatform.common_code_dirs().contains(&"Developer"));
+        if let Some(home) = home_dir() {
+            let xcode_clone = home.join("Developer").join("repo");
+            assert!(!MacOsPlatform.is_access_protected(&xcode_clone));
+        }
     }
 
     #[test]

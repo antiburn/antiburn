@@ -622,7 +622,26 @@ pub struct SessionHygienePayload {
     pub evidence_state: &'static str,
 }
 
-fn badge_id_str(id: BadgeId) -> &'static str {
+/// The aggregate hygiene numbers for the sessions in the activity window.
+///
+/// The onboarding Ready step reads this: a progress state while
+/// `settled_sessions` trails `total_sessions`, a results card after.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HygieneSummaryPayload {
+    /// Sessions in the window, after the disabled-agent display filter.
+    pub total_sessions: u64,
+    /// Sessions whose analysis reached a terminal state.
+    pub settled_sessions: u64,
+    /// Sessions with current ready evidence, so the checks ran.
+    pub analyzed_sessions: u64,
+    /// Analyzed sessions with at least one finding.
+    pub failing_sessions: u64,
+    /// Badge id of the most frequent finding, when any session fails.
+    pub most_common_finding: Option<&'static str>,
+}
+
+pub(crate) fn badge_id_str(id: BadgeId) -> &'static str {
     match id {
         BadgeId::SessionOverdepth => "sessionOverdepth",
         BadgeId::ModelOverthinking => "modelOverthinking",

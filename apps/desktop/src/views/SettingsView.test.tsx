@@ -60,6 +60,7 @@ const SETTINGS = {
   nudgePlacement: "menuBar" as const,
   nudgeAutoDismissSecs: 10,
   notificationSound: true,
+  nudgesRespectDnd: false,
   diskSpaceDisplay: "whenLow" as const,
   diskSpaceThresholdGb: 50,
   notifyDiskSpaceLow: true,
@@ -69,6 +70,7 @@ const SETTINGS = {
   liveUsageHiddenProviders: [],
   analyticsEnabled: true,
   overviewLimitsExpanded: true,
+  disabledAgents: [] as string[],
 }
 
 const INFO = {

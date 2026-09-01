@@ -8,12 +8,16 @@ import { PaneHeader } from "../../components/ui/Pane"
 import { PushButton } from "../../components/ui/PushButton"
 import { SectionGroup } from "../../components/ui/SectionGroup"
 import { StatusText } from "../../components/ui/StatusText"
+import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
+import { renderAgentIcon } from "../../lib/agentIcon"
 import { openFolderAccessSettings, scanNow } from "../../lib/ipc"
-import { scanStatusStore } from "../../lib/scanStatusStore"
+import { AGENT_SLUGS, agentDisplayName } from "../../lib/presentation/agents"
+import { scanStatusStore, withKnownAgents } from "../../lib/scanStatusStore"
 import type { LocalRepositoryItem } from "../../lib/types/repository"
 import { useFolderPermissionFlow } from "../../lib/useFolderPermissionFlow"
 import { scanStatusLabel } from "../popover/ScanStatusBar"
 import { SourcesSession } from "./SourcesSession"
+import { useAppSettings } from "./useAppSettings"
 
 /**
  * Sources: which repositories antiburn watches, and where it looks for them.
@@ -46,7 +50,7 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
 
   const handleRescanSessions = useCallback(async () => {
     const status = await scanNow().catch(() => null)
-    if (status) scanStatusStore.set(status)
+    if (status) scanStatusStore.set(withKnownAgents(status))
   }, [])
 
   // Granting is the one path that can add repositories the reader is waiting
@@ -73,6 +77,27 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
   const handleLocate = useCallback(() => session.locate(), [session])
 
   const handleRemoveRoot = useCallback((path: string) => session.removeRoot(path), [session])
+
+  const { settings, update } = useAppSettings()
+  const disabledAgents = settings.disabledAgents
+
+  const setAgentEnabled = useCallback(
+    (slug: string, enabled: boolean) => {
+      const next = new Set(disabledAgents)
+      if (enabled) next.delete(slug)
+      else next.add(slug)
+      void update({ disabledAgents: [...next].sort() })
+    },
+    [disabledAgents, update],
+  )
+
+  // Detected agents lead, ordered by evidence; the rest keep registry order.
+  const sessionsByAgent = new Map(
+    (scanStatus?.agents ?? []).map((entry) => [entry.agent, entry.sessionsSeen]),
+  )
+  const agentRows = [...AGENT_SLUGS].sort(
+    (a, b) => (sessionsByAgent.get(b) ?? 0) - (sessionsByAgent.get(a) ?? 0),
+  )
 
   return (
     <>
@@ -116,6 +141,36 @@ export function SourcesPane({ discoveryPaused }: SourcesPaneProps) {
                 {scanStatus?.running ? "Scanning…" : "Rescan"}
               </PushButton>
             </div>
+          </Card>
+        </SectionGroup>
+
+        <SectionGroup title="Coding agents">
+          <Card>
+            <p className="px-4 pt-3 pb-1 type-footnote text-label-secondary">
+              A switched-off agent keeps its sessions indexed, but the session list and reports
+              leave them out.
+            </p>
+            {agentRows.map((slug) => {
+              const sessions = sessionsByAgent.get(slug) ?? 0
+              return (
+                <div key={slug} className="flex items-center gap-2.5 px-4 py-2">
+                  <span className="flex w-5 shrink-0 justify-center">
+                    {renderAgentIcon(slug, 15)}
+                  </span>
+                  <span className="type-callout text-label">{agentDisplayName(slug)}</span>
+                  <span className="flex-1 type-footnote text-label-tertiary">
+                    {sessions > 0
+                      ? `${sessions} ${sessions === 1 ? "session" : "sessions"}`
+                      : ""}
+                  </span>
+                  <ToggleSwitch
+                    checked={!disabledAgents.includes(slug)}
+                    onCheckedChange={(next) => setAgentEnabled(slug, next)}
+                    aria-label={`Show ${agentDisplayName(slug)} sessions`}
+                  />
+                </div>
+              )
+            })}
           </Card>
         </SectionGroup>
 

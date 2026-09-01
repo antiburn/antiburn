@@ -23,11 +23,13 @@
 //! - **Only the shell posts one.** The webview is granted no notification
 //!   permission (`capabilities/default.json`), so "what is worth interrupting
 //!   someone for" is decided in one place, in this file.
-//! - **The operating system gets the last word** for automated kinds.
-//!   Immediately before an automated notification shows, [`deliver`] asks the
-//!   OS whether interruptions are welcome right now — Focus and Do Not Disturb
-//!   on macOS, fullscreen/presentation/toasts-off states on Windows, DND on
-//!   GNOME and Plasma ([`antiburn_nudge::NotificationGate`]). A suppressed
+//! - **The operating system gets the last word** for automated kinds, when
+//!   the reader opts in (`nudges_respect_dnd`, off by default because the
+//!   macOS Focus check needs its own authorization prompt). Immediately
+//!   before an automated notification shows, [`deliver`] asks the OS whether
+//!   interruptions are welcome right now — Focus and Do Not Disturb on macOS,
+//!   fullscreen/presentation/toasts-off states on Windows, DND on GNOME and
+//!   Plasma ([`antiburn_nudge::NotificationGate`]). A suppressed
 //!   notification is dropped and its trigger stays consumed, so ending Focus
 //!   does not release a backlog of stale notifications. Unknown OS state fails
 //!   open. Preview kinds bypass the gate for the same reason they bypass the
@@ -200,9 +202,19 @@ enum Delivery {
 
 /// Ask the OS whether an automated notification may interrupt right now.
 ///
-/// A missing gate fails open: the gate is managed at setup, so its absence
-/// means a test harness, not a policy answer.
+/// The check runs only when the reader opted in (`nudges_respect_dnd`):
+/// on macOS it depends on a Focus-status authorization prompt, which must
+/// follow a choice rather than precede one. A missing gate fails open: the
+/// gate is managed at setup, so its absence means a test harness, not a
+/// policy answer.
 fn os_gate_allows(app: &AppHandle) -> bool {
+    let respect = app
+        .try_state::<Store>()
+        .and_then(|store| store.settings().ok())
+        .is_some_and(|settings| settings.nudges_respect_dnd);
+    if !respect {
+        return true;
+    }
     app.try_state::<antiburn_nudge::NotificationGate>()
         .is_none_or(|gate| gate.delivery_allowed())
 }
@@ -579,11 +591,13 @@ pub fn note_sample(app: &AppHandle, kind: Kind) {
 
 /// Request the macOS Focus-status authorization, at most once per process.
 ///
-/// The request runs only when setup is complete and the master notification
-/// preference is on, so the permission sheet cannot appear over the first-run
-/// window. Repeat calls are free: the gate keeps a once-flag. The other
-/// platforms need no authorization. The gate self-skips for unbundled dev
-/// binaries, which cannot hold the signed entitlement.
+/// The request runs only when setup is complete, the master notification
+/// preference is on, and the reader opted in to the Focus check — so the
+/// permission sheet cannot appear over the first-run window, and never
+/// appears for a reader who did not ask for the check. Repeat calls are
+/// free: the gate keeps a once-flag. The other platforms need no
+/// authorization. The gate self-skips for unbundled dev binaries, which
+/// cannot hold the signed entitlement.
 pub fn maybe_initialize_authorization(app: &AppHandle) {
     #[cfg(feature = "memory-probe")]
     let _ = app;
@@ -594,7 +608,9 @@ pub fn maybe_initialize_authorization(app: &AppHandle) {
             .try_state::<Store>()
             .and_then(|store| store.settings().ok())
             .is_some_and(|settings| {
-                settings.onboarding_completed && settings.notifications_enabled
+                settings.onboarding_completed
+                    && settings.notifications_enabled
+                    && settings.nudges_respect_dnd
             });
         if !ready {
             return;

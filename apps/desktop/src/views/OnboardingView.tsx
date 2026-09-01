@@ -65,10 +65,15 @@ export function OnboardingView() {
         onToggleRepository={session.toggleRepository}
         onDiscover={session.rescan}
         scanStatus={state.scanStatus}
+        disabledAgents={state.disabledAgents}
+        onAgentEnabledChange={session.setAgentEnabled}
         launchAtLogin={state.launchAtLogin}
         onLaunchAtLoginChange={session.setLaunchAtLogin}
-        analyticsSupported={state.analyticsSupported}
-        analyticsEnvironmentDisabled={state.analyticsEnvironmentDisabled}
+        nudgesRespectDnd={state.nudgesRespectDnd}
+        onNudgesRespectDndChange={session.setNudgesRespectDnd}
+        activityWindowDays={state.activityWindowDays}
+        hygieneSummary={state.hygieneSummary}
+        onReadyEntered={session.beginHygienePolling}
         onStepViewed={session.noteOnboardingStep}
         finishing={state.finishing}
         finishError={state.finishError}

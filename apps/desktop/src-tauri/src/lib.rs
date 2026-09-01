@@ -171,6 +171,7 @@ pub fn run() {
             commands::refresh_live_usage,
             commands::get_scan_status,
             commands::get_insights_report,
+            commands::get_hygiene_summary,
             commands::get_insights_status,
             commands::get_session_hygiene,
             commands::cancel_insights_report,

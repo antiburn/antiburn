@@ -216,6 +216,7 @@ pub enum Interaction {
 #[serde(rename_all = "snake_case")]
 pub enum OnboardingStep {
     Welcome,
+    AgentsDetected,
     SourcesAndRepos,
     Ready,
 }
@@ -287,6 +288,7 @@ impl OnboardingStep {
     fn as_str(self) -> &'static str {
         match self {
             OnboardingStep::Welcome => "welcome",
+            OnboardingStep::AgentsDetected => "agents_detected",
             OnboardingStep::SourcesAndRepos => "sources_and_repos",
             OnboardingStep::Ready => "ready",
         }

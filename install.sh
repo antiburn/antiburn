@@ -18,6 +18,27 @@ info() {
   printf '%s\n' "antiburn: $*"
 }
 
+# Print the wordmark and one line about what antiburn does. Color and art
+# appear only on an interactive terminal that did not opt out; a piped or
+# dumb terminal gets one plain line.
+banner() {
+  if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ] && [ -z "${NO_COLOR:-}" ]; then
+    orange=$(printf '\033[38;5;208m')
+    reset=$(printf '\033[0m')
+    printf '%s\n' ''
+    printf '%s%s%s\n' "$orange" ' ▄▄        █  ▀ █' "$reset"
+    printf '%s%s%s\n' "$orange" ' ▄▄█ █▀▀▄ ▀█▀ █ █▀▀▄ █  █ █▄▀▀ █▀▀▄' "$reset"
+    printf '%s%s%s\n' "$orange" '▀▄▄█ █  █  █▄ █ █▄▄▀ ▀▄▄█ █    █  █' "$reset"
+    printf '%s\n' ''
+    printf '%s\n' 'Stop hitting your token limits.'
+    printf '%s\n' 'antiburn reads your coding agent sessions locally, finds what'
+    printf '%s\n' 'burns tokens, and nudges you before you hit a limit.'
+    printf '%s\n' ''
+  else
+    info "Stop hitting your token limits - antiburn finds what burns tokens in your coding agent sessions."
+  fi
+}
+
 fail() {
   printf '%s\n' "antiburn: error: $*" >&2
   exit 1
@@ -337,6 +358,7 @@ parse_args() {
 
 install_antiburn() {
   parse_args "$@"
+  banner
   require_command curl
   require_command awk
   require_command mktemp
@@ -357,6 +379,7 @@ install_antiburn() {
     Linux) install_linux "$arch" ;;
     *) fail "Unsupported operating system: $os" ;;
   esac
+  info "Open antiburn - it lives in your menu bar."
 }
 
 install_antiburn "$@"
