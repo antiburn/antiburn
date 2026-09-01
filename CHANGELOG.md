@@ -20,6 +20,15 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-01
+
+### Fixed
+
+- macOS disk images now open with the designed Finder background, window
+  layout, and application shortcut.
+- Hovering a notification nudge no longer closes the open popover or restores
+  focus after the reader changes applications or opens notification settings.
+
 ## [0.3.0] - 2026-09-01
 
 ### Added
