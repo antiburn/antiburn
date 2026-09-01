@@ -12,8 +12,8 @@ importers:
         specifier: 13.0.5
         version: 13.0.5
       aislop:
-        specifier: 0.15.0
-        version: 0.15.0(@types/react@19.2.18)
+        specifier: github:daveslutzkin/aislop#caa0959
+        version: https://codeload.github.com/daveslutzkin/aislop/tar.gz/caa0959c6a22ee8c6923cbb2360a9f0729e6ebc6(@types/react@19.2.18)
       secretlint:
         specifier: 13.0.5
         version: 13.0.5
@@ -1872,8 +1872,9 @@ packages:
     resolution: {integrity: sha512-XleryMhbuksdKtofnWZ9Sk+4CUTbms4Mb/EU32SZwToAyZ5RgVos/ki8n+yr0LWHOGKuakbXTuuYNHLQjhddgg==}
     engines: {node: '>=14.0'}
 
-  aislop@0.15.0:
-    resolution: {integrity: sha512-+NsoIWymGo6YYWcVYn4XPFWa2CpqWlACj3Nh5FQ1gZk+qNQjESr1Etdv1lBvVZHo1TxmQodgncwE+m1rBj+r9Q==}
+  aislop@https://codeload.github.com/daveslutzkin/aislop/tar.gz/caa0959c6a22ee8c6923cbb2360a9f0729e6ebc6:
+    resolution: {gitHosted: true, integrity: sha512-ppNtVE1zsw6hspj09HhifyH80bVglAS2R3n1RUfNN3JROdI8DwwayLorNs8/B8lHq+7Jp6m3NGihlxBifWnu4g==, tarball: https://codeload.github.com/daveslutzkin/aislop/tar.gz/caa0959c6a22ee8c6923cbb2360a9f0729e6ebc6}
+    version: 0.16.0
     engines: {node: '>=20'}
     hasBin: true
 
@@ -5137,7 +5138,7 @@ snapshots:
 
   adm-zip@0.6.0: {}
 
-  aislop@0.15.0(@types/react@19.2.18):
+  aislop@https://codeload.github.com/daveslutzkin/aislop/tar.gz/caa0959c6a22ee8c6923cbb2360a9f0729e6ebc6(@types/react@19.2.18):
     dependencies:
       '@biomejs/biome': 2.5.11
       '@clack/prompts': 1.7.0

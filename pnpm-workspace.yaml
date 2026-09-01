@@ -19,7 +19,9 @@ minimumReleaseAgeExclude:
   - '@secretlint/walker@13.0.5'
   - secretlint@13.0.5
 
-# No dependency is allowed to run install scripts. If a future dependency
-# needs one, add it to `onlyBuiltDependencies` deliberately, with a note
-# saying what the script does.
+# The temporary aislop fork builds its CLI from the pinned source revision.
+allowBuilds:
+  aislop@https://codeload.github.com/daveslutzkin/aislop/tar.gz/caa0959c6a22ee8c6923cbb2360a9f0729e6ebc6: true
+
+# No other dependency can run an install script.
 onlyBuiltDependencies: []
