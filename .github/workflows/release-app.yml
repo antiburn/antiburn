@@ -589,6 +589,9 @@ jobs:
           # The updater's detached signature. Required on every target.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # The bundler skips the Finder layout step when CI is set, so the
+          # DMG ships without its background. This flag keeps the step on.
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
           # Read by the bundler on macOS only, and empty everywhere else.
           APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_CERTIFICATE || '' }}
           APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && steps.signing.outputs.platform_signing == 'developer-id' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
