@@ -123,6 +123,10 @@ export interface PopoverSnapshot {
   usageRefreshing: boolean
   /** Whether the full Usage view is showing over the activity list. */
   showUsage: boolean
+  /** The surface whose native resize has completed and React can render. */
+  presentedSurface: PopoverSurface
+  /** The session retained while a request to present another surface is in flight. */
+  presentedSession: SessionSubject | null
   storage: StorageHealthPayload
   /** Banners the reader has waved away this run. */
   dismissed: readonly AttentionKind[]
@@ -229,6 +233,7 @@ export class PopoverSession {
   private started = false
   private generation = 0
   private analysisToken = 0
+  private resizeToken = 0
   /**
    * How many `refreshUsage` calls are currently in flight.
    *
@@ -278,6 +283,8 @@ export class PopoverSession {
     liveUsage: EMPTY_LIVE_USAGE,
     usageRefreshing: false,
     showUsage: false,
+    presentedSurface: "activity",
+    presentedSession: null,
     storage: HEALTHY_STORAGE,
     dismissed: [],
     stack: [],
@@ -914,9 +921,28 @@ export class PopoverSession {
   // Reduced motion is a webview preference, so the decision is made here and
   // the shell simply honours it.
   private syncHeight(): void {
-    void setPopoverHeight(popoverHeightFor(this.surface()), !prefersReducedMotion()).catch(
-      () => {},
-    )
+    const surface = this.surface()
+    const presentedSession = surface === "session" ? (this.snapshot.stack.at(-1) ?? null) : null
+    const targetHeight = popoverHeightFor(surface)
+    const token = ++this.resizeToken
+
+    // A taller or equal-height surface fits immediately. A shorter surface
+    // waits so its larger replacement stays mounted during the contraction.
+    if (targetHeight >= popoverHeightFor(this.snapshot.presentedSurface)) {
+      this.update({ presentedSurface: surface, presentedSession })
+    }
+
+    void setPopoverHeight(targetHeight, !prefersReducedMotion())
+      .then(() => {
+        if (token !== this.resizeToken || surface !== this.surface()) return
+        // A failed shell resize must not leave old navigation active forever.
+        // The shell has already stopped a failed or superseded animation.
+        this.update({ presentedSurface: surface, presentedSession })
+      })
+      .catch(() => {
+        if (token !== this.resizeToken || surface !== this.surface()) return
+        this.update({ presentedSurface: surface, presentedSession })
+      })
   }
 
   private update(change: Partial<PopoverSnapshot>): void {

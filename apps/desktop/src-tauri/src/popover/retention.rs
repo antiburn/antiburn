@@ -1,12 +1,10 @@
 //! The popover renderer retention policy.
 //!
-//! This module owns lease deadlines and eviction callback identity. The
-//! popover facade owns all window operations and timer scheduling.
+//! This module owns onboarding prewarm deadlines and eviction callback
+//! identity. The popover facade owns all window operations and timer
+//! scheduling.
 
 use std::time::{Duration, Instant};
-
-/// How long a hidden popover keeps its renderer after a normal dismissal.
-pub(super) const IDLE_EVICTION_DELAY: Duration = Duration::from_secs(15);
 
 /// How long onboarding keeps a hidden renderer after it becomes ready.
 pub(super) const PREWARM_READY_EVICTION_DELAY: Duration = Duration::from_secs(60);
@@ -19,7 +17,6 @@ pub(super) const EVICTION_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EvictionMode {
-    Normal,
     PrewarmReady,
     PrewarmLoading,
 }
@@ -218,15 +215,10 @@ impl Retention {
         &mut self,
         renderer_generation: u64,
         now: Instant,
-        pinned: bool,
     ) -> Option<EvictionSchedule> {
-        let (delay, mode) = match self.prewarm.schedule(renderer_generation, now) {
-            Some(schedule) => schedule,
-            None if pinned => {
-                self.cancel_eviction();
-                return None;
-            }
-            None => (IDLE_EVICTION_DELAY, EvictionMode::Normal),
+        let Some((delay, mode)) = self.prewarm.schedule(renderer_generation, now) else {
+            self.cancel_eviction();
+            return None;
         };
         Some(self.arm(renderer_generation, delay, mode))
     }
@@ -264,13 +256,11 @@ impl Retention {
         token: EvictionToken,
         current_renderer_generation: u64,
         visible: bool,
-        pinned: bool,
     ) -> Option<DueEviction> {
         let armed = self.armed?;
         let due = armed.token == token
             && armed.renderer_generation == current_renderer_generation
-            && !visible
-            && (!pinned || armed.mode != EvictionMode::Normal);
+            && !visible;
         if !due {
             return None;
         }
@@ -309,16 +299,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normal_dismissal_keeps_the_renderer_for_fifteen_seconds() {
+    fn normal_dismissal_keeps_the_renderer_for_the_process_lifetime() {
         let now = Instant::now();
         let mut retention = Retention::default();
 
-        let schedule = retention
-            .arm_hidden(4, now, false)
-            .expect("an unpinned renderer must get an eviction schedule");
-
-        assert_eq!(schedule.delay(), Duration::from_secs(15));
-        assert_eq!(schedule.mode(), EvictionMode::Normal);
+        assert_eq!(retention.arm_hidden(4, now), None);
     }
 
     #[test]
@@ -328,7 +313,7 @@ mod tests {
         retention.begin_prewarm(4, started_at);
 
         let loading = retention
-            .arm_hidden(4, started_at, false)
+            .arm_hidden(4, started_at)
             .expect("a loading prewarm must get a fail-safe schedule");
         assert_eq!(loading.delay(), Duration::from_secs(65));
         assert_eq!(loading.mode(), EvictionMode::PrewarmLoading);
@@ -336,7 +321,7 @@ mod tests {
         let ready_at = started_at + Duration::from_secs(2);
         assert!(retention.mark_prewarm_ready(4, ready_at));
         let ready = retention
-            .arm_hidden(4, ready_at, false)
+            .arm_hidden(4, ready_at)
             .expect("a ready prewarm must keep its renderer");
         assert_eq!(ready.delay(), Duration::from_secs(60));
         assert_eq!(ready.mode(), EvictionMode::PrewarmReady);
@@ -353,7 +338,7 @@ mod tests {
         assert!(retention.is_prewarm(5));
 
         let schedule = retention
-            .arm_hidden(5, started_at + Duration::from_secs(10), false)
+            .arm_hidden(5, started_at + Duration::from_secs(10))
             .expect("the replacement must inherit the lease");
         assert_eq!(schedule.delay(), Duration::from_secs(55));
         assert_eq!(schedule.mode(), EvictionMode::PrewarmLoading);
@@ -369,12 +354,12 @@ mod tests {
 
         assert!(retention.transfer_prewarm(4, 5));
         let first = retention
-            .arm_hidden(5, ready_at + Duration::from_secs(10), false)
+            .arm_hidden(5, ready_at + Duration::from_secs(10))
             .expect("the transferred ready lease remains active");
         assert_eq!(first.delay(), Duration::from_secs(50));
 
         let rearmed = retention
-            .arm_hidden(5, ready_at + Duration::from_secs(20), false)
+            .arm_hidden(5, ready_at + Duration::from_secs(20))
             .expect("rearming keeps the original ready deadline");
         assert_eq!(rearmed.delay(), Duration::from_secs(40));
         assert_eq!(rearmed.mode(), EvictionMode::PrewarmReady);
@@ -383,11 +368,13 @@ mod tests {
     #[test]
     fn the_first_reveal_consumes_the_prewarm_lease_once() {
         let mut retention = Retention::default();
-        retention.begin_prewarm(4, Instant::now());
+        let now = Instant::now();
+        retention.begin_prewarm(4, now);
 
         assert!(retention.consume_prewarm_on_reveal(4));
         assert!(!retention.consume_prewarm_on_reveal(4));
         assert_eq!(retention.prewarm_generation(), None);
+        assert_eq!(retention.arm_hidden(4, now), None);
     }
 
     #[test]
@@ -412,36 +399,17 @@ mod tests {
     fn a_replacement_schedule_invalidates_the_old_eviction_token() {
         let now = Instant::now();
         let mut retention = Retention::default();
+        retention.begin_prewarm(4, now);
         let first = retention
-            .arm_hidden(4, now, false)
-            .expect("the first dismissal must arm eviction");
+            .arm_hidden(4, now)
+            .expect("the first prewarm schedule must arm eviction");
         let replacement = retention
-            .arm_hidden(4, now, false)
-            .expect("the repeated dismissal must replace eviction");
+            .arm_hidden(4, now)
+            .expect("the repeated prewarm schedule must replace eviction");
 
-        assert_eq!(retention.take_due(first.token(), 4, false, false), None);
+        assert_eq!(retention.take_due(first.token(), 4, false), None);
         assert_eq!(
-            retention.take_due(replacement.token(), 4, false, false),
-            Some(DueEviction {
-                renderer_generation: 4,
-                mode: EvictionMode::Normal,
-            })
-        );
-    }
-
-    #[test]
-    fn pinning_protects_normal_eviction_but_not_prewarm_expiry() {
-        let now = Instant::now();
-        let mut normal = Retention::default();
-        assert_eq!(normal.arm_hidden(4, now, true), None);
-
-        let mut prewarm = Retention::default();
-        prewarm.begin_prewarm(4, now);
-        let schedule = prewarm
-            .arm_hidden(4, now, true)
-            .expect("a pin must not make the prewarm lease unbounded");
-        assert_eq!(
-            prewarm.take_due(schedule.token(), 4, false, true),
+            retention.take_due(replacement.token(), 4, false),
             Some(DueEviction {
                 renderer_generation: 4,
                 mode: EvictionMode::PrewarmLoading,
@@ -450,25 +418,21 @@ mod tests {
     }
 
     #[test]
-    fn visibility_and_renderer_replacement_protect_a_normal_renderer() {
+    fn visibility_and_renderer_replacement_protect_a_prewarm_renderer() {
         let now = Instant::now();
         let mut visible = Retention::default();
+        visible.begin_prewarm(4, now);
         let visible_schedule = visible
-            .arm_hidden(4, now, false)
-            .expect("the dismissal must arm eviction");
-        assert_eq!(
-            visible.take_due(visible_schedule.token(), 4, true, false),
-            None
-        );
+            .arm_hidden(4, now)
+            .expect("the prewarm must arm eviction");
+        assert_eq!(visible.take_due(visible_schedule.token(), 4, true), None);
 
         let mut replaced = Retention::default();
+        replaced.begin_prewarm(4, now);
         let replaced_schedule = replaced
-            .arm_hidden(4, now, false)
-            .expect("the dismissal must arm eviction");
-        assert_eq!(
-            replaced.take_due(replaced_schedule.token(), 5, false, false),
-            None
-        );
+            .arm_hidden(4, now)
+            .expect("the prewarm must arm eviction");
+        assert_eq!(replaced.take_due(replaced_schedule.token(), 5, false), None);
     }
 
     #[test]
@@ -477,11 +441,11 @@ mod tests {
         let mut retention = Retention::default();
         retention.begin_prewarm(4, now);
         let first = retention
-            .arm_hidden(4, now, false)
+            .arm_hidden(4, now)
             .expect("the loading prewarm must arm eviction");
 
         let due = retention
-            .take_due(first.token(), 4, false, false)
+            .take_due(first.token(), 4, false)
             .expect("the deadline callback must own the matching renderer");
         let retry = retention.arm_retry(due.renderer_generation(), due.mode());
 
@@ -489,7 +453,7 @@ mod tests {
         assert_eq!(retry.mode(), EvictionMode::PrewarmLoading);
         assert!(retention.is_prewarm(4));
         assert_eq!(
-            retention.take_due(retry.token(), 4, false, true),
+            retention.take_due(retry.token(), 4, false),
             Some(DueEviction {
                 renderer_generation: 4,
                 mode: EvictionMode::PrewarmLoading,
@@ -503,11 +467,11 @@ mod tests {
         let mut retention = Retention::default();
         retention.begin_prewarm(4, now);
         let schedule = retention
-            .arm_hidden(4, now, false)
+            .arm_hidden(4, now)
             .expect("the loading prewarm must arm eviction");
 
         assert_eq!(retention.take_prewarm(), Some(4));
         retention.cancel_eviction();
-        assert_eq!(retention.take_due(schedule.token(), 4, false, false), None);
+        assert_eq!(retention.take_due(schedule.token(), 4, false), None);
     }
 }

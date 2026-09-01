@@ -1,4 +1,12 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as InsightsIpc from "../../lib/insightsIpc"
@@ -14,9 +22,59 @@ vi.mock("../../lib/insightsIpc", async (importOriginal) => ({
 beforeEach(() => {
   getSessionHygiene.mockReset()
   getSessionHygiene.mockResolvedValue(null)
+
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    return this.classList.contains("ui-scroll-viewport") ? 356 : 340
+  })
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    if (this.classList.contains("ui-scroll-viewport")) return 320
+    if (this.dataset.virtualKind === "heading") {
+      return this.querySelector(".sr-only") ? 0 : 28
+    }
+    if (this.dataset.virtualKind === "row") {
+      return this.textContent?.includes("Tall fixture") ? 120 : 72
+    }
+    return 0
+  })
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element,
+  ) {
+    const element = this as HTMLElement
+    const viewport = element.classList.contains("ui-scroll-viewport")
+      ? element
+      : element.closest<HTMLElement>(".ui-scroll-viewport")
+    const measuredItem = element.closest<HTMLElement>("[data-index]")
+    const start = Number(measuredItem?.style.transform.match(/[-\d.]+/)?.[0] ?? 0)
+    const top =
+      viewport && !element.classList.contains("ui-scroll-viewport")
+        ? start - viewport.scrollTop
+        : 0
+    const height = element.classList.contains("ui-scroll-viewport")
+      ? element.offsetHeight
+      : (measuredItem?.offsetHeight ?? element.offsetHeight)
+    return {
+      x: 0,
+      y: top,
+      top,
+      left: 0,
+      right: element.offsetWidth,
+      bottom: top + height,
+      width: element.offsetWidth,
+      height,
+      toJSON: () => ({}),
+    }
+  })
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+})
 
 const NOW = new Date("2026-03-04T12:00:00.000Z")
 
@@ -46,6 +104,16 @@ function list(over: Partial<SessionListProps> = {}) {
     ...over,
   }
   return render(<SessionList {...props} />)
+}
+
+function entries(count: number): SessionListEntry[] {
+  return Array.from({ length: count }, (_, index) =>
+    entry({
+      sessionId: `session-${index}`,
+      title: `Fixture session ${index}`,
+      timestamp: new Date(NOW.getTime() - index * 1_000).toISOString(),
+    }),
+  )
 }
 
 describe("SessionList — rows", () => {
@@ -321,6 +389,309 @@ describe("SessionList — grouping", () => {
     })
     expect(screen.getByText("Inside")).toBeTruthy()
     expect(screen.queryByText("Outside")).toBeNull()
+  })
+})
+
+describe("SessionList — virtualization", () => {
+  it.each([225, 500])("bounds mounted rows for %i sessions", async (count) => {
+    list({ entries: entries(count), onOpenSession: vi.fn() })
+
+    await waitFor(() => {
+      const mountedRows = screen.getAllByRole("button")
+      expect(mountedRows.length).toBeGreaterThan(1)
+      expect(mountedRows.length).toBeLessThan(20)
+    })
+    expect(screen.getByText("Fixture session 0")).toBeTruthy()
+    expect(screen.queryByText(`Fixture session ${count - 1}`)).toBeNull()
+  })
+
+  it("measures variable row heights without overlap", async () => {
+    const { container } = list({
+      entries: [
+        entry({ sessionId: "normal", title: "Normal fixture", timestamp: at(0, 11) }),
+        entry({ sessionId: "tall", title: "Tall fixture", timestamp: at(0, 10) }),
+        entry({ sessionId: "after", title: "After fixture", timestamp: at(0, 9) }),
+      ],
+    })
+
+    await waitFor(() => {
+      const rows = [...container.querySelectorAll<HTMLElement>('[data-virtual-kind="row"]')]
+      expect(rows).toHaveLength(3)
+      const tall = rows.find((row) => row.textContent?.includes("Tall fixture"))!
+      const after = rows.find((row) => row.textContent?.includes("After fixture"))!
+      const tallStart = Number(tall.style.transform.match(/[-\d.]+/)?.[0])
+      const afterStart = Number(after.style.transform.match(/[-\d.]+/)?.[0])
+      expect(afterStart).toBeGreaterThanOrEqual(tallStart + tall.offsetHeight)
+    })
+  })
+
+  it("mounts the final row after scrolling to the end", async () => {
+    const { container } = list({ entries: entries(225), onOpenSession: vi.fn() })
+    const viewport = container.querySelector<HTMLElement>(".ui-scroll-viewport")!
+
+    viewport.scrollTop = 20_000
+    fireEvent.scroll(viewport)
+
+    await waitFor(() => {
+      expect(screen.getByText("Fixture session 224")).toBeTruthy()
+    })
+    expect(screen.queryByText("Fixture session 0")).toBeNull()
+    expect(screen.getAllByRole("button").length).toBeLessThan(20)
+  })
+
+  it("keeps the focused row mounted while the list scrolls", async () => {
+    const { container } = list({ entries: entries(225), onOpenSession: vi.fn() })
+    const firstRow = screen.getByRole("button", { name: /Fixture session 0/ })
+    const viewport = container.querySelector<HTMLElement>(".ui-scroll-viewport")!
+
+    firstRow.focus()
+    viewport.scrollTop = 20_000
+    fireEvent.scroll(viewport)
+
+    await waitFor(() => {
+      expect(screen.getByText("Fixture session 224")).toBeTruthy()
+    })
+    expect(firstRow).toBe(document.activeElement)
+    expect(screen.getAllByRole("button").length).toBeLessThan(20)
+  })
+
+  it("moves Tab focus into the next virtual range", async () => {
+    const { container } = list({ entries: entries(225), onOpenSession: vi.fn() })
+    const viewport = container.querySelector<HTMLElement>(".ui-scroll-viewport")!
+    Object.defineProperty(viewport, "scrollTo", {
+      value: ({ top }: ScrollToOptions) => {
+        viewport.scrollTop = top ?? 0
+        fireEvent.scroll(viewport)
+      },
+    })
+    const mountedRows = screen.getAllByRole("button")
+    const lastMounted = mountedRows.at(-1)!
+    const previousIndex = Number(
+      lastMounted.closest<HTMLElement>("[data-index]")?.dataset.index,
+    )
+    expect(
+      viewport.querySelector(`[data-virtual-kind="row"][data-index="${previousIndex + 1}"]`),
+    ).toBeNull()
+    lastMounted.focus()
+
+    expect(fireEvent.keyDown(lastMounted, { key: "Tab" })).toBe(false)
+
+    await waitFor(() => {
+      const focusedRow = document.activeElement?.closest<HTMLElement>("[data-index]")
+      expect(Number(focusedRow?.dataset.index)).toBeGreaterThan(previousIndex)
+    })
+  })
+
+  it("updates the pinned label from measured group headings", async () => {
+    const { container } = list({
+      entries: [
+        entry({ sessionId: "today", title: "Today fixture", timestamp: at(0) }),
+        entry({ sessionId: "yesterday", title: "Yesterday fixture", timestamp: at(1) }),
+      ],
+    })
+    const viewport = container.querySelector<HTMLElement>(".ui-scroll-viewport")!
+    const yesterdayHeading = screen.getByRole("heading", { name: "Yesterday" })
+    const headingItem = yesterdayHeading.closest<HTMLElement>("[data-index]")!
+
+    viewport.scrollTop = Number(headingItem.style.transform.match(/[-\d.]+/)?.[0])
+    fireEvent.scroll(viewport)
+
+    await waitFor(() => {
+      expect(screen.getByTestId("activity-pinned-group-label").textContent).toBe("Yesterday")
+    })
+  })
+
+  it("preserves the viewport callback ref cleanup", () => {
+    const cleanupRef = vi.fn()
+    const viewportRef = vi.fn((node: HTMLDivElement | null) => (node ? cleanupRef : undefined))
+    const { unmount } = list({ viewportRef })
+
+    expect(viewportRef).toHaveBeenCalledWith(expect.any(HTMLDivElement))
+    unmount()
+    expect(cleanupRef).toHaveBeenCalledOnce()
+  })
+})
+
+describe("SessionList — shared tooltips", () => {
+  it("mounts one owner for every populated list size and none for an empty list", async () => {
+    const { container, rerender } = list({ entries: entries(500) })
+
+    await waitFor(() =>
+      expect(container.querySelectorAll("[data-session-tooltip-owner]")).toHaveLength(1),
+    )
+    expect(container.querySelectorAll("[data-shared-tooltip-trigger]").length).toBeGreaterThan(
+      1,
+    )
+
+    rerender(<SessionList entries={[]} days={7} now={NOW} />)
+    expect(container.querySelectorAll("[data-session-tooltip-owner]")).toHaveLength(0)
+  })
+
+  it("shares rich status and cost content with fork, repository, and WSL labels", async () => {
+    getSessionHygiene.mockResolvedValueOnce([
+      {
+        evidenceState: "ready",
+        badges: [
+          { id: "sessionOverdepth", status: "finding", notAssessedReason: null },
+          { id: "modelOverthinking", status: "clean", notAssessedReason: null },
+          { id: "overpoweredSubagents", status: "clean", notAssessedReason: null },
+          { id: "obsoleteModel", status: "clean", notAssessedReason: null },
+          { id: "fastModeOveruse", status: "clean", notAssessedReason: null },
+          { id: "excessCacheRehydration", status: "clean", notAssessedReason: null },
+        ],
+      },
+    ])
+    const { container } = list({
+      entries: [
+        entry({
+          additionalRepos: ["avery/docs"],
+          hasForkParent: true,
+          forkChildCount: 2,
+          wslDistro: "Ubuntu-24.04",
+          cost: {
+            totalUsd: 2.4,
+            figureLabel: "Estimated cost",
+            models: ["claude-fable-5"],
+            breakdownRows: [{ label: "Output", usd: 1.25 }],
+          },
+        }),
+      ],
+    })
+    const status = await screen.findByLabelText("5 of 6 burn checks pass")
+    const cost = screen.getByLabelText("Estimated cost $2.40")
+    const fork = screen.getByLabelText("Forked from another session")
+    const repository = screen.getByText("avery/widgets +1")
+    const wsl = screen.getByLabelText("Found in Ubuntu-24.04 on Windows Subsystem for Linux")
+    const row = status.closest(".group")!
+
+    vi.useFakeTimers()
+
+    fireEvent.pointerOver(status)
+    act(() => vi.advanceTimersByTime(149))
+    expect(document.querySelector(".ui-tooltip")).toBeNull()
+    act(() => vi.advanceTimersByTime(1))
+    expect(document.querySelector(".ui-tooltip")?.textContent).toContain(
+      "Open the session for details",
+    )
+    expect(status.dataset.state).toBe("delayed-open")
+    expect(status.getAttribute("aria-describedby")).toBe(
+      document.querySelector(".ui-tooltip")?.id,
+    )
+    expect(row.querySelector('[data-state="delayed-open"]')).toBe(status)
+
+    fireEvent.pointerOut(status)
+    fireEvent.pointerOver(cost)
+    act(() => vi.advanceTimersByTime(150))
+    const costTooltip = document.querySelector<HTMLElement>(".ui-tooltip")!
+    expect(costTooltip.dataset.side).toBe("bottom")
+    expect(costTooltip.textContent).toContain("claude-fable-5")
+    expect(costTooltip.textContent).toContain("Output")
+
+    fireEvent.pointerOut(cost)
+    fireEvent.pointerOver(fork)
+    act(() => vi.advanceTimersByTime(500))
+    expect(document.querySelector(".ui-tooltip")?.textContent).toBe(
+      "Forked from another session",
+    )
+
+    fireEvent.pointerOut(fork)
+    fireEvent.pointerOver(repository)
+    act(() => vi.advanceTimersByTime(600))
+    expect(document.querySelector(".ui-tooltip")?.textContent).toBe("Also observed: avery/docs")
+
+    fireEvent.pointerOut(repository)
+    fireEvent.pointerOver(wsl)
+    act(() => vi.advanceTimersByTime(600))
+    expect(document.querySelector(".ui-tooltip")?.textContent).toBe(
+      "Found in Ubuntu-24.04 on Windows Subsystem for Linux",
+    )
+    expect(container.querySelectorAll("[data-session-tooltip-owner]")).toHaveLength(1)
+  })
+
+  it("dismisses and clears superseded timers without leaving stale trigger state", () => {
+    const { container, unmount } = list({
+      entries: [entry({ hasForkParent: true, repo: "avery/widgets", wslDistro: "Ubuntu" })],
+    })
+    const status = screen.getByLabelText("Computing session hygiene checks")
+    const fork = screen.getByLabelText("Forked from another session")
+    const repository = screen.getByText("avery/widgets")
+    const wsl = screen.getByLabelText("Found in Ubuntu on Windows Subsystem for Linux")
+    const viewport = container.querySelector<HTMLElement>(".ui-scroll-viewport")!
+    vi.useFakeTimers()
+
+    fireEvent.pointerOver(fork)
+    act(() => vi.advanceTimersByTime(499))
+    fireEvent.pointerOut(fork, { relatedTarget: repository })
+    fireEvent.pointerOver(repository, { relatedTarget: fork })
+    act(() => vi.advanceTimersByTime(101))
+    expect(document.querySelector(".ui-tooltip")).toBeNull()
+    expect(fork.dataset.state).toBe("closed")
+    fireEvent.scroll(viewport)
+    act(() => vi.advanceTimersByTime(499))
+    expect(document.querySelector(".ui-tooltip")).toBeNull()
+
+    fireEvent.pointerOver(repository)
+    act(() => vi.advanceTimersByTime(600))
+    expect(document.querySelector(".ui-tooltip")?.textContent).toBe("avery/widgets")
+
+    fireEvent.scroll(viewport)
+    expect(document.querySelector(".ui-tooltip")).toBeNull()
+    expect(repository.dataset.state).toBe("closed")
+
+    fireEvent.focus(status)
+    expect(document.querySelector(".ui-tooltip")?.textContent).toBe(
+      "Computing session hygiene checks",
+    )
+    fireEvent.blur(status)
+    expect(document.querySelector(".ui-tooltip")).toBeNull()
+
+    fireEvent.pointerOver(wsl)
+    act(() => vi.advanceTimersByTime(600))
+    fireEvent.keyDown(document, { key: "Escape" })
+    expect(document.querySelector(".ui-tooltip")).toBeNull()
+    expect(wsl.dataset.state).toBe("closed")
+
+    fireEvent.pointerOver(repository)
+    unmount()
+    act(() => vi.runAllTimers())
+    expect(document.querySelector(".ui-tooltip")).toBeNull()
+  })
+
+  it("does not open a tooltip from a touch pointer", () => {
+    list({ entries: [entry({ hasForkParent: true })] })
+    const fork = screen.getByLabelText("Forked from another session")
+    vi.useFakeTimers()
+
+    fireEvent.pointerOver(fork, { pointerType: "touch" })
+    act(() => vi.runAllTimers())
+
+    expect(document.querySelector(".ui-tooltip")).toBeNull()
+    expect(fork.dataset.state).toBe("closed")
+  })
+
+  it("keeps an open rich tooltip through a list rerender", () => {
+    const props: SessionListProps = {
+      entries: [
+        entry({
+          cost: {
+            totalUsd: 2.4,
+            figureLabel: "Estimated cost",
+            models: ["claude-fable-5"],
+          },
+        }),
+      ],
+      days: 7,
+      now: NOW,
+    }
+    const { rerender } = render(<SessionList {...props} />)
+    const cost = screen.getByLabelText("Estimated cost $2.40")
+
+    fireEvent.focus(cost)
+    expect(document.querySelector(".ui-tooltip")?.textContent).toContain("claude-fable-5")
+    rerender(<SessionList {...props} />)
+
+    expect(document.querySelector(".ui-tooltip")?.textContent).toContain("claude-fable-5")
+    expect(cost.dataset.state).toBe("instant-open")
   })
 })
 

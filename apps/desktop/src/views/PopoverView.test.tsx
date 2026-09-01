@@ -245,6 +245,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve([])
       case "get_storage_health":
         return Promise.resolve(HEALTHY_STORAGE)
+      case "set_popover_height":
+        return Promise.resolve(true)
       default:
         return Promise.resolve(null)
     }
@@ -1013,6 +1015,38 @@ describe("PopoverView — window behaviour", () => {
       .map(([, args]) => (args as { height: number }).height)
     expect(heights.length).toBeGreaterThan(0)
     expect(Math.max(...heights)).toBeLessThanOrEqual(780)
+  })
+
+  it("keeps Usage mounted and session rows absent until contraction completes", async () => {
+    let finishContraction: (() => void) | null = null
+    const baseInvoke = invoke.getMockImplementation()!
+    invoke.mockImplementation((command: string, args?: unknown) => {
+      if (
+        command === "set_popover_height" &&
+        (args as { height?: number } | undefined)?.height === 700
+      ) {
+        return new Promise<boolean>((resolve) => {
+          finishContraction = () => resolve(true)
+        })
+      }
+      return baseInvoke(command, args)
+    })
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+
+    fireEvent.click(await screen.findByRole("button", { name: "Codex at 40 percent" }))
+    expect(await screen.findByRole("heading", { name: "Usage" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Back to activity" }))
+
+    expect(screen.getByRole("heading", { name: "Usage" })).toBeInTheDocument()
+    expect(screen.queryByRole("region", { name: "Sessions" })).not.toBeInTheDocument()
+    expect(screen.queryByText("Wire the tray popover")).not.toBeInTheDocument()
+
+    await act(async () => {
+      finishContraction?.()
+      await Promise.resolve()
+    })
+    expect(await screen.findByText("Wire the tray popover")).toBeInTheDocument()
   })
 
   it("dismisses the popover on Escape", async () => {

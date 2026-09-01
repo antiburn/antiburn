@@ -599,24 +599,30 @@ pub fn note_sample(app: &AppHandle, kind: Kind) {
 /// authorization. The gate self-skips for unbundled dev binaries, which
 /// cannot hold the signed entitlement.
 pub fn maybe_initialize_authorization(app: &AppHandle) {
-    let ready = app
-        .try_state::<Store>()
-        .and_then(|store| store.settings().ok())
-        .is_some_and(|settings| {
-            settings.onboarding_completed
-                && settings.notifications_enabled
-                && settings.nudges_respect_dnd
-        });
-    if !ready {
-        return;
-    }
-    let init_app = app.clone();
-    if let Err(error) = app.run_on_main_thread(move || {
-        if let Some(gate) = init_app.try_state::<antiburn_nudge::NotificationGate>() {
-            gate.initialize_authorization();
+    #[cfg(feature = "memory-probe")]
+    let _ = app;
+
+    #[cfg(not(feature = "memory-probe"))]
+    {
+        let ready = app
+            .try_state::<Store>()
+            .and_then(|store| store.settings().ok())
+            .is_some_and(|settings| {
+                settings.onboarding_completed
+                    && settings.notifications_enabled
+                    && settings.nudges_respect_dnd
+            });
+        if !ready {
+            return;
         }
-    }) {
-        tracing::debug!(event = "nudge_authorization_dispatch_failed", %error);
+        let init_app = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            if let Some(gate) = init_app.try_state::<antiburn_nudge::NotificationGate>() {
+                gate.initialize_authorization();
+            }
+        }) {
+            tracing::debug!(event = "nudge_authorization_dispatch_failed", %error);
+        }
     }
 }
 

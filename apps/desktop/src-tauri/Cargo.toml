@@ -34,6 +34,8 @@ distribution = []
 # Include the first-party analytics client. Source builds omit it unless the
 # builder selects this feature explicitly.
 analytics = ["dep:getrandom"]
+# Add local memory fixtures and WebContent PID diagnostics.
+memory-probe = []
 
 [[bin]]
 name = "antiburn"
