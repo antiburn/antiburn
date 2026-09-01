@@ -476,12 +476,11 @@ describe("UsageView — plan limits layered over local estimates", () => {
       "Gemini weekly limit",
       "Claude and GPT 5-hour limit",
       "Claude and GPT weekly limit",
-      "Gemini 3 Pro weekly limit",
-      "Gemini 3 Flash weekly limit",
-      "Claude Sonnet weekly limit",
     ]) {
       expect(within(card).getByRole("progressbar", { name })).toBeInTheDocument()
     }
+    expect(within(card).queryByText("Gemini 3 Pro weekly limit")).not.toBeInTheDocument()
+    expect(within(card).queryByText("Claude Sonnet weekly limit")).not.toBeInTheDocument()
   })
 
   it("groups multiple live accounts without repeating provider-wide local usage", () => {

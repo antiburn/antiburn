@@ -553,11 +553,13 @@ describe("hiding unused model quota limits", () => {
     expect(liveWindows(antigravity)).toHaveLength(4)
   })
 
-  it("keeps every Google model window supplied by the provider", () => {
+  it("shows shared Google pools instead of model fallback detail", () => {
     const google = provider({
       provider: "google",
       sourceLabel: "Asked Google directly",
       windows: [
+        window({ id: "antigravity-gemini-weekly", scopeModel: "Gemini" }),
+        window({ id: "antigravity-claude-gpt-weekly", scopeModel: "Claude + GPT" }),
         window({
           id: "weekly-gemini-3-pro",
           role: "supplemental",
@@ -583,9 +585,8 @@ describe("hiding unused model quota limits", () => {
     })
 
     expect(liveWindows(google).map((entry) => entry.id)).toEqual([
-      "weekly-gemini-3-pro",
-      "weekly-gemini-3-flash",
-      "weekly-claude-sonnet",
+      "antigravity-gemini-weekly",
+      "antigravity-claude-gpt-weekly",
     ])
   })
 

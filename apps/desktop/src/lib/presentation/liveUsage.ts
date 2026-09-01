@@ -97,6 +97,13 @@ const GOOGLE_PLAN_NAME_LABELS: Readonly<Record<string, string>> = {
   "google ai ultra": "Google AI Ultra",
 }
 
+const ANTIGRAVITY_PRIMARY_WINDOW_IDS = new Set([
+  "antigravity-gemini-5h",
+  "antigravity-gemini-weekly",
+  "antigravity-claude-gpt-5h",
+  "antigravity-claude-gpt-weekly",
+])
+
 /** Claude's plan label, reading the tier only for the `max` name. */
 function claudePlanLabel(plan: LiveUsagePlanPayload): string {
   if (plan.name === "max") {
@@ -347,7 +354,11 @@ export function liveWindows(provider: LiveProviderUsagePayload): LiveUsageWindow
   // A stable sort over a copy, so the provider's own order breaks ties and two
   // supplemental windows never swap places between renders.
   const localAntigravity = provider.sourceLabel.startsWith("Read from Antigravity")
-  return provider.windows
+  const primaryAntigravity = provider.windows.filter((window) =>
+    ANTIGRAVITY_PRIMARY_WINDOW_IDS.has(window.id),
+  )
+  const candidates = primaryAntigravity.length > 0 ? primaryAntigravity : provider.windows
+  return candidates
     .filter(
       (window) =>
         provider.provider === GOOGLE || localAntigravity || isUsageWindowVisible(window),

@@ -1095,7 +1095,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_cloud_summary_merges_project_scoped_model_windows() {
+    fn partial_cloud_summary_fills_missing_shared_pools_from_model_windows() {
         let fake = CompatibilityFake {
             quota: Ok(HttpReply {
                 status: reqwest::StatusCode::OK,
@@ -1121,11 +1121,20 @@ mod tests {
                 .iter()
                 .any(|window| window.id == "antigravity-gemini-weekly")
         );
-        assert!(
+        assert_eq!(
             snapshot
                 .windows
                 .iter()
-                .any(|window| window.id == "antigravity-model-gemini-3-pro-high")
+                .map(|window| window.id.as_str())
+                .collect::<std::collections::HashSet<_>>(),
+            [
+                "antigravity-gemini-5h",
+                "antigravity-gemini-weekly",
+                "antigravity-claude-gpt-5h",
+                "antigravity-claude-gpt-weekly",
+            ]
+            .into_iter()
+            .collect()
         );
     }
 
@@ -1142,6 +1151,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(snapshot.windows.len(), 2);
+        assert_eq!(snapshot.windows[0].id, "antigravity-gemini-5h");
+        assert_eq!(snapshot.windows[1].id, "antigravity-claude-gpt-5h");
     }
 
     #[test]

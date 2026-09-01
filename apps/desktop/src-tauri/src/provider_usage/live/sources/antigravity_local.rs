@@ -673,20 +673,16 @@ mod tests {
     }
 
     #[test]
-    fn local_shared_and_model_windows_merge_without_replacing_either_set() {
+    fn local_shared_windows_hide_model_fallback_detail() {
         let fake = FakeEndpoint {
             summary: Ok(LocalReply::Body(SUMMARY.to_owned())),
             calls: RefCell::default(),
         };
         let (summary, status) = local_pair(&fake);
         let windows = antigravity::merge_windows(summary.unwrap().windows, status.windows);
-        assert_eq!(windows.len(), 5);
+        assert_eq!(windows.len(), 4);
         assert!(windows.iter().any(|window| window.id.ends_with("weekly")));
-        assert!(
-            windows
-                .iter()
-                .any(|window| window.id == "antigravity-model-gemini-3-pro")
-        );
+        assert!(windows.iter().all(|window| !window.id.contains("-model-")));
     }
 
     #[test]

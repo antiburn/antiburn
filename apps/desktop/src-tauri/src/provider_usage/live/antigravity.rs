@@ -243,18 +243,40 @@ pub fn parse_available_models(input: &str) -> Result<QuotaSummary, ProviderUsage
     Ok(QuotaSummary { windows })
 }
 
-/// Merge windows without discarding a valid window from either response.
+/// Merge model fallbacks into the shared pools shown by Antigravity.
 pub fn merge_windows(
     mut windows: Vec<UsageWindow>,
     additional: Vec<UsageWindow>,
 ) -> Vec<UsageWindow> {
+    let supplied: [bool; 4] = std::array::from_fn(|index| {
+        let id = slot_model(index).0;
+        windows.iter().any(|window| window.id == id)
+    });
     for window in additional {
-        if let Some(existing) = windows.iter_mut().find(|existing| existing.id == window.id) {
-            fold_window(existing, window);
+        let Some(index) = fallback_slot(&window) else {
+            continue;
+        };
+        if supplied[index] {
+            continue;
+        }
+        let (id, role, kind, scope) = slot_model(index);
+        let pooled = UsageWindow {
+            id: id.into(),
+            role,
+            kind,
+            scope,
+            used_percent: window.used_percent,
+            starts_at: window.starts_at,
+            resets_at: window.resets_at,
+            authoritative: window.authoritative,
+        };
+        if let Some(existing) = windows.iter_mut().find(|existing| existing.id == pooled.id) {
+            fold_window(existing, pooled);
         } else {
-            windows.push(window);
+            windows.push(pooled);
         }
     }
+    windows.sort_by_key(|window| shared_slot(&window.id).unwrap_or(usize::MAX));
     windows
 }
 
@@ -422,6 +444,25 @@ fn semantic_slot(group: Option<&str>, bucket: &serde_json::Map<String, Value>) -
     }
 }
 
+fn fallback_slot(window: &UsageWindow) -> Option<usize> {
+    let UsageScope::Model(model) = &window.scope else {
+        return None;
+    };
+    let text = format!("{} {model}", window.id).to_ascii_lowercase();
+    let group = if text.contains("gemini") {
+        0
+    } else if text.contains("claude") || text.contains("gpt") {
+        2
+    } else {
+        return None;
+    };
+    Some(group + usize::from(window.kind == UsageWindowKind::Weekly))
+}
+
+fn shared_slot(id: &str) -> Option<usize> {
+    (0..4).find(|index| slot_model(*index).0 == id)
+}
+
 fn slot_model(index: usize) -> (&'static str, WindowRole, UsageWindowKind, UsageScope) {
     match index {
         0 => (
@@ -438,13 +479,13 @@ fn slot_model(index: usize) -> (&'static str, WindowRole, UsageWindowKind, Usage
         ),
         2 => (
             "antigravity-claude-gpt-5h",
-            WindowRole::Supplemental,
+            WindowRole::PrimaryShort,
             UsageWindowKind::Rolling,
             UsageScope::Model("Claude + GPT".into()),
         ),
         _ => (
             "antigravity-claude-gpt-weekly",
-            WindowRole::Supplemental,
+            WindowRole::PrimaryLong,
             UsageWindowKind::Weekly,
             UsageScope::Model("Claude + GPT".into()),
         ),
@@ -662,6 +703,29 @@ mod tests {
             .find(|window| window.id.contains("standard-weekly-limit"))
             .unwrap();
         assert_eq!(weekly.kind, UsageWindowKind::Weekly);
+    }
+
+    #[test]
+    fn model_fallbacks_collapse_into_two_shared_pools() {
+        let models = parse_available_models(
+            r#"{"models":{
+              "gemini-3-pro":{"displayName":"Gemini 3 Pro","quotaInfo":{"remainingFraction":0.8}},
+              "gemini-3-flash":{"displayName":"Gemini 3 Flash","quotaInfo":{"remainingFraction":0.6}},
+              "claude-sonnet":{"displayName":"Claude Sonnet","quotaInfo":{"remainingFraction":0.9}},
+              "chat_20706":{"displayName":"chat_20706","quotaInfo":{"remainingFraction":0.1}}
+            }}"#,
+        )
+        .unwrap();
+
+        let windows = merge_windows(Vec::new(), models.windows);
+
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].id, "antigravity-gemini-5h");
+        assert!((windows[0].used_percent.unwrap() - 40.0).abs() < 1e-9);
+        assert_eq!(windows[0].role, WindowRole::PrimaryShort);
+        assert_eq!(windows[1].id, "antigravity-claude-gpt-5h");
+        assert!((windows[1].used_percent.unwrap() - 10.0).abs() < 1e-9);
+        assert_eq!(windows[1].role, WindowRole::PrimaryShort);
     }
 
     #[test]
