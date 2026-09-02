@@ -95,7 +95,8 @@ pub use rows::{
     insert_coverage_record, insert_turn_rows, query_coverage_record, turn_row_from_event,
 };
 pub use source_validity::{
-    AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, SourceClaim, append_only_guarantee,
+    AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, RESUME_TAIL_BYTES, ResumePoint,
+    SourceClaim, append_only_guarantee,
 };
 pub use vendors::claude::ClaudeAdapter;
 pub use vendors::pi::PiAdapter;

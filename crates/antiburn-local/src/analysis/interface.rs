@@ -330,11 +330,24 @@ pub enum VisitOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceChangedReason {
     IdentityMismatch,
-    ShortAtOpen { size: u64, boundary: u64 },
+    ShortAtOpen {
+        size: u64,
+        boundary: u64,
+    },
     HeadRegionMismatch,
-    ShortRead { consumed: u64, boundary: u64 },
-    TruncatedAfterRead { size: u64, boundary: u64 },
+    ShortRead {
+        consumed: u64,
+        boundary: u64,
+    },
+    TruncatedAfterRead {
+        size: u64,
+        boundary: u64,
+    },
     FingerprintMismatch,
+    /// A resumed open's file is shorter than the claimed resume offset, or
+    /// the trailing window before that offset no longer hashes to the
+    /// claimed tail hash. See [`crate::analysis::source_validity::ResumePoint`].
+    ResumeTailMismatch,
 }
 
 /// Implemented once per vendor format. Stateless and `Sync` so adapters can be
