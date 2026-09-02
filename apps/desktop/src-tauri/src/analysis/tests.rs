@@ -288,45 +288,6 @@ async fn a_claimed_antigravity_database_stays_native_and_publishes() {
     assert!(!observed(&evidence.models).by_model.is_empty());
 }
 
-#[tokio::test]
-async fn antigravity_poll_fingerprint_tracks_transcript_metadata() {
-    let (_directory, path) = antigravity_database();
-    let source = SessionSource::ProviderDb {
-        agent: AgentKind::Antigravity,
-        db_path: path.clone(),
-        session_id: "root".to_owned(),
-    };
-    let transcript = antigravity_sibling_transcript(&path, "root").unwrap();
-
-    let before =
-        poll_fingerprint_with_subagents(AgentKind::Antigravity, "root", None, &source).await;
-    let mut file = std::fs::OpenOptions::new()
-        .append(true)
-        .open(transcript)
-        .unwrap();
-    std::io::Write::write_all(&mut file, b"{}\n").unwrap();
-    let after =
-        poll_fingerprint_with_subagents(AgentKind::Antigravity, "root", None, &source).await;
-
-    assert!(before.starts_with("poll-v1:"));
-    assert_ne!(before, after);
-}
-
-#[test]
-fn antigravity_poll_fingerprint_tracks_child_only_changes() {
-    let directory = tempfile::TempDir::new().unwrap();
-    let parent = directory.path().join("root.db");
-    let child = directory.path().join("child.jsonl");
-    std::fs::write(&parent, "parent").unwrap();
-    std::fs::write(&child, "child").unwrap();
-    let paths = vec![parent, child.clone()];
-
-    let before = poll_fingerprint_from_paths(paths.clone());
-    std::fs::write(&child, "child changed").unwrap();
-
-    assert_ne!(before, poll_fingerprint_from_paths(paths));
-}
-
 #[test]
 fn a_claimed_opencode_database_publishes_from_the_validated_snapshot() {
     let (_directory, path, fingerprint) = opencode_database();

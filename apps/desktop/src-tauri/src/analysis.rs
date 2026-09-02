@@ -477,86 +477,6 @@ pub async fn fingerprint_with_subagents(
     }
 }
 
-/// Cheap fingerprint for the open-detail poll.
-///
-/// Antigravity databases use file, WAL, and transcript metadata here. Claimed
-/// ingestion still uses the full row-content fingerprint.
-pub async fn poll_fingerprint_with_subagents(
-    agent: AgentKind,
-    session_id: &str,
-    wsl_distro: Option<&str>,
-    source: &SessionSource,
-) -> String {
-    if let SessionSource::ProviderDb {
-        agent: AgentKind::Antigravity,
-        db_path,
-        session_id,
-    } = source
-    {
-        let mut paths = vec![db_path.clone()];
-        let mut wal = db_path.as_os_str().to_os_string();
-        wal.push("-wal");
-        paths.push(std::path::PathBuf::from(wal));
-        if let Some(transcript) = antigravity_sibling_transcript(db_path, session_id) {
-            paths.push(transcript);
-        }
-        let mut subagent_paths = Explorers::DISK
-            .list_subagents_in_environment(&agent, session_id, wsl_distro)
-            .await;
-        subagent_paths.sort();
-        paths.extend(subagent_paths);
-        return poll_fingerprint_from_paths(paths);
-    }
-    fingerprint_with_subagents(agent, session_id, wsl_distro, source).await
-}
-
-fn poll_fingerprint_from_paths(paths: Vec<std::path::PathBuf>) -> String {
-    let parts = paths
-        .into_iter()
-        .map(|path| {
-            (
-                path.to_string_lossy().into_owned(),
-                fingerprint_of_path(&path),
-            )
-        })
-        .collect::<Vec<_>>();
-    serde_json::to_string(&parts)
-        .map(|fingerprint| format!("poll-v1:{fingerprint}"))
-        .unwrap_or_else(|_| MISSING_FINGERPRINT.to_string())
-}
-
-fn fingerprint_of_path(path: &std::path::Path) -> String {
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return MISSING_FINGERPRINT.to_string();
-    };
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    format!("{modified}:{}", metadata.len())
-}
-
-fn antigravity_sibling_transcript(
-    db_path: &std::path::Path,
-    session_id: &str,
-) -> Option<std::path::PathBuf> {
-    let conversations = db_path.parent()?;
-    if conversations.file_name()?.to_str()? != "conversations" {
-        return None;
-    }
-    Some(
-        conversations
-            .parent()?
-            .join("brain")
-            .join(session_id)
-            .join(".system_generated")
-            .join("logs")
-            .join("transcript.jsonl"),
-    )
-}
-
 /// Build one stable fingerprint from a parent and its sorted child paths.
 fn combined_fingerprint(source: &SessionSource, subagent_paths: &[std::path::PathBuf]) -> String {
     combined_fingerprint_from_parent(fingerprint_of(source), subagent_paths)
@@ -1860,9 +1780,8 @@ pub fn analysis_from_rows(
         row_projections: None,
         agent_slug: agent_slug.to_string(),
         parent_session_id: session_id.to_string(),
-        // Rows carry no file path; the drilldown's reveal action stays
-        // unavailable for a replayed view. `get_session_analysis_fingerprint`
-        // still resolves the live path independently for the freshness poll.
+        // Rows carry no file path, so the drilldown's reveal action stays
+        // unavailable for a replayed view.
         source_path: None,
         fingerprint: record.source_fingerprint,
         analyzed_generation: record.analyzed_generation,

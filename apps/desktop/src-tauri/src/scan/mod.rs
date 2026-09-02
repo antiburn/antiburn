@@ -89,11 +89,13 @@ use tokio::task::JoinSet;
 
 use crate::agents;
 use crate::analysis;
-use crate::dto::ScanStatus;
+use crate::commands;
+use crate::dto::{ActivityEntry, ScanStatus};
 use crate::repositories;
 use crate::storage_health::{self, checked};
 use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
+pub mod idle;
 pub mod watch;
 
 /// How often the scheduler wakes up.
@@ -234,13 +236,18 @@ pub async fn run_pass(app: &AppHandle, activity_window_days: Option<u32>) -> Sca
             status.completed_agents = 0;
             status.total_agents = AgentKind::ALL.len();
             status.sessions = 0;
+            status.list_changed = false;
             status.error = None;
             status.cancelled = false;
         });
         let _ = app.emit(EVENT_STARTED, started);
     }
 
-    let outcome = pass(app, activity_window_days).await;
+    let announce_app = app.clone();
+    let announce = move |entry: ActivityEntry| {
+        let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
+    };
+    let outcome = pass(app, activity_window_days, &announce).await;
 
     let controller = app.state::<ScanController>();
     let cancelled = controller.cancelled();
@@ -249,8 +256,9 @@ pub async fn run_pass(app: &AppHandle, activity_window_days: Option<u32>) -> Sca
         status.cancelled = cancelled;
         status.finished_at = Some(crate::store::now_rfc3339());
         match &outcome {
-            Ok(sessions) => {
-                status.sessions = *sessions;
+            Ok(summary) => {
+                status.sessions = summary.sessions;
+                status.list_changed = summary.list_changed;
                 // A cancelled pass did not finish every agent, and saying it
                 // did would make the progress line lie on its last frame.
                 if !cancelled {
@@ -273,14 +281,30 @@ pub async fn run_pass(app: &AppHandle, activity_window_days: Option<u32>) -> Sca
     // all is an analytics question, and this scheduler runs a pass a minute
     // while the popover is open. `None` is a failure, which travels as a bare
     // category — an error string can hold a path.
-    crate::analytics::record_scan(app, outcome.as_ref().ok().map(|n| *n as u64));
+    crate::analytics::record_scan(
+        app,
+        outcome.as_ref().ok().map(|summary| summary.sessions as u64),
+    );
     crate::notifications::note_scan_outcome(app, &finished);
     finished
 }
 
+/// What one pass persisted, for [`run_pass`] to fold into the reported status.
+struct PassSummary {
+    sessions: usize,
+    /// True when a reader's list needs a full refetch rather than a row
+    /// patch: this pass indexed a session the list has never shown, or
+    /// evicted a rejected one.
+    list_changed: bool,
+}
+
 /// The body of one pass. Split out so [`run_pass`] owns only the in-flight
 /// bookkeeping and the events.
-async fn pass(app: &AppHandle, _activity_window_days: Option<u32>) -> anyhow::Result<usize> {
+async fn pass(
+    app: &AppHandle,
+    _activity_window_days: Option<u32>,
+    announce: &(dyn Fn(ActivityEntry) + Send + Sync),
+) -> anyhow::Result<PassSummary> {
     let store = app.state::<Store>();
     let now = unix_now();
     // Discovery always covers the widest list the UI can request, so changing
@@ -310,8 +334,12 @@ async fn pass(app: &AppHandle, _activity_window_days: Option<u32>) -> anyhow::Re
         .await;
 
     let previous_records = store.session_records()?;
-    let Described { records, rejected } =
-        describe_with_states(logs, &home, &ignored, &previous_records).await;
+    let Described {
+        records,
+        rejected,
+        changed,
+        list_changed,
+    } = describe_with_states(logs, &home, &ignored, &previous_records).await;
     // Every write below is routed through the storage-health check, so a
     // database that has stopped accepting writes becomes a banner in the
     // popover rather than a list that silently stops changing.
@@ -321,6 +349,11 @@ async fn pass(app: &AppHandle, _activity_window_days: Option<u32>) -> anyhow::Re
         store.upsert_sessions(&records, &agents::evidence_cohort()),
     )?;
     crate::insights_worker::wake(app);
+    // A write may have added a session the idle task was not yet watching,
+    // or moved one's deadline later; either way its sleep needs recomputing.
+    idle::wake(app);
+
+    announce_changed_rows(&store, &changed, &previous_records, now, announce);
 
     // A transcript the gate rejected may have been indexed by an earlier
     // version of the app that did not gate; the row is removed rather than
@@ -345,12 +378,41 @@ async fn pass(app: &AppHandle, _activity_window_days: Option<u32>) -> anyhow::Re
     // the reader's results and only skips the work still ahead.
     let controller = app.state::<ScanController>();
     if controller.cancelled() {
-        return Ok(records.len());
+        return Ok(PassSummary {
+            sessions: records.len(),
+            list_changed,
+        });
     }
 
     repositories::refresh(app).await?;
 
-    Ok(records.len())
+    Ok(PassSummary {
+        sessions: records.len(),
+        list_changed,
+    })
+}
+
+/// Emit `SESSION_ENTRY_CHANGED_EVENT` for every re-described row the reader's
+/// list has already shown, so a row already on screen patches in place
+/// instead of waiting for the next full refetch. A brand-new session is not
+/// announced this way: it has no row to patch, and [`Described::list_changed`]
+/// tells the list to refetch and pick it up instead.
+fn announce_changed_rows(
+    store: &Store,
+    changed: &[SessionKey],
+    previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
+    now: i64,
+    announce: &(dyn Fn(ActivityEntry) + Send + Sync),
+) {
+    let previously_known = previously_known_keys(previous_records);
+    for key in changed {
+        if !previously_known.contains(key) {
+            continue;
+        }
+        if let Some(entry) = crate::insights_worker::completion_entry(store, key, now) {
+            announce(entry);
+        }
+    }
 }
 
 /// What one scan pass learned: rows for the index, and previously indexable
@@ -358,6 +420,13 @@ async fn pass(app: &AppHandle, _activity_window_days: Option<u32>) -> anyhow::Re
 struct Described {
     records: Vec<SessionRecord>,
     rejected: Vec<SessionKey>,
+    /// Keys of every record this pass re-described — new, or its cursor
+    /// moved — never a row this pass reused verbatim.
+    changed: Vec<SessionKey>,
+    /// True when a reader's list needs a full refetch rather than a row
+    /// patch: this pass indexed a session absent from `previous_records`, or
+    /// rejected a sub-agent transcript.
+    list_changed: bool,
 }
 
 /// Read metadata for every discovered log, at a bounded concurrency, and drop
@@ -380,6 +449,8 @@ async fn describe_with_states(
     let indexed_titles = indexed_titles_for_logs(&logs).await;
     let mut records = Vec::with_capacity(logs.len());
     let mut rejected = Vec::new();
+    let mut changed = Vec::new();
+    let mut list_changed = false;
     for chunk in logs.chunks(METADATA_CONCURRENCY) {
         let mut set = JoinSet::new();
         for log in chunk {
@@ -395,28 +466,61 @@ async fn describe_with_states(
                 .and_then(|session_id| indexed_titles.get(&(log.agent_type, session_id)).cloned());
             set.spawn(async move {
                 if let Some(reused) = reuse_unchanged_record(&log, previous.as_ref()).await {
-                    return DescribeOutcome::Session(Box::new(reused));
+                    return (DescribeOutcome::Session(Box::new(reused)), false);
                 }
-                describe_one_with_activity(log, &home, indexed_title, previous).await
+                let outcome = describe_one_with_activity(log, &home, indexed_title, previous).await;
+                (outcome, true)
             });
         }
         while let Some(joined) = set.join_next().await {
             match joined {
-                Ok(DescribeOutcome::Session(record)) => {
+                Ok((DescribeOutcome::Session(record), re_described)) => {
                     let cwd = record.cwd.as_deref();
                     // The engine's opt-out gate, applied once here so every
                     // surface that reads the store inherits it.
                     if cwd.is_some_and(|cwd| ignored_paths::set_contains(ignored, cwd)) {
                         continue;
                     }
+                    if re_described {
+                        changed.push(record.key.clone());
+                    }
                     records.push(*record);
                 }
-                Ok(DescribeOutcome::Subagent(key)) => rejected.push(key),
-                Ok(DescribeOutcome::Skip) | Err(_) => {}
+                Ok((DescribeOutcome::Subagent(key), _)) => rejected.push(key),
+                Ok((DescribeOutcome::Skip, _)) | Err(_) => {}
             }
         }
     }
-    Described { records, rejected }
+    // A rejected transcript's stale row, if any, is about to be evicted below
+    // `describe_with_states`'s caller — either way the list must refetch to
+    // stop showing it.
+    if !rejected.is_empty() {
+        list_changed = true;
+    }
+    let previously_known = previously_known_keys(previous_records);
+    if changed.iter().any(|key| !previously_known.contains(key)) {
+        list_changed = true;
+    }
+    Described {
+        records,
+        rejected,
+        changed,
+        list_changed,
+    }
+}
+
+/// Every session key `previous_records` already held, keyed the way
+/// [`Described::changed`] is: by session identity rather than by activity
+/// source. Shared by the `list_changed` check above and by
+/// [`announce_changed_rows`], which both ask the same question — was this
+/// key already on the reader's list — of the same map.
+fn previously_known_keys(
+    previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
+) -> std::collections::HashSet<&SessionKey> {
+    previous_records
+        .values()
+        .map(|record| &record.key)
+        .collect()
 }
 
 /// Read each durable vendor title store once for the sessions in this pass.

@@ -216,15 +216,41 @@ Goal: layer 1 is continuous and cheap, and every consumer reads one signal.
   pays for the full walk underneath. Needs the same date- or mtime-gated
   pruning the other three agents got in 4a.
 
-#### Phase 4b: per-session event, idle expiry, HUD fold-in (not started)
+#### Phase 4b: per-session event, idle expiry, HUD fold-in (done)
 
-- A discovery-level per-session event to the webview carries the refreshed
-  `ActivityEntry`, so the list patches one row instead of refetching.
-- Active-to-idle expiry as a backend timer, emitted as the same event.
-- The HUD's `latest_session_activity` becomes a query on the session table
-  or a subscription to the expiry signal; its discovery walk is deleted.
-- The detail pane's 10-second fingerprint poll is replaced by the row-change
-  event.
+- A scan pass now tracks which sessions it actually re-described versus
+  reused, in `scan::describe_with_states`, and announces each changed one
+  through the existing `sessions:entry-changed` event
+  (`SESSION_ENTRY_CHANGED_EVENT`) instead of leaving the popover to find out
+  on its next full refetch. `ScanStatus` gained `list_changed`, true when a
+  pass indexed a session the list has never shown or evicted a rejected one,
+  so a consumer can tell "the set of rows changed" from "a row's fields
+  changed" without diffing the list itself.
+- Active-to-idle expiry is a backend task (`scan/idle.rs`): it sleeps until
+  the soonest active session's window ends, then announces every session
+  that crossed it through the same `sessions:entry-changed` event. An
+  `IdleWake` notify lets `scan::pass` re-arm the task's deadline immediately
+  after a write, rather than waiting for a stale wake.
+  `Store::sessions_active_since` backs the task's read of the active set.
+- `hud::latest_session_activity` is now one call to
+  `Store::latest_session_activity` — a single `SELECT MAX(updated_at_epoch)`
+  query — replacing the discovery walk and its in-memory memoization.
+  `get_latest_session_activity` is a sync command now that it no longer
+  awaits a walk.
+- The popover's detail pane no longer polls a fingerprint. It refreshes,
+  coalesced to one extra run per burst, when `sessions:entry-changed` names
+  its open subject (or, for a sub-agent, its parent). The activity list
+  patches the one row an event describes in place and re-sorts it; a row not
+  already on screen triggers a coalesced full refetch instead. `scan:finished`
+  drives the list too: `list_changed` refetches immediately, and a pass that
+  never sets it still gets reconciled every `LIST_RECONCILE_MS` (60 s, the
+  scheduler's own healthy-watcher tick) as a backstop. The
+  `get_session_analysis_fingerprint` command, `poll_fingerprint_with_subagents`,
+  and their tests are deleted along with the poll.
+- Left out: Cursor's `collect_agent_transcript_dirs` and
+  `collect_cursor_chat_metadata` are still unwindowed recursive walks — the
+  4a follow-up noted above, unrelated to 4b's event and expiry work, and
+  still open.
 
 ## Sequencing notes
 

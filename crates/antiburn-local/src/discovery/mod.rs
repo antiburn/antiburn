@@ -1790,35 +1790,8 @@ impl Explorers {
     }
 
     /// Collect every agent's recent session logs, native and WSL, deduped.
-    ///
-    /// Quiet counterpart to [`Self::discover_recent_sessions_with_progress`] for
-    /// callers that report their own progress (or none).
-    pub async fn discover_recent_sessions(&self, now: i64, since_secs: i64) -> Vec<SessionLog> {
-        // One spawn per agent, driven off the `AgentKind::ALL` registry so a new
-        // agent is wired up in exactly one place rather than in each fan-out's
-        // hand-written roster. Order is irrelevant: `collect_discovered_sessions`
-        // merges the per-agent batches.
-        let mut set = tokio::task::JoinSet::new();
-        for t in AgentKind::ALL {
-            let explorer = self.get(t);
-            set.spawn(async move { explorer.discover_recent(now, since_secs).await });
-        }
-        let mut per_agent_logs: Vec<Vec<SessionLog>> = Vec::new();
-        while let Some(result) = set.join_next().await {
-            if let Ok(logs) = result {
-                per_agent_logs.push(logs);
-            }
-        }
-
-        let mut logs = collect_discovered_sessions(per_agent_logs);
-        logs.extend(self.discover_wsl_file_sessions(now, since_secs).await);
-        dedupe_environment_sessions(&mut logs);
-        logs
-    }
-
-    /// Like [`Self::discover_recent_sessions`] but calls `on_agent_done`
-    /// each time an agent explorer completes, enabling per-agent progress
-    /// reporting.
+    /// Calls `on_agent_done` each time an agent explorer completes, enabling
+    /// per-agent progress reporting.
     ///
     /// The callback receives `(agent_name, sessions_found, completed_count, total_agents)`.
     pub async fn discover_recent_sessions_with_progress(

@@ -17,7 +17,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use antiburn_local::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SessionEvidence, SourceAcceptance,
 };
-use antiburn_local::discovery::SessionSource;
 use antiburn_local::insights::{
     BadgeId, BadgeStatus, NotAssessedReason, ReportCatalogs, session_badges,
 };
@@ -268,8 +267,8 @@ pub fn set_hud_detail_size(app: tauri::AppHandle, height: f64) {
 
 /// Return the newest recent transcript write as epoch seconds.
 #[tauri::command]
-pub async fn get_latest_session_activity() -> Option<i64> {
-    crate::hud::latest_session_activity().await
+pub fn get_latest_session_activity(app: tauri::AppHandle) -> Option<i64> {
+    crate::hud::latest_session_activity(&app.state::<Store>())
 }
 
 /// Where the app came from and what it is running against.
@@ -1017,48 +1016,6 @@ pub async fn get_session_analysis(
         analysis_pending,
         analysis_stale,
     })
-}
-
-/// The cheap fingerprint of one session's analysis inputs.
-///
-/// The session-detail popover polls this while it is open, and re-runs the
-/// full analysis only when the value changes. This command reads file
-/// metadata alone, never a transcript or database row, so a poll costs little.
-#[tauri::command]
-pub async fn get_session_analysis_fingerprint(
-    app: tauri::AppHandle,
-    agent: String,
-    session_id: String,
-    wsl_distro: Option<String>,
-) -> CommandResult<String> {
-    let Some(kind) = kind_from_slug(&agent) else {
-        return Err(format!("unknown agent {agent}"));
-    };
-    let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
-    let stored = app.state::<Store>().session(&key).map_err(fail)?;
-    let source = match stored.as_ref() {
-        Some(record) if record.source_kind == "file" => {
-            Some(SessionSource::File(PathBuf::from(&record.source_label)))
-        }
-        Some(record) if record.source_kind == "providerDb" => Some(SessionSource::ProviderDb {
-            agent: kind,
-            db_path: PathBuf::from(&record.source_label),
-            session_id: session_id.clone(),
-        }),
-        _ => analysis::locate(kind, &session_id, wsl_distro.as_deref()).await,
-    };
-    let Some(source) = source else {
-        return Ok(analysis::MISSING_FINGERPRINT.to_string());
-    };
-    Ok(
-        analysis::poll_fingerprint_with_subagents(
-            kind,
-            &session_id,
-            wsl_distro.as_deref(),
-            &source,
-        )
-        .await,
-    )
 }
 
 /// One sub-agent's own analysis, opened from the roster.
