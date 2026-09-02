@@ -21,7 +21,11 @@ use antiburn_local::insights::{
 use rusqlite::params;
 use serde_json::{Value, json};
 
+#[path = "support/pricing.rs"]
+mod pricing;
+
 fn fixture(name: &str) -> &'static str {
+    pricing::install();
     match name {
         "minimal_session" => include_str!("fixtures/pi_characterization/minimal_session.jsonl"),
         "role_ordering" => include_str!("fixtures/pi_characterization/role_ordering.jsonl"),

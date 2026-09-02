@@ -174,18 +174,19 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             There is no antiburn account, and nothing of ours you have to reach for the app to
             work. Nothing derived from your sessions — no transcript, prompt, title, file path,
             repository name, token count, or cost figure — is sent anywhere, ever. antiburn does
-            make requests of its own: it asks GitHub Releases whether a newer version exists;
-            where a source is enabled, it can ask a provider for your current plan limits using
-            the credentials your own tools already stored; and, in a released build with the
-            switch below on, it sends anonymised analytics about the application itself. Handing
-            a provider back a credential it issued you is not a disclosure — it already has it.
-            Those analytics are the one thing that goes to us; they are listed field by field
-            below, and they contain none of your work. This build
+            make requests of its own: it downloads public model prices from models.dev at
+            startup and hourly while running; it asks GitHub Releases whether a newer version
+            exists; where a source is enabled, it can ask a provider for your current plan
+            limits using the credentials your own tools already stored; and, in a released build
+            with the switch below on, it sends anonymised analytics about the application
+            itself. Handing a provider back a credential it issued you is not a disclosure — it
+            already has it. Those analytics are the one thing that goes to us; they are listed
+            field by field below, and they contain none of your work. This build
             {analyticsSupported
               ? " can send them."
               : " has no analytics endpoint, so it cannot send them at all."}
           </Disclosure>
-          <Disclosure label="One setting lets antiburn go online for current figures">
+          <Disclosure label="Provider plan-limit access is optional">
             Settings &rarr; Usage has a switch, on by default once first-run setup is complete,
             for keeping plan limits current. On, antiburn asks each provider directly for your
             current usage, using the credentials your own coding tools already have — that is

@@ -92,7 +92,7 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
         <Card>
           <Row
             label="Pricing catalog"
-            description="Review date of the bundled price list every cost estimate is computed from. Prices are never fetched."
+            description="Latest models.dev snapshot used for cost estimates. Antiburn refreshes it hourly and keeps the last valid copy locally."
             trailing={
               <span className="type-body tabular-nums text-label-secondary">
                 {info?.pricingCatalogVersion ?? "—"}
