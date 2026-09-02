@@ -270,6 +270,10 @@ pub struct ScanStatus {
     /// command rather than pushed as an event (an event fires per agent, so
     /// re-reading the table for each would be pure noise).
     pub agents: Vec<AgentScanState>,
+    /// True when this pass indexed a session the list has never shown, or
+    /// evicted a rejected one. A reader's list refetches on this rather than
+    /// on every pass, since an unchanged pass patches rows in place instead.
+    pub list_changed: bool,
 }
 
 /* -------------------------------------------------------------------------

@@ -2,6 +2,7 @@ use super::*;
 use antiburn_local::platform::environment::DiscoveryEnvironment;
 use std::collections::HashSet;
 use std::io::Write;
+use std::sync::Mutex;
 
 /// A synthetic Claude store: `<home>/.claude/projects/<encoded>/<id>.jsonl`.
 /// Every value is fictional; the shapes are what the engine's scanner reads.
@@ -1365,4 +1366,148 @@ fn the_scheduler_ticks_at_the_fallback_rate_when_the_watcher_is_not_healthy() {
         }),
         TICK
     );
+}
+
+#[tokio::test]
+async fn an_unchanged_pass_emits_nothing_and_reports_no_list_change() {
+    let home = tempfile::TempDir::new().unwrap();
+    let path = write_claude_session(home.path(), "steady");
+    let store = crate::store::Store::open_in_memory(home.path()).unwrap();
+
+    let first = describe_with_states(
+        vec![log(AgentKind::Claude, path.clone(), 1_800_000_000)],
+        home.path(),
+        &HashSet::new(),
+        &store.session_records().unwrap(),
+    )
+    .await;
+    store
+        .upsert_sessions(&first.records, &agents::evidence_cohort())
+        .unwrap();
+
+    // Same size, same mtime bucket: the source is reused, so nothing changed.
+    let previous = store.session_records().unwrap();
+    let second = describe_with_states(
+        vec![log(AgentKind::Claude, path, 1_800_000_000)],
+        home.path(),
+        &HashSet::new(),
+        &previous,
+    )
+    .await;
+    assert!(second.changed.is_empty());
+    assert!(!second.list_changed);
+
+    let announced = Mutex::new(Vec::new());
+    announce_changed_rows(
+        &store,
+        &second.changed,
+        &previous,
+        1_800_000_100,
+        &|entry| {
+            announced.lock().unwrap().push(entry);
+        },
+    );
+    assert!(announced.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_moved_cursor_emits_exactly_one_entry_and_reports_no_list_change() {
+    let home = tempfile::TempDir::new().unwrap();
+    let path = write_claude_session(home.path(), "moving");
+    let store = crate::store::Store::open_in_memory(home.path()).unwrap();
+
+    let first = describe_with_states(
+        vec![log(AgentKind::Claude, path.clone(), 1_800_000_000)],
+        home.path(),
+        &HashSet::new(),
+        &store.session_records().unwrap(),
+    )
+    .await;
+    store
+        .upsert_sessions(&first.records, &agents::evidence_cohort())
+        .unwrap();
+    let previous = store.session_records().unwrap();
+
+    // A genuine append moves the activity cursor: the row is known, but its
+    // source changed, so it is re-described rather than reused.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(b"{\"type\":\"assistant\",\"timestamp\":\"2026-08-01T10:05:00Z\"}\n")
+        .unwrap();
+    let second = describe_with_states(
+        vec![log(AgentKind::Claude, path, 1_800_000_100)],
+        home.path(),
+        &HashSet::new(),
+        &previous,
+    )
+    .await;
+    assert_eq!(second.changed.len(), 1);
+    assert!(!second.list_changed);
+    store
+        .upsert_sessions(&second.records, &agents::evidence_cohort())
+        .unwrap();
+
+    let announced = Mutex::new(Vec::new());
+    announce_changed_rows(
+        &store,
+        &second.changed,
+        &previous,
+        1_800_000_200,
+        &|entry| {
+            announced.lock().unwrap().push(entry);
+        },
+    );
+    let entries = announced.lock().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].session_id, "moving");
+}
+
+#[tokio::test]
+async fn a_new_session_emits_nothing_and_reports_a_list_change() {
+    let home = tempfile::TempDir::new().unwrap();
+    let path = write_claude_session(home.path(), "fresh");
+    let store = crate::store::Store::open_in_memory(home.path()).unwrap();
+    let previous = store.session_records().unwrap();
+
+    let described = describe_with_states(
+        vec![log(AgentKind::Claude, path, 1_800_000_000)],
+        home.path(),
+        &HashSet::new(),
+        &previous,
+    )
+    .await;
+    assert_eq!(described.changed.len(), 1);
+    assert!(described.list_changed);
+
+    // A brand-new session has no row on screen to patch; the list's own
+    // `list_changed` refetch is what picks it up, not this event.
+    let announced = Mutex::new(Vec::new());
+    announce_changed_rows(
+        &store,
+        &described.changed,
+        &previous,
+        1_800_000_100,
+        &|entry| {
+            announced.lock().unwrap().push(entry);
+        },
+    );
+    assert!(announced.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_rejected_transcript_reports_a_list_change() {
+    let home = tempfile::TempDir::new().unwrap();
+    let sidechain = write_claude_sidechain(home.path(), "aaaa-1111");
+
+    let described = describe(
+        vec![log(AgentKind::Claude, sidechain, 1_800_000_000)],
+        home.path(),
+        &HashSet::new(),
+    )
+    .await;
+
+    assert_eq!(described.rejected.len(), 1);
+    assert!(described.list_changed);
 }

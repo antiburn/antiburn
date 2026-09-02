@@ -325,6 +325,8 @@ export interface ScanStatus {
   cancelled: boolean
   error: string | null
   agents: AgentScanState[]
+  /** True when this pass indexed a session the list has never shown, or evicted a rejected one. */
+  listChanged: boolean
 }
 
 /**
