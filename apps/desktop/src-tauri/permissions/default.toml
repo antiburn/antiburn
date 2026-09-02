@@ -19,6 +19,7 @@ permissions = [
   "allow-get-consent-diagnostics",
   "allow-get-folder-permissions",
   "allow-get-hud-detail-state",
+  "allow-get-hygiene-summary",
   "allow-get-insights-report",
   "allow-get-insights-status",
   "allow-get-latest-session-activity",
