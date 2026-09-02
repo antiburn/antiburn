@@ -57,6 +57,10 @@ pub struct EvidenceResumeState {
     pub seen_thread_uuids: HashSet<String>,
 }
 
+/// [`Clone`] lets a caller keep one input's residual as its own
+/// (for a future resume snapshot) while folding a copy into the
+/// parent's coverage record. See `stream_vendor_with_hooks`.
+#[derive(Clone)]
 pub struct SessionEvidenceAccumulator {
     identity: SessionEvidenceIdentity,
     capabilities: SourceCapabilities,

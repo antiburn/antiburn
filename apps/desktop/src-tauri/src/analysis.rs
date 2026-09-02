@@ -691,13 +691,13 @@ fn adapter_supports_provider_db(agent: &str) -> bool {
     matches!(agent, "opencode" | "antigravity")
 }
 
-/// Records one discovered child that this pass could not read. The parent
-/// streams at index 0, so the residual exists for every child path; the
-/// guard keeps a broken invariant from panicking the blocking thread.
-fn note_child_unreadable(parent_residual: &mut Option<SessionEvidenceAccumulator>) {
-    if let Some(parent) = parent_residual.as_mut() {
-        parent.observe_child_unreadable();
-    }
+/// One child input's contribution to the parent's folded coverage, kept
+/// apart from the parent's own residual until the fold at the end of
+/// [`stream_vendor_with_hooks`]. `Unreadable` marks a discovered child this
+/// pass could not read; `Coverage` carries that child's own residual.
+enum ChildFold {
+    Coverage(Box<SessionEvidenceAccumulator>),
+    Unreadable,
 }
 
 fn stream_vendor_with_hooks(
@@ -708,13 +708,15 @@ fn stream_vendor_with_hooks(
     turn_row_store: Option<Arc<dyn TurnRowStore>>,
 ) -> StreamOutcome {
     let mut metrics_accumulators = Vec::with_capacity(inputs.len());
-    // The parent's residual evidence accumulator. Set once index 0 streams
-    // successfully, then folded into by every child that streams after it —
-    // see `SessionEvidenceAccumulator::observe_child_coverage` and
-    // `observe_child_unreadable`. One document covers the parent and every
-    // child, so this must outlive the loop rather than live inside the
-    // per-index accumulator the loop below builds.
+    // The parent's own residual evidence accumulator, set once index 0
+    // streams successfully. Unlike `child_folds`, this never has a later
+    // child folded into it in place: the fold that produces the coverage
+    // record runs once, at the end, over a clone of this value — see
+    // `ChildFold` and the fold below the loop.
     let mut parent_residual: Option<SessionEvidenceAccumulator> = None;
+    // Each child's own contribution, kept apart from the parent's residual
+    // until the fold at the end, in input order.
+    let mut child_folds: Vec<ChildFold> = Vec::new();
     let mut parent_fingerprint = None;
     // Captured only for a worker pass (a `turn_row_store` is given): the
     // point of persisting these is to replay rows later, so a pass with no
@@ -770,7 +772,7 @@ fn stream_vendor_with_hooks(
                     }
                     Err(_) if index == 0 => return StreamOutcome::ParentUnreadable,
                     Err(_) => {
-                        note_child_unreadable(&mut parent_residual);
+                        child_folds.push(ChildFold::Unreadable);
                         continue;
                     }
                 };
@@ -839,13 +841,13 @@ fn stream_vendor_with_hooks(
                     if index == 0 {
                         return StreamOutcome::ParentUnreadable;
                     }
-                    note_child_unreadable(&mut parent_residual);
+                    child_folds.push(ChildFold::Unreadable);
                     continue;
                 };
                 if index == 0 {
                     parent_residual = Some(residual);
-                } else if let Some(parent) = parent_residual.as_mut() {
-                    parent.observe_child_coverage(&residual);
+                } else {
+                    child_folds.push(ChildFold::Coverage(Box::new(residual)));
                 }
                 metrics_accumulators.push(metrics);
             }
@@ -853,7 +855,7 @@ fn stream_vendor_with_hooks(
                 return StreamOutcome::ParentUnreadable;
             }
             Err(_) => {
-                note_child_unreadable(&mut parent_residual);
+                child_folds.push(ChildFold::Unreadable);
                 continue;
             }
         }
@@ -875,6 +877,19 @@ fn stream_vendor_with_hooks(
         .map(|child| (child.metrics(), child.started_at_ms().map(|ts| ts / 1000)))
         .collect();
     let merged = merge_metrics(parent, children);
+    // The coverage record folds a clone of the parent's own residual with
+    // every child's residual (or unreadable marker), in input order. This
+    // never mutates `parent_residual` itself, so a future caller can still
+    // read each source's own, unfolded residual — see `ChildFold`.
+    let folded_residual = parent_residual.clone().map(|mut folded| {
+        for child in &child_folds {
+            match child {
+                ChildFold::Coverage(residual) => folded.observe_child_coverage(residual),
+                ChildFold::Unreadable => folded.observe_child_unreadable(),
+            }
+        }
+        folded
+    });
     // A pass without a row store publishes no evidence. Rows and a coverage
     // record are both required. Neither exists without a store. A query or
     // write failure fails the whole pass. This matches the turn-row write
@@ -891,7 +906,7 @@ fn stream_vendor_with_hooks(
             // too. It replays both with `evidence_from_facts`. A resumed
             // pass with no live fold needs the same rebuild, so the worker
             // exercises it on every publish.
-            let evidence = match parent_residual {
+            let evidence = match folded_residual {
                 Some(residual) => {
                     let record = residual.coverage_record();
                     if store.write_coverage_record(&record).is_err() {
@@ -2932,6 +2947,56 @@ mod tests {
         assert_eq!(
             cache.longest_idle_gap_ms, 0,
             "two children never share a thread, so they form no idle gap"
+        );
+    }
+
+    /// Pins the coverage record a full pass writes for a parent-plus-two-
+    /// children fixture, byte for byte, against the record the pre-refactor
+    /// in-place fold produced for the same fixture. Guards the residual
+    /// refactor (`ChildFold`): folding a clone at the end must still equal
+    /// folding into the parent as the loop goes.
+    #[test]
+    fn a_full_pass_writes_the_same_coverage_record_the_in_place_fold_did() {
+        let directory = tempfile::TempDir::new().expect("tempdir");
+        let parent = directory.path().join("parent.jsonl");
+        let first_child = directory.path().join("first-child.jsonl");
+        let second_child = directory.path().join("second-child.jsonl");
+        std::fs::write(&parent, claude_record("fold-parity-parent", 1_760_000_000))
+            .expect("write parent");
+        std::fs::write(
+            &first_child,
+            claude_record_with("fold-parity-child-1", 1_760_000_001, "model-a", None),
+        )
+        .expect("write first child");
+        std::fs::write(
+            &second_child,
+            claude_record_with("fold-parity-child-2", 1_760_000_002, "model-b", None),
+        )
+        .expect("write second child");
+
+        let store = turn_row_store("claude", "fold-parity-parent");
+        let pass = evidence_pass_with_turn_rows(
+            &[
+                file_input(&parent, "fold-parity-parent"),
+                file_input(&first_child, "fold-parity-child-1"),
+                file_input(&second_child, "fold-parity-child-2"),
+            ],
+            &|| false,
+            Some(Arc::clone(&store)),
+        );
+        assert_eq!(pass.outcome, PassOutcome::Published);
+        let record = store
+            .query_coverage_record()
+            .expect("coverage record query")
+            .expect("coverage record");
+
+        // Captured from the same fixture against the pre-refactor
+        // in-place fold, before `ChildFold` existed.
+        let before_refactor = r#"{"coverageSchemaRevision":1,"identity":{"agent":"claude","sessionId":"fold-parity-parent"},"capabilities":{"requestContextTokens":true,"cacheWriteTokens":true,"timestampsAndOrder":true,"toolInvocations":true,"skillMcpAttribution":true,"toolDefinitions":false,"modelIdentity":true,"tokenClasses":true,"reasoningEffortTier":true,"fastTier":true,"serviceTier":false,"subagentRelationships":true,"subagentModels":true,"compactionBoundaries":true,"threadIdentity":true,"recordIdentity":true,"linearRecordOrder":false,"quotaIncidents":false,"harnessVersion":false},"sourceKind":"file","sourceAcceptance":"accepted_full","ordering":"monotonic","diagnostics":{"recordsObserved":3,"recordsUnusable":0,"recordsUnrecognizedInert":0,"unusableReasons":{},"unrecognizedTypes":[],"truncatedStrings":[],"cappedCollections":[],"childrenDiscovered":2,"childrenUnreadable":0,"duplicateTurnIdentities":0},"recordLossReason":null,"sessionCapExceeded":false,"tools":{},"invokedSkills":[],"toolsCapExceeded":false,"skills":{},"mcpServers":{},"contextSourcesCapExceeded":false,"subagentSpawnCount":0,"subagentChildren":[],"subagentExamples":[],"subagentsCapExceeded":false,"threadParentUnresolved":false,"summaryObserved":true,"childLossReason":null}"#;
+        assert_eq!(
+            serde_json::to_string(&record).expect("encode"),
+            before_refactor,
+            "the residual refactor must not change the coverage record a full pass writes"
         );
     }
 
