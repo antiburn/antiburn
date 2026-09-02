@@ -65,7 +65,7 @@ export interface SessionBucket {
   compactionPostTokens: number | null
 }
 
-export interface CacheRehydration {
+interface CacheRehydration {
   contextTokens: number
   stillCachedTokens: number
   rewrittenTokens: number
