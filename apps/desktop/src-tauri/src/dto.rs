@@ -1032,7 +1032,7 @@ pub struct AppInfo {
     pub debug_build: bool,
     /// CPU architecture this binary was compiled for, e.g. `aarch64`.
     pub arch: String,
-    /// Review date of the engine's bundled pricing catalog.
+    /// Version of the active runtime pricing catalog.
     pub pricing_catalog_version: String,
     /// Applied schema version of the local database.
     pub schema_version: i64,

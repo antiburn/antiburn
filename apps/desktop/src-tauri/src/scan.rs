@@ -160,6 +160,7 @@ pub(crate) fn on_demand_start(controller: &ScanController) -> bool {
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        crate::runtime_pricing::wait_until_ready(&app).await;
         // A fresh install has nothing to scan until the reader picks sources.
         if scheduled_scanning_allowed(&app) {
             run_pass(&app, None).await;

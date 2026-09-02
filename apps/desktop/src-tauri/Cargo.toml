@@ -77,8 +77,8 @@ async-trait = "0.1"
 base64 = "0.23"
 # Derives installation-scoped provider account keys without storing subjects.
 hmac = "0.12"
-# Direct provider usage fetch (`provider_usage::live::sources`): a plain
-# HTTPS request to the provider's own endpoint, with the reader's own
+# Direct provider usage and public model-pricing fetches: plain HTTPS requests
+# to the relevant public or provider endpoint, with the reader's own
 # credential — a `GET` for the usage reading itself, and, for Codex, the
 # occasional token-refresh `POST` (`form`, for its `application/`
 # `x-www-form-urlencoded` body). Blocking, so every source's `fetch` stays

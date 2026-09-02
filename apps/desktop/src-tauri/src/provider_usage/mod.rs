@@ -5,7 +5,7 @@
 //! Exactly one place: the local database's cached session analysis. Each
 //! analyzed session carries a billable-token breakdown per model; this module
 //! attributes those models to providers ([`providers`]), sums them over three
-//! calendar windows, prices them against the engine's bundled catalog, and
+//! calendar windows, prices them against the active runtime snapshot, and
 //! reports how confident the result is.
 //!
 //! # Its ceiling, and why
@@ -206,7 +206,7 @@ struct AgentBuckets {
 #[derive(Debug, Default, Clone, Copy)]
 struct Priced {
     usd: f64,
-    /// At least one model has a price in the bundled catalog.
+    /// At least one model has a price in the runtime snapshot.
     any_priced: bool,
     /// At least one model does not, so `usd` is a floor and not a total.
     any_unpriced: bool,

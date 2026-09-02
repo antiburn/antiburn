@@ -35,8 +35,7 @@ import type { AppSettingsController } from "./useAppSettings"
  * already names the version, so the row here is the action and its status,
  * not a restatement.
  *
- * The updater plugin is the **only** network-capable surface in the whole
- * application, and `info.updatesSupported` is the shell's answer about whether
+ * `info.updatesSupported` is the shell's answer about whether
  * it actually registered — not a compile-time guess. Everything here hangs off
  * that one flag:
  *

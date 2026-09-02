@@ -719,10 +719,7 @@ export async function popoverContentReady(generation: number): Promise<void> {
 }
 
 /**
- * Version stamp of the engine's bundled pricing catalog.
- *
- * The end-to-end proof that the shell links the local engine: the value
- * originates in `antiburn_local::pricing::PRICING_CATALOG_VERSION`.
+ * Version stamp of the active runtime pricing catalog.
  */
 export async function engineCatalogVersion(): Promise<string | null> {
   if (!hasShell()) return null

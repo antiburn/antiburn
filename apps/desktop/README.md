@@ -7,9 +7,11 @@ The app discovers the coding-agent sessions already on this machine, analyzes
 them with the engine, and shows activity, per-session analysis, and
 API-equivalent cost estimates. Everything runs on the device, as you: antiburn
 needs no antiburn account, server, or backend of any kind, and nothing about
-your sessions is uploaded. It makes two calls to a service of ours, neither of
-which it depends on: the updater plugin, registered in release builds only,
-asking whether a newer version exists; and the anonymised analytics
+your sessions is uploaded. It downloads public model prices from models.dev at
+startup and hourly while running; the request contains no session data or
+credentials. It also makes two calls to a service of ours, neither of which it
+depends on: the updater plugin, registered in release builds only, asking
+whether a newer version exists; and the anonymised analytics
 channel in [`src-tauri/src/analytics`](src-tauri/src/analytics),
 which reports on the application itself in official release builds. The Ready
 screen explains it, and Settings → Privacy provides the opt-out. The analytics

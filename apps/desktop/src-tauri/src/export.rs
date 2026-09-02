@@ -74,9 +74,8 @@ pub struct SessionExport {
     pub format_version: u32,
     pub exported_at: String,
     pub app_version: String,
-    /// Review date of the pricing catalog the cost estimate came from, so a
-    /// figure can be interpreted later.
-    pub pricing_catalog_version: &'static str,
+    /// Version of the pricing snapshot used for the cost estimate.
+    pub pricing_catalog_version: String,
     pub content_notice: &'static str,
     pub session: ExportedSession,
     /// The engine's per-session metrics, or absent when the transcript could
@@ -100,6 +99,7 @@ impl SessionExport {
     /// Assemble a document from an analysis and the session's stored metadata.
     pub fn new(
         app_version: String,
+        pricing_catalog_version: String,
         session: ExportedSession,
         analysis: &crate::analysis::SessionAnalysis,
     ) -> SessionExport {
@@ -108,7 +108,7 @@ impl SessionExport {
             format_version: FORMAT_VERSION,
             exported_at: crate::store::now_rfc3339(),
             app_version,
-            pricing_catalog_version: antiburn_local::pricing::PRICING_CATALOG_VERSION,
+            pricing_catalog_version,
             content_notice: CONTENT_NOTICE,
             session,
             metrics: analysis.metrics.clone(),
@@ -140,7 +140,12 @@ mod tests {
 
     #[test]
     fn the_document_references_the_transcript_without_copying_it() {
-        let export = SessionExport::new("0.1.0".into(), session(), &SessionAnalysis::unavailable());
+        let export = SessionExport::new(
+            "0.1.0".into(),
+            "test-catalog".into(),
+            session(),
+            &SessionAnalysis::unavailable(),
+        );
         let json = export.to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
 
@@ -200,7 +205,12 @@ mod tests {
 
     #[test]
     fn the_notice_travels_inside_every_document() {
-        let export = SessionExport::new("0.1.0".into(), session(), &SessionAnalysis::unavailable());
+        let export = SessionExport::new(
+            "0.1.0".into(),
+            "test-catalog".into(),
+            session(),
+            &SessionAnalysis::unavailable(),
+        );
         let value: serde_json::Value = serde_json::from_str(&export.to_json().unwrap()).unwrap();
         assert_eq!(value["contentNotice"], CONTENT_NOTICE);
     }
@@ -218,7 +228,12 @@ mod tests {
 
     #[test]
     fn an_unanalyzable_session_still_exports_its_identity() {
-        let export = SessionExport::new("0.1.0".into(), session(), &SessionAnalysis::unavailable());
+        let export = SessionExport::new(
+            "0.1.0".into(),
+            "test-catalog".into(),
+            session(),
+            &SessionAnalysis::unavailable(),
+        );
         let value: serde_json::Value = serde_json::from_str(&export.to_json().unwrap()).unwrap();
         assert_eq!(value["session"]["sessionId"], "abc");
         assert!(value["metrics"].is_null());
@@ -228,10 +243,12 @@ mod tests {
 
     #[test]
     fn the_document_carries_the_catalog_version_its_costs_came_from() {
-        let export = SessionExport::new("0.1.0".into(), session(), &SessionAnalysis::unavailable());
-        assert_eq!(
-            export.pricing_catalog_version,
-            antiburn_local::pricing::PRICING_CATALOG_VERSION
+        let export = SessionExport::new(
+            "0.1.0".into(),
+            "test-catalog".into(),
+            session(),
+            &SessionAnalysis::unavailable(),
         );
+        assert_eq!(export.pricing_catalog_version, "test-catalog");
     }
 }
