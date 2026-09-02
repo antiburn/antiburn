@@ -697,6 +697,7 @@ mod tests {
                     analysis: SessionAnalysis::unavailable(),
                     evidence: None,
                     outcome: PassOutcome::SourceMissing,
+                    source_outcomes: Vec::new(),
                 }
             }) as PassFuture
         };

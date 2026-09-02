@@ -66,7 +66,8 @@ pub use evidence::{
     ToolEvidence, ToolUse, TurnCounts,
 };
 pub use evidence_query::{
-    TurnFacts, query_model_breakdown, query_model_runs, query_turn_facts, query_turn_rows,
+    FenceScope, PublishedScope, TurnFacts, query_model_breakdown, query_model_runs,
+    query_turn_facts, query_turn_rows,
 };
 pub use evidence_replay::evidence_from_facts;
 pub use evidence_sink::{

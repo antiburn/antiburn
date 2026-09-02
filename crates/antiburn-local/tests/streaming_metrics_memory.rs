@@ -185,6 +185,10 @@ impl TurnRowStore for CountingWriter {
     fn drop_resume(&self, _source_key: &str) -> Result<(), TurnRowError> {
         Ok(())
     }
+
+    fn delete_rows_for_source(&self, _source_key: &str) -> Result<(), TurnRowError> {
+        Ok(())
+    }
 }
 
 #[test]
@@ -488,6 +492,10 @@ impl TurnRowStore for CountingRealStore {
 
     fn drop_resume(&self, source_key: &str) -> Result<(), TurnRowError> {
         self.inner.drop_resume(source_key)
+    }
+
+    fn delete_rows_for_source(&self, source_key: &str) -> Result<(), TurnRowError> {
+        self.inner.delete_rows_for_source(source_key)
     }
 }
 

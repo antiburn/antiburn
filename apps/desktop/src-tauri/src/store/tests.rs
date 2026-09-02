@@ -2802,6 +2802,7 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
                 analysis: crate::analysis::SessionAnalysis::unavailable(),
                 evidence: None,
                 outcome: crate::analysis::PassOutcome::SourceMissing,
+                source_outcomes: Vec::new(),
             }
         }) as crate::insights_worker::PassFuture
     };

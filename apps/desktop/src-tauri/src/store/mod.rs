@@ -37,13 +37,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, ModelRun, PARSER_REVISION, ResumeRevisions,
-    SessionCoverageRecord, StoredResume, TurnFacts, TurnRow, TurnRowError, TurnRowStore,
-    TurnSessionKey, count_turn_rows, delete_source_resume, delete_source_rows_at_fence,
-    delete_stale_source_resume, delete_turn_rows, delete_turn_rows_except_fence,
-    delete_turn_rows_for_fence, insert_coverage_record, insert_source_resume, insert_turn_rows,
-    query_coverage_record, query_model_breakdown, query_model_runs, query_source_resume,
-    query_turn_facts, query_turn_rows, restamp_source_rows,
+    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, FenceScope, ModelRun, PARSER_REVISION,
+    PublishedScope, ResumeRevisions, SessionCoverageRecord, StoredResume, TurnFacts, TurnRow,
+    TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows, delete_source_resume,
+    delete_source_rows_at_fence, delete_stale_source_resume, delete_turn_rows,
+    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_coverage_record,
+    insert_source_resume, insert_turn_rows, query_coverage_record, query_model_breakdown,
+    query_model_runs, query_source_resume, query_turn_facts, query_turn_rows, restamp_source_rows,
 };
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -1308,19 +1308,7 @@ impl Store {
         // there), or this pass's own claim fence for a session that has
         // never published. Read before the claim-race UPDATE below so this
         // still names the *pre*-publish value.
-        let existing_published_fence: Option<i64> = transaction
-            .query_row(
-                "SELECT published_fence FROM session_evidence
-                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-                params![
-                    record.key.environment_key,
-                    record.key.agent,
-                    record.key.session_id
-                ],
-                |row| row.get::<_, Option<i64>>(0),
-            )
-            .optional()?
-            .flatten();
+        let existing_published_fence = read_published_fence(&transaction, &record.key)?;
         let target_fence = existing_published_fence.unwrap_or(completion.claim_fence);
         transaction.execute(
             "INSERT INTO session_analysis (
@@ -1517,12 +1505,44 @@ impl Store {
                 )?;
             }
         }
+        // A source published by an earlier pass but absent from this one
+        // (a removed or unreadable child transcript) is neither named nor
+        // unnamed above, so nothing above touches its rows. Left alone,
+        // they would sit under `target_fence` forever and skew coverage.
+        // Drop them, and the stale resume snapshot with them, the same way
+        // a full pass on main already would.
+        let touched_this_pass: HashSet<&str> = named_sources
+            .iter()
+            .copied()
+            .chain(unnamed_sources.iter().map(String::as_str))
+            .collect();
+        let mut published_sources_statement = transaction.prepare(
+            "SELECT DISTINCT source_key FROM turn
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND claim_fence = ?4",
+        )?;
+        let vanished_sources: Vec<String> = published_sources_statement
+            .query_map(
+                params![key.environment_key, key.agent, key.session_id, target_fence],
+                |row| row.get(0),
+            )?
+            .collect::<rusqlite::Result<Vec<String>>>()?
+            .into_iter()
+            .filter(|source_key| !touched_this_pass.contains(source_key.as_str()))
+            .collect();
+        drop(published_sources_statement);
+        for source_key in &vanished_sources {
+            delete_source_rows_at_fence(&transaction, &key, source_key, target_fence)?;
+            delete_source_resume(&transaction, &key, source_key)?;
+        }
         // The coverage record this pass wrote under the claim fence (R3
         // rebuilds it every pass, resumed or full) becomes the published
         // record, replacing whatever was there before.
-        if let Some(coverage_record) =
-            query_coverage_record(&transaction, &key, completion.claim_fence)?
-        {
+        if let Some(coverage_record) = query_coverage_record(
+            &transaction,
+            &key,
+            &FenceScope::single(completion.claim_fence),
+        )? {
             insert_coverage_record(&transaction, &key, target_fence, &coverage_record)?;
         }
         // Every row and coverage record from an earlier, superseded fence
@@ -1573,6 +1593,12 @@ impl Store {
     /// served before that started. The evidence lookup and the row query
     /// run under one lock, so a concurrent claim cannot swap
     /// `published_fence` in between them.
+    ///
+    /// This reads at `published_fence` alone, with no `FenceScope`
+    /// widening: it wants only what the last publish left behind, not the
+    /// in-flight pass's own claim fence. [`FencedTurnRowStore`] is the one
+    /// that widens, and only for a mid-pass read of a source that resumed
+    /// — see the `v30` migration comment in `store::schema`.
     pub fn published_turn_rows(&self, key: &SessionKey) -> Result<Option<Vec<TurnRow>>> {
         let connection = self.lock();
         let Some(evidence) = connection
@@ -1591,7 +1617,7 @@ impl Store {
         Ok(Some(query_turn_rows(
             &connection,
             &turn_session_key(key),
-            published_fence,
+            &FenceScope::single(published_fence),
         )?))
     }
 
@@ -1624,7 +1650,7 @@ impl Store {
         Ok(query_coverage_record(
             &connection,
             &turn_session_key(key),
-            published_fence,
+            &FenceScope::single(published_fence),
         )?)
     }
 
@@ -2678,6 +2704,25 @@ fn turn_session_key(key: &SessionKey) -> TurnSessionKey<'_> {
     }
 }
 
+/// This session's current `published_fence`, or `None` when it has never
+/// published. Shared by `Store::publish_projections` (deciding the fence
+/// this pass's winning rows join) and `FencedTurnRowStore` (widening a
+/// mid-pass read for a source that resumed — see [`FenceScope`]).
+fn read_published_fence(
+    connection: &Connection,
+    key: &SessionKey,
+) -> rusqlite::Result<Option<i64>> {
+    connection
+        .query_row(
+            "SELECT published_fence FROM session_evidence
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![key.environment_key, key.agent, key.session_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .optional()
+        .map(Option::flatten)
+}
+
 fn delete_turn_rows_in(connection: &Connection, key: &SessionKey) -> Result<usize> {
     Ok(delete_turn_rows(connection, &turn_session_key(key))?)
 }
@@ -2746,6 +2791,11 @@ pub struct FencedTurnRowStore {
     store: Store,
     key: SessionKey,
     claim_fence: i64,
+    /// Source keys the worker has told this pass genuinely resumed (see
+    /// [`TurnRowStore::note_resumed_source`]). A mid-pass fact query widens
+    /// its fence scope to include these sources' already-published rows,
+    /// since only their new rows have moved to `claim_fence` so far.
+    resumed_sources: Arc<Mutex<Vec<String>>>,
 }
 
 impl FencedTurnRowStore {
@@ -2754,7 +2804,41 @@ impl FencedTurnRowStore {
             store,
             key,
             claim_fence,
+            resumed_sources: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// The source keys the worker has told this pass genuinely resumed so
+    /// far, cloned out of the mutex for a single query call.
+    fn resumed_sources(&self) -> Vec<String> {
+        self.resumed_sources
+            .lock()
+            .expect("resumed_sources mutex poisoned")
+            .clone()
+    }
+
+    /// Builds the fence scope for a mid-pass fact query against `resumed`:
+    /// the claim fence alone when nothing has resumed this pass, or a union
+    /// with the session's published fence over the resumed source keys
+    /// otherwise. `resumed` must be a slice this call's caller keeps alive
+    /// for as long as the returned scope is in use.
+    fn fact_query_scope<'a>(
+        &self,
+        connection: &Connection,
+        resumed: &'a [String],
+    ) -> Result<FenceScope<'a>, TurnRowError> {
+        if resumed.is_empty() {
+            return Ok(FenceScope::single(self.claim_fence));
+        }
+        let published_fence =
+            read_published_fence(connection, &self.key)?.unwrap_or(self.claim_fence);
+        Ok(FenceScope {
+            claim_fence: self.claim_fence,
+            published: Some(PublishedScope {
+                fence: published_fence,
+                source_keys: resumed,
+            }),
+        })
     }
 }
 
@@ -2776,10 +2860,12 @@ impl TurnRowStore for FencedTurnRowStore {
 
     fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
         let connection = self.store.lock();
+        let resumed = self.resumed_sources();
+        let scope = self.fact_query_scope(&connection, &resumed)?;
         Ok(query_turn_facts(
             &connection,
             &turn_session_key(&self.key),
-            self.claim_fence,
+            &scope,
         )?)
     }
 
@@ -2790,19 +2876,23 @@ impl TurnRowStore for FencedTurnRowStore {
         TurnRowError,
     > {
         let connection = self.store.lock();
+        let resumed = self.resumed_sources();
+        let scope = self.fact_query_scope(&connection, &resumed)?;
         Ok(query_model_breakdown(
             &connection,
             &turn_session_key(&self.key),
-            self.claim_fence,
+            &scope,
         )?)
     }
 
     fn query_model_runs(&self) -> Result<Vec<ModelRun>, TurnRowError> {
         let connection = self.store.lock();
+        let resumed = self.resumed_sources();
+        let scope = self.fact_query_scope(&connection, &resumed)?;
         Ok(query_model_runs(
             &connection,
             &turn_session_key(&self.key),
-            self.claim_fence,
+            &scope,
         )?)
     }
 
@@ -2817,12 +2907,15 @@ impl TurnRowStore for FencedTurnRowStore {
         Ok(())
     }
 
+    // R3: the coverage record is rebuilt complete every pass, resumed or
+    // full, so it never needs the published-fence widening — the claim
+    // fence alone always has this pass's whole record.
     fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError> {
         let connection = self.store.lock();
         Ok(query_coverage_record(
             &connection,
             &turn_session_key(&self.key),
-            self.claim_fence,
+            &FenceScope::single(self.claim_fence),
         )?)
     }
 
@@ -2852,5 +2945,23 @@ impl TurnRowStore for FencedTurnRowStore {
         let connection = self.store.lock();
         delete_source_resume(&connection, &turn_session_key(&self.key), source_key)?;
         Ok(())
+    }
+
+    fn delete_rows_for_source(&self, source_key: &str) -> Result<(), TurnRowError> {
+        let connection = self.store.lock();
+        delete_source_rows_at_fence(
+            &connection,
+            &turn_session_key(&self.key),
+            source_key,
+            self.claim_fence,
+        )?;
+        Ok(())
+    }
+
+    fn note_resumed_source(&self, source_key: &str) {
+        self.resumed_sources
+            .lock()
+            .expect("resumed_sources mutex poisoned")
+            .push(source_key.to_string());
     }
 }

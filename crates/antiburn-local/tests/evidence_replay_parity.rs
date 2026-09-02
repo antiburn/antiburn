@@ -27,8 +27,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    CompositeSink, EvidenceSource, MemoryTurnRowStore, NormalizedEvent, NormalizedRecord,
-    RawSource, Role, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
+    CompositeSink, EvidenceSource, FenceScope, MemoryTurnRowStore, NormalizedEvent,
+    NormalizedRecord, RawSource, Role, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
     SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind, TurnRowSink,
     TurnRowStore, TurnScope, TurnSessionKey, VisitOutcome, adapter_for, evidence_from_facts,
     query_coverage_record, query_turn_facts,
@@ -240,8 +240,9 @@ fn run_fixture_and_replay(
         .write_coverage_record(&record)
         .expect("coverage record must write");
     let (facts, record) = store.with_connection(|conn| {
-        let facts = query_turn_facts(conn, &key, 1).expect("query facts must succeed");
-        let record = query_coverage_record(conn, &key, 1)
+        let facts =
+            query_turn_facts(conn, &key, &FenceScope::single(1)).expect("query facts must succeed");
+        let record = query_coverage_record(conn, &key, &FenceScope::single(1))
             .expect("query coverage record must succeed")
             .expect("coverage record must have been written");
         (facts, record)
@@ -790,8 +791,9 @@ fn a_parent_with_a_discovered_child_matches_evidence_from_facts() {
         .write_coverage_record(&record)
         .expect("coverage record must write");
     let (facts, record) = store.with_connection(|conn| {
-        let facts = query_turn_facts(conn, &key, 1).expect("query facts must succeed");
-        let record = query_coverage_record(conn, &key, 1)
+        let facts =
+            query_turn_facts(conn, &key, &FenceScope::single(1)).expect("query facts must succeed");
+        let record = query_coverage_record(conn, &key, &FenceScope::single(1))
             .expect("query coverage record must succeed")
             .expect("coverage record must have been written");
         (facts, record)
@@ -845,8 +847,9 @@ fn a_parent_with_an_unreadable_child_matches_evidence_from_facts() {
         .write_coverage_record(&record)
         .expect("coverage record must write");
     let (facts, record) = store.with_connection(|conn| {
-        let facts = query_turn_facts(conn, &key, 1).expect("query facts must succeed");
-        let record = query_coverage_record(conn, &key, 1)
+        let facts =
+            query_turn_facts(conn, &key, &FenceScope::single(1)).expect("query facts must succeed");
+        let record = query_coverage_record(conn, &key, &FenceScope::single(1))
             .expect("query coverage record must succeed")
             .expect("coverage record must have been written");
         (facts, record)

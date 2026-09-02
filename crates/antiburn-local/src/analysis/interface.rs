@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::analysis::framing::PartialReason;
 use crate::analysis::initial_context::InitialContextBreakdown;
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall};
-use crate::analysis::resume::{AdapterResume, StreamSnapshot};
+use crate::analysis::resume::{AdapterResume, AdapterSnapshot, StreamSnapshot};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, SourceClaim};
 
 /// Where a session's raw bytes come from. Adapters choose how to read it.
@@ -467,5 +467,21 @@ pub trait VendorAdapter: Sync {
         _sink: &mut dyn RecordSink,
     ) -> anyhow::Result<ResumedVisit> {
         anyhow::bail!("resume is unsupported for this adapter")
+    }
+
+    /// This adapter's own encoded, empty resume state: the form
+    /// [`Self::visit_claimed_resumed`]'s `resume.adapter` field takes to
+    /// start the very first resumable pass over a source with no stored
+    /// snapshot yet. A caller pairs this with a [`StreamSnapshot`] whose
+    /// [`crate::analysis::source_validity::ResumePoint::offset`] is zero
+    /// and calls [`Self::visit_claimed_resumed`], which then reads the
+    /// whole source from the start — the same result [`Self::visit_claimed`]
+    /// would give — while still producing a real [`AdapterResume`] for the
+    /// next pass to resume from.
+    ///
+    /// `None` when this adapter does not support resume, matching
+    /// [`Self::visit_claimed_resumed`]'s own "unsupported" default.
+    fn empty_resume_state(&self) -> Option<AdapterSnapshot> {
+        None
     }
 }

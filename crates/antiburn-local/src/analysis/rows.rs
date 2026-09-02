@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::analysis::evidence::SessionCoverageRecord;
-use crate::analysis::evidence_query::{TurnFacts, query_turn_facts};
+use crate::analysis::evidence_query::{FenceScope, TurnFacts, query_turn_facts};
 use crate::analysis::interface::{ContentPart, NormalizedRecord, RecordSink, SessionSummary};
 use crate::analysis::model::{CompactionTrigger, EventSource, NormalizedEvent, Role};
 
@@ -413,6 +413,27 @@ pub trait TurnRowStore: Send + Sync {
 
     /// Deletes the stored resume snapshot for `source_key`, if any.
     fn drop_resume(&self, source_key: &str) -> Result<(), TurnRowError>;
+
+    /// Deletes every row this store wrote for `source_key` under its own
+    /// claim fence, and their `turn_content`. A resumed pass calls this
+    /// before it retries a source with a full read: a resumed visit that
+    /// reports `SourceChanged` can already have flushed some of the new
+    /// rows it read before detecting the change, and a full read's own
+    /// rows must not join or duplicate them.
+    fn delete_rows_for_source(&self, source_key: &str) -> Result<(), TurnRowError>;
+
+    /// Notes that `source_key` resumed this pass, before any row-fact
+    /// read runs. [`Self::query_turn_facts`], [`Self::query_model_breakdown`],
+    /// and [`Self::query_model_runs`] must then widen their read for this
+    /// source to include its rows already published, not only the new
+    /// rows this pass itself wrote under the claim fence — see
+    /// [`crate::analysis::evidence_query::FenceScope`].
+    ///
+    /// Default: does nothing. Only a store whose reads are fence-scoped
+    /// needs to track this.
+    fn note_resumed_source(&self, source_key: &str) {
+        let _ = source_key;
+    }
 }
 
 /// A [`RecordSink`] that turns `MetricsEvent` records into [`TurnRow`]s,
@@ -989,19 +1010,30 @@ pub fn insert_coverage_record(
 }
 
 /// Reads the [`SessionCoverageRecord`] written for `key` under
-/// `claim_fence`. `None` when nothing has been written under that key and
-/// fence.
+/// `scope.claim_fence`. `None` when nothing has been written under that
+/// key and fence.
+///
+/// Takes a [`FenceScope`] for the same public surface every fence-scoped
+/// read shares, but never widens to `scope.published`: a coverage record
+/// is rebuilt from the live residual and written complete under the claim
+/// fence every pass (R3), so it is never split across two fences the way
+/// row-derived facts can be for a resumed source.
 pub fn query_coverage_record(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
 ) -> rusqlite::Result<Option<SessionCoverageRecord>> {
     let coverage_json: Option<String> = conn
         .query_row(
             "SELECT coverage_json FROM session_coverage
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
                 AND claim_fence = ?4",
-            params![key.environment_key, key.agent, key.session_id, claim_fence],
+            params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                scope.claim_fence
+            ],
             |row| row.get(0),
         )
         .optional()?;
@@ -1097,6 +1129,13 @@ pub struct MemoryTurnRowStore {
     agent: String,
     session_id: String,
     claim_fence: i64,
+    /// Every source key [`TurnRowStore::note_resumed_source`] has
+    /// recorded. This store has one claim fence for its whole life (no
+    /// publish step ever moves rows to a separate published fence), so a
+    /// resumed source's rows are never split across two fences here — the
+    /// list is kept only so a test can assert a resumed source was noted,
+    /// the same call the desktop worker makes.
+    resumed_sources: Mutex<Vec<String>>,
 }
 
 impl MemoryTurnRowStore {
@@ -1129,6 +1168,7 @@ impl MemoryTurnRowStore {
             agent,
             session_id,
             claim_fence: 1,
+            resumed_sources: Mutex::new(Vec::new()),
         })
     }
 
@@ -1157,7 +1197,12 @@ impl TurnRowStore for MemoryTurnRowStore {
 
     fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
         let connection = self.connection.lock().expect("lock");
-        query_turn_facts(&connection, &self.key(), self.claim_fence).map_err(TurnRowError::from)
+        query_turn_facts(
+            &connection,
+            &self.key(),
+            &FenceScope::single(self.claim_fence),
+        )
+        .map_err(TurnRowError::from)
     }
 
     fn query_model_breakdown(
@@ -1167,7 +1212,7 @@ impl TurnRowStore for MemoryTurnRowStore {
         crate::analysis::evidence_query::query_model_breakdown(
             &connection,
             &self.key(),
-            self.claim_fence,
+            &FenceScope::single(self.claim_fence),
         )
         .map_err(TurnRowError::from)
     }
@@ -1177,7 +1222,7 @@ impl TurnRowStore for MemoryTurnRowStore {
         crate::analysis::evidence_query::query_model_runs(
             &connection,
             &self.key(),
-            self.claim_fence,
+            &FenceScope::single(self.claim_fence),
         )
         .map_err(TurnRowError::from)
     }
@@ -1190,8 +1235,12 @@ impl TurnRowStore for MemoryTurnRowStore {
 
     fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError> {
         let connection = self.connection.lock().expect("lock");
-        query_coverage_record(&connection, &self.key(), self.claim_fence)
-            .map_err(TurnRowError::from)
+        query_coverage_record(
+            &connection,
+            &self.key(),
+            &FenceScope::single(self.claim_fence),
+        )
+        .map_err(TurnRowError::from)
     }
 
     fn read_resume(&self, source_key: &str) -> Result<Option<StoredResume>, TurnRowError> {
@@ -1208,6 +1257,20 @@ impl TurnRowStore for MemoryTurnRowStore {
     fn drop_resume(&self, source_key: &str) -> Result<(), TurnRowError> {
         let connection = self.connection.lock().expect("lock");
         delete_source_resume(&connection, &self.key(), source_key).map_err(TurnRowError::from)
+    }
+
+    fn delete_rows_for_source(&self, source_key: &str) -> Result<(), TurnRowError> {
+        let connection = self.connection.lock().expect("lock");
+        delete_source_rows_at_fence(&connection, &self.key(), source_key, self.claim_fence)
+            .map_err(TurnRowError::from)?;
+        Ok(())
+    }
+
+    fn note_resumed_source(&self, source_key: &str) {
+        self.resumed_sources
+            .lock()
+            .expect("lock")
+            .push(source_key.to_owned());
     }
 }
 
@@ -1641,6 +1704,10 @@ mod tests {
         fn drop_resume(&self, _source_key: &str) -> Result<(), TurnRowError> {
             Err(TurnRowError("boom".to_owned()))
         }
+
+        fn delete_rows_for_source(&self, _source_key: &str) -> Result<(), TurnRowError> {
+            Err(TurnRowError("boom".to_owned()))
+        }
     }
 
     /// A store over a real connection, so batching tests can assert on rows
@@ -1738,7 +1805,7 @@ mod tests {
                     agent: "claude",
                     session_id: &self.key,
                 },
-                1,
+                &FenceScope::single(1),
             )
             .map_err(TurnRowError::from)
         }
@@ -1755,7 +1822,7 @@ mod tests {
                     agent: "claude",
                     session_id: &self.key,
                 },
-                1,
+                &FenceScope::single(1),
             )
             .map_err(TurnRowError::from)
         }
@@ -1769,7 +1836,7 @@ mod tests {
                     agent: "claude",
                     session_id: &self.key,
                 },
-                1,
+                &FenceScope::single(1),
             )
             .map_err(TurnRowError::from)
         }
@@ -1801,7 +1868,7 @@ mod tests {
                     agent: "claude",
                     session_id: &self.key,
                 },
-                1,
+                &FenceScope::single(1),
             )
             .map_err(TurnRowError::from)
         }
@@ -1847,6 +1914,22 @@ mod tests {
                 source_key,
             )
             .map_err(TurnRowError::from)
+        }
+
+        fn delete_rows_for_source(&self, source_key: &str) -> Result<(), TurnRowError> {
+            let conn = self.conn.lock().expect("lock");
+            delete_source_rows_at_fence(
+                &conn,
+                &TurnSessionKey {
+                    environment_key: "native",
+                    agent: "claude",
+                    session_id: &self.key,
+                },
+                source_key,
+                1,
+            )
+            .map_err(TurnRowError::from)?;
+            Ok(())
         }
     }
 
@@ -1898,7 +1981,9 @@ mod tests {
             session_id: "s1",
         };
         let indices: Vec<u64> = store
-            .with_connection(|conn| crate::analysis::evidence_query::query_turn_rows(conn, &key, 1))
+            .with_connection(|conn| {
+                crate::analysis::evidence_query::query_turn_rows(conn, &key, &FenceScope::single(1))
+            })
             .expect("query turn rows")
             .into_iter()
             .map(|row| row.turn_index)

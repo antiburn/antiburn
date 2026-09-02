@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use antiburn_local::analysis::{
     AppendOnlyGuarantee, ClaudeAdapter, CompositeSink, EvidenceSnapshot, EvidenceSource,
-    MemoryTurnRowStore, RESUME_SNAPSHOT_REVISION, RawSource, ResumePoint,
+    FenceScope, MemoryTurnRowStore, RESUME_SNAPSHOT_REVISION, RawSource, ResumePoint,
     SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SourceCapabilities,
     SourceChangedReason, SourceClaim, SourceKind, StreamSnapshot, TurnRowSink, TurnRowStore,
     TurnSessionKey, VisitOutcome, query_turn_facts, query_turn_rows,
@@ -231,8 +231,10 @@ fn run_full_pass(
         session_id,
     };
     let (rows, facts) = store.with_connection(|conn| {
-        let rows = query_turn_rows(conn, &key, 1).expect("full pass rows query");
-        let facts = query_turn_facts(conn, &key, 1).expect("full pass facts query");
+        let rows =
+            query_turn_rows(conn, &key, &FenceScope::single(1)).expect("full pass rows query");
+        let facts =
+            query_turn_facts(conn, &key, &FenceScope::single(1)).expect("full pass facts query");
         (rows, facts)
     });
     let content = turn_content_rows(&store, &key, 1);
@@ -289,8 +291,10 @@ fn assert_resume_parity(
             session_id,
         };
         let (resumed_rows, resumed_facts) = resumed_store.with_connection(|conn| {
-            let rows = query_turn_rows(conn, &key, 1).expect("resumed rows query");
-            let facts = query_turn_facts(conn, &key, 1).expect("resumed facts query");
+            let rows =
+                query_turn_rows(conn, &key, &FenceScope::single(1)).expect("resumed rows query");
+            let facts =
+                query_turn_facts(conn, &key, &FenceScope::single(1)).expect("resumed facts query");
             (rows, facts)
         });
         let resumed_content = turn_content_rows(&resumed_store, &key, 1);

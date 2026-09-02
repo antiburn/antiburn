@@ -572,8 +572,17 @@ const V29: &str = antiburn_local::analysis::TURN_SCHEMA_V4_SQL;
 /// session ever publishes. A source that reads fully still has its old
 /// published rows deleted and its new rows stamped onto that same
 /// `published_fence`. Either way, every source's rows for a session share
-/// one fence at all times: [`antiburn_local::analysis::delete_turn_rows_except_fence`]
+/// one fence once a pass publishes: [`antiburn_local::analysis::delete_turn_rows_except_fence`]
 /// keeps this true, and finds nothing left to delete on a resumed pass.
+///
+/// During the pass itself, before that publish transaction runs, a
+/// resumed source's rows are genuinely split: its new rows sit under
+/// `claim_fence` and its old rows stay under `published_fence` until
+/// re-stamped. A mid-pass fact read must still see both, so it uses
+/// [`antiburn_local::analysis::FenceScope`] to union the claim fence with
+/// the published fence, restricted to the sources that resumed this
+/// pass — never by re-stamping early, which would break claim-race
+/// safety.
 ///
 /// `antiburn_local::analysis::SOURCE_RESUME_SCHEMA_SQL` owns the column
 /// list, for the same reason [`V15`] re-exports `TURN_SCHEMA_SQL` instead of
