@@ -182,15 +182,16 @@ impl Default for ReorderWindow {
 }
 
 impl ReorderWindow {
-    pub(crate) fn push(&mut self, mut slot: SlotAggregate) -> Option<SlotAggregate> {
-        let ready = (self.entries.len() == REORDER_WINDOW).then(|| self.pop_minimum());
+    pub(crate) fn push(
+        &mut self,
+        mut slot: SlotAggregate,
+        agent: &str,
+        session_id: &str,
+    ) -> Option<SlotAggregate> {
+        let ready = (self.entries.len() == REORDER_WINDOW)
+            .then(|| self.pop_minimum(agent, session_id, "window_evict"));
+        self.clamp_if_behind(&mut slot, agent, session_id, "arrival");
         let key = (slot.first_ts, slot.first_ordinal);
-        if self.last_popped.is_some_and(|last| key < last) {
-            let timestamp = self.last_popped.map_or(slot.first_ts, |last| last.0);
-            clamp_timestamp(&mut slot, timestamp);
-            self.overflow = self.overflow.saturating_add(1);
-            tracing::debug!(event = "metrics_reorder_window_capped");
-        }
         if self
             .entries
             .back()
@@ -202,7 +203,7 @@ impl ReorderWindow {
         ready
     }
 
-    fn pop_minimum(&mut self) -> SlotAggregate {
+    fn pop_minimum(&mut self, agent: &str, session_id: &str, phase: &str) -> SlotAggregate {
         let mut slot = if self.ordered {
             self.entries.pop_front().unwrap_or_else(|| unreachable!())
         } else {
@@ -223,21 +224,46 @@ impl ReorderWindow {
                     });
             slot
         };
-        let key = (slot.first_ts, slot.first_ordinal);
-        if self.last_popped.is_some_and(|last| key < last) {
-            let timestamp = self.last_popped.map_or(slot.first_ts, |last| last.0);
-            clamp_timestamp(&mut slot, timestamp);
-            self.overflow = self.overflow.saturating_add(1);
-            tracing::debug!(event = "metrics_reorder_window_capped");
-        }
+        self.clamp_if_behind(&mut slot, agent, session_id, phase);
         self.last_popped = Some((slot.first_ts, slot.first_ordinal));
         slot
     }
 
-    pub(crate) fn drain_sorted(&mut self) -> Vec<SlotAggregate> {
+    fn clamp_if_behind(
+        &mut self,
+        slot: &mut SlotAggregate,
+        agent: &str,
+        session_id: &str,
+        phase: &str,
+    ) {
+        let key = (slot.first_ts, slot.first_ordinal);
+        let Some(last) = self.last_popped.filter(|last| key < *last) else {
+            return;
+        };
+        self.overflow = self.overflow.saturating_add(1);
+        tracing::debug!(
+            event = "metrics_reorder_window_capped",
+            agent,
+            session_id,
+            phase,
+            record_timestamp_ms = ?slot.timestamp,
+            effective_timestamp_ms = slot.first_ts,
+            ordinal = slot.first_ordinal,
+            last_committed_timestamp_ms = last.0,
+            last_committed_ordinal = last.1,
+            timestamp_regression_ms = last.0.saturating_sub(slot.first_ts),
+            ordinal_gap_from_last_commit = slot.first_ordinal.saturating_sub(last.1),
+            buffered_records = self.entries.len(),
+            reorder_window = REORDER_WINDOW,
+            overflow_count = self.overflow,
+        );
+        clamp_timestamp(slot, last.0);
+    }
+
+    pub(crate) fn drain_sorted(&mut self, agent: &str, session_id: &str) -> Vec<SlotAggregate> {
         let mut drained = Vec::with_capacity(self.entries.len());
         while !self.entries.is_empty() {
-            drained.push(self.pop_minimum());
+            drained.push(self.pop_minimum(agent, session_id, "finish_drain"));
         }
         self.entries.shrink_to_fit();
         self.ordered = true;
@@ -518,7 +544,11 @@ mod tests {
         for timestamp in 1..=REORDER_WINDOW {
             assert!(
                 window
-                    .push(SlotAggregate::new(timestamp as u64, timestamp as i64))
+                    .push(
+                        SlotAggregate::new(timestamp as u64, timestamp as i64),
+                        "synthetic",
+                        "reorder-test",
+                    )
                     .is_none()
             );
         }
@@ -531,7 +561,7 @@ mod tests {
             pre_tokens: None,
             post_tokens: None,
         });
-        window.push(compaction);
+        window.push(compaction, "synthetic", "reorder-test");
         let clamped = window
             .iter()
             .find(|slot| slot.first_ordinal == 0)
