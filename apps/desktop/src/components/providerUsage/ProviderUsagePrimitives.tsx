@@ -11,12 +11,7 @@ import {
 
 import { fromSimpleIcons, OPENAI_MARK, type BrandMark } from "../../lib/brandMarks"
 import { cn } from "../../lib/cn"
-import type { ProviderUsageState } from "../../lib/ipc"
-import {
-  providerInitial,
-  usageStateLabel,
-  usageStateToneClass,
-} from "../../lib/presentation/providerUsage"
+import { providerInitial } from "../../lib/presentation/providerUsage"
 
 /**
  * The two marks the usage surfaces repeat: a provider's glyph and its state.
@@ -116,30 +111,4 @@ export function ProviderGlyph({
 
 export function providerMark(provider: string): BrandMark | undefined {
   return PROVIDER_MARKS[provider]
-}
-
-interface UsageStateBadgeProps {
-  state: ProviderUsageState
-  className?: string
-}
-
-/**
- * What kind of evidence produced a provider's figures.
- *
- * The word is visible rather than encoded in a color, so the distinction
- * between a priced estimate and a bare token count survives both a screen
- * reader and a monochrome display.
- */
-export function UsageStateBadge({ state, className = "" }: UsageStateBadgeProps) {
-  return (
-    <span
-      className={cn(
-        "inline-flex shrink-0 items-center rounded-full px-1.5 py-px type-caption font-medium leading-[13px]",
-        usageStateToneClass(state),
-        className,
-      )}
-    >
-      {usageStateLabel(state)}
-    </span>
-  )
 }

@@ -169,6 +169,8 @@ fn selected_provider_data(
                 .into_iter()
                 .filter(|candidate| candidate.provider == provider)
                 .collect(),
+            totals: local.totals,
+            agents: local.agents,
             generated_at: local.generated_at,
         },
         live: LiveUsageSummary {
@@ -335,6 +337,8 @@ mod tests {
             "openai",
             ProviderUsageSummary {
                 providers: vec![local_provider("anthropic"), local_provider("openai")],
+                totals: ProviderUsageWindows::default(),
+                agents: Vec::new(),
                 generated_at: "now".to_string(),
             },
             LiveUsageSummary {

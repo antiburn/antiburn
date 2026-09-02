@@ -136,6 +136,8 @@ export interface AppSettings {
    * where the reader last left it.
    */
   overviewLimitsExpanded: boolean
+  /** The metric shown in each activity-session badge. */
+  sessionBadgeMetric: "cost" | "weeklyPercent" | "fiveHourPercent"
 }
 
 /** Where the app came from. Mirrors Rust `AppInfo`. */
@@ -317,11 +319,12 @@ export interface ProviderUsageWindowPayload {
   sessionCount: number
 }
 
-/** The three windows every provider is summarized over. */
+/** Local usage windows, including both month-to-date and trailing 30 days. */
 export interface ProviderUsageWindowsPayload {
   today: ProviderUsageWindowPayload
   week: ProviderUsageWindowPayload
-  month: ProviderUsageWindowPayload
+  monthToDate: ProviderUsageWindowPayload
+  last30Days: ProviderUsageWindowPayload
 }
 
 export interface ProviderAgentUsagePayload {
@@ -347,6 +350,8 @@ export interface ProviderUsagePayload {
 /** Local provider usage as one snapshot. Mirrors Rust `ProviderUsageSummary`. */
 export interface ProviderUsageSummaryPayload {
   providers: ProviderUsagePayload[]
+  totals?: ProviderUsageWindowsPayload
+  agents?: ProviderAgentUsagePayload[]
   generatedAt: string
 }
 
@@ -700,6 +705,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   disabledAgents: [],
   analyticsEnabled: true,
   overviewLimitsExpanded: true,
+  sessionBadgeMetric: "cost",
 }
 
 /* -------------------------------------------------------------------------
@@ -1083,6 +1089,25 @@ export async function getProviderUsage(): Promise<ProviderUsageSummaryPayload> {
 /** What provider usage looks like with nothing to report. */
 export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
   providers: [],
+  totals: {
+    today: { tokensIn: 0, tokensOut: 0, cacheRead: 0, estimatedUsd: null, sessionCount: 0 },
+    week: { tokensIn: 0, tokensOut: 0, cacheRead: 0, estimatedUsd: null, sessionCount: 0 },
+    monthToDate: {
+      tokensIn: 0,
+      tokensOut: 0,
+      cacheRead: 0,
+      estimatedUsd: null,
+      sessionCount: 0,
+    },
+    last30Days: {
+      tokensIn: 0,
+      tokensOut: 0,
+      cacheRead: 0,
+      estimatedUsd: null,
+      sessionCount: 0,
+    },
+  },
+  agents: [],
   generatedAt: "",
 }
 

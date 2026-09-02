@@ -52,8 +52,8 @@ pub use model::{
     EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters,
     MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement,
     ProjectionRevisions, PublishedEvidence, RETAIN_SESSION_DATA_FOREVER, RelationKind,
-    RelationRecord, RepositoryRecord, SessionActivityKey, SessionActivityState, SessionKey,
-    SessionRecord, SourceVersionState, ThemePreference, UsageEvidenceRecord,
+    RelationRecord, RepositoryRecord, SessionActivityKey, SessionActivityState, SessionBadgeMetric,
+    SessionKey, SessionRecord, SourceVersionState, ThemePreference, UsageEvidenceRecord,
 };
 
 /// Evidence rows that still wait for, or sit in, processing.
@@ -2011,6 +2011,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("overviewLimitsExpanded")
             .map(|value| value == "true")
             .unwrap_or(defaults.overview_limits_expanded),
+        session_badge_metric: stored
+            .get("sessionBadgeMetric")
+            .and_then(|value| SessionBadgeMetric::parse(value))
+            .unwrap_or(defaults.session_badge_metric),
     }
     .normalized())
 }
@@ -2104,6 +2108,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
     put.execute(params![
         "overviewLimitsExpanded",
         bool_text(settings.overview_limits_expanded)
+    ])?;
+    put.execute(params![
+        "sessionBadgeMetric",
+        settings.session_badge_metric.as_str()
     ])?;
     Ok(())
 }

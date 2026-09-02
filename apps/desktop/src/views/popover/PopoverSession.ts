@@ -368,6 +368,16 @@ export class PopoverSession {
       .catch(() => {})
   }
 
+  setSessionBadgeMetric = (metric: AppSettings["sessionBadgeMetric"]): void => {
+    const current = this.snapshot.settings ?? DEFAULT_SETTINGS
+    if (current.sessionBadgeMetric === metric) return
+    const next = { ...current, sessionBadgeMetric: metric }
+    this.update({ settings: next })
+    void setSettings(next)
+      .then((saved) => this.update({ settings: saved }))
+      .catch(() => {})
+  }
+
   /** Run a discovery pass. The source-access banner's only action. */
   rescan = async (): Promise<void> => {
     await scanNow().catch(() => null)

@@ -4,6 +4,10 @@ import { AlertTriangle, Settings } from "lucide-react"
 
 import { SessionList, type SessionListEntry } from "../components/session/SessionList"
 import { UsageLimitsBar } from "../components/providerUsage"
+import {
+  EMPTY_USAGE_WINDOWS,
+  UsageSpendSummary,
+} from "../components/providerUsage/UsageSpendSummary"
 import { Banner } from "../components/ui/Banner"
 import { Skeleton } from "../components/ui/Skeleton"
 import { renderAgentIcon } from "../lib/agentIcon"
@@ -382,6 +386,9 @@ export function PopoverView() {
         {/* The wrapper clips the chart while `foldUsageChart` closes it in
             step with the list scroll. */}
         <div ref={usageChartWrap} className="shrink-0 overflow-hidden">
+          {state.usage && (
+            <UsageSpendSummary totals={state.usage.totals ?? EMPTY_USAGE_WINDOWS} compact />
+          )}
           <UsageLimitsBar
             live={state.liveUsage}
             expanded={limitsExpanded}
@@ -454,6 +461,12 @@ export function PopoverView() {
               }}
               renderAgentIcon={renderAgentIcon}
               viewportRef={restoreListScroll}
+              badgeMetric={
+                state.settings?.sessionBadgeMetric ?? DEFAULT_SETTINGS.sessionBadgeMetric
+              }
+              onBadgeMetricChange={session.setSessionBadgeMetric}
+              liveUsage={state.liveUsage}
+              usage={state.usage}
             />
           )}
         </div>

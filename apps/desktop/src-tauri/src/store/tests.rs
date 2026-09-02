@@ -526,6 +526,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             disabled_agents: DisabledAgents::parse("windsurf,kiro"),
             analytics_enabled: false,
             overview_limits_expanded: false,
+            session_badge_metric: SessionBadgeMetric::WeeklyPercent,
         })
         .unwrap();
     assert_eq!(store.settings().unwrap(), saved);

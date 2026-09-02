@@ -436,6 +436,35 @@ impl DiskSpaceDisplay {
     }
 }
 
+/// The metric shown in every session's activity badge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionBadgeMetric {
+    #[default]
+    Cost,
+    WeeklyPercent,
+    FiveHourPercent,
+}
+
+impl SessionBadgeMetric {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cost => "cost",
+            Self::WeeklyPercent => "weeklyPercent",
+            Self::FiveHourPercent => "fiveHourPercent",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "cost" => Some(Self::Cost),
+            "weeklyPercent" => Some(Self::WeeklyPercent),
+            "fiveHourPercent" => Some(Self::FiveHourPercent),
+            _ => None,
+        }
+    }
+}
+
 pub const MILESTONE_OPTIONS: [u8; 20] = [
     5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100,
 ];
@@ -704,6 +733,8 @@ pub struct AppSettings {
     /// display preference — it never gates a fetch — so it defaults open and
     /// stays wherever the reader last left it.
     pub overview_limits_expanded: bool,
+    /// The metric shown in each activity-session badge.
+    pub session_badge_metric: SessionBadgeMetric,
 }
 
 impl Default for AppSettings {
@@ -753,6 +784,7 @@ impl Default for AppSettings {
             // Open by default: a reader who has live limits at all should see
             // them without an extra click the first time they notice this.
             overview_limits_expanded: true,
+            session_badge_metric: SessionBadgeMetric::default(),
         }
     }
 }

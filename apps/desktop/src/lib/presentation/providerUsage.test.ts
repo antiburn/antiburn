@@ -10,6 +10,7 @@ import {
   stalenessNote,
   usageStateDescription,
   usageStateLabel,
+  usageMetricLabel,
   usageValueLabel,
   usageWindowLabel,
   USAGE_WINDOWS,
@@ -30,7 +31,12 @@ function provider(overrides: Partial<ProviderUsagePayload> = {}): ProviderUsageP
     displayName: "Anthropic",
     state: "estimated",
     staleness: "fresh",
-    windows: { today: usageWindow(), week: usageWindow(), month: usageWindow() },
+    windows: {
+      today: usageWindow(),
+      week: usageWindow(),
+      monthToDate: usageWindow(),
+      last30Days: usageWindow(),
+    },
     agents: [],
     lastActivityAt: new Date().toISOString(),
     ...overrides,
@@ -40,6 +46,12 @@ function provider(overrides: Partial<ProviderUsagePayload> = {}): ProviderUsageP
 describe("usage values", () => {
   it("leads with the cost when the models could be priced", () => {
     expect(usageValueLabel(usageWindow({ estimatedUsd: 1.5, tokensIn: 10 }))).toBe("$1.50")
+  })
+
+  it("shows the cost before the token count in a window bar", () => {
+    expect(
+      usageMetricLabel(usageWindow({ estimatedUsd: 1.5, tokensIn: 1_200, tokensOut: 300 })),
+    ).toBe("$1.50 · 1.5k")
   })
 
   it("falls back to a token count rather than a zero that was never priced", () => {
@@ -131,7 +143,8 @@ describe("provider windows and ranking", () => {
     windows: {
       today: usageWindow({ estimatedUsd: 1, tokensIn: 100, sessionCount: 1 }),
       week: usageWindow({ estimatedUsd: 1, tokensIn: 100, sessionCount: 1 }),
-      month: usageWindow({ estimatedUsd: 1, tokensIn: 100, sessionCount: 1 }),
+      monthToDate: usageWindow({ estimatedUsd: 1, tokensIn: 100, sessionCount: 1 }),
+      last30Days: usageWindow({ estimatedUsd: 1, tokensIn: 100, sessionCount: 1 }),
     },
   })
   const openai = provider({
@@ -141,7 +154,8 @@ describe("provider windows and ranking", () => {
     windows: {
       today: usageWindow({ estimatedUsd: 4, tokensIn: 10, sessionCount: 2 }),
       week: usageWindow({ estimatedUsd: 4, tokensIn: 10, sessionCount: 2 }),
-      month: usageWindow({ estimatedUsd: 4, tokensIn: 10, sessionCount: 2 }),
+      monthToDate: usageWindow({ estimatedUsd: 4, tokensIn: 10, sessionCount: 2 }),
+      last30Days: usageWindow({ estimatedUsd: 4, tokensIn: 10, sessionCount: 2 }),
     },
   })
   const unpriced = provider({
@@ -151,7 +165,8 @@ describe("provider windows and ranking", () => {
     windows: {
       today: usageWindow({ tokensIn: 9_000, sessionCount: 3 }),
       week: usageWindow({ tokensIn: 9_000, sessionCount: 3 }),
-      month: usageWindow({ tokensIn: 9_000, sessionCount: 3 }),
+      monthToDate: usageWindow({ tokensIn: 9_000, sessionCount: 3 }),
+      last30Days: usageWindow({ tokensIn: 9_000, sessionCount: 3 }),
     },
   })
 
@@ -161,7 +176,7 @@ describe("provider windows and ranking", () => {
   })
 
   it("reads a window off a provider without the caller indexing it", () => {
-    expect(providerWindow(openai, "month").estimatedUsd).toBe(4)
+    expect(providerWindow(openai, "monthToDate").estimatedUsd).toBe(4)
   })
 })
 

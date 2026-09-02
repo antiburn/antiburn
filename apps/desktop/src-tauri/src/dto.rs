@@ -352,14 +352,16 @@ pub struct ProviderUsageWindow {
 /// The three windows every provider is summarized over.
 ///
 /// Independent, not nested: `week` is the trailing seven calendar days and
-/// `month` starts at the first of the current month, so early in a month the
-/// week reaches back further than the month does.
+/// `month_to_date` starts at the first of the current month, so early in a
+/// month the week reaches back further than the month does.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUsageWindows {
     pub today: ProviderUsageWindow,
     pub week: ProviderUsageWindow,
-    pub month: ProviderUsageWindow,
+    pub month_to_date: ProviderUsageWindow,
+    /// The trailing thirty local calendar days, including today.
+    pub last_30_days: ProviderUsageWindow,
 }
 
 /// One source agent's contribution to a provider account group.
@@ -394,6 +396,10 @@ pub struct ProviderUsageSummary {
     /// Providers with at least one session in the covered span, newest first.
     /// A provider the reader has not used lately is absent rather than zeroed.
     pub providers: Vec<ProviderUsage>,
+    /// Totals across every attributed provider and account.
+    pub totals: ProviderUsageWindows,
+    /// Totals per source agent across every attributed provider and account.
+    pub agents: Vec<ProviderAgentUsage>,
     /// ISO-8601 stamp of the moment this snapshot was computed.
     pub generated_at: String,
 }

@@ -21,20 +21,21 @@ import { relativeTime } from "./relativeTime"
 import { formatCompact, formatCost } from "./sessionAnalysis"
 
 /** Which window a surface is showing. */
-export type UsageWindowKey = "today" | "week" | "month"
+export type UsageWindowKey = "today" | "week" | "monthToDate" | "last30Days"
 
 /** The window selector's options, in the order they are offered. */
 export const USAGE_WINDOWS: ReadonlyArray<{ value: UsageWindowKey; label: string }> = [
   { value: "today", label: "Today" },
-  { value: "week", label: "Week" },
-  { value: "month", label: "Month" },
+  { value: "week", label: "This week" },
+  { value: "last30Days", label: "Last 30 days" },
 ]
 
 /** The full name of a window, for a place with room for it. */
 export function usageWindowLabel(key: UsageWindowKey): string {
   if (key === "today") return "Today"
-  if (key === "week") return "Last 7 days"
-  return "This month"
+  if (key === "week") return "This week"
+  if (key === "monthToDate") return "Month to date"
+  return "Last 30 days"
 }
 
 /** An empty window, for a provider that has none of one. */
@@ -78,6 +79,14 @@ export function usageValueLabel(window: ProviderUsageWindowPayload): string {
   return "—"
 }
 
+/** A local cost followed by its token count, when the cost is available. */
+export function usageMetricLabel(window: ProviderUsageWindowPayload): string {
+  const tokens = windowTokens(window)
+  if (window.estimatedUsd != null)
+    return `${formatCost(window.estimatedUsd)} · ${formatCompact(tokens)}`
+  return tokens > 0 ? formatCompact(tokens) : "—"
+}
+
 /**
  * The one-word capability label for a state.
  *
@@ -113,17 +122,6 @@ export function usageStateDescription(state: ProviderUsageState): string {
     default:
       return "Sessions were attributed to this provider, but none of them carries token evidence yet."
   }
-}
-
-/** Tailwind classes for a state badge. Muted by design — a badge, not an alarm. */
-export function usageStateToneClass(state: ProviderUsageState): string {
-  if (state === "estimated" || state === "live") {
-    return "bg-system-gold/15 text-system-gold-text"
-  }
-  if (state === "observed" || state === "detected") {
-    return "bg-surface-secondary text-label-secondary"
-  }
-  return "bg-surface-secondary text-label-tertiary"
 }
 
 /**
@@ -241,7 +239,7 @@ export function windowShareOfMonth(
   key: UsageWindowKey,
 ): number {
   const window = providerWindow(provider, key)
-  const month = providerWindow(provider, "month")
+  const month = providerWindow(provider, "monthToDate")
   const numerator =
     month.estimatedUsd != null && month.estimatedUsd > 0
       ? (window.estimatedUsd ?? 0)
@@ -270,11 +268,6 @@ export function usageMetricRows(
       label: "Today's tokens",
       value: windowTokens(today) > 0 ? formatCompact(windowTokens(today)) : "—",
     },
-    // "Spend trend", not "Pace trend": a provider card can carry the plan
-    // limits above these rows, and those have their own Pace and Trend
-    // computed from the provider's percentages. Two rows called pace, four
-    // apart, measuring different things from different evidence, is a reader
-    // being asked to hold a distinction the labels refuse to make.
-    { key: "trend", label: "Spend trend", value: paceTrendLabel(paceTrend(provider)) },
+    { key: "trend", label: "Trend", value: paceTrendLabel(paceTrend(provider)) },
   ]
 }

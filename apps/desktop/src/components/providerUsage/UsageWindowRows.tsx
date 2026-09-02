@@ -3,7 +3,7 @@ import type { ProviderUsagePayload } from "../../lib/ipc"
 import {
   providerWindow,
   sessionCountLabel,
-  usageValueLabel,
+  usageMetricLabel,
   usageWindowLabel,
   windowShareOfMonth,
   USAGE_WINDOWS,
@@ -40,7 +40,7 @@ export function UsageWindowRows({
                   {sessionCountLabel(window.sessionCount)}
                 </span>
                 <span className="type-footnote tabular-nums text-label">
-                  {usageValueLabel(window)}
+                  {usageMetricLabel(window)}
                 </span>
               </dd>
             </div>

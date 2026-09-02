@@ -24,8 +24,10 @@ import { SessionStatusBar } from "./SessionStatusBar"
 import { SessionTooltipOwner } from "./SessionTooltipOwner"
 import { type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
 import { ScrollPane } from "../ui/ScrollPane"
+import { SegmentedControl } from "../ui/SegmentedControl"
 import { countGroupedItems, groupActivityByDay } from "../activity/activityFeedGrouping"
 import { useActivityGroupPinning, type ViewportRef } from "../activity/useActivityGroupPinning"
+import type { LiveUsageSummaryPayload, ProviderUsageSummaryPayload } from "../../lib/ipc"
 
 import "../../styles/session-rows.css"
 
@@ -82,6 +84,13 @@ export interface SessionListProps {
   renderAgentIcon?: SessionAgentIconRenderer
   /** Glyph for the WSL-origin badge. */
   wslIcon?: ReactNode
+  badgeMetric?: "cost" | "weeklyPercent" | "fiveHourPercent"
+  onBadgeMetricChange?: (metric: "cost" | "weeklyPercent" | "fiveHourPercent") => void
+  liveUsage?: LiveUsageSummaryPayload
+  usage?: ProviderUsageSummaryPayload | null
+  onLimitBadgeHover?: (
+    badge: { provider: string; windowId: string; percent: number } | null,
+  ) => void
 }
 
 function primaryLine(entry: SessionListEntry): string {
@@ -89,6 +98,102 @@ function primaryLine(entry: SessionListEntry): string {
   if (title) return title
   if (entry.sessionId) return `Session ${entry.sessionId.slice(0, 7)}`
   return agentDisplayName(entry.agent)
+}
+
+type BadgeMetric = "cost" | "weeklyPercent" | "fiveHourPercent"
+
+function hasFiveHourLimit(live?: LiveUsageSummaryPayload): boolean {
+  return (
+    live?.providers.some((provider) =>
+      provider.windows.some(
+        (window) => window.role === "primaryShort" && window.usedPercent != null,
+      ),
+    ) ?? false
+  )
+}
+
+function sessionLimitBadge(
+  entry: SessionListEntry,
+  metric: Exclude<BadgeMetric, "cost">,
+  usage?: ProviderUsageSummaryPayload | null,
+  live?: LiveUsageSummaryPayload,
+): {
+  label: string
+  percent: number | null
+  fallbackReason: string
+  provider?: string
+  windowId?: string
+} {
+  const modelProvider = entry.modelRuns
+    ?.map((run) => providerForModel(run.model))
+    .find((provider): provider is string => provider != null)
+  const local =
+    usage?.providers
+      .filter(
+        (provider) =>
+          provider.provider === modelProvider ||
+          provider.agents.some((agent) => agent.agent === entry.agent) ||
+          live?.providers.length === 1,
+      )
+      .sort(
+        (left, right) =>
+          (right.windows.last30Days.estimatedUsd ??
+            right.windows.monthToDate.estimatedUsd ??
+            0) -
+          (left.windows.last30Days.estimatedUsd ?? left.windows.monthToDate.estimatedUsd ?? 0),
+      ) ?? []
+  if (local.length === 0 || entry.cost == null) {
+    return {
+      label: "Session usage limit share",
+      percent: null,
+      fallbackReason: "No provider limit data is available for this session.",
+    }
+  }
+  const provider =
+    local.find((candidate) => candidate.provider === modelProvider) ??
+    local.find((candidate) =>
+      live?.providers.some((reading) => reading.provider === candidate.provider),
+    ) ??
+    local[0]!
+  const account = live?.providers.find((candidate) => candidate.provider === provider.provider)
+  const window = account?.windows.find((candidate) =>
+    metric === "weeklyPercent"
+      ? candidate.kind === "weekly" || candidate.role === "primaryLong"
+      : candidate.role === "primaryShort" || candidate.id.includes("five"),
+  )
+  const total =
+    metric === "weeklyPercent"
+      ? (provider.windows.last30Days.estimatedUsd ?? provider.windows.monthToDate.estimatedUsd)
+      : (provider.windows.today.estimatedUsd ?? provider.windows.week.estimatedUsd)
+  if (window?.usedPercent == null) {
+    return {
+      label: "Session usage limit share",
+      percent: null,
+      fallbackReason: account
+        ? `A ${metric === "weeklyPercent" ? "weekly" : "5-hour"} ${provider.displayName} limit reading is not available for this session.`
+        : `${provider.displayName} has no subscription limit reading for this session. It may use API billing.`,
+    }
+  }
+  const allocationBase = total != null && total > 0 ? total : entry.cost.totalUsd
+  const percent = Math.min(
+    100,
+    Math.max(0, window.usedPercent * (entry.cost.totalUsd / allocationBase)),
+  )
+  return {
+    label: `${metric === "weeklyPercent" ? "Weekly" : "5-hour"} ${provider.displayName} limit used by this session. This is an estimate from local spend and the current ${provider.displayName} reading.`,
+    percent,
+    fallbackReason: "",
+    provider: provider.provider,
+    windowId: window.id,
+  }
+}
+
+function providerForModel(model: string): string | null {
+  const key = model.toLowerCase()
+  if (key.includes("claude")) return "anthropic"
+  if (key.includes("gpt") || key.includes("o1") || key.includes("o3")) return "openai"
+  if (key.includes("gemini")) return "google"
+  return null
 }
 
 function EmptySessionList({ title, description }: { title: string; description: string }) {
@@ -141,6 +246,14 @@ interface SessionRowProps {
   onOpen?: () => void
   renderAgentIcon?: SessionAgentIconRenderer | undefined
   wslIcon?: ReactNode | undefined
+  limitBadge?: {
+    label: string
+    percent: number | null
+    fallbackReason: string
+    provider?: string
+    windowId?: string
+  }
+  onLimitBadgeHover?: SessionListProps["onLimitBadgeHover"]
 }
 
 /**
@@ -150,7 +263,15 @@ interface SessionRowProps {
  * The whole card opens the session analysis. Unsupported agents open an empty
  * analysis state that explains why no data is available.
  */
-function SessionRow({ entry, hygiene, onOpen, renderAgentIcon, wslIcon }: SessionRowProps) {
+function SessionRow({
+  entry,
+  hygiene,
+  onOpen,
+  renderAgentIcon,
+  wslIcon,
+  limitBadge,
+  onLimitBadgeHover,
+}: SessionRowProps) {
   const clickable = !!entry.sessionId && !!onOpen
   const primary = primaryLine(entry)
   const hasRepo = entry.repo !== ""
@@ -196,6 +317,18 @@ function SessionRow({ entry, hygiene, onOpen, renderAgentIcon, wslIcon }: Sessio
           checks={hygieneChecks}
           evidenceState={hygiene.evidenceState}
           cost={entry.cost ?? null}
+          limitBadge={limitBadge}
+          onLimitBadgeHover={(badge) => {
+            if (badge?.percent == null || !badge.provider || !badge.windowId) {
+              onLimitBadgeHover?.(null)
+              return
+            }
+            onLimitBadgeHover?.({
+              provider: badge.provider,
+              windowId: badge.windowId,
+              percent: badge.percent,
+            })
+          }}
         />
       </div>
 
@@ -322,6 +455,10 @@ export function SessionList({
   now,
   renderAgentIcon,
   wslIcon,
+  badgeMetric = "cost",
+  onBadgeMetricChange,
+  liveUsage,
+  usage,
 }: SessionListProps) {
   const items = entries.map((entry, index) => ({
     entry,
@@ -372,6 +509,7 @@ export function SessionList({
     groups.map((group) => group.label),
     viewportRef,
   )
+  const topLabel = pinnedLabel ?? groups[0]?.label
   const scrollElementRef = useRef<HTMLDivElement | null>(null)
   const [pendingFocusIndex, setPendingFocusIndex] = useState<number | null>(null)
   // TanStack Virtual owns mutable measurement state, so the React Compiler cannot memoize this component.
@@ -463,15 +601,29 @@ export function SessionList({
         {visibleCount === 0 ? resolvedEmptyTitle : ""}
       </span>
 
-      {pinnedLabel && (
+      {topLabel && (
         <div
           data-testid="activity-pinned-group-label"
-          aria-hidden="true"
           // The inset matches the cards, so the label sits on their left
           // edge. The type matches the usage view's group labels.
-          className="shrink-0 px-3 py-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
+          className="mb-1 flex h-7 shrink-0 items-center justify-between gap-2 px-3 type-caption font-medium tracking-wide uppercase text-label-tertiary"
         >
-          {pinnedLabel}
+          <span>{topLabel}</span>
+          {onBadgeMetricChange && (
+            <SegmentedControl
+              options={[
+                { value: "cost", label: "$" },
+                { value: "weeklyPercent", label: "% week" },
+                ...(hasFiveHourLimit(liveUsage)
+                  ? [{ value: "fiveHourPercent" as const, label: "% 5h" }]
+                  : []),
+              ]}
+              value={badgeMetric}
+              onChange={onBadgeMetricChange}
+              ariaLabel="Session badge metric"
+              className="normal-case"
+            />
+          )}
         </div>
       )}
 
@@ -552,6 +704,16 @@ export function SessionList({
                                   : {})}
                                 {...(renderAgentIcon ? { renderAgentIcon } : {})}
                                 {...(wslIcon ? { wslIcon } : {})}
+                                {...(badgeMetric !== "cost"
+                                  ? {
+                                      limitBadge: sessionLimitBadge(
+                                        virtualItem.item.entry,
+                                        badgeMetric,
+                                        usage,
+                                        liveUsage,
+                                      ),
+                                    }
+                                  : {})}
                               />
                             )}
                           </div>

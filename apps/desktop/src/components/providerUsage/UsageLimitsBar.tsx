@@ -104,10 +104,6 @@ export function UsageLimitsBar({
 
   if (limited.length === 0 && unavailable.length === 0) return null
 
-  // The provider whose name line carries the disclosure while the meters are
-  // open — the topmost group, whichever list it came from.
-  const firstProvider = limited[0]
-
   const disclosure = (compact: boolean) => (
     <LimitsDisclosure
       expanded={expanded}
@@ -161,25 +157,27 @@ export function UsageLimitsBar({
           // the pointer that just clicked it.
           className="space-y-1 px-2 pt-3 pb-2"
         >
+          <div className="flex h-7 items-center justify-between px-1">
+            <span className="type-caption font-medium tracking-wide uppercase text-label">
+              Usage limits
+            </span>
+            {disclosure(false)}
+          </div>
           {limited.map(({ reading, key }) => (
             <ProviderGroup
               key={key}
               provider={reading}
               displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
               now={at}
-              action={reading === firstProvider?.reading ? disclosure(true) : undefined}
+              action={undefined}
               activation={
                 activeProvider?.provider === reading.provider ? activeProvider.activation : null
               }
               {...(onHoverProvider ? { onHover: onHoverProvider } : {})}
             />
           ))}
-          {unavailable.map((entry, index) => (
-            <UnavailableGroup
-              key={entry.provider}
-              entry={entry}
-              action={!firstProvider && index === 0 ? disclosure(true) : undefined}
-            />
+          {unavailable.map((entry) => (
+            <UnavailableGroup key={entry.provider} entry={entry} action={undefined} />
           ))}
         </div>
       )}
@@ -225,7 +223,7 @@ function LimitsDisclosure({
   compact: boolean
 }) {
   return (
-    <>
+    <span className="inline-flex items-center gap-1">
       {refreshing && (
         <span role="status" className="inline-flex shrink-0 items-center text-label-tertiary">
           <LoaderCircle size={12} strokeWidth={2} aria-hidden="true" className="animate-spin" />
@@ -248,7 +246,7 @@ function LimitsDisclosure({
       >
         <BarChartHorizontalBig size={14} strokeWidth={1.75} aria-hidden="true" />
       </button>
-    </>
+    </span>
   )
 }
 

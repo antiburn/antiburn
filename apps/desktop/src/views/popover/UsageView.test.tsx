@@ -65,7 +65,8 @@ const ANTHROPIC: ProviderUsagePayload = {
   windows: {
     today: usageWindow({ estimatedUsd: 2.5, tokensIn: 1_000, sessionCount: 1 }),
     week: usageWindow({ estimatedUsd: 8, tokensIn: 4_000, sessionCount: 4 }),
-    month: usageWindow({ estimatedUsd: 8, tokensIn: 4_000, sessionCount: 4 }),
+    monthToDate: usageWindow({ estimatedUsd: 8, tokensIn: 4_000, sessionCount: 4 }),
+    last30Days: usageWindow({ estimatedUsd: 8, tokensIn: 4_000, sessionCount: 4 }),
   },
   agents: [],
   lastActivityAt: new Date().toISOString(),
@@ -80,7 +81,8 @@ const OPENAI: ProviderUsagePayload = {
   windows: {
     today: usageWindow(),
     week: usageWindow({ tokensIn: 20_000, sessionCount: 2 }),
-    month: usageWindow({ tokensIn: 20_000, sessionCount: 2 }),
+    monthToDate: usageWindow({ tokensIn: 20_000, sessionCount: 2 }),
+    last30Days: usageWindow({ tokensIn: 20_000, sessionCount: 2 }),
   },
   agents: [],
   lastActivityAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
@@ -140,13 +142,13 @@ describe("UsageView", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "false")
     const bodyId = toggle.getAttribute("aria-controls")!
     expect(document.getElementById(bodyId)).toBeInTheDocument()
-    expect(within(cards[2]!).getByText("Today's spend")).not.toBeVisible()
+    expect(within(cards[2]!).getByText("Trend")).not.toBeVisible()
 
     fireEvent.click(toggle)
 
     expect(toggle).toHaveAttribute("aria-expanded", "true")
     expect(toggle).toHaveAccessibleName("Collapse Unattributed usage")
-    expect(within(cards[2]!).getByText("Today's spend")).toBeInTheDocument()
+    expect(within(cards[2]!).getByText("Trend")).toBeInTheDocument()
   })
 
   it("hides embedded section headings but keeps their accessible regions", () => {
@@ -169,21 +171,19 @@ describe("UsageView", () => {
     const card = screen.getByText("Anthropic").closest("li")
     expect(card).not.toBeNull()
     expect(within(card!).getByText("Today")).toBeInTheDocument()
-    expect(within(card!).getByText("Last 7 days")).toBeInTheDocument()
-    expect(within(card!).getByText("This month")).toBeInTheDocument()
-    // "$2.50" appears twice by design: the Today's-spend metric row and the
-    // Today window row describe the same day.
-    expect(within(card!).getAllByText("$2.50")).toHaveLength(2)
-    expect(within(card!).getAllByText("$8.00")).toHaveLength(2)
+    expect(within(card!).getByText("This week")).toBeInTheDocument()
+    expect(within(card!).getByText("Last 30 days")).toBeInTheDocument()
+    expect(within(card!).getAllByText("$2.50 · 1.0k")).toHaveLength(1)
+    expect(within(card!).getAllByText("$8.00 · 4.0k")).toHaveLength(2)
     expect(within(card!).getByText("1 session")).toBeInTheDocument()
   })
 
-  it("derives the metric block from the reader’s own windows", () => {
+  it("keeps only the local spend trend above the windows", () => {
     render(<UsageView summary={summary()} onBack={vi.fn()} />)
 
     const card = screen.getByText("Anthropic").closest("li")
-    expect(within(card!).getByText("Today's spend")).toBeInTheDocument()
-    expect(within(card!).getByText("Today's tokens")).toBeInTheDocument()
+    expect(within(card!).queryByText("Today's spend")).not.toBeInTheDocument()
+    expect(within(card!).queryByText("Today's tokens")).not.toBeInTheDocument()
     // 1,000 today vs (4,000 − 1,000)/6 = 500 per day → 2.0× and rising.
     expect(within(card!).getByText(/Picking up · 2\.0×/)).toBeInTheDocument()
   })
@@ -193,33 +193,11 @@ describe("UsageView", () => {
 
     const card = screen.getByText("OpenAI").closest("li")
     expect(card).not.toBeNull()
-    expect(within(card!).getByText("Observed")).toBeInTheDocument()
+    expect(within(card!).queryByText("Observed")).not.toBeInTheDocument()
     expect(within(card!).getAllByText("20.0k").length).toBeGreaterThan(0)
     expect(within(card!).getByText(/Last used 3d ago/)).toBeInTheDocument()
     // Nothing today against a real weekly baseline reads as easing off.
     expect(within(card!).getByText(/Easing · <0\.1×/)).toBeInTheDocument()
-  })
-
-  it("explains local spend and provider limits", () => {
-    render(<UsageView summary={summary()} onBack={vi.fn()} />)
-
-    expect(
-      screen.getByText("Local spend is estimated; plan limits come from your provider."),
-    ).toBeInTheDocument()
-  })
-
-  it("places each provider explanation below its inset card", () => {
-    render(<UsageView summary={summary()} onBack={vi.fn()} />)
-
-    const item = screen.getByText("Anthropic").closest("li")
-    const explanation = screen.getByText(
-      "Estimated locally at API rates. Your provider bill may differ.",
-    )
-    expect(item).not.toBeNull()
-    expect(item).toHaveClass("flex", "flex-col", "gap-1")
-    expect(item?.firstElementChild).toHaveClass("bg-surface-card")
-    expect(item?.firstElementChild).not.toContainElement(explanation)
-    expect(explanation.parentElement).toBe(item)
   })
 
   it("is honest when there is nothing to show", () => {
@@ -244,7 +222,7 @@ describe("UsageWindowRows shares", () => {
     const card = screen.getByText("Anthropic").closest("li")!
     // Fixture: today $2.50 of this month's $8.00 → 31% (rounded).
     expect(within(card).getByTestId("usage-share-today")).toHaveStyle({ width: "31%" })
-    expect(within(card).getByTestId("usage-share-month")).toHaveStyle({ width: "100%" })
+    expect(within(card).getByTestId("usage-share-last30Days")).toHaveStyle({ width: "100%" })
   })
 })
 
@@ -333,12 +311,12 @@ describe("UsageView — plan limits layered over local estimates", () => {
 
     // The estimate half is still there and unchanged: a reader who connects a
     // source gains the limits, they do not trade one surface for the other.
-    expect(within(card).getByText("Last 7 days")).toBeInTheDocument()
+    expect(within(card).getByText("This week")).toBeInTheDocument()
     expect(within(card).getByTestId("usage-share-today")).toBeInTheDocument()
 
     // And the limits come first in the document, not after.
     expect(
-      limits.compareDocumentPosition(within(card).getByText("Last 7 days")) &
+      limits.compareDocumentPosition(within(card).getByText("This week")) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
   })
@@ -420,7 +398,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
     const card = screen.getByText("Google").closest("li")!
     expect(screen.getAllByRole("listitem")).toHaveLength(1)
     expect(within(card).getByText("Gemini 5-hour limit")).toBeInTheDocument()
-    expect(within(card).getByText("Last 7 days")).toBeInTheDocument()
+    expect(within(card).getByText("This week")).toBeInTheDocument()
     expect(within(card).getByText(/Asked Antigravity directly · Live/)).toBeInTheDocument()
   })
 
@@ -499,7 +477,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
       "Google · Google AI Pro",
     )
     expect(within(card).getByText("AI credits: 750 remaining")).toBeInTheDocument()
-    expect(within(card).queryByText("Last 7 days")).not.toBeInTheDocument()
+    expect(within(card).queryByText("This week")).not.toBeInTheDocument()
     expect(card.querySelector('[data-provider-icon="google"]')).toBeInTheDocument()
 
     for (const name of [
@@ -558,11 +536,11 @@ describe("UsageView — plan limits layered over local estimates", () => {
     ).toHaveTextContent("Gemini weekly limit")
     const unassigned = within(card).getByRole("button", { name: "Unassigned account" })
     expect(unassigned).toHaveAttribute("aria-expanded", "false")
-    expect(within(card).queryByText("Last 7 days")).not.toBeInTheDocument()
+    expect(within(card).queryByText("This week")).not.toBeInTheDocument()
 
     fireEvent.click(unassigned)
     expect(unassigned).toHaveAttribute("aria-expanded", "true")
-    expect(within(card).getAllByText("Last 7 days")).toHaveLength(1)
+    expect(within(card).getAllByText("This week")).toHaveLength(1)
   })
 
   it("shows unassigned sessions under the only account", () => {
@@ -574,7 +552,8 @@ describe("UsageView — plan limits layered over local estimates", () => {
       windows: {
         today: usageWindow({ estimatedUsd: 1, tokensIn: 500, sessionCount: 1 }),
         week: usageWindow({ estimatedUsd: 1, tokensIn: 500, sessionCount: 1 }),
-        month: usageWindow({ estimatedUsd: 1, tokensIn: 500, sessionCount: 1 }),
+        monthToDate: usageWindow({ estimatedUsd: 1, tokensIn: 500, sessionCount: 1 }),
+        last30Days: usageWindow({ estimatedUsd: 1, tokensIn: 500, sessionCount: 1 }),
       },
     }
     const unassigned: ProviderUsagePayload = {
@@ -599,7 +578,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
 
     const card = document.querySelector<HTMLElement>('[data-provider-card="google"]')!
     expect(within(card).queryByText("Unassigned account")).not.toBeInTheDocument()
-    expect(within(card).getAllByText("$3.50").length).toBeGreaterThan(0)
+    expect(within(card).getAllByText("$3.50 · 1.5k").length).toBeGreaterThan(0)
     expect(within(card).getByText("2 sessions")).toBeInTheDocument()
   })
 
@@ -612,7 +591,8 @@ describe("UsageView — plan limits layered over local estimates", () => {
       windows: {
         today: usageWindow({ estimatedUsd: 1, sessionCount: 1 }),
         week: usageWindow({ estimatedUsd: 1, sessionCount: 1 }),
-        month: usageWindow({ estimatedUsd: 1, sessionCount: 1 }),
+        monthToDate: usageWindow({ estimatedUsd: 1, sessionCount: 1 }),
+        last30Days: usageWindow({ estimatedUsd: 1, sessionCount: 1 }),
       },
     }
     const accountB: ProviderUsagePayload = {
@@ -621,7 +601,8 @@ describe("UsageView — plan limits layered over local estimates", () => {
       windows: {
         today: usageWindow({ estimatedUsd: 2, sessionCount: 1 }),
         week: usageWindow({ estimatedUsd: 2, sessionCount: 1 }),
-        month: usageWindow({ estimatedUsd: 2, sessionCount: 1 }),
+        monthToDate: usageWindow({ estimatedUsd: 2, sessionCount: 1 }),
+        last30Days: usageWindow({ estimatedUsd: 2, sessionCount: 1 }),
       },
     }
     const first = liveProvider({
@@ -652,10 +633,10 @@ describe("UsageView — plan limits layered over local estimates", () => {
     const secondGroup = screen.getByRole("region", {
       name: "Google Account 2 plan limits",
     }).parentElement!
-    expect(within(firstGroup).getAllByText("$2.00").length).toBeGreaterThan(0)
-    expect(within(firstGroup).queryByText("$1.00")).not.toBeInTheDocument()
-    expect(within(secondGroup).getAllByText("$1.00").length).toBeGreaterThan(0)
-    expect(within(secondGroup).queryByText("$2.00")).not.toBeInTheDocument()
+    expect(within(firstGroup).getAllByText("$2.00 · 0").length).toBeGreaterThan(0)
+    expect(within(firstGroup).queryByText("$1.00 · 0")).not.toBeInTheDocument()
+    expect(within(secondGroup).getAllByText("$1.00 · 0").length).toBeGreaterThan(0)
+    expect(within(secondGroup).queryByText("$2.00 · 0")).not.toBeInTheDocument()
   })
 
   it("keeps account sections mounted through reorder, polling, and removal", () => {
@@ -1030,15 +1011,15 @@ describe("UsageView — plan limits layered over local estimates", () => {
     expect(
       within(openai).queryByRole("region", { name: /plan limits/ }),
     ).not.toBeInTheDocument()
-    expect(within(openai).getByText("Last 7 days")).toBeInTheDocument()
+    expect(within(openai).getByText("This week")).toBeInTheDocument()
   })
 
   it("falls back to the estimate surface alone when no live payload is given", () => {
     render(<UsageView summary={summary()} onBack={vi.fn()} />)
 
     expect(screen.queryByRole("region", { name: /plan limits/ })).not.toBeInTheDocument()
-    // One per provider card, and both still there.
-    expect(screen.getAllByText("Last 7 days")).toHaveLength(2)
+    // One per provider card, and both remain without live limits.
+    expect(screen.getAllByText("This week")).toHaveLength(2)
   })
 
   it("banners a signed-out source, and only that failure", () => {
@@ -1129,14 +1110,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
       screen.getByText("Codex usage is unavailable. Check your connection, then retry."),
     ).toBeInTheDocument()
   })
-
-  it("shows the usage disclaimer in the footer", () => {
-    render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />)
-
-    expect(
-      screen.getByText("Local spend is estimated; plan limits come from your provider."),
-    ).toBeInTheDocument()
-  })
 })
 
 describe("UsageView — what history says about a limit", () => {
@@ -1156,7 +1129,7 @@ describe("UsageView — what history says about a limit", () => {
       ],
     })
 
-  it("reports pace, trend and runway when the series supports them", () => {
+  it("reports pace and runway when the series supports them", () => {
     render(
       <UsageView
         summary={summary()}
@@ -1174,7 +1147,7 @@ describe("UsageView — what history says about a limit", () => {
 
     const card = screen.getByText("Anthropic").closest("li")!
     expect(within(card).getByText("Running hot · 1.3× · 12.5%/hour")).toBeInTheDocument()
-    expect(within(card).getByText("Picking up · 1.4×")).toBeInTheDocument()
+    expect(within(card).queryByText("Picking up · 1.4×")).not.toBeInTheDocument()
     expect(within(card).getByText("Runs out in 1h 12m")).toBeInTheDocument()
   })
 
@@ -1185,8 +1158,8 @@ describe("UsageView — what history says about a limit", () => {
     const rows = within(card).getByRole("group", { name: /pace$/ })
     expect(within(rows).getByText("Pace")).toBeInTheDocument()
     expect(within(rows).getByText("Runway")).toBeInTheDocument()
-    // Three questions still asked; the answer is why we cannot answer them.
-    expect(within(rows).getAllByText("Not enough history")).toHaveLength(3)
+    // Two questions still asked; the answer is why we cannot answer them.
+    expect(within(rows).getAllByText("Not enough history")).toHaveLength(2)
   })
 
   it("distinguishes a window that just reset from one with no history at all", () => {

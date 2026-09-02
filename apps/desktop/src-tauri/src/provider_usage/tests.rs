@@ -113,7 +113,7 @@ fn the_windows_are_local_calendar_boundaries_around_now() {
     // Mid-month, the month reaches further back than the week does — the two
     // windows are independent, not nested.
     assert!(bounds.month_start < bounds.week_start);
-    assert_eq!(lookback_start(NOW, 0), bounds.month_start);
+    assert_eq!(lookback_start(NOW, 0), bounds.last_30_days_start);
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn early_in_a_month_the_week_reaches_further_back_than_the_month() {
     assert_eq!(bounds.month_start, 1_801_440_000); // 2027-02-01T00:00:00Z
     assert_eq!(bounds.week_start, 1_801_008_000); // 2027-01-27T00:00:00Z
     assert!(bounds.week_start < bounds.month_start);
-    assert_eq!(lookback_start(now, 0), bounds.week_start);
+    assert_eq!(lookback_start(now, 0), bounds.last_30_days_start);
 }
 
 #[test]
@@ -141,9 +141,9 @@ fn a_session_in_last_month_counts_in_the_week_but_not_the_month() {
 
     assert_eq!(anthropic.windows.week.tokens_in, 1_000_000);
     assert_eq!(anthropic.windows.week.session_count, 1);
-    assert_eq!(anthropic.windows.month.tokens_in, 0);
-    assert_eq!(anthropic.windows.month.session_count, 0);
-    assert_eq!(anthropic.windows.month.estimated_usd, None);
+    assert_eq!(anthropic.windows.month_to_date.tokens_in, 0);
+    assert_eq!(anthropic.windows.month_to_date.session_count, 0);
+    assert_eq!(anthropic.windows.month_to_date.estimated_usd, None);
     assert_eq!(anthropic.windows.today.session_count, 0);
 }
 
@@ -170,7 +170,7 @@ fn a_window_includes_its_own_first_second_and_excludes_the_one_before_it() {
         "midnight is today"
     );
     assert_eq!(anthropic.windows.week.session_count, 2);
-    assert_eq!(anthropic.windows.month.session_count, 2);
+    assert_eq!(anthropic.windows.month_to_date.session_count, 2);
 }
 
 #[test]
@@ -178,10 +178,43 @@ fn a_session_older_than_every_window_is_ignored_entirely() {
     let bounds = window_bounds(NOW, 0);
     let rows = [row(
         "claude-code",
-        bounds.month_start - 1,
+        bounds.last_30_days_start - 1,
         &[(PRICED_MODEL, tokens(1_000_000, 0, 0, 0))],
     )];
     assert!(summarize(&rows, NOW, 0).providers.is_empty());
+}
+
+#[test]
+fn totals_and_agents_cover_the_trailing_thirty_days() {
+    let bounds = window_bounds(NOW, 0);
+    let rows = [
+        row(
+            "claude-code",
+            bounds.last_30_days_start,
+            &[(PRICED_MODEL, tokens(100, 0, 0, 0))],
+        ),
+        row(
+            "codex",
+            bounds.today_start,
+            &[(PRICED_MODEL, tokens(50, 0, 0, 0))],
+        ),
+    ];
+    let summary = summarize(&rows, NOW, 0);
+
+    assert_eq!(summary.totals.last_30_days.tokens_in, 150);
+    assert_eq!(summary.totals.today.tokens_in, 50);
+    assert_eq!(summary.agents.len(), 2);
+    assert_eq!(
+        summary
+            .agents
+            .iter()
+            .find(|entry| entry.agent == "claude-code")
+            .unwrap()
+            .windows
+            .last_30_days
+            .tokens_in,
+        100
+    );
 }
 
 #[test]

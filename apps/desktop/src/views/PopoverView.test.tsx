@@ -143,7 +143,12 @@ const PROVIDER_USAGE = {
       displayName: "Anthropic",
       state: "estimated",
       staleness: "fresh",
-      windows: { today: USAGE_WINDOW, week: USAGE_WINDOW, month: USAGE_WINDOW },
+      windows: {
+        today: USAGE_WINDOW,
+        week: USAGE_WINDOW,
+        monthToDate: USAGE_WINDOW,
+        last30Days: USAGE_WINDOW,
+      },
       agents: [],
       lastActivityAt: "2027-01-15T07:59:00Z",
     },
