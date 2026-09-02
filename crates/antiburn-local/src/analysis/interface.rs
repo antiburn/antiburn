@@ -208,7 +208,7 @@ pub(crate) fn bounded_provider_hint_value(value: &str) -> Option<String> {
 }
 
 /// Session facts that an adapter can state only after the last record.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionSummary {
     /// True when this adapter can observe cache-write tokens.

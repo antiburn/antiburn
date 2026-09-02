@@ -306,6 +306,19 @@ impl VendorAdapter for ClaudeAdapter {
 }
 
 impl ClaudeAdapter {
+    /// A fresh [`ClaudeStreamState`], serialized. A caller starting the
+    /// first resumable pass over a source (no snapshot from a prior pass
+    /// exists yet) uses this to build a [`StreamSnapshot`] with
+    /// [`ResumePoint::offset`] zero: see
+    /// [`VendorAdapter::visit_claimed_resumed`]'s doc comment for why that
+    /// one method covers both cases.
+    pub fn empty_adapter_snapshot() -> crate::analysis::resume::AdapterSnapshot {
+        crate::analysis::resume::AdapterSnapshot(
+            postcard::to_allocvec(&ClaudeStreamState::default())
+                .expect("a default ClaudeStreamState always encodes"),
+        )
+    }
+
     pub fn visit_claimed(
         &self,
         input: &SessionInput,
@@ -758,7 +771,7 @@ mod tests {
     use crate::analysis::evidence::{EvidenceSource, SourceCapabilities, SourceKind};
     use crate::analysis::evidence_sink::{EvidenceResumeState, SessionEvidenceAccumulator};
     use crate::analysis::metrics_sink::SessionMetricsAccumulator;
-    use crate::analysis::resume::{AdapterSnapshot, EvidenceSnapshot};
+    use crate::analysis::resume::EvidenceSnapshot;
     use crate::analysis::source_validity::ResumePoint;
     use crate::analysis::{PartialReason, RESUME_SNAPSHOT_REVISION, RecordCoverage};
     use crate::discovery::source_version::head_hash_of;
@@ -961,7 +974,7 @@ mod tests {
                 tail_hash: head_hash_of(&[]),
                 tail_len: 0,
             },
-            adapter: AdapterSnapshot(postcard::to_allocvec(&ClaudeStreamState::default()).unwrap()),
+            adapter: ClaudeAdapter::empty_adapter_snapshot(),
         })
     }
 

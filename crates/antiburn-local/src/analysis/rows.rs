@@ -417,6 +417,14 @@ impl TurnRowSink {
         self
     }
 
+    /// The `turn_index` this sink assigns to its next row. A caller that
+    /// pauses a stream mid-session carries this into the next pass's
+    /// snapshot, so a later [`Self::with_start_index`] continues the same
+    /// sequence.
+    pub fn next_index(&self) -> u64 {
+        self.next_index
+    }
+
     /// True once a write has failed. No further row reaches the store after
     /// this, but rows already accepted before the failure stay written.
     pub fn has_error(&self) -> bool {

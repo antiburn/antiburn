@@ -20,10 +20,11 @@ use crate::analysis::interface::{
 };
 use crate::analysis::metrics_sink::SessionMetricsAccumulator;
 use crate::analysis::model::NormalizedEvent;
+use crate::analysis::resume::{AdapterResume, EvidenceSnapshot, StreamSnapshot};
 use crate::analysis::rows::TurnRowSink;
 use crate::analysis::{
     ANALYZER_REVISION, COVERAGE_SCHEMA_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION,
-    SessionMetrics,
+    RESUME_SNAPSHOT_REVISION, SessionMetrics,
 };
 
 /// The suffix after a skill's last `:` (e.g. `deploy` from
@@ -1116,6 +1117,13 @@ impl RecordSink for SessionEvidenceAccumulator {
     }
 }
 
+/// Metrics and evidence state as they stood immediately before the most
+/// recent [`RecordSink::finish`] mutated them. See [`CompositeSink::snapshot`].
+struct PreFinishState {
+    metrics: SessionMetricsAccumulator,
+    evidence: EvidenceSnapshot,
+}
+
 pub struct CompositeSink {
     metrics: SessionMetricsAccumulator,
     evidence: SessionEvidenceAccumulator,
@@ -1127,6 +1135,9 @@ pub struct CompositeSink {
     /// `finish` itself only borrows the summary before moving it on to
     /// `self.metrics`.
     summary: Option<SessionSummary>,
+    /// Set by [`RecordSink::finish`], `None` before the first call. See
+    /// [`Self::snapshot`].
+    pre_finish: Option<PreFinishState>,
 }
 
 impl CompositeSink {
@@ -1136,6 +1147,7 @@ impl CompositeSink {
             evidence,
             turn_rows: None,
             summary: None,
+            pre_finish: None,
         }
     }
 
@@ -1152,6 +1164,7 @@ impl CompositeSink {
             evidence,
             turn_rows: Some(turn_rows),
             summary: None,
+            pre_finish: None,
         }
     }
 
@@ -1208,10 +1221,54 @@ impl CompositeSink {
         self.turn_rows.as_ref().is_some_and(TurnRowSink::has_error)
     }
 
+    /// The fanned-out [`TurnRowSink`]'s next `turn_index`, `None` when
+    /// there is none. A caller building a resume snapshot needs this
+    /// before [`Self::into_parts`] drops the row sink.
+    pub fn turn_rows_next_index(&self) -> Option<u64> {
+        self.turn_rows.as_ref().map(TurnRowSink::next_index)
+    }
+
     pub fn into_parts(self) -> Option<(SessionMetricsAccumulator, SessionEvidenceAccumulator)> {
         self.evidence
             .can_publish()
             .then_some((self.metrics, self.evidence))
+    }
+
+    /// Assembles this source's [`StreamSnapshot`] for the next resume,
+    /// combining `resume` (the adapter's own half, from
+    /// [`crate::analysis::interface::ResumedVisit::resume`]) with this
+    /// sink's own metrics, evidence, and row-index state.
+    ///
+    /// Uses state captured just *before* the most recent `finish` mutated
+    /// it, not after. `finish` can commit a one-time decision from an
+    /// incomplete view of the session — `ProgressSlots::flip_to_active`
+    /// (`metrics_sink/slots.rs`) fixes its chart-bucket position scale on
+    /// the first `finish` that drains a record, using only what that
+    /// `finish` has seen so far — and a resumed pass calls `finish` at
+    /// every step, not only the last one. Restoring the pre-`finish` state
+    /// and running one more `finish` after every future record this
+    /// session ever sees — whether resumed again or not — reproduces
+    /// exactly what a single continuous pass computes, because a
+    /// continuous pass also calls `finish` exactly once, after the same
+    /// records. See `crates/antiburn-local/tests/resume_parity.rs`.
+    ///
+    /// `None` before the first `finish`, or under the same rule
+    /// [`Self::evidence`] returns `None` (no fanned-out [`TurnRowSink`], or
+    /// the residual cannot publish yet).
+    pub fn snapshot(&self, resume: AdapterResume) -> Option<StreamSnapshot> {
+        if !self.evidence.can_publish() {
+            return None;
+        }
+        let pre_finish = self.pre_finish.as_ref()?;
+        let next_turn_index = self.turn_rows_next_index()?;
+        Some(StreamSnapshot {
+            revision: RESUME_SNAPSHOT_REVISION,
+            resume: resume.point,
+            adapter: resume.adapter,
+            metrics: pre_finish.metrics.clone(),
+            evidence: pre_finish.evidence.clone(),
+            next_turn_index,
+        })
     }
 }
 
@@ -1225,6 +1282,18 @@ impl RecordSink for CompositeSink {
     }
 
     fn finish(&mut self, summary: SessionSummary) {
+        // `Self::snapshot` needs the state from before `finish` mutates it.
+        // Only a sink with turn rows can snapshot, so a sink without them
+        // does not pay for the clone.
+        if self.turn_rows.is_some() {
+            self.pre_finish = Some(PreFinishState {
+                metrics: self.metrics.snapshot(),
+                evidence: EvidenceSnapshot {
+                    record: self.evidence.coverage_record(),
+                    resume: self.evidence.resume_state(),
+                },
+            });
+        }
         self.evidence.observe_summary(&summary);
         if let Some(turn_rows) = &mut self.turn_rows {
             turn_rows.flush();

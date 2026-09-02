@@ -80,8 +80,8 @@ pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, So
 pub use interface::{
     ContentKind, ContentPart, ContextSourceKind, EvidenceObservation, MAX_CONTENT_PART_BYTES,
     MAX_PROVIDER_HINTS, NormalizedRecord, ProviderHint, RawSource, RecordCoverage, RecordSink,
-    RelationProvenance, SessionCollector, SessionInput, SessionSummary, SourceChangedReason,
-    TurnContent, VendorAdapter, VisitOutcome,
+    RelationProvenance, ResumedVisit, SessionCollector, SessionInput, SessionSummary,
+    SourceChangedReason, TurnContent, VendorAdapter, VisitOutcome,
 };
 pub use merge::merge_subagent_events;
 pub use metrics_sink::{RETAINED_METRICS_BYTES_BOUND, SessionMetricsAccumulator, merge_metrics};

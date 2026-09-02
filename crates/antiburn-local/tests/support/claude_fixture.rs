@@ -1,3 +1,7 @@
+//! Shared by every test that includes it through `#[path]`. Not every
+//! binary uses every helper here — the same reason `corpus.rs` allows this.
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
