@@ -1721,10 +1721,11 @@ fn reveal(window: &WebviewWindow) {
 /// Everything that has to happen when the popover reaches the screen, whichever
 /// way it got there.
 ///
-/// The popover *is* the view of the scanned data, so its visibility is what
-/// gates the periodic rescan (see [`crate::scan`]). Reported from here rather
-/// than inferred from window events, because a hidden window that was never
-/// shown produces no event at all.
+/// The scheduler's [`TICK`](crate::scan::TICK) already runs while the popover
+/// is hidden, so this is reconciliation, not the only path to a fresh list: it
+/// closes the gap between the last tick and the moment a reader is actually
+/// looking. Reported from here rather than inferred from window events,
+/// because a hidden window that was never shown produces no event at all.
 ///
 /// The menu-bar highlight is lit here for the same reason [`note_hidden`]
 /// clears it: both open paths already run through this one — the toggle, and a
@@ -1733,7 +1734,6 @@ fn reveal(window: &WebviewWindow) {
 /// has to remember.
 fn note_shown(app: &AppHandle) {
     if let Some(controller) = app.try_state::<crate::scan::ScanController>() {
-        controller.set_popover_visible(true);
         // Opening the popover is the one moment a reader is guaranteed to be
         // looking, so refresh immediately instead of waiting out a tick.
         controller.request();
@@ -1762,14 +1762,12 @@ fn note_shown(app: &AppHandle) {
 /// Every close path already runs through here — the toggle, the webview's
 /// Escape, dismissal on focus loss or an outside click, and the shell's
 /// suppressed window close — which is why the menu-bar highlight is cleared
-/// here rather than at each of them.
+/// here rather than at each of them. The scan scheduler does not gate on
+/// visibility, so this hook has nothing left to tell it.
 ///
 /// Unconditional: clearing a highlight that is already off costs nothing, and
 /// a state that somehow drifted out of step is corrected rather than kept.
 pub fn note_hidden(app: &AppHandle) {
-    if let Some(controller) = app.try_state::<crate::scan::ScanController>() {
-        controller.set_popover_visible(false);
-    }
     crate::tray::set_highlight(app, false);
 }
 
