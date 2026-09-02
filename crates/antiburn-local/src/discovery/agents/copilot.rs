@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 
 use crate::discovery::scanner::AgentKind;
 use crate::discovery::{
-    AgentExplorer, DesktopPlatform, SessionLog, SessionSource, SurfacePaths, app_config_dir_in,
-    collect_dirs_with_exts, current_desktop_platform, env_path_when_real_home,
+    AgentExplorer, DesktopPlatform, SessionLog, SessionSource, SurfacePaths, WatchRoot,
+    app_config_dir_in, collect_dirs_with_exts, current_desktop_platform, env_path_when_real_home,
     find_chat_session_dirs, home_dir, recent_files_with_exts,
 };
 use async_trait::async_trait;
@@ -130,6 +130,17 @@ impl AgentExplorer for CopilotExplorer {
             ],
             mirror: Vec::new(),
         }
+    }
+
+    /// The same CLI and IDE roots discovery walks.
+    fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
+        let paths = self.surface_paths(home);
+        paths
+            .cli
+            .into_iter()
+            .chain(paths.ide_desktop)
+            .map(WatchRoot::recursive)
+            .collect()
     }
 }
 

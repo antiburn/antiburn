@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use std::mem::size_of;
 
+use serde::{Deserialize, Serialize};
+
 use super::slots::{CacheRehydrationMark, CacheSlot};
 use super::tally::IdentityKey;
 
@@ -13,7 +15,7 @@ const CACHE_REHYDRATION_RECOVERY_READ_RATIO: f64 = 0.5;
 const CLAUDE_REHYDRATION_MIN_USER_INACTIVITY_SECS: u64 = 60 * 60;
 const CODEX_REHYDRATION_MIN_USER_INACTIVITY_SECS: u64 = 30 * 60;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub(crate) struct CacheTurn {
     key: (i64, u64),
     context_tokens: u64,
@@ -33,7 +35,7 @@ pub(crate) struct CacheInput {
     pub(crate) model: Option<IdentityKey>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct DeferredCache {
     key: (i64, u64),
     gap: Option<u64>,
@@ -48,7 +50,7 @@ pub(crate) struct CachePatch {
     pub(crate) slot: CacheSlot,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub(crate) struct CacheReducer {
     rehydration_min_user_inactivity_secs: Option<u64>,
     has_explicit_cache_writes: bool,

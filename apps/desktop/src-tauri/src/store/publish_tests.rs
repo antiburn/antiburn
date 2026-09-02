@@ -163,7 +163,7 @@ fn a_lost_race_from_a_zero_baseline_publishes_no_evidence_no_analysis_and_no_tur
         evidence_completion(&claim, PublishedEvidence::Ready, "{\"lost\":true}".into());
 
     let published = store
-        .publish_projections(&record, None, &completion, &[])
+        .publish_projections(&record, None, &completion, &[], &[])
         .unwrap();
     assert!(
         !published,
@@ -210,7 +210,7 @@ fn a_lost_race_leaves_relations_untouched() {
 
     assert!(
         !store
-            .publish_projections(&record, None, &completion, &losing_relations)
+            .publish_projections(&record, None, &completion, &losing_relations, &[])
             .unwrap()
     );
     assert_eq!(store.relations(&key).unwrap(), relations_before);
@@ -251,7 +251,7 @@ fn a_won_race_removes_turn_rows_from_every_superseded_fence_and_keeps_only_its_o
 
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 
@@ -298,7 +298,7 @@ fn published_turn_rows_returns_the_winning_pass_rows_in_order() {
     let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 
@@ -328,7 +328,7 @@ fn published_turn_rows_serves_the_last_published_fence_while_a_newer_claim_is_in
     let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
     let published = store.published_turn_rows(&key).unwrap();
@@ -414,7 +414,7 @@ fn published_fence_equals_claim_fence_for_every_terminal_status() {
         let completion = evidence_completion(&claim, status, "{}".into());
         assert!(
             store
-                .publish_projections(&record, None, &completion, &[])
+                .publish_projections(&record, None, &completion, &[], &[])
                 .unwrap(),
             "a {} completion still publishes",
             status.as_str()
@@ -445,7 +445,7 @@ fn a_second_publish_supersedes_the_first_in_published_turn_rows() {
     let first_completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
     assert!(
         store
-            .publish_projections(&record, None, &first_completion, &[])
+            .publish_projections(&record, None, &first_completion, &[], &[])
             .unwrap()
     );
     assert_eq!(
@@ -470,7 +470,7 @@ fn a_second_publish_supersedes_the_first_in_published_turn_rows() {
     let next_completion = evidence_completion(&next_claim, PublishedEvidence::Ready, "{}".into());
     assert!(
         store
-            .publish_projections(&next_record, None, &next_completion, &[])
+            .publish_projections(&next_record, None, &next_completion, &[], &[])
             .unwrap()
     );
 
@@ -494,7 +494,7 @@ fn publish_projections_stamps_published_fence_with_the_completion_claim_fence() 
     let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 
@@ -517,7 +517,7 @@ fn a_lost_race_does_not_stamp_published_fence() {
 
     assert!(
         !store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 
@@ -534,7 +534,7 @@ fn a_requeue_and_a_reclaim_leave_published_fence_intact() {
     let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
     let published_fence = store.evidence(&key).unwrap().unwrap().published_fence;
@@ -571,7 +571,7 @@ fn fail_evidence_leaves_published_fence_intact() {
     let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
     let published_fence = store.evidence(&key).unwrap().unwrap().published_fence;
@@ -613,7 +613,7 @@ fn published_turn_rows_serves_the_last_published_fence_after_a_requeue() {
     let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 

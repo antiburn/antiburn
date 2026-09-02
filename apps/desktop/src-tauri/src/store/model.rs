@@ -4,6 +4,7 @@
 //! camelCase payloads in [`crate::dto`]. Keeping the two apart means a schema
 //! change never silently alters what the webview receives.
 
+use antiburn_local::analysis::StoredResume;
 use serde::{Deserialize, Serialize};
 
 /// Identity of one local session: the execution environment it ran in, the
@@ -261,6 +262,40 @@ pub struct EvidenceCompletion {
     pub evidence_json: String,
 }
 
+/// Whether one source in a completed pass resumed from a snapshot or read
+/// fully. See "R4. Fence semantics" in the phase 3b build spec
+/// (`docs/plans/continuous-session-ingest.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourcePublishMode {
+    /// The pass appended only new rows for this source, under the claim
+    /// fence, alongside its rows already published under
+    /// `published_fence`. [`super::Store::publish_projections`] re-stamps
+    /// the appended rows onto `published_fence` instead of deleting the
+    /// rows already there.
+    Resumed,
+    /// The pass read this source from the start. Its rows this pass
+    /// replace every row already published for it.
+    Full,
+}
+
+/// One source's fate in a completed pass: how [`super::Store::publish_projections`]
+/// handles its rows, and the resume snapshot (if any) to persist for the
+/// next pass. A source with no entry in the list a caller passes is
+/// treated as [`SourcePublishMode::Full`] with no resume bookkeeping —
+/// this is what every pre-resume caller's empty list means, and stays
+/// correct for a caller that never claims resume support for any source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourcePublishOutcome {
+    pub source_key: String,
+    pub mode: SourcePublishMode,
+    /// The source's resume snapshot to persist for the next pass. `None`
+    /// when the source's adapter does not support resume, or its
+    /// end-of-stream state was unsettled — [`super::Store::publish_projections`]
+    /// then drops any snapshot already stored for this source instead of
+    /// leaving a stale one behind.
+    pub resume: Option<StoredResume>,
+}
+
 /// One session's token evidence, as the provider-usage aggregation reads it.
 ///
 /// A projection rather than a record: the aggregation needs four columns out
@@ -281,6 +316,27 @@ pub struct UsageEvidenceRecord {
     pub provider_hints_json: Option<String>,
     /// Opaque account observations keyed by canonical provider.
     pub provider_accounts_json: String,
+}
+
+/// One session and its published turns for limit-share estimates.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionUsageRecord {
+    pub key: SessionKey,
+    pub wsl_distro: Option<String>,
+    pub provider_hints_json: Option<String>,
+    pub provider_accounts_json: String,
+    pub turns: Vec<SessionUsageTurnRecord>,
+}
+
+/// One timestamped turn used by a session limit estimate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionUsageTurnRecord {
+    pub ts_ms: Option<i64>,
+    pub model: Option<String>,
+    pub input_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub output_tokens: u64,
 }
 
 /// One local relationship between two sessions.
@@ -421,6 +477,35 @@ impl DiskSpaceDisplay {
             "always" => Some(DiskSpaceDisplay::Always),
             "whenLow" => Some(DiskSpaceDisplay::WhenLow),
             "never" => Some(DiskSpaceDisplay::Never),
+            _ => None,
+        }
+    }
+}
+
+/// The metric shown in every session's activity badge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionBadgeMetric {
+    #[default]
+    Cost,
+    WeeklyPercent,
+    FiveHourPercent,
+}
+
+impl SessionBadgeMetric {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cost => "cost",
+            Self::WeeklyPercent => "weeklyPercent",
+            Self::FiveHourPercent => "fiveHourPercent",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "cost" => Some(Self::Cost),
+            "weeklyPercent" => Some(Self::WeeklyPercent),
+            "fiveHourPercent" => Some(Self::FiveHourPercent),
             _ => None,
         }
     }
@@ -694,6 +779,8 @@ pub struct AppSettings {
     /// display preference — it never gates a fetch — so it defaults open and
     /// stays wherever the reader last left it.
     pub overview_limits_expanded: bool,
+    /// The metric shown in each activity-session badge.
+    pub session_badge_metric: SessionBadgeMetric,
 }
 
 impl Default for AppSettings {
@@ -743,6 +830,7 @@ impl Default for AppSettings {
             // Open by default: a reader who has live limits at all should see
             // them without an extra click the first time they notice this.
             overview_limits_expanded: true,
+            session_badge_metric: SessionBadgeMetric::default(),
         }
     }
 }

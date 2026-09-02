@@ -196,6 +196,12 @@ pub fn run() {
             ) {
                 ::tracing::error!(event = "evidence_reconcile_failed", error = %error);
             }
+            if let Err(error) = app
+                .state::<store::Store>()
+                .purge_stale_source_resume(analysis::resume_revisions())
+            {
+                ::tracing::error!(event = "source_resume_purge_failed", error = %error);
+            }
 
             // Apply the persisted theme before any window shows, so the first
             // paint is already in the reader's chosen appearance. "system" and
@@ -211,6 +217,7 @@ pub fn run() {
                 }
             }
             app.manage(scan::ScanController::default());
+            app.manage(scan::idle::IdleWake::default());
             app.manage(Schedulers::default());
             app.manage(popover::PopoverState::default());
             app.manage(popover_peek::manager());
@@ -293,6 +300,7 @@ pub fn run() {
             if let Some(schedulers) = app.try_state::<Schedulers>() {
                 schedulers.push(runtime_pricing::spawn_scheduler(app.handle()));
                 schedulers.push(scan::spawn_scheduler(app.handle()));
+                schedulers.push(scan::idle::spawn(app.handle()));
                 schedulers.push(retention::spawn_scheduler(app.handle()));
                 schedulers.push(insights_worker::spawn(app.handle()));
                 schedulers.push(updates::spawn_scheduler(app.handle()));
@@ -588,6 +596,16 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
+    fn default_windows_can_request_session_limit_allocations() {
+        let permissions = include_str!("../permissions/default.toml");
+        assert!(
+            permissions
+                .lines()
+                .any(|line| line.trim() == "\"allow-get-session-limit-allocations\",")
+        );
+    }
+
+    #[test]
     fn a_window_close_never_quits_the_finished_menu_bar_app() {
         // Settings and the popover both close with no exit code, and the tray
         // item is the app's real lifetime.
@@ -681,6 +699,7 @@ mod tests {
                     analysis: SessionAnalysis::unavailable(),
                     evidence: None,
                     outcome: PassOutcome::SourceMissing,
+                    source_outcomes: Vec::new(),
                 }
             }) as PassFuture
         };

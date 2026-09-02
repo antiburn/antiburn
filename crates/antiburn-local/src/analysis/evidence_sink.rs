@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::mem::size_of;
 
+use serde::{Deserialize, Serialize};
+
 use crate::analysis::evidence::{
     CacheEvidence, ChurnCounts, CompactionEvidence, ContextEvidence, ContextSourceEvidence,
     CoverageReason, EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource,
@@ -18,10 +20,11 @@ use crate::analysis::interface::{
 };
 use crate::analysis::metrics_sink::SessionMetricsAccumulator;
 use crate::analysis::model::NormalizedEvent;
+use crate::analysis::resume::{AdapterResume, EvidenceSnapshot, StreamSnapshot};
 use crate::analysis::rows::TurnRowSink;
 use crate::analysis::{
     ANALYZER_REVISION, COVERAGE_SCHEMA_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION,
-    SessionMetrics,
+    RESUME_SNAPSHOT_REVISION, SessionMetrics,
 };
 
 /// The suffix after a skill's last `:` (e.g. `deploy` from
@@ -42,6 +45,22 @@ pub const RETAINED_EVIDENCE_BYTES_BOUND: usize = 64 * 1_024;
 /// pointers and per-node slack — on top of its own key or value bytes.
 const BTREE_ENTRY_OVERHEAD_BYTES: usize = 48;
 
+/// The two fields [`SessionEvidenceAccumulator::coverage_record`] leaves
+/// out because a closed pass's record already carries their final effect.
+/// A resumed, still-open accumulator needs them back:
+/// `last_ts_ms` to keep detecting out-of-order records across the resume
+/// boundary, `seen_thread_uuids` so a later record's parent link resolves
+/// against an identity an earlier, already-processed record declared.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EvidenceResumeState {
+    pub last_ts_ms: Option<i64>,
+    pub seen_thread_uuids: HashSet<String>,
+}
+
+/// [`Clone`] lets a caller keep one input's residual as its own
+/// (for a future resume snapshot) while folding a copy into the
+/// parent's coverage record. See `stream_vendor_with_hooks`.
+#[derive(Clone)]
 pub struct SessionEvidenceAccumulator {
     identity: SessionEvidenceIdentity,
     capabilities: SourceCapabilities,
@@ -502,7 +521,26 @@ impl SessionEvidenceAccumulator {
     /// carry (`last_ts_ms`, `seen_thread_uuids`) start empty: [`Self::evidence`]
     /// never reads them directly, only the `ordering` and
     /// `thread_parent_unresolved` results already folded into the record.
+    ///
+    /// This is the row-replay shape: [`crate::analysis::evidence_from_facts`]
+    /// rebuilds [`SessionEvidence`] for a *closed* pass, where the record
+    /// already carries the final effect of those two fields. A resumed
+    /// accumulator that will keep observing more records instead needs
+    /// [`Self::from_coverage_record_with_resume`].
     pub fn from_coverage_record(record: SessionCoverageRecord) -> Self {
+        Self::from_coverage_record_with_resume(record, EvidenceResumeState::default())
+    }
+
+    /// Like [`Self::from_coverage_record`], but restores the two transient
+    /// fields from `resume` instead of starting them empty. Use this to
+    /// resume a still-open accumulator: an unresumed
+    /// `seen_thread_uuids` would make a later record's parent link look
+    /// unresolved even when an earlier, already-processed record declared
+    /// it.
+    pub fn from_coverage_record_with_resume(
+        record: SessionCoverageRecord,
+        resume: EvidenceResumeState,
+    ) -> Self {
         Self {
             identity: record.identity,
             capabilities: record.capabilities,
@@ -512,7 +550,7 @@ impl SessionEvidenceAccumulator {
             diagnostics: record.diagnostics,
             record_loss_reason: record.record_loss_reason,
             session_cap_exceeded: record.session_cap_exceeded,
-            last_ts_ms: None,
+            last_ts_ms: resume.last_ts_ms,
             tools: record.tools,
             invoked_skills: record.invoked_skills,
             tools_cap_exceeded: record.tools_cap_exceeded,
@@ -523,10 +561,20 @@ impl SessionEvidenceAccumulator {
             subagent_children: record.subagent_children,
             subagent_examples: record.subagent_examples,
             subagents_cap_exceeded: record.subagents_cap_exceeded,
-            seen_thread_uuids: HashSet::new(),
+            seen_thread_uuids: resume.seen_thread_uuids,
             thread_parent_unresolved: record.thread_parent_unresolved,
             summary_observed: record.summary_observed,
             child_loss_reason: record.child_loss_reason,
+        }
+    }
+
+    /// The two transient fields [`Self::coverage_record`] leaves out,
+    /// needed to resume a still-open accumulator. See
+    /// [`Self::from_coverage_record_with_resume`].
+    pub fn resume_state(&self) -> EvidenceResumeState {
+        EvidenceResumeState {
+            last_ts_ms: self.last_ts_ms,
+            seen_thread_uuids: self.seen_thread_uuids.clone(),
         }
     }
 
@@ -1073,6 +1121,13 @@ impl RecordSink for SessionEvidenceAccumulator {
     }
 }
 
+/// Metrics and evidence state as they stood immediately before the most
+/// recent [`RecordSink::finish`] mutated them. See [`CompositeSink::snapshot`].
+struct PreFinishState {
+    metrics: SessionMetricsAccumulator,
+    evidence: EvidenceSnapshot,
+}
+
 pub struct CompositeSink {
     metrics: SessionMetricsAccumulator,
     evidence: SessionEvidenceAccumulator,
@@ -1084,6 +1139,9 @@ pub struct CompositeSink {
     /// `finish` itself only borrows the summary before moving it on to
     /// `self.metrics`.
     summary: Option<SessionSummary>,
+    /// Set by [`RecordSink::finish`], `None` before the first call. See
+    /// [`Self::snapshot`].
+    pre_finish: Option<PreFinishState>,
 }
 
 impl CompositeSink {
@@ -1093,6 +1151,7 @@ impl CompositeSink {
             evidence,
             turn_rows: None,
             summary: None,
+            pre_finish: None,
         }
     }
 
@@ -1109,6 +1168,7 @@ impl CompositeSink {
             evidence,
             turn_rows: Some(turn_rows),
             summary: None,
+            pre_finish: None,
         }
     }
 
@@ -1165,10 +1225,54 @@ impl CompositeSink {
         self.turn_rows.as_ref().is_some_and(TurnRowSink::has_error)
     }
 
+    /// The fanned-out [`TurnRowSink`]'s next `turn_index`, `None` when
+    /// there is none. A caller building a resume snapshot needs this
+    /// before [`Self::into_parts`] drops the row sink.
+    pub fn turn_rows_next_index(&self) -> Option<u64> {
+        self.turn_rows.as_ref().map(TurnRowSink::next_index)
+    }
+
     pub fn into_parts(self) -> Option<(SessionMetricsAccumulator, SessionEvidenceAccumulator)> {
         self.evidence
             .can_publish()
             .then_some((self.metrics, self.evidence))
+    }
+
+    /// Assembles this source's [`StreamSnapshot`] for the next resume,
+    /// combining `resume` (the adapter's own half, from
+    /// [`crate::analysis::interface::ResumedVisit::resume`]) with this
+    /// sink's own metrics, evidence, and row-index state.
+    ///
+    /// Uses state captured just *before* the most recent `finish` mutated
+    /// it, not after. `finish` can commit a one-time decision from an
+    /// incomplete view of the session — `ProgressSlots::flip_to_active`
+    /// (`metrics_sink/slots.rs`) fixes its chart-bucket position scale on
+    /// the first `finish` that drains a record, using only what that
+    /// `finish` has seen so far — and a resumed pass calls `finish` at
+    /// every step, not only the last one. Restoring the pre-`finish` state
+    /// and running one more `finish` after every future record this
+    /// session ever sees — whether resumed again or not — reproduces
+    /// exactly what a single continuous pass computes, because a
+    /// continuous pass also calls `finish` exactly once, after the same
+    /// records. See `crates/antiburn-local/tests/resume_parity.rs`.
+    ///
+    /// `None` before the first `finish`, or under the same rule
+    /// [`Self::evidence`] returns `None` (no fanned-out [`TurnRowSink`], or
+    /// the residual cannot publish yet).
+    pub fn snapshot(&self, resume: AdapterResume) -> Option<StreamSnapshot> {
+        if !self.evidence.can_publish() {
+            return None;
+        }
+        let pre_finish = self.pre_finish.as_ref()?;
+        let next_turn_index = self.turn_rows_next_index()?;
+        Some(StreamSnapshot {
+            revision: RESUME_SNAPSHOT_REVISION,
+            resume: resume.point,
+            adapter: resume.adapter,
+            metrics: pre_finish.metrics.clone(),
+            evidence: pre_finish.evidence.clone(),
+            next_turn_index,
+        })
     }
 }
 
@@ -1182,6 +1286,18 @@ impl RecordSink for CompositeSink {
     }
 
     fn finish(&mut self, summary: SessionSummary) {
+        // `Self::snapshot` needs the state from before `finish` mutates it.
+        // Only a sink with turn rows can snapshot, so a sink without them
+        // does not pay for the clone.
+        if self.turn_rows.is_some() {
+            self.pre_finish = Some(PreFinishState {
+                metrics: self.metrics.snapshot(),
+                evidence: EvidenceSnapshot {
+                    record: self.evidence.coverage_record(),
+                    resume: self.evidence.resume_state(),
+                },
+            });
+        }
         self.evidence.observe_summary(&summary);
         if let Some(turn_rows) = &mut self.turn_rows {
             turn_rows.flush();

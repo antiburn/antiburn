@@ -10,8 +10,10 @@ use super::model::{
 };
 use super::*;
 
+mod activity_tests;
 mod coverage_tests;
 mod reconcile_tests;
+mod resume_tests;
 
 fn store() -> Store {
     Store::open_in_memory(Path::new("/tmp/antiburn-test-state")).expect("in-memory store")
@@ -335,7 +337,7 @@ fn provider_hints_migration_keeps_old_analysis_unknown() {
         .unwrap()
         .expect("legacy analysis survives");
 
-    assert_eq!(store.schema_version().unwrap(), 28);
+    assert_eq!(store.schema_version().unwrap(), 30);
     assert_eq!(analysis.provider_hints_json, None);
 }
 
@@ -527,6 +529,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             disabled_agents: DisabledAgents::parse("windsurf,kiro"),
             analytics_enabled: false,
             overview_limits_expanded: false,
+            session_badge_metric: SessionBadgeMetric::WeeklyPercent,
         })
         .unwrap();
     assert_eq!(store.settings().unwrap(), saved);
@@ -1575,7 +1578,7 @@ fn publish_projections_writes_the_generation_and_revision_columns() {
 
     assert!(
         store
-            .publish_projections(&record, Some(900), &completion, &[])
+            .publish_projections(&record, Some(900), &completion, &[], &[])
             .unwrap()
     );
 
@@ -1603,7 +1606,7 @@ fn publish_projections_round_trips_initial_context_json() {
 
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 
@@ -1634,7 +1637,7 @@ fn publish_projections_round_trips_source_summaries_json() {
 
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 
@@ -1659,7 +1662,7 @@ fn publish_projections_round_trips_provider_hints_json() {
 
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 
@@ -1681,7 +1684,7 @@ fn publish_projections_never_clears_a_known_start_time() {
     let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
     assert!(
         store
-            .publish_projections(&record, Some(800), &completion, &[])
+            .publish_projections(&record, Some(800), &completion, &[], &[])
             .unwrap()
     );
 
@@ -1699,7 +1702,7 @@ fn publish_projections_never_clears_a_known_start_time() {
     let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 
@@ -2700,7 +2703,7 @@ fn analysis_from_rows_serves_a_pass_published_unsupported() {
     let completion = evidence_completion(&claim, PublishedEvidence::Unsupported, "{}".into());
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
     assert_eq!(
@@ -2800,6 +2803,7 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
                 analysis: crate::analysis::SessionAnalysis::unavailable(),
                 evidence: None,
                 outcome: crate::analysis::PassOutcome::SourceMissing,
+                source_outcomes: Vec::new(),
             }
         }) as crate::insights_worker::PassFuture
     };
@@ -3267,7 +3271,7 @@ fn publishing_session_evidence_writes_both_projections_and_the_start_time() {
 
     assert!(
         store
-            .publish_projections(&record, Some(50), &completion, &[])
+            .publish_projections(&record, Some(50), &completion, &[], &[])
             .unwrap()
     );
 
@@ -3309,7 +3313,7 @@ fn published_session_evidence_and_analysis_describe_the_same_pass() {
 
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 
@@ -3352,7 +3356,7 @@ fn a_stale_generation_publishes_no_session_evidence_and_no_analysis() {
 
     assert!(
         !store
-            .publish_projections(&record, Some(88), &completion, &[])
+            .publish_projections(&record, Some(88), &completion, &[], &[])
             .unwrap()
     );
 
@@ -3388,7 +3392,7 @@ fn a_stale_fence_publishes_no_session_evidence_and_no_analysis() {
 
     assert!(
         !store
-            .publish_projections(&record, Some(88), &completion, &[])
+            .publish_projections(&record, Some(88), &completion, &[], &[])
             .unwrap()
     );
 
@@ -3426,7 +3430,7 @@ fn a_stale_claim_cannot_change_projections_or_relations() {
     }];
     assert!(
         store
-            .publish_projections(&record, None, &current_completion, &current_relations)
+            .publish_projections(&record, None, &current_completion, &current_relations, &[])
             .unwrap()
     );
     let analysis_before = store.analysis(&record.key).unwrap();
@@ -3447,7 +3451,13 @@ fn a_stale_claim_cannot_change_projections_or_relations() {
 
     assert!(
         !store
-            .publish_projections(&stale_record, None, &stale_completion, &stale_relations)
+            .publish_projections(
+                &stale_record,
+                None,
+                &stale_completion,
+                &stale_relations,
+                &[]
+            )
             .unwrap()
     );
     assert_eq!(store.analysis(&record.key).unwrap(), analysis_before);
@@ -3490,7 +3500,7 @@ fn publication_replaces_subagent_relations_in_one_transaction() {
 
     assert!(
         store
-            .publish_projections(&record, None, &completion, &new_relations)
+            .publish_projections(&record, None, &completion, &new_relations, &[])
             .unwrap()
     );
     assert_eq!(
@@ -3567,7 +3577,7 @@ fn a_session_evidence_payload_round_trips_through_the_store() {
 
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 
@@ -3710,10 +3720,22 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 28);
+    assert_eq!(super::schema::MIGRATIONS.len(), 30);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 28);
+    assert_eq!(store.schema_version().unwrap(), 30);
+    let index_exists = store
+        .lock()
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'index' AND name = 'turn_usage_timestamp'
+            )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap();
+    assert!(index_exists);
 }
 
 #[test]
@@ -3766,7 +3788,7 @@ fn publishing_evidence_keeps_only_the_current_fence_turn_rows() {
 
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 
@@ -3779,6 +3801,41 @@ fn publishing_evidence_keeps_only_the_current_fence_turn_rows() {
         count_turn_rows(&connection, &turn_session_key(&key), claim.claim_fence).unwrap(),
         2
     );
+}
+
+#[test]
+fn session_usage_turns_returns_published_rows_at_the_time_boundary() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "session-usage-turns", 100, 60);
+    let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+    {
+        let connection = store.lock();
+        insert_turn_rows(
+            &connection,
+            &turn_session_key(&key),
+            claim.claim_fence + 1,
+            &[turn_row(2)],
+        )
+        .unwrap();
+    }
+
+    let rows = store.session_usage_turns(1_001).unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key, key);
+    assert_eq!(rows[0].turns.len(), 1);
+    assert_eq!(rows[0].turns[0].ts_ms, Some(1_001));
+    assert_eq!(rows[0].turns[0].model.as_deref(), Some("claude-opus-4-6"));
+    assert_eq!(rows[0].turns[0].input_tokens, 10);
+    assert_eq!(rows[0].turns[0].output_tokens, 5);
 }
 
 #[test]
@@ -3816,7 +3873,7 @@ fn a_lost_publish_race_deletes_only_its_own_fences_turn_rows() {
 
     assert!(
         !store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 

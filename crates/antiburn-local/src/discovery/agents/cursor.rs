@@ -17,7 +17,7 @@ use super::path_codec::decode_cursor_workspace_path_buf;
 use crate::discovery::scanner::{self, AgentKind};
 use crate::discovery::{
     AgentExplorer, DuplicateForkDetector, FORK_OBSERVATION_KEY, ForkObservation, SessionLog,
-    SessionSource, SurfacePaths, app_config_dir_in, find_chat_session_dirs, home_dir,
+    SessionSource, SurfacePaths, WatchRoot, app_config_dir_in, find_chat_session_dirs, home_dir,
     recent_files_with_exts,
 };
 
@@ -124,6 +124,17 @@ impl AgentExplorer for CursorExplorer {
             ],
             mirror: Vec::new(),
         }
+    }
+
+    /// The same CLI and IDE roots discovery walks.
+    fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
+        let paths = self.surface_paths(home);
+        paths
+            .cli
+            .into_iter()
+            .chain(paths.ide_desktop)
+            .map(WatchRoot::recursive)
+            .collect()
     }
 }
 

@@ -1,4 +1,4 @@
-import { Check, CircleDashed, X, type LucideIcon } from "lucide-react"
+import { Check, CircleDashed, Flame, X, type LucideIcon } from "lucide-react"
 import { Fragment } from "react"
 
 import type { SessionHygieneEvidenceState } from "../../lib/insightsIpc"
@@ -16,6 +16,15 @@ export interface SessionStatusBarProps {
   evidenceState?: SessionHygieneEvidenceState
   /** Display values for the cost figure; omit when nothing priced the session. */
   cost?: SessionCostBadgeProps | null | undefined
+  limitBadge?:
+    | {
+        label: string
+        percent: number
+        provider?: string
+        windowId?: string
+      }
+    | undefined
+  onLimitBadgeHover?: (badge: NonNullable<SessionStatusBarProps["limitBadge"]> | null) => void
 }
 
 /**
@@ -35,6 +44,11 @@ function verdictInk(failedShare: number, assessedCount: number): string {
   if (failedShare === 0) return "var(--color-system-green)"
   const pct = Math.round(failedShare * 100)
   return `color-mix(in oklch, var(--color-system-red-text) ${pct}%, var(--color-system-orange))`
+}
+
+function formatLimitPercent(percent: number): string {
+  if (percent > 0 && percent < 0.01) return "<0.01%"
+  return `${Number(percent.toFixed(2))}%`
 }
 
 interface StatusMark {
@@ -113,6 +127,8 @@ export function SessionStatusBar({
   checks,
   evidenceState = "ready",
   cost,
+  limitBadge,
+  onLimitBadgeHover,
 }: SessionStatusBarProps) {
   const failed = checks.filter((check) => check.status === "finding")
   const passed = checks.filter((check) => check.status === "clean")
@@ -153,6 +169,7 @@ export function SessionStatusBar({
               }`
       }`
   const tooltip = showStateText ? verdictLabel : renderTooltip(failed, passed, notAssessed)
+  const isHighLimitShare = (limitBadge?.percent ?? 0) >= 5
 
   return (
     <div className="flex w-full items-center justify-between gap-x-1.5 text-label-secondary">
@@ -169,7 +186,35 @@ export function SessionStatusBar({
         </span>
       </Tooltip>
 
-      {cost && <SessionCostBadge {...cost} appearance={cost.isHighCost ? "pill" : "bare"} />}
+      {limitBadge ? (
+        <Tooltip label={limitBadge.label} delayMs={150}>
+          <span
+            className={
+              isHighLimitShare
+                ? "flex shrink-0 items-center gap-0.5 rounded-full bg-brand-tint px-1.5 py-px font-mono type-footnote font-medium! leading-[13px] tracking-tight! text-white tabular-nums"
+                : "font-mono type-footnote tabular-nums text-label-secondary"
+            }
+            data-session-limit-provider={limitBadge.provider}
+            data-session-limit-window={limitBadge.windowId}
+            data-session-limit-percent={limitBadge.percent.toFixed(4)}
+            aria-label={
+              isHighLimitShare
+                ? `${limitBadge.label} This session uses 5% or more of your limit.`
+                : limitBadge.label
+            }
+            tabIndex={0}
+            onMouseEnter={() => onLimitBadgeHover?.(limitBadge)}
+            onMouseLeave={() => onLimitBadgeHover?.(null)}
+            onFocus={() => onLimitBadgeHover?.(limitBadge)}
+            onBlur={() => onLimitBadgeHover?.(null)}
+          >
+            {isHighLimitShare && <Flame size={11} className="shrink-0" aria-hidden="true" />}
+            {formatLimitPercent(limitBadge.percent)}
+          </span>
+        </Tooltip>
+      ) : (
+        cost && <SessionCostBadge {...cost} appearance={cost.isHighCost ? "pill" : "bare"} />
+      )}
     </div>
   )
 }

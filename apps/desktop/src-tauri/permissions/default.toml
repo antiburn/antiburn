@@ -29,6 +29,7 @@ permissions = [
   "allow-get-session-analysis",
   "allow-get-session-analysis-fingerprint",
   "allow-get-session-hygiene",
+  "allow-get-session-limit-allocations",
   "allow-get-settings",
   "allow-get-storage-health",
   "allow-get-subagent-analysis",

@@ -414,6 +414,18 @@ pub trait AgentExplorer: Send + Sync {
         SurfacePaths::default()
     }
 
+    /// Filesystem roots a watcher should observe for this agent, for a given
+    /// `home`. Each root uses the same resolution as the agent's discovery
+    /// (including env overrides such as `CODEX_HOME` or `PI_AGENT_DIR`).
+    ///
+    /// A watcher, not discovery, calls this. It does not filter by
+    /// existence — the caller checks that before it asks the OS to watch a
+    /// path. Default returns empty so the trait stays additive; only
+    /// file-backed agents override it.
+    fn watch_roots(&self, _home: &Path) -> Vec<WatchRoot> {
+        Vec::new()
+    }
+
     /// Optional per-agent hook for recovering a session ID from the on-disk
     /// path when the scanner's content parse didn't surface one. Called from
     /// `scanner::apply_metadata_from_path` only if `metadata.session_id` is
@@ -616,6 +628,36 @@ pub struct SurfacePaths {
     pub cli: Vec<PathBuf>,
     pub ide_desktop: Vec<PathBuf>,
     pub mirror: Vec<PathBuf>,
+}
+
+/// One filesystem root a watcher observes for [`AgentExplorer::watch_roots`].
+///
+/// `recursive` says whether the watcher must observe every directory under
+/// `path`, or only `path` itself. A non-recursive root fits an agent whose
+/// session files sit directly in it, with no subdirectories the watcher
+/// needs (OpenCode's data root: `opencode.db` and its `-wal` file).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchRoot {
+    pub path: PathBuf,
+    pub recursive: bool,
+}
+
+impl WatchRoot {
+    /// A root whose subdirectories all matter to the watcher.
+    pub fn recursive(path: PathBuf) -> Self {
+        Self {
+            path,
+            recursive: true,
+        }
+    }
+
+    /// A root whose session files sit directly inside it.
+    pub fn shallow(path: PathBuf) -> Self {
+        Self {
+            path,
+            recursive: false,
+        }
+    }
 }
 
 /// VS Code-family desktop apps whose `User/globalStorage/<ext-id>/` trees
@@ -832,6 +874,12 @@ impl Explorers {
     /// The per-surface path registry for a given agent, resolved against `home`.
     pub fn surface_paths_for(&self, agent: &AgentKind, home: &Path) -> SurfacePaths {
         self.get(agent).surface_paths(home)
+    }
+
+    /// The filesystem roots a watcher should observe for a given agent,
+    /// resolved against `home`.
+    pub fn watch_roots_for(&self, agent: &AgentKind, home: &Path) -> Vec<WatchRoot> {
+        self.get(agent).watch_roots(home)
     }
 
     /// The per-agent filename-based session-id recovery hook. Called by
@@ -1742,35 +1790,8 @@ impl Explorers {
     }
 
     /// Collect every agent's recent session logs, native and WSL, deduped.
-    ///
-    /// Quiet counterpart to [`Self::discover_recent_sessions_with_progress`] for
-    /// callers that report their own progress (or none).
-    pub async fn discover_recent_sessions(&self, now: i64, since_secs: i64) -> Vec<SessionLog> {
-        // One spawn per agent, driven off the `AgentKind::ALL` registry so a new
-        // agent is wired up in exactly one place rather than in each fan-out's
-        // hand-written roster. Order is irrelevant: `collect_discovered_sessions`
-        // merges the per-agent batches.
-        let mut set = tokio::task::JoinSet::new();
-        for t in AgentKind::ALL {
-            let explorer = self.get(t);
-            set.spawn(async move { explorer.discover_recent(now, since_secs).await });
-        }
-        let mut per_agent_logs: Vec<Vec<SessionLog>> = Vec::new();
-        while let Some(result) = set.join_next().await {
-            if let Ok(logs) = result {
-                per_agent_logs.push(logs);
-            }
-        }
-
-        let mut logs = collect_discovered_sessions(per_agent_logs);
-        logs.extend(self.discover_wsl_file_sessions(now, since_secs).await);
-        dedupe_environment_sessions(&mut logs);
-        logs
-    }
-
-    /// Like [`Self::discover_recent_sessions`] but calls `on_agent_done`
-    /// each time an agent explorer completes, enabling per-agent progress
-    /// reporting.
+    /// Calls `on_agent_done` each time an agent explorer completes, enabling
+    /// per-agent progress reporting.
     ///
     /// The callback receives `(agent_name, sessions_found, completed_count, total_agents)`.
     pub async fn discover_recent_sessions_with_progress(

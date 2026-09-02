@@ -1,11 +1,13 @@
 use std::mem::size_of;
 
+use serde::{Deserialize, Serialize};
+
 use crate::analysis::engine::IDLE_GAP_MS;
 
 /// The segment cap covers 1,024 distinct active-time intervals.
 pub(crate) const MAX_ACTIVE_SEGMENTS: usize = 1_024;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct ActiveSegment {
     start: i64,
     end: i64,
@@ -41,10 +43,15 @@ impl ActiveSegment {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub(crate) struct ActiveSegments {
     segments: Vec<ActiveSegment>,
+    /// A prefix-sum cache over `segments`, rebuilt by `Self::rebuild_prefix`
+    /// instead of serialized. `prefix_valid` starts `false` on restore, the
+    /// same state a fresh accumulator starts in.
+    #[serde(skip)]
     prefix: Vec<i64>,
+    #[serde(skip)]
     prefix_valid: bool,
     first_ts: Option<i64>,
     last_ts: Option<i64>,

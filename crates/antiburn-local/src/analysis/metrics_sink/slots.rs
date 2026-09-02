@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use std::mem::size_of;
 
+use serde::{Deserialize, Serialize};
+
 use crate::analysis::model::CompactionTrigger;
 
 use super::tally::NameId;
@@ -12,13 +14,13 @@ pub(crate) const SLOTS_PER_BUCKET: usize = 3;
 /// The slot grid has three times the visible chart resolution.
 pub(crate) const SLOTS: usize = crate::analysis::engine::BUCKETS * SLOTS_PER_BUCKET;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StampedName {
     pub(crate) ordinal: u64,
     pub(crate) name: NameId,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CompactionMark {
     pub(crate) effective_ts: i64,
     pub(crate) ordinal: u64,
@@ -27,7 +29,7 @@ pub(crate) struct CompactionMark {
     pub(crate) post_tokens: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CacheSlot {
     pub(crate) is_rehydration: bool,
     pub(crate) is_routing_miss: bool,
@@ -35,7 +37,7 @@ pub(crate) struct CacheSlot {
     pub(crate) rehydration: Option<CacheRehydrationMark>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CacheRehydrationMark {
     pub(crate) ordinal: u64,
     pub(crate) context_tokens: u64,
@@ -45,7 +47,7 @@ pub(crate) struct CacheRehydrationMark {
     pub(crate) user_inactive_secs: Option<u64>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SlotAggregate {
     pub(crate) first_ordinal: u64,
     pub(crate) last_ordinal: u64,
@@ -180,7 +182,7 @@ fn merge_cache(target: &mut CacheSlot, incoming: CacheSlot) {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ReorderWindow {
     entries: VecDeque<SlotAggregate>,
     ordered: bool,
@@ -324,20 +326,20 @@ fn clamp_timestamp(slot: &mut SlotAggregate, timestamp: i64) {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum SlotAxis {
     #[default]
     Ordinal,
     Active,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct PositionedSlot {
     index: u64,
     aggregate: SlotAggregate,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub(crate) struct ProgressSlots {
     slots: Vec<PositionedSlot>,
     quantum: u64,

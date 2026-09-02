@@ -21,20 +21,21 @@ import { relativeTime } from "./relativeTime"
 import { formatCompact, formatCost } from "./sessionAnalysis"
 
 /** Which window a surface is showing. */
-export type UsageWindowKey = "today" | "week" | "month"
+export type UsageWindowKey = "today" | "week" | "monthToDate" | "last30Days"
 
 /** The window selector's options, in the order they are offered. */
 export const USAGE_WINDOWS: ReadonlyArray<{ value: UsageWindowKey; label: string }> = [
   { value: "today", label: "Today" },
-  { value: "week", label: "Week" },
-  { value: "month", label: "Month" },
+  { value: "week", label: "This week" },
+  { value: "last30Days", label: "Last 30 days" },
 ]
 
 /** The full name of a window, for a place with room for it. */
 export function usageWindowLabel(key: UsageWindowKey): string {
   if (key === "today") return "Today"
-  if (key === "week") return "Last 7 days"
-  return "This month"
+  if (key === "week") return "This week"
+  if (key === "monthToDate") return "Month to date"
+  return "Last 30 days"
 }
 
 /** An empty window, for a provider that has none of one. */
@@ -43,6 +44,7 @@ export const EMPTY_WINDOW: ProviderUsageWindowPayload = {
   tokensOut: 0,
   cacheRead: 0,
   estimatedUsd: null,
+  costComplete: true,
   sessionCount: 0,
 }
 
@@ -76,6 +78,14 @@ export function usageValueLabel(window: ProviderUsageWindowPayload): string {
   const tokens = windowTokens(window)
   if (tokens > 0) return formatCompact(tokens)
   return "—"
+}
+
+/** A local cost followed by its token count, when the cost is available. */
+export function usageMetricLabel(window: ProviderUsageWindowPayload): string {
+  const tokens = windowTokens(window)
+  if (window.costComplete && window.estimatedUsd != null)
+    return `${formatCost(window.estimatedUsd)} · ${formatCompact(tokens)}`
+  return tokens > 0 ? formatCompact(tokens) : "—"
 }
 
 /**
@@ -115,17 +125,6 @@ export function usageStateDescription(state: ProviderUsageState): string {
   }
 }
 
-/** Tailwind classes for a state badge. Muted by design — a badge, not an alarm. */
-export function usageStateToneClass(state: ProviderUsageState): string {
-  if (state === "estimated" || state === "live") {
-    return "bg-system-gold/15 text-system-gold-text"
-  }
-  if (state === "observed" || state === "detected") {
-    return "bg-surface-secondary text-label-secondary"
-  }
-  return "bg-surface-secondary text-label-tertiary"
-}
-
 /**
  * The note shown when a provider's newest session is old, or null when it is
  * not. Phrased as an observation, never as a warning: nothing is wrong with a
@@ -156,11 +155,14 @@ export function rankByWindow(
   providers: readonly ProviderUsagePayload[],
   key: UsageWindowKey,
 ): ProviderUsagePayload[] {
+  const useCost = providers.every((provider) => providerWindow(provider, key).costComplete)
   return [...providers].sort((a, b) => {
     const left = providerWindow(a, key)
     const right = providerWindow(b, key)
-    const cost = (right.estimatedUsd ?? 0) - (left.estimatedUsd ?? 0)
-    if (cost !== 0) return cost
+    if (useCost) {
+      const cost = (right.estimatedUsd ?? 0) - (left.estimatedUsd ?? 0)
+      if (cost !== 0) return cost
+    }
     return windowTokens(right) - windowTokens(left)
   })
 }
@@ -236,20 +238,17 @@ export function updatedNote(provider: ProviderUsagePayload): string | null {
  * own local spend against a longer span of it. It is deliberately not a meter
  * against any allowance — that figure does not exist on this machine.
  */
-export function windowShareOfMonth(
+export function windowShareOfLast30Days(
   provider: ProviderUsagePayload,
   key: UsageWindowKey,
 ): number {
   const window = providerWindow(provider, key)
-  const month = providerWindow(provider, "month")
+  const month = providerWindow(provider, "last30Days")
+  const pricedMonth = month.costComplete ? month.estimatedUsd : null
+  const useCost = window.costComplete && pricedMonth != null && pricedMonth > 0
   const numerator =
-    month.estimatedUsd != null && month.estimatedUsd > 0
-      ? (window.estimatedUsd ?? 0)
-      : windowTokens(window)
-  const denominator =
-    month.estimatedUsd != null && month.estimatedUsd > 0
-      ? month.estimatedUsd
-      : windowTokens(month)
+    useCost && window.estimatedUsd != null ? window.estimatedUsd : windowTokens(window)
+  const denominator = useCost ? pricedMonth : windowTokens(month)
   if (denominator <= 0) return 0
   return Math.min(1, Math.max(0, numerator / denominator))
 }
@@ -263,18 +262,14 @@ export function usageMetricRows(
     {
       key: "today-spend",
       label: "Today's spend",
-      value: today.estimatedUsd != null ? formatCost(today.estimatedUsd) : "—",
+      value:
+        today.costComplete && today.estimatedUsd != null ? formatCost(today.estimatedUsd) : "—",
     },
     {
       key: "today-tokens",
       label: "Today's tokens",
       value: windowTokens(today) > 0 ? formatCompact(windowTokens(today)) : "—",
     },
-    // "Spend trend", not "Pace trend": a provider card can carry the plan
-    // limits above these rows, and those have their own Pace and Trend
-    // computed from the provider's percentages. Two rows called pace, four
-    // apart, measuring different things from different evidence, is a reader
-    // being asked to hold a distinction the labels refuse to make.
-    { key: "trend", label: "Spend trend", value: paceTrendLabel(paceTrend(provider)) },
+    { key: "trend", label: "Trend", value: paceTrendLabel(paceTrend(provider)) },
   ]
 }

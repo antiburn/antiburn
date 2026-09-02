@@ -3,9 +3,9 @@ import type { ProviderUsagePayload } from "../../lib/ipc"
 import {
   providerWindow,
   sessionCountLabel,
-  usageValueLabel,
+  usageMetricLabel,
   usageWindowLabel,
-  windowShareOfMonth,
+  windowShareOfLast30Days,
   USAGE_WINDOWS,
 } from "../../lib/presentation/providerUsage"
 
@@ -30,7 +30,7 @@ export function UsageWindowRows({
     <dl className={cn("space-y-2", className)}>
       {USAGE_WINDOWS.map(({ value }) => {
         const window = providerWindow(provider, value)
-        const share = windowShareOfMonth(provider, value)
+        const share = windowShareOfLast30Days(provider, value)
         return (
           <div key={value}>
             <div className="flex items-baseline justify-between gap-3">
@@ -40,13 +40,13 @@ export function UsageWindowRows({
                   {sessionCountLabel(window.sessionCount)}
                 </span>
                 <span className="type-footnote tabular-nums text-label">
-                  {usageValueLabel(window)}
+                  {usageMetricLabel(window)}
                 </span>
               </dd>
             </div>
             <div
               role="img"
-              aria-label={`${usageWindowLabel(value)}: this window's share of the month of local spend shown below it`}
+              aria-label={`${usageWindowLabel(value)}: this window's share of the last 30 days of local spend`}
               className="mt-1 w-full overflow-hidden rounded-full"
               style={{ height: 3, backgroundColor: "var(--color-separator)" }}
             >

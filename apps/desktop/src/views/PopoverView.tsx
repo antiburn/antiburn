@@ -1,9 +1,14 @@
 import { lazy, Suspense, useCallback, useRef, useState, useSyncExternalStore } from "react"
 
 import { AlertTriangle, Settings } from "lucide-react"
+import type { VirtualItem } from "@tanstack/react-virtual"
 
 import { SessionList, type SessionListEntry } from "../components/session/SessionList"
 import { UsageLimitsBar } from "../components/providerUsage"
+import {
+  EMPTY_USAGE_WINDOWS,
+  UsageSpendSummary,
+} from "../components/providerUsage/UsageSpendSummary"
 import { Banner } from "../components/ui/Banner"
 import { Skeleton } from "../components/ui/Skeleton"
 import { renderAgentIcon } from "../lib/agentIcon"
@@ -237,17 +242,15 @@ export function PopoverView() {
     node?.querySelector<HTMLElement>("[data-view-heading]")?.focus()
   }, [])
 
-  // The same surface swap unmounts the activity list, so its viewport comes
-  // back at the top after a session closes. The reader expects to land where
-  // they left. The list's scroll offset lives here, on the component that
-  // outlives the swap: each scroll records it, and the viewport takes it back
-  // the moment the list mounts again.
+  // The same surface swap unmounts the activity list. This component keeps the
+  // offset so the virtualizer can restore it when the list mounts again.
   const listScrollTop = useRef(0)
+  const [listMeasurements, setListMeasurements] = useState<VirtualItem[]>([])
+  const initialListScrollOffset = useCallback(() => listScrollTop.current, [])
   // The usage chart's fold wrapper, driven from the list's scroll events.
   const usageChartWrap = useRef<HTMLDivElement | null>(null)
   const restoreListScroll = useCallback((node: HTMLDivElement | null) => {
     if (!node) return
-    node.scrollTop = listScrollTop.current
     const record = () => {
       listScrollTop.current = node.scrollTop
       foldUsageChart(usageChartWrap.current, node)
@@ -382,50 +385,55 @@ export function PopoverView() {
         {/* The wrapper clips the chart while `foldUsageChart` closes it in
             step with the list scroll. */}
         <div ref={usageChartWrap} className="shrink-0 overflow-hidden">
-          <UsageLimitsBar
-            live={state.liveUsage}
-            expanded={limitsExpanded}
-            onToggleExpanded={() => {
-              void peekTriggers.leave()
-              session.setOverviewLimitsExpanded(!limitsExpanded)
-            }}
-            refreshing={state.usageRefreshing}
-            onViewAll={() => {
-              void hidePopoverPeek().catch(() => undefined)
-              // A provider pill is the one place the reader asks for the full
-              // Usage view from the activity surface. Counts and a three-value
-              // evidence label, never a per-provider list.
-              noteInteraction({
-                kind: "usageViewed",
-                providers: state.usage?.providers.length ?? 0,
-                evidence: usageEvidence(state.usage, state.liveUsage),
-              })
-              session.setShowUsage(true)
-            }}
-            onHoverProvider={(provider, anchor) => {
-              if (provider && anchor) {
-                void peekTriggers.hover(
-                  {
-                    kind: "provider",
-                    provider,
-                    utcOffsetMinutes: -new Date().getTimezoneOffset(),
-                  },
-                  anchor,
-                  selectedProviderPresentation(peekPresentation, provider),
-                )
-              } else {
+          <div>
+            {state.usage && (
+              <UsageSpendSummary totals={state.usage.totals ?? EMPTY_USAGE_WINDOWS} compact />
+            )}
+            <UsageLimitsBar
+              live={state.liveUsage}
+              expanded={limitsExpanded}
+              onToggleExpanded={() => {
                 void peekTriggers.leave()
+                session.setOverviewLimitsExpanded(!limitsExpanded)
+              }}
+              refreshing={state.usageRefreshing}
+              onViewAll={() => {
+                void hidePopoverPeek().catch(() => undefined)
+                // A provider pill is the one place the reader asks for the full
+                // Usage view from the activity surface. Counts and a three-value
+                // evidence label, never a per-provider list.
+                noteInteraction({
+                  kind: "usageViewed",
+                  providers: state.usage?.providers.length ?? 0,
+                  evidence: usageEvidence(state.usage, state.liveUsage),
+                })
+                session.setShowUsage(true)
+              }}
+              onHoverProvider={(provider, anchor) => {
+                if (provider && anchor) {
+                  void peekTriggers.hover(
+                    {
+                      kind: "provider",
+                      provider,
+                      utcOffsetMinutes: -new Date().getTimezoneOffset(),
+                    },
+                    anchor,
+                    selectedProviderPresentation(peekPresentation, provider),
+                  )
+                } else {
+                  void peekTriggers.leave()
+                }
+              }}
+              activeProvider={
+                peekTrigger.target?.kind === "provider" && peekTrigger.activation !== "idle"
+                  ? {
+                      provider: peekTrigger.target.provider,
+                      activation: peekTrigger.activation,
+                    }
+                  : null
               }
-            }}
-            activeProvider={
-              peekTrigger.target?.kind === "provider" && peekTrigger.activation !== "idle"
-                ? {
-                    provider: peekTrigger.target.provider,
-                    activation: peekTrigger.activation,
-                  }
-                : null
-            }
-          />
+            />
+          </div>
         </div>
 
         <div className="min-h-0 flex-1">
@@ -454,6 +462,16 @@ export function PopoverView() {
               }}
               renderAgentIcon={renderAgentIcon}
               viewportRef={restoreListScroll}
+              initialScrollOffset={initialListScrollOffset}
+              initialMeasurementsCache={listMeasurements}
+              onMeasurementsChange={setListMeasurements}
+              badgeMetric={
+                state.settings?.sessionBadgeMetric ?? DEFAULT_SETTINGS.sessionBadgeMetric
+              }
+              onBadgeMetricChange={session.setSessionBadgeMetric}
+              now={new Date(state.now)}
+              liveUsage={state.liveUsage}
+              sessionLimitAllocations={state.sessionLimitAllocations}
             />
           )}
         </div>

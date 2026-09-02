@@ -6,11 +6,12 @@ import {
   DEFAULT_SETTINGS,
   EMPTY_LIVE_USAGE,
   EMPTY_PROVIDER_USAGE,
+  EMPTY_SESSION_LIMIT_ALLOCATIONS,
   appInfo,
   getLiveUsage,
   getProviderUsage,
+  getSessionLimitAllocations,
   getSessionAnalysis,
-  getSessionAnalysisFingerprint,
   getSettings,
   getStorageHealth,
   getSubagentAnalysis,
@@ -31,9 +32,11 @@ import {
   scanNow,
   setPopoverHeight,
   setSettings,
+  type ActivityEntryPayload,
   type AppSettings,
   type LiveUsageSummaryPayload,
   type ProviderUsageSummaryPayload,
+  type SessionLimitAllocationSummaryPayload,
   type SessionAnalysisPayload,
   type StorageHealthPayload,
 } from "../../lib/ipc"
@@ -71,45 +74,6 @@ type PopoverAnalysisState = {
   error: boolean
 } | null
 
-/** Whether the settled analysis for `key` has nothing usable. */
-function isUnavailableAnalysis(state: PopoverAnalysisState, key: string): boolean {
-  if (state === null || state.key !== key) return false
-  if (state.error) return true
-  return (
-    state.payload !== null &&
-    state.payload.supportsAnalysis &&
-    state.payload.summary === null &&
-    state.payload.cost === null
-  )
-}
-
-/**
- * Whether the settled analysis for `key` reports the drilldown as still
- * pending: the worker has not published a row set for this session yet, so
- * the shell served a placeholder payload rather than a real read.
- */
-function isAnalysisPending(state: PopoverAnalysisState, key: string): boolean {
-  return (
-    state !== null &&
-    state.key === key &&
-    state.payload !== null &&
-    state.payload.analysisPending
-  )
-}
-
-/**
- * Whether the settled analysis for `key` reports itself as stale: it comes
- * from a published fence a fresher pass is already queued or running
- * behind, or whose transcript has since moved on. The data on screen is
- * real, so this does not gate what renders — it only keeps the poll running
- * so the fresh pass swaps in once the worker publishes it.
- */
-function isAnalysisStale(state: PopoverAnalysisState, key: string): boolean {
-  return (
-    state !== null && state.key === key && state.payload !== null && state.payload.analysisStale
-  )
-}
-
 export interface PopoverSnapshot {
   appVersion: string | null
   debugBuild: boolean
@@ -119,6 +83,7 @@ export interface PopoverSnapshot {
   /** Provider usage, or null while the first snapshot is in flight. */
   usage: ProviderUsageSummaryPayload | null
   liveUsage: LiveUsageSummaryPayload
+  sessionLimitAllocations: SessionLimitAllocationSummaryPayload
   /** Whether a `refreshUsage` call is in flight, for the limits section's spinner. */
   usageRefreshing: boolean
   /** Whether the full Usage view is showing over the activity list. */
@@ -192,28 +157,33 @@ async function loadAnalysis(subject: SessionSubject): Promise<SessionAnalysisPay
 }
 
 /**
- * Fetch one subject's transcript fingerprint, for the live-detail poll.
- *
- * The parent fingerprint covers the parent transcript and every sub-agent
- * transcript, so a sub-agent subject fingerprints its parent session.
- */
-async function loadAnalysisFingerprint(subject: SessionSubject): Promise<string> {
-  const sessionId = subject.subagent?.parentSessionId ?? subject.sessionId
-  return getSessionAnalysisFingerprint(subject.agent, sessionId, subject.wslDistro)
-}
-
-/** How often the open detail pane checks its transcript for new activity. */
-export const ANALYSIS_POLL_MS = 10_000
-
-/** How many times a subject can re-read an unavailable analysis. */
-const MAX_UNAVAILABLE_ANALYSIS_RETRIES = 3
-
-/**
  * How often the store forces a snapshot change while a detail pane is open,
  * so the header's relative-time text ("last just now") stays current even
  * when nothing else about the session has changed.
  */
 const NOW_TICK_MS = 30_000
+
+/**
+ * How long the list can go without a full refetch before `listenScanEvent`
+ * forces one, even though the pass reported `listChanged: false`. The
+ * backstop for a signal this session missed or got wrong; matches the
+ * backend scheduler's own tick, so reconciliation never lags a full cycle
+ * behind the pass that produced it.
+ */
+const LIST_RECONCILE_MS = 60_000
+
+/**
+ * Order list rows the way the backend does: newest activity first, and a
+ * revived session's own id breaking a tie. `listenSessionEntryChanged`
+ * re-sorts with this after patching one row in place, so a session whose
+ * activity just moved reliably lands where a full re-list would put it.
+ */
+function compareByRecency(a: SessionListEntry, b: SessionListEntry): number {
+  if (a.timestamp !== b.timestamp) return a.timestamp > b.timestamp ? -1 : 1
+  const aId = a.sessionId ?? ""
+  const bId = b.sessionId ?? ""
+  return aId > bId ? -1 : aId < bId ? 1 : 0
+}
 
 /** Narrow the shell's status string to the repository list's union. */
 function repositoryStatus(status: string): LocalRepositoryStatus {
@@ -245,24 +215,33 @@ export class PopoverSession {
   private usageRefreshCount = 0
   /** How many `refreshAnalysis` calls are in flight; see `usageRefreshCount`. */
   private analysisRefreshCount = 0
+  /**
+   * Set when a matching `sessions:entry-changed` event lands while a
+   * `refreshAnalysis` call is already in flight. Coalesced to one extra run,
+   * not one per event: the in-flight call's own result is already stale by
+   * the time it lands, so every event that arrives before it finishes is
+   * asking for the same thing.
+   */
+  private pendingAnalysisRefresh = false
   private liveUsageRevision = 0
+  private sessionLimitAllocationRequested = 0
+  private sessionLimitAllocationRefresh: Promise<void> | null = null
+  private sessionLimitAllocationExpiryTimer: ReturnType<typeof setTimeout> | null = null
   private initialContentReady = false
   private contentReadyReportedGeneration: number | null = null
   private contentReadyReportInFlightGeneration: number | null = null
   private contentReadyRetryGeneration: number | null = null
 
+  /** Set while a coalesced `refreshEntries` call is in flight; see `pendingAnalysisRefresh`. */
+  private entriesRefreshInFlight = false
+  private entriesRefreshQueued = false
   /**
-   * The key of the subject the poll's fingerprint belongs to, and the last
-   * fingerprint fetched for it. `null` fingerprint means no baseline has
-   * landed yet, so a poll tick must not treat it as a change.
+   * When `listenScanEvent` last refetched the full list. Read against
+   * `LIST_RECONCILE_MS` so a pass that never sets `listChanged` still gets
+   * reconciled eventually.
    */
-  private analysisFingerprintKey: string | null = null
-  private analysisFingerprint: string | null = null
-  private analysisRetryKey: string | null = null
-  private analysisRetryCount = 0
-  /** Set while a poll tick's fetch is in flight, so ticks never overlap. */
-  private analysisPollInFlight = false
-  private analysisPollTimer: ReturnType<typeof setInterval> | null = null
+  private lastListReconcileAt = 0
+
   private nowTickTimer: ReturnType<typeof setInterval> | null = null
 
   private stopSettingsListening: (() => void) | null = null
@@ -281,6 +260,7 @@ export class PopoverSession {
     repositories: [],
     usage: null,
     liveUsage: EMPTY_LIVE_USAGE,
+    sessionLimitAllocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
     usageRefreshing: false,
     showUsage: false,
     presentedSurface: "activity",
@@ -321,8 +301,6 @@ export class PopoverSession {
     if (top) {
       this.openAnalysis(top)
     } else {
-      this.analysisFingerprintKey = null
-      this.analysisFingerprint = null
       this.syncDetailTimers()
     }
   }
@@ -368,6 +346,16 @@ export class PopoverSession {
       .catch(() => {})
   }
 
+  setSessionBadgeMetric = (metric: AppSettings["sessionBadgeMetric"]): void => {
+    const current = this.snapshot.settings ?? DEFAULT_SETTINGS
+    if (current.sessionBadgeMetric === metric) return
+    const next = { ...current, sessionBadgeMetric: metric }
+    this.update({ settings: next })
+    void setSettings(next)
+      .then((saved) => this.update({ settings: saved }))
+      .catch(() => {})
+  }
+
   /** Run a discovery pass. The source-access banner's only action. */
   rescan = async (): Promise<void> => {
     await scanNow().catch(() => null)
@@ -400,14 +388,7 @@ export class PopoverSession {
 
     // A stack carried over from a previous start (the window never really
     // unmounts, but the listener count can still hit zero and come back)
-    // needs a fresh fingerprint baseline before the poll resumes on it.
-    const top = this.snapshot.stack.at(-1)
-    if (top) {
-      const key = sessionKey(top)
-      this.analysisFingerprintKey = key
-      this.analysisFingerprint = null
-      this.seedAnalysisFingerprint(top, generation, key)
-    }
+    // still needs its relative-time ticker running again.
     this.syncDetailTimers()
   }
 
@@ -428,12 +409,8 @@ export class PopoverSession {
     this.stopPopoverShownListening = null
     this.stopLiveUsageListening?.()
     this.stopLiveUsageListening = null
-    this.stopAnalysisPolling()
     this.stopNowTicking()
-    this.analysisFingerprintKey = null
-    this.analysisFingerprint = null
-    this.analysisRetryKey = null
-    this.analysisRetryCount = 0
+    this.stopSessionLimitAllocationExpiryTimer()
     window.removeEventListener("keydown", this.onWindowKeyDown)
   }
 
@@ -516,33 +493,105 @@ export class PopoverSession {
   // Opening a session computes its analysis and the shell caches it, but a
   // cache write alone does not change what a scan already put in the list.
   // The shell pushes the one changed row here so the pills stay current
-  // without a full re-query.
+  // without a full re-query, and — since this is also the scan pass's own
+  // per-session signal, not only the worker's — this also refreshes an open
+  // detail pane's analysis when the changed session is the one on screen.
   private listenSessionEntryChanged = async (generation: number): Promise<void> => {
     const unlisten = await onSessionEntryChanged((entry) => {
       if (generation !== this.generation) return
-      const entries = this.snapshot.entries
-      if (!entries) return
-      const index = indexOfSession(entries, entry.agent, entry.sessionId, entry.wslDistro)
-      // A session outside the current window is the next scan's business, so
-      // an entry with no match here is not inserted.
-      if (index === -1) return
-      // The cohort for the high-cost flag is the list on screen, with the
-      // replaced row's own cost swapped in — the same set `toActivityEntries`
-      // would see on a full re-list.
-      const threshold = costOutlierThreshold(
-        entries
-          .map((row, i) => (i === index ? entry.cost?.totalUsd : row.cost?.totalUsd))
-          .filter((usd): usd is number => typeof usd === "number"),
-      )
-      const next = [...entries]
-      next[index] = toActivityEntry(entry, threshold)
-      this.update({ entries: next })
+      this.patchOrRefetchEntry(entry)
+      this.refreshOpenAnalysisIfMatching(entry)
+      void this.refreshSessionLimitAllocations()
     })
     if (generation !== this.generation) {
       unlisten()
       return
     }
     this.stopSessionEntryChangedListening = unlisten
+  }
+
+  /**
+   * Patch the one row `entry` describes in place, re-sorted the way the
+   * backend orders the list so a revived session moves back to the top. A
+   * session not already on screen — one that just re-entered the window, or
+   * one the popover has never listed — triggers a coalesced full refetch
+   * instead of being dropped.
+   */
+  private patchOrRefetchEntry(entry: ActivityEntryPayload): void {
+    const entries = this.snapshot.entries
+    if (!entries) return
+    const index = indexOfSession(entries, entry.agent, entry.sessionId, entry.wslDistro)
+    if (index === -1) {
+      this.requestEntriesRefresh()
+      return
+    }
+    // The cohort for the high-cost flag is the list on screen, with the
+    // replaced row's own cost swapped in — the same set `toActivityEntries`
+    // would see on a full re-list.
+    const threshold = costOutlierThreshold(
+      entries
+        .map((row, i) => (i === index ? entry.cost?.totalUsd : row.cost?.totalUsd))
+        .filter((usd): usd is number => typeof usd === "number"),
+    )
+    const next = [...entries]
+    next[index] = toActivityEntry(entry, threshold)
+    next.sort(compareByRecency)
+    this.update({ entries: next })
+  }
+
+  /**
+   * Refresh `refreshEntries` at most once at a time: a burst of
+   * `sessions:entry-changed` events for sessions outside the current list
+   * (a watcher-driven scan describing several new sessions in one pass, say)
+   * must not start a refetch per event.
+   */
+  private requestEntriesRefresh = (): void => {
+    if (this.entriesRefreshInFlight) {
+      this.entriesRefreshQueued = true
+      return
+    }
+    this.entriesRefreshInFlight = true
+    void this.refreshEntries(this.windowDays())
+      .catch(() => {})
+      .finally(() => {
+        this.entriesRefreshInFlight = false
+        if (this.entriesRefreshQueued) {
+          this.entriesRefreshQueued = false
+          this.requestEntriesRefresh()
+        }
+      })
+  }
+
+  /**
+   * Refresh the open detail pane's analysis when `entry` describes the
+   * subject on top of the stack — its own session, or for a sub-agent
+   * subject its parent's session, in the same environment.
+   */
+  private refreshOpenAnalysisIfMatching(entry: ActivityEntryPayload): void {
+    const subject = this.snapshot.stack.at(-1)
+    if (!subject) return
+    const sessionId = subject.subagent?.parentSessionId ?? subject.sessionId
+    if (
+      entry.agent !== subject.agent ||
+      entry.sessionId !== sessionId ||
+      (entry.wslDistro ?? null) !== (subject.wslDistro ?? null)
+    ) {
+      return
+    }
+    this.requestAnalysisRefresh()
+  }
+
+  /**
+   * Refresh the open analysis, coalesced: a matching event that lands while
+   * a refresh is already in flight schedules exactly one more, run after the
+   * in-flight one settles, rather than a second overlapping load.
+   */
+  private requestAnalysisRefresh = (): void => {
+    if (this.analysisRefreshCount > 0) {
+      this.pendingAnalysisRefresh = true
+      return
+    }
+    void this.refreshAnalysis()
   }
 
   // Storage health changes rarely and matters immediately, so it is pushed
@@ -568,14 +617,21 @@ export class PopoverSession {
   // The scan is the only thing that changes what is on screen behind the
   // reader's back, so that is what the list listens for rather than polling.
   // Only `finished` matters here: no surface in this window draws a pass in
-  // progress, so the intermediate phases have nothing to say.
+  // progress, so the intermediate phases have nothing to say. A full refetch
+  // of entries and repositories only runs when the pass says the list needs
+  // one, or the reconcile interval has elapsed — `sessions:entry-changed`
+  // already keeps individual rows current in between.
   private listenScanEvent = async (generation: number): Promise<void> => {
-    const unlisten = await onScanEvent((_status, phase) => {
+    const unlisten = await onScanEvent((status, phase) => {
       if (generation !== this.generation) return
       if (phase !== "finished") return
-      void this.refreshEntries(this.windowDays()).catch(() => {})
+      const now = Date.now()
+      if (status.listChanged || now - this.lastListReconcileAt >= LIST_RECONCILE_MS) {
+        this.lastListReconcileAt = now
+        void this.refreshEntries(this.windowDays()).catch(() => {})
+        void this.refreshRepositoryList()
+      }
       void this.refreshUsage()
-      void this.refreshRepositoryList()
     })
     if (generation !== this.generation) {
       unlisten()
@@ -658,6 +714,7 @@ export class PopoverSession {
       if (generation !== this.generation) return
       this.liveUsageRevision += 1
       this.update({ liveUsage })
+      void this.refreshSessionLimitAllocations()
     })
     if (generation !== this.generation) {
       unlisten()
@@ -693,6 +750,7 @@ export class PopoverSession {
 
   private loadCachedUsage = async (): Promise<void> => {
     const liveUsageRevision = this.liveUsageRevision
+    void this.refreshSessionLimitAllocations()
     const [usage, liveUsage] = await Promise.all([
       getProviderUsage().catch(() => EMPTY_PROVIDER_USAGE),
       getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
@@ -724,6 +782,7 @@ export class PopoverSession {
           })
           .catch(() => undefined),
       ])
+      await this.refreshSessionLimitAllocations()
       // Usage arriving can flip the derived surface to 'usage' on its own —
       // the reader may have already asked to see it before there was
       // anything to show — so the height request has to follow this update
@@ -733,6 +792,57 @@ export class PopoverSession {
       this.usageRefreshCount -= 1
       this.update({ usageRefreshing: this.usageRefreshCount > 0 })
     }
+  }
+
+  private refreshSessionLimitAllocations = (): Promise<void> => {
+    this.sessionLimitAllocationRequested += 1
+    if (!this.sessionLimitAllocationRefresh) {
+      this.sessionLimitAllocationRefresh = this.runSessionLimitAllocationRefreshes().finally(
+        () => {
+          this.sessionLimitAllocationRefresh = null
+        },
+      )
+    }
+    return this.sessionLimitAllocationRefresh
+  }
+
+  private runSessionLimitAllocationRefreshes = async (): Promise<void> => {
+    let completed = 0
+    while (completed < this.sessionLimitAllocationRequested) {
+      const target = this.sessionLimitAllocationRequested
+      const generation = this.generation
+      const sessionLimitAllocations = await getSessionLimitAllocations().catch(() => null)
+      if (sessionLimitAllocations && generation === this.generation) {
+        this.update({ sessionLimitAllocations })
+        this.scheduleSessionLimitAllocationExpiry()
+      }
+      completed = target
+    }
+  }
+
+  private scheduleSessionLimitAllocationExpiry(): void {
+    this.stopSessionLimitAllocationExpiryTimer()
+    const now = Date.now()
+    let nextReset = Number.POSITIVE_INFINITY
+    for (const allocation of this.snapshot.sessionLimitAllocations.allocations) {
+      const reset = Date.parse(allocation.resetsAt)
+      if (reset > now && reset < nextReset) nextReset = reset
+    }
+    if (!Number.isFinite(nextReset)) return
+    this.sessionLimitAllocationExpiryTimer = setTimeout(
+      () => {
+        this.sessionLimitAllocationExpiryTimer = null
+        this.update({ now: Date.now() })
+        this.scheduleSessionLimitAllocationExpiry()
+      },
+      Math.min(nextReset - now + 1, 2_147_483_647),
+    )
+  }
+
+  private stopSessionLimitAllocationExpiryTimer(): void {
+    if (this.sessionLimitAllocationExpiryTimer === null) return
+    clearTimeout(this.sessionLimitAllocationExpiryTimer)
+    this.sessionLimitAllocationExpiryTimer = null
   }
 
   private refreshRepositoryList = async (): Promise<void> => {
@@ -745,120 +855,19 @@ export class PopoverSession {
     })
   }
 
-  /**
-   * Load a subject's analysis, then seed the live poll's fingerprint baseline
-   * from the freshly-loaded transcript, and make sure the poll and the
-   * relative-time ticker are running — a detail pane is now open.
-   *
-   * The baseline is fetched only after `loadAnalysisFor` settles, not next to
-   * it: that way the poll's first tick compares against a transcript state at
-   * least as new as what is already on screen, and never fires a refresh on
-   * data the reader has not even seen yet.
-   */
+  /** Load a subject's analysis and make sure the relative-time ticker is running — a detail pane is now open. */
   private openAnalysis(subject: SessionSubject): void {
-    const generation = this.generation
-    const key = sessionKey(subject)
-    this.analysisFingerprintKey = key
-    this.analysisFingerprint = null
-    this.analysisRetryKey = key
-    this.analysisRetryCount = 0
-    void this.loadAnalysisFor(subject).then(() => {
-      if (generation !== this.generation || key !== this.analysisFingerprintKey) return
-      this.seedAnalysisFingerprint(subject, generation, key)
-    })
+    void this.loadAnalysisFor(subject)
     this.syncDetailTimers()
   }
 
-  private seedAnalysisFingerprint(
-    subject: SessionSubject,
-    generation: number,
-    key: string,
-  ): void {
-    void loadAnalysisFingerprint(subject)
-      .then((fingerprint) => {
-        if (generation !== this.generation || key !== this.analysisFingerprintKey) return
-        this.analysisFingerprint = fingerprint
-      })
-      .catch(() => {})
-  }
-
-  /**
-   * One poll tick: fetch the open subject's fingerprint and, if it moved
-   * since the last tick (or the seed), re-load the analysis. Overlapping
-   * ticks are dropped rather than queued — a slow fetch is left to finish on
-   * its own, and the next interval simply tries again.
-   *
-   * A pending analysis (the worker has not published rows for this session
-   * yet) or a stale one (rows are published, but a fresher pass is queued or
-   * running behind them) re-loads on every tick, unbounded, whether or not
-   * the fingerprint moved: there is nothing newer to compare against until
-   * the worker's next pass lands, and that pass is what this poll is
-   * waiting for. That check runs before, and short-circuits, the bounded
-   * unavailable-analysis retry below, which answers a different question —
-   * a published pass that turned up nothing to show.
-   */
-  private tickAnalysisPoll = (): void => {
-    if (this.analysisPollInFlight) return
-    const subject = this.snapshot.stack.at(-1)
-    if (!subject) return
-    const generation = this.generation
-    const key = sessionKey(subject)
-    this.analysisPollInFlight = true
-    void loadAnalysisFingerprint(subject)
-      .then((fingerprint) => {
-        if (generation !== this.generation || key !== this.analysisFingerprintKey) return
-        const previous = this.analysisFingerprint
-        this.analysisFingerprint = fingerprint
-        if (previous !== null && fingerprint !== previous) {
-          void this.refreshAnalysis()
-          return
-        }
-        if (
-          isAnalysisPending(this.snapshot.analysis, key) ||
-          isAnalysisStale(this.snapshot.analysis, key)
-        ) {
-          void this.refreshAnalysis()
-          return
-        }
-        if (subject.subagent) return
-        if (key !== this.analysisRetryKey) {
-          this.analysisRetryKey = key
-          this.analysisRetryCount = 0
-        }
-        if (
-          isUnavailableAnalysis(this.snapshot.analysis, key) &&
-          this.analysisRetryCount < MAX_UNAVAILABLE_ANALYSIS_RETRIES
-        ) {
-          this.analysisRetryCount += 1
-          void this.refreshAnalysis()
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        this.analysisPollInFlight = false
-      })
-  }
-
-  /** Start or stop the poll and the relative-time ticker to match whether a detail pane is open. */
+  /** Start or stop the relative-time ticker to match whether a detail pane is open. */
   private syncDetailTimers(): void {
     if (this.snapshot.stack.length > 0) {
-      this.startAnalysisPolling()
       this.startNowTicking()
     } else {
-      this.stopAnalysisPolling()
       this.stopNowTicking()
     }
-  }
-
-  private startAnalysisPolling(): void {
-    if (this.analysisPollTimer !== null) return
-    this.analysisPollTimer = setInterval(this.tickAnalysisPoll, ANALYSIS_POLL_MS)
-  }
-
-  private stopAnalysisPolling(): void {
-    if (this.analysisPollTimer === null) return
-    clearInterval(this.analysisPollTimer)
-    this.analysisPollTimer = null
   }
 
   private startNowTicking(): void {
@@ -880,10 +889,6 @@ export class PopoverSession {
       .then((payload) => {
         if (generation !== this.generation || token !== this.analysisToken) return
         this.update({ analysis: { key, payload, error: false } })
-        if (!isUnavailableAnalysis(this.snapshot.analysis, key)) {
-          this.analysisRetryKey = key
-          this.analysisRetryCount = 0
-        }
       })
       .catch(() => {
         if (generation !== this.generation || token !== this.analysisToken) return
@@ -896,6 +901,10 @@ export class PopoverSession {
    * result stays on screen until the new one lands: `loading` is derived from
    * a key mismatch, and the key does not change here, so the reader sees the
    * header spinner rather than the skeleton.
+   *
+   * A matching `sessions:entry-changed` event that lands while this is
+   * already running is not dropped: `requestAnalysisRefresh` queues exactly
+   * one more call, picked up here once this one settles.
    */
   private refreshAnalysis = async (): Promise<void> => {
     const top = this.snapshot.stack.at(-1)
@@ -907,6 +916,10 @@ export class PopoverSession {
     } finally {
       this.analysisRefreshCount -= 1
       this.update({ analysisRefreshing: this.analysisRefreshCount > 0 })
+      if (this.analysisRefreshCount === 0 && this.pendingAnalysisRefresh) {
+        this.pendingAnalysisRefresh = false
+        void this.refreshAnalysis()
+      }
     }
   }
 

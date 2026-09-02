@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use crate::discovery::scanner::AgentKind;
 use crate::discovery::{
-    AgentExplorer, SessionLog, SessionSource, SurfacePaths, collect_dirs_with_exts, home_dir,
-    recent_files_with_exts, vs_code_global_storage_task_roots,
+    AgentExplorer, SessionLog, SessionSource, SurfacePaths, WatchRoot, collect_dirs_with_exts,
+    home_dir, recent_files_with_exts, vs_code_global_storage_task_roots,
 };
 use async_trait::async_trait;
 
@@ -82,6 +82,17 @@ impl AgentExplorer for ClineExplorer {
             ide_desktop: vs_code_global_storage_task_roots(home, CLINE_EXT_IDS),
             mirror: Vec::new(),
         }
+    }
+
+    /// The same CLI and extension roots discovery walks.
+    fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
+        let paths = self.surface_paths(home);
+        paths
+            .cli
+            .into_iter()
+            .chain(paths.ide_desktop)
+            .map(WatchRoot::recursive)
+            .collect()
     }
 }
 

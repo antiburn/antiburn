@@ -12,6 +12,8 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::mem::size_of;
 
+use serde::{Deserialize, Serialize};
+
 use active::ActiveSegments;
 use cache_miss::{CacheInput, CachePatch, CacheReducer};
 use slots::{CompactionMark, ProgressSlots, ReorderWindow, SlotAggregate, SlotAxis, StampedName};
@@ -42,13 +44,13 @@ const MAX_DESCRIPTION_CHARS: usize = 300;
 /// Initial-context rows retain the largest named rows and overflow totals.
 const MAX_INITIAL_CONTEXT_SOURCES: usize = 64;
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct MetricsIdentity {
     pub(crate) agent: String,
     pub(crate) session_id: String,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub(crate) struct OnlineTallies {
     tokens_in: u64,
     tokens_out: u64,
@@ -89,7 +91,7 @@ impl OnlineTallies {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 struct StoredSummary {
     context_window: Option<u64>,
     model: Option<String>,
@@ -98,7 +100,7 @@ struct StoredSummary {
     skill_descriptions: Vec<(String, String)>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct ModelRunMark {
     effective_ts: i64,
     ordinal: u64,
@@ -106,7 +108,7 @@ struct ModelRunMark {
     thinking_mode: Option<NameId>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionMetricsAccumulator {
     identity: MetricsIdentity,
     slots: ProgressSlots,
@@ -200,6 +202,37 @@ impl SessionMetricsAccumulator {
         let mut axis = self.active.clone();
         axis.rebuild_prefix();
         self.project(&axis)
+    }
+
+    /// A restorable snapshot of this accumulator's full internal state:
+    /// every reducer, interner, and pending window, not just the projected
+    /// [`SessionMetrics`]. Serializing this and feeding the result to
+    /// [`Self::restore`] reproduces this exact accumulator.
+    pub fn snapshot(&self) -> Self {
+        self.clone()
+    }
+
+    /// Restores an accumulator [`Self::snapshot`] produced. Rebuilds the
+    /// index caches serialization skips (see [`tally::Interner`],
+    /// [`active::ActiveSegments`]) so the result keeps observing records as
+    /// if it never stopped.
+    pub fn restore(snapshot: Self) -> Self {
+        let mut accumulator = snapshot;
+        accumulator.rebuild_caches();
+        accumulator
+    }
+
+    /// Rebuilds every index a snapshot restore leaves empty or invalid.
+    fn rebuild_caches(&mut self) {
+        self.interner.rebuild_index();
+        self.mcp_interner.rebuild_index();
+        self.model_interner.rebuild_index();
+        self.bucket_model_interner.rebuild_index();
+        self.thinking_interner.rebuild_index();
+        self.speed_interner.rebuild_index();
+        self.last_tool_interner.rebuild_index();
+        self.skill_names.rebuild_index();
+        self.active.rebuild_prefix();
     }
 
     pub fn earliest_ts_ms(&self) -> Option<i64> {

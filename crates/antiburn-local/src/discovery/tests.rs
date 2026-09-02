@@ -1065,6 +1065,115 @@ fn surface_paths_route_through_platform_helpers() {
     }
 }
 
+/// Every file-backed agent's watcher roots must be the same directories its
+/// own discovery reads. Most agents watch exactly their `surface_paths` CLI
+/// and IDE roots; the few exceptions (extra roots or non-recursive watching)
+/// are asserted individually.
+#[test]
+fn watch_roots_match_each_agents_surface_paths() {
+    let home = PathBuf::from("/home/tester");
+
+    for ty in [
+        AgentKind::Cursor,
+        AgentKind::AmpCode,
+        AgentKind::Cline,
+        AgentKind::Copilot,
+        AgentKind::Kiro,
+        AgentKind::Windsurf,
+    ] {
+        let surface = Explorers::DISK.surface_paths_for(&ty, &home);
+        let expected: Vec<PathBuf> = surface.cli.into_iter().chain(surface.ide_desktop).collect();
+        let roots = Explorers::DISK.watch_roots_for(&ty, &home);
+        assert!(
+            roots.iter().all(|root| root.recursive),
+            "{ty:?} watch roots should all be recursive"
+        );
+        let paths: Vec<PathBuf> = roots.into_iter().map(|root| root.path).collect();
+        assert_eq!(paths, expected, "{ty:?} watch roots must match discovery");
+    }
+}
+
+#[test]
+fn claude_watch_roots_add_the_desktop_manifest_dir_and_jobs() {
+    let home = PathBuf::from("/home/tester");
+    let roots = Explorers::DISK.watch_roots_for(&AgentKind::Claude, &home);
+    let paths: Vec<PathBuf> = roots.iter().map(|root| root.path.clone()).collect();
+    assert!(roots.iter().all(|root| root.recursive));
+    assert!(paths.contains(&home.join(".claude").join("projects")));
+    assert!(paths.contains(&app_config_dir_in("Claude", &home).join("claude-code-sessions")));
+    assert!(paths.contains(&home.join(".claude").join("jobs")));
+}
+
+#[test]
+fn codex_watch_roots_cover_the_default_sessions_root() {
+    let home = PathBuf::from("/home/tester");
+    let roots = Explorers::DISK.watch_roots_for(&AgentKind::Codex, &home);
+    assert_eq!(roots.len(), 1);
+    assert!(roots[0].recursive);
+    assert_eq!(roots[0].path, home.join(".codex").join("sessions"));
+}
+
+#[test]
+fn codex_session_roots_helper_adds_the_codex_home_override() {
+    // `codex_session_roots` backs both discovery and `watch_roots`; exercise
+    // the override directly rather than mutating the process environment.
+    let home = PathBuf::from("/home/tester");
+    let codex_home = PathBuf::from("/elsewhere/codex-home");
+    let roots = agents::codex::codex_session_roots(&home, Some(&codex_home));
+    assert_eq!(
+        roots,
+        vec![
+            home.join(".codex").join("sessions"),
+            codex_home.join("sessions"),
+        ]
+    );
+
+    // An override that already resolves to the default root is not duplicated.
+    let default_sessions = home.join(".codex");
+    let deduped = agents::codex::codex_session_roots(&home, Some(&default_sessions));
+    assert_eq!(deduped, vec![home.join(".codex").join("sessions")]);
+}
+
+#[test]
+fn pi_watch_roots_cover_the_sessions_root() {
+    let home = PathBuf::from("/home/tester");
+    let roots = Explorers::DISK.watch_roots_for(&AgentKind::Pi, &home);
+    assert_eq!(roots.len(), 1);
+    assert!(roots[0].recursive);
+    assert_eq!(
+        roots[0].path,
+        home.join(".pi").join("agent").join("sessions")
+    );
+}
+
+#[test]
+fn opencode_watch_roots_are_non_recursive() {
+    let home = PathBuf::from("/home/tester");
+    let surface = Explorers::DISK.surface_paths_for(&AgentKind::OpenCode, &home);
+    let roots = Explorers::DISK.watch_roots_for(&AgentKind::OpenCode, &home);
+    assert!(!roots.is_empty());
+    assert!(
+        roots.iter().all(|root| !root.recursive),
+        "opencode.db and its -wal file sit directly in the data root"
+    );
+    let paths: Vec<PathBuf> = roots.into_iter().map(|root| root.path).collect();
+    assert_eq!(paths, surface.cli);
+}
+
+#[test]
+fn antigravity_watch_roots_cover_every_brain_subroot() {
+    let home = PathBuf::from("/home/tester");
+    let roots = Explorers::DISK.watch_roots_for(&AgentKind::Antigravity, &home);
+    let gemini_root = home.join(".gemini");
+    let expected: Vec<PathBuf> = ["antigravity-cli", "antigravity-ide", "antigravity"]
+        .into_iter()
+        .map(|subroot| gemini_root.join(subroot))
+        .collect();
+    assert!(roots.iter().all(|root| root.recursive));
+    let paths: Vec<PathBuf> = roots.into_iter().map(|root| root.path).collect();
+    assert_eq!(paths, expected);
+}
+
 #[test]
 fn infer_agent_and_surface_classifies_cli_paths() {
     let home = PathBuf::from("/home/tester");

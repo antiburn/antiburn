@@ -635,9 +635,9 @@ export interface LiveMetricRow {
 /**
  * The derived rows for one window, in a fixed order.
  *
- * Fixed because they answer a sequence of questions — how fast, faster than
- * before?, will it last, how much was today — and a reader who learns where
- * the runway sits should find it in the same place next time. A row whose
+ * Fixed because they answer a sequence of questions — how fast, will it last,
+ * how much was today — and a reader who learns where the runway sits should
+ * find it in the same place next time. A row whose
  * figure is unavailable still appears, carrying the reason: a row that
  * vanishes takes the question with it.
  */
@@ -664,16 +664,6 @@ export function liveMetricRows(window: LiveUsageWindowPayload, now: number): Liv
     pace.value = `${forecast.consumptionRate.toFixed(1)}%/hour`
   }
 
-  const trend: LiveMetricRow = {
-    key: "trend",
-    label: "Trend",
-    value: forecast.paceTrend == null ? (unavailable ?? "Not enough history") : "",
-    toneClass: muted,
-  }
-  if (forecast.paceTrend != null) {
-    trend.value = `${trendLabel(forecast.paceTrend)} · ${forecast.paceTrend.toFixed(1)}×`
-  }
-
   const runway: LiveMetricRow = {
     key: "runway",
     label: "Runway",
@@ -687,14 +677,14 @@ export function liveMetricRows(window: LiveUsageWindowPayload, now: number): Liv
       forecast.paceRatio != null && forecast.paceRatio > 1 ? "text-system-orange" : muted
   }
 
-  const rows = [pace, trend, runway]
+  const rows = [pace, runway]
   if (forecast.usedToday != null) {
     // The shell reports percentage points of this window's allowance, and only
     // for a window longer than a day. "Points" is the unit, not a word a
     // reader knows, so the row gives the share of the limit instead.
     rows.push({
       key: "today",
-      label: "Today",
+      label: "Today's usage %",
       value: `${formatAllowanceShare(forecast.usedToday)} of this limit`,
       toneClass: muted,
     })

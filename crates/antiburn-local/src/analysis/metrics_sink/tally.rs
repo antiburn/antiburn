@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::mem::size_of;
 
+use serde::{Deserialize, Serialize};
+
 use crate::analysis::model::{EventSource, Usage};
 
 /// Names keep enough bytes for provider and tool identifiers.
@@ -28,10 +30,10 @@ pub(crate) const MAX_SPEEDS: usize = 64;
 /// Provisional built-in commands cannot consume the late-skill budget.
 pub(crate) const MAX_BUILTIN_LATE_CANDIDATES: usize = 64;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct NameId(pub(crate) u16);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct IdentityKey {
     first: u64,
     second: u64,
@@ -54,9 +56,12 @@ fn hash_bytes(bytes: &[u8], seed: u64) -> u64 {
     })
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct Interner {
     names: Vec<String>,
+    /// Rebuilt from `names` on restore (`Self::rebuild_index`) instead of
+    /// serialized: it duplicates every name `names` already holds.
+    #[serde(skip)]
     ids: HashMap<String, NameId>,
     limit: usize,
     pub(crate) truncated: u64,
@@ -70,6 +75,16 @@ impl Interner {
             limit,
             truncated: 0,
         }
+    }
+
+    /// Rebuilds `ids` from `names` after a snapshot restore leaves it empty.
+    pub(crate) fn rebuild_index(&mut self) {
+        self.ids = self
+            .names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), NameId(index as u16)))
+            .collect();
     }
 
     pub(crate) fn intern(&mut self, name: &str) -> Option<NameId> {
@@ -114,14 +129,27 @@ impl Interner {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub(crate) struct SkillNameInterner {
     names: Vec<String>,
+    /// Rebuilt from `names` on restore (`Self::rebuild_index`) instead of
+    /// serialized: it duplicates every name `names` already holds.
+    #[serde(skip)]
     ids: HashMap<String, NameId>,
     pub(crate) truncated: u64,
 }
 
 impl SkillNameInterner {
+    /// Rebuilds `ids` from `names` after a snapshot restore leaves it empty.
+    pub(crate) fn rebuild_index(&mut self) {
+        self.ids = self
+            .names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| (name.clone(), NameId(index as u16)))
+            .collect();
+    }
+
     pub(crate) fn intern(&mut self, name: &str) -> Option<NameId> {
         if name.len() <= MAX_SKILL_NAME_BYTES
             && let Some(id) = self.ids.get(name)
@@ -188,7 +216,7 @@ pub(crate) fn truncate_name(name: &str) -> String {
     format!("{}#{:016x}", &name[..end], IdentityKey::new(name).first)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct SkillMark {
     pub(crate) ordinal: u64,
     pub(crate) tool_index: u16,
@@ -211,7 +239,7 @@ impl SkillMark {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct LateToolCandidate {
     pub(crate) ordinal: u64,
     pub(crate) source: EventSource,

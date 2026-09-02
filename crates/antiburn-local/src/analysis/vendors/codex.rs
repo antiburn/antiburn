@@ -41,6 +41,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
 
 use anyhow::Context;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::read_source;
@@ -48,13 +49,15 @@ use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, 
 use crate::analysis::initial_context::CodexContextAccumulator;
 use crate::analysis::interface::{
     ContentKind, ContentPart, EvidenceObservation, NormalizedRecord, RawSource, RecordSink,
-    RelationProvenance, SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
+    RelationProvenance, ResumedVisit, SessionInput, SessionSummary, TurnContent, VendorAdapter,
+    VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, ToolCall, Usage};
 use crate::analysis::records::{
     compact_json_text, concatenated_text, extract_content_parts_from_container, parse_ts,
     tool_call_from_input,
 };
+use crate::analysis::resume::{AdapterResume, StreamSnapshot};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 
 const MAX_PENDING_FORK_ROWS: usize = 256;
@@ -87,14 +90,22 @@ impl VendorAdapter for CodexAdapter {
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
         (|| -> anyhow::Result<VisitOutcome> {
-            let summary = match &input.source {
-                RawSource::File(path) => {
-                    self.visit_reader(BufReader::new(File::open(path)?), &|| false, sink)?
-                }
+            let state = match &input.source {
+                RawSource::File(path) => self.visit_reader(
+                    BufReader::new(File::open(path)?),
+                    &|| false,
+                    sink,
+                    CodexStreamState::default(),
+                )?,
                 RawSource::Jsonl(content) => {
                     let suffix: &[u8] = if content.ends_with('\n') { b"" } else { b"\n" };
                     let source = Cursor::new(content.as_bytes()).chain(suffix);
-                    self.visit_reader(BufReader::new(source), &|| false, sink)?
+                    self.visit_reader(
+                        BufReader::new(source),
+                        &|| false,
+                        sink,
+                        CodexStreamState::default(),
+                    )?
                 }
                 RawSource::Sqlite(path) => {
                     anyhow::bail!(
@@ -103,6 +114,7 @@ impl VendorAdapter for CodexAdapter {
                     )
                 }
             };
+            let summary = state.finish(sink);
             sink.finish(summary);
             Ok(VisitOutcome::Unvalidated)
         })()
@@ -119,9 +131,37 @@ impl VendorAdapter for CodexAdapter {
     ) -> anyhow::Result<VisitOutcome> {
         CodexAdapter::visit_claimed(self, input, claim, guarantee, cancel, sink)
     }
+
+    fn visit_claimed_resumed(
+        &self,
+        input: &SessionInput,
+        claim: &SourceClaim,
+        resume: &StreamSnapshot,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<ResumedVisit> {
+        CodexAdapter::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
+    }
+
+    fn empty_resume_state(&self) -> Option<crate::analysis::resume::AdapterSnapshot> {
+        Some(CodexAdapter::empty_adapter_snapshot())
+    }
 }
 
 impl CodexAdapter {
+    /// A fresh [`CodexStreamState`], serialized. Mirrors
+    /// [`crate::analysis::vendors::claude::ClaudeAdapter::empty_adapter_snapshot`]:
+    /// pairs with a [`StreamSnapshot`] whose [`ResumePoint`][rp] offset is
+    /// zero to start the first resumable pass over a source.
+    ///
+    /// [rp]: crate::analysis::source_validity::ResumePoint
+    pub fn empty_adapter_snapshot() -> crate::analysis::resume::AdapterSnapshot {
+        crate::analysis::resume::AdapterSnapshot(
+            postcard::to_allocvec(&CodexStreamState::default())
+                .expect("a default CodexStreamState always encodes"),
+        )
+    }
+
     pub fn visit_claimed(
         &self,
         input: &SessionInput,
@@ -142,7 +182,12 @@ impl CodexAdapter {
                 AppendOnlyGuarantee::Evidenced => claim.boundary,
                 AppendOnlyGuarantee::Absent => u64::MAX,
             };
-            let summary = self.visit_reader(BufReader::new(pinned.reader(limit)), cancel, sink)?;
+            let state = self.visit_reader(
+                BufReader::new(pinned.reader(limit)),
+                cancel,
+                sink,
+                CodexStreamState::default(),
+            )?;
             let outcome = match guarantee {
                 AppendOnlyGuarantee::Evidenced => match pinned.recheck_prefix()? {
                     Some(reason) => VisitOutcome::SourceChanged(reason),
@@ -158,20 +203,119 @@ impl CodexAdapter {
             if matches!(outcome, VisitOutcome::SourceChanged(_)) {
                 return Ok(outcome);
             }
+            let summary = state.finish(sink);
             sink.finish(summary);
             Ok(outcome)
         })()
         .with_context(|| format!("reading claimed Codex session {}", input.session_id))
     }
 
+    /// Streams a file from a verified [`StreamSnapshot`], restoring
+    /// [`CodexStreamState`] from `resume.adapter` and reading only the bytes
+    /// past `resume.resume.offset`. Mirrors
+    /// [`crate::analysis::vendors::claude::ClaudeAdapter::visit_claimed_resumed`]
+    /// exactly; see its doc comment for the full read/recheck/snapshot shape.
+    ///
+    /// "Unsettled" rule: a fork sub-agent rollout's ownership can still be
+    /// [`ForkOwnership::Pending`] at end of stream — the rows in
+    /// `pending_rows` have no proven owner yet. [`CodexStreamState::finish`]
+    /// flushes them as owned so a settled read still publishes every row,
+    /// but a later full pass could resolve the same rows differently (an
+    /// `agent_message` addressed to the child might still arrive). A
+    /// snapshot taken at that point would not reproduce a full pass, so
+    /// this method reports `resume: None` whenever ownership is still
+    /// `Pending` right before `finish` — even though `outcome` is
+    /// [`VisitOutcome::AcceptedFull`] and the sink still finishes normally.
+    /// The next change to this source costs one full pass instead of a
+    /// resume.
+    pub fn visit_claimed_resumed(
+        &self,
+        input: &SessionInput,
+        claim: &SourceClaim,
+        resume: &StreamSnapshot,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<ResumedVisit> {
+        (|| -> anyhow::Result<ResumedVisit> {
+            anyhow::ensure!(
+                resume.is_current(),
+                "snapshot revision {} is not current",
+                resume.revision
+            );
+            let RawSource::File(path) = &input.source else {
+                anyhow::bail!("a claimed Codex source must be a file");
+            };
+            let mut pinned = match PinnedSource::open_resumed(path, claim.clone(), &resume.resume)?
+            {
+                Ok(pinned) => pinned,
+                Err(reason) => {
+                    return Ok(ResumedVisit {
+                        outcome: VisitOutcome::SourceChanged(reason),
+                        resume: None,
+                    });
+                }
+            };
+            let initial_state: CodexStreamState = postcard::from_bytes(&resume.adapter.0)
+                .context("decoding Codex adapter snapshot")?;
+            let state = self.visit_reader(
+                BufReader::new(pinned.reader_from(resume.resume.offset, u64::MAX)),
+                cancel,
+                sink,
+                initial_state,
+            )?;
+            let outcome = match pinned.recheck_full()? {
+                Some(reason) => VisitOutcome::SourceChanged(reason),
+                None => VisitOutcome::AcceptedFull,
+            };
+            if matches!(outcome, VisitOutcome::SourceChanged(_)) {
+                return Ok(ResumedVisit {
+                    outcome,
+                    resume: None,
+                });
+            }
+            // See the "unsettled" rule above: pending fork ownership is not
+            // a safe resume point, even though this read still finishes
+            // the sink. The `pending_rows` check is defensive: ownership
+            // stays `Pending` for as long as any row is buffered, so the
+            // two conditions coincide today, but a resume snapshot must
+            // never depend on that coincidence holding.
+            let pending =
+                state.ownership == ForkOwnership::Pending || !state.pending_rows.is_empty();
+            let settled_resume = if pending {
+                None
+            } else {
+                let adapter =
+                    postcard::to_allocvec(&state).context("encoding Codex adapter snapshot")?;
+                let point = pinned.resume_point()?;
+                Some(AdapterResume {
+                    point,
+                    adapter: crate::analysis::resume::AdapterSnapshot(adapter),
+                })
+            };
+            let summary = state.finish(sink);
+            sink.finish(summary);
+            Ok(ResumedVisit {
+                outcome,
+                resume: settled_resume,
+            })
+        })()
+        .with_context(|| format!("reading resumed Codex session {}", input.session_id))
+    }
+
+    /// Streams `reader` starting from `state`, so a resumed pass can carry
+    /// forward the state a prior pass left off with. A first pass starts
+    /// from `CodexStreamState::default()`. Returns the state at the end of
+    /// the stream, not yet reduced to a [`SessionSummary`]: the caller
+    /// decides whether to snapshot it before calling
+    /// [`CodexStreamState::finish`].
     fn visit_reader(
         &self,
         reader: impl BufRead,
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
-    ) -> anyhow::Result<SessionSummary> {
+        mut state: CodexStreamState,
+    ) -> anyhow::Result<CodexStreamState> {
         let mut reader = BoundedJsonlReader::new(reader);
-        let mut state = CodexStreamState::default();
 
         while let Some(record) = reader.next_record(cancel) {
             match record {
@@ -198,11 +342,11 @@ impl CodexAdapter {
             }
         }
 
-        Ok(state.finish(sink))
+        Ok(state)
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 enum ForkOwnership {
     #[default]
     TopLevel,
@@ -210,14 +354,22 @@ enum ForkOwnership {
     Owned,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 struct CodexStreamState {
     ownership: ForkOwnership,
     agent_path: Option<String>,
+    /// See [`json_text_codec`]: `postcard` cannot decode a `serde_json::Value`
+    /// directly, so this field's wire form is JSON text. Always empty at the
+    /// point [`CodexAdapter::visit_claimed_resumed`] encodes a snapshot (see
+    /// its "unsettled" rule), but the codec must not depend on that: it round
+    /// trips a populated buffer too.
+    #[serde(with = "json_text_codec")]
     pending_rows: Vec<Value>,
     pending_bytes: usize,
     pending_owned_start: Option<usize>,
     fork_attribution_incomplete: bool,
+    /// See [`json_text_codec`].
+    #[serde(with = "json_text_codec")]
     previous_token_count_key: Option<TokenCountKey>,
     previous_event_was_boundary: bool,
     previous_boundary_ts: Option<i64>,
@@ -233,6 +385,40 @@ struct CodexStreamState {
     /// [`CACHE_WRITE_ALIAS_KEYS`] key. See `usage_carries_cache_write`.
     cache_write_tokens_available: bool,
     context: CodexContextAccumulator,
+}
+
+/// Snapshot codec for a `CodexStreamState` field whose type carries
+/// `serde_json::Value` data at any depth (`pending_rows`,
+/// `previous_token_count_key`).
+///
+/// `serde_json::Value`'s `Deserialize` impl calls `deserialize_any`, a
+/// self-describing lookahead `postcard` explicitly does not implement (its
+/// wire format carries no type tags). Encoding a `Value` works either way,
+/// but decoding one back only works through a self-describing format such
+/// as JSON. This module stores the whole field as JSON text on the wire
+/// instead, parsed back through `serde_json`'s own self-describing decoder —
+/// generic over any `T`, so one codec covers every such field.
+mod json_text_codec {
+    use serde::de::DeserializeOwned;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        T: Serialize,
+        S: Serializer,
+    {
+        let text = serde_json::to_string(value).map_err(serde::ser::Error::custom)?;
+        text.serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, T, D>(deserializer: D) -> Result<T, D::Error>
+    where
+        T: DeserializeOwned,
+        D: Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        serde_json::from_str(&text).map_err(serde::de::Error::custom)
+    }
 }
 
 impl CodexStreamState {
@@ -2402,5 +2588,359 @@ mod tests {
             .expect("visit spawn-other-name session");
 
         assert!(spawn_agent_observations(&sink).is_empty());
+    }
+
+    /* ------------------------------------------------------------------
+     * Resume snapshots.
+     * ------------------------------------------------------------------ */
+
+    mod resume_snapshots {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        use std::path::{Path, PathBuf};
+
+        use tempfile::TempDir;
+
+        use super::*;
+        use crate::analysis::evidence::{EvidenceSource, SourceCapabilities, SourceKind};
+        use crate::analysis::evidence_sink::{EvidenceResumeState, SessionEvidenceAccumulator};
+        use crate::analysis::metrics_sink::SessionMetricsAccumulator;
+        use crate::analysis::resume::EvidenceSnapshot;
+        use crate::analysis::source_validity::ResumePoint;
+        use crate::analysis::{RESUME_SNAPSHOT_REVISION, SourceChangedReason};
+        use crate::discovery::source_version::head_hash_of;
+        use crate::discovery::{FingerprintInputs, SourceStat};
+
+        const FIRST_RECORD: &str = concat!(
+            r#"{"timestamp":"2026-01-01T00:00:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first"}]}}"#,
+            "\n",
+        );
+        const SECOND_RECORD: &str = concat!(
+            r#"{"timestamp":"2026-01-01T00:00:01Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second"}]}}"#,
+            "\n",
+        );
+
+        fn file_input(path: &Path) -> SessionInput {
+            SessionInput {
+                agent: "codex".to_string(),
+                session_id: "claimed-session".to_string(),
+                source: RawSource::File(path.to_path_buf()),
+            }
+        }
+
+        fn claim_for_path(path: &Path) -> SourceClaim {
+            let file = File::open(path).expect("open source for claim");
+            let stat = SourceStat::from_open_std_file(&file).expect("stat source for claim");
+            let bytes = std::fs::read(path).expect("read source for claim");
+            SourceClaim::from_fingerprint_inputs(&FingerprintInputs {
+                stat,
+                head_hash: Some(head_hash_of(&bytes)),
+            })
+        }
+
+        fn write_source(directory: &TempDir, bytes: &[u8]) -> PathBuf {
+            let path = directory.path().join("session.jsonl");
+            std::fs::write(&path, bytes).expect("write source");
+            path
+        }
+
+        /// A full [`StreamSnapshot`] around `resume` (the adapter's own
+        /// half), with fresh metrics/evidence/index state. Mirrors
+        /// `claude.rs`'s test helper of the same name.
+        fn snapshot_from(resume: AdapterResume) -> StreamSnapshot {
+            let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+                agent: "codex".to_owned(),
+                session_id: "claimed-session".to_owned(),
+                kind: SourceKind::Jsonl,
+                capabilities: SourceCapabilities::codex(),
+            });
+            StreamSnapshot {
+                revision: RESUME_SNAPSHOT_REVISION,
+                resume: resume.point,
+                adapter: resume.adapter,
+                metrics: SessionMetricsAccumulator::new("codex", "claimed-session"),
+                evidence: EvidenceSnapshot {
+                    record: evidence.coverage_record(),
+                    resume: EvidenceResumeState::default(),
+                },
+                next_turn_index: 0,
+            }
+        }
+
+        /// A snapshot at offset zero, ready to resume a whole file from its
+        /// start: [`PinnedSource::open_resumed`]'s offset-zero case.
+        fn fresh_snapshot() -> StreamSnapshot {
+            snapshot_from(AdapterResume {
+                point: ResumePoint {
+                    offset: 0,
+                    tail_hash: head_hash_of(&[]),
+                    tail_len: 0,
+                },
+                adapter: CodexAdapter::empty_adapter_snapshot(),
+            })
+        }
+
+        #[test]
+        fn a_resumed_read_from_offset_zero_matches_a_full_read() {
+            let directory = TempDir::new().expect("tempdir");
+            let path = write_source(&directory, FIRST_RECORD.as_bytes());
+            let claim = claim_for_path(&path);
+            let input = file_input(&path);
+            let mut collector = SessionCollector::new("codex", "claimed-session");
+
+            let visit = CodexAdapter
+                .visit_claimed_resumed(&input, &claim, &fresh_snapshot(), &|| false, &mut collector)
+                .expect("resumed visit of a fresh file");
+
+            assert_eq!(visit.outcome, VisitOutcome::AcceptedFull);
+            let resume = visit.resume.expect("a settled pass carries a resume");
+            assert_eq!(resume.point.offset, FIRST_RECORD.len() as u64);
+            assert_eq!(
+                collector
+                    .into_session()
+                    .expect("resumed read must publish")
+                    .events
+                    .len(),
+                1
+            );
+        }
+
+        #[test]
+        fn a_second_resumed_read_continues_from_the_first_snapshot() {
+            let directory = TempDir::new().expect("tempdir");
+            let path = write_source(&directory, FIRST_RECORD.as_bytes());
+            let input = file_input(&path);
+            let mut first_pass = SessionCollector::new("codex", "claimed-session");
+            let first_claim = claim_for_path(&path);
+            let first_visit = CodexAdapter
+                .visit_claimed_resumed(
+                    &input,
+                    &first_claim,
+                    &fresh_snapshot(),
+                    &|| false,
+                    &mut first_pass,
+                )
+                .expect("first resumed visit");
+            let resume = first_visit.resume.expect("a settled pass carries a resume");
+            let snapshot = snapshot_from(resume);
+
+            OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("open source for append")
+                .write_all(SECOND_RECORD.as_bytes())
+                .expect("append second record");
+            let second_claim = claim_for_path(&path);
+            let mut second_pass = SessionCollector::new("codex", "claimed-session");
+
+            let second_visit = CodexAdapter
+                .visit_claimed_resumed(
+                    &input,
+                    &second_claim,
+                    &snapshot,
+                    &|| false,
+                    &mut second_pass,
+                )
+                .expect("second resumed visit");
+
+            assert_eq!(second_visit.outcome, VisitOutcome::AcceptedFull);
+            assert_eq!(
+                second_pass
+                    .into_session()
+                    .expect("resumed read must publish")
+                    .events
+                    .len(),
+                1,
+                "the resumed pass reads only the newly appended record"
+            );
+        }
+
+        #[test]
+        fn a_rewritten_tail_fails_a_resumed_read_without_a_snapshot() {
+            let directory = TempDir::new().expect("tempdir");
+            let path = write_source(&directory, FIRST_RECORD.as_bytes());
+            let input = file_input(&path);
+            let first_claim = claim_for_path(&path);
+            let mut first_pass = SessionCollector::new("codex", "claimed-session");
+            let first_visit = CodexAdapter
+                .visit_claimed_resumed(
+                    &input,
+                    &first_claim,
+                    &fresh_snapshot(),
+                    &|| false,
+                    &mut first_pass,
+                )
+                .expect("first resumed visit");
+            let resume = first_visit.resume.expect("a settled pass carries a resume");
+            let snapshot = snapshot_from(resume);
+
+            // Same identity, a rewritten tail: the old snapshot's offset now
+            // points past a rewritten byte instead of an append. Re-claiming
+            // against the rewritten content isolates that check from the
+            // unrelated head-region check `open_resumed` also runs.
+            std::fs::write(&path, SECOND_RECORD.as_bytes()).expect("rewrite source");
+            let rewritten_claim = claim_for_path(&path);
+            let mut second_pass = SessionCollector::new("codex", "claimed-session");
+
+            let visit = CodexAdapter
+                .visit_claimed_resumed(
+                    &input,
+                    &rewritten_claim,
+                    &snapshot,
+                    &|| false,
+                    &mut second_pass,
+                )
+                .expect("resumed visit of a rewritten source");
+
+            assert_eq!(
+                visit.outcome,
+                VisitOutcome::SourceChanged(SourceChangedReason::ResumeTailMismatch)
+            );
+            assert!(visit.resume.is_none());
+            assert!(second_pass.into_session().is_err());
+        }
+
+        /// A subagent rollout whose ownership is still `Pending` at EOF (no
+        /// `agent_message` ever addresses the child): the "unsettled" rule
+        /// on `visit_claimed_resumed`. The read still settles
+        /// (`AcceptedFull`, and the sink still publishes the buffered rows
+        /// `finish` flushes), but no resume snapshot comes back — a later
+        /// full pass could still resolve those rows differently.
+        #[test]
+        fn a_pending_fork_at_eof_settles_but_carries_no_resume_snapshot() {
+            let jsonl = include_str!(
+                "../../../tests/fixtures/codex_characterization/unresolved_fork.jsonl"
+            );
+            let directory = TempDir::new().expect("tempdir");
+            let path = write_source(&directory, jsonl.as_bytes());
+            let claim = claim_for_path(&path);
+            let input = file_input(&path);
+            let mut collector = SessionCollector::new("codex", "claimed-session");
+
+            let visit = CodexAdapter
+                .visit_claimed_resumed(&input, &claim, &fresh_snapshot(), &|| false, &mut collector)
+                .expect("resumed visit of a pending fork");
+
+            assert_eq!(visit.outcome, VisitOutcome::AcceptedFull);
+            assert!(
+                visit.resume.is_none(),
+                "pending fork ownership at EOF must not carry a resume snapshot"
+            );
+            assert!(
+                !collector
+                    .into_session()
+                    .expect("a settled pass still publishes")
+                    .events
+                    .is_empty(),
+                "finish still flushes the pending rows as owned"
+            );
+        }
+
+        /// After a pending fork's first resumed pass reports no snapshot,
+        /// a later append that resolves ownership (an `agent_message`
+        /// addressed to the child) is picked up by a fresh bootstrap pass
+        /// — offset zero, a fresh adapter state — which does produce a
+        /// resume snapshot once ownership settles to `Owned`.
+        #[test]
+        fn a_later_append_that_resolves_ownership_lets_a_fresh_bootstrap_pass_snapshot() {
+            let jsonl = include_str!(
+                "../../../tests/fixtures/codex_characterization/unresolved_fork.jsonl"
+            );
+            let directory = TempDir::new().expect("tempdir");
+            let path = write_source(&directory, jsonl.as_bytes());
+            let claim = claim_for_path(&path);
+            let input = file_input(&path);
+            let mut first_pass = SessionCollector::new("codex", "claimed-session");
+            let first_visit = CodexAdapter
+                .visit_claimed_resumed(
+                    &input,
+                    &claim,
+                    &fresh_snapshot(),
+                    &|| false,
+                    &mut first_pass,
+                )
+                .expect("resumed visit of a pending fork");
+            assert!(first_visit.resume.is_none());
+
+            let resolving = concat!(
+                r#"{"timestamp":"2026-08-06T10:00:03Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-08-06T10:00:04Z","type":"response_item","payload":{"type":"agent_message","author":"parent","recipient":"worker","content":[{"type":"input_text","text":"Handle the synthetic task."}]}}"#,
+                "\n",
+            );
+            OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("open source for append")
+                .write_all(resolving.as_bytes())
+                .expect("append resolving records");
+
+            // A fresh bootstrap pass: offset zero, a fresh adapter state —
+            // the fallback the desktop worker and the parity harness use
+            // whenever a resumed pass carries no snapshot forward.
+            let bootstrap_claim = claim_for_path(&path);
+            let mut second_pass = SessionCollector::new("codex", "claimed-session");
+            let second_visit = CodexAdapter
+                .visit_claimed_resumed(
+                    &input,
+                    &bootstrap_claim,
+                    &fresh_snapshot(),
+                    &|| false,
+                    &mut second_pass,
+                )
+                .expect("fresh bootstrap pass over the resolved fork");
+
+            assert_eq!(second_visit.outcome, VisitOutcome::AcceptedFull);
+            assert!(
+                second_visit.resume.is_some(),
+                "ownership resolved to Owned by EOF must carry a resume snapshot"
+            );
+        }
+
+        /// `pending_rows` must round-trip through a `StreamSnapshot` even
+        /// when populated: `visit_claimed_resumed` never encodes a state
+        /// whose buffer is non-empty today (see the "unsettled" rule), but
+        /// the codec itself must not depend on that invariant holding.
+        #[test]
+        fn a_populated_pending_rows_buffer_round_trips_through_a_stream_snapshot() {
+            let state = CodexStreamState {
+                ownership: ForkOwnership::Pending,
+                pending_rows: vec![
+                    serde_json::json!({
+                        "type": "session_meta",
+                        "payload": {"id": "synthetic", "thread_source": "subagent"}
+                    }),
+                    serde_json::json!({
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "token_count",
+                            "info": {"last_token_usage": {"input_tokens": 5}}
+                        }
+                    }),
+                ],
+                pending_bytes: 42,
+                ..Default::default()
+            };
+
+            let adapter_bytes =
+                postcard::to_allocvec(&state).expect("a populated CodexStreamState always encodes");
+            let snapshot = snapshot_from(AdapterResume {
+                point: ResumePoint {
+                    offset: 0,
+                    tail_hash: head_hash_of(&[]),
+                    tail_len: 0,
+                },
+                adapter: crate::analysis::resume::AdapterSnapshot(adapter_bytes),
+            });
+
+            let encoded = snapshot.encode();
+            let decoded = StreamSnapshot::decode(&encoded).expect("decode stream snapshot");
+            let decoded_state: CodexStreamState = postcard::from_bytes(&decoded.adapter.0)
+                .expect("decode codex adapter snapshot with a populated pending_rows buffer");
+
+            assert_eq!(decoded_state.ownership, ForkOwnership::Pending);
+            assert_eq!(decoded_state.pending_rows, state.pending_rows);
+            assert_eq!(decoded_state.pending_bytes, state.pending_bytes);
+        }
     }
 }

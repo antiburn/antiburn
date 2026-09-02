@@ -134,44 +134,123 @@ the full record stream, so evidence must come from rows first.
 
 Goal: an appended 4 KB costs 4 KB.
 
-- Persist per source (parent and each child) the consumed byte offset and a
-  hash of the trailing window before it. On the next change, re-hash that
-  window; on match, stream from the offset and continue the turn index; on
-  mismatch, full pass.
-- Provider-database sources persist a row cursor on the vendor's update
-  column and ingest rows after it.
-- Fence semantics change: the published row set spans passes. The claim fence
-  still guards a full pass; an incremental pass appends under the published
-  fence inside one transaction. The schema revision and the
-  `published_turn_rows` contract are updated together.
-- A parser or analyzer revision bump invalidates every cursor and forces a
-  full pass.
-- Turn the `AppendOnlyGuarantee` from a static assumption into the runtime
-  verification above.
-- Adapter stream state (for example `ClaudeStreamState`) must be persisted per
-  source alongside the offset, or be reconstructable from rows, or the resume
-  falls back to a full pass.
+- The unit of resume is a snapshot, not an offset. State lives in adapters
+  (per-stream buffers like `ClaudeStreamState`), sinks (a reorder window,
+  deferred cache patches, duration heaps), and rows (which cannot rebuild
+  every field). A snapshot bundles the adapter and sink state with the
+  verified byte offset and a hash of the trailing window before it.
+  Restoring it and streaming from the offset must equal a full pass.
+
+Deferred: provider-database sources persist no row cursor here. Their
+fingerprint already gates re-streaming, the stream is a query, and the
+Antigravity blob hash is a discovery cost that phase 4 tiers address.
+
+#### Phase 3a: snapshot resume, crate level
+
+- Snapshot types, an offset reader with tail verification, a
+  `VendorAdapter::visit_claimed_resumed` seam, and a Claude adapter
+  snapshot.
 - Test: parity. Incremental ingest over a transcript grown in steps produces
-  the same rows as one full pass over the final file, for each vendor.
+  the same rows, metrics, summary, and evidence as one full pass over the
+  final file.
+- Codex, Pi, and the provider-database adapters report resume unsupported;
+  a caller falls back to a full pass for them.
+
+#### Phase 3b: snapshot resume, desktop level
+
+- A `source_resume` table persists each source's snapshot. The worker calls
+  the new seam and falls back to a full pass when it returns unsupported or
+  the offset reader detects a change.
+- Fence semantics change: the published row set spans passes. The claim
+  fence still guards a full pass; an incremental pass appends under the
+  published fence inside one transaction. The schema revision and the
+  `published_turn_rows` contract are updated together.
+- A parser, analyzer, metrics, evidence, or coverage revision bump
+  invalidates every snapshot and forces a full pass.
+- Turn the `AppendOnlyGuarantee` from a static assumption into the runtime
+  verification phase 3a adds.
+
+#### Phase 3c: Codex and Pi snapshots (done)
+
+- Extended `visit_claimed_resumed` to `CodexAdapter` and `PiAdapter`,
+  covering Codex's pending fork-row buffer. The resume parity harness now
+  sweeps every Codex and Pi characterization fixture, not just Claude's.
+- Codex unsettled rule: a fork sub-agent rollout can still have
+  `ForkOwnership::Pending` at end of stream. `finish` still flushes those
+  buffered rows as owned, so a settled read publishes every row, but a
+  later full pass could resolve the same rows differently. So
+  `visit_claimed_resumed` reports `resume: None` whenever ownership is
+  still `Pending` right before `finish`, even though the read still
+  settles. The next change to that source costs one full pass instead of
+  a resume.
 
 ### Phase 4: watcher tiers, events, and the HUD fold-in
 
 Goal: layer 1 is continuous and cheap, and every consumer reads one signal.
 
-- Add `notify`. Watch each agent's roots. Classify events into "new source
-  under a root" and "known source changed". Debounce writes.
-- Polling tiers as reconciliation and fallback: active sources stat every
-  few seconds, inactive every minute, new-source leaf-directory check every
-  few seconds, full walk hourly and on demand. Per-agent leaf strategies
-  replace the unwindowed Codex tree walk and the Claude subagent sweep. WSL
-  paths get a slower tier.
-- A discovery-level per-session event to the webview carries the refreshed
-  `ActivityEntry`, so the list patches one row instead of refetching.
-- Active-to-idle expiry as a backend timer, emitted as the same event.
-- The HUD's `latest_session_activity` becomes a query on the session table
-  or a subscription to the expiry signal; its discovery walk is deleted.
-- The detail pane's 10-second fingerprint poll is replaced by the row-change
-  event.
+#### Phase 4a: filesystem watchers and discovery pruning (done)
+
+- Added `notify` and a watcher over each agent's `watch_roots` (the
+  `AgentExplorer` trait's per-agent recursive or shallow root set). A
+  changed path debounces into a `ScanController::request()` kick: quiet
+  window 1.5 s, maximum wait 5 s, so a burst of writes collapses into one
+  follow-up pass and a continuous stream still kicks at least every 5 s.
+  `Access`-only events and WSL-mounted paths are dropped as noise.
+- The scheduler's own tick drops from 60 s to a 15 s fallback only while
+  the watcher is unhealthy (it never started, or a root failed to watch);
+  a healthy watcher keeps the 60 s tick as pure reconciliation. Watched
+  roots are re-listed and any new one picked up every 60 s, so an agent
+  installed after startup is watched without a restart.
+  WSL paths stay on the tick; they are not watched.
+- Discovery pruning replaced the three unwindowed walks a frequent pass
+  would otherwise repeat: Codex now walks only `YYYY/MM/DD` date
+  directories inside the recency window (full-walk fallback for an
+  unparseable name), Claude's sub-agent sweep skips a session's
+  `subagents/` directory unless its parent is already in the recent set
+  or the directory's own mtime is inside the window, and Antigravity
+  checks the mtime window before opening a conversation database instead
+  of after.
+- Follow-up, not done here: Cursor's `collect_agent_transcript_dirs` and
+  `collect_cursor_chat_metadata` are still unwindowed recursive walks: a
+  Cursor watch delivers change notifications, but a kicked pass still
+  pays for the full walk underneath. Needs the same date- or mtime-gated
+  pruning the other three agents got in 4a.
+
+#### Phase 4b: per-session event, idle expiry, HUD fold-in (done)
+
+- A scan pass now tracks which sessions it actually re-described versus
+  reused, in `scan::describe_with_states`, and announces each changed one
+  through the existing `sessions:entry-changed` event
+  (`SESSION_ENTRY_CHANGED_EVENT`) instead of leaving the popover to find out
+  on its next full refetch. `ScanStatus` gained `list_changed`, true when a
+  pass indexed a session the list has never shown or evicted a rejected one,
+  so a consumer can tell "the set of rows changed" from "a row's fields
+  changed" without diffing the list itself.
+- Active-to-idle expiry is a backend task (`scan/idle.rs`): it sleeps until
+  the soonest active session's window ends, then announces every session
+  that crossed it through the same `sessions:entry-changed` event. An
+  `IdleWake` notify lets `scan::pass` re-arm the task's deadline immediately
+  after a write, rather than waiting for a stale wake.
+  `Store::sessions_active_since` backs the task's read of the active set.
+- `hud::latest_session_activity` is now one call to
+  `Store::latest_session_activity` — a single `SELECT MAX(updated_at_epoch)`
+  query — replacing the discovery walk and its in-memory memoization.
+  `get_latest_session_activity` is a sync command now that it no longer
+  awaits a walk.
+- The popover's detail pane no longer polls a fingerprint. It refreshes,
+  coalesced to one extra run per burst, when `sessions:entry-changed` names
+  its open subject (or, for a sub-agent, its parent). The activity list
+  patches the one row an event describes in place and re-sorts it; a row not
+  already on screen triggers a coalesced full refetch instead. `scan:finished`
+  drives the list too: `list_changed` refetches immediately, and a pass that
+  never sets it still gets reconciled every `LIST_RECONCILE_MS` (60 s, the
+  scheduler's own healthy-watcher tick) as a backstop. The
+  `get_session_analysis_fingerprint` command, `poll_fingerprint_with_subagents`,
+  and their tests are deleted along with the poll.
+- Left out: Cursor's `collect_agent_transcript_dirs` and
+  `collect_cursor_chat_metadata` are still unwindowed recursive walks — the
+  4a follow-up noted above, unrelated to 4b's event and expiry work, and
+  still open.
 
 ## Sequencing notes
 

@@ -42,6 +42,7 @@ mod model;
 mod pricing;
 pub(crate) mod records;
 mod replay;
+mod resume;
 mod rows;
 mod source_validity;
 pub(crate) mod threads;
@@ -65,10 +66,13 @@ pub use evidence::{
     ToolEvidence, ToolUse, TurnCounts,
 };
 pub use evidence_query::{
-    TurnFacts, query_model_breakdown, query_model_runs, query_turn_facts, query_turn_rows,
+    FenceScope, PublishedScope, TurnFacts, query_model_breakdown, query_model_runs,
+    query_turn_facts, query_turn_rows,
 };
 pub use evidence_replay::evidence_from_facts;
-pub use evidence_sink::{CompositeSink, RETAINED_EVIDENCE_BYTES_BOUND, SessionEvidenceAccumulator};
+pub use evidence_sink::{
+    CompositeSink, EvidenceResumeState, RETAINED_EVIDENCE_BYTES_BOUND, SessionEvidenceAccumulator,
+};
 pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
     SCAN_QUANTUM_BYTES,
@@ -77,25 +81,30 @@ pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, So
 pub use interface::{
     ContentKind, ContentPart, ContextSourceKind, EvidenceObservation, MAX_CONTENT_PART_BYTES,
     MAX_PROVIDER_HINTS, NormalizedRecord, ProviderHint, RawSource, RecordCoverage, RecordSink,
-    RelationProvenance, SessionCollector, SessionInput, SessionSummary, SourceChangedReason,
-    TurnContent, VendorAdapter, VisitOutcome,
+    RelationProvenance, ResumedVisit, SessionCollector, SessionInput, SessionSummary,
+    SourceChangedReason, TurnContent, VendorAdapter, VisitOutcome,
 };
 pub use merge::merge_subagent_events;
 pub use metrics_sink::{RETAINED_METRICS_BYTES_BOUND, SessionMetricsAccumulator, merge_metrics};
 pub use model::{
     EventSource, ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
 };
-pub use pricing::{install_runtime_pricing, price_breakdown, pricing_generation};
+pub use pricing::{install_runtime_pricing, lookup_pricing, price_breakdown, pricing_generation};
 pub use replay::{MissingParentRows, metrics_by_source, metrics_from_rows};
+pub use resume::{AdapterResume, AdapterSnapshot, EvidenceSnapshot, StreamSnapshot};
 pub use rows::{
-    MemoryTurnRowStore, SESSION_COVERAGE_SCHEMA_SQL, TURN_MIGRATIONS, TURN_ROW_BATCH_SIZE,
-    TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL, TURN_SCHEMA_V3_SQL, TurnRow, TurnRowError, TurnRowSink,
-    TurnRowStore, TurnScope, TurnSessionKey, count_turn_content_rows, count_turn_rows,
-    delete_turn_rows, delete_turn_rows_except_fence, delete_turn_rows_for_fence,
-    insert_coverage_record, insert_turn_rows, query_coverage_record, turn_row_from_event,
+    MemoryTurnRowStore, ResumeRevisions, SESSION_COVERAGE_SCHEMA_SQL, SOURCE_RESUME_SCHEMA_SQL,
+    StoredResume, TURN_MIGRATIONS, TURN_ROW_BATCH_SIZE, TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL,
+    TURN_SCHEMA_V3_SQL, TURN_SCHEMA_V4_SQL, TurnRow, TurnRowError, TurnRowSink, TurnRowStore,
+    TurnScope, TurnSessionKey, count_turn_content_rows, count_turn_rows, delete_source_resume,
+    delete_source_rows_at_fence, delete_stale_source_resume, delete_turn_rows,
+    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_coverage_record,
+    insert_source_resume, insert_turn_rows, query_coverage_record, query_source_resume,
+    restamp_source_rows, turn_row_from_event,
 };
 pub use source_validity::{
-    AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, SourceClaim, append_only_guarantee,
+    AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, RESUME_TAIL_BYTES, ResumePoint,
+    SourceClaim, append_only_guarantee,
 };
 pub use vendors::claude::ClaudeAdapter;
 pub use vendors::pi::PiAdapter;
@@ -167,6 +176,19 @@ pub const EVIDENCE_SCHEMA_REVISION: i64 = 12;
 /// A persisted record from an older revision cannot be trusted to replay
 /// correctly, so a reader must reparse instead of reusing it.
 pub const COVERAGE_SCHEMA_REVISION: i64 = 1;
+/// Versions [`resume::StreamSnapshot`]'s own shape. [`resume::StreamSnapshot::is_current`]
+/// rejects a persisted snapshot stamped with an older revision.
+///
+/// A bump to [`PARSER_REVISION`], [`ANALYZER_REVISION`], [`METRICS_SCHEMA_REVISION`],
+/// [`EVIDENCE_SCHEMA_REVISION`], or [`COVERAGE_SCHEMA_REVISION`] also
+/// invalidates every persisted snapshot: a snapshot's adapter and sink
+/// state was built under the old rules, and resuming it would keep
+/// producing rows, metrics, or evidence the new rules never agreed to.
+/// Phase 3b's persistence layer enforces this by checking every revision
+/// before it restores a snapshot; this constant and the rule are
+/// documented here so a future revision bump remembers to bump this one
+/// too, when the change touches resumable state.
+pub const RESUME_SNAPSHOT_REVISION: i64 = 1;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

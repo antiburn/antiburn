@@ -32,8 +32,12 @@ export function foldUsageChart(wrap: HTMLDivElement | null, viewport: HTMLDivEle
   const height = chart.offsetHeight
   // What the list could scroll with the chart open: its present range plus
   // the room the current fold already handed over.
-  const openRange = viewport.scrollHeight - viewport.clientHeight + (height - wrap.offsetHeight)
-  const room = Math.min(height * progress, Math.max(0, openRange - scrollTop))
+  const currentRange = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
+  const openRange = currentRange + (height - wrap.offsetHeight)
+  // WebKit reports offsets beyond the range during elastic bottom overscroll.
+  // Keep that bounce from opening a chart that only upward scrolling opens.
+  const boundedScrollTop = Math.min(scrollTop, currentRange)
+  const room = Math.min(height * progress, Math.max(0, openRange - boundedScrollTop))
   // The wrapper keeps a whole number of pixels. Round its height up. Then the
   // fold the browser applies is never deeper than the room above permits.
   // A height that rounds down folds up to half a pixel too far. The reader

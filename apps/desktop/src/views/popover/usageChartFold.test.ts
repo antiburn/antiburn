@@ -96,6 +96,19 @@ describe("foldUsageChart", () => {
     expect(seen.at(-1)).toBe(seen.at(-2))
   })
 
+  it("keeps the chart folded during elastic overscroll at the bottom", () => {
+    const s = scene(460, 400)
+    s.scrollTo(20)
+    const folded = s.folded()
+
+    // WebKit can report a temporary offset beyond the real scroll range
+    // during the bottom bounce.
+    s.viewport.scrollTop = 60
+    foldUsageChart(s.wrap, s.viewport)
+
+    expect(s.folded()).toBe(folded)
+  })
+
   it("clears every override at the top", () => {
     const s = scene(3000, 400)
     s.scrollTo(96)

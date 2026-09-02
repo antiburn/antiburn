@@ -77,23 +77,75 @@ pub struct TurnFacts {
     pub diagnostics: ParseDiagnostics,
 }
 
-/// Reads every [`TurnFacts`] field for the rows `key` and `claim_fence`
-/// select.
+/// Which rows a mid-pass read should see.
+///
+/// A pass writes only its own new rows under the claim fence: a resumed
+/// source's earlier rows still sit at the session's published fence until
+/// the publish transaction re-stamps them (see the `source_resume`
+/// migration comment). A read scoped to the claim fence alone would then
+/// undercount a resumed source's history for the rest of this pass.
+/// `FenceScope` widens the read for exactly the sources this pass
+/// resumed. Every other source (read fully this pass) is unaffected: its
+/// rows are already complete under the claim fence alone.
+pub struct FenceScope<'a> {
+    pub claim_fence: i64,
+    pub published: Option<PublishedScope<'a>>,
+}
+
+/// The published fence a scope's read widens to, and which source keys
+/// that widening covers. A source not in `source_keys` is read at
+/// [`FenceScope::claim_fence`] alone, even when a scope carries this.
+pub struct PublishedScope<'a> {
+    pub fence: i64,
+    pub source_keys: &'a [String],
+}
+
+impl<'a> FenceScope<'a> {
+    /// A scope that reads only `fence` — no source resumed this pass, or
+    /// this read (the coverage record) is written complete under the
+    /// claim fence every pass and never needs the published fence too.
+    pub fn single(fence: i64) -> Self {
+        Self {
+            claim_fence: fence,
+            published: None,
+        }
+    }
+}
+
+/// The three values every fence-scoped query binds, in the order its SQL
+/// always expects them after `environment_key`/`agent`/`session_id`: the
+/// claim fence, the fence a resumed source's earlier rows sit under (the
+/// claim fence again when nothing resumed, so the predicate's second half
+/// can never match a row the first half did not already match), and a
+/// JSON array of which source keys that published fence covers.
+fn scope_bind_values(scope: &FenceScope<'_>) -> (i64, i64, String) {
+    match &scope.published {
+        Some(published) => (
+            scope.claim_fence,
+            published.fence,
+            serde_json::to_string(published.source_keys).unwrap_or_else(|_| "[]".to_string()),
+        ),
+        None => (scope.claim_fence, scope.claim_fence, "[]".to_string()),
+    }
+}
+
+/// Reads every [`TurnFacts`] field for the rows `key` and `scope` select
+/// — see [`FenceScope`].
 pub fn query_turn_facts(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
 ) -> rusqlite::Result<TurnFacts> {
     let mut diagnostics = ParseDiagnostics::new();
 
-    let core = query_core(conn, key, claim_fence)?;
-    let top_depth_examples = query_top_depth_examples(conn, key, claim_fence, &mut diagnostics)?;
-    let (by_model, models_capped) = query_by_model(conn, key, claim_fence, &mut diagnostics)?;
-    let dominant_main_model = query_dominant_main_model(conn, key, claim_fence, &mut diagnostics)?;
+    let core = query_core(conn, key, scope)?;
+    let top_depth_examples = query_top_depth_examples(conn, key, scope, &mut diagnostics)?;
+    let (by_model, models_capped) = query_by_model(conn, key, scope, &mut diagnostics)?;
+    let dominant_main_model = query_dominant_main_model(conn, key, scope, &mut diagnostics)?;
     let (effort_tiers, effort_capped) = query_tier_map(
         conn,
         key,
-        claim_fence,
+        scope,
         EFFORT_TIERS_SQL,
         "models.effort_tiers",
         &mut diagnostics,
@@ -101,21 +153,21 @@ pub fn query_turn_facts(
     let (fast_modes, fast_capped) = query_tier_map(
         conn,
         key,
-        claim_fence,
+        scope,
         FAST_MODES_SQL,
         "models.fast_modes",
         &mut diagnostics,
     )?;
-    let (effort_signal, speed_signal) = query_signal_coverage(conn, key, claim_fence)?;
+    let (effort_signal, speed_signal) = query_signal_coverage(conn, key, scope)?;
     let (delegated_models, delegated_models_capped) =
-        query_delegated_models(conn, key, claim_fence, &mut diagnostics)?;
+        query_delegated_models(conn, key, scope, &mut diagnostics)?;
     let (model_transitions, transitions_capped, longest_idle_gap_ms, idle_gap_ms_total) =
-        query_transitions_and_idle_gaps(conn, key, claim_fence, &mut diagnostics)?;
-    let manual_compactions = query_manual_compactions(conn, key, claim_fence)?;
+        query_transitions_and_idle_gaps(conn, key, scope, &mut diagnostics)?;
+    let manual_compactions = query_manual_compactions(conn, key, scope)?;
     let (compaction_boundaries, compactions_capped) =
-        query_compaction_boundaries(conn, key, claim_fence, &mut diagnostics)?;
-    let duplicate_turn_identities = query_duplicate_turn_identities(conn, key, claim_fence)?;
-    let repeated_context = query_repeated_context(conn, key, claim_fence)?;
+        query_compaction_boundaries(conn, key, scope, &mut diagnostics)?;
+    let duplicate_turn_identities = query_duplicate_turn_identities(conn, key, scope)?;
+    let repeated_context = query_repeated_context(conn, key, scope)?;
 
     Ok(TurnFacts {
         eligibility: core.eligibility,
@@ -211,16 +263,24 @@ const CORE_SQL: &str = "SELECT
     COALESCE(SUM(scope = 'delegated' AND role = 'assistant' AND model IS NULL), 0),
     COALESCE(SUM(uuid IS NULL), 0)
   FROM turn
- WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4";
+ WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))";
 
 fn query_core(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
 ) -> rusqlite::Result<Core> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     conn.query_row(
         CORE_SQL,
-        params![key.environment_key, key.agent, key.session_id, claim_fence],
+        params![
+            key.environment_key,
+            key.agent,
+            key.session_id,
+            claim_fence,
+            published_fence,
+            source_keys_json
+        ],
         |row| {
             let turns: i64 = row.get(0)?;
             let assistant_turns: i64 = row.get(1)?;
@@ -268,7 +328,7 @@ const TURN_ROWS_SQL: &str = "SELECT source_key, thread_id, turn_index, scope, ch
         uuid, parent_uuid, compaction_trigger, compaction_pre_tokens,
         compaction_post_tokens, has_thinking, last_tool, subagent_launches
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
   ORDER BY source_key, turn_index";
 
 /// Reads the full ordered turn rows for `key` at `claim_fence`, without
@@ -280,11 +340,19 @@ const TURN_ROWS_SQL: &str = "SELECT source_key, thread_id, turn_index, scope, ch
 pub fn query_turn_rows(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
 ) -> rusqlite::Result<Vec<TurnRow>> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     let mut statement = conn.prepare(TURN_ROWS_SQL)?;
     let rows = statement.query_map(
-        params![key.environment_key, key.agent, key.session_id, claim_fence],
+        params![
+            key.environment_key,
+            key.agent,
+            key.session_id,
+            claim_fence,
+            published_fence,
+            source_keys_json
+        ],
         |row| {
             let scope_text: String = row.get(3)?;
             let scope = TurnScope::parse(&scope_text).ok_or_else(|| {
@@ -348,18 +416,19 @@ pub fn query_turn_rows(
 const TOP_DEPTH_EXAMPLES_SQL: &str = "SELECT ts_ms,
         (input_tokens + cache_read_tokens + cache_write_tokens) AS depth, model
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND ts_ms IS NOT NULL
     AND (input_tokens + cache_read_tokens + cache_write_tokens) > 0
   ORDER BY depth DESC, ts_ms ASC
-  LIMIT ?5";
+  LIMIT ?7";
 
 fn query_top_depth_examples(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
     diagnostics: &mut ParseDiagnostics,
 ) -> rusqlite::Result<Vec<DepthExample>> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     // One row past the cap tells us whether more qualifying rows exist,
     // without a second COUNT query.
     let limit = (MAX_EVIDENCE_EXAMPLES + 1) as i64;
@@ -369,6 +438,8 @@ fn query_top_depth_examples(
         key.agent,
         key.session_id,
         claim_fence,
+        published_fence,
+        source_keys_json,
         limit
     ])?;
     let mut examples = Vec::new();
@@ -398,22 +469,25 @@ fn query_top_depth_examples(
 const BY_MODEL_SQL: &str = "SELECT model, input_tokens, output_tokens, cache_read_tokens,
         cache_write_tokens, ts_ms
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND role = 'assistant' AND model IS NOT NULL
   ORDER BY rowid";
 
 fn query_by_model(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
     diagnostics: &mut ParseDiagnostics,
 ) -> rusqlite::Result<(BTreeMap<String, ModelTokens>, bool)> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     let mut statement = conn.prepare(BY_MODEL_SQL)?;
     let mut rows = statement.query(params![
         key.environment_key,
         key.agent,
         key.session_id,
-        claim_fence
+        claim_fence,
+        published_fence,
+        source_keys_json
     ])?;
     let mut models: BTreeMap<String, ModelTokens> = BTreeMap::new();
     let mut capped = false;
@@ -493,7 +567,7 @@ fn add_model_tokens(
 const MODEL_BREAKDOWN_SQL: &str = "SELECT model, input_tokens, output_tokens,
         cache_read_tokens, cache_write_tokens
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND role = 'assistant' AND model IS NOT NULL
     AND (input_tokens != 0 OR output_tokens != 0
          OR cache_read_tokens != 0 OR cache_write_tokens != 0)";
@@ -520,14 +594,17 @@ const MODEL_BREAKDOWN_SQL: &str = "SELECT model, input_tokens, output_tokens,
 pub fn query_model_breakdown(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
 ) -> rusqlite::Result<BTreeMap<String, crate::pricing::ModelTokens>> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     let mut statement = conn.prepare(MODEL_BREAKDOWN_SQL)?;
     let mut rows = statement.query(params![
         key.environment_key,
         key.agent,
         key.session_id,
-        claim_fence
+        claim_fence,
+        published_fence,
+        source_keys_json
     ])?;
     let mut breakdown: BTreeMap<String, crate::pricing::ModelTokens> = BTreeMap::new();
     while let Some(row) = rows.next()? {
@@ -553,7 +630,7 @@ pub fn query_model_breakdown(
 
 const MODEL_RUNS_SQL: &str = "SELECT source_key, model, effort
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND role = 'assistant' AND model IS NOT NULL
     AND (input_tokens != 0 OR output_tokens != 0
          OR cache_read_tokens != 0 OR cache_write_tokens != 0)";
@@ -582,14 +659,17 @@ const MODEL_RUNS_SQL: &str = "SELECT source_key, model, effort
 pub fn query_model_runs(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
 ) -> rusqlite::Result<Vec<ModelRun>> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     let mut statement = conn.prepare(MODEL_RUNS_SQL)?;
     let mut rows = statement.query(params![
         key.environment_key,
         key.agent,
         key.session_id,
-        claim_fence
+        claim_fence,
+        published_fence,
+        source_keys_json
     ])?;
     let mut parent_runs: BTreeSet<ModelRun> = BTreeSet::new();
     let mut child_runs: BTreeSet<ModelRun> = BTreeSet::new();
@@ -643,7 +723,7 @@ pub fn query_model_runs(
 /// substitute. `LIMIT 1` keeps this a single bounded row.
 const DOMINANT_MAIN_MODEL_SQL: &str = "SELECT model
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'main' AND role = 'assistant' AND model IS NOT NULL
   GROUP BY model
   ORDER BY SUM(output_tokens) DESC, COUNT(*) DESC, MAX(ts_ms) ASC, MIN(turn_index) ASC
@@ -652,13 +732,21 @@ const DOMINANT_MAIN_MODEL_SQL: &str = "SELECT model
 fn query_dominant_main_model(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
     diagnostics: &mut ParseDiagnostics,
 ) -> rusqlite::Result<Option<String>> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     let mut statement = conn.prepare(DOMINANT_MAIN_MODEL_SQL)?;
     let model: Option<String> = statement
         .query_row(
-            params![key.environment_key, key.agent, key.session_id, claim_fence],
+            params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                claim_fence,
+                published_fence,
+                source_keys_json
+            ],
             |row| row.get(0),
         )
         .optional()?;
@@ -671,30 +759,33 @@ fn query_dominant_main_model(
 
 const EFFORT_TIERS_SQL: &str = "SELECT effort, scope
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND effort IS NOT NULL
   ORDER BY rowid";
 
 const FAST_MODES_SQL: &str = "SELECT speed, scope
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND speed IS NOT NULL
   ORDER BY rowid";
 
 fn query_tier_map(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
     sql: &str,
     field: &'static str,
     diagnostics: &mut ParseDiagnostics,
 ) -> rusqlite::Result<(BTreeMap<String, TurnCounts>, bool)> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     let mut statement = conn.prepare(sql)?;
     let mut rows = statement.query(params![
         key.environment_key,
         key.agent,
         key.session_id,
-        claim_fence
+        claim_fence,
+        published_fence,
+        source_keys_json
     ])?;
     let mut map: BTreeMap<String, TurnCounts> = BTreeMap::new();
     let mut capped = false;
@@ -737,16 +828,24 @@ const SIGNAL_COVERAGE_SQL: &str = "SELECT
     COALESCE(SUM(role = 'assistant' AND model IS NOT NULL AND effort IS NOT NULL), 0),
     COALESCE(SUM(role = 'assistant' AND model IS NOT NULL AND speed IS NOT NULL), 0)
   FROM turn
- WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4";
+ WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))";
 
 fn query_signal_coverage(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
 ) -> rusqlite::Result<(SignalCoverage, SignalCoverage)> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     conn.query_row(
         SIGNAL_COVERAGE_SQL,
-        params![key.environment_key, key.agent, key.session_id, claim_fence],
+        params![
+            key.environment_key,
+            key.agent,
+            key.session_id,
+            claim_fence,
+            published_fence,
+            source_keys_json
+        ],
         |row| {
             let eligible: i64 = row.get(0)?;
             let effort_present: i64 = row.get(1)?;
@@ -772,22 +871,25 @@ fn query_signal_coverage(
 
 const DELEGATED_MODELS_SQL: &str = "SELECT model
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'delegated' AND role = 'assistant' AND model IS NOT NULL
   ORDER BY rowid";
 
 fn query_delegated_models(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
     diagnostics: &mut ParseDiagnostics,
 ) -> rusqlite::Result<(BTreeSet<String>, bool)> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     let mut statement = conn.prepare(DELEGATED_MODELS_SQL)?;
     let mut rows = statement.query(params![
         key.environment_key,
         key.agent,
         key.session_id,
-        claim_fence
+        claim_fence,
+        published_fence,
+        source_keys_json
     ])?;
     let mut models = BTreeSet::new();
     let mut capped = false;
@@ -817,7 +919,7 @@ fn query_delegated_models(
 
 const MAIN_THREAD_SCAN_SQL: &str = "SELECT thread_id, ts_ms, model
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'main'
   ORDER BY thread_id, turn_index";
 
@@ -828,15 +930,18 @@ const MAIN_THREAD_SCAN_SQL: &str = "SELECT thread_id, ts_ms, model
 fn query_transitions_and_idle_gaps(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
     diagnostics: &mut ParseDiagnostics,
 ) -> rusqlite::Result<(Vec<ModelTransition>, bool, i64, i64)> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     let mut statement = conn.prepare(MAIN_THREAD_SCAN_SQL)?;
     let mut rows = statement.query(params![
         key.environment_key,
         key.agent,
         key.session_id,
-        claim_fence
+        claim_fence,
+        published_fence,
+        source_keys_json
     ])?;
     let mut transitions = Vec::new();
     let mut capped = false;
@@ -895,16 +1000,17 @@ fn query_transitions_and_idle_gaps(
  * ----------------------------------------------------------------- */
 
 const MANUAL_COMPACTIONS_SQL: &str = "SELECT COALESCE(
-        SUM(is_compaction_boundary = 1 AND compaction_trigger = ?5), 0)
+        SUM(is_compaction_boundary = 1 AND compaction_trigger = ?7), 0)
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'main'";
 
 fn query_manual_compactions(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
 ) -> rusqlite::Result<u64> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     let count: i64 = conn.query_row(
         MANUAL_COMPACTIONS_SQL,
         params![
@@ -912,6 +1018,8 @@ fn query_manual_compactions(
             key.agent,
             key.session_id,
             claim_fence,
+            published_fence,
+            source_keys_json,
             CompactionTrigger::Manual.as_str()
         ],
         |row| row.get(0),
@@ -922,17 +1030,18 @@ fn query_manual_compactions(
 const COMPACTION_BOUNDARIES_SQL: &str = "SELECT ts_ms, compaction_trigger,
         compaction_pre_tokens, compaction_post_tokens
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'main' AND is_compaction_boundary = 1
   ORDER BY thread_id, turn_index
-  LIMIT ?5";
+  LIMIT ?7";
 
 fn query_compaction_boundaries(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
     diagnostics: &mut ParseDiagnostics,
 ) -> rusqlite::Result<(Vec<CompactionBoundary>, bool)> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     let limit = (MAX_COMPACTION_BOUNDARIES + 1) as i64;
     let mut statement = conn.prepare(COMPACTION_BOUNDARIES_SQL)?;
     let mut rows = statement.query(params![
@@ -940,6 +1049,8 @@ fn query_compaction_boundaries(
         key.agent,
         key.session_id,
         claim_fence,
+        published_fence,
+        source_keys_json,
         limit
     ])?;
     let mut boundaries = Vec::new();
@@ -969,7 +1080,7 @@ fn query_compaction_boundaries(
 
 const DUPLICATE_TURN_IDENTITIES_SQL: &str = "SELECT COUNT(*) FROM (
         SELECT uuid FROM turn
-         WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+         WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
            AND uuid IS NOT NULL
          GROUP BY uuid
         HAVING COUNT(DISTINCT source_key) > 1
@@ -978,11 +1089,19 @@ const DUPLICATE_TURN_IDENTITIES_SQL: &str = "SELECT COUNT(*) FROM (
 fn query_duplicate_turn_identities(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
 ) -> rusqlite::Result<u64> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     let count: i64 = conn.query_row(
         DUPLICATE_TURN_IDENTITIES_SQL,
-        params![key.environment_key, key.agent, key.session_id, claim_fence],
+        params![
+            key.environment_key,
+            key.agent,
+            key.session_id,
+            claim_fence,
+            published_fence,
+            source_keys_json
+        ],
         |row| row.get(0),
     )?;
     Ok(as_u64(count))
@@ -1000,7 +1119,7 @@ fn query_duplicate_turn_identities(
 const REPEATED_CONTEXT_SCAN_SQL: &str = "SELECT thread_id, ts_ms, input_tokens,
         cache_read_tokens, cache_write_tokens, is_compaction_boundary
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence = ?4
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'main' AND role = 'assistant'
   ORDER BY thread_id, turn_index";
 
@@ -1031,14 +1150,17 @@ struct RepeatedContextTotals {
 fn query_repeated_context(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
 ) -> rusqlite::Result<RepeatedContextTotals> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
     let mut statement = conn.prepare(REPEATED_CONTEXT_SCAN_SQL)?;
     let mut rows = statement.query(params![
         key.environment_key,
         key.agent,
         key.session_id,
-        claim_fence
+        claim_fence,
+        published_fence,
+        source_keys_json
     ])?;
     let mut cache_write_tokens: u64 = 0;
     let mut uncached_input_tokens: u64 = 0;
@@ -1162,7 +1284,7 @@ mod tests {
     #[test]
     fn an_empty_session_reads_as_all_zero() {
         let conn = test_connection();
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.eligibility.turns, 0);
         assert_eq!(facts.max_request_context_tokens, 0);
         assert_eq!(
@@ -1188,8 +1310,51 @@ mod tests {
     fn fence_filtering_ignores_rows_under_another_fence() {
         let conn = test_connection();
         insert_turn_rows(&conn, &KEY, 2, &[base_row("s1", 0)]).expect("insert other fence");
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.eligibility.turns, 0);
+    }
+
+    #[test]
+    fn a_published_scope_widens_only_the_listed_source() {
+        let conn = test_connection();
+        // "s1" resumed this pass: two rows already published under fence
+        // 1, one new row this pass wrote under the claim fence, 2.
+        let mut old_s1_a = base_row("s1", 0);
+        old_s1_a.source_key = "s1".to_owned();
+        let mut old_s1_b = base_row("s1", 1);
+        old_s1_b.source_key = "s1".to_owned();
+        insert_turn_rows(&conn, &KEY, 1, &[old_s1_a, old_s1_b]).expect("insert published s1 rows");
+        let mut new_s1 = base_row("s1", 2);
+        new_s1.source_key = "s1".to_owned();
+        insert_turn_rows(&conn, &KEY, 2, &[new_s1]).expect("insert claim-fence s1 row");
+
+        // "s2" was not touched this pass: five rows sit only at the
+        // published fence, none at the claim fence.
+        let published_s2: Vec<TurnRow> = (0..5)
+            .map(|index| {
+                let mut row = base_row("s1", index);
+                row.source_key = "s2".to_owned();
+                row
+            })
+            .collect();
+        insert_turn_rows(&conn, &KEY, 1, &published_s2).expect("insert published s2 rows");
+
+        let resumed_sources = vec!["s1".to_owned()];
+        let scope = FenceScope {
+            claim_fence: 2,
+            published: Some(PublishedScope {
+                fence: 1,
+                source_keys: &resumed_sources,
+            }),
+        };
+        let rows = query_turn_rows(&conn, &KEY, &scope).expect("query rows");
+        let s1_rows = rows.iter().filter(|row| row.source_key == "s1").count();
+        let s2_rows = rows.iter().filter(|row| row.source_key == "s2").count();
+        assert_eq!(s1_rows, 3, "a listed source counts rows from both fences");
+        assert_eq!(
+            s2_rows, 0,
+            "an unlisted source counts only the claim fence, where it wrote nothing this pass"
+        );
     }
 
     #[test]
@@ -1204,7 +1369,7 @@ mod tests {
                 base_row("s1", 0),
             ],
         );
-        let rows = query_turn_rows(&conn, &KEY, 1).expect("query rows");
+        let rows = query_turn_rows(&conn, &KEY, &FenceScope::single(1)).expect("query rows");
         let order: Vec<(&str, u64)> = rows
             .iter()
             .map(|row| (row.source_key.as_str(), row.turn_index))
@@ -1220,7 +1385,7 @@ mod tests {
     fn turn_rows_omits_rows_under_another_fence() {
         let conn = test_connection();
         insert_turn_rows(&conn, &KEY, 2, &[base_row("s1", 0)]).expect("insert other fence");
-        let rows = query_turn_rows(&conn, &KEY, 1).expect("query rows");
+        let rows = query_turn_rows(&conn, &KEY, &FenceScope::single(1)).expect("query rows");
         assert!(rows.is_empty(), "another fence's rows must not appear");
     }
 
@@ -1251,7 +1416,7 @@ mod tests {
         )];
         insert(&conn, &[row]);
 
-        let rows = query_turn_rows(&conn, &KEY, 1).expect("query rows");
+        let rows = query_turn_rows(&conn, &KEY, &FenceScope::single(1)).expect("query rows");
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
         assert_eq!(row.scope, TurnScope::Delegated);
@@ -1288,7 +1453,7 @@ mod tests {
             })
             .collect();
         insert(&conn, &rows);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.by_model.len(), MAX_MODELS);
         assert!(facts.models_capped);
         assert!(
@@ -1310,7 +1475,7 @@ mod tests {
             })
             .collect();
         insert(&conn, &rows);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.effort_tiers.len(), MAX_TIER_LABELS);
         assert!(facts.tiers_capped);
     }
@@ -1326,7 +1491,7 @@ mod tests {
             })
             .collect();
         insert(&conn, &rows);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.top_depth_examples.len(), MAX_EVIDENCE_EXAMPLES);
         // The deepest example is kept; depth is `input_tokens` here since
         // every other component of depth is zero.
@@ -1347,7 +1512,7 @@ mod tests {
             })
             .collect();
         insert(&conn, &rows);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.model_transitions.len(), MAX_MODEL_TRANSITIONS);
         assert!(facts.transitions_capped);
     }
@@ -1360,7 +1525,7 @@ mod tests {
         let mut second = base_row("s1", 1);
         second.model = Some("x".repeat(EVIDENCE_STRING_CAP * 2));
         insert(&conn, &[first, second]);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.model_transitions.len(), 1);
         assert_eq!(
             facts.model_transitions[0].to_model.len(),
@@ -1375,7 +1540,7 @@ mod tests {
         let mut row = base_row("s1", 0);
         row.model = Some("x".repeat(EVIDENCE_STRING_CAP * 2));
         insert(&conn, &[row]);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.by_model.len(), 1);
         assert_eq!(
             facts.by_model.keys().next().unwrap().len(),
@@ -1393,7 +1558,7 @@ mod tests {
             row.speed = Some("x".repeat(EVIDENCE_STRING_CAP * 2));
         }
         insert(&conn, &[row]);
-        query_turn_facts(&conn, &KEY, 1).expect("query facts")
+        query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts")
     }
 
     #[test]
@@ -1431,7 +1596,7 @@ mod tests {
             })
             .collect();
         insert(&conn, &rows);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.delegated_models.len(), MAX_SUBAGENT_MODELS);
         assert!(facts.delegated_models_capped);
     }
@@ -1444,7 +1609,7 @@ mod tests {
         row.child_id = Some("s1".to_owned());
         row.model = Some("x".repeat(EVIDENCE_STRING_CAP * 2));
         insert(&conn, &[row]);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.delegated_models.len(), 1);
         assert_eq!(
             facts.delegated_models.iter().next().unwrap().len(),
@@ -1469,7 +1634,7 @@ mod tests {
             ..base_row("s1", 2)
         };
         insert(&conn, &[with_signal, unattributed, tool_row]);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.effort_signal.eligible_turns, 1);
         assert_eq!(facts.effort_signal.present_turns, 1);
         assert_eq!(facts.speed_signal.eligible_turns, 1);
@@ -1487,7 +1652,7 @@ mod tests {
             })
             .collect();
         insert(&conn, &rows);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.compaction_boundaries.len(), MAX_COMPACTION_BOUNDARIES);
         assert!(facts.compactions_capped);
     }
@@ -1500,7 +1665,7 @@ mod tests {
         let mut second = base_row("thread-b", 0);
         second.model = Some("model-b".to_owned());
         insert(&conn, &[first, second]);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert!(facts.model_transitions.is_empty());
     }
 
@@ -1514,7 +1679,7 @@ mod tests {
         let mut first_b = base_row("thread-b", 0);
         first_b.ts_ms = Some(50_000);
         insert(&conn, &[first_a, second_a, first_b]);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         // A gap between the two threads' first rows must not appear: the
         // scan resets `previous_ts` at the `thread-b` boundary.
         assert_eq!(facts.longest_idle_gap_ms, 10_000);
@@ -1532,7 +1697,7 @@ mod tests {
         let mut main = base_row("s1", 1);
         main.model = Some("model-a".to_owned());
         insert(&conn, &[delegated, main]);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         // Only one main-loop model is ever observed, so there is no
         // transition to record even though the session used two models.
         assert!(facts.model_transitions.is_empty());
@@ -1551,7 +1716,7 @@ mod tests {
         let mut unique = base_row("s1", 2);
         unique.uuid = Some("solo".to_owned());
         insert(&conn, &[first, second, unique]);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.duplicate_turn_identities, 1);
     }
 
@@ -1572,7 +1737,7 @@ mod tests {
         single.output_tokens = 100;
         rows.push(single);
         insert(&conn, &rows);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.dominant_main_model.as_deref(), Some("model-b"));
     }
 
@@ -1593,7 +1758,7 @@ mod tests {
         single.output_tokens = 10;
         rows.push(single);
         insert(&conn, &rows);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.dominant_main_model.as_deref(), Some("model-a"));
     }
 
@@ -1612,7 +1777,7 @@ mod tests {
         third.cache_write_tokens = 10;
         third.ts_ms = Some(1_020);
         insert(&conn, &[first, second, third]);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.repeated_context_cache_write_tokens, 0);
         assert_eq!(facts.repeated_context_pairs_considered, 2);
         assert_eq!(facts.repeated_context_pairs_skipped, 0);
@@ -1631,7 +1796,7 @@ mod tests {
         second.cache_write_tokens = 5_000;
         second.ts_ms = Some(2_000);
         insert(&conn, &[first, second]);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         // depth grew 1000 -> 5000 (+4000); paid cache-write is 5000, so
         // 5000 - 4000 = 1000 tokens are repeated, not grown.
         assert_eq!(facts.repeated_context_cache_write_tokens, 1_000);
@@ -1656,7 +1821,7 @@ mod tests {
         thread_b_first.input_tokens = 100_000;
         thread_b_first.ts_ms = Some(20);
         insert(&conn, &[thread_a_first, thread_a_second, thread_b_first]);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         // A wrongly-crossed pair between thread-a's last row and
         // thread-b's huge first row would swamp this sum.
         assert_eq!(facts.repeated_context_cache_write_tokens, 50);
@@ -1681,7 +1846,7 @@ mod tests {
         second_main.cache_write_tokens = 30;
         second_main.ts_ms = Some(10);
         insert(&conn, &[first_main, delegated, second_main]);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         // The delegated row's huge input never enters the scan (scope =
         // 'main' only), so the pair forms directly between the two main
         // rows: growth is 0 and the whole cache write (30) is repeated.
@@ -1698,7 +1863,7 @@ mod tests {
         second.ts_ms = None;
         second.cache_write_tokens = 40;
         insert(&conn, &[first, second]);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         assert_eq!(facts.repeated_context_pairs_skipped, 1);
         assert_eq!(facts.repeated_context_pairs_considered, 0);
         assert_eq!(facts.repeated_context_cache_write_tokens, 0);
@@ -1719,7 +1884,7 @@ mod tests {
         second.cache_write_tokens = 0;
         second.ts_ms = Some(1_000);
         insert(&conn, &[first, second]);
-        let facts = query_turn_facts(&conn, &KEY, 1).expect("query facts");
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
         // depth grew 1000 -> 6000 (+5000); paid uncached input is 6000, so
         // 6000 - 5000 = 1000 tokens are repeated.
         assert_eq!(facts.repeated_context_uncached_input_tokens, 1_000);

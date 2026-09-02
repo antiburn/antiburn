@@ -4,6 +4,7 @@ import { ChevronDown, ChevronLeft, PictureInPicture2 } from "lucide-react"
 
 import { ProviderGlyph } from "../../components/providerUsage"
 import { LiveUsageDetail } from "../../components/providerUsage/LiveUsageDetail"
+import { LiveMetricRows } from "../../components/providerUsage/LiveMetricRows"
 import { UsageMetricRows } from "../../components/providerUsage/UsageMetricRows"
 import { UsageWindowRows } from "../../components/providerUsage/UsageWindowRows"
 import { useStableAccountNumbers } from "../../components/providerUsage/useStableAccountNumbers"
@@ -14,17 +15,18 @@ import type {
   LiveProviderUsagePayload,
   LiveUsageSourceErrorPayload,
   LiveUsageSummaryPayload,
+  LiveUsageWindowPayload,
   ProviderUsagePayload,
   ProviderUsageSummaryPayload,
 } from "../../lib/ipc"
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
 import { HudVisibilitySession } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
-import { agentDisplayName } from "../../lib/presentation/agents"
 import {
   liveAuthNote,
   liveErrorNote,
   livePlanLabel,
+  liveWindows,
   orderedLiveAccounts,
 } from "../../lib/presentation/liveUsage"
 import { noMeterSelected } from "../../lib/usageBars"
@@ -33,9 +35,10 @@ import {
   rankByWindow,
   stalenessNote,
   updatedNote,
-  usageStateDescription,
   windowHasEvidence,
+  windowTokens,
 } from "../../lib/presentation/providerUsage"
+import { formatCompact, formatCost } from "../../lib/presentation/sessionAnalysis"
 
 export interface UsageViewProps {
   summary: ProviderUsageSummaryPayload
@@ -59,7 +62,7 @@ function sectioned(providers: readonly ProviderUsagePayload[]): {
   recent: ProviderUsagePayload[]
   rest: ProviderUsagePayload[]
 } {
-  const ranked = rankByWindow(providers, "month")
+  const ranked = rankByWindow(providers, "last30Days")
   const recent = ranked.filter(
     (provider) =>
       windowHasEvidence(providerWindow(provider, "today")) || provider.staleness === "fresh",
@@ -87,8 +90,31 @@ function addWindow(
       left.estimatedUsd == null && right.estimatedUsd == null
         ? null
         : (left.estimatedUsd ?? 0) + (right.estimatedUsd ?? 0),
+    costComplete: left.costComplete && right.costComplete,
     sessionCount: left.sessionCount + right.sessionCount,
   }
+}
+
+function providerHeaderMetric(window: ProviderUsagePayload["windows"]["today"]): string {
+  const tokens = formatCompact(windowTokens(window))
+  return !window.costComplete || window.estimatedUsd == null
+    ? tokens
+    : `${formatCost(window.estimatedUsd)} · ${tokens}`
+}
+
+function summedWindow(
+  providers: readonly ProviderUsagePayload[],
+  key: "today" | "last30Days",
+): ProviderUsagePayload["windows"]["today"] {
+  const empty: ProviderUsagePayload["windows"]["today"] = {
+    tokensIn: 0,
+    tokensOut: 0,
+    cacheRead: 0,
+    estimatedUsd: null,
+    costComplete: true,
+    sessionCount: 0,
+  }
+  return providers.reduce((total, provider) => addWindow(total, provider.windows[key]), empty)
 }
 
 function addLocalUsage(
@@ -122,7 +148,8 @@ function addLocalUsage(
     windows: {
       today: addWindow(account.windows.today, unassigned.windows.today),
       week: addWindow(account.windows.week, unassigned.windows.week),
-      month: addWindow(account.windows.month, unassigned.windows.month),
+      monthToDate: addWindow(account.windows.monthToDate, unassigned.windows.monthToDate),
+      last30Days: addWindow(account.windows.last30Days, unassigned.windows.last30Days),
     },
     agents: [
       ...new Map(
@@ -284,7 +311,7 @@ export function UsageView({
         </header>
       )}
 
-      <ScrollPane viewportClassName="px-3 pb-2">
+      <ScrollPane viewportClassName="px-2 pb-2">
         {providerlessAuthNote && (
           <p
             role="status"
@@ -309,12 +336,6 @@ export function UsageView({
           </>
         )}
       </ScrollPane>
-
-      <footer className="shrink-0 overflow-hidden border-t border-separator px-4 py-2.5">
-        <p className="truncate type-caption text-label-tertiary">
-          Local spend is estimated; plan limits come from your provider.
-        </p>
-      </footer>
     </div>
   )
 }
@@ -429,6 +450,8 @@ function ProviderCard({
     primaryLocal?.displayName ?? live[0]?.displayName ?? errors[0]?.displayName ?? provider
   const [open, setOpen] = useState(provider !== "unknown")
   const bodyId = useId()
+  const todayTotal = summedWindow(shownLocal, "today")
+  const last30DaysTotal = summedWindow(shownLocal, "last30Days")
 
   return (
     <li data-provider-card={provider} className="flex flex-col gap-1">
@@ -452,6 +475,13 @@ function ProviderCard({
                 </span>
               )}
             </div>
+            {shownLocal.length > 0 && (
+              <p className="mt-0.5 truncate type-caption tabular-nums text-label-secondary">
+                Today {providerHeaderMetric(todayTotal)}
+                <span className="px-1 text-label-tertiary">·</span>
+                30d {providerHeaderMetric(last30DaysTotal)}
+              </p>
+            )}
             {(stale ?? updated) && (
               <p
                 className={cn(
@@ -494,18 +524,21 @@ function ProviderCard({
                   ? `Account ${accountNumbers.get(key)}`
                   : "Unassigned account"
                 : undefined
+            const primaryWindow = liveWindows(reading)[0]
             return (
-              <div key={key} className="space-y-2.5">
+              <div key={key} className="space-y-1.5">
                 <LiveUsageDetail
                   live={reading}
                   now={now}
                   showPlan={showAccountPlans}
+                  showRunway={!matchingLocal}
                   {...(accountLabel ? { accountLabel } : {})}
                 />
                 {matchingLocal && (
                   <LocalUsageDetail
                     provider={matchingLocal}
-                    showState={shownLocal.length > 1}
+                    now={now}
+                    {...(primaryWindow ? { runway: primaryWindow } : {})}
                   />
                 )}
               </div>
@@ -528,9 +561,7 @@ function ProviderCard({
               : "unassigned"
             const accountNumber = accountNumbers.get(key)
             const accountLabel = entry.accountKey ? `Account ${accountNumber} usage` : null
-            const detail = (
-              <LocalUsageDetail provider={entry} showState={shownLocal.length > 1} />
-            )
+            const detail = <LocalUsageDetail provider={entry} />
             if (entry.accountKey == null && identifiedAccountKeys.size > 1) {
               return (
                 <Disclosure
@@ -560,34 +591,24 @@ function ProviderCard({
           })}
         </div>
       </div>
-
-      {primaryLocal && shownLocal.length === 1 && (
-        <p hidden={!open} className="px-3 type-caption text-pretty text-label-tertiary">
-          {usageStateDescription(primaryLocal.state)}
-        </p>
-      )}
     </li>
   )
 }
 
 function LocalUsageDetail({
   provider,
-  showState,
+  runway,
+  now,
 }: {
   provider: ProviderUsagePayload
-  showState: boolean
+  runway?: LiveUsageWindowPayload
+  now?: number
 }) {
-  const sources = provider.agents.map((entry) => agentDisplayName(entry.agent)).join(", ")
   return (
-    <div className="space-y-2">
-      {sources && <p className="type-caption text-label-tertiary">From {sources}</p>}
+    <div className="space-y-1.5">
       <UsageMetricRows provider={provider} />
+      {runway && now != null && <LiveMetricRows window={runway} now={now} keys={["runway"]} />}
       <UsageWindowRows provider={provider} className="border-t border-separator pt-2" />
-      {showState && (
-        <p className="type-caption text-label-tertiary">
-          {usageStateDescription(provider.state)}
-        </p>
-      )}
     </div>
   )
 }

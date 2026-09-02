@@ -1,26 +1,71 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../../lib/ipc"
-import type { SessionAnalysisPayload } from "../../lib/ipc"
-import { ANALYSIS_POLL_MS, PopoverSession, sessionKey } from "./PopoverSession"
+import type { ActivityEntryPayload, ScanStatus, SessionAnalysisPayload } from "../../lib/ipc"
+import { PopoverSession, sessionKey } from "./PopoverSession"
 import type { SessionSubject } from "./SessionPane"
 
 const getSessionAnalysis = vi.hoisted(() => vi.fn())
-const getSessionAnalysisFingerprint = vi.hoisted(() => vi.fn())
 const getSubagentAnalysis = vi.hoisted(() => vi.fn())
+const getSessionLimitAllocations = vi.hoisted(() => vi.fn())
 const setPopoverHeight = vi.hoisted(() => vi.fn())
+const listRecentSessions = vi.hoisted(() => vi.fn())
+const onSessionEntryChanged = vi.hoisted(() => vi.fn())
+const onScanEvent = vi.hoisted(() => vi.fn())
 
-// The analysis commands are overridden. All other wrappers keep their real
-// no-shell fallback because `hasShell()` is false outside Tauri.
+// The analysis, list, and event-subscription commands are overridden. All
+// other wrappers keep their real no-shell fallback because `hasShell()` is
+// false outside Tauri.
 vi.mock("../../lib/ipc", async (importOriginal) => {
   const actual = await importOriginal<typeof Ipc>()
   return {
     ...actual,
     getSessionAnalysis,
-    getSessionAnalysisFingerprint,
     getSubagentAnalysis,
+    getSessionLimitAllocations,
     setPopoverHeight,
+    listRecentSessions,
+    onSessionEntryChanged,
+    onScanEvent,
   }
+})
+
+type EntryChangedHandler = (entry: ActivityEntryPayload) => void
+type ScanEventHandler = (status: ScanStatus, phase: "started" | "progress" | "finished") => void
+
+let entryChangedHandler: EntryChangedHandler | null = null
+let scanEventHandler: ScanEventHandler | null = null
+
+beforeEach(() => {
+  entryChangedHandler = null
+  scanEventHandler = null
+  getSessionAnalysis.mockReset()
+  getSessionAnalysis.mockResolvedValue(null)
+  getSubagentAnalysis.mockReset()
+  getSubagentAnalysis.mockResolvedValue(null)
+  setPopoverHeight.mockReset()
+  setPopoverHeight.mockResolvedValue(true)
+  listRecentSessions.mockReset()
+  listRecentSessions.mockResolvedValue([])
+  onSessionEntryChanged.mockReset()
+  onSessionEntryChanged.mockImplementation(async (handler: EntryChangedHandler) => {
+    entryChangedHandler = handler
+    return () => {
+      entryChangedHandler = null
+    }
+  })
+  onScanEvent.mockReset()
+  onScanEvent.mockImplementation(async (handler: ScanEventHandler) => {
+    scanEventHandler = handler
+    return () => {
+      scanEventHandler = null
+    }
+  })
+  getSessionLimitAllocations.mockReset()
+  getSessionLimitAllocations.mockResolvedValue({
+    generatedAt: "2027-01-15T08:00:00Z",
+    allocations: [],
+  })
 })
 
 describe("PopoverSession surface presentation", () => {
@@ -30,13 +75,9 @@ describe("PopoverSession surface presentation", () => {
     wslDistro: null,
   }
 
-  beforeEach(() => {
-    setPopoverHeight.mockReset()
-    setPopoverHeight.mockResolvedValue(true)
-  })
-
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.useRealTimers()
   })
 
   it("keeps Usage presented until the winning resize presents the requested session", async () => {
@@ -107,6 +148,61 @@ describe("PopoverSession surface presentation", () => {
     const unsubscribe = session.subscribe(() => {})
 
     await vi.waitFor(() => expect(setPopoverHeight).toHaveBeenCalledWith(700, false))
+    unsubscribe()
+  })
+
+  it("coalesces overlapping allocation requests into one trailing refresh", async () => {
+    let resolveFirst!: () => void
+    getSessionLimitAllocations
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = () =>
+              resolve({ generatedAt: "2027-01-15T08:00:00Z", allocations: [] })
+          }),
+      )
+      .mockResolvedValue({ generatedAt: "2027-01-15T08:00:01Z", allocations: [] })
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.waitFor(() => expect(resolveFirst).toBeTypeOf("function"))
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
+
+    resolveFirst()
+
+    await vi.waitFor(() => expect(getSessionLimitAllocations).toHaveBeenCalledTimes(2))
+    unsubscribe()
+  })
+
+  it("updates the snapshot when the next cached allocation expires", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime("2027-01-15T08:00:00Z")
+    getSessionLimitAllocations.mockResolvedValue({
+      generatedAt: "2027-01-15T08:00:00Z",
+      allocations: [
+        {
+          agent: "claude-code",
+          sessionId: "session-1",
+          wslDistro: null,
+          provider: "anthropic",
+          displayName: "Claude",
+          accountKey: null,
+          metric: "weekly",
+          windowId: "weekly-main",
+          resetsAt: "2027-01-15T08:00:01Z",
+          percent: 10,
+        },
+      ],
+    })
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(session.getSnapshot().sessionLimitAllocations.allocations).toHaveLength(1)
+    const before = session.getSnapshot().now
+
+    await vi.advanceTimersByTimeAsync(1_001)
+
+    expect(session.getSnapshot().now).toBeGreaterThan(before)
     unsubscribe()
   })
 })
@@ -186,11 +282,11 @@ describe("sessionKey", () => {
 })
 
 /**
- * The live poll behind an open detail pane: it re-loads the analysis only
- * when the transcript's fingerprint actually moves, and it never runs
- * against an empty stack.
+ * The event-driven refresh behind an open detail pane and the activity list:
+ * `sessions:entry-changed` replaces the old fingerprint poll, and
+ * `scan:finished` is the list's own backstop when a pass reports no change.
  */
-describe("PopoverSession live analysis poll", () => {
+describe("PopoverSession event-driven refresh", () => {
   const subject: SessionSubject = {
     agent: "claude-code",
     sessionId: "session-1",
@@ -222,215 +318,53 @@ describe("PopoverSession live analysis poll", () => {
     ...overrides,
   })
 
-  const usableAnalysis = (): SessionAnalysisPayload =>
-    analysisPayload({
-      summary: {
-        sessionCount: 1,
-        avgDurationSecs: 1,
-        avgActiveSecs: 1,
-        tokensInTotal: 0,
-        tokensOutTotal: 0,
-        peakContextTokens: 0,
-        contextWindow: 0,
-        buckets: [],
-        sessions: [],
-      },
-    })
-
-  beforeEach(() => {
-    vi.useFakeTimers()
-    getSessionAnalysis.mockReset()
-    getSessionAnalysis.mockResolvedValue(null)
-    getSessionAnalysisFingerprint.mockReset()
-    getSessionAnalysisFingerprint.mockResolvedValue("fingerprint-1")
-    getSubagentAnalysis.mockReset()
-    getSubagentAnalysis.mockResolvedValue(null)
+  const entryPayload = (
+    overrides: Partial<ActivityEntryPayload> = {},
+  ): ActivityEntryPayload => ({
+    agent: "claude-code",
+    sessionId: "session-1",
+    repo: "repo",
+    timestamp: "2024-01-01T00:00:00.000Z",
+    isActive: false,
+    surface: "cli",
+    wslDistro: null,
+    title: null,
+    hasForkParent: false,
+    forkChildCount: 0,
+    cost: null,
+    models: [],
+    modelRuns: [],
+    ...overrides,
   })
 
-  afterEach(() => {
-    vi.useRealTimers()
+  const scanStatus = (overrides: Partial<ScanStatus> = {}): ScanStatus => ({
+    running: false,
+    completedAgents: 1,
+    totalAgents: 1,
+    sessions: 1,
+    finishedAt: "2024-01-01T00:00:00.000Z",
+    cancelled: false,
+    error: null,
+    agents: [],
+    listChanged: false,
+    ...overrides,
   })
 
-  it("re-loads the analysis when the fingerprint changes on a tick", async () => {
-    const session = new PopoverSession()
-    const unsubscribe = session.subscribe(() => {})
-    session.openSession(subject)
-    // Let `loadAnalysisFor` and the fingerprint seed that follows it settle,
-    // so the poll's own baseline is in place before the first tick.
-    await vi.advanceTimersByTimeAsync(0)
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(1)
-
-    getSessionAnalysisFingerprint.mockResolvedValue("fingerprint-2")
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
-
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(2)
-    unsubscribe()
-  })
-
-  it("does not re-load the analysis when the fingerprint is unchanged", async () => {
-    const session = new PopoverSession()
-    const unsubscribe = session.subscribe(() => {})
-    session.openSession(subject)
-    await vi.advanceTimersByTimeAsync(0)
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(1)
-
-    // The mock keeps returning "fingerprint-1" from the seed above.
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
-
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(1)
-    unsubscribe()
-  })
-
-  it("re-loads on the next tick after an unavailable read, fingerprint unchanged", async () => {
+  it("refreshes the open analysis when a matching entry event lands", async () => {
     getSessionAnalysis.mockResolvedValue(analysisPayload())
     const session = new PopoverSession()
     const unsubscribe = session.subscribe(() => {})
     session.openSession(subject)
-    await vi.advanceTimersByTimeAsync(0)
+    await vi.waitFor(() => expect(getSessionAnalysis).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(entryChangedHandler).not.toBeNull())
 
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
+    entryChangedHandler?.(entryPayload())
 
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(2)
+    await vi.waitFor(() => expect(getSessionAnalysis).toHaveBeenCalledTimes(2))
     unsubscribe()
   })
 
-  it("re-loads on every tick while the drilldown is pending, fingerprint unchanged", async () => {
-    getSessionAnalysis.mockResolvedValue(analysisPayload({ analysisPending: true }))
-    const session = new PopoverSession()
-    const unsubscribe = session.subscribe(() => {})
-    session.openSession(subject)
-    await vi.advanceTimersByTimeAsync(0)
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(1)
-
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 5)
-
-    // Unbounded, unlike the unavailable-analysis retry budget below: a
-    // pending drilldown keeps refetching every tick until the worker
-    // actually publishes something, however many ticks that takes.
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(6)
-    unsubscribe()
-  })
-
-  it("stops re-loading once a pending drilldown resolves", async () => {
-    getSessionAnalysis
-      .mockResolvedValueOnce(analysisPayload({ analysisPending: true }))
-      .mockResolvedValueOnce(analysisPayload({ analysisPending: true }))
-      .mockResolvedValue(usableAnalysis())
-    const session = new PopoverSession()
-    const unsubscribe = session.subscribe(() => {})
-    session.openSession(subject)
-    await vi.advanceTimersByTimeAsync(0)
-
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 5)
-
-    // 1 initial load + 2 pending re-loads, then the third re-load lands
-    // usable and the poll goes back to comparing fingerprints alone.
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(3)
-    unsubscribe()
-  })
-
-  it("re-loads a pending sub-agent drilldown too, unlike the unavailable-analysis retry", async () => {
-    getSubagentAnalysis.mockResolvedValue(analysisPayload({ analysisPending: true }))
-    const subagent: SessionSubject = {
-      ...subject,
-      subagent: { parentSessionId: subject.sessionId, subagentId: "subagent-1" },
-    }
-    const session = new PopoverSession()
-    const unsubscribe = session.subscribe(() => {})
-    session.openSession(subagent)
-    await vi.advanceTimersByTimeAsync(0)
-
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 2)
-
-    expect(getSubagentAnalysis).toHaveBeenCalledTimes(3)
-    unsubscribe()
-  })
-
-  it("re-loads on every tick while the analysis is stale, fingerprint unchanged", async () => {
-    getSessionAnalysis.mockResolvedValue({ ...usableAnalysis(), analysisStale: true })
-    const session = new PopoverSession()
-    const unsubscribe = session.subscribe(() => {})
-    session.openSession(subject)
-    await vi.advanceTimersByTimeAsync(0)
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(1)
-
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 5)
-
-    // Unbounded, the same as a pending drilldown: a stale analysis keeps
-    // refetching every tick until the fresher pass the worker already
-    // queued or is already running actually publishes.
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(6)
-    unsubscribe()
-  })
-
-  it("stops re-loading once a stale analysis comes back fresh", async () => {
-    getSessionAnalysis
-      .mockResolvedValueOnce({ ...usableAnalysis(), analysisStale: true })
-      .mockResolvedValueOnce({ ...usableAnalysis(), analysisStale: true })
-      .mockResolvedValue(usableAnalysis())
-    const session = new PopoverSession()
-    const unsubscribe = session.subscribe(() => {})
-    session.openSession(subject)
-    await vi.advanceTimersByTimeAsync(0)
-
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 5)
-
-    // 1 initial load + 2 stale re-loads, then the third re-load lands fresh
-    // and the poll goes back to comparing fingerprints alone.
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(3)
-    unsubscribe()
-  })
-
-  it("stops retrying once a usable analysis lands", async () => {
-    getSessionAnalysis
-      .mockResolvedValueOnce(analysisPayload())
-      .mockResolvedValue(usableAnalysis())
-    const session = new PopoverSession()
-    const unsubscribe = session.subscribe(() => {})
-    session.openSession(subject)
-    await vi.advanceTimersByTimeAsync(0)
-
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 4)
-
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(2)
-    unsubscribe()
-  })
-
-  it("latches after three unavailable retries", async () => {
-    getSessionAnalysis.mockResolvedValue(analysisPayload())
-    const session = new PopoverSession()
-    const unsubscribe = session.subscribe(() => {})
-    session.openSession(subject)
-    await vi.advanceTimersByTimeAsync(0)
-
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 12)
-
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(4)
-    unsubscribe()
-  })
-
-  it("re-arms the budget after a usable analysis settles", async () => {
-    getSessionAnalysis
-      .mockResolvedValueOnce(analysisPayload())
-      .mockResolvedValueOnce(usableAnalysis())
-      .mockResolvedValueOnce(analysisPayload())
-      .mockResolvedValue(usableAnalysis())
-    const session = new PopoverSession()
-    const unsubscribe = session.subscribe(() => {})
-    session.openSession(subject)
-    await vi.advanceTimersByTimeAsync(0)
-
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
-    getSessionAnalysisFingerprint.mockResolvedValue("fingerprint-2")
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
-
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(4)
-    unsubscribe()
-  })
-
-  it("does not retry a sub-agent subject", async () => {
+  it("refreshes a sub-agent subject's analysis on its parent's entry event", async () => {
     getSubagentAnalysis.mockResolvedValue(analysisPayload())
     const subagent: SessionSubject = {
       ...subject,
@@ -439,56 +373,122 @@ describe("PopoverSession live analysis poll", () => {
     const session = new PopoverSession()
     const unsubscribe = session.subscribe(() => {})
     session.openSession(subagent)
-    await vi.advanceTimersByTimeAsync(0)
+    await vi.waitFor(() => expect(getSubagentAnalysis).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(entryChangedHandler).not.toBeNull())
 
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 3)
-    expect(getSubagentAnalysis).toHaveBeenCalledTimes(1)
+    entryChangedHandler?.(entryPayload({ sessionId: subject.sessionId }))
 
-    getSessionAnalysisFingerprint.mockResolvedValue("fingerprint-2")
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
-
-    expect(getSubagentAnalysis).toHaveBeenCalledTimes(2)
+    await vi.waitFor(() => expect(getSubagentAnalysis).toHaveBeenCalledTimes(2))
     unsubscribe()
   })
 
-  it("does not retry when the agent does not support analysis", async () => {
-    getSessionAnalysis.mockResolvedValue(analysisPayload({ supportsAnalysis: false }))
+  it("does not refresh the open analysis when the entry event names a different session", async () => {
+    getSessionAnalysis.mockResolvedValue(analysisPayload())
     const session = new PopoverSession()
     const unsubscribe = session.subscribe(() => {})
     session.openSession(subject)
-    await vi.advanceTimersByTimeAsync(0)
+    await vi.waitFor(() => expect(getSessionAnalysis).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(entryChangedHandler).not.toBeNull())
 
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 2)
+    entryChangedHandler?.(entryPayload({ sessionId: "another-session" }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(getSessionAnalysis).toHaveBeenCalledTimes(1)
     unsubscribe()
   })
 
-  it("retries a rejected read", async () => {
-    getSessionAnalysis.mockRejectedValueOnce(new Error("read failed"))
-    getSessionAnalysis.mockResolvedValue(usableAnalysis())
+  it("coalesces two matching events that land during one in-flight refresh into exactly one more", async () => {
+    getSessionAnalysis.mockResolvedValue(analysisPayload())
     const session = new PopoverSession()
     const unsubscribe = session.subscribe(() => {})
     session.openSession(subject)
-    await vi.advanceTimersByTimeAsync(0)
+    await vi.waitFor(() => expect(getSessionAnalysis).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(entryChangedHandler).not.toBeNull())
 
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS)
+    const pendingResolvers: ((payload: SessionAnalysisPayload) => void)[] = []
+    getSessionAnalysis.mockImplementationOnce(
+      () =>
+        new Promise<SessionAnalysisPayload>((resolve) => {
+          pendingResolvers.push(resolve)
+        }),
+    )
+    const matching = entryPayload()
+    entryChangedHandler?.(matching)
+    await vi.waitFor(() => expect(getSessionAnalysis).toHaveBeenCalledTimes(2))
 
-    expect(getSessionAnalysis).toHaveBeenCalledTimes(2)
+    // Both land while the refresh above is still in flight.
+    entryChangedHandler?.(matching)
+    entryChangedHandler?.(matching)
+
+    pendingResolvers.shift()?.(analysisPayload())
+    await vi.waitFor(() => expect(getSessionAnalysis).toHaveBeenCalledTimes(3))
+
+    // No further call follows the coalesced one.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(getSessionAnalysis).toHaveBeenCalledTimes(3)
     unsubscribe()
   })
 
-  it("stops polling once the detail pane closes", async () => {
+  it("refetches the list once for an entry event whose session is not on screen", async () => {
     const session = new PopoverSession()
     const unsubscribe = session.subscribe(() => {})
-    session.openSession(subject)
-    await vi.advanceTimersByTimeAsync(0)
-    getSessionAnalysisFingerprint.mockClear()
+    await vi.waitFor(() => expect(listRecentSessions).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(entryChangedHandler).not.toBeNull())
 
-    session.goBack()
-    await vi.advanceTimersByTimeAsync(ANALYSIS_POLL_MS * 3)
+    entryChangedHandler?.(entryPayload({ sessionId: "unknown-session" }))
 
-    expect(getSessionAnalysisFingerprint).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(listRecentSessions).toHaveBeenCalledTimes(2))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(listRecentSessions).toHaveBeenCalledTimes(2)
+    unsubscribe()
+  })
+
+  it("does not refetch on a scan:finished within the reconcile interval when the list did not change", async () => {
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.waitFor(() => expect(listRecentSessions).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(scanEventHandler).not.toBeNull())
+
+    scanEventHandler?.(scanStatus({ listChanged: true }), "finished")
+    await vi.waitFor(() => expect(listRecentSessions).toHaveBeenCalledTimes(2))
+
+    scanEventHandler?.(scanStatus({ listChanged: false }), "finished")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(listRecentSessions).toHaveBeenCalledTimes(2)
+    unsubscribe()
+  })
+
+  it("re-sorts a revived session to the top of the list", async () => {
+    const older = entryPayload({
+      sessionId: "session-old",
+      timestamp: "2024-01-01T00:00:00.000Z",
+    })
+    const newer = entryPayload({
+      sessionId: "session-new",
+      timestamp: "2024-01-02T00:00:00.000Z",
+    })
+    listRecentSessions.mockResolvedValue([newer, older])
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().entries?.map((entry) => entry.sessionId)).toEqual([
+        "session-new",
+        "session-old",
+      ]),
+    )
+    await vi.waitFor(() => expect(entryChangedHandler).not.toBeNull())
+
+    entryChangedHandler?.(
+      entryPayload({ sessionId: "session-old", timestamp: "2024-01-03T00:00:00.000Z" }),
+    )
+
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().entries?.map((entry) => entry.sessionId)).toEqual([
+        "session-old",
+        "session-new",
+      ]),
+    )
     unsubscribe()
   })
 })

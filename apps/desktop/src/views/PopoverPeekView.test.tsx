@@ -50,7 +50,14 @@ const PROVIDER_DATA: PopoverPeekData = {
 }
 
 function providerData(provider: string, displayName: string) {
-  const usage = { tokensIn: 1, tokensOut: 1, cacheRead: 0, estimatedUsd: 0.01, sessionCount: 1 }
+  const usage = {
+    tokensIn: 1,
+    tokensOut: 1,
+    cacheRead: 0,
+    estimatedUsd: 0.01,
+    costComplete: true,
+    sessionCount: 1,
+  }
   return {
     kind: "provider" as const,
     summary: {
@@ -62,7 +69,7 @@ function providerData(provider: string, displayName: string) {
           agents: [],
           state: "estimated" as const,
           staleness: "fresh" as const,
-          windows: { today: usage, week: usage, month: usage },
+          windows: { today: usage, week: usage, monthToDate: usage, last30Days: usage },
           lastActivityAt: null,
         },
       ],
@@ -157,11 +164,6 @@ describe("PopoverPeekView", () => {
 
     expect(await screen.findByText("No local evidence yet")).toBeInTheDocument()
     await waitFor(() => expect(popoverPeekPresented).toHaveBeenCalledWith(1, 196))
-    const context = screen.getByText(
-      "Local spend is estimated; plan limits come from your provider.",
-    )
-    expect(context).toHaveClass("truncate")
-    expect(context.parentElement).toHaveClass("shrink-0", "overflow-hidden")
     expect(screen.queryByRole("heading", { name: "Usage" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Back to activity" })).not.toBeInTheDocument()
   })

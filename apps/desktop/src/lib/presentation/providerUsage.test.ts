@@ -10,10 +10,13 @@ import {
   stalenessNote,
   usageStateDescription,
   usageStateLabel,
+  usageMetricLabel,
+  usageMetricRows,
   usageValueLabel,
   usageWindowLabel,
   USAGE_WINDOWS,
   windowHasEvidence,
+  windowShareOfLast30Days,
   windowTokens,
 } from "./providerUsage"
 
@@ -30,7 +33,12 @@ function provider(overrides: Partial<ProviderUsagePayload> = {}): ProviderUsageP
     displayName: "Anthropic",
     state: "estimated",
     staleness: "fresh",
-    windows: { today: usageWindow(), week: usageWindow(), month: usageWindow() },
+    windows: {
+      today: usageWindow(),
+      week: usageWindow(),
+      monthToDate: usageWindow(),
+      last30Days: usageWindow(),
+    },
     agents: [],
     lastActivityAt: new Date().toISOString(),
     ...overrides,
@@ -40,6 +48,43 @@ function provider(overrides: Partial<ProviderUsagePayload> = {}): ProviderUsageP
 describe("usage values", () => {
   it("leads with the cost when the models could be priced", () => {
     expect(usageValueLabel(usageWindow({ estimatedUsd: 1.5, tokensIn: 10 }))).toBe("$1.50")
+  })
+
+  it("shows the cost before the token count in a window bar", () => {
+    expect(
+      usageMetricLabel(usageWindow({ estimatedUsd: 1.5, tokensIn: 1_200, tokensOut: 300 })),
+    ).toBe("$1.50 · 1.5k")
+  })
+
+  it("hides a partial cost and keeps the complete token count", () => {
+    expect(
+      usageMetricLabel(
+        usageWindow({
+          estimatedUsd: 1.5,
+          costComplete: false,
+          tokensIn: 1_200,
+          tokensOut: 300,
+        }),
+      ),
+    ).toBe("1.5k")
+  })
+
+  it("uses tokens for a window bar when either cost is incomplete", () => {
+    const summary = provider({
+      windows: {
+        today: usageWindow({
+          estimatedUsd: 90,
+          costComplete: false,
+          tokensIn: 250,
+        }),
+        week: usageWindow(),
+        monthToDate: usageWindow(),
+        last30Days: usageWindow({ estimatedUsd: 100, tokensIn: 1_000 }),
+      },
+    })
+
+    expect(windowShareOfLast30Days(summary, "today")).toBe(0.25)
+    expect(usageMetricRows(summary)[0]?.value).toBe("—")
   })
 
   it("falls back to a token count rather than a zero that was never priced", () => {
@@ -131,7 +176,8 @@ describe("provider windows and ranking", () => {
     windows: {
       today: usageWindow({ estimatedUsd: 1, tokensIn: 100, sessionCount: 1 }),
       week: usageWindow({ estimatedUsd: 1, tokensIn: 100, sessionCount: 1 }),
-      month: usageWindow({ estimatedUsd: 1, tokensIn: 100, sessionCount: 1 }),
+      monthToDate: usageWindow({ estimatedUsd: 1, tokensIn: 100, sessionCount: 1 }),
+      last30Days: usageWindow({ estimatedUsd: 1, tokensIn: 100, sessionCount: 1 }),
     },
   })
   const openai = provider({
@@ -141,7 +187,8 @@ describe("provider windows and ranking", () => {
     windows: {
       today: usageWindow({ estimatedUsd: 4, tokensIn: 10, sessionCount: 2 }),
       week: usageWindow({ estimatedUsd: 4, tokensIn: 10, sessionCount: 2 }),
-      month: usageWindow({ estimatedUsd: 4, tokensIn: 10, sessionCount: 2 }),
+      monthToDate: usageWindow({ estimatedUsd: 4, tokensIn: 10, sessionCount: 2 }),
+      last30Days: usageWindow({ estimatedUsd: 4, tokensIn: 10, sessionCount: 2 }),
     },
   })
   const unpriced = provider({
@@ -149,19 +196,25 @@ describe("provider windows and ranking", () => {
     displayName: "Unattributed",
     state: "observed",
     windows: {
-      today: usageWindow({ tokensIn: 9_000, sessionCount: 3 }),
-      week: usageWindow({ tokensIn: 9_000, sessionCount: 3 }),
-      month: usageWindow({ tokensIn: 9_000, sessionCount: 3 }),
+      today: usageWindow({ tokensIn: 9_000, costComplete: false, sessionCount: 3 }),
+      week: usageWindow({ tokensIn: 9_000, costComplete: false, sessionCount: 3 }),
+      monthToDate: usageWindow({ tokensIn: 9_000, costComplete: false, sessionCount: 3 }),
+      last30Days: usageWindow({ tokensIn: 9_000, costComplete: false, sessionCount: 3 }),
     },
   })
 
-  it("ranks by cost first and by tokens where there is no cost", () => {
+  it("ranks every provider by tokens when one cost is incomplete", () => {
     const ranked = rankByWindow([anthropic, unpriced, openai], "today")
-    expect(ranked.map((entry) => entry.provider)).toEqual(["openai", "anthropic", "unknown"])
+    expect(ranked.map((entry) => entry.provider)).toEqual(["unknown", "anthropic", "openai"])
+  })
+
+  it("ranks by cost when every provider cost is complete", () => {
+    const ranked = rankByWindow([anthropic, openai], "today")
+    expect(ranked.map((entry) => entry.provider)).toEqual(["openai", "anthropic"])
   })
 
   it("reads a window off a provider without the caller indexing it", () => {
-    expect(providerWindow(openai, "month").estimatedUsd).toBe(4)
+    expect(providerWindow(openai, "monthToDate").estimatedUsd).toBe(4)
   })
 })
 

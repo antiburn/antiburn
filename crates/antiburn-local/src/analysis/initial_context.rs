@@ -28,7 +28,7 @@ use crate::model::skill::SkillUse;
 const DEFERRED_TOOL_TOKEN_ESTIMATE: u32 = 5;
 
 /// Source dimension for tokens loaded before a coding agent's first response.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum InitialContextTokenSource {
     /// Skill catalog entries or loaded skill instructions.
     Skill,
@@ -288,6 +288,7 @@ struct InitialContextTokenBreakdown {
     rows: Vec<InitialContextTokenSourceCount>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct InitialContextTokenSourceCount {
     source: InitialContextTokenSource,
     source_name: Option<String>,
@@ -379,7 +380,7 @@ fn parse_codex(payload: &str, catalog: &ToolCatalog) -> InitialContextTokenParse
     InitialContextTokenParseResult::Supported(normalize_breakdown(source_rows))
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CodexContextAccumulator {
     source_rows: Vec<InitialContextTokenSourceCount>,
     skill_descriptions: HashMap<String, String>,
@@ -454,7 +455,7 @@ mod claude_origin_rank {
     pub(super) const LISTING_NAME_SHAPE: u8 = 3;
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ClaudeContextAccumulator {
     source_rows: Vec<InitialContextTokenSourceCount>,
     skill_descriptions: HashMap<String, String>,
