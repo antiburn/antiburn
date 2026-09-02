@@ -1655,6 +1655,24 @@ async fn mirror_scan_roots(app: &tauri::AppHandle, roots: &[String]) -> anyhow::
  * Session actions
  * ---------------------------------------------------------------------- */
 
+/// Write the privacy-scoped support diagnostics to `dest_path` as JSON.
+///
+/// The export omits transcript content, titles, paths, working directories,
+/// account keys, analytics identifiers, and every `turn_content` value.
+#[tauri::command]
+pub async fn export_diagnostics(app: tauri::AppHandle, dest_path: String) -> CommandResult<String> {
+    let data_dir = app.state::<Store>().state_dir().to_path_buf();
+    let app_version = app.package_info().version.to_string();
+    let json = tauri::async_runtime::spawn_blocking(move || {
+        crate::diagnostics_export::build(&data_dir, app_version)?.to_json()
+    })
+    .await
+    .map_err(fail)?
+    .map_err(fail)?;
+    tokio::fs::write(&dest_path, json).await.map_err(fail)?;
+    Ok(dest_path)
+}
+
 /// Write one session's derived analysis to `dest_path` as JSON.
 ///
 /// The transcript is **not** copied: the document carries a reference to where
