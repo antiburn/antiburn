@@ -239,6 +239,11 @@ pub(crate) fn apply_outcome(
                 pass.analysis.started_at_epoch,
                 &completion,
                 &relations,
+                // Populated in a later change (continuous ingest, phase
+                // 3b commit 3): the worker does not yet decide per-source
+                // resume outcomes, so every pass reads every source fully,
+                // exactly as before this change.
+                &[],
             )
         }
         PassOutcome::SourceChanged => store.fail_evidence(

@@ -196,6 +196,12 @@ pub fn run() {
             ) {
                 ::tracing::error!(event = "evidence_reconcile_failed", error = %error);
             }
+            if let Err(error) = app
+                .state::<store::Store>()
+                .purge_stale_source_resume(analysis::resume_revisions())
+            {
+                ::tracing::error!(event = "source_resume_purge_failed", error = %error);
+            }
 
             // Apply the persisted theme before any window shows, so the first
             // paint is already in the reader's chosen appearance. "system" and

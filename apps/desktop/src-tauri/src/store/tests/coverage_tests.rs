@@ -67,7 +67,7 @@ fn publishing_evidence_keeps_only_the_current_fence_coverage_record() {
 
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 
@@ -125,7 +125,7 @@ fn a_lost_publish_race_deletes_only_its_own_fences_coverage_record() {
 
     assert!(
         !store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 

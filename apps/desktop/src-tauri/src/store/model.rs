@@ -4,6 +4,7 @@
 //! camelCase payloads in [`crate::dto`]. Keeping the two apart means a schema
 //! change never silently alters what the webview receives.
 
+use antiburn_local::analysis::StoredResume;
 use serde::{Deserialize, Serialize};
 
 /// Identity of one local session: the execution environment it ran in, the
@@ -259,6 +260,40 @@ pub struct EvidenceCompletion {
     pub status: PublishedEvidence,
     pub evidence_schema_revision: i64,
     pub evidence_json: String,
+}
+
+/// Whether one source in a completed pass resumed from a snapshot or read
+/// fully. See "R4. Fence semantics" in the phase 3b build spec
+/// (`docs/plans/continuous-session-ingest.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourcePublishMode {
+    /// The pass appended only new rows for this source, under the claim
+    /// fence, alongside its rows already published under
+    /// `published_fence`. [`super::Store::publish_projections`] re-stamps
+    /// the appended rows onto `published_fence` instead of deleting the
+    /// rows already there.
+    Resumed,
+    /// The pass read this source from the start. Its rows this pass
+    /// replace every row already published for it.
+    Full,
+}
+
+/// One source's fate in a completed pass: how [`super::Store::publish_projections`]
+/// handles its rows, and the resume snapshot (if any) to persist for the
+/// next pass. A source with no entry in the list a caller passes is
+/// treated as [`SourcePublishMode::Full`] with no resume bookkeeping —
+/// this is what every pre-resume caller's empty list means, and stays
+/// correct for a caller that never claims resume support for any source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourcePublishOutcome {
+    pub source_key: String,
+    pub mode: SourcePublishMode,
+    /// The source's resume snapshot to persist for the next pass. `None`
+    /// when the source's adapter does not support resume, or its
+    /// end-of-stream state was unsettled — [`super::Store::publish_projections`]
+    /// then drops any snapshot already stored for this source instead of
+    /// leaving a stale one behind.
+    pub resume: Option<StoredResume>,
 }
 
 /// One session's token evidence, as the provider-usage aggregation reads it.

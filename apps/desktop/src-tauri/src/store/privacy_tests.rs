@@ -205,6 +205,7 @@ fn ingest_and_publish(store: &Store, kind: AgentKind, session_id: &str, source: 
             pass.analysis.started_at_epoch,
             &completion,
             &[],
+            &[],
         )
         .expect("publish projections");
     assert!(

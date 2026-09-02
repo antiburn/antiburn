@@ -17,14 +17,15 @@ use std::sync::{
 };
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, ActiveSessionsSummary, CompositeSink, EVIDENCE_SCHEMA_REVISION,
-    EfficiencyTotals, EvidenceSource, InitialContextBreakdown, MAX_PROVIDER_HINTS,
-    METRICS_SCHEMA_REVISION, ModelRun, PARSER_REVISION, ProviderHint, RawSource, SessionCost,
-    SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
-    SessionMetricsAccumulator, SessionSummary, SkillUse, SourceCapabilities, SourceClaim,
-    SourceKind, TurnRow, TurnRowSink, TurnRowStore, TurnScope, VisitOutcome, adapter_for,
-    aggregate_metrics, append_only_guarantee, evidence_from_facts, merge_metrics,
-    metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation,
+    ANALYZER_REVISION, ActiveSessionsSummary, COVERAGE_SCHEMA_REVISION, CompositeSink,
+    EVIDENCE_SCHEMA_REVISION, EfficiencyTotals, EvidenceSource, InitialContextBreakdown,
+    MAX_PROVIDER_HINTS, METRICS_SCHEMA_REVISION, ModelRun, PARSER_REVISION, ProviderHint,
+    RESUME_SNAPSHOT_REVISION, RawSource, ResumeRevisions, SessionCost, SessionEvidence,
+    SessionEvidenceAccumulator, SessionInput, SessionMetrics, SessionMetricsAccumulator,
+    SessionSummary, SkillUse, SourceCapabilities, SourceClaim, SourceKind, TurnRow, TurnRowSink,
+    TurnRowStore, TurnScope, VisitOutcome, adapter_for, aggregate_metrics, append_only_guarantee,
+    evidence_from_facts, merge_metrics, metrics_by_source, metrics_from_rows, price_breakdown,
+    pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
@@ -1589,6 +1590,20 @@ pub fn projection_revisions() -> ProjectionRevisions {
         analyzer_revision: ANALYZER_REVISION,
         metrics_schema_revision: METRICS_SCHEMA_REVISION,
         evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
+    }
+}
+
+/// The revisions a stored `source_resume` snapshot must match to be
+/// trusted. Passed to `Store::purge_stale_source_resume` on startup,
+/// alongside `projection_revisions` feeding `reconcile_evidence_revisions`.
+pub fn resume_revisions() -> ResumeRevisions {
+    ResumeRevisions {
+        snapshot_revision: RESUME_SNAPSHOT_REVISION,
+        parser_revision: PARSER_REVISION,
+        analyzer_revision: ANALYZER_REVISION,
+        metrics_schema_revision: METRICS_SCHEMA_REVISION,
+        evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
+        coverage_schema_revision: COVERAGE_SCHEMA_REVISION,
     }
 }
 
