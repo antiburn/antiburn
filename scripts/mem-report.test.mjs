@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   DIAGNOSTIC_PREFIX,
   LineCapture,
+  ONBOARDING_STEPS,
   PROFILE_MARKER,
   collectMemory,
   createRunProfile,
@@ -28,6 +29,15 @@ import {
   summarizeSamples,
   validateProfileRoot,
 } from "./mem-report.mjs";
+
+test("pins the current four-step onboarding path", () => {
+  assert.deepEqual(ONBOARDING_STEPS, [
+    { heading: "Stop hitting your token limits", action: "Continue" },
+    { heading: "Scan Locations: Agents", action: "Continue" },
+    { heading: "Scan Locations: Repos", action: "Continue" },
+    { heading: "Ready", action: "Start using antiburn" },
+  ]);
+});
 
 test("parses defaults, release defaults, and explicit options", () => {
   const defaults = parseArguments([]);

@@ -53,8 +53,9 @@ pub use model::{
     EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters,
     MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement,
     ProjectionRevisions, PublishedEvidence, RETAIN_SESSION_DATA_FOREVER, RelationKind,
-    RelationRecord, RepositoryRecord, SessionActivityKey, SessionKey, SessionRecord,
-    SourceVersionState, ThemePreference, UsageEvidenceRecord,
+    RelationRecord, RepositoryRecord, SessionActivityKey, SessionBadgeMetric, SessionKey,
+    SessionRecord, SessionUsageRecord, SessionUsageTurnRecord, SourceVersionState, ThemePreference,
+    UsageEvidenceRecord,
 };
 
 /// Evidence rows that still wait for, or sit in, processing.
@@ -1634,6 +1635,98 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Published timestamped turns at or after `since_ms`, grouped by session.
+    pub fn session_usage_turns(&self, since_ms: i64) -> Result<Vec<SessionUsageRecord>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "WITH recent_session AS (
+                SELECT DISTINCT t.environment_key, t.agent, t.session_id
+                  FROM turn t
+                  JOIN session_evidence e
+                    ON e.environment_key = t.environment_key
+                   AND e.agent = t.agent
+                   AND e.session_id = t.session_id
+                   AND e.published_fence = t.claim_fence
+                 WHERE t.ts_ms >= ?1
+            )
+             SELECT s.environment_key, s.agent, s.session_id, s.wsl_distro,
+                    a.provider_hints_json,
+                    COALESCE((
+                        SELECT json_group_array(json_object(
+                            'provider', spa.provider,
+                            'accountKey', spa.account_key
+                        ))
+                          FROM session_provider_account spa
+                         WHERE spa.environment_key = s.environment_key
+                           AND spa.agent = s.agent
+                           AND spa.session_id = s.session_id
+                    ), '[]')
+               FROM recent_session r
+               JOIN session s
+                 ON s.environment_key = r.environment_key
+                AND s.agent = r.agent
+                AND s.session_id = r.session_id
+               LEFT JOIN session_analysis a
+                 ON a.environment_key = s.environment_key
+                AND a.agent = s.agent
+                AND a.session_id = s.session_id",
+        )?;
+        let rows = statement.query_map(params![since_ms], |row| {
+            Ok(SessionUsageRecord {
+                key: SessionKey {
+                    environment_key: row.get(0)?,
+                    agent: row.get(1)?,
+                    session_id: row.get(2)?,
+                },
+                wsl_distro: row.get(3)?,
+                provider_hints_json: row.get(4)?,
+                provider_accounts_json: row.get(5)?,
+                turns: Vec::new(),
+            })
+        })?;
+        let mut sessions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        let indexes: HashMap<_, _> = sessions
+            .iter()
+            .enumerate()
+            .map(|(index, session)| (session.key.clone(), index))
+            .collect();
+        let mut statement = connection.prepare(
+            "SELECT t.environment_key, t.agent, t.session_id,
+                    t.ts_ms, t.model, t.input_tokens, t.cache_read_tokens,
+                    t.cache_write_tokens, t.output_tokens
+               FROM turn t
+               JOIN session_evidence e
+                 ON e.environment_key = t.environment_key
+                AND e.agent = t.agent
+                AND e.session_id = t.session_id
+                AND e.published_fence = t.claim_fence
+              WHERE t.ts_ms >= ?1
+              ORDER BY t.ts_ms, t.rowid",
+        )?;
+        let mut rows = statement.query(params![since_ms])?;
+        while let Some(row) = rows.next()? {
+            let key = SessionKey {
+                environment_key: row.get(0)?,
+                agent: row.get(1)?,
+                session_id: row.get(2)?,
+            };
+            let index = indexes
+                .get(&key)
+                .copied()
+                .context("a recent turn has no session metadata")?;
+            sessions[index].turns.push(SessionUsageTurnRecord {
+                ts_ms: row.get(3)?,
+                model: row.get(4)?,
+                input_tokens: row.get(5)?,
+                cache_read_tokens: row.get(6)?,
+                cache_write_tokens: row.get(7)?,
+                output_tokens: row.get(8)?,
+            });
+        }
+        Ok(sessions)
+    }
+
     /// Bind recent sessions after the account-attribution rollout.
     pub fn observe_provider_account(
         &self,
@@ -2046,6 +2139,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("overviewLimitsExpanded")
             .map(|value| value == "true")
             .unwrap_or(defaults.overview_limits_expanded),
+        session_badge_metric: stored
+            .get("sessionBadgeMetric")
+            .and_then(|value| SessionBadgeMetric::parse(value))
+            .unwrap_or(defaults.session_badge_metric),
     }
     .normalized())
 }
@@ -2139,6 +2236,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
     put.execute(params![
         "overviewLimitsExpanded",
         bool_text(settings.overview_limits_expanded)
+    ])?;
+    put.execute(params![
+        "sessionBadgeMetric",
+        settings.session_badge_metric.as_str()
     ])?;
     Ok(())
 }

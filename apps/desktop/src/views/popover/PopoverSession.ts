@@ -6,9 +6,11 @@ import {
   DEFAULT_SETTINGS,
   EMPTY_LIVE_USAGE,
   EMPTY_PROVIDER_USAGE,
+  EMPTY_SESSION_LIMIT_ALLOCATIONS,
   appInfo,
   getLiveUsage,
   getProviderUsage,
+  getSessionLimitAllocations,
   getSessionAnalysis,
   getSessionAnalysisFingerprint,
   getSettings,
@@ -34,6 +36,7 @@ import {
   type AppSettings,
   type LiveUsageSummaryPayload,
   type ProviderUsageSummaryPayload,
+  type SessionLimitAllocationSummaryPayload,
   type SessionAnalysisPayload,
   type StorageHealthPayload,
 } from "../../lib/ipc"
@@ -119,6 +122,7 @@ export interface PopoverSnapshot {
   /** Provider usage, or null while the first snapshot is in flight. */
   usage: ProviderUsageSummaryPayload | null
   liveUsage: LiveUsageSummaryPayload
+  sessionLimitAllocations: SessionLimitAllocationSummaryPayload
   /** Whether a `refreshUsage` call is in flight, for the limits section's spinner. */
   usageRefreshing: boolean
   /** Whether the full Usage view is showing over the activity list. */
@@ -246,6 +250,9 @@ export class PopoverSession {
   /** How many `refreshAnalysis` calls are in flight; see `usageRefreshCount`. */
   private analysisRefreshCount = 0
   private liveUsageRevision = 0
+  private sessionLimitAllocationRequested = 0
+  private sessionLimitAllocationRefresh: Promise<void> | null = null
+  private sessionLimitAllocationExpiryTimer: ReturnType<typeof setTimeout> | null = null
   private initialContentReady = false
   private contentReadyReportedGeneration: number | null = null
   private contentReadyReportInFlightGeneration: number | null = null
@@ -281,6 +288,7 @@ export class PopoverSession {
     repositories: [],
     usage: null,
     liveUsage: EMPTY_LIVE_USAGE,
+    sessionLimitAllocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
     usageRefreshing: false,
     showUsage: false,
     presentedSurface: "activity",
@@ -368,6 +376,16 @@ export class PopoverSession {
       .catch(() => {})
   }
 
+  setSessionBadgeMetric = (metric: AppSettings["sessionBadgeMetric"]): void => {
+    const current = this.snapshot.settings ?? DEFAULT_SETTINGS
+    if (current.sessionBadgeMetric === metric) return
+    const next = { ...current, sessionBadgeMetric: metric }
+    this.update({ settings: next })
+    void setSettings(next)
+      .then((saved) => this.update({ settings: saved }))
+      .catch(() => {})
+  }
+
   /** Run a discovery pass. The source-access banner's only action. */
   rescan = async (): Promise<void> => {
     await scanNow().catch(() => null)
@@ -430,6 +448,7 @@ export class PopoverSession {
     this.stopLiveUsageListening = null
     this.stopAnalysisPolling()
     this.stopNowTicking()
+    this.stopSessionLimitAllocationExpiryTimer()
     this.analysisFingerprintKey = null
     this.analysisFingerprint = null
     this.analysisRetryKey = null
@@ -537,6 +556,7 @@ export class PopoverSession {
       const next = [...entries]
       next[index] = toActivityEntry(entry, threshold)
       this.update({ entries: next })
+      void this.refreshSessionLimitAllocations()
     })
     if (generation !== this.generation) {
       unlisten()
@@ -658,6 +678,7 @@ export class PopoverSession {
       if (generation !== this.generation) return
       this.liveUsageRevision += 1
       this.update({ liveUsage })
+      void this.refreshSessionLimitAllocations()
     })
     if (generation !== this.generation) {
       unlisten()
@@ -693,6 +714,7 @@ export class PopoverSession {
 
   private loadCachedUsage = async (): Promise<void> => {
     const liveUsageRevision = this.liveUsageRevision
+    void this.refreshSessionLimitAllocations()
     const [usage, liveUsage] = await Promise.all([
       getProviderUsage().catch(() => EMPTY_PROVIDER_USAGE),
       getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
@@ -724,6 +746,7 @@ export class PopoverSession {
           })
           .catch(() => undefined),
       ])
+      await this.refreshSessionLimitAllocations()
       // Usage arriving can flip the derived surface to 'usage' on its own —
       // the reader may have already asked to see it before there was
       // anything to show — so the height request has to follow this update
@@ -733,6 +756,57 @@ export class PopoverSession {
       this.usageRefreshCount -= 1
       this.update({ usageRefreshing: this.usageRefreshCount > 0 })
     }
+  }
+
+  private refreshSessionLimitAllocations = (): Promise<void> => {
+    this.sessionLimitAllocationRequested += 1
+    if (!this.sessionLimitAllocationRefresh) {
+      this.sessionLimitAllocationRefresh = this.runSessionLimitAllocationRefreshes().finally(
+        () => {
+          this.sessionLimitAllocationRefresh = null
+        },
+      )
+    }
+    return this.sessionLimitAllocationRefresh
+  }
+
+  private runSessionLimitAllocationRefreshes = async (): Promise<void> => {
+    let completed = 0
+    while (completed < this.sessionLimitAllocationRequested) {
+      const target = this.sessionLimitAllocationRequested
+      const generation = this.generation
+      const sessionLimitAllocations = await getSessionLimitAllocations().catch(() => null)
+      if (sessionLimitAllocations && generation === this.generation) {
+        this.update({ sessionLimitAllocations })
+        this.scheduleSessionLimitAllocationExpiry()
+      }
+      completed = target
+    }
+  }
+
+  private scheduleSessionLimitAllocationExpiry(): void {
+    this.stopSessionLimitAllocationExpiryTimer()
+    const now = Date.now()
+    let nextReset = Number.POSITIVE_INFINITY
+    for (const allocation of this.snapshot.sessionLimitAllocations.allocations) {
+      const reset = Date.parse(allocation.resetsAt)
+      if (reset > now && reset < nextReset) nextReset = reset
+    }
+    if (!Number.isFinite(nextReset)) return
+    this.sessionLimitAllocationExpiryTimer = setTimeout(
+      () => {
+        this.sessionLimitAllocationExpiryTimer = null
+        this.update({ now: Date.now() })
+        this.scheduleSessionLimitAllocationExpiry()
+      },
+      Math.min(nextReset - now + 1, 2_147_483_647),
+    )
+  }
+
+  private stopSessionLimitAllocationExpiryTimer(): void {
+    if (this.sessionLimitAllocationExpiryTimer === null) return
+    clearTimeout(this.sessionLimitAllocationExpiryTimer)
+    this.sessionLimitAllocationExpiryTimer = null
   }
 
   private refreshRepositoryList = async (): Promise<void> => {

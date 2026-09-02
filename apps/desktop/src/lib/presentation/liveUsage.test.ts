@@ -852,17 +852,17 @@ describe("the derived rows", () => {
 
   it("leads with the verdict, the ratio, and the rate behind them", () => {
     const rows = liveMetricRows(busy, NOW)
-    expect(rows.map((row) => row.label)).toEqual(["Pace", "Trend", "Runway"])
+    expect(rows.map((row) => row.label)).toEqual(["Pace", "Runway"])
     expect(rows[0]?.value).toBe("Running hot · 1.3× · 12.5%/hour")
     expect(rows[0]?.toneClass).toContain("orange")
-    expect(rows[1]?.value).toBe("Picking up · 1.4×")
+    expect(rows[1]?.value).toBe("Runs out in 1h 12m")
   })
 
   it("keeps every row when a figure is missing, carrying the reason instead", () => {
     // A row that disappears takes its question with it, and a reader who
     // cannot find "runway" concludes the app has no such idea.
     const rows = liveMetricRows(window(), NOW)
-    expect(rows.map((row) => row.label)).toEqual(["Pace", "Trend", "Runway"])
+    expect(rows.map((row) => row.label)).toEqual(["Pace", "Runway"])
     expect(rows.every((row) => row.value === "Not enough history")).toBe(true)
     expect(rows.every((row) => row.toneClass === "text-label-tertiary")).toBe(true)
   })
@@ -883,8 +883,10 @@ describe("the derived rows", () => {
       liveMetricRows(window({ forecast: forecast({ usedToday: 12.5 }) }), NOW).map(
         (row) => row.label,
       ),
-    ).toContain("Today")
-    expect(liveMetricRows(window(), NOW).map((row) => row.label)).not.toContain("Today")
+    ).toContain("Today's usage %")
+    expect(liveMetricRows(window(), NOW).map((row) => row.label)).not.toContain(
+      "Today's usage %",
+    )
   })
 })
 

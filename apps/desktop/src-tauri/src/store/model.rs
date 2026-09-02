@@ -283,6 +283,27 @@ pub struct UsageEvidenceRecord {
     pub provider_accounts_json: String,
 }
 
+/// One session and its published turns for limit-share estimates.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionUsageRecord {
+    pub key: SessionKey,
+    pub wsl_distro: Option<String>,
+    pub provider_hints_json: Option<String>,
+    pub provider_accounts_json: String,
+    pub turns: Vec<SessionUsageTurnRecord>,
+}
+
+/// One timestamped turn used by a session limit estimate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionUsageTurnRecord {
+    pub ts_ms: Option<i64>,
+    pub model: Option<String>,
+    pub input_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub output_tokens: u64,
+}
+
 /// One local relationship between two sessions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationRecord {
@@ -421,6 +442,35 @@ impl DiskSpaceDisplay {
             "always" => Some(DiskSpaceDisplay::Always),
             "whenLow" => Some(DiskSpaceDisplay::WhenLow),
             "never" => Some(DiskSpaceDisplay::Never),
+            _ => None,
+        }
+    }
+}
+
+/// The metric shown in every session's activity badge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionBadgeMetric {
+    #[default]
+    Cost,
+    WeeklyPercent,
+    FiveHourPercent,
+}
+
+impl SessionBadgeMetric {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cost => "cost",
+            Self::WeeklyPercent => "weeklyPercent",
+            Self::FiveHourPercent => "fiveHourPercent",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "cost" => Some(Self::Cost),
+            "weeklyPercent" => Some(Self::WeeklyPercent),
+            "fiveHourPercent" => Some(Self::FiveHourPercent),
             _ => None,
         }
     }
@@ -694,6 +744,8 @@ pub struct AppSettings {
     /// display preference — it never gates a fetch — so it defaults open and
     /// stays wherever the reader last left it.
     pub overview_limits_expanded: bool,
+    /// The metric shown in each activity-session badge.
+    pub session_badge_metric: SessionBadgeMetric,
 }
 
 impl Default for AppSettings {
@@ -743,6 +795,7 @@ impl Default for AppSettings {
             // Open by default: a reader who has live limits at all should see
             // them without an extra click the first time they notice this.
             overview_limits_expanded: true,
+            session_badge_metric: SessionBadgeMetric::default(),
         }
     }
 }

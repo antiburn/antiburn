@@ -37,7 +37,8 @@ use crate::dto::{
     ActivityEntry, AgentScanState, AppInfo, DeferredPermissionDir, HygieneSummaryPayload,
     InsightsReportPayload, InsightsStatusPayload, LiveUsageSummary, OrchestrationStatus,
     ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload,
-    SessionHygieneRequest, SessionIdentity, SessionRelation, SessionRelations, SubagentMember,
+    SessionHygieneRequest, SessionIdentity, SessionLimitAllocationSummary, SessionRelation,
+    SessionRelations, SubagentMember,
 };
 use crate::export::{ExportedSession, SessionExport};
 use crate::insights_ipc::InsightsController;
@@ -784,6 +785,32 @@ pub(crate) fn provider_usage_summary(
             .count(),
     );
     Ok(summary)
+}
+
+/// Estimate each recent session's share of current provider allowance windows.
+#[tauri::command]
+pub async fn get_session_limit_allocations(
+    app: tauri::AppHandle,
+) -> CommandResult<SessionLimitAllocationSummary> {
+    let now = scan::unix_now();
+    let since_ms = now.saturating_sub(8 * 24 * 60 * 60).saturating_mul(1_000);
+    let store = app.state::<Store>().inner().clone();
+    let live = cached_live_usage(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        let turns = store.session_usage_turns(since_ms).map_err(fail)?;
+        let history = provider_usage::live::history::load(&store);
+        Ok(SessionLimitAllocationSummary {
+            allocations: provider_usage::allocation::estimate(
+                turns,
+                &live,
+                &history,
+                now.saturating_mul(1_000),
+            ),
+            generated_at: crate::store::iso_from_epoch(Some(now)),
+        })
+    })
+    .await
+    .map_err(fail)?
 }
 
 /// How fresh a reading the refresh command asks each source's cooldown for.

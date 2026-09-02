@@ -21,6 +21,12 @@ export const REPORT_SCHEMA_VERSION = 2;
 export const PROFILE_MARKER = ".antiburn-memory-profile-v2";
 export const DIAGNOSTIC_PREFIX = "@antiburn-mem ";
 export const STEVE_UPSTREAM = "https://github.com/mikker/steve";
+export const ONBOARDING_STEPS = Object.freeze([
+  { heading: "Stop hitting your token limits", action: "Continue" },
+  { heading: "Scan Locations: Agents", action: "Continue" },
+  { heading: "Scan Locations: Repos", action: "Continue" },
+  { heading: "Ready", action: "Start using antiburn" },
+]);
 const MEMORY_BUNDLE_ID = "ai.antiburn.desktop.memory-probe";
 const LAUNCH_ENVIRONMENT_KEYS = [
   "HOME",
@@ -1064,18 +1070,12 @@ async function prepareProfile(options, executable, profile, report, run) {
     recordPhase(report, run, "onboarding-started", { pid });
     stage = "attach to onboarding";
     await waitForApp(options, pid);
-    stage = "wait for welcome";
-    await waitForText(options, pid, "Stop hitting your token limits");
-    stage = "continue from welcome";
-    await waitAndClick(options, pid, "Continue");
-    stage = "wait for repository setup";
-    await waitForText(options, pid, "Repo search locations");
-    stage = "continue from repository setup";
-    await waitAndClick(options, pid, "Continue");
-    stage = "wait for ready step";
-    await waitForText(options, pid, "Ready");
-    stage = "finish onboarding";
-    await waitAndClick(options, pid, "Start using antiburn");
+    for (const step of ONBOARDING_STEPS) {
+      stage = `wait for onboarding heading ${step.heading}`;
+      await waitForText(options, pid, step.heading);
+      stage = `click onboarding action ${step.action}`;
+      await waitAndClick(options, pid, step.action);
+    }
     stage = "wait for onboarding handoff";
     await waitForTextGone(options, pid, "Start using antiburn");
     recordPhase(report, run, "onboarding-complete");

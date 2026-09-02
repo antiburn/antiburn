@@ -31,6 +31,7 @@ export function LiveUsageDetail({
   now,
   accountLabel,
   showPlan = false,
+  showRunway = true,
   className = "",
 }: {
   live: LiveProviderUsagePayload
@@ -38,6 +39,7 @@ export function LiveUsageDetail({
   now: number
   accountLabel?: string
   showPlan?: boolean
+  showRunway?: boolean
   className?: string
 }) {
   const staleness = liveStalenessNote(live)
@@ -81,6 +83,7 @@ export function LiveUsageDetail({
         <LiveMetricRows
           window={primary}
           now={now}
+          {...(!showRunway ? { keys: ["pace", "today"] } : {})}
           className="border-t border-separator pt-1.5"
         />
       )}

@@ -25,6 +25,7 @@
 //!    session that ran across midnight counts entirely in the day it last
 //!    touched. The views say so.
 
+pub(crate) mod allocation;
 pub mod live;
 pub mod providers;
 
@@ -68,12 +69,16 @@ pub struct WindowBounds {
     pub week_start: i64,
     /// Local midnight on the first of the current month.
     pub month_start: i64,
+    /// Local midnight twenty-nine days before today.
+    pub last_30_days_start: i64,
 }
 
 impl WindowBounds {
     /// The earliest instant any window reaches back to.
     fn earliest(&self) -> i64 {
-        self.week_start.min(self.month_start)
+        self.week_start
+            .min(self.month_start)
+            .min(self.last_30_days_start)
     }
 }
 
@@ -110,6 +115,7 @@ pub fn window_bounds(now: i64, utc_offset_minutes: i32) -> WindowBounds {
         // would make the same session appear and disappear as the clock moves.
         week_start: today_start - 6 * 86_400,
         month_start,
+        last_30_days_start: today_start - 29 * 86_400,
     }
 }
 
@@ -133,6 +139,7 @@ struct Membership {
     today: bool,
     week: bool,
     month: bool,
+    last_30_days: bool,
 }
 
 impl Membership {
@@ -141,6 +148,7 @@ impl Membership {
             today: epoch >= bounds.today_start,
             week: epoch >= bounds.week_start,
             month: epoch >= bounds.month_start,
+            last_30_days: epoch >= bounds.last_30_days_start,
         }
     }
 
@@ -148,7 +156,7 @@ impl Membership {
     /// — a session whose activity is older than the widest bound, or missing
     /// entirely (stored as zero).
     fn is_empty(self) -> bool {
-        !self.today && !self.week && !self.month
+        !self.today && !self.week && !self.month && !self.last_30_days
     }
 }
 
@@ -186,7 +194,8 @@ impl Bucket {
 struct Accumulator {
     today: Bucket,
     week: Bucket,
-    month: Bucket,
+    month_to_date: Bucket,
+    last_30_days: Bucket,
     /// Every model seen in the covered span, used for the provider's state.
     /// Kept separately because the state describes the provider, not a window.
     all: Bucket,
@@ -199,7 +208,8 @@ struct Accumulator {
 struct AgentBuckets {
     today: Bucket,
     week: Bucket,
-    month: Bucket,
+    month_to_date: Bucket,
+    last_30_days: Bucket,
 }
 
 /// What pricing could say about a set of models.
@@ -241,6 +251,7 @@ fn window_of(bucket: &Bucket) -> ProviderUsageWindow {
     let mut window = ProviderUsageWindow {
         session_count: bucket.session_count,
         estimated_usd: priced.any_priced.then_some(priced.usd),
+        cost_complete: !priced.any_unpriced,
         ..ProviderUsageWindow::default()
     };
     for tokens in bucket.models.values() {
@@ -494,7 +505,10 @@ pub fn summarize(
                 buckets.push(&mut accumulator.week);
             }
             if membership.month {
-                buckets.push(&mut accumulator.month);
+                buckets.push(&mut accumulator.month_to_date);
+            }
+            if membership.last_30_days {
+                buckets.push(&mut accumulator.last_30_days);
             }
             for bucket in buckets {
                 bucket.session_count = bucket.session_count.saturating_add(1);
@@ -512,7 +526,10 @@ pub fn summarize(
                 agent_buckets.push(&mut agent.week);
             }
             if membership.month {
-                agent_buckets.push(&mut agent.month);
+                agent_buckets.push(&mut agent.month_to_date);
+            }
+            if membership.last_30_days {
+                agent_buckets.push(&mut agent.last_30_days);
             }
             for bucket in agent_buckets {
                 bucket.session_count = bucket.session_count.saturating_add(1);
@@ -534,7 +551,8 @@ pub fn summarize(
             windows: ProviderUsageWindows {
                 today: window_of(&accumulator.today),
                 week: window_of(&accumulator.week),
-                month: window_of(&accumulator.month),
+                month_to_date: window_of(&accumulator.month_to_date),
+                last_30_days: window_of(&accumulator.last_30_days),
             },
             agents: accumulator
                 .agents
@@ -544,7 +562,8 @@ pub fn summarize(
                     windows: ProviderUsageWindows {
                         today: window_of(&buckets.today),
                         week: window_of(&buckets.week),
-                        month: window_of(&buckets.month),
+                        month_to_date: window_of(&buckets.month_to_date),
+                        last_30_days: window_of(&buckets.last_30_days),
                     },
                 })
                 .collect(),
@@ -562,8 +581,55 @@ pub fn summarize(
             .then_with(|| a.account_key.cmp(&b.account_key))
     });
 
+    let totals = providers
+        .iter()
+        .fold(ProviderUsageWindows::default(), |mut totals, provider| {
+            add_window(&mut totals.today, &provider.windows.today);
+            add_window(&mut totals.week, &provider.windows.week);
+            add_window(&mut totals.month_to_date, &provider.windows.month_to_date);
+            add_window(&mut totals.last_30_days, &provider.windows.last_30_days);
+            totals
+        });
+    let mut agents: BTreeMap<String, ProviderUsageWindows> = BTreeMap::new();
+    for provider in &providers {
+        for entry in &provider.agents {
+            let windows = agents.entry(entry.agent.clone()).or_default();
+            add_window(&mut windows.today, &entry.windows.today);
+            add_window(&mut windows.week, &entry.windows.week);
+            add_window(&mut windows.month_to_date, &entry.windows.month_to_date);
+            add_window(&mut windows.last_30_days, &entry.windows.last_30_days);
+        }
+    }
+
+    tracing::debug!(
+        providers = providers.len(),
+        agents = agents.len(),
+        today_tokens = totals.today.tokens_in + totals.today.tokens_out + totals.today.cache_read,
+        last_30_day_tokens = totals.last_30_days.tokens_in
+            + totals.last_30_days.tokens_out
+            + totals.last_30_days.cache_read,
+        "computed local usage totals"
+    );
+
     ProviderUsageSummary {
         providers,
+        totals,
+        agents: agents
+            .into_iter()
+            .map(|(agent, windows)| ProviderAgentUsage { agent, windows })
+            .collect(),
         generated_at: iso_from_epoch(Some(now)),
     }
+}
+
+fn add_window(target: &mut ProviderUsageWindow, source: &ProviderUsageWindow) {
+    target.tokens_in = target.tokens_in.saturating_add(source.tokens_in);
+    target.tokens_out = target.tokens_out.saturating_add(source.tokens_out);
+    target.cache_read = target.cache_read.saturating_add(source.cache_read);
+    target.session_count = target.session_count.saturating_add(source.session_count);
+    target.cost_complete &= source.cost_complete;
+    target.estimated_usd = match (target.estimated_usd, source.estimated_usd) {
+        (None, None) => None,
+        (left, right) => Some(left.unwrap_or(0.0) + right.unwrap_or(0.0)),
+    };
 }

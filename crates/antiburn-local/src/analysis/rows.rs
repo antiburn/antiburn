@@ -102,6 +102,11 @@ ALTER TABLE turn ADD COLUMN last_tool TEXT;
 ALTER TABLE turn ADD COLUMN subagent_launches INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// DDL that indexes recent turn reads by timestamp.
+pub const TURN_SCHEMA_V4_SQL: &str = r#"
+CREATE INDEX turn_usage_timestamp ON turn (ts_ms);
+"#;
+
 /// DDL for the `session_coverage` table: one row per `(environment_key,
 /// agent, session_id, claim_fence)`, holding the serialized
 /// [`SessionCoverageRecord`] a pass wrote alongside its turn rows under the
@@ -131,14 +136,15 @@ CREATE TABLE session_coverage (
 /// `session_coverage` schema, in order. A caller that creates this schema
 /// from scratch (a test, an in-memory store) applies every entry in order;
 /// the app applies [`TURN_SCHEMA_SQL`], [`TURN_SCHEMA_V2_SQL`],
-/// [`TURN_SCHEMA_V3_SQL`], and [`SESSION_COVERAGE_SCHEMA_SQL`] as its own
-/// separately numbered migrations instead, since [`TURN_SCHEMA_SQL`] is
-/// already applied on user machines.
+/// [`TURN_SCHEMA_V3_SQL`], [`SESSION_COVERAGE_SCHEMA_SQL`], and
+/// [`TURN_SCHEMA_V4_SQL`] as its own separately numbered migrations instead,
+/// since [`TURN_SCHEMA_SQL`] is already applied on user machines.
 pub const TURN_MIGRATIONS: &[&str] = &[
     TURN_SCHEMA_SQL,
     TURN_SCHEMA_V2_SQL,
     TURN_SCHEMA_V3_SQL,
     SESSION_COVERAGE_SCHEMA_SQL,
+    TURN_SCHEMA_V4_SQL,
 ];
 
 /// Number of rows a [`TurnRowSink`] buffers before it writes them, unless the

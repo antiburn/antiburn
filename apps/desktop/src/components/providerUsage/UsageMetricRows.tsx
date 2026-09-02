@@ -1,29 +1,9 @@
-import {
-  ArrowRight,
-  Coins,
-  Gauge,
-  TrendingDown,
-  TrendingUp,
-  type LucideIcon,
-} from "lucide-react"
+import { ArrowRight, Gauge, TrendingDown, TrendingUp, type LucideIcon } from "lucide-react"
 
 import type { ProviderUsagePayload } from "../../lib/ipc"
 import { paceTrend, usageMetricRows } from "../../lib/presentation/providerUsage"
-import { UsageStateBadge } from "./ProviderUsagePrimitives"
 
-/**
- * The shared metric block: today's spend, today's tokens, and the spend trend
- * against the trailing week — every figure derived from the reader's own
- * sessions. No percentage, allowance, reset, or runway appears here by
- * policy: a transcript records what was spent, never what remains.
- *
- * The block carries its own heading and its own evidence badge because a card
- * can now hold two halves with different provenance. The badge used to sit in
- * the card header, where it read as describing everything below it —
- * including the provider's own stated limits, which it has nothing to do
- * with. Sitting here, over exactly the rows it describes, it says what it
- * means.
- */
+/** The local spend trend, after the provider's limit pace. */
 export function UsageMetricRows({ provider }: { provider: ProviderUsagePayload }) {
   const trend = paceTrend(provider)
   const trendIcon: LucideIcon =
@@ -32,22 +12,13 @@ export function UsageMetricRows({ provider }: { provider: ProviderUsagePayload }
       : trend.kind === "easing"
         ? TrendingDown
         : ArrowRight
-  const icons: Record<string, LucideIcon> = {
-    "today-spend": Gauge,
-    "today-tokens": Coins,
-    trend: trendIcon,
-  }
+  const icons: Record<string, LucideIcon> = { trend: trendIcon }
 
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-baseline justify-between gap-2">
-        <h4 className="type-caption font-medium tracking-wide uppercase text-label-tertiary">
-          On this machine
-        </h4>
-        <UsageStateBadge state={provider.state} />
-      </div>
-      <dl className="space-y-1.5">
-        {usageMetricRows(provider).map((row) => {
+    <dl className="space-y-1.5">
+      {usageMetricRows(provider)
+        .filter((row) => row.key === "trend")
+        .map((row) => {
           const Icon = icons[row.key] ?? Gauge
           return (
             <div key={row.key} className="flex items-baseline justify-between gap-3">
@@ -59,7 +30,6 @@ export function UsageMetricRows({ provider }: { provider: ProviderUsagePayload }
             </div>
           )
         })}
-      </dl>
-    </div>
+    </dl>
   )
 }
