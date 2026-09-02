@@ -659,8 +659,8 @@ fn requeue_and_wake_worker(app: &tauri::AppHandle, store: &Store, key: &SessionK
 /// published against a transcript that has since changed. Returns whether it
 /// found one — the caller folds that into the payload's `analysisStale` flag.
 ///
-/// This uses the exact ingestion fingerprint. The webview's frequent poll uses
-/// cheaper metadata and only decides whether it must refresh the detail view.
+/// This uses the exact ingestion fingerprint, the same one the worker stores
+/// with the analysis, so a stale verdict here is never a false positive.
 async fn nudge_if_evidence_stale(
     app: &tauri::AppHandle,
     store: &Store,

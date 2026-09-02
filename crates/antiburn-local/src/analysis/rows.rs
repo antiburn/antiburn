@@ -775,7 +775,7 @@ pub fn restamp_source_rows(
 ///
 /// Used when a source reads fully instead of resuming: its earlier
 /// published rows are replaced outright by the new full read, rather than
-/// appended to. See "R4. Fence semantics" in the phase 3b build spec.
+/// appended to. See "R4. Fence semantics" in the phase 3b design rules in `docs/plans/continuous-session-ingest.md`.
 pub fn delete_source_rows_at_fence(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
@@ -843,7 +843,8 @@ impl ResumeRevisions {
     /// True when every one of `stored`'s six revision columns equals this
     /// value's own. A caller rejects a stored resume that fails this check
     /// instead of restoring it, falling back to a full read of that
-    /// source — see "R2. Resume conditions" in the phase 3b build spec.
+    /// source — see "R2. Resume conditions" in
+    /// the phase 3b design rules in `docs/plans/continuous-session-ingest.md`.
     pub fn matches(&self, stored: &StoredResume) -> bool {
         self.snapshot_revision == stored.snapshot_revision
             && self.parser_revision == stored.parser_revision
@@ -956,7 +957,7 @@ pub fn delete_source_resume(
 /// analyzer, metrics, evidence, or coverage revision bump invalidates
 /// every persisted snapshot at once; the next winning publish for a source
 /// writes it a fresh one under the new revisions. See "R6. Invalidation"
-/// in the phase 3b build spec.
+/// in the phase 3b design rules in `docs/plans/continuous-session-ingest.md`.
 pub fn delete_stale_source_resume(
     conn: &Connection,
     current: &ResumeRevisions,

@@ -1,13 +1,15 @@
 ---
 title: "Continuous session ingest: watch, resume, and replay"
 created_at: "2026-09-02"
-status: in progress
+status: done
 ---
 
 # Continuous session ingest
 
 - **Date:** 2026-09-02
-- **Issue:** none yet. Opened from a popover staleness report.
+- **Issue:** none. Opened from a popover staleness report.
+- **Status:** every phase merged on 2026-09-03 (#343, #345, #350, #353, #354,
+  #355, #356). Open follow-ups are listed at the end.
 
 ## Problem
 
@@ -91,7 +93,7 @@ activity tiering of its own.
 
 Each phase is one pull request, mergeable on its own, in dependency order.
 
-### Phase 1: describe only on change, scan while hidden
+### Phase 1: describe only on change, scan while hidden (done)
 
 Goal: fix the pop-in without the new architecture.
 
@@ -113,7 +115,7 @@ Known limit, accepted: a title change in a vendor index while the transcript
 size is unchanged is not picked up until the transcript grows. Phase 3
 replaces the size gate with a verified offset.
 
-### Phase 2: evidence from rows
+### Phase 2: evidence from rows (done)
 
 Goal: layer 2 never opens a transcript.
 
@@ -130,7 +132,7 @@ the full record stream, so evidence must come from rows first.
   rows on a debounced "rows changed" trigger, immediate for an open
   drilldown. The Insights report recomputes when the queue drains, as today.
 
-### Phase 3: verified-resume ingest
+### Phase 3: verified-resume ingest (done)
 
 Goal: an appended 4 KB costs 4 KB.
 
@@ -145,7 +147,7 @@ Deferred: provider-database sources persist no row cursor here. Their
 fingerprint already gates re-streaming, the stream is a query, and the
 Antigravity blob hash is a discovery cost that phase 4 tiers address.
 
-#### Phase 3a: snapshot resume, crate level
+#### Phase 3a: snapshot resume, crate level (done)
 
 - Snapshot types, an offset reader with tail verification, a
   `VendorAdapter::visit_claimed_resumed` seam, and a Claude adapter
@@ -156,7 +158,7 @@ Antigravity blob hash is a discovery cost that phase 4 tiers address.
 - Codex, Pi, and the provider-database adapters report resume unsupported;
   a caller falls back to a full pass for them.
 
-#### Phase 3b: snapshot resume, desktop level
+#### Phase 3b: snapshot resume, desktop level (done)
 
 - A `source_resume` table persists each source's snapshot. The worker calls
   the new seam and falls back to a full pass when it returns unsupported or
@@ -167,8 +169,46 @@ Antigravity blob hash is a discovery cost that phase 4 tiers address.
   `published_turn_rows` contract are updated together.
 - A parser, analyzer, metrics, evidence, or coverage revision bump
   invalidates every snapshot and forces a full pass.
-- Turn the `AppendOnlyGuarantee` from a static assumption into the runtime
-  verification phase 3a adds.
+- Not done: `AppendOnlyGuarantee` is still the static `Absent` stub. The
+  resumed path verifies its offset with the tail hash from phase 3a and
+  never consults the guarantee, so it now only decides how a full read
+  re-checks its prefix. Listed as a follow-up below.
+
+Design rules the 3b code comments cite by number:
+
+- **R1. Per source.** A snapshot is stored per `(session key, source_key)`,
+  where `source_key` is the parent's session id or a child's own id, the
+  same value the turn rows carry. Each source independently resumes
+  (appends its new rows) or reads fully (replaces its rows).
+- **R2. Resume conditions.** A source resumes only when a stored snapshot
+  exists, its six revision columns all equal the current constants, it
+  decodes, the adapter supports resume, and `visit_claimed_resumed` accepts
+  it. Otherwise the source reads fully. A `SourceChanged` outcome from the
+  resumed visit falls back to a full read of that source in the same pass.
+- **R3. Evidence fold is rebuilt every pass.** One evidence accumulator per
+  input. At the end of the pass the parent's residual is cloned and every
+  child's residual folded into the clone, in input order, to produce the
+  coverage record. The per-source snapshot stores each source's own
+  residual, never the folded one.
+- **R4. Fence semantics.** A resumed source's new rows are written under the
+  claim fence, then re-stamped onto the session's existing published fence
+  inside the publish transaction. A source that read fully has its old rows
+  under the published fence deleted first, then its new rows re-stamped the
+  same way. `published_fence` stays put once set and becomes the claim fence
+  only the first time a session publishes. On a lost race the claim fence
+  still identifies exactly this pass's rows. The coverage record is
+  upserted under the published fence.
+- **R5. Snapshot storage.** The `source_resume` table (migration v30) holds
+  one row per source: the snapshot blob, the six revisions it was captured
+  under, a descriptive fingerprint, and a write time, with the same cascade
+  from `session` that `turn` has. A row is written only inside a winning
+  publish transaction. A full read that yields no resume state deletes the
+  source's row.
+- **R6. Invalidation.** A revision mismatch is decided at read time, so a
+  build with a bumped revision never resumes from old rows. A startup sweep
+  next to `reconcile_evidence_revisions` deletes every stale row.
+- **R7. Queueing is unchanged.** The scan pass still marks evidence pending
+  on a fingerprint or cursor change; the worker claims as before.
 
 #### Phase 3c: Codex and Pi snapshots (done)
 
@@ -184,7 +224,7 @@ Antigravity blob hash is a discovery cost that phase 4 tiers address.
   settles. The next change to that source costs one full pass instead of
   a resume.
 
-### Phase 4: watcher tiers, events, and the HUD fold-in
+### Phase 4: watcher tiers, events, and the HUD fold-in (done)
 
 Goal: layer 1 is continuous and cheap, and every consumer reads one signal.
 
@@ -247,10 +287,6 @@ Goal: layer 1 is continuous and cheap, and every consumer reads one signal.
   scheduler's own healthy-watcher tick) as a backstop. The
   `get_session_analysis_fingerprint` command, `poll_fingerprint_with_subagents`,
   and their tests are deleted along with the poll.
-- Left out: Cursor's `collect_agent_transcript_dirs` and
-  `collect_cursor_chat_metadata` are still unwindowed recursive walks — the
-  4a follow-up noted above, unrelated to 4b's event and expiry work, and
-  still open.
 
 ## Sequencing notes
 
@@ -258,3 +294,19 @@ Goal: layer 1 is continuous and cheap, and every consumer reads one signal.
 - Phase 2 depends only on phase 1.
 - Phase 3 is the enabling work for phase 4.
 - Default cadences are set in phase 4 and reviewed after a week of use.
+
+## Follow-ups
+
+- Cursor's `collect_agent_transcript_dirs` and `collect_cursor_chat_metadata`
+  are still unwindowed recursive walks. A Cursor watch delivers change
+  notifications, but the kicked pass pays for the full walk underneath. They
+  need the same date- or mtime-gated pruning the other agents got in 4a.
+- `AppendOnlyGuarantee` is still hard-coded to `Absent`. The resumed path no
+  longer needs it; either evidence it per agent or remove it and let a full
+  read always re-check its whole prefix.
+- Provider-database agents (OpenCode, Antigravity) persist no row cursor. A
+  change still costs a full re-stream of the session's rows.
+- Review the phase 4 cadences (60 s tick, 15 s fallback, 1.5 s / 5 s
+  debounce, 60 s list reconcile) after a week of use.
+- While discovery is paused the scan does not run, so the HUD's live signal
+  now follows the pause. Decide whether that is the wanted behaviour.

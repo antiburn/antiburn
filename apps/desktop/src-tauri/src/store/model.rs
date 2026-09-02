@@ -263,8 +263,8 @@ pub struct EvidenceCompletion {
 }
 
 /// Whether one source in a completed pass resumed from a snapshot or read
-/// fully. See "R4. Fence semantics" in the phase 3b build spec
-/// (`docs/plans/continuous-session-ingest.md`).
+/// fully. See "R4. Fence semantics" in the phase 3b design rules in
+/// `docs/plans/continuous-session-ingest.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourcePublishMode {
     /// The pass appended only new rows for this source, under the claim

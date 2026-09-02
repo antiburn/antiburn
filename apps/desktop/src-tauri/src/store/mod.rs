@@ -1064,7 +1064,8 @@ impl Store {
     /// read time, so a bumped build simply never resumes from them; this
     /// sweeps them out so they do not sit unused. Call this from the same
     /// startup path that calls [`Self::reconcile_evidence_revisions`]. See
-    /// "R6. Invalidation" in the phase 3b build spec.
+    /// "R6. Invalidation" in the phase 3b design rules in
+    /// `docs/plans/continuous-session-ingest.md`.
     pub fn purge_stale_source_resume(&self, current: ResumeRevisions) -> Result<usize> {
         let connection = self.lock();
         Ok(delete_stale_source_resume(&connection, &current)?)
@@ -1328,10 +1329,10 @@ impl Store {
     /// read fully — and the resume snapshot (if any) to persist for the
     /// next pass. A source with no entry is treated as
     /// [`SourcePublishMode::Full`] with no resume bookkeeping; a caller
-    /// that never claims resume support for any source (every caller
-    /// before phase 3b) passes an empty slice and keeps today's behavior
-    /// exactly. See "R4. Fence semantics" and "R5. Snapshot storage" in
-    /// the phase 3b build spec.
+    /// that never claims resume support for any source passes an empty
+    /// slice and gets a plain full publish. See "R4. Fence semantics" and
+    /// "R5. Snapshot storage" in the phase 3b design rules in
+    /// `docs/plans/continuous-session-ingest.md`.
     pub fn publish_projections(
         &self,
         record: &AnalysisRecord,
@@ -1504,11 +1505,10 @@ impl Store {
                 None => delete_source_resume(&transaction, &key, &source.source_key)?,
             }
         }
-        // Every source this pass touched but did not name explicitly (every
-        // caller before phase 3b names none) is a full read by default: its
-        // rows sit under the claim fence with no counterpart at
-        // `target_fence` to preserve, so the old published set for it is
-        // replaced outright, the same way `delete_turn_rows_except_fence`
+        // Every source this pass touched but did not name explicitly is a
+        // full read by default: its rows sit under the claim fence with no
+        // counterpart at `target_fence` to preserve, so the old published
+        // set for it is replaced outright, the same way `delete_turn_rows_except_fence`
         // used to treat every source at once.
         let mut unnamed_sources_statement = transaction.prepare(
             "SELECT DISTINCT source_key FROM turn

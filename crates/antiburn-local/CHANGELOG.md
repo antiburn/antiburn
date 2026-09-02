@@ -17,11 +17,35 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+### Added
+
+- Snapshot resume: `AdapterResume`, `AdapterSnapshot`, `EvidenceSnapshot`,
+  `StreamSnapshot`, `RESUME_SNAPSHOT_REVISION`, and the
+  `VendorAdapter::visit_claimed_resumed` seam. The Claude, Codex, and Pi
+  adapters resume from a snapshot; a verified tail hash (`ResumePoint`,
+  `RESUME_TAIL_BYTES`) guards the offset. The `resume_parity` test proves an
+  incremental read equals one full pass over every adapter's fixtures.
+- `source_resume` persistence in the row pipeline: `SOURCE_RESUME_SCHEMA_SQL`,
+  `StoredResume`, `ResumeRevisions`, and the insert, query, restamp, and
+  per-source delete helpers a fenced publish uses.
+- `WatchRoot`, `AgentExplorer::watch_roots`, and `Explorers::watch_roots_for`
+  expose the directories each agent's discovery reads, for a filesystem
+  watcher.
+
 ### Changed
 
 - Material cache rebuilds after a user resumes are cache rehydrations after 60
   minutes for Claude and 30 minutes for Codex. Other rebuilds are provider
   cache misses. Zero-only cache-write fields use loss-and-recovery inference.
+- **Breaking:** `Explorers::discover_recent_sessions` is removed; callers use
+  `discover_recent_sessions_with_progress`.
+- The evidence fold keeps one accumulator per input and rebuilds the folded
+  coverage record at the end of each pass, so a per-source residual can be
+  snapshotted on its own.
+- Discovery prunes before it stats: Codex walks only the date directories
+  inside the recency window, Claude's sub-agent sweep skips a session whose
+  parent is not recent and whose `subagents` directory is old, and
+  Antigravity checks a database's mtime before opening it.
 
 ## [0.4.0] - 2026-09-02
 

@@ -27,7 +27,6 @@ permissions = [
   "allow-get-provider-usage",
   "allow-get-scan-status",
   "allow-get-session-analysis",
-  "allow-get-session-analysis-fingerprint",
   "allow-get-session-hygiene",
   "allow-get-session-limit-allocations",
   "allow-get-settings",
