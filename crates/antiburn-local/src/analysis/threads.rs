@@ -10,6 +10,8 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 /// The most distinct uuids [`ThreadResolver`] records before it stops
 /// tracking new ones. Real Claude transcripts (measured: 76 sessions) stay
 /// orders of magnitude below this; the bound exists only to hold memory for
@@ -22,7 +24,7 @@ const MAX_THREAD_IDENTITIES: usize = 50_000;
 /// already seen. A record with no link, or with an unseen target, starts a
 /// thread named by its own uuid. A record without a uuid joins the current
 /// thread.
-#[derive(Default)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ThreadResolver {
     thread_by_uuid: HashMap<String, String>,
     current: Option<String>,

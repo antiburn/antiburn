@@ -1294,6 +1294,41 @@ fn capped_names_do_not_change_observed_turn_counts() {
 }
 
 #[test]
+fn a_snapshot_restored_through_json_keeps_observing_as_if_it_never_stopped() {
+    let events: Vec<NormalizedEvent> = (0..40)
+        .map(|index| {
+            let mut current = event(Some(index * 1_000), Role::Assistant, 5, 3);
+            current.model = Some(format!("model-{}", index % 3));
+            current.tools.push(ToolCall::new("Skill"));
+            current.tools[0].detail = Some(format!("skill-{}", index % 4));
+            current
+        })
+        .collect();
+    let (first_half, second_half) = events.split_at(20);
+
+    let mut continuous = SessionMetricsAccumulator::new("synthetic", "session");
+    for event in &events {
+        continuous.record(NormalizedRecord::MetricsEvent(Box::new(event.clone())));
+    }
+    continuous.finish(SessionSummary::default());
+
+    let mut resumed = SessionMetricsAccumulator::new("synthetic", "session");
+    for event in first_half {
+        resumed.record(NormalizedRecord::MetricsEvent(Box::new(event.clone())));
+    }
+    let json = serde_json::to_string(&resumed.snapshot()).expect("serialize snapshot");
+    let restored: SessionMetricsAccumulator =
+        serde_json::from_str(&json).expect("deserialize snapshot");
+    let mut resumed = SessionMetricsAccumulator::restore(restored);
+    for event in second_half {
+        resumed.record(NormalizedRecord::MetricsEvent(Box::new(event.clone())));
+    }
+    resumed.finish(SessionSummary::default());
+
+    assert_eq!(resumed.metrics(), continuous.metrics());
+}
+
+#[test]
 fn earliest_timestamp_is_a_minimum() {
     let accumulator = finished(
         vec![

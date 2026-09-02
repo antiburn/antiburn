@@ -12,12 +12,13 @@ use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::Path;
 
 use anyhow::Context;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::initial_context::ClaudeContextAccumulator;
 use crate::analysis::interface::{
-    ContextSourceKind, EvidenceObservation, NormalizedRecord, RawSource, RecordSink,
+    ContextSourceKind, EvidenceObservation, NormalizedRecord, RawSource, RecordSink, ResumedVisit,
     SessionCollector, SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall, Usage};
@@ -26,6 +27,7 @@ use crate::analysis::records::{
     is_inert_unrecognized, is_recognized_eventless, parse_record, record_discriminator,
     thread_identity_field,
 };
+use crate::analysis::resume::{AdapterResume, StreamSnapshot};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 use crate::analysis::threads::ThreadResolver;
 use crate::discovery::SubagentMeta;
@@ -244,16 +246,28 @@ impl VendorAdapter for ClaudeAdapter {
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
         (|| -> anyhow::Result<VisitOutcome> {
-            let summary = match &input.source {
+            let state = match &input.source {
                 RawSource::File(path) => {
                     let replayed_uuids = replay_skip_uuids(path);
                     let file = File::open(path)?;
-                    self.visit_reader(BufReader::new(file), &|| false, sink, &replayed_uuids)?
+                    self.visit_reader(
+                        BufReader::new(file),
+                        &|| false,
+                        sink,
+                        &replayed_uuids,
+                        ClaudeStreamState::default(),
+                    )?
                 }
                 RawSource::Jsonl(content) => {
                     let suffix: &[u8] = if content.ends_with('\n') { b"" } else { b"\n" };
                     let source = Cursor::new(content.as_bytes()).chain(suffix);
-                    self.visit_reader(BufReader::new(source), &|| false, sink, &HashSet::new())?
+                    self.visit_reader(
+                        BufReader::new(source),
+                        &|| false,
+                        sink,
+                        &HashSet::new(),
+                        ClaudeStreamState::default(),
+                    )?
                 }
                 RawSource::Sqlite(path) => {
                     anyhow::bail!(
@@ -262,7 +276,7 @@ impl VendorAdapter for ClaudeAdapter {
                     )
                 }
             };
-            sink.finish(summary);
+            sink.finish(state.into_summary());
             Ok(VisitOutcome::Unvalidated)
         })()
         .with_context(|| format!("reading claude session {}", input.session_id))
@@ -278,9 +292,33 @@ impl VendorAdapter for ClaudeAdapter {
     ) -> anyhow::Result<VisitOutcome> {
         ClaudeAdapter::visit_claimed(self, input, claim, guarantee, cancel, sink)
     }
+
+    fn visit_claimed_resumed(
+        &self,
+        input: &SessionInput,
+        claim: &SourceClaim,
+        resume: &StreamSnapshot,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<ResumedVisit> {
+        ClaudeAdapter::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
+    }
 }
 
 impl ClaudeAdapter {
+    /// A fresh [`ClaudeStreamState`], serialized. A caller starting the
+    /// first resumable pass over a source (no snapshot from a prior pass
+    /// exists yet) uses this to build a [`StreamSnapshot`] with
+    /// [`ResumePoint::offset`] zero: see
+    /// [`VendorAdapter::visit_claimed_resumed`]'s doc comment for why that
+    /// one method covers both cases.
+    pub fn empty_adapter_snapshot() -> crate::analysis::resume::AdapterSnapshot {
+        crate::analysis::resume::AdapterSnapshot(
+            postcard::to_allocvec(&ClaudeStreamState::default())
+                .expect("a default ClaudeStreamState always encodes"),
+        )
+    }
+
     pub fn visit_claimed(
         &self,
         input: &SessionInput,
@@ -302,11 +340,12 @@ impl ClaudeAdapter {
                 AppendOnlyGuarantee::Evidenced => claim.boundary,
                 AppendOnlyGuarantee::Absent => u64::MAX,
             };
-            let summary = self.visit_reader(
+            let state = self.visit_reader(
                 BufReader::new(pinned.reader(limit)),
                 cancel,
                 sink,
                 &replayed_uuids,
+                ClaudeStreamState::default(),
             )?;
             let outcome = match guarantee {
                 AppendOnlyGuarantee::Evidenced => match pinned.recheck_prefix()? {
@@ -323,21 +362,111 @@ impl ClaudeAdapter {
             if matches!(outcome, VisitOutcome::SourceChanged(_)) {
                 return Ok(outcome);
             }
-            sink.finish(summary);
+            sink.finish(state.into_summary());
             Ok(outcome)
         })()
         .with_context(|| format!("reading claimed Claude session {}", input.session_id))
     }
 
+    /// Streams a file from a verified [`StreamSnapshot`], restoring
+    /// [`ClaudeStreamState`] from `resume.adapter` and reading only the
+    /// bytes past `resume.resume.offset`.
+    ///
+    /// Unlike [`Self::visit_claimed`], this always reads to the current end
+    /// of file and rechecks with [`PinnedSource::recheck_full`]: the
+    /// snapshot's `ResumePoint` already proves the claimed prefix is
+    /// unchanged (`PinnedSource::open_resumed`'s tail-hash check), so there
+    /// is no separate evidenced/absent append-only distinction to make for
+    /// the new bytes — only whether a writer changed the file during this
+    /// read.
+    ///
+    /// "Unsettled" rule: Claude has no case today where its end-of-stream
+    /// state is unsafe to resume from. Every event's usage is fully
+    /// deduplicated as it arrives ([`ClaudeStreamState::dedup_usage`]), and
+    /// `pending_commands` — resolved only in [`ClaudeStreamState::into_summary`]
+    /// — carry forward unresolved in the serialized state itself, so a
+    /// resumed pass keeps resolving them exactly as a single continuous
+    /// pass would. This method's `resume` is `None` only when `outcome`
+    /// is [`VisitOutcome::SourceChanged`].
+    pub fn visit_claimed_resumed(
+        &self,
+        input: &SessionInput,
+        claim: &SourceClaim,
+        resume: &StreamSnapshot,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<ResumedVisit> {
+        (|| -> anyhow::Result<ResumedVisit> {
+            anyhow::ensure!(
+                resume.is_current(),
+                "snapshot revision {} is not current",
+                resume.revision
+            );
+            let RawSource::File(path) = &input.source else {
+                anyhow::bail!("a claimed Claude source must be a file");
+            };
+            // Reruns on every pass: it reads the fork parent's own file, a
+            // source this snapshot does not cover. See the module doc.
+            let replayed_uuids = replay_skip_uuids(path);
+            let mut pinned = match PinnedSource::open_resumed(path, claim.clone(), &resume.resume)?
+            {
+                Ok(pinned) => pinned,
+                Err(reason) => {
+                    return Ok(ResumedVisit {
+                        outcome: VisitOutcome::SourceChanged(reason),
+                        resume: None,
+                    });
+                }
+            };
+            let initial_state: ClaudeStreamState = postcard::from_bytes(&resume.adapter.0)
+                .context("decoding Claude adapter snapshot")?;
+            let state = self.visit_reader(
+                BufReader::new(pinned.reader_from(resume.resume.offset, u64::MAX)),
+                cancel,
+                sink,
+                &replayed_uuids,
+                initial_state,
+            )?;
+            let outcome = match pinned.recheck_full()? {
+                Some(reason) => VisitOutcome::SourceChanged(reason),
+                None => VisitOutcome::AcceptedFull,
+            };
+            if matches!(outcome, VisitOutcome::SourceChanged(_)) {
+                return Ok(ResumedVisit {
+                    outcome,
+                    resume: None,
+                });
+            }
+            let adapter =
+                postcard::to_allocvec(&state).context("encoding Claude adapter snapshot")?;
+            let new_resume = pinned.resume_point()?;
+            sink.finish(state.into_summary());
+            Ok(ResumedVisit {
+                outcome,
+                resume: Some(AdapterResume {
+                    point: new_resume,
+                    adapter: crate::analysis::resume::AdapterSnapshot(adapter),
+                }),
+            })
+        })()
+        .with_context(|| format!("reading resumed Claude session {}", input.session_id))
+    }
+
+    /// Streams `reader` starting from `state`, so a resumed pass can carry
+    /// forward the state a prior pass left off with. A first pass starts
+    /// from `ClaudeStreamState::default()`. Returns the state at the end of
+    /// the stream, not yet reduced to a [`SessionSummary`]: the caller
+    /// decides whether to snapshot it before calling
+    /// [`ClaudeStreamState::into_summary`].
     fn visit_reader(
         &self,
         reader: impl BufRead,
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
         replayed_uuids: &HashSet<String>,
-    ) -> anyhow::Result<SessionSummary> {
+        mut state: ClaudeStreamState,
+    ) -> anyhow::Result<ClaudeStreamState> {
         let mut reader = BoundedJsonlReader::new(reader);
-        let mut state = ClaudeStreamState::default();
 
         while let Some(record) = reader.next_record(cancel) {
             match record {
@@ -448,11 +577,11 @@ impl ClaudeAdapter {
             }
         }
 
-        Ok(state.into_summary())
+        Ok(state)
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 struct ClaudeStreamState {
     max_usage_by_message_id: HashMap<String, Usage>,
     context_window: Option<u64>,
@@ -639,7 +768,12 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::analysis::{PartialReason, RecordCoverage};
+    use crate::analysis::evidence::{EvidenceSource, SourceCapabilities, SourceKind};
+    use crate::analysis::evidence_sink::{EvidenceResumeState, SessionEvidenceAccumulator};
+    use crate::analysis::metrics_sink::SessionMetricsAccumulator;
+    use crate::analysis::resume::EvidenceSnapshot;
+    use crate::analysis::source_validity::ResumePoint;
+    use crate::analysis::{PartialReason, RESUME_SNAPSHOT_REVISION, RecordCoverage};
     use crate::discovery::source_version::head_hash_of;
     use crate::discovery::{FingerprintInputs, SourceStat};
     use tempfile::TempDir;
@@ -804,6 +938,187 @@ mod tests {
         );
     }
 
+    /// A full [`StreamSnapshot`] around `resume` (the adapter's own half),
+    /// with fresh metrics/evidence/index state. These tests exercise only
+    /// the adapter's own offset and tail-hash behavior through
+    /// [`SessionCollector`], a sink with no `snapshot` of its own — unlike
+    /// [`crate::analysis::evidence_sink::CompositeSink::snapshot`], which a
+    /// production caller uses to carry real metrics and evidence state
+    /// forward.
+    fn snapshot_from(resume: AdapterResume) -> StreamSnapshot {
+        let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "claude".to_owned(),
+            session_id: "claimed-session".to_owned(),
+            kind: SourceKind::Jsonl,
+            capabilities: SourceCapabilities::claude(),
+        });
+        StreamSnapshot {
+            revision: RESUME_SNAPSHOT_REVISION,
+            resume: resume.point,
+            adapter: resume.adapter,
+            metrics: SessionMetricsAccumulator::new("claude", "claimed-session"),
+            evidence: EvidenceSnapshot {
+                record: evidence.coverage_record(),
+                resume: EvidenceResumeState::default(),
+            },
+            next_turn_index: 0,
+        }
+    }
+
+    /// A snapshot at offset zero, ready to resume a whole file from its
+    /// start: [`PinnedSource::open_resumed`]'s offset-zero case.
+    fn fresh_snapshot() -> StreamSnapshot {
+        snapshot_from(AdapterResume {
+            point: ResumePoint {
+                offset: 0,
+                tail_hash: head_hash_of(&[]),
+                tail_len: 0,
+            },
+            adapter: ClaudeAdapter::empty_adapter_snapshot(),
+        })
+    }
+
+    #[test]
+    fn a_resumed_read_from_offset_zero_matches_a_full_read() {
+        let directory = TempDir::new().expect("tempdir");
+        let path = write_source(&directory, FIRST_RECORD.as_bytes());
+        let claim = claim_for_path(&path);
+        let input = file_input(&path);
+        let mut collector = SessionCollector::new("claude", "claimed-session");
+
+        let visit = ClaudeAdapter
+            .visit_claimed_resumed(&input, &claim, &fresh_snapshot(), &|| false, &mut collector)
+            .expect("resumed visit of a fresh file");
+
+        assert_eq!(visit.outcome, VisitOutcome::AcceptedFull);
+        let resume = visit.resume.expect("a settled pass carries a resume");
+        assert_eq!(resume.point.offset, FIRST_RECORD.len() as u64);
+        assert_eq!(
+            collector
+                .into_session()
+                .expect("resumed read must publish")
+                .events
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_second_resumed_read_continues_from_the_first_snapshot() {
+        let directory = TempDir::new().expect("tempdir");
+        let path = write_source(&directory, FIRST_RECORD.as_bytes());
+        let input = file_input(&path);
+        let mut first_pass = SessionCollector::new("claude", "claimed-session");
+        let first_claim = claim_for_path(&path);
+        let first_visit = ClaudeAdapter
+            .visit_claimed_resumed(
+                &input,
+                &first_claim,
+                &fresh_snapshot(),
+                &|| false,
+                &mut first_pass,
+            )
+            .expect("first resumed visit");
+        let resume = first_visit.resume.expect("a settled pass carries a resume");
+        let snapshot = snapshot_from(resume);
+
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open source for append")
+            .write_all(SECOND_RECORD.as_bytes())
+            .expect("append second record");
+        let second_claim = claim_for_path(&path);
+        let mut second_pass = SessionCollector::new("claude", "claimed-session");
+
+        let second_visit = ClaudeAdapter
+            .visit_claimed_resumed(
+                &input,
+                &second_claim,
+                &snapshot,
+                &|| false,
+                &mut second_pass,
+            )
+            .expect("second resumed visit");
+
+        assert_eq!(second_visit.outcome, VisitOutcome::AcceptedFull);
+        assert_eq!(
+            second_pass
+                .into_session()
+                .expect("resumed read must publish")
+                .events
+                .len(),
+            1,
+            "the resumed pass reads only the newly appended record"
+        );
+    }
+
+    #[test]
+    fn a_rewritten_tail_fails_a_resumed_read_without_a_snapshot() {
+        let directory = TempDir::new().expect("tempdir");
+        let path = write_source(&directory, FIRST_RECORD.as_bytes());
+        let input = file_input(&path);
+        let first_claim = claim_for_path(&path);
+        let mut first_pass = SessionCollector::new("claude", "claimed-session");
+        let first_visit = ClaudeAdapter
+            .visit_claimed_resumed(
+                &input,
+                &first_claim,
+                &fresh_snapshot(),
+                &|| false,
+                &mut first_pass,
+            )
+            .expect("first resumed visit");
+        let resume = first_visit.resume.expect("a settled pass carries a resume");
+        let snapshot = snapshot_from(resume);
+
+        // Same identity, a rewritten tail: the old snapshot's offset now
+        // points past a rewritten byte instead of an append. Re-claiming
+        // against the rewritten content isolates that check from the
+        // unrelated head-region check `open_resumed` also runs.
+        std::fs::write(&path, SECOND_RECORD.as_bytes()).expect("rewrite source");
+        let rewritten_claim = claim_for_path(&path);
+        let mut second_pass = SessionCollector::new("claude", "claimed-session");
+
+        let visit = ClaudeAdapter
+            .visit_claimed_resumed(
+                &input,
+                &rewritten_claim,
+                &snapshot,
+                &|| false,
+                &mut second_pass,
+            )
+            .expect("resumed visit of a rewritten source");
+
+        assert_eq!(
+            visit.outcome,
+            VisitOutcome::SourceChanged(crate::analysis::SourceChangedReason::ResumeTailMismatch)
+        );
+        assert!(visit.resume.is_none());
+        assert!(second_pass.into_session().is_err());
+    }
+
+    #[test]
+    fn a_stale_snapshot_revision_is_rejected() {
+        let directory = TempDir::new().expect("tempdir");
+        let path = write_source(&directory, FIRST_RECORD.as_bytes());
+        let claim = claim_for_path(&path);
+        let input = file_input(&path);
+        let mut collector = SessionCollector::new("claude", "claimed-session");
+        let mut snapshot = fresh_snapshot();
+        snapshot.revision = RESUME_SNAPSHOT_REVISION - 1;
+
+        let result = ClaudeAdapter.visit_claimed_resumed(
+            &input,
+            &claim,
+            &snapshot,
+            &|| false,
+            &mut collector,
+        );
+
+        assert!(result.is_err());
+    }
+
     #[test]
     fn a_plain_claude_read_reports_unvalidated() {
         let input = SessionInput {
@@ -877,7 +1192,13 @@ mod tests {
         let source = b"{\"type\":\"assistant\",\"message\":{\"id\":\"first\",\"role\":\"assistant\",\"content\":[]}}\n";
         let reader = BufReader::new(DataThenError::new(source));
         let mut collector = SessionCollector::new("claude", "read-failure");
-        let result = ClaudeAdapter.visit_reader(reader, &|| false, &mut collector, &HashSet::new());
+        let result = ClaudeAdapter.visit_reader(
+            reader,
+            &|| false,
+            &mut collector,
+            &HashSet::new(),
+            ClaudeStreamState::default(),
+        );
         assert!(result.is_err());
     }
 
@@ -1352,10 +1673,16 @@ mod tests {
         let reader = BufReader::new(source.as_bytes());
         let mut collector = SessionCollector::new("claude", "fork-child");
         let replayed = HashSet::from(["replayed-1".to_string()]);
-        let summary = ClaudeAdapter
-            .visit_reader(reader, &|| false, &mut collector, &replayed)
+        let state = ClaudeAdapter
+            .visit_reader(
+                reader,
+                &|| false,
+                &mut collector,
+                &replayed,
+                ClaudeStreamState::default(),
+            )
             .expect("read must succeed");
-        collector.finish(summary);
+        collector.finish(state.into_summary());
         let session = collector.into_session().expect("session must build");
         let uuids: Vec<Option<String>> = session
             .events
