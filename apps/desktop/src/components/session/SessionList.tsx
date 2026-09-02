@@ -162,7 +162,7 @@ function SessionRow({ entry, hygiene, onOpen, renderAgentIcon, wslIcon }: Sessio
     <div
       className={cn(
         "group relative",
-        "w-full grid grid-cols-[14px_1fr] gap-x-2 gap-y-1",
+        "w-full grid grid-cols-[14px_minmax(0,1fr)] gap-x-2 gap-y-1",
         "items-center",
         "rounded-[var(--radius-popover)] bg-surface-card px-3 py-3",
         "transition-colors duration-[var(--duration-fast)] ease-out",
@@ -239,9 +239,9 @@ function SessionRow({ entry, hygiene, onOpen, renderAgentIcon, wslIcon }: Sessio
       </div>
 
       {modelPairs.length > 0 && (
-        <div className="col-2 space-y-px">
+        <div className="col-2 min-w-0 space-y-px">
           <div
-            className="min-w-0 truncate type-callout text-label-tertiary"
+            className="min-w-0 max-w-full truncate type-callout text-label-tertiary"
             title={modelRunNames(modelRuns).join("\n")}
           >
             {modelPairs.map((pair, index) => (
