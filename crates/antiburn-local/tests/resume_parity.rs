@@ -31,7 +31,7 @@ use antiburn_local::analysis::{
     FenceScope, MemoryTurnRowStore, RESUME_SNAPSHOT_REVISION, RawSource, ResumePoint,
     SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SourceCapabilities,
     SourceChangedReason, SourceClaim, SourceKind, StreamSnapshot, TurnRowSink, TurnRowStore,
-    TurnSessionKey, VisitOutcome, query_turn_facts, query_turn_rows,
+    TurnSessionKey, VisitOutcome, adapter_for, query_turn_facts, query_turn_rows,
 };
 use antiburn_local::discovery::source_version::head_hash_of;
 use antiburn_local::discovery::{FingerprintInputs, SourceStat};
@@ -56,8 +56,8 @@ fn claim_for(path: &Path) -> SourceClaim {
 
 /// A [`StreamSnapshot`] ready to start the very first resumable pass over a
 /// source: [`ResumePoint`] offset zero (an empty tail, so
-/// `PinnedSource::open_resumed` resumes as a full read) and a fresh
-/// [`ClaudeAdapter`] state.
+/// `PinnedSource::open_resumed` resumes as a full read) and `agent`'s own
+/// fresh adapter state.
 fn fresh_snapshot(
     agent: &str,
     session_id: &str,
@@ -76,7 +76,9 @@ fn fresh_snapshot(
             tail_hash: head_hash_of(&[]),
             tail_len: 0,
         },
-        adapter: ClaudeAdapter::empty_adapter_snapshot(),
+        adapter: adapter_for(agent)
+            .empty_resume_state()
+            .expect("adapter under test must support resume"),
         metrics: SessionMetricsAccumulator::new(agent, session_id),
         evidence: EvidenceSnapshot {
             record: evidence.coverage_record(),
@@ -209,7 +211,7 @@ fn run_full_pass(
     );
     let input = session_input(agent, session_id, path);
     let claim = claim_for(path);
-    let outcome = ClaudeAdapter
+    let outcome = adapter_for(agent)
         .visit_claimed(
             &input,
             &claim,
@@ -250,6 +252,13 @@ fn run_full_pass(
 /// `path`, and at every step compares the resumed path (a snapshot carried
 /// forward from `S0`) against the full path (one fresh `visit_claimed` over
 /// that step's whole content).
+///
+/// A step whose resumed visit carries no snapshot forward (`visit.resume`
+/// is `None` — an adapter's "unsettled" rule, such as Codex fork ownership
+/// still `Pending` at EOF) still settles and still must match the full pass
+/// for that step. The next step then starts from a fresh bootstrap pass
+/// instead of a continuation: a fresh store and a fresh, offset-zero
+/// snapshot, exactly the fallback a caller with no stored snapshot takes.
 fn assert_resume_parity(
     agent: &str,
     session_id: &str,
@@ -259,8 +268,9 @@ fn assert_resume_parity(
     assert!(!steps.is_empty(), "at least one step is required");
     let directory = TempDir::new().expect("tempdir");
     let path = directory.path().join("session.jsonl");
+    let adapter = adapter_for(agent);
 
-    let resumed_store = MemoryTurnRowStore::new(agent, session_id);
+    let mut resumed_store = MemoryTurnRowStore::new(agent, session_id);
     let mut snapshot = fresh_snapshot(agent, session_id, capabilities);
 
     for (index, step) in steps.iter().enumerate() {
@@ -269,7 +279,7 @@ fn assert_resume_parity(
         let claim = claim_for(&path);
 
         let mut resumed = restored_composite(&resumed_store, session_id, &snapshot);
-        let visit = ClaudeAdapter
+        let visit = adapter
             .visit_claimed_resumed(&input, &claim, &snapshot, &|| false, &mut resumed)
             .unwrap_or_else(|error| {
                 panic!("{agent}/{session_id} step {index}: resumed visit failed: {error:?}")
@@ -337,12 +347,19 @@ fn assert_resume_parity(
             "{agent}/{session_id} step {index}: SessionEvidence"
         );
 
-        let resume = visit
-            .resume
-            .expect("a settled pass over a quiescent source carries a resume");
-        snapshot = resumed
-            .snapshot(resume)
-            .expect("resumed pass must publish a snapshot to carry state forward");
+        match visit.resume {
+            Some(resume) => {
+                snapshot = resumed.snapshot(resume).unwrap_or_else(|| {
+                    panic!(
+                        "{agent}/{session_id} step {index}: resumed pass must publish a snapshot to carry state forward"
+                    )
+                });
+            }
+            None => {
+                resumed_store = MemoryTurnRowStore::new(agent, session_id);
+                snapshot = fresh_snapshot(agent, session_id, capabilities);
+            }
+        }
     }
 }
 
@@ -408,6 +425,72 @@ fn every_claude_characterization_fixture_resumes_identically_in_three_steps() {
             "claude",
             &format!("resume-{name}"),
             SourceCapabilities::claude(),
+            &steps,
+        );
+    }
+}
+
+/// Every `.jsonl` fixture name (without extension) directly inside
+/// `tests/fixtures/<dir>/`, sorted for a stable sweep order. Unlike
+/// `claude_fixture_names`'s curated list, the Codex and Pi sweeps below
+/// cover every fixture their directory holds.
+fn characterization_fixture_names(dir: &str) -> Vec<String> {
+    let base = format!("{}/tests/fixtures/{dir}", env!("CARGO_MANIFEST_DIR"));
+    let mut names: Vec<String> = std::fs::read_dir(&base)
+        .unwrap_or_else(|error| panic!("read fixture dir {base}: {error}"))
+        .map(|entry| entry.expect("read fixture dir entry").path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jsonl"))
+        .map(|path| {
+            path.file_stem()
+                .expect("fixture file has a stem")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+fn characterization_fixture(dir: &str, name: &str) -> String {
+    let path = format!(
+        "{}/tests/fixtures/{dir}/{name}.jsonl",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read_to_string(path).expect("fixture must be readable")
+}
+
+/// Every Codex characterization fixture, cut into three record-aligned
+/// steps. A fixture whose fork ownership is still `Pending` at some cut
+/// point exercises the "resume: None → fresh bootstrap pass" fallback in
+/// [`assert_resume_parity`]; see `unresolved_fork` and `resolved_fork`.
+#[test]
+fn every_codex_characterization_fixture_resumes_identically_in_three_steps() {
+    for name in characterization_fixture_names("codex_characterization") {
+        let jsonl = characterization_fixture("codex_characterization", &name);
+        let record_count = jsonl.lines().count();
+        let step_count = record_count.min(3);
+        let steps = record_aligned_steps(&jsonl, step_count);
+        assert_resume_parity(
+            "codex",
+            &format!("resume-{name}"),
+            SourceCapabilities::codex(),
+            &steps,
+        );
+    }
+}
+
+/// Every Pi characterization fixture, cut into three record-aligned steps.
+#[test]
+fn every_pi_characterization_fixture_resumes_identically_in_three_steps() {
+    for name in characterization_fixture_names("pi_characterization") {
+        let jsonl = characterization_fixture("pi_characterization", &name);
+        let record_count = jsonl.lines().count();
+        let step_count = record_count.min(3);
+        let steps = record_aligned_steps(&jsonl, step_count);
+        assert_resume_parity(
+            "pi",
+            &format!("resume-{name}"),
+            SourceCapabilities::pi(),
             &steps,
         );
     }
