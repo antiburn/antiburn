@@ -134,25 +134,46 @@ the full record stream, so evidence must come from rows first.
 
 Goal: an appended 4 KB costs 4 KB.
 
-- Persist per source (parent and each child) the consumed byte offset and a
-  hash of the trailing window before it. On the next change, re-hash that
-  window; on match, stream from the offset and continue the turn index; on
-  mismatch, full pass.
-- Provider-database sources persist a row cursor on the vendor's update
-  column and ingest rows after it.
-- Fence semantics change: the published row set spans passes. The claim fence
-  still guards a full pass; an incremental pass appends under the published
-  fence inside one transaction. The schema revision and the
-  `published_turn_rows` contract are updated together.
-- A parser or analyzer revision bump invalidates every cursor and forces a
-  full pass.
-- Turn the `AppendOnlyGuarantee` from a static assumption into the runtime
-  verification above.
-- Adapter stream state (for example `ClaudeStreamState`) must be persisted per
-  source alongside the offset, or be reconstructable from rows, or the resume
-  falls back to a full pass.
+- The unit of resume is a snapshot, not an offset. State lives in adapters
+  (per-stream buffers like `ClaudeStreamState`), sinks (a reorder window,
+  deferred cache patches, duration heaps), and rows (which cannot rebuild
+  every field). A snapshot bundles the adapter and sink state with the
+  verified byte offset and a hash of the trailing window before it.
+  Restoring it and streaming from the offset must equal a full pass.
+
+Deferred: provider-database sources persist no row cursor here. Their
+fingerprint already gates re-streaming, the stream is a query, and the
+Antigravity blob hash is a discovery cost that phase 4 tiers address.
+
+#### Phase 3a: snapshot resume, crate level
+
+- Snapshot types, an offset reader with tail verification, a
+  `VendorAdapter::visit_claimed_resumed` seam, and a Claude adapter
+  snapshot.
 - Test: parity. Incremental ingest over a transcript grown in steps produces
-  the same rows as one full pass over the final file, for each vendor.
+  the same rows, metrics, summary, and evidence as one full pass over the
+  final file.
+- Codex, Pi, and the provider-database adapters report resume unsupported;
+  a caller falls back to a full pass for them.
+
+#### Phase 3b: snapshot resume, desktop level
+
+- A `source_resume` table persists each source's snapshot. The worker calls
+  the new seam and falls back to a full pass when it returns unsupported or
+  the offset reader detects a change.
+- Fence semantics change: the published row set spans passes. The claim
+  fence still guards a full pass; an incremental pass appends under the
+  published fence inside one transaction. The schema revision and the
+  `published_turn_rows` contract are updated together.
+- A parser, analyzer, metrics, evidence, or coverage revision bump
+  invalidates every snapshot and forces a full pass.
+- Turn the `AppendOnlyGuarantee` from a static assumption into the runtime
+  verification phase 3a adds.
+
+#### Phase 3c: Codex and Pi snapshots
+
+- Extend `visit_claimed_resumed` to `CodexAdapter` and `PiAdapter`, covering
+  Codex's pending fork-row buffer.
 
 ### Phase 4: watcher tiers, events, and the HUD fold-in
 
