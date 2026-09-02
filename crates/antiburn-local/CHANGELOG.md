@@ -17,6 +17,33 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-02
+
+### Added
+
+- `AntigravityAdapter` and `AntigravityExplorer` stream native Antigravity IDE
+  and `agy` session sources with bounded token, model, cache, retry, timing, and
+  tool evidence.
+- `SessionCoverageRecord`, `EvidenceAccumulator::coverage_record`, and
+  `evidence_from_facts` expose a serializable coverage snapshot and row-backed
+  evidence replay contract.
+- Analysis results expose bounded provider and model hints for downstream
+  account attribution.
+
+### Changed
+
+- **Breaking:** `install_runtime_pricing` now returns whether the active catalog
+  changed, and the engine no longer supplies a built-in production pricing
+  catalog. Consumers install a validated runtime catalog before calculating
+  costs.
+- **Breaking:** analysis result and row-sink contracts include coverage and
+  provider-hint data used by persisted evidence replay.
+- Antigravity discovery reads native SQLite and optional brain transcripts,
+  detects source changes, and rejects mixed snapshots instead of publishing
+  inconsistent analysis.
+- Pi, OpenCode, and Antigravity records now retain bounded provider hints for
+  provider-account grouping.
+
 ## [0.3.0] - 2026-09-01
 
 ### Added
