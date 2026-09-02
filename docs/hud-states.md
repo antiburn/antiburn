@@ -167,7 +167,7 @@ outside the visible HUD reach the application underneath it.
   detail window does not blink.
 - A transcript write stays live for 90 seconds.
 - The renderer polls session liveness every 5 seconds.
-- The shell memoizes session discovery for 60 seconds.
+- The shell answers each liveness poll with one indexed store query.
 - The renderer polls usage every 60 seconds.
 - Reset labels update every 30 seconds.
 - The native hover watcher polls every 100ms while the window is visible.
