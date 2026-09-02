@@ -118,6 +118,51 @@ test("install.sh keeps execution on its final line", () => {
   assert.equal(source.trimEnd().split("\n").at(-1), 'install_antiburn "$@"');
 });
 
+test("install.sh elevates only when the destination is not writable", () => {
+  const context = harness();
+  const definitions = join(context.directory, "install-definitions.sh");
+  const writable = join(context.directory, "writable");
+  const protectedPath = join(context.directory, "not-present");
+  const source = readFileSync(installer, "utf8").trimEnd().split("\n");
+  writeFileSync(definitions, `${source.slice(0, -1).join("\n")}\n`);
+  mkdirSync(writable);
+  executable(
+    join(context.directory, "bin", "record-install"),
+    "#!/bin/sh\nprintf 'command\\n' >> \"$TEST_COMMAND_LOG\"\n",
+  );
+  executable(
+    join(context.directory, "bin", "sudo"),
+    '#!/bin/sh\nprintf \'sudo\\n\' >> "$TEST_COMMAND_LOG"\nexec "$@"\n',
+  );
+
+  execFileSync(
+    "/bin/sh",
+    [
+      "-c",
+      '. "$1"; as_root_if_needed "$2" record-install',
+      "sh",
+      definitions,
+      writable,
+    ],
+    { env: context.env },
+  );
+  assert.equal(readFileSync(context.log, "utf8"), "command\n");
+
+  writeFileSync(context.log, "");
+  execFileSync(
+    "/bin/sh",
+    [
+      "-c",
+      '. "$1"; id() { printf "501\\n"; }; as_root_if_needed "$2" record-install',
+      "sh",
+      definitions,
+      protectedPath,
+    ],
+    { env: context.env },
+  );
+  assert.equal(readFileSync(context.log, "utf8"), "sudo\ncommand\n");
+});
+
 test("install.sh rejects an unsupported operating system before downloading", () => {
   const context = harness({ os: "Plan9" });
   const result = spawnSync("/bin/sh", [installer], {
@@ -188,6 +233,10 @@ test("install.sh contains the required macOS trust checks", () => {
   assert.match(source, /codesign --verify --deep --strict/);
   assert.match(source, /spctl --assess --type execute/);
   assert.match(source, /ai\.antiburn\.desktop/);
+  assert.match(
+    source,
+    /Administrator access is required because your account cannot write to \/Applications\./,
+  );
 });
 
 test("the application release publishes both root installers before checksums", () => {
