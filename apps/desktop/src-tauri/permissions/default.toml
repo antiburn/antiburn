@@ -13,6 +13,7 @@ permissions = [
   "allow-delete-session-data",
   "allow-engine-catalog-version",
   "allow-end-popover-hold",
+  "allow-export-diagnostics",
   "allow-export-session",
   "allow-finish-onboarding",
   "allow-get-consent-diagnostics",
