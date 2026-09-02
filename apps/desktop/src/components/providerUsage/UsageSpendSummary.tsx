@@ -20,9 +20,7 @@ export const EMPTY_USAGE_WINDOWS: ProviderUsageWindowsPayload = {
 
 function metric(window: ProviderUsageWindowsPayload["today"]): string {
   const tokens = formatCompact(windowTokens(window))
-  return !window.costComplete || window.estimatedUsd == null
-    ? tokens
-    : `${formatCost(window.estimatedUsd)} · ${tokens}`
+  return window.estimatedUsd == null ? tokens : `${formatCost(window.estimatedUsd)} · ${tokens}`
 }
 
 export function UsageSpendSummary({
