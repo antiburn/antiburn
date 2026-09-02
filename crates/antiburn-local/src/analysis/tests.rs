@@ -1273,6 +1273,13 @@ fn cache_rehydration_is_detected_when_the_prefix_stays_cached() {
         .find(|bucket| bucket.is_cache_rehydration)
         .expect("the rehydration bucket");
     assert_eq!(bucket.secs_since_prior_turn, Some(155 * 60));
+    let expected_rehydration = Some(crate::analysis::engine::CacheRehydration {
+        context_tokens: 101_724,
+        still_cached_tokens: 24_682,
+        rewritten_tokens: 76_882,
+        growth_tokens: 160,
+    });
+    assert_eq!(bucket.cache_rehydration, expected_rehydration);
     assert_eq!(m.cache_rehydration_count, 1);
     assert_eq!(m.cache_routing_miss_count, 0);
     assert_eq!(m.compaction_count, 0);
@@ -1284,6 +1291,7 @@ fn cache_rehydration_is_detected_when_the_prefix_stays_cached() {
         .find(|bucket| bucket.is_cache_rehydration)
         .expect("the summary rehydration bucket");
     assert_eq!(summary_bucket.secs_since_prior_turn, Some(155 * 60));
+    assert_eq!(summary_bucket.cache_rehydration, expected_rehydration);
 }
 
 /// A multi-session summary bucket must OR each contributing session's flag

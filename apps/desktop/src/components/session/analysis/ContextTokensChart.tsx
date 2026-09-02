@@ -144,11 +144,8 @@ function betweenCallsLabel(gap: NonNullable<ContextTokenPoint["betweenCalls"]>):
   return `Between model calls${secs}`
 }
 
-/**
- * The rehydration tooltip names a reported write when one exists. Otherwise,
- * it names the fresh input that the API had to read again at full price.
- */
-function rehydrationLabel(point: ContextTokenPoint): string {
+/** Describe a rehydration from an analysis that predates its exact breakdown. */
+function legacyRehydrationLabel(point: ContextTokenPoint): string {
   if (point.cacheWriteTokens > 0) {
     return `Cache rehydrated · ${formatCompact(point.cacheWriteTokens)} written`
   }
@@ -172,27 +169,33 @@ function rewriteLabel(point: ContextTokenPoint): string {
 }
 
 /**
- * A material rewrite reaches its token level on the context axis. A legacy
- * cache marker reaches the context level when no rewrite quantity exists.
+ * A material rewrite occupies its part of the current context. A legacy cache
+ * marker reaches the context level when no rewrite quantity exists.
  */
 function rewriteBar(
   point: ContextTokenPoint,
   keyPrefix: string,
   hasContextAxis: boolean,
   opacity: number,
+  label: string,
 ): ReactElement {
+  const rehydration = point.cacheRehydration
+  const start = rehydration?.stillCachedTokens ?? 0
+  const end = rehydration
+    ? rehydration.stillCachedTokens + rehydration.rewrittenTokens
+    : point.rewriteTokens || point.contextTokens
   return hasContextAxis ? (
     <ReferenceLine
       key={`${keyPrefix}-${point.index}`}
       yAxisId="context"
       segment={[
-        { x: point.index, y: 0 },
-        { x: point.index, y: point.rewriteTokens || point.contextTokens },
+        { x: point.index, y: start },
+        { x: point.index, y: end },
       ]}
       stroke="var(--color-context-critical)"
       strokeWidth={REWRITE_BAR_WIDTH}
       strokeOpacity={opacity}
-      label={{ ...AXIS_LABEL, value: "rewrite", position: "top" }}
+      label={{ ...AXIS_LABEL, value: label, position: "top" }}
     />
   ) : (
     <ReferenceLine
@@ -202,7 +205,7 @@ function rewriteBar(
       stroke="var(--color-context-critical)"
       strokeWidth={REWRITE_BAR_WIDTH}
       strokeOpacity={opacity}
-      label={{ ...AXIS_LABEL, value: "rewrite", position: "top" }}
+      label={{ ...AXIS_LABEL, value: label, position: "top" }}
     />
   )
 }
@@ -225,6 +228,7 @@ export function ContextTokensTooltip({
     activeSecs != null && bucketCount > 1
       ? formatDuration((point.index / (bucketCount - 1)) * activeSecs)
       : `${point.progress}% through`
+  const rehydration = point.cacheRehydration
   const pct =
     contextWindow != null && contextWindow > 0
       ? Math.min(1, point.contextTokens / contextWindow)
@@ -250,10 +254,11 @@ export function ContextTokensTooltip({
         {point.betweenCalls != null && (
           <span className="mt-1">{betweenCallsLabel(point.betweenCalls)}</span>
         )}
-        {point.betweenCalls == null && (
+        {point.betweenCalls == null && rehydration == null && (
           <span className="mt-1 type-caption text-label-tertiary">Tokens</span>
         )}
         {point.betweenCalls == null &&
+          rehydration == null &&
           TOKEN_ROWS.map((row) => (
             <span key={row.key} className="flex items-center gap-1.5">
               <span
@@ -264,6 +269,7 @@ export function ContextTokensTooltip({
             </span>
           ))}
         {point.betweenCalls == null &&
+          rehydration == null &&
           CACHE_ROWS.filter((row) => !row.hideWhenZero || point[row.key] > 0).map((row) => (
             <span key={row.key} className="flex items-center gap-1.5">
               <span
@@ -273,9 +279,25 @@ export function ContextTokensTooltip({
               {row.label} · {formatCompact(point[row.key])}
             </span>
           ))}
-        {point.isCacheRehydration && (
+        {rehydration != null && (
+          <>
+            <span style={{ color: "var(--color-context-critical)" }}>
+              Cache rehydration · {formatCompact(rehydration.contextTokens)} context
+            </span>
+            <span className="pl-3">
+              Still cached · {formatCompact(rehydration.stillCachedTokens)}
+            </span>
+            <span className="pl-3">
+              Old context rewritten · {formatCompact(rehydration.rewrittenTokens)}
+            </span>
+            <span className="pl-3">
+              Context growth · {formatCompact(rehydration.growthTokens)}
+            </span>
+          </>
+        )}
+        {point.isCacheRehydration && rehydration == null && (
           <span style={{ color: "var(--color-context-critical)" }}>
-            {rehydrationLabel(point)}
+            {legacyRehydrationLabel(point)}
           </span>
         )}
         {point.isCacheRoutingMiss && (
@@ -283,7 +305,7 @@ export function ContextTokensTooltip({
             {routingMissLabel(point)}
           </span>
         )}
-        {point.rewriteTokens > 0 && (
+        {point.rewriteTokens > 0 && rehydration == null && (
           <span style={{ color: "var(--color-context-critical)" }}>{rewriteLabel(point)}</span>
         )}
         {point.secsSincePriorTurn != null && (
@@ -423,7 +445,12 @@ export function ContextTokensChart({
             const opacity = point.isCacheRoutingMiss
               ? ROUTING_MISS_BAR_OPACITY
               : REWRITE_BAR_OPACITY
-            return rewriteBar(point, "rewrite", !!contextAxis, opacity)
+            const label = point.isCacheRehydration
+              ? "rehydration"
+              : point.isCacheRoutingMiss
+                ? "routing miss"
+                : "rewrite"
+            return rewriteBar(point, "rewrite", !!contextAxis, opacity, label)
           })}
         {/* A mode change (model, thinking effort, or speed) draws no line at
             all — only its label, at the top of the plot — so it stays a

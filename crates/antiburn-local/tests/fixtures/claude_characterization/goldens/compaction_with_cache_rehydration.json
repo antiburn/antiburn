@@ -826,6 +826,12 @@
         },
         {
           "cacheReadTokens": 1000,
+          "cacheRehydration": {
+            "contextTokens": 41500,
+            "growthTokens": 6500,
+            "rewrittenTokens": 34000,
+            "stillCachedTokens": 1000
+          },
           "cacheWriteTokens": 40000,
           "compactionPostTokens": null,
           "compactionPreTokens": null,
@@ -4108,6 +4114,12 @@
         },
         {
           "cacheReadTokens": 1000,
+          "cacheRehydration": {
+            "contextTokens": 37500,
+            "growthTokens": 7100,
+            "rewrittenTokens": 29400,
+            "stillCachedTokens": 1000
+          },
           "cacheWriteTokens": 36000,
           "compactionPostTokens": null,
           "compactionPreTokens": null,

@@ -111,6 +111,12 @@ describe("contextTokenSeries", () => {
         cacheWriteTokens: 25_000,
         rewriteTokens: 24_000,
         isCacheRehydration: true,
+        cacheRehydration: {
+          contextTokens: 30_000,
+          stillCachedTokens: 5_000,
+          rewrittenTokens: 24_000,
+          growthTokens: 1_000,
+        },
       }),
     ]
     const series = contextTokenSeries(buckets)
@@ -120,10 +126,22 @@ describe("contextTokenSeries", () => {
         p.cacheWriteTokens,
         p.rewriteTokens,
         p.isCacheRehydration,
+        p.cacheRehydration,
       ]),
     ).toEqual([
-      [5_000, 200, 100, false],
-      [0, 25_000, 24_000, true],
+      [5_000, 200, 100, false, null],
+      [
+        0,
+        25_000,
+        24_000,
+        true,
+        {
+          contextTokens: 30_000,
+          stillCachedTokens: 5_000,
+          rewrittenTokens: 24_000,
+          growthTokens: 1_000,
+        },
+      ],
     ])
   })
 

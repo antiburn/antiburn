@@ -59,6 +59,9 @@ pub struct Bucket {
     pub rewrite_tokens: u64,
     /// True when a cache rehydration turn lands in this bucket.
     pub is_cache_rehydration: bool,
+    /// The context composition on the latest rehydration turn in this bucket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_rehydration: Option<CacheRehydration>,
     /// True when an uncached context replay lands here too soon for a cache expiry.
     #[serde(default)]
     pub is_cache_routing_miss: bool,
@@ -102,6 +105,16 @@ pub struct Bucket {
     /// The context token count right after the compaction in this bucket,
     /// when known. Parent turns only. Keeps the last compaction's value.
     pub compaction_post_tokens: Option<u64>,
+}
+
+/// The context composition on one cache rehydration turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheRehydration {
+    pub context_tokens: u64,
+    pub still_cached_tokens: u64,
+    pub rewritten_tokens: u64,
+    pub growth_tokens: u64,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -436,6 +449,7 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         // them.
         if count == 1 {
             let own = &metrics[0].buckets[bi];
+            bucket.cache_rehydration = own.cache_rehydration;
             bucket.secs_since_prior_turn = own.secs_since_prior_turn;
             bucket.model = own.model.clone();
             bucket.thinking_mode = own.thinking_mode.clone();

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::mem::size_of;
 
-use super::slots::CacheSlot;
+use super::slots::{CacheRehydrationMark, CacheSlot};
 use super::tally::IdentityKey;
 
 pub(crate) const CACHE_REHYDRATION_MIN_CONTEXT_TOKENS: u64 = 20_000;
@@ -43,6 +43,7 @@ struct DeferredCache {
     previous_model: Option<IdentityKey>,
     current_model: Option<IdentityKey>,
     next_model: Option<IdentityKey>,
+    rehydration: CacheRehydrationMark,
 }
 
 pub(crate) struct CachePatch {
@@ -118,7 +119,11 @@ impl CacheReducer {
             self.previous_cache_read,
             self.first_turn_after_compaction,
         ) {
-            classify(&mut mode_1, input.key.1, gap);
+            classify(
+                &mut mode_1,
+                rehydration_mark(self.previous_context, turn),
+                gap,
+            );
             count_slot(
                 mode_1,
                 &mut self.mode_1_rehydrations,
@@ -158,6 +163,7 @@ impl CacheReducer {
             return None;
         }
         let models = [previous.model, current.model, next.model];
+        let rehydration = rehydration_mark(previous.context_tokens, current);
         let has_missing = models.iter().any(Option::is_none);
         let has_explicit = models.iter().any(Option::is_some);
         if has_missing && has_explicit {
@@ -168,6 +174,7 @@ impl CacheReducer {
                     previous_model: previous.model,
                     current_model: current.model,
                     next_model: next.model,
+                    rehydration,
                 });
             } else {
                 tracing::debug!(event = "metrics_cache_deferral_capped");
@@ -177,7 +184,7 @@ impl CacheReducer {
         if !models_match(previous.model, current.model, next.model, None) {
             return None;
         }
-        Some(self.mode_2_patch(current.key, current.secs_since_prior_turn))
+        Some(self.mode_2_patch(current.key, current.secs_since_prior_turn, rehydration))
     }
 
     pub(crate) fn resolve_deferred(&mut self, fallback: Option<IdentityKey>) -> Vec<CachePatch> {
@@ -192,13 +199,18 @@ impl CacheReducer {
                     fallback,
                 )
             })
-            .map(|candidate| self.mode_2_patch(candidate.key, candidate.gap))
+            .map(|candidate| self.mode_2_patch(candidate.key, candidate.gap, candidate.rehydration))
             .collect()
     }
 
-    fn mode_2_patch(&mut self, key: (i64, u64), gap: Option<u64>) -> CachePatch {
+    fn mode_2_patch(
+        &mut self,
+        key: (i64, u64),
+        gap: Option<u64>,
+        rehydration: CacheRehydrationMark,
+    ) -> CachePatch {
         let mut slot = CacheSlot::default();
-        classify(&mut slot, key.1, gap);
+        classify(&mut slot, rehydration, gap);
         count_slot(
             slot,
             &mut self.mode_2_rehydrations,
@@ -226,12 +238,29 @@ fn count_slot(slot: CacheSlot, rehydrations: &mut u64, routing_misses: &mut u64)
     }
 }
 
-fn classify(slot: &mut CacheSlot, ordinal: u64, gap: Option<u64>) {
+fn classify(slot: &mut CacheSlot, rehydration: CacheRehydrationMark, gap: Option<u64>) {
     if gap_allows_rehydration(gap) {
         slot.is_rehydration = true;
-        slot.rehydration_gap = Some((ordinal, gap));
+        slot.rehydration_gap = Some((rehydration.ordinal, gap));
+        slot.rehydration = Some(rehydration);
     } else {
         slot.is_routing_miss = true;
+    }
+}
+
+fn rehydration_mark(previous_context: u64, current: CacheTurn) -> CacheRehydrationMark {
+    let still_cached_tokens = current.cache_read_tokens.min(current.context_tokens);
+    let uncached_tokens = current.context_tokens.saturating_sub(still_cached_tokens);
+    let growth_tokens = current
+        .context_tokens
+        .saturating_sub(previous_context)
+        .min(uncached_tokens);
+    CacheRehydrationMark {
+        ordinal: current.key.1,
+        context_tokens: current.context_tokens,
+        still_cached_tokens,
+        rewritten_tokens: uncached_tokens.saturating_sub(growth_tokens),
+        growth_tokens,
     }
 }
 
@@ -322,8 +351,19 @@ mod tests {
     #[test]
     fn a_fast_gap_is_a_routing_miss() {
         let mut slot = CacheSlot::default();
-        classify(&mut slot, 4, Some(10));
+        classify(
+            &mut slot,
+            CacheRehydrationMark {
+                ordinal: 4,
+                context_tokens: 30_000,
+                still_cached_tokens: 5_000,
+                rewritten_tokens: 25_000,
+                growth_tokens: 0,
+            },
+            Some(10),
+        );
         assert!(slot.is_routing_miss);
         assert!(!slot.is_rehydration);
+        assert_eq!(slot.rehydration, None);
     }
 }

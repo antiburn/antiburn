@@ -670,6 +670,42 @@ fn merged_cache_detection_uses_chronological_parent_order() {
 }
 
 #[test]
+fn merged_cache_rehydration_keeps_its_turn_composition() {
+    let mut previous = event(Some(0), Role::Assistant, 101, 50);
+    previous.usage.cache_read_tokens = 99_584;
+    previous.usage.cache_creation_tokens = 1_879;
+    let mut current = event(Some(155 * 60 * 1_000), Role::Assistant, 2, 50);
+    current.usage.cache_read_tokens = 24_682;
+    current.usage.cache_creation_tokens = 77_040;
+    let mut next = event(Some(155 * 60 * 1_000 + 1), Role::Assistant, 1_000, 50);
+    next.usage.cache_read_tokens = 101_724;
+    let parent = finished(
+        vec![previous, current, next],
+        SessionSummary {
+            cache_write_tokens_available: true,
+            ..SessionSummary::default()
+        },
+    );
+    let child = finished(
+        vec![event(Some(60_000), Role::Assistant, 500, 20)],
+        SessionSummary::default(),
+    );
+
+    let merged = merge_metrics(&parent, &[child]);
+    let bucket = merged
+        .buckets
+        .iter()
+        .find(|bucket| bucket.cache_rehydration.is_some())
+        .expect("the rehydration bucket");
+    assert!(bucket.cache_read_tokens > bucket.context_tokens);
+    let rehydration = bucket.cache_rehydration.expect("the rehydration breakdown");
+    assert_eq!(rehydration.context_tokens, 101_724);
+    assert_eq!(rehydration.still_cached_tokens, 24_682);
+    assert_eq!(rehydration.rewritten_tokens, 76_882);
+    assert_eq!(rehydration.growth_tokens, 160);
+}
+
+#[test]
 fn merged_unattributed_child_tokens_use_the_parent_model() {
     let mut parent_event = event(Some(0), Role::Assistant, 10, 2);
     parent_event.model = Some("claude-opus-4-6".to_string());

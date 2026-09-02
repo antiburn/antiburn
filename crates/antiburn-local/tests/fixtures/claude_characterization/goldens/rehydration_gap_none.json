@@ -82,6 +82,12 @@
       "buckets": [
         {
           "cacheReadTokens": 36000,
+          "cacheRehydration": {
+            "contextTokens": 72000,
+            "growthTokens": 37000,
+            "rewrittenTokens": 33000,
+            "stillCachedTokens": 2000
+          },
           "cacheWriteTokens": 40000,
           "compactionPostTokens": null,
           "compactionPreTokens": null,

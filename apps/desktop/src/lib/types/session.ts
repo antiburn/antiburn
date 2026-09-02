@@ -37,6 +37,8 @@ export interface SessionBucket {
   rewriteTokens?: number
   /** True when a turn in this bucket is a cache rehydration: the cache TTL lapsed and re-wrote. */
   isCacheRehydration: boolean
+  /** The exact context composition on the latest rehydration turn in this bucket. */
+  cacheRehydration?: CacheRehydration
   /** True when a turn in this bucket is a cache routing miss: a fast re-send too soon for a TTL lapse. */
   isCacheRoutingMiss: boolean
   /** Wall-clock seconds since the prior parent turn, when this bucket contains a timed turn. */
@@ -61,6 +63,13 @@ export interface SessionBucket {
   compactionPreTokens: number | null
   /** The context token count right after the compaction in this bucket, when known. */
   compactionPostTokens: number | null
+}
+
+export interface CacheRehydration {
+  contextTokens: number
+  stillCachedTokens: number
+  rewrittenTokens: number
+  growthTokens: number
 }
 
 /* -------------------------------------------------------------------------

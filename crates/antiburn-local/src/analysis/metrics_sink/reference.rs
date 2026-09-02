@@ -3,7 +3,7 @@ use std::mem::size_of;
 
 use crate::analysis::efficiency::EfficiencyTotals;
 use crate::analysis::engine::{
-    BUCKETS, Bucket, CONTEXT_WINDOW, IDLE_GAP_MS, SessionMetrics, SkillUse,
+    BUCKETS, Bucket, CONTEXT_WINDOW, CacheRehydration, IDLE_GAP_MS, SessionMetrics, SkillUse,
 };
 use crate::analysis::interface::{NormalizedRecord, RecordSink, SessionSummary};
 use crate::analysis::model::{
@@ -323,6 +323,21 @@ fn cache_ratio(tokens: u64, context_tokens: u64) -> f64 {
         return 0.0;
     }
     tokens as f64 / context_tokens as f64
+}
+
+fn cache_rehydration(previous_context: u64, usage: Usage) -> CacheRehydration {
+    let context_tokens = usage.context_tokens();
+    let still_cached_tokens = usage.cache_read_tokens.min(context_tokens);
+    let uncached_tokens = context_tokens.saturating_sub(still_cached_tokens);
+    let growth_tokens = context_tokens
+        .saturating_sub(previous_context)
+        .min(uncached_tokens);
+    CacheRehydration {
+        context_tokens,
+        still_cached_tokens,
+        rewritten_tokens: uncached_tokens.saturating_sub(growth_tokens),
+        growth_tokens,
+    }
 }
 
 fn same_known_model(left: Option<&str>, right: Option<&str>) -> bool {
@@ -697,6 +712,7 @@ pub(crate) fn finalize_metrics(
     let cache_miss_events = cache_miss_events(turns, summary);
     let mut last_progress = 0.0f32;
     let mut previous_turn_ts: Option<i64> = None;
+    let mut previous_parent_context = 0u64;
     let mut cache_rehydration_count = 0u64;
     let mut cache_routing_miss_count = 0u64;
 
@@ -749,6 +765,8 @@ pub(crate) fn finalize_metrics(
                 let is_cache_rehydration = cache_miss_events.rehydrations.contains(&index);
                 if is_cache_rehydration {
                     bucket.is_cache_rehydration = true;
+                    bucket.cache_rehydration =
+                        Some(cache_rehydration(previous_parent_context, turn.usage));
                     cache_rehydration_count = cache_rehydration_count.saturating_add(1);
                 }
                 if cache_miss_events.routing_misses.contains(&index) {
@@ -761,6 +779,7 @@ pub(crate) fn finalize_metrics(
                     bucket.secs_since_prior_turn = secs_since_prior_turn;
                 }
                 previous_turn_ts = turn.ts_ms;
+                previous_parent_context = turn.usage.context_tokens();
             }
             let launches = turn
                 .tools

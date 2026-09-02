@@ -1046,6 +1046,7 @@ struct BucketState {
     compaction: Option<CompactionMark>,
     first_gap: Option<(u64, u64)>,
     rehydration_gap: Option<(u64, Option<u64>)>,
+    rehydration: Option<slots::CacheRehydrationMark>,
 }
 
 fn fold_slot(
@@ -1122,6 +1123,13 @@ fn fold_cache_slot(bucket: &mut Bucket, state: &mut BucketState, cache: slots::C
     }) {
         state.rehydration_gap = cache.rehydration_gap;
     }
+    if cache.rehydration.is_some_and(|value| {
+        state
+            .rehydration
+            .is_none_or(|current| value.ordinal > current.ordinal)
+    }) {
+        state.rehydration = cache.rehydration;
+    }
 }
 
 fn finish_bucket_state(
@@ -1154,6 +1162,18 @@ fn finish_bucket_state(
             .rehydration_gap
             .map(|(_, gap)| gap)
             .unwrap_or_else(|| state.first_gap.map(|(_, gap)| gap));
+        bucket.cache_rehydration = state.rehydration.map(public_cache_rehydration);
+    }
+}
+
+fn public_cache_rehydration(
+    mark: slots::CacheRehydrationMark,
+) -> crate::analysis::engine::CacheRehydration {
+    crate::analysis::engine::CacheRehydration {
+        context_tokens: mark.context_tokens,
+        still_cached_tokens: mark.still_cached_tokens,
+        rewritten_tokens: mark.rewritten_tokens,
+        growth_tokens: mark.growth_tokens,
     }
 }
 
@@ -1679,6 +1699,7 @@ fn reproject_exact_merged_cache(
     }
     for bucket in &mut metrics.buckets {
         bucket.is_cache_rehydration = false;
+        bucket.cache_rehydration = None;
         bucket.is_cache_routing_miss = false;
         bucket.secs_since_prior_turn = None;
     }
@@ -1773,11 +1794,12 @@ fn apply_projected_cache_slot(
 ) {
     bucket.is_cache_rehydration |= cache.is_rehydration;
     bucket.is_cache_routing_miss |= cache.is_routing_miss;
-    if cache
+    let replaces_rehydration = cache
         .rehydration_gap
-        .is_some_and(|incoming| rehydration_gap.is_none_or(|current| incoming.0 > current.0))
-    {
+        .is_some_and(|incoming| rehydration_gap.is_none_or(|current| incoming.0 > current.0));
+    if replaces_rehydration {
         *rehydration_gap = cache.rehydration_gap;
+        bucket.cache_rehydration = cache.rehydration.map(public_cache_rehydration);
     }
 }
 
