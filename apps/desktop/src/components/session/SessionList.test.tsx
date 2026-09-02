@@ -117,6 +117,155 @@ function entries(count: number): SessionListEntry[] {
 }
 
 describe("SessionList — rows", () => {
+  it("shows the backend weekly allocation for the exact session identity", () => {
+    list({
+      badgeMetric: "weeklyPercent",
+      sessionLimitAllocations: {
+        generatedAt: NOW.toISOString(),
+        allocations: [
+          {
+            agent: "claude-code",
+            sessionId: "session-1",
+            wslDistro: null,
+            provider: "anthropic",
+            displayName: "Claude",
+            accountKey: "work",
+            metric: "weekly",
+            windowId: "weekly-main",
+            resetsAt: new Date(NOW.getTime() + 7 * 86_400_000).toISOString(),
+            percent: 12.345,
+          },
+        ],
+      },
+    })
+
+    const badge = screen.getByText("12.35%")
+    expect(badge.dataset.sessionLimitProvider).toBe("anthropic")
+    expect(badge.dataset.sessionLimitWindow).toBe("weekly-main")
+    expect(badge.dataset.sessionLimitPercent).toBe("12.3450")
+    expect(badge).toHaveAttribute(
+      "aria-label",
+      "Estimated share of your Claude weekly limit. This session uses 5% or more of your limit.",
+    )
+  })
+
+  it("leaves the badge blank when the selected limit has no allocation", () => {
+    list({
+      entries: [
+        entry({
+          cost: { totalUsd: 1, figureLabel: "Estimated cost", models: ["gpt-5.6-sol"] },
+        }),
+      ],
+      badgeMetric: "weeklyPercent",
+    })
+
+    expect(screen.queryByLabelText("Estimated cost $1.00")).toBeNull()
+    expect(
+      screen.queryByLabelText("A weekly provider estimate is not available for this session."),
+    ).toBeNull()
+  })
+
+  it("does not fall back to cost when a controlled five-hour metric is unavailable", () => {
+    list({
+      entries: [
+        entry({
+          cost: { totalUsd: 1, figureLabel: "Estimated cost", models: ["gpt-5.6-sol"] },
+        }),
+      ],
+      badgeMetric: "fiveHourPercent",
+      onBadgeMetricChange: vi.fn(),
+    })
+
+    expect(screen.getByRole("radio", { name: "$" })).toHaveAttribute("aria-checked", "false")
+    expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.queryByLabelText("Estimated cost $1.00")).toBeNull()
+  })
+
+  it("does not offer five-hour mode for another short rolling window", () => {
+    list({
+      entries: [entry()],
+      onBadgeMetricChange: vi.fn(),
+      liveUsage: {
+        generatedAt: NOW.toISOString(),
+        errors: [],
+        meters: [],
+        providers: [
+          {
+            provider: "openai",
+            accountKey: null,
+            displayName: "OpenAI",
+            support: "live",
+            freshness: "fresh",
+            sourceLabel: "test",
+            observedAt: NOW.toISOString(),
+            windows: [
+              {
+                id: "burst-60m",
+                role: "primaryShort",
+                kind: "rolling",
+                scopeModel: null,
+                usedPercent: 20,
+                startsAt: null,
+                resetsAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+                hasNonzeroUsageInCurrentPeriod: true,
+                forecast: {
+                  unavailableReason: "sparseHistory",
+                  confidence: null,
+                  consumptionRate: null,
+                  paceRatio: null,
+                  paceTrend: null,
+                  runwayAt: null,
+                  usedToday: null,
+                },
+              },
+            ],
+            extraUsage: null,
+            resetCredits: null,
+            plan: null,
+          },
+        ],
+      },
+    })
+
+    expect(screen.queryByRole("radio", { name: "% 5h" })).toBeNull()
+  })
+
+  it("shows a five-hour allocation when the provider exposes that window", () => {
+    const props: SessionListProps = {
+      entries: [entry()],
+      days: 7,
+      now: NOW,
+      badgeMetric: "fiveHourPercent",
+      onBadgeMetricChange: vi.fn(),
+      sessionLimitAllocations: {
+        generatedAt: NOW.toISOString(),
+        allocations: [
+          {
+            agent: "claude-code",
+            sessionId: "session-1",
+            wslDistro: null,
+            provider: "openai",
+            displayName: "Codex",
+            accountKey: null,
+            metric: "fiveHour",
+            windowId: "five-hour",
+            resetsAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+            percent: 6.25,
+          },
+        ],
+      },
+    }
+    const { rerender } = render(<SessionList {...props} />)
+
+    expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByText("6.25%")).toBeInTheDocument()
+
+    rerender(<SessionList {...props} now={new Date(NOW.getTime() + 3_600_001)} />)
+    expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByRole("radio", { name: "$" })).toHaveAttribute("aria-checked", "false")
+    expect(screen.queryByText("6.25%")).toBeNull()
+  })
+
   it("names a session by its title, then a short id, then its agent", () => {
     list({
       entries: [
@@ -426,7 +575,28 @@ describe("SessionList — virtualization", () => {
   })
 
   it("mounts the final row after scrolling to the end", async () => {
-    const { container } = list({ entries: entries(225), onOpenSession: vi.fn() })
+    const { container } = list({
+      entries: entries(225),
+      onOpenSession: vi.fn(),
+      badgeMetric: "weeklyPercent",
+      sessionLimitAllocations: {
+        generatedAt: NOW.toISOString(),
+        allocations: [
+          {
+            agent: "claude-code",
+            sessionId: "session-224",
+            wslDistro: null,
+            provider: "anthropic",
+            displayName: "Claude",
+            accountKey: null,
+            metric: "weekly",
+            windowId: "weekly-main",
+            resetsAt: new Date(NOW.getTime() + 7 * 86_400_000).toISOString(),
+            percent: 7.25,
+          },
+        ],
+      },
+    })
     const viewport = container.querySelector<HTMLElement>(".ui-scroll-viewport")!
 
     viewport.scrollTop = 20_000
@@ -434,6 +604,7 @@ describe("SessionList — virtualization", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Fixture session 224")).toBeTruthy()
+      expect(screen.getByText("7.25%")).toBeTruthy()
     })
     expect(screen.queryByText("Fixture session 0")).toBeNull()
     expect(screen.getAllByRole("button").length).toBeLessThan(20)

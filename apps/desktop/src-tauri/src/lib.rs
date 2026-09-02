@@ -581,6 +581,16 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
+    fn default_windows_can_request_session_limit_allocations() {
+        let permissions = include_str!("../permissions/default.toml");
+        assert!(
+            permissions
+                .lines()
+                .any(|line| line.trim() == "\"allow-get-session-limit-allocations\",")
+        );
+    }
+
+    #[test]
     fn a_window_close_never_quits_the_finished_menu_bar_app() {
         // Settings and the popover both close with no exit code, and the tray
         // item is the app's real lifetime.

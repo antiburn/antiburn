@@ -88,6 +88,19 @@ impl History {
             })
             .unwrap_or_default()
     }
+
+    /// Samples for a provider account and window without reconstructing a snapshot.
+    pub fn samples_for(
+        &self,
+        provider: &str,
+        account_key: Option<&str>,
+        window_id: &str,
+    ) -> Vec<UsageSample> {
+        self.samples(&format!(
+            "{provider}:{}:{window_id}",
+            account_key.unwrap_or_default()
+        ))
+    }
 }
 
 /// The identity a series is kept under.
@@ -286,6 +299,15 @@ mod tests {
         assert_eq!(
             history.samples(&window_key(&other, "five-hour"))[0].used_percent,
             Some(90.0)
+        );
+        assert_eq!(
+            history.samples_for("anthropic", Some("account-b"), "five-hour")[0].used_percent,
+            Some(90.0)
+        );
+        assert!(
+            history
+                .samples_for("anthropic", Some("missing"), "five-hour")
+                .is_empty()
         );
     }
 

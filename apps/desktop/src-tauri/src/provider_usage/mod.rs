@@ -25,6 +25,7 @@
 //!    session that ran across midnight counts entirely in the day it last
 //!    touched. The views say so.
 
+pub(crate) mod allocation;
 pub mod live;
 pub mod providers;
 
@@ -250,6 +251,7 @@ fn window_of(bucket: &Bucket) -> ProviderUsageWindow {
     let mut window = ProviderUsageWindow {
         session_count: bucket.session_count,
         estimated_usd: priced.any_priced.then_some(priced.usd),
+        cost_complete: !priced.any_unpriced,
         ..ProviderUsageWindow::default()
     };
     for tokens in bucket.models.values() {
@@ -625,6 +627,7 @@ fn add_window(target: &mut ProviderUsageWindow, source: &ProviderUsageWindow) {
     target.tokens_out = target.tokens_out.saturating_add(source.tokens_out);
     target.cache_read = target.cache_read.saturating_add(source.cache_read);
     target.session_count = target.session_count.saturating_add(source.session_count);
+    target.cost_complete &= source.cost_complete;
     target.estimated_usd = match (target.estimated_usd, source.estimated_usd) {
         (None, None) => None,
         (left, right) => Some(left.unwrap_or(0.0) + right.unwrap_or(0.0)),

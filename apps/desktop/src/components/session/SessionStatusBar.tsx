@@ -1,4 +1,4 @@
-import { Check, CircleDashed, Info, X, type LucideIcon } from "lucide-react"
+import { Check, CircleDashed, Flame, X, type LucideIcon } from "lucide-react"
 import { Fragment } from "react"
 
 import type { SessionHygieneEvidenceState } from "../../lib/insightsIpc"
@@ -19,8 +19,7 @@ export interface SessionStatusBarProps {
   limitBadge?:
     | {
         label: string
-        percent: number | null
-        fallbackReason: string
+        percent: number
         provider?: string
         windowId?: string
       }
@@ -170,6 +169,7 @@ export function SessionStatusBar({
               }`
       }`
   const tooltip = showStateText ? verdictLabel : renderTooltip(failed, passed, notAssessed)
+  const isHighLimitShare = (limitBadge?.percent ?? 0) >= 5
 
   return (
     <div className="flex w-full items-center justify-between gap-x-1.5 text-label-secondary">
@@ -186,35 +186,34 @@ export function SessionStatusBar({
         </span>
       </Tooltip>
 
-      {limitBadge?.percent != null ? (
+      {limitBadge ? (
         <Tooltip label={limitBadge.label} delayMs={150}>
           <span
-            className="font-mono type-footnote tabular-nums text-label-secondary"
+            className={
+              isHighLimitShare
+                ? "flex shrink-0 items-center gap-0.5 rounded-full bg-brand-tint px-1.5 py-px font-mono type-footnote font-medium! leading-[13px] tracking-tight! text-white tabular-nums"
+                : "font-mono type-footnote tabular-nums text-label-secondary"
+            }
             data-session-limit-provider={limitBadge.provider}
             data-session-limit-window={limitBadge.windowId}
             data-session-limit-percent={limitBadge.percent.toFixed(4)}
+            aria-label={
+              isHighLimitShare
+                ? `${limitBadge.label} This session uses 5% or more of your limit.`
+                : limitBadge.label
+            }
+            tabIndex={0}
             onMouseEnter={() => onLimitBadgeHover?.(limitBadge)}
             onMouseLeave={() => onLimitBadgeHover?.(null)}
+            onFocus={() => onLimitBadgeHover?.(limitBadge)}
+            onBlur={() => onLimitBadgeHover?.(null)}
           >
+            {isHighLimitShare && <Flame size={11} className="shrink-0" aria-hidden="true" />}
             {formatLimitPercent(limitBadge.percent)}
           </span>
         </Tooltip>
       ) : (
-        cost && (
-          <span className="flex items-center gap-1">
-            <SessionCostBadge {...cost} appearance={cost.isHighCost ? "pill" : "bare"} />
-            {limitBadge && (
-              <Tooltip label={limitBadge.fallbackReason} delayMs={150}>
-                <span
-                  className="inline-flex text-label-tertiary"
-                  aria-label={limitBadge.fallbackReason}
-                >
-                  <Info size={12} strokeWidth={1.75} aria-hidden="true" />
-                </span>
-              </Tooltip>
-            )}
-          </span>
-        )
+        cost && <SessionCostBadge {...cost} appearance={cost.isHighCost ? "pill" : "bare"} />
       )}
     </div>
   )

@@ -1,5 +1,9 @@
 import { GitBranchPlus, GitFork, SquareTerminal } from "lucide-react"
-import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual"
+import {
+  defaultRangeExtractor,
+  useVirtualizer,
+  type VirtualItem,
+} from "@tanstack/react-virtual"
 import { useCallback, useRef, useState, type ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
@@ -27,7 +31,11 @@ import { ScrollPane } from "../ui/ScrollPane"
 import { SegmentedControl } from "../ui/SegmentedControl"
 import { countGroupedItems, groupActivityByDay } from "../activity/activityFeedGrouping"
 import { useActivityGroupPinning, type ViewportRef } from "../activity/useActivityGroupPinning"
-import type { LiveUsageSummaryPayload, ProviderUsageSummaryPayload } from "../../lib/ipc"
+import type {
+  LiveUsageSummaryPayload,
+  SessionLimitAllocationPayload,
+  SessionLimitAllocationSummaryPayload,
+} from "../../lib/ipc"
 
 import "../../styles/session-rows.css"
 
@@ -79,6 +87,9 @@ export interface SessionListProps {
   onOpenSession?: (entry: SessionListEntry) => void
   /** The scrolling viewport, for a host that needs to observe it. */
   viewportRef?: ViewportRef
+  initialScrollOffset?: number | (() => number)
+  initialMeasurementsCache?: VirtualItem[]
+  onMeasurementsChange?: (measurements: VirtualItem[]) => void
   /** Frozen clock, for tests. */
   now?: Date
   renderAgentIcon?: SessionAgentIconRenderer
@@ -87,7 +98,7 @@ export interface SessionListProps {
   badgeMetric?: "cost" | "weeklyPercent" | "fiveHourPercent"
   onBadgeMetricChange?: (metric: "cost" | "weeklyPercent" | "fiveHourPercent") => void
   liveUsage?: LiveUsageSummaryPayload
-  usage?: ProviderUsageSummaryPayload | null
+  sessionLimitAllocations?: SessionLimitAllocationSummaryPayload
   onLimitBadgeHover?: (
     badge: { provider: string; windowId: string; percent: number } | null,
   ) => void
@@ -102,98 +113,71 @@ function primaryLine(entry: SessionListEntry): string {
 
 type BadgeMetric = "cost" | "weeklyPercent" | "fiveHourPercent"
 
-function hasFiveHourLimit(live?: LiveUsageSummaryPayload): boolean {
+function keepScrollOffset(): false {
+  return false
+}
+
+function allocationIsCurrent(allocation: SessionLimitAllocationPayload, now: number): boolean {
+  const resetsAt = Date.parse(allocation.resetsAt)
+  return Number.isFinite(resetsAt) && now < resetsAt
+}
+
+function isFiveHourWindow(provider: string, id: string): boolean {
+  if (provider === "anthropic") return id === "five-hour"
+  if (provider === "openai") return id === "five-hour" || id.endsWith("-300m")
+  if (provider === "google") {
+    return id === "antigravity-gemini-5h" || id === "antigravity-claude-gpt-5h"
+  }
+  return false
+}
+
+function hasCurrentFiveHourWindow(
+  live: LiveUsageSummaryPayload | undefined,
+  now: number,
+): boolean {
   return (
-    live?.providers.some((provider) =>
-      provider.windows.some(
-        (window) => window.role === "primaryShort" && window.usedPercent != null,
-      ),
-    ) ?? false
+    live?.providers.some((provider) => {
+      const observedAt = Date.parse(provider.observedAt)
+      return (
+        provider.freshness === "fresh" &&
+        provider.windows.some((window) => {
+          const resetsAt = Date.parse(window.resetsAt ?? "")
+          return (
+            isFiveHourWindow(provider.provider, window.id) &&
+            window.usedPercent != null &&
+            Number.isFinite(window.usedPercent) &&
+            window.usedPercent >= 0 &&
+            window.usedPercent <= 100 &&
+            Number.isFinite(observedAt) &&
+            observedAt < resetsAt &&
+            now < resetsAt
+          )
+        })
+      )
+    }) ?? false
   )
 }
 
 function sessionLimitBadge(
-  entry: SessionListEntry,
   metric: Exclude<BadgeMetric, "cost">,
-  usage?: ProviderUsageSummaryPayload | null,
-  live?: LiveUsageSummaryPayload,
-): {
-  label: string
-  percent: number | null
-  fallbackReason: string
-  provider?: string
-  windowId?: string
-} {
-  const modelProvider = entry.modelRuns
-    ?.map((run) => providerForModel(run.model))
-    .find((provider): provider is string => provider != null)
-  const local =
-    usage?.providers
-      .filter(
-        (provider) =>
-          provider.provider === modelProvider ||
-          provider.agents.some((agent) => agent.agent === entry.agent) ||
-          live?.providers.length === 1,
-      )
-      .sort(
-        (left, right) =>
-          (right.windows.last30Days.estimatedUsd ??
-            right.windows.monthToDate.estimatedUsd ??
-            0) -
-          (left.windows.last30Days.estimatedUsd ?? left.windows.monthToDate.estimatedUsd ?? 0),
-      ) ?? []
-  if (local.length === 0 || entry.cost == null) {
-    return {
-      label: "Session usage limit share",
-      percent: null,
-      fallbackReason: "No provider limit data is available for this session.",
+  allocation?: SessionLimitAllocationPayload,
+):
+  | {
+      label: string
+      percent: number
+      provider?: string
+      windowId?: string
     }
+  | undefined {
+  if (!allocation || !Number.isFinite(allocation.percent)) {
+    return undefined
   }
-  const provider =
-    local.find((candidate) => candidate.provider === modelProvider) ??
-    local.find((candidate) =>
-      live?.providers.some((reading) => reading.provider === candidate.provider),
-    ) ??
-    local[0]!
-  const account = live?.providers.find((candidate) => candidate.provider === provider.provider)
-  const window = account?.windows.find((candidate) =>
-    metric === "weeklyPercent"
-      ? candidate.kind === "weekly" || candidate.role === "primaryLong"
-      : candidate.role === "primaryShort" || candidate.id.includes("five"),
-  )
-  const total =
-    metric === "weeklyPercent"
-      ? (provider.windows.last30Days.estimatedUsd ?? provider.windows.monthToDate.estimatedUsd)
-      : (provider.windows.today.estimatedUsd ?? provider.windows.week.estimatedUsd)
-  if (window?.usedPercent == null) {
-    return {
-      label: "Session usage limit share",
-      percent: null,
-      fallbackReason: account
-        ? `A ${metric === "weeklyPercent" ? "weekly" : "5-hour"} ${provider.displayName} limit reading is not available for this session.`
-        : `${provider.displayName} has no subscription limit reading for this session. It may use API billing.`,
-    }
-  }
-  const allocationBase = total != null && total > 0 ? total : entry.cost.totalUsd
-  const percent = Math.min(
-    100,
-    Math.max(0, window.usedPercent * (entry.cost.totalUsd / allocationBase)),
-  )
   return {
-    label: `${metric === "weeklyPercent" ? "Weekly" : "5-hour"} ${provider.displayName} limit used by this session. This is an estimate from local spend and the current ${provider.displayName} reading.`,
-    percent,
-    fallbackReason: "",
-    provider: provider.provider,
-    windowId: window.id,
+    label: `Estimated share of your ${allocation.displayName} ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit.`,
+    percent: allocation.percent,
+    provider: allocation.provider,
+    windowId: allocation.windowId,
   }
-}
-
-function providerForModel(model: string): string | null {
-  const key = model.toLowerCase()
-  if (key.includes("claude")) return "anthropic"
-  if (key.includes("gpt") || key.includes("o1") || key.includes("o3")) return "openai"
-  if (key.includes("gemini")) return "google"
-  return null
 }
 
 function EmptySessionList({ title, description }: { title: string; description: string }) {
@@ -246,13 +230,15 @@ interface SessionRowProps {
   onOpen?: () => void
   renderAgentIcon?: SessionAgentIconRenderer | undefined
   wslIcon?: ReactNode | undefined
-  limitBadge?: {
-    label: string
-    percent: number | null
-    fallbackReason: string
-    provider?: string
-    windowId?: string
-  }
+  showCost?: boolean
+  limitBadge?:
+    | {
+        label: string
+        percent: number
+        provider?: string
+        windowId?: string
+      }
+    | undefined
   onLimitBadgeHover?: SessionListProps["onLimitBadgeHover"]
 }
 
@@ -271,6 +257,7 @@ function SessionRow({
   wslIcon,
   limitBadge,
   onLimitBadgeHover,
+  showCost = true,
 }: SessionRowProps) {
   const clickable = !!entry.sessionId && !!onOpen
   const primary = primaryLine(entry)
@@ -316,7 +303,7 @@ function SessionRow({
         <SessionStatusBar
           checks={hygieneChecks}
           evidenceState={hygiene.evidenceState}
-          cost={entry.cost ?? null}
+          cost={showCost ? (entry.cost ?? null) : null}
           limitBadge={limitBadge}
           onLimitBadgeHover={(badge) => {
             if (badge?.percent == null || !badge.provider || !badge.windowId) {
@@ -452,14 +439,36 @@ export function SessionList({
   emptyDescription = "Coding sessions appear here as they are discovered on this machine.",
   onOpenSession,
   viewportRef,
+  initialScrollOffset = 0,
+  initialMeasurementsCache,
+  onMeasurementsChange,
   now,
   renderAgentIcon,
   wslIcon,
   badgeMetric = "cost",
   onBadgeMetricChange,
   liveUsage,
-  usage,
+  sessionLimitAllocations,
+  onLimitBadgeHover,
 }: SessionListProps) {
+  const currentTime = now?.getTime() ?? Date.now()
+  const fiveHourAvailable =
+    badgeMetric === "fiveHourPercent" ||
+    hasCurrentFiveHourWindow(liveUsage, currentTime) ||
+    (sessionLimitAllocations?.allocations.some(
+      (allocation) =>
+        allocation.metric === "fiveHour" && allocationIsCurrent(allocation, currentTime),
+    ) ??
+      false)
+  const selectedMetric = badgeMetric
+  const allocationBySession = new Map(
+    (sessionLimitAllocations?.allocations ?? [])
+      .filter((allocation) => allocationIsCurrent(allocation, currentTime))
+      .map((allocation) => [
+        `${localSessionKey(allocation.agent, allocation.sessionId, allocation.wslDistro)}:${allocation.metric}`,
+        allocation,
+      ]),
+  )
   const items = entries.map((entry, index) => ({
     entry,
     at: entry.timestamp,
@@ -521,6 +530,8 @@ export function SessionList({
     estimateSize: (index) => (virtualItems[index]?.type === "heading" ? 28 : 88),
     // Mount the initial overscan before the viewport ref attaches.
     initialRect: { width: 0, height: 1 },
+    initialOffset: initialScrollOffset,
+    ...(initialMeasurementsCache ? { initialMeasurementsCache } : {}),
     // Three items keep short wheel and keyboard moves mounted without retaining
     // a large part of the session list.
     overscan: 3,
@@ -543,6 +554,11 @@ export function SessionList({
       return [...indexes].sort((left, right) => left - right)
     },
   })
+  // The restored measurements preserve the old layout. Do not move the saved
+  // offset when an uncached row receives its first measurement.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = initialMeasurementsCache?.length
+    ? keepScrollOffset
+    : undefined
   const measuredItems = virtualizer.getVirtualItems()
   const measureAndRestoreFocus = useCallback(
     (node: HTMLDivElement | null) => {
@@ -579,13 +595,14 @@ export function SessionList({
     (node: HTMLDivElement | null) => {
       scrollElementRef.current = node
       const cleanup = assignViewportRef(node)
-      if (!cleanup) return
+      if (!node) return cleanup
       return () => {
+        onMeasurementsChange?.(virtualizer.takeSnapshot())
         scrollElementRef.current = null
-        cleanup()
+        cleanup?.()
       }
     },
-    [assignViewportRef],
+    [assignViewportRef, onMeasurementsChange, virtualizer],
   )
 
   const resolvedEmptyTitle =
@@ -614,11 +631,11 @@ export function SessionList({
               options={[
                 { value: "cost", label: "$" },
                 { value: "weeklyPercent", label: "% week" },
-                ...(hasFiveHourLimit(liveUsage)
+                ...(fiveHourAvailable
                   ? [{ value: "fiveHourPercent" as const, label: "% 5h" }]
                   : []),
               ]}
-              value={badgeMetric}
+              value={selectedMetric}
               onChange={onBadgeMetricChange}
               ariaLabel="Session badge metric"
               className="normal-case"
@@ -690,6 +707,7 @@ export function SessionList({
                             ) : (
                               <SessionRow
                                 entry={virtualItem.item.entry}
+                                showCost={selectedMetric === "cost"}
                                 hygiene={
                                   virtualItem.item.entry.sessionId
                                     ? sessionHygieneFor(hygieneBySession, {
@@ -700,18 +718,30 @@ export function SessionList({
                                     : INITIAL_SESSION_HYGIENE
                                 }
                                 {...(onOpenSession
-                                  ? { onOpen: () => onOpenSession(virtualItem.item.entry) }
+                                  ? {
+                                      onOpen: () => {
+                                        onMeasurementsChange?.(virtualizer.takeSnapshot())
+                                        onOpenSession(virtualItem.item.entry)
+                                      },
+                                    }
                                   : {})}
                                 {...(renderAgentIcon ? { renderAgentIcon } : {})}
                                 {...(wslIcon ? { wslIcon } : {})}
-                                {...(badgeMetric !== "cost"
+                                {...(selectedMetric !== "cost"
                                   ? {
                                       limitBadge: sessionLimitBadge(
-                                        virtualItem.item.entry,
-                                        badgeMetric,
-                                        usage,
-                                        liveUsage,
+                                        selectedMetric,
+                                        virtualItem.item.entry.sessionId
+                                          ? allocationBySession.get(
+                                              `${localSessionKey(
+                                                virtualItem.item.entry.agent,
+                                                virtualItem.item.entry.sessionId,
+                                                virtualItem.item.entry.wslDistro,
+                                              )}:${selectedMetric === "weeklyPercent" ? "weekly" : "fiveHour"}`,
+                                            )
+                                          : undefined,
                                       ),
+                                      ...(onLimitBadgeHover ? { onLimitBadgeHover } : {}),
                                     }
                                   : {})}
                               />

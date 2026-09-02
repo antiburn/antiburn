@@ -90,13 +90,16 @@ function addWindow(
       left.estimatedUsd == null && right.estimatedUsd == null
         ? null
         : (left.estimatedUsd ?? 0) + (right.estimatedUsd ?? 0),
+    costComplete: left.costComplete && right.costComplete,
     sessionCount: left.sessionCount + right.sessionCount,
   }
 }
 
 function providerHeaderMetric(window: ProviderUsagePayload["windows"]["today"]): string {
   const tokens = formatCompact(windowTokens(window))
-  return window.estimatedUsd == null ? tokens : `${formatCost(window.estimatedUsd)} · ${tokens}`
+  return !window.costComplete || window.estimatedUsd == null
+    ? tokens
+    : `${formatCost(window.estimatedUsd)} · ${tokens}`
 }
 
 function summedWindow(
@@ -108,6 +111,7 @@ function summedWindow(
     tokensOut: 0,
     cacheRead: 0,
     estimatedUsd: null,
+    costComplete: true,
     sessionCount: 0,
   }
   return providers.reduce((total, provider) => addWindow(total, provider.windows[key]), empty)

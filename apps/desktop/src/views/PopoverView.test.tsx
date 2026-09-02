@@ -240,6 +240,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
       case "get_live_usage":
       case "refresh_live_usage":
         return Promise.resolve(LIVE_USAGE)
+      case "get_session_limit_allocations":
+        return Promise.resolve({ generatedAt: "2027-01-15T08:00:00Z", allocations: [] })
       case "get_scan_status":
       case "scan_now":
       case "cancel_scan":
@@ -274,6 +276,13 @@ describe("PopoverView", () => {
     openDialog.mockReset()
     listeners.clear()
     Reflect.deleteProperty(window, "__ANTIBURN_WINDOW_GENERATION__")
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+      configurable: true,
+      value(this: HTMLElement, options: ScrollToOptions | number, y?: number) {
+        this.scrollTop = typeof options === "number" ? (y ?? 0) : (options.top ?? 0)
+        this.dispatchEvent(new Event("scroll"))
+      },
+    })
     mockCommands()
   })
 
@@ -316,6 +325,85 @@ describe("PopoverView", () => {
     expect(
       invoke.mock.calls.filter(([command]) => command === "popover_content_ready"),
     ).toHaveLength(1)
+  })
+
+  it("renders the backend limit allocation for a session row", async () => {
+    mockCommands({
+      get_settings: { ...SETTINGS, sessionBadgeMetric: "weeklyPercent" },
+      get_session_limit_allocations: {
+        generatedAt: "2027-01-15T08:00:00Z",
+        allocations: [
+          {
+            agent: "claude-code",
+            sessionId: "session-abc-123",
+            wslDistro: null,
+            provider: "anthropic",
+            displayName: "Claude",
+            accountKey: "work",
+            metric: "weekly",
+            windowId: "weekly-main",
+            resetsAt: "2027-01-20T08:00:00Z",
+            percent: 12.345,
+          },
+        ],
+      },
+    })
+
+    render(<PopoverView />)
+
+    expect(await screen.findByText("12.35%")).toHaveAttribute(
+      "data-session-limit-window",
+      "weekly-main",
+    )
+    expect(invoke).toHaveBeenCalledWith("get_session_limit_allocations")
+  })
+
+  it("keeps the last allocation when a refresh fails", async () => {
+    const allocationSummary = {
+      generatedAt: "2027-01-15T08:00:00Z",
+      allocations: [
+        {
+          agent: "claude-code",
+          sessionId: "session-abc-123",
+          wslDistro: null,
+          provider: "anthropic",
+          displayName: "Claude",
+          accountKey: null,
+          metric: "weekly",
+          windowId: "weekly-main",
+          resetsAt: "2027-01-20T08:00:00Z",
+          percent: 12.5,
+        },
+      ],
+    }
+    mockCommands({
+      get_settings: { ...SETTINGS, sessionBadgeMetric: "weeklyPercent" },
+      get_session_limit_allocations: allocationSummary,
+    })
+    const baseInvoke = invoke.getMockImplementation()!
+    let allocationRefreshFails = false
+    invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "get_session_limit_allocations" && allocationRefreshFails) {
+        return Promise.reject(new Error("temporary allocation failure"))
+      }
+      return baseInvoke(command, args)
+    })
+    render(<PopoverView />)
+    expect(await screen.findByText("12.5%")).toBeInTheDocument()
+    const allocationCallsBefore = invoke.mock.calls.filter(
+      ([command]) => command === "get_session_limit_allocations",
+    ).length
+
+    allocationRefreshFails = true
+    emit("popover:shown", undefined)
+
+    await waitFor(() =>
+      expect(
+        invoke.mock.calls.filter(([command]) => command === "get_session_limit_allocations")
+          .length,
+      ).toBeGreaterThan(allocationCallsBefore),
+    )
+    expect(screen.getByText("12.5%")).toBeInTheDocument()
   })
 
   it("retries a failed hidden content report when the popover appears", async () => {
@@ -416,6 +504,9 @@ describe("PopoverView", () => {
     const listCallsBefore = invoke.mock.calls.filter(
       ([command]) => command === "list_recent_sessions",
     ).length
+    const allocationCallsBefore = invoke.mock.calls.filter(
+      ([command]) => command === "get_session_limit_allocations",
+    ).length
 
     emit("sessions:entry-changed", {
       ...activityEntry(),
@@ -426,6 +517,12 @@ describe("PopoverView", () => {
     expect(
       invoke.mock.calls.filter(([command]) => command === "list_recent_sessions"),
     ).toHaveLength(listCallsBefore)
+    await waitFor(() =>
+      expect(
+        invoke.mock.calls.filter(([command]) => command === "get_session_limit_allocations")
+          .length,
+      ).toBeGreaterThan(allocationCallsBefore),
+    )
   })
 
   it("keeps a row's high-cost flag after a sessions:entry-changed event replaces it", async () => {
@@ -475,7 +572,28 @@ describe("PopoverView", () => {
     expect(screen.getByText("Wire the tray popover")).toBeInTheDocument()
   })
 
-  it("brings the list back at the offset it was scrolled to before a session opened", async () => {
+  it("keeps the list at the same offset through repeated session navigation", async () => {
+    const scrollTo = vi.fn(function (
+      this: HTMLElement,
+      options: ScrollToOptions | number,
+      y?: number,
+    ) {
+      this.scrollTop = typeof options === "number" ? (y ?? 0) : (options.top ?? 0)
+      this.dispatchEvent(new Event("scroll"))
+    })
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+      configurable: true,
+      value: scrollTo,
+    })
+    mockCommands({
+      list_recent_sessions: Array.from({ length: 12 }, (_, index) =>
+        activityEntry({
+          sessionId: `session-${index}`,
+          title: index === 0 ? "Wire the tray popover" : `Session fixture ${index}`,
+          timestamp: new Date(Date.now() - index * 1_000).toISOString(),
+        }),
+      ),
+    })
     render(<PopoverView />)
     await screen.findByText("Wire the tray popover")
 
@@ -488,11 +606,27 @@ describe("PopoverView", () => {
     viewport!.scrollTop = 240
     fireEvent.scroll(viewport!)
 
-    fireEvent.click(screen.getByText("Wire the tray popover"))
-    fireEvent.click(await screen.findByRole("button", { name: "Back" }, { timeout: 5_000 }))
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      fireEvent.click(screen.getByText("Wire the tray popover"))
+      fireEvent.click(await screen.findByRole("button", { name: "Back" }, { timeout: 5_000 }))
 
-    await screen.findByText("Wire the tray popover")
-    expect(viewportOf()?.scrollTop).toBe(240)
+      await screen.findByText("Wire the tray popover")
+      await waitFor(() => expect(viewportOf()?.scrollTop).toBe(240))
+    }
+    expect(
+      scrollTo.mock.calls.some(
+        ([options]) => typeof options !== "number" && (options.top ?? 0) === 240,
+      ),
+    ).toBe(true)
+  })
+
+  it("folds the complete usage header as one measured target", async () => {
+    render(<PopoverView />)
+
+    const summary = await screen.findByRole("region", { name: "Usage and spend" })
+    const foldTarget = summary.parentElement
+    expect(foldTarget).toContainElement(screen.getByTestId("usage-limits-bar"))
+    expect(foldTarget?.parentElement?.children).toHaveLength(1)
   })
 
   it("notes an opened session as an agent and an environment, and nothing else", async () => {
@@ -808,6 +942,9 @@ describe("PopoverView", () => {
     const callsBeforeShown = invoke.mock.calls.filter(
       ([command]) => command === "refresh_live_usage",
     ).length
+    const allocationCallsBeforeShown = invoke.mock.calls.filter(
+      ([command]) => command === "get_session_limit_allocations",
+    ).length
 
     // `popover:shown` carries no payload — it is a pure signal, unlike the
     // scan events, which carry a status.
@@ -817,6 +954,12 @@ describe("PopoverView", () => {
       expect(
         invoke.mock.calls.filter(([command]) => command === "refresh_live_usage").length,
       ).toBeGreaterThan(callsBeforeShown),
+    )
+    await waitFor(() =>
+      expect(
+        invoke.mock.calls.filter(([command]) => command === "get_session_limit_allocations")
+          .length,
+      ).toBeGreaterThan(allocationCallsBeforeShown),
     )
     // Not riding the scan pipeline: no scan command was ever asked for.
     expect(invoke).not.toHaveBeenCalledWith("scan_now", expect.anything())

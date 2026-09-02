@@ -50,6 +50,7 @@ function usageWindow(
     tokensOut: 0,
     cacheRead: 0,
     estimatedUsd: null,
+    costComplete: true,
     sessionCount: 0,
     ...overrides,
   }

@@ -446,6 +446,7 @@ fn an_unpriceable_model_is_observed_with_no_dollar_figure_at_all() {
     assert_eq!(anthropic.windows.today.tokens_in, 1_000);
     assert_eq!(anthropic.windows.today.tokens_out, 500);
     assert_eq!(anthropic.windows.today.estimated_usd, None);
+    assert!(!anthropic.windows.today.cost_complete);
 }
 
 #[test]
@@ -470,7 +471,29 @@ fn a_partly_priced_provider_reports_the_priced_part_and_says_it_is_observed() {
         .estimated_usd
         .expect("partly priced");
     assert!(usd > 0.0);
+    assert!(!anthropic.windows.today.cost_complete);
     assert_eq!(anthropic.windows.today.tokens_in, 10_000_000);
+}
+
+#[test]
+fn aggregate_cost_is_incomplete_when_any_provider_window_is_unpriced() {
+    let rows = [
+        row(
+            "claude-code",
+            NOW - 60,
+            &[(PRICED_MODEL, tokens(1_000_000, 0, 0, 0))],
+        ),
+        row(
+            "codex",
+            NOW - 30,
+            &[(UNPRICED_MODEL, tokens(2_000_000, 0, 0, 0))],
+        ),
+    ];
+    let summary = summarize(&rows, NOW, 0);
+
+    assert!(summary.totals.today.estimated_usd.is_some());
+    assert!(!summary.totals.today.cost_complete);
+    assert_eq!(summary.totals.today.tokens_in, 3_000_000);
 }
 
 #[test]

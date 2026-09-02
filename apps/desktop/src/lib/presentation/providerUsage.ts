@@ -44,6 +44,7 @@ export const EMPTY_WINDOW: ProviderUsageWindowPayload = {
   tokensOut: 0,
   cacheRead: 0,
   estimatedUsd: null,
+  costComplete: true,
   sessionCount: 0,
 }
 
@@ -82,7 +83,7 @@ export function usageValueLabel(window: ProviderUsageWindowPayload): string {
 /** A local cost followed by its token count, when the cost is available. */
 export function usageMetricLabel(window: ProviderUsageWindowPayload): string {
   const tokens = windowTokens(window)
-  if (window.estimatedUsd != null)
+  if (window.costComplete && window.estimatedUsd != null)
     return `${formatCost(window.estimatedUsd)} · ${formatCompact(tokens)}`
   return tokens > 0 ? formatCompact(tokens) : "—"
 }
@@ -154,11 +155,14 @@ export function rankByWindow(
   providers: readonly ProviderUsagePayload[],
   key: UsageWindowKey,
 ): ProviderUsagePayload[] {
+  const useCost = providers.every((provider) => providerWindow(provider, key).costComplete)
   return [...providers].sort((a, b) => {
     const left = providerWindow(a, key)
     const right = providerWindow(b, key)
-    const cost = (right.estimatedUsd ?? 0) - (left.estimatedUsd ?? 0)
-    if (cost !== 0) return cost
+    if (useCost) {
+      const cost = (right.estimatedUsd ?? 0) - (left.estimatedUsd ?? 0)
+      if (cost !== 0) return cost
+    }
     return windowTokens(right) - windowTokens(left)
   })
 }
@@ -234,20 +238,17 @@ export function updatedNote(provider: ProviderUsagePayload): string | null {
  * own local spend against a longer span of it. It is deliberately not a meter
  * against any allowance — that figure does not exist on this machine.
  */
-export function windowShareOfMonth(
+export function windowShareOfLast30Days(
   provider: ProviderUsagePayload,
   key: UsageWindowKey,
 ): number {
   const window = providerWindow(provider, key)
-  const month = providerWindow(provider, "monthToDate")
+  const month = providerWindow(provider, "last30Days")
+  const pricedMonth = month.costComplete ? month.estimatedUsd : null
+  const useCost = window.costComplete && pricedMonth != null && pricedMonth > 0
   const numerator =
-    month.estimatedUsd != null && month.estimatedUsd > 0
-      ? (window.estimatedUsd ?? 0)
-      : windowTokens(window)
-  const denominator =
-    month.estimatedUsd != null && month.estimatedUsd > 0
-      ? month.estimatedUsd
-      : windowTokens(month)
+    useCost && window.estimatedUsd != null ? window.estimatedUsd : windowTokens(window)
+  const denominator = useCost ? pricedMonth : windowTokens(month)
   if (denominator <= 0) return 0
   return Math.min(1, Math.max(0, numerator / denominator))
 }
@@ -261,7 +262,8 @@ export function usageMetricRows(
     {
       key: "today-spend",
       label: "Today's spend",
-      value: today.estimatedUsd != null ? formatCost(today.estimatedUsd) : "—",
+      value:
+        today.costComplete && today.estimatedUsd != null ? formatCost(today.estimatedUsd) : "—",
     },
     {
       key: "today-tokens",

@@ -25,6 +25,13 @@ import type {
   SessionCostComponents,
   SessionEfficiency,
 } from "./types/session"
+import type {
+  LiveUsageSummaryPayload,
+  ProviderUsageSummaryPayload,
+  SessionLimitAllocationSummaryPayload,
+} from "./providerUsageIpc"
+
+export * from "./providerUsageIpc"
 
 /* -------------------------------------------------------------------------
  * Payload shapes — mirrors of `src-tauri/src/dto.rs`
@@ -284,248 +291,6 @@ export interface SessionAnalysisPayload {
    * moved on. The data on screen is real, just not the latest — unlike
    * `analysisPending`, which means there is nothing to show yet. */
   analysisStale: boolean
-}
-
-/**
- * How well the app can describe one provider's usage. Mirrors Rust
- * `ProviderUsageState`.
- *
- * `live` is reserved for provider-owned allowance data. `detected` means
- * explicit transcript metadata names a provider but reports no tokens.
- */
-export type ProviderUsageState = "live" | "estimated" | "observed" | "detected" | "unknown"
-
-/** Whether a provider's newest local evidence still describes now. */
-export type ProviderUsageStaleness = "fresh" | "stale" | "unknown"
-
-/**
- * One provider's totals over one window.
- *
- * There is no percentage, allowance, remaining balance, or reset here, and
- * that is deliberate — see `ProviderUsageState`.
- */
-export interface ProviderUsageWindowPayload {
-  /** Fresh prompt tokens plus prompt-cache writes. */
-  tokensIn: number
-  tokensOut: number
-  /** Prompt-cache reads, billed at their own rate. */
-  cacheRead: number
-  /**
-   * On-device estimate for the models that could be priced, or null when none
-   * could. A `observed` state means this is a floor rather than a total.
-   */
-  estimatedUsd: number | null
-  /** Sessions that contributed. One session can count under two providers. */
-  sessionCount: number
-}
-
-/** Local usage windows, including both month-to-date and trailing 30 days. */
-export interface ProviderUsageWindowsPayload {
-  today: ProviderUsageWindowPayload
-  week: ProviderUsageWindowPayload
-  monthToDate: ProviderUsageWindowPayload
-  last30Days: ProviderUsageWindowPayload
-}
-
-export interface ProviderAgentUsagePayload {
-  agent: string
-  windows: ProviderUsageWindowsPayload
-}
-
-/** Everything the usage surfaces show about one provider. */
-export interface ProviderUsagePayload {
-  /** Canonical id (`anthropic`, `openai`, `unknown`, …) — a key, not copy. */
-  provider: string
-  /** Installation-scoped opaque account key, or null when unassigned. */
-  accountKey: string | null
-  displayName: string
-  state: ProviderUsageState
-  staleness: ProviderUsageStaleness
-  windows: ProviderUsageWindowsPayload
-  /** Per-agent contributions retained inside this provider account group. */
-  agents: ProviderAgentUsagePayload[]
-  lastActivityAt: string | null
-}
-
-/** Local provider usage as one snapshot. Mirrors Rust `ProviderUsageSummary`. */
-export interface ProviderUsageSummaryPayload {
-  providers: ProviderUsagePayload[]
-  totals?: ProviderUsageWindowsPayload
-  agents?: ProviderAgentUsagePayload[]
-  generatedAt: string
-}
-
-/* -------------------------------------------------------------------------
- * Live provider usage — the provider's own limit figures.
- *
- * A second payload rather than fields on `ProviderUsageSummaryPayload`, and
- * for the same reason on this side as on the shell's: that type's guarantee is
- * that it carries no percentage, allowance, or reset, and a test proves it.
- * The views layer the two.
- *
- * Still nothing is fetched here, in the webview. The agent fetched these
- * figures and cached them on this machine. The shell reads that file and this
- * module receives it over IPC like everything else.
- * ---------------------------------------------------------------------- */
-
-/** Marks figures stated directly by a provider. Mirrors Rust `LiveUsageSupport`. */
-export type LiveUsageSupport = "live"
-
-/** Whether a live reading still describes now. */
-export type LiveUsageFreshness = "fresh" | "stale"
-
-/**
- * One provider-reported allowance.
- *
- * Every field through `resetsAt` is either something the provider stated or
- * null. In particular `usedPercent` is null — never 0 — when the provider did
- * not say, because a meter reading empty and a meter reading unknown are
- * different facts and the views render them differently. The last two fields
- * are the exception: both are derived from this window's own sample history
- * rather than stated by anyone.
- */
-export interface LiveUsageWindowPayload {
-  /** `five-hour`, `seven-day`, `weekly-<model>`, or the provider's own name. */
-  id: string
-  /** `primaryShort` | `primaryLong` | `supplemental` | the provider's word. */
-  role: string
-  /** `rolling` | `weekly` | `daily` | `monthly` | `billingCycle` | provider's. */
-  kind: string
-  /** The model a scoped window covers, when it covers one. */
-  scopeModel: string | null
-  /** Consumed capacity, 0–100. Never remaining. */
-  usedPercent: number | null
-  startsAt: string | null
-  resetsAt: string | null
-  /**
-   * Whether trustworthy history shows non-zero usage anywhere in this
-   * window's current allowance period. Consulted only for a supplemental,
-   * model-scoped window — see `isUsageWindowVisible` in `liveUsage.ts`.
-   */
-  hasNonzeroUsageInCurrentPeriod: boolean
-  /** What this window's own history supports saying about it. */
-  forecast: LiveUsageForecastPayload
-}
-
-/**
- * The derived half of a window. Mirrors Rust `LiveUsageForecast`.
- *
- * Exactly one of `unavailableReason` and the value fields is populated, and
- * that is not a formality: "we have not seen enough of your week to say" and
- * "you are on track" are different answers, only one of them reassuring. A
- * null value here always means the former, so the views say so rather than
- * rendering a blank.
- */
-export interface LiveUsageForecastPayload {
-  /** `stale` | `transition` | `sparseHistory`, or null when there is one. */
-  unavailableReason: string | null
-  /** `low` | `medium` | `high`. */
-  confidence: string | null
-  /** Percentage points of the allowance consumed per hour. */
-  consumptionRate: number | null
-  /** Current rate over the rate that lands exactly at the reset. >1 overshoots. */
-  paceRatio: number | null
-  /** Last half hour's rate over the last two hours'. >1 is speeding up. */
-  paceTrend: number | null
-  /** When the allowance runs out at the current rate. */
-  runwayAt: string | null
-  /** Points of this window consumed since the reader's local midnight. */
-  usedToday: number | null
-}
-
-/** Metered spend alongside the allowance. */
-export interface LiveExtraUsagePayload {
-  /** Whether the account permits this path. `false` differs from unknown. */
-  enabled: boolean
-  usedPercent: number | null
-  used: number | null
-  remaining: number | null
-  limit: number | null
-  currency: string | null
-}
-
-/** Provider credits that manually reset rate limits. */
-export interface LiveUsageResetCreditsPayload {
-  availableCount: number
-}
-
-/** The account's subscription plan, in the provider's own raw strings. */
-export interface LiveUsagePlanPayload {
-  name: string
-  tier: string | null
-}
-
-/** One provider account's live usage. Mirrors Rust `LiveProviderUsage`. */
-export interface LiveProviderUsagePayload {
-  /** Canonical id, matching `ProviderUsagePayload.provider` so the two join. */
-  provider: string
-  /** Stable opaque account key. Null when the source does not identify an account. */
-  accountKey: string | null
-  displayName: string
-  support: LiveUsageSupport
-  freshness: LiveUsageFreshness
-  /** Where the figures came from. Safe to display; carries no account id. */
-  sourceLabel: string
-  /** When the *provider fact* was observed — not when the app read it. */
-  observedAt: string
-  windows: LiveUsageWindowPayload[]
-  extraUsage: LiveExtraUsagePayload | null
-  resetCredits: LiveUsageResetCreditsPayload | null
-  /** The subscription plan, in the provider's own raw strings. Null when the source does not report one. */
-  plan: LiveUsagePlanPayload | null
-}
-
-/** A source that failed, in terms a reader can act on. */
-export interface LiveUsageSourceErrorPayload {
-  source: string
-  /**
-   * The canonical id of the provider the source answers for. A failed source
-   * contributes no entry to `providers`, so this is how the views keep a
-   * section for the provider the failure left without a reading. Empty on a
-   * snapshot cached before the field existed.
-   */
-  provider: string
-  /** The provider's display name, for example "Claude". Empty like `provider`. */
-  displayName: string
-  /** `authentication` | `rateLimited` | `schema` | `unavailable`. */
-  category: string
-}
-
-/**
- * Live provider usage as one snapshot. Mirrors Rust `LiveUsageSummary`.
- *
- * An empty `providers` list is the ordinary state and the views render
- * nothing. `errors` is separate so "nothing found" and "something broke" never
- * look alike.
- */
-export interface LiveUsageSummaryPayload {
-  providers: LiveProviderUsagePayload[]
-  errors: LiveUsageSourceErrorPayload[]
-  /**
-   * Every provider antiburn can meter, shown or hidden, ordered by id.
-   *
-   * Says which kind of empty `providers` is. A roster whose entries are all
-   * hidden means the reader turned the meters off. A roster with entries
-   * still shown means antiburn found nothing to report.
-   */
-  meters: LiveUsageMeterPayload[]
-  generatedAt: string
-}
-
-/**
- * One provider antiburn can meter. Mirrors Rust `LiveUsageMeter`.
- *
- * The roster comes from the registered sources, not from the readings: a
- * hidden provider is never asked, so it is absent from `providers`. This list
- * is what keeps its switch on screen.
- */
-export interface LiveUsageMeterPayload {
-  /** The canonical provider id, for example `anthropic`. */
-  provider: string
-  /** The provider's display name, for example "Claude". */
-  displayName: string
-  /** False when the reader turned this meter off. */
-  shown: boolean
 }
 
 /** One repository row. Mirrors Rust `RepositoryItem`. */
@@ -1086,17 +851,42 @@ export async function getProviderUsage(): Promise<ProviderUsageSummaryPayload> {
   })
 }
 
+export async function getSessionLimitAllocations(): Promise<SessionLimitAllocationSummaryPayload> {
+  if (!hasShell()) return EMPTY_SESSION_LIMIT_ALLOCATIONS
+  return invoke<SessionLimitAllocationSummaryPayload>("get_session_limit_allocations")
+}
+
+export const EMPTY_SESSION_LIMIT_ALLOCATIONS: SessionLimitAllocationSummaryPayload = {
+  allocations: [],
+  generatedAt: "",
+}
+
 /** What provider usage looks like with nothing to report. */
 export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
   providers: [],
   totals: {
-    today: { tokensIn: 0, tokensOut: 0, cacheRead: 0, estimatedUsd: null, sessionCount: 0 },
-    week: { tokensIn: 0, tokensOut: 0, cacheRead: 0, estimatedUsd: null, sessionCount: 0 },
+    today: {
+      tokensIn: 0,
+      tokensOut: 0,
+      cacheRead: 0,
+      estimatedUsd: null,
+      costComplete: true,
+      sessionCount: 0,
+    },
+    week: {
+      tokensIn: 0,
+      tokensOut: 0,
+      cacheRead: 0,
+      estimatedUsd: null,
+      costComplete: true,
+      sessionCount: 0,
+    },
     monthToDate: {
       tokensIn: 0,
       tokensOut: 0,
       cacheRead: 0,
       estimatedUsd: null,
+      costComplete: true,
       sessionCount: 0,
     },
     last30Days: {
@@ -1104,6 +894,7 @@ export const EMPTY_PROVIDER_USAGE: ProviderUsageSummaryPayload = {
       tokensOut: 0,
       cacheRead: 0,
       estimatedUsd: null,
+      costComplete: true,
       sessionCount: 0,
     },
   },

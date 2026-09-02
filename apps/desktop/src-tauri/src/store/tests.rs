@@ -334,7 +334,7 @@ fn provider_hints_migration_keeps_old_analysis_unknown() {
         .unwrap()
         .expect("legacy analysis survives");
 
-    assert_eq!(store.schema_version().unwrap(), 27);
+    assert_eq!(store.schema_version().unwrap(), 28);
     assert_eq!(analysis.provider_hints_json, None);
 }
 
@@ -3710,10 +3710,22 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 27);
+    assert_eq!(super::schema::MIGRATIONS.len(), 28);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 27);
+    assert_eq!(store.schema_version().unwrap(), 28);
+    let index_exists = store
+        .lock()
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'index' AND name = 'turn_usage_timestamp'
+            )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap();
+    assert!(index_exists);
 }
 
 #[test]
@@ -3779,6 +3791,41 @@ fn publishing_evidence_keeps_only_the_current_fence_turn_rows() {
         count_turn_rows(&connection, &turn_session_key(&key), claim.claim_fence).unwrap(),
         2
     );
+}
+
+#[test]
+fn session_usage_turns_returns_published_rows_at_the_time_boundary() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "session-usage-turns", 100, 60);
+    let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[])
+            .unwrap()
+    );
+    {
+        let connection = store.lock();
+        insert_turn_rows(
+            &connection,
+            &turn_session_key(&key),
+            claim.claim_fence + 1,
+            &[turn_row(2)],
+        )
+        .unwrap();
+    }
+
+    let rows = store.session_usage_turns(1_001).unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key, key);
+    assert_eq!(rows[0].turns.len(), 1);
+    assert_eq!(rows[0].turns[0].ts_ms, Some(1_001));
+    assert_eq!(rows[0].turns[0].model.as_deref(), Some("claude-opus-4-6"));
+    assert_eq!(rows[0].turns[0].input_tokens, 10);
+    assert_eq!(rows[0].turns[0].output_tokens, 5);
 }
 
 #[test]

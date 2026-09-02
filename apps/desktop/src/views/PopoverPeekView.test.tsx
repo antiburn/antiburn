@@ -50,7 +50,14 @@ const PROVIDER_DATA: PopoverPeekData = {
 }
 
 function providerData(provider: string, displayName: string) {
-  const usage = { tokensIn: 1, tokensOut: 1, cacheRead: 0, estimatedUsd: 0.01, sessionCount: 1 }
+  const usage = {
+    tokensIn: 1,
+    tokensOut: 1,
+    cacheRead: 0,
+    estimatedUsd: 0.01,
+    costComplete: true,
+    sessionCount: 1,
+  }
   return {
     kind: "provider" as const,
     summary: {

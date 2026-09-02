@@ -330,7 +330,7 @@ pub enum ProviderUsageStaleness {
 /// field anywhere in this type. Session evidence records what was *spent*; a
 /// denominator would have to be invented, and an invented denominator is the
 /// one thing this surface must never show.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUsageWindow {
     /// Effective input: fresh prompt tokens plus prompt-cache writes, matching
@@ -344,9 +344,25 @@ pub struct ProviderUsageWindow {
     /// priced. Absent when none could. A partial estimate is possible and is
     /// signalled by [`ProviderUsageState::Observed`], never by this field.
     pub estimated_usd: Option<f64>,
+    /// True when every token-bearing model in this window has a catalog price.
+    /// Empty windows are complete because they contain no unknown cost.
+    pub cost_complete: bool,
     /// Sessions that contributed to this window. A session that used two
     /// providers is counted once under each.
     pub session_count: u32,
+}
+
+impl Default for ProviderUsageWindow {
+    fn default() -> Self {
+        Self {
+            tokens_in: 0,
+            tokens_out: 0,
+            cache_read: 0,
+            estimated_usd: None,
+            cost_complete: true,
+            session_count: 0,
+        }
+    }
 }
 
 /// The three windows every provider is summarized over.
@@ -401,6 +417,38 @@ pub struct ProviderUsageSummary {
     /// Totals per source agent across every attributed provider and account.
     pub agents: Vec<ProviderAgentUsage>,
     /// ISO-8601 stamp of the moment this snapshot was computed.
+    pub generated_at: String,
+}
+
+/// The provider allowance represented by one session estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionLimitMetric {
+    Weekly,
+    FiveHour,
+}
+
+/// One session's estimated share of a provider-reported allowance.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionLimitAllocation {
+    pub agent: String,
+    pub session_id: String,
+    pub wsl_distro: Option<String>,
+    pub metric: SessionLimitMetric,
+    pub provider: String,
+    pub display_name: String,
+    pub account_key: Option<String>,
+    pub window_id: String,
+    pub resets_at: String,
+    pub percent: f64,
+}
+
+/// Current per-session estimates, computed from local turns and live limits.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionLimitAllocationSummary {
+    pub allocations: Vec<SessionLimitAllocation>,
     pub generated_at: String,
 }
 

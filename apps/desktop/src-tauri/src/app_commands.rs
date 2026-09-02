@@ -28,6 +28,7 @@ macro_rules! with_app_commands {
             commands::get_session_analysis => "get_session_analysis",
             commands::get_session_analysis_fingerprint => "get_session_analysis_fingerprint",
             commands::get_session_hygiene => "get_session_hygiene",
+            commands::get_session_limit_allocations => "get_session_limit_allocations",
             commands::get_settings => "get_settings",
             commands::get_storage_health => "get_storage_health",
             commands::get_subagent_analysis => "get_subagent_analysis",

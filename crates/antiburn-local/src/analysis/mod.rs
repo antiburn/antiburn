@@ -83,12 +83,12 @@ pub use metrics_sink::{RETAINED_METRICS_BYTES_BOUND, SessionMetricsAccumulator, 
 pub use model::{
     EventSource, ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
 };
-pub use pricing::{install_runtime_pricing, price_breakdown, pricing_generation};
+pub use pricing::{install_runtime_pricing, lookup_pricing, price_breakdown, pricing_generation};
 pub use replay::{MissingParentRows, metrics_by_source, metrics_from_rows};
 pub use rows::{
     MemoryTurnRowStore, TURN_MIGRATIONS, TURN_ROW_BATCH_SIZE, TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL,
-    TURN_SCHEMA_V3_SQL, TurnRow, TurnRowError, TurnRowSink, TurnRowStore, TurnScope,
-    TurnSessionKey, count_turn_content_rows, count_turn_rows, delete_turn_rows,
+    TURN_SCHEMA_V3_SQL, TURN_SCHEMA_V4_SQL, TurnRow, TurnRowError, TurnRowSink, TurnRowStore,
+    TurnScope, TurnSessionKey, count_turn_content_rows, count_turn_rows, delete_turn_rows,
     delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_turn_rows,
     turn_row_from_event,
 };

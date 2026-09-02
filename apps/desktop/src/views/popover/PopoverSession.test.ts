@@ -8,6 +8,7 @@ import type { SessionSubject } from "./SessionPane"
 const getSessionAnalysis = vi.hoisted(() => vi.fn())
 const getSessionAnalysisFingerprint = vi.hoisted(() => vi.fn())
 const getSubagentAnalysis = vi.hoisted(() => vi.fn())
+const getSessionLimitAllocations = vi.hoisted(() => vi.fn())
 const setPopoverHeight = vi.hoisted(() => vi.fn())
 
 // The analysis commands are overridden. All other wrappers keep their real
@@ -19,8 +20,17 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     getSessionAnalysis,
     getSessionAnalysisFingerprint,
     getSubagentAnalysis,
+    getSessionLimitAllocations,
     setPopoverHeight,
   }
+})
+
+beforeEach(() => {
+  getSessionLimitAllocations.mockReset()
+  getSessionLimitAllocations.mockResolvedValue({
+    generatedAt: "2027-01-15T08:00:00Z",
+    allocations: [],
+  })
 })
 
 describe("PopoverSession surface presentation", () => {
@@ -37,6 +47,7 @@ describe("PopoverSession surface presentation", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.useRealTimers()
   })
 
   it("keeps Usage presented until the winning resize presents the requested session", async () => {
@@ -107,6 +118,61 @@ describe("PopoverSession surface presentation", () => {
     const unsubscribe = session.subscribe(() => {})
 
     await vi.waitFor(() => expect(setPopoverHeight).toHaveBeenCalledWith(700, false))
+    unsubscribe()
+  })
+
+  it("coalesces overlapping allocation requests into one trailing refresh", async () => {
+    let resolveFirst!: () => void
+    getSessionLimitAllocations
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = () =>
+              resolve({ generatedAt: "2027-01-15T08:00:00Z", allocations: [] })
+          }),
+      )
+      .mockResolvedValue({ generatedAt: "2027-01-15T08:00:01Z", allocations: [] })
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.waitFor(() => expect(resolveFirst).toBeTypeOf("function"))
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
+
+    resolveFirst()
+
+    await vi.waitFor(() => expect(getSessionLimitAllocations).toHaveBeenCalledTimes(2))
+    unsubscribe()
+  })
+
+  it("updates the snapshot when the next cached allocation expires", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime("2027-01-15T08:00:00Z")
+    getSessionLimitAllocations.mockResolvedValue({
+      generatedAt: "2027-01-15T08:00:00Z",
+      allocations: [
+        {
+          agent: "claude-code",
+          sessionId: "session-1",
+          wslDistro: null,
+          provider: "anthropic",
+          displayName: "Claude",
+          accountKey: null,
+          metric: "weekly",
+          windowId: "weekly-main",
+          resetsAt: "2027-01-15T08:00:01Z",
+          percent: 10,
+        },
+      ],
+    })
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(session.getSnapshot().sessionLimitAllocations.allocations).toHaveLength(1)
+    const before = session.getSnapshot().now
+
+    await vi.advanceTimersByTimeAsync(1_001)
+
+    expect(session.getSnapshot().now).toBeGreaterThan(before)
     unsubscribe()
   })
 })

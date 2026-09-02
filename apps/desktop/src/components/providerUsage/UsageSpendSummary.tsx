@@ -2,16 +2,27 @@ import type { ProviderUsageWindowsPayload } from "../../lib/ipc"
 import { formatCompact, formatCost } from "../../lib/presentation/sessionAnalysis"
 import { windowTokens } from "../../lib/presentation/providerUsage"
 
+const EMPTY_USAGE_WINDOW = {
+  tokensIn: 0,
+  tokensOut: 0,
+  cacheRead: 0,
+  estimatedUsd: null,
+  costComplete: true,
+  sessionCount: 0,
+}
+
 export const EMPTY_USAGE_WINDOWS: ProviderUsageWindowsPayload = {
-  today: { tokensIn: 0, tokensOut: 0, cacheRead: 0, estimatedUsd: null, sessionCount: 0 },
-  week: { tokensIn: 0, tokensOut: 0, cacheRead: 0, estimatedUsd: null, sessionCount: 0 },
-  monthToDate: { tokensIn: 0, tokensOut: 0, cacheRead: 0, estimatedUsd: null, sessionCount: 0 },
-  last30Days: { tokensIn: 0, tokensOut: 0, cacheRead: 0, estimatedUsd: null, sessionCount: 0 },
+  today: { ...EMPTY_USAGE_WINDOW },
+  week: { ...EMPTY_USAGE_WINDOW },
+  monthToDate: { ...EMPTY_USAGE_WINDOW },
+  last30Days: { ...EMPTY_USAGE_WINDOW },
 }
 
 function metric(window: ProviderUsageWindowsPayload["today"]): string {
   const tokens = formatCompact(windowTokens(window))
-  return window.estimatedUsd == null ? tokens : `${formatCost(window.estimatedUsd)} · ${tokens}`
+  return !window.costComplete || window.estimatedUsd == null
+    ? tokens
+    : `${formatCost(window.estimatedUsd)} · ${tokens}`
 }
 
 export function UsageSpendSummary({
