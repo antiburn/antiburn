@@ -23,8 +23,8 @@ use antiburn_local::analysis::{
     SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
     SessionMetricsAccumulator, SessionSummary, SkillUse, SourceCapabilities, SourceClaim,
     SourceKind, TurnRow, TurnRowSink, TurnRowStore, TurnScope, VisitOutcome, adapter_for,
-    aggregate_metrics, append_only_guarantee, merge_metrics, metrics_by_source, metrics_from_rows,
-    price_breakdown, pricing_generation,
+    aggregate_metrics, append_only_guarantee, evidence_from_facts, merge_metrics,
+    metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
@@ -874,21 +874,40 @@ fn stream_vendor_with_hooks(
         .map(|child| (child.metrics(), child.started_at_ms().map(|ts| ts / 1000)))
         .collect();
     let merged = merge_metrics(parent, children);
-    // A pass without a row store publishes no evidence: the residual alone
-    // cannot build a `SessionEvidence`, since every row-derived group comes
-    // from `TurnFacts`. A row query failure fails the whole pass, the same
-    // way a turn-row write failure does above — published metrics must
-    // never disagree with rows this pass could not read back. The same
-    // fail-the-pass rule covers `row_projections`: `inclusive_model_breakdown`
-    // and `model_runs` must never publish out of step with the rows this
-    // pass itself wrote.
+    // A pass without a row store publishes no evidence. Rows and a coverage
+    // record are both required. Neither exists without a store. A query or
+    // write failure fails the whole pass. This matches the turn-row write
+    // failure above: published metrics must never disagree with rows this
+    // pass could not read back. The same fail-the-pass rule covers
+    // `row_projections`: `inclusive_model_breakdown` and `model_runs` must
+    // never publish out of step with the rows this pass itself wrote.
     let (evidence, row_projections) = match turn_row_store {
         Some(store) => {
-            let facts = match store.query_turn_facts() {
-                Ok(facts) => facts,
-                Err(_) => return StreamOutcome::ParentUnreadable,
+            // The worker never builds `SessionEvidence` from its own
+            // in-memory fold. It writes the fold's `SessionCoverageRecord`
+            // under this pass's claim fence. Then it reads the facts back
+            // through the store's own SQL query and reads the record back
+            // too. It replays both with `evidence_from_facts`. A resumed
+            // pass with no live fold needs the same rebuild, so the worker
+            // exercises it on every publish.
+            let evidence = match parent_residual {
+                Some(residual) => {
+                    let record = residual.coverage_record();
+                    if store.write_coverage_record(&record).is_err() {
+                        return StreamOutcome::ParentUnreadable;
+                    }
+                    let facts = match store.query_turn_facts() {
+                        Ok(facts) => facts,
+                        Err(_) => return StreamOutcome::ParentUnreadable,
+                    };
+                    let record = match store.query_coverage_record() {
+                        Ok(Some(record)) => record,
+                        Ok(None) | Err(_) => return StreamOutcome::ParentUnreadable,
+                    };
+                    Some(evidence_from_facts(&facts, &record))
+                }
+                None => None,
             };
-            let evidence = parent_residual.map(|residual| residual.evidence(&facts));
             let model_breakdown = match store.query_model_breakdown() {
                 Ok(model_breakdown) => model_breakdown,
                 Err(_) => return StreamOutcome::ParentUnreadable,

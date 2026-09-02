@@ -37,10 +37,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, ModelRun, PARSER_REVISION, TurnFacts, TurnRow,
-    TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows, delete_turn_rows,
-    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_turn_rows,
-    query_model_breakdown, query_model_runs, query_turn_facts, query_turn_rows,
+    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, ModelRun, PARSER_REVISION, SessionCoverageRecord,
+    TurnFacts, TurnRow, TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows,
+    delete_turn_rows, delete_turn_rows_except_fence, delete_turn_rows_for_fence,
+    insert_coverage_record, insert_turn_rows, query_coverage_record, query_model_breakdown,
+    query_model_runs, query_turn_facts, query_turn_rows,
 };
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -1232,6 +1233,7 @@ impl Store {
         tx.execute("DELETE FROM session_analysis", [])?;
         tx.execute("DELETE FROM session_evidence", [])?;
         tx.execute("DELETE FROM turn_content", [])?;
+        tx.execute("DELETE FROM session_coverage", [])?;
         tx.execute("DELETE FROM turn", [])?;
         let sessions = tx.execute("DELETE FROM session", [])?;
         tx.execute("DELETE FROM provider_account_seen", [])?;
@@ -1445,6 +1447,39 @@ impl Store {
             &turn_session_key(key),
             published_fence,
         )?))
+    }
+
+    /// One session's last published [`SessionCoverageRecord`], or `None`
+    /// when this session has never published.
+    ///
+    /// Mirrors [`Self::published_turn_rows`]'s contract exactly, over
+    /// `session_coverage` instead of `turn`: `published_fence` names a
+    /// complete coverage record for the same reason it names a complete row
+    /// set, and the evidence lookup and the record query run under one
+    /// lock for the same race-free guarantee.
+    pub fn published_coverage_record(
+        &self,
+        key: &SessionKey,
+    ) -> Result<Option<SessionCoverageRecord>> {
+        let connection = self.lock();
+        let Some(evidence) = connection
+            .query_row(
+                EVIDENCE_BY_KEY_SQL,
+                params![key.environment_key, key.agent, key.session_id],
+                evidence_from_row,
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let Some(published_fence) = evidence.published_fence else {
+            return Ok(None);
+        };
+        Ok(query_coverage_record(
+            &connection,
+            &turn_session_key(key),
+            published_fence,
+        )?)
     }
 
     /// Write one session's analysis columns directly, without the evidence
@@ -2332,10 +2367,10 @@ fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<bool> 
           WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         parameters,
     )?;
-    // Same reasoning as `session_evidence` above: the v15 cascades from
-    // `session` cover `turn` and `turn_content`, but this stays explicit and
-    // pragma-independent. `turn_content` has no direct session key, so it is
-    // deleted through `turn`'s rowid.
+    // Same reasoning as `session_evidence` above: the v15 and v28 cascades
+    // from `session` cover `turn`, `turn_content`, and `session_coverage`,
+    // but this stays explicit and pragma-independent. `turn_content` has no
+    // direct session key, so it is deleted through `turn`'s rowid.
     delete_turn_rows_in(connection, key)?;
     let removed = connection.execute(
         "DELETE FROM session WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
@@ -2512,6 +2547,26 @@ impl TurnRowStore for FencedTurnRowStore {
     fn query_model_runs(&self) -> Result<Vec<ModelRun>, TurnRowError> {
         let connection = self.store.lock();
         Ok(query_model_runs(
+            &connection,
+            &turn_session_key(&self.key),
+            self.claim_fence,
+        )?)
+    }
+
+    fn write_coverage_record(&self, record: &SessionCoverageRecord) -> Result<(), TurnRowError> {
+        let connection = self.store.lock();
+        insert_coverage_record(
+            &connection,
+            &turn_session_key(&self.key),
+            self.claim_fence,
+            record,
+        )?;
+        Ok(())
+    }
+
+    fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError> {
+        let connection = self.store.lock();
+        Ok(query_coverage_record(
             &connection,
             &turn_session_key(&self.key),
             self.claim_fence,

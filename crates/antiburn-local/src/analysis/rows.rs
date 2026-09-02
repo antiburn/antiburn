@@ -4,14 +4,16 @@
 //! query the durable rows instead of streaming an accumulator, and lets a
 //! catalog or policy change requery rows instead of reparsing a transcript.
 //!
-//! This module owns only the `turn` and `turn_content` DDL and the read/write
-//! functions over a borrowed [`rusqlite::Connection`]. The crate does not open
-//! the app database and does not know any other app table.
+//! This module owns only the `turn`, `turn_content`, and `session_coverage`
+//! DDL and the read/write functions over a borrowed [`rusqlite::Connection`].
+//! The crate does not open the app database and does not know any other app
+//! table.
 
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::analysis::evidence::SessionCoverageRecord;
 use crate::analysis::evidence_query::{TurnFacts, query_turn_facts};
 use crate::analysis::interface::{ContentPart, NormalizedRecord, RecordSink, SessionSummary};
 use crate::analysis::model::{CompactionTrigger, EventSource, NormalizedEvent, Role};
@@ -100,13 +102,44 @@ ALTER TABLE turn ADD COLUMN last_tool TEXT;
 ALTER TABLE turn ADD COLUMN subagent_launches INTEGER NOT NULL DEFAULT 0;
 "#;
 
-/// Every migration that builds the `turn` and `turn_content` schema, in
-/// order. A caller that creates this schema from scratch (a test, an
-/// in-memory store) applies every entry in order; the app applies
-/// [`TURN_SCHEMA_SQL`], [`TURN_SCHEMA_V2_SQL`], and [`TURN_SCHEMA_V3_SQL`] as
-/// its own separately numbered migrations instead, since [`TURN_SCHEMA_SQL`]
-/// is already applied on user machines.
-pub const TURN_MIGRATIONS: &[&str] = &[TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL, TURN_SCHEMA_V3_SQL];
+/// DDL for the `session_coverage` table: one row per `(environment_key,
+/// agent, session_id, claim_fence)`, holding the serialized
+/// [`SessionCoverageRecord`] a pass wrote alongside its turn rows under the
+/// same fence.
+///
+/// Carries the same `ON DELETE CASCADE` foreign key to `session` that `turn`
+/// does, for the same reason: deleting a session must not leave an orphaned
+/// coverage record behind. [`delete_turn_rows_except_fence`] and
+/// [`delete_turn_rows_for_fence`] delete from this table too — the published
+/// fence covers rows and the coverage record together, never one without the
+/// other.
+pub const SESSION_COVERAGE_SCHEMA_SQL: &str = r#"
+CREATE TABLE session_coverage (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    claim_fence INTEGER NOT NULL,
+    coverage_json TEXT NOT NULL,
+    coverage_schema_revision INTEGER NOT NULL,
+    PRIMARY KEY (environment_key, agent, session_id, claim_fence),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+"#;
+
+/// Every migration that builds the `turn`, `turn_content`, and
+/// `session_coverage` schema, in order. A caller that creates this schema
+/// from scratch (a test, an in-memory store) applies every entry in order;
+/// the app applies [`TURN_SCHEMA_SQL`], [`TURN_SCHEMA_V2_SQL`],
+/// [`TURN_SCHEMA_V3_SQL`], and [`SESSION_COVERAGE_SCHEMA_SQL`] as its own
+/// separately numbered migrations instead, since [`TURN_SCHEMA_SQL`] is
+/// already applied on user machines.
+pub const TURN_MIGRATIONS: &[&str] = &[
+    TURN_SCHEMA_SQL,
+    TURN_SCHEMA_V2_SQL,
+    TURN_SCHEMA_V3_SQL,
+    SESSION_COVERAGE_SCHEMA_SQL,
+];
 
 /// Number of rows a [`TurnRowSink`] buffers before it writes them, unless the
 /// caller picks a different size with [`TurnRowSink::with_batch_size`].
@@ -311,6 +344,14 @@ pub trait TurnRowStore: Send + Sync {
     /// its own session key and fence, parent runs first. See
     /// [`crate::analysis::query_model_runs`].
     fn query_model_runs(&self) -> Result<Vec<crate::analysis::model::ModelRun>, TurnRowError>;
+
+    /// Writes this session's [`SessionCoverageRecord`] under this store's own
+    /// session key and fence, replacing any record already written under it.
+    fn write_coverage_record(&self, record: &SessionCoverageRecord) -> Result<(), TurnRowError>;
+
+    /// Reads the coverage record this store wrote under its own session key
+    /// and fence. `None` when nothing has written one yet under this fence.
+    fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError>;
 }
 
 /// A [`RecordSink`] that turns `MetricsEvent` records into [`TurnRow`]s,
@@ -535,7 +576,8 @@ pub fn insert_turn_rows(
 ///
 /// Used after a pass publishes: rows from every earlier, superseded pass are
 /// dropped, keeping only the rows the just-published evidence was built
-/// from. Returns the number of `turn` rows removed.
+/// from. Also deletes any `session_coverage` record stamped with a fence
+/// other than `keep_fence`. Returns the number of `turn` rows removed.
 pub fn delete_turn_rows_except_fence(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
@@ -547,6 +589,12 @@ pub fn delete_turn_rows_except_fence(
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
                 AND claim_fence != ?4
          )",
+        params![key.environment_key, key.agent, key.session_id, keep_fence],
+    )?;
+    conn.execute(
+        "DELETE FROM session_coverage
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+            AND claim_fence != ?4",
         params![key.environment_key, key.agent, key.session_id, keep_fence],
     )?;
     conn.execute(
@@ -562,7 +610,8 @@ pub fn delete_turn_rows_except_fence(
 /// Used when a pass loses the publish race (its claim fence no longer
 /// matches): the rows it wrote never became part of any published evidence,
 /// so they are cleaned up under their own fence rather than left to
-/// accumulate. Returns the number of `turn` rows removed.
+/// accumulate. Also deletes any `session_coverage` record stamped with
+/// `claim_fence`. Returns the number of `turn` rows removed.
 pub fn delete_turn_rows_for_fence(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
@@ -577,6 +626,12 @@ pub fn delete_turn_rows_for_fence(
         params![key.environment_key, key.agent, key.session_id, claim_fence],
     )?;
     conn.execute(
+        "DELETE FROM session_coverage
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+            AND claim_fence = ?4",
+        params![key.environment_key, key.agent, key.session_id, claim_fence],
+    )?;
+    conn.execute(
         "DELETE FROM turn
           WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
             AND claim_fence = ?4",
@@ -584,14 +639,77 @@ pub fn delete_turn_rows_for_fence(
     )
 }
 
-/// Deletes every row for `key`. Used by session delete and
-/// clear-local-session-data paths.
+const UPSERT_SESSION_COVERAGE_SQL: &str = "INSERT INTO session_coverage (
+    environment_key, agent, session_id, claim_fence,
+    coverage_json, coverage_schema_revision
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+ON CONFLICT (environment_key, agent, session_id, claim_fence) DO UPDATE SET
+    coverage_json = excluded.coverage_json,
+    coverage_schema_revision = excluded.coverage_schema_revision";
+
+/// Writes `record` for `key` under `claim_fence`, replacing any record
+/// already written under that same key and fence.
+pub fn insert_coverage_record(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+    record: &SessionCoverageRecord,
+) -> rusqlite::Result<()> {
+    let coverage_json = serde_json::to_string(record)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    conn.execute(
+        UPSERT_SESSION_COVERAGE_SQL,
+        params![
+            key.environment_key,
+            key.agent,
+            key.session_id,
+            claim_fence,
+            coverage_json,
+            record.coverage_schema_revision,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Reads the [`SessionCoverageRecord`] written for `key` under
+/// `claim_fence`. `None` when nothing has been written under that key and
+/// fence.
+pub fn query_coverage_record(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    claim_fence: i64,
+) -> rusqlite::Result<Option<SessionCoverageRecord>> {
+    let coverage_json: Option<String> = conn
+        .query_row(
+            "SELECT coverage_json FROM session_coverage
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND claim_fence = ?4",
+            params![key.environment_key, key.agent, key.session_id, claim_fence],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(coverage_json) = coverage_json else {
+        return Ok(None);
+    };
+    let record = serde_json::from_str(&coverage_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    Ok(Some(record))
+}
+
+/// Deletes every row, and every `session_coverage` record, for `key`. Used
+/// by session delete and clear-local-session-data paths.
 pub fn delete_turn_rows(conn: &Connection, key: &TurnSessionKey<'_>) -> rusqlite::Result<usize> {
     conn.execute(
         "DELETE FROM turn_content WHERE turn_rowid IN (
              SELECT rowid FROM turn
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
          )",
+        params![key.environment_key, key.agent, key.session_id],
+    )?;
+    conn.execute(
+        "DELETE FROM session_coverage
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         params![key.environment_key, key.agent, key.session_id],
     )?;
     conn.execute(
@@ -745,6 +863,18 @@ impl TurnRowStore for MemoryTurnRowStore {
             self.claim_fence,
         )
         .map_err(TurnRowError::from)
+    }
+
+    fn write_coverage_record(&self, record: &SessionCoverageRecord) -> Result<(), TurnRowError> {
+        let connection = self.connection.lock().expect("lock");
+        insert_coverage_record(&connection, &self.key(), self.claim_fence, record)
+            .map_err(TurnRowError::from)
+    }
+
+    fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError> {
+        let connection = self.connection.lock().expect("lock");
+        query_coverage_record(&connection, &self.key(), self.claim_fence)
+            .map_err(TurnRowError::from)
     }
 }
 
@@ -983,6 +1113,17 @@ mod tests {
         fn query_model_runs(&self) -> Result<Vec<crate::analysis::model::ModelRun>, TurnRowError> {
             Err(TurnRowError("not readable".to_owned()))
         }
+
+        fn write_coverage_record(
+            &self,
+            _record: &SessionCoverageRecord,
+        ) -> Result<(), TurnRowError> {
+            Err(TurnRowError("boom".to_owned()))
+        }
+
+        fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError> {
+            Err(TurnRowError("not readable".to_owned()))
+        }
     }
 
     /// A store over a real connection, so batching tests can assert on rows
@@ -1105,6 +1246,38 @@ mod tests {
         fn query_model_runs(&self) -> Result<Vec<crate::analysis::model::ModelRun>, TurnRowError> {
             let conn = self.conn.lock().expect("lock");
             crate::analysis::evidence_query::query_model_runs(
+                &conn,
+                &TurnSessionKey {
+                    environment_key: "native",
+                    agent: "claude",
+                    session_id: &self.key,
+                },
+                1,
+            )
+            .map_err(TurnRowError::from)
+        }
+
+        fn write_coverage_record(
+            &self,
+            record: &SessionCoverageRecord,
+        ) -> Result<(), TurnRowError> {
+            let conn = self.conn.lock().expect("lock");
+            insert_coverage_record(
+                &conn,
+                &TurnSessionKey {
+                    environment_key: "native",
+                    agent: "claude",
+                    session_id: &self.key,
+                },
+                1,
+                record,
+            )
+            .map_err(TurnRowError::from)
+        }
+
+        fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError> {
+            let conn = self.conn.lock().expect("lock");
+            query_coverage_record(
                 &conn,
                 &TurnSessionKey {
                     environment_key: "native",
