@@ -47,11 +47,11 @@ empty chart that looks like an idle session.
 
 ## Cost estimates
 
-Costs are computed on this device from a bundled price list, against the tokens a
-transcript recorded. They are **API-equivalent estimates**, not a bill:
+Costs are computed on this device from the latest valid models.dev snapshot, against
+the tokens a transcript recorded. They are **API-equivalent estimates**, not a bill:
 
-- prices are never fetched; the bundled catalog's review date is shown in Settings →
-  About;
+- prices refresh at startup and hourly while the app runs; the snapshot date is
+  shown in Settings → About;
 - a model with no price in the catalog produces no figure rather than a wrong zero,
   and the provider's total is then labelled as a floor;
 - work done on another machine is not counted, because antiburn cannot see it.
@@ -120,7 +120,10 @@ the next time it looks.
 antiburn needs no account or backend for its main work. The connections it makes
 beyond analytics and updates are yours, not ours: reading
 a provider's own figures with your own credentials is traffic between this machine
-and a provider you already use. The application's own connection to a service of
+and a provider you already use. antiburn also downloads a public model-price catalog
+from models.dev at startup and hourly while it runs. That request sends no session
+data or credentials, and the last valid copy stays on this machine. The application's
+own connection to a service of
 ours are analytics and the updater. The updater asks GitHub Releases whether a newer
 version exists. When automatic updates are enabled, it downloads and installs the
 signed bundle and restarts antiburn. The app never depends on either connection.

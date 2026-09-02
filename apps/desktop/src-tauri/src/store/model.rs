@@ -117,16 +117,6 @@ impl SessionActivityKey {
     }
 }
 
-/// Small persisted cursor used by the scanner before it reads transcript
-/// suffixes. Kept separate from [`SessionRecord`] so callers that only need
-/// the activity gate do not materialize titles, CWDs, or relationships.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SessionActivityState {
-    pub activity_cursor: String,
-    pub updated_at_epoch: Option<i64>,
-    pub activity_source: String,
-}
-
 /// Engine-derived analysis for one session, as cached.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnalysisRecord {

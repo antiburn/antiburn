@@ -12,21 +12,22 @@
 //! antiburn is an always-running background utility. CPU time, memory, open
 //! files, and disk I/O are therefore correctness constraints, not optional
 //! optimizations: a scan must do no more work, retain no more data in memory,
-//! and run no more often than the visible feature requires.
+//! and run no more often than the visible feature requires. A pass describes
+//! a file-backed session again only when its parent and child sizes have
+//! changed since the stored record; an unchanged source is reused without
+//! opening its transcript. This is what makes the unconditional tick in the
+//! next section affordable.
 //!
 //! When a pass runs:
 //!
 //! - **At launch**, once, if onboarding is finished. A first-run install has no
 //!   sources selected yet, so scanning before the flow completes would only
 //!   spend disk on a window nobody can see.
-//! - **Every [`TICK`] while the popover is open.** The popover *is* the view of
-//!   this data; refreshing behind a closed popover would burn disk on a machine
-//!   whose owner is not looking.
-//! - **Paused entirely while the popover is hidden.** The scheduler keeps
-//!   ticking (it is one timer) but does no work, so reopening the popover
-//!   refreshes within a tick rather than after a cold start.
-//! - **The moment the popover is opened**, so a reader never looks at a stale
-//!   list while waiting out a tick.
+//! - **Every [`TICK`], unconditionally.** The popover does not gate the timer:
+//!   a pass over sources that have not changed reads no transcript, so ticking
+//!   while the popover is hidden costs stat calls, not disk reads.
+//! - **The moment the popover is opened**, as reconciliation, so a reader never
+//!   waits out a tick behind a missed event.
 //! - **On demand**, from the rescan control and after any change to the source
 //!   selection.
 //!
@@ -82,7 +83,7 @@ use crate::analysis;
 use crate::dto::ScanStatus;
 use crate::repositories;
 use crate::storage_health::{self, checked};
-use crate::store::{SessionActivityKey, SessionActivityState, SessionKey, SessionRecord, Store};
+use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
 /// How often the scheduler wakes up.
 pub const TICK: Duration = Duration::from_secs(60);
@@ -104,7 +105,6 @@ pub const EVENT_FINISHED: &str = "scan:finished";
 #[derive(Default)]
 pub struct ScanController {
     running: AtomicBool,
-    popover_visible: AtomicBool,
     cancel: Arc<AtomicBool>,
     status: Mutex<ScanStatus>,
     kick: Notify,
@@ -114,15 +114,6 @@ impl ScanController {
     /// Ask for a pass as soon as the scheduler can start one.
     pub fn request(&self) {
         self.kick.notify_one();
-    }
-
-    /// Record whether the popover is on screen, which is what gates the timer.
-    pub fn set_popover_visible(&self, visible: bool) {
-        self.popover_visible.store(visible, Ordering::Relaxed);
-    }
-
-    fn popover_visible(&self) -> bool {
-        self.popover_visible.load(Ordering::Relaxed)
     }
 
     /// Ask the pass in flight to stop at its next phase boundary.
@@ -157,17 +148,6 @@ impl ScanController {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum Wake {
-    Launch,
-    Tick,
-    Kick,
-}
-
-pub(crate) fn should_run_scheduled_pass(wake: Wake, popover_visible: bool, allowed: bool) -> bool {
-    allowed && (!matches!(wake, Wake::Tick) || popover_visible)
-}
-
 pub(crate) fn on_demand_start(controller: &ScanController) -> bool {
     if controller.running.swap(true, Ordering::SeqCst) {
         return false;
@@ -180,24 +160,21 @@ pub(crate) fn on_demand_start(controller: &ScanController) -> bool {
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        crate::runtime_pricing::wait_until_ready(&app).await;
         // A fresh install has nothing to scan until the reader picks sources.
-        if should_run_scheduled_pass(Wake::Launch, false, scheduled_scanning_allowed(&app)) {
+        if scheduled_scanning_allowed(&app) {
             run_pass(&app, None).await;
         }
         loop {
             let controller = app.state::<ScanController>();
-            let wake = tokio::select! {
-                () = controller.kick.notified() => Wake::Kick,
-                () = tokio::time::sleep(TICK) => Wake::Tick,
-            };
+            tokio::select! {
+                () = controller.kick.notified() => {}
+                () = tokio::time::sleep(TICK) => {}
+            }
             // Checked after the wake-up rather than before the wait, so
             // resuming discovery takes effect at the next request or tick
             // instead of needing the app restarted.
-            if !should_run_scheduled_pass(
-                wake,
-                controller.popover_visible(),
-                scheduled_scanning_allowed(&app),
-            ) {
+            if !scheduled_scanning_allowed(&app) {
                 continue;
             }
             run_pass(&app, None).await;
@@ -304,9 +281,9 @@ async fn pass(app: &AppHandle, _activity_window_days: Option<u32>) -> anyhow::Re
         )
         .await;
 
-    let activity_states = store.session_activity_states()?;
+    let previous_records = store.session_records()?;
     let Described { records, rejected } =
-        describe_with_states(logs, &home, &ignored, &activity_states).await;
+        describe_with_states(logs, &home, &ignored, &previous_records).await;
     // Every write below is routed through the storage-health check, so a
     // database that has stopped accepting writes becomes a banner in the
     // popover rather than a list that silently stops changing.
@@ -370,7 +347,7 @@ async fn describe_with_states(
     logs: Vec<SessionLog>,
     home: &std::path::Path,
     ignored: &std::collections::HashSet<String>,
-    activity_states: &std::collections::HashMap<SessionActivityKey, SessionActivityState>,
+    previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
 ) -> Described {
     let indexed_titles = indexed_titles_for_logs(&logs).await;
     let mut records = Vec::with_capacity(logs.len());
@@ -385,11 +362,14 @@ async fn describe_with_states(
                 log.agent_type.slug(),
                 log.source_label(),
             );
-            let activity_state = activity_states.get(&activity_key).cloned();
+            let previous = previous_records.get(&activity_key).cloned();
             let indexed_title = recovered_id(&log)
                 .and_then(|session_id| indexed_titles.get(&(log.agent_type, session_id)).cloned());
             set.spawn(async move {
-                describe_one_with_activity(log, &home, indexed_title, activity_state).await
+                if let Some(reused) = reuse_unchanged_record(&log, previous.as_ref()).await {
+                    return DescribeOutcome::Session(Box::new(reused));
+                }
+                describe_one_with_activity(log, &home, indexed_title, previous).await
             });
         }
         while let Some(joined) = set.join_next().await {
@@ -447,11 +427,91 @@ enum DescribeOutcome {
     Skip,
 }
 
+/// Build the sizes-only activity cursor for one source: the parent path and
+/// size, plus each child's path and size. The format must stay byte-identical
+/// across releases — a stored row holds this string, and a format change
+/// would read as a change and re-queue evidence for every session.
+fn activity_cursor(
+    parent: &std::path::Path,
+    parent_size: u64,
+    children: &[(std::path::PathBuf, Option<u64>)],
+) -> String {
+    // Include the complete source set in the cursor. Parent + child sizes and
+    // identities make an unchanged orchestrator as cheap as a leaf while a
+    // child append naturally invalidates the gate.
+    let mut cursor_parts = vec![[
+        "parent".to_string(),
+        parent.to_string_lossy().into_owned(),
+        parent_size.to_string(),
+    ]];
+    for (child, child_size) in children {
+        cursor_parts.push([
+            "child".to_string(),
+            child.to_string_lossy().into_owned(),
+            child_size.map_or_else(|| "missing".to_string(), |size| size.to_string()),
+        ]);
+    }
+    cursor_parts.sort_unstable();
+    serde_json::to_string(&cursor_parts).expect("activity cursor is serializable")
+}
+
+/// Stat the parent and its children the same way [`semantic_activity_for_log`]
+/// does, and return the cursor those sizes produce. `None` when the source is
+/// not eligible for the unchanged-source skip: not a native file source, or a
+/// stat failed.
+async fn stat_activity_cursor(log: &SessionLog) -> Option<String> {
+    if !log.environment.is_native() {
+        // A WSL mount's stat behaviour is not trusted for this skip; describe
+        // it every pass, as today.
+        return None;
+    }
+    let SessionSource::File(path) = &log.source else {
+        return None;
+    };
+    let size = tokio::fs::metadata(path).await.ok()?.len();
+    let children = match log.agent_type {
+        AgentKind::Claude | AgentKind::Codex => {
+            Explorers::DISK
+                .list_subagents_for_transcript(&log.agent_type, path)
+                .await
+        }
+        _ => Vec::new(),
+    };
+    let mut child_sizes = Vec::with_capacity(children.len());
+    for child in &children {
+        let child_size = tokio::fs::metadata(child).await.ok().map(|meta| meta.len());
+        child_sizes.push((child.clone(), child_size));
+    }
+    Some(activity_cursor(path, size, &child_sizes))
+}
+
+/// Reuse a previous record verbatim when its source has not changed, so the
+/// pass never opens the transcript. Only a native file source with a stored
+/// record is eligible; provider-database, inline, and WSL sources always
+/// describe.
+async fn reuse_unchanged_record(
+    log: &SessionLog,
+    previous: Option<&SessionRecord>,
+) -> Option<SessionRecord> {
+    let previous = previous?;
+    let cursor = stat_activity_cursor(log).await?;
+    if cursor != previous.activity_cursor {
+        return None;
+    }
+    // An "event" row takes its activity from transcript content, and the
+    // cursor covers the sizes of that content. Any other row tracks the file
+    // mtime. A rewrite can keep the size, so such a row also needs the same
+    // discovered mtime before the pass can reuse it.
+    let mtime_matches =
+        previous.activity_source == "event" || previous.updated_at_epoch == log.updated_at;
+    mtime_matches.then(|| previous.clone())
+}
+
 /// Resolve the display timestamp from transcript events while using the
 /// persisted aggregate cursor as a cheap unchanged-source gate.
 async fn semantic_activity_for_log(
     log: &SessionLog,
-    previous: Option<&SessionActivityState>,
+    previous: Option<&SessionRecord>,
     children: &[std::path::PathBuf],
     preview: Option<&str>,
 ) -> (Option<i64>, String, String) {
@@ -463,28 +523,12 @@ async fn semantic_activity_for_log(
         return (log.updated_at, "mtime".to_string(), String::new());
     };
 
-    // Include the complete source set in the cursor. Parent + child sizes and
-    // identities make an unchanged orchestrator as cheap as a leaf while a
-    // child append naturally invalidates the gate.
-    let mut cursor_parts = vec![[
-        "parent".to_string(),
-        path.to_string_lossy().into_owned(),
-        size.to_string(),
-    ]];
+    let mut child_sizes = Vec::with_capacity(children.len());
     for child in children {
-        let child_size = tokio::fs::metadata(child)
-            .await
-            .ok()
-            .map(|meta| meta.len())
-            .map_or_else(|| "missing".to_string(), |size| size.to_string());
-        cursor_parts.push([
-            "child".to_string(),
-            child.to_string_lossy().into_owned(),
-            child_size,
-        ]);
+        let child_size = tokio::fs::metadata(child).await.ok().map(|meta| meta.len());
+        child_sizes.push((child.clone(), child_size));
     }
-    cursor_parts.sort_unstable();
-    let cursor = serde_json::to_string(&cursor_parts).expect("activity cursor is serializable");
+    let cursor = activity_cursor(path, size, &child_sizes);
 
     let unchanged_event = previous
         .is_some_and(|state| state.activity_source == "event" && state.activity_cursor == cursor);
@@ -553,7 +597,7 @@ async fn describe_one_with_activity(
     log: SessionLog,
     home: &std::path::Path,
     indexed_title: Option<ResolvedTitle>,
-    activity_state: Option<SessionActivityState>,
+    previous: Option<SessionRecord>,
 ) -> DescribeOutcome {
     let read = session_log_read(&log).await;
     let metadata = read.as_ref().map(|read| &read.metadata);
@@ -611,7 +655,7 @@ async fn describe_one_with_activity(
     let fork_parent_session_id = preview.and_then(analysis::fork_parent_from_content);
 
     let (updated_at_epoch, activity_source, activity_cursor) =
-        semantic_activity_for_log(&log, activity_state.as_ref(), &children, preview).await;
+        semantic_activity_for_log(&log, previous.as_ref(), &children, preview).await;
     let descriptor = SourceDescriptor {
         agent: log.agent_type,
         session_id: session_id.clone(),
@@ -1272,6 +1316,131 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_second_pass_over_an_unchanged_source_performs_no_head_read() {
+        let home = tempfile::TempDir::new().unwrap();
+        let path = write_claude_session(home.path(), "unchanged-source");
+        antiburn_local::discovery::track_head_reads(&path);
+        let store = crate::store::Store::open_in_memory(home.path()).unwrap();
+
+        let first = describe_with_states(
+            vec![log(AgentKind::Claude, path.clone(), 1_800_000_000)],
+            home.path(),
+            &HashSet::new(),
+            &store.session_records().unwrap(),
+        )
+        .await;
+        assert_eq!(first.records.len(), 1);
+        assert_eq!(antiburn_local::discovery::take_tracked_head_reads(&path), 1);
+        // `take_tracked_head_reads` deregisters the path, so each phase
+        // re-arms tracking for the read count it is about to check.
+        antiburn_local::discovery::track_head_reads(&path);
+        store
+            .upsert_sessions(&first.records, &agents::evidence_cohort())
+            .unwrap();
+
+        // Second pass, source unchanged: the stored record is reused verbatim
+        // and the transcript is never opened.
+        let second = describe_with_states(
+            vec![log(AgentKind::Claude, path.clone(), 1_800_000_100)],
+            home.path(),
+            &HashSet::new(),
+            &store.session_records().unwrap(),
+        )
+        .await;
+        assert_eq!(second.records.len(), 1);
+        assert_eq!(second.records[0], first.records[0]);
+        assert_eq!(antiburn_local::discovery::take_tracked_head_reads(&path), 0);
+        antiburn_local::discovery::track_head_reads(&path);
+        store
+            .upsert_sessions(&second.records, &agents::evidence_cohort())
+            .unwrap();
+
+        // A genuine append changes the cursor and forces a real read.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"type\":\"assistant\",\"timestamp\":\"2026-08-01T10:05:00Z\"}\n")
+            .unwrap();
+        let third = describe_with_states(
+            vec![log(AgentKind::Claude, path.clone(), 1_800_000_200)],
+            home.path(),
+            &HashSet::new(),
+            &store.session_records().unwrap(),
+        )
+        .await;
+        assert_eq!(third.records.len(), 1);
+        assert_eq!(antiburn_local::discovery::take_tracked_head_reads(&path), 1);
+    }
+
+    #[tokio::test]
+    async fn an_mtime_row_is_described_again_when_only_its_mtime_moved() {
+        let home = tempfile::TempDir::new().unwrap();
+        let path = write_claude_session(home.path(), "mtime-source");
+        let store = crate::store::Store::open_in_memory(home.path()).unwrap();
+
+        let first = describe_with_states(
+            vec![log(AgentKind::Claude, path.clone(), 1_800_000_000)],
+            home.path(),
+            &HashSet::new(),
+            &store.session_records().unwrap(),
+        )
+        .await;
+        assert_eq!(first.records.len(), 1);
+        // Simulate a row whose activity fell back to the file mtime.
+        let mut stored = first.records[0].clone();
+        stored.activity_source = "mtime".into();
+        stored.updated_at_epoch = Some(1_800_000_000);
+        store
+            .upsert_sessions(&[stored], &agents::evidence_cohort())
+            .unwrap();
+
+        // Same size and same mtime: reused without a read.
+        antiburn_local::discovery::track_head_reads(&path);
+        let same = describe_with_states(
+            vec![log(AgentKind::Claude, path.clone(), 1_800_000_000)],
+            home.path(),
+            &HashSet::new(),
+            &store.session_records().unwrap(),
+        )
+        .await;
+        assert_eq!(antiburn_local::discovery::take_tracked_head_reads(&path), 0);
+        assert_eq!(same.records[0].activity_source, "mtime");
+
+        // Same size but a newer mtime: the pass must describe it again.
+        antiburn_local::discovery::track_head_reads(&path);
+        let moved = describe_with_states(
+            vec![log(AgentKind::Claude, path.clone(), 1_800_000_100)],
+            home.path(),
+            &HashSet::new(),
+            &store.session_records().unwrap(),
+        )
+        .await;
+        assert_eq!(antiburn_local::discovery::take_tracked_head_reads(&path), 1);
+        assert_eq!(moved.records[0].activity_source, "event");
+    }
+
+    #[test]
+    fn the_activity_cursor_format_is_pinned() {
+        let parent = std::path::Path::new("/home/avery/.claude/projects/demo/session.jsonl");
+        let child_a = std::path::PathBuf::from(
+            "/home/avery/.claude/projects/demo/session/subagents/agent-a.jsonl",
+        );
+        let child_b = std::path::PathBuf::from(
+            "/home/avery/.claude/projects/demo/session/subagents/agent-b.jsonl",
+        );
+        let cursor = activity_cursor(parent, 42, &[(child_a, Some(7)), (child_b, None)]);
+        assert_eq!(
+            cursor,
+            concat!(
+                r#"[["child","/home/avery/.claude/projects/demo/session/subagents/agent-a.jsonl","7"],"#,
+                r#"["child","/home/avery/.claude/projects/demo/session/subagents/agent-b.jsonl","missing"],"#,
+                r#"["parent","/home/avery/.claude/projects/demo/session.jsonl","42"]]"#
+            )
+        );
+    }
+
+    #[tokio::test]
     async fn describing_an_opencode_provider_db_does_not_render_the_transcript() {
         let home = tempfile::TempDir::new().unwrap();
         let session_id = "opencode-provider-db";
@@ -1586,7 +1755,7 @@ mod tests {
             .upsert_sessions(&[stale], &agents::evidence_cohort())
             .unwrap();
 
-        let states = store.session_activity_states().unwrap();
+        let states = store.session_records().unwrap();
         let described = describe_with_states(
             vec![log(AgentKind::Claude, path.clone(), 1_787_155_652)],
             home.path(),
@@ -1606,7 +1775,7 @@ mod tests {
             .upsert_sessions(&described.records, &agents::evidence_cohort())
             .unwrap();
         let stored = store
-            .session_activity_states()
+            .session_records()
             .unwrap()
             .remove(&SessionActivityKey::new(
                 "native",
@@ -1633,7 +1802,7 @@ mod tests {
                 .as_bytes(),
             )
             .unwrap();
-        let states = store.session_activity_states().unwrap();
+        let states = store.session_records().unwrap();
         let touched = describe_with_states(
             vec![log(AgentKind::Claude, path.clone(), 1_800_000_000)],
             home.path(),
@@ -1649,7 +1818,7 @@ mod tests {
             store
                 .upsert_sessions(&touched.records, &agents::evidence_cohort())
                 .unwrap();
-            store.session_activity_states().unwrap()
+            store.session_records().unwrap()
         };
         let gated = describe_with_states(
             vec![log(AgentKind::Claude, path, 1_800_000_001)],
@@ -1684,7 +1853,7 @@ mod tests {
             vec![log(AgentKind::Claude, parent.clone(), 1_800_000_000)],
             home.path(),
             &HashSet::new(),
-            &store.session_activity_states().unwrap(),
+            &store.session_records().unwrap(),
         )
         .await;
         assert_eq!(first.records[0].subagent_count, 1);
@@ -1699,7 +1868,7 @@ mod tests {
             vec![log(AgentKind::Claude, parent.clone(), 1_900_000_000)],
             home.path(),
             &HashSet::new(),
-            &store.session_activity_states().unwrap(),
+            &store.session_records().unwrap(),
         )
         .await;
         assert_eq!(gated.records[0].updated_at_epoch, Some(first_epoch));
@@ -1719,7 +1888,7 @@ mod tests {
             vec![log(AgentKind::Claude, parent, 1_900_000_001)],
             home.path(),
             &HashSet::new(),
-            &store.session_activity_states().unwrap(),
+            &store.session_records().unwrap(),
         )
         .await;
         let expected = time::OffsetDateTime::parse(
@@ -2058,18 +2227,6 @@ mod tests {
     }
 
     #[test]
-    fn the_scheduled_trigger_set_is_unchanged() {
-        for wake in [Wake::Launch, Wake::Kick] {
-            assert!(should_run_scheduled_pass(wake, false, true));
-            assert!(should_run_scheduled_pass(wake, true, true));
-            assert!(!should_run_scheduled_pass(wake, true, false));
-        }
-        assert!(should_run_scheduled_pass(Wake::Tick, true, true));
-        assert!(!should_run_scheduled_pass(Wake::Tick, false, true));
-        assert!(!should_run_scheduled_pass(Wake::Tick, true, false));
-    }
-
-    #[test]
     fn an_on_demand_pass_starts_without_the_scheduler_gate() {
         let controller = ScanController::default();
         assert!(on_demand_start(&controller));
@@ -2079,11 +2236,8 @@ mod tests {
     }
 
     #[test]
-    fn the_controller_reports_the_popover_gate_and_a_clean_initial_status() {
+    fn a_fresh_controller_reports_a_clean_initial_status() {
         let controller = ScanController::default();
-        assert!(!controller.popover_visible());
-        controller.set_popover_visible(true);
-        assert!(controller.popover_visible());
 
         let status = controller.status();
         assert!(!status.running);

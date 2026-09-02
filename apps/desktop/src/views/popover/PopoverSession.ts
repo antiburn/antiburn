@@ -610,15 +610,20 @@ export class PopoverSession {
   // paused or onboarding is unfinished, and even a scan that does run can
   // take a while to finish. Neither has any bearing on a provider's own
   // stated limits, so usage gets its own refresh here rather than waiting on
-  // — or being silenced by — the scan pipeline. Entries and the repository
-  // list are already covered by `listenScanEvent` above. The open session's
-  // analysis is not: its transcript can grow while the popover is hidden,
-  // and nothing else asks for it again until the reader navigates.
+  // — or being silenced by — the scan pipeline. The open session's analysis
+  // is in the same position: its transcript can grow while the popover is
+  // hidden, and nothing else asks for it again until the reader navigates.
+  //
+  // Entries are also refetched here, even though the scan scheduler now
+  // ticks unconditionally and `listenScanEvent` above is the primary path:
+  // this is a cheap defence against a `scan:finished` event missed while the
+  // popover was hidden, so a reader never sees a stale list for a whole tick.
   private listenPopoverShown = async (generation: number): Promise<void> => {
     const unlisten = await onPopoverShown(() => {
       if (generation !== this.generation) return
       if (this.initialContentReady) this.reportContentReady(true)
       void this.restoreFloatingHud(generation)
+      void this.refreshEntries(this.windowDays()).catch(() => {})
       void this.refreshUsage()
       void this.refreshAnalysis()
     })

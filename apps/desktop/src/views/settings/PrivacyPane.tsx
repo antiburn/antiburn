@@ -1,4 +1,4 @@
-import { confirm } from "@tauri-apps/plugin-dialog"
+import { confirm, save } from "@tauri-apps/plugin-dialog"
 import { useCallback, useState } from "react"
 
 import { Card } from "../../components/ui/Card"
@@ -10,6 +10,7 @@ import { SectionGroup } from "../../components/ui/SectionGroup"
 import { SegmentedControl } from "../../components/ui/SegmentedControl"
 import { StatusText } from "../../components/ui/StatusText"
 import { ToggleRow } from "../../components/ui/ToggleRow"
+import { exportDiagnostics } from "../../lib/diagnosticsIpc"
 import {
   clearLocalIndex,
   openAnalyticsDocumentation,
@@ -39,6 +40,9 @@ type ClearState =
   | { kind: "cleared"; sessions: number }
   | { kind: "failed" }
 
+/** What the diagnostics export action is currently doing. */
+type DiagnosticsExportState = "idle" | "exporting" | "exported" | "failed"
+
 type RetentionValue = "30" | "90" | "-1"
 
 const RETENTION_OPTIONS: ReadonlyArray<{ value: RetentionValue; label: string }> = [
@@ -55,6 +59,8 @@ export type PrivacyPaneProps = AppSettingsController & { info: AppInfo | null }
 
 export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps) {
   const [clearState, setClearState] = useState<ClearState>({ kind: "idle" })
+  const [diagnosticsExportState, setDiagnosticsExportState] =
+    useState<DiagnosticsExportState>("idle")
   // Derived from the running build, never from a compile-time guess: a build
   // with no injected endpoint cannot send anything, and this pane's whole job
   // is to not overstate what the application does.
@@ -100,6 +106,32 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
     }
   }, [])
 
+  async function handleDiagnosticsExport() {
+    const proceed = await confirm(
+      "The export covers up to 500 recent indexed sessions. It excludes transcript bodies, titles, file paths, working directories, repository names, account identifiers, and analytics identifiers. It does include opaque session ids and derived model, tool, skill, timing, evidence, and error data. Review it before sharing.",
+      {
+        title: "Export diagnostics?",
+        kind: "warning",
+        okLabel: "Choose destination…",
+      },
+    )
+    if (!proceed) return
+
+    const destination = await save({
+      defaultPath: "antiburn-diagnostics.json",
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    })
+    if (!destination) return
+
+    setDiagnosticsExportState("exporting")
+    try {
+      await exportDiagnostics(destination)
+      setDiagnosticsExportState("exported")
+    } catch {
+      setDiagnosticsExportState("failed")
+    }
+  }
+
   return (
     <Pane title="Privacy">
       <div className="space-y-3">
@@ -142,18 +174,19 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             There is no antiburn account, and nothing of ours you have to reach for the app to
             work. Nothing derived from your sessions — no transcript, prompt, title, file path,
             repository name, token count, or cost figure — is sent anywhere, ever. antiburn does
-            make requests of its own: it asks GitHub Releases whether a newer version exists;
-            where a source is enabled, it can ask a provider for your current plan limits using
-            the credentials your own tools already stored; and, in a released build with the
-            switch below on, it sends anonymised analytics about the application itself. Handing
-            a provider back a credential it issued you is not a disclosure — it already has it.
-            Those analytics are the one thing that goes to us; they are listed field by field
-            below, and they contain none of your work. This build
+            make requests of its own: it downloads public model prices from models.dev at
+            startup and hourly while running; it asks GitHub Releases whether a newer version
+            exists; where a source is enabled, it can ask a provider for your current plan
+            limits using the credentials your own tools already stored; and, in a released build
+            with the switch below on, it sends anonymised analytics about the application
+            itself. Handing a provider back a credential it issued you is not a disclosure — it
+            already has it. Those analytics are the one thing that goes to us; they are listed
+            field by field below, and they contain none of your work. This build
             {analyticsSupported
               ? " can send them."
               : " has no analytics endpoint, so it cannot send them at all."}
           </Disclosure>
-          <Disclosure label="One setting lets antiburn go online for current figures">
+          <Disclosure label="Provider plan-limit access is optional">
             Settings &rarr; Usage has a switch, on by default once first-run setup is complete,
             for keeping plan limits current. On, antiburn asks each provider directly for your
             current usage, using the credentials your own coding tools already have — that is
@@ -356,6 +389,34 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             // to check, and finding nothing is not an answer.
             description="antiburn cannot do this, by design. Removing a conversation is your agent’s job, in your agent’s own interface. antiburn only ever deletes records it created itself."
           />
+        </Card>
+      </SectionGroup>
+
+      <SectionGroup title="Diagnostics">
+        <Card>
+          <Row
+            label="Export diagnostics"
+            description="Create a JSON file for up to 500 recent indexed sessions, with derived evidence, processing state, revisions, errors, and aggregate turn signals. It excludes transcript bodies, titles, paths, working directories, repositories, account identifiers, analytics identifiers, and turn content. Model, tool, and skill names and descriptions can still describe real work, so review the file before sharing it."
+            trailing={
+              <PushButton
+                onClick={() => void handleDiagnosticsExport()}
+                disabled={diagnosticsExportState === "exporting"}
+              >
+                {diagnosticsExportState === "exporting" ? "Exporting…" : "Export…"}
+              </PushButton>
+            }
+          >
+            {diagnosticsExportState === "exported" && (
+              <div className="mt-1.5" aria-live="polite">
+                <StatusText tone="secondary">Diagnostics exported.</StatusText>
+              </div>
+            )}
+            {diagnosticsExportState === "failed" && (
+              <div className="mt-1.5" aria-live="polite">
+                <StatusText tone="secondary">The diagnostics could not be exported.</StatusText>
+              </div>
+            )}
+          </Row>
         </Card>
       </SectionGroup>
     </Pane>

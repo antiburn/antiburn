@@ -4,8 +4,7 @@
 //! nothing here depends on a clock, a scan, or a database. The two things worth
 //! stating explicitly: the anchor `1_800_000_000` is `2027-01-15T08:00:00Z`
 //! (pinned by a test below, and by `commands::tests`), and the pricing figures
-//! come from the engine's bundled catalog rather than from constants repeated
-//! here — a catalog revision should move them, not fail these tests.
+//! come from the engine's test snapshot rather than from repeated constants.
 
 use super::*;
 
@@ -13,7 +12,7 @@ use super::*;
 /// boundaries are all distinct and none of them coincides with `now`.
 const NOW: i64 = 1_800_000_000;
 
-/// A model the bundled catalog prices.
+/// A model the test snapshot prices.
 const PRICED_MODEL: &str = "claude-opus-4-6";
 /// A model it does not, and will not: the point is the shape, not the name.
 const UNPRICED_MODEL: &str = "some-unreleased-model";

@@ -6,10 +6,10 @@ use crate::analysis::evidence::{
     CoverageReason, EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource,
     MAX_CONTEXT_SOURCES, MAX_EVIDENCE_EXAMPLES, MAX_SUBAGENT_CHILDREN, MAX_TOOL_NAMES,
     MAX_UNRECOGNIZED_TYPES, ModelEvidence, OrderingObservation, ParseDiagnostics,
-    RelationConfidence, RepeatedContext, RepeatedContextAccounting, SessionEvidence,
-    SessionEvidenceIdentity, SessionProvenance, SourceAcceptance, SourceCapabilities, SourceKind,
-    SubagentChild, SubagentEvidence, SubagentExample, ToolClass, ToolEvidence, ToolUse, cap_string,
-    insert_diagnostic_field, record_diagnostic_set_cap,
+    RelationConfidence, RepeatedContext, RepeatedContextAccounting, SessionCoverageRecord,
+    SessionEvidence, SessionEvidenceIdentity, SessionProvenance, SourceAcceptance,
+    SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
+    ToolEvidence, ToolUse, cap_string, insert_diagnostic_field, record_diagnostic_set_cap,
 };
 use crate::analysis::evidence_query::TurnFacts;
 use crate::analysis::interface::{
@@ -20,7 +20,8 @@ use crate::analysis::metrics_sink::SessionMetricsAccumulator;
 use crate::analysis::model::NormalizedEvent;
 use crate::analysis::rows::TurnRowSink;
 use crate::analysis::{
-    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SessionMetrics,
+    ANALYZER_REVISION, COVERAGE_SCHEMA_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION,
+    SessionMetrics,
 };
 
 /// The suffix after a skill's last `:` (e.g. `deploy` from
@@ -460,6 +461,73 @@ impl SessionEvidenceAccumulator {
             self.set_record_loss_reason(CoverageReason::PinnedPrefix);
         }
         self.source_acceptance = SourceAcceptance::from(outcome);
+    }
+
+    /// Snapshots every field [`Self::evidence`] reads from `self` (every
+    /// field but the two transient ones, `last_ts_ms` and
+    /// `seen_thread_uuids`, that exist only to compute `ordering` and
+    /// `thread_parent_unresolved` live) into a [`SessionCoverageRecord`].
+    /// [`crate::analysis::evidence_replay::evidence_from_facts`] combines the
+    /// record this returns with row-derived [`TurnFacts`] to rebuild
+    /// [`SessionEvidence`] without a live fold.
+    pub fn coverage_record(&self) -> SessionCoverageRecord {
+        SessionCoverageRecord {
+            coverage_schema_revision: COVERAGE_SCHEMA_REVISION,
+            identity: self.identity.clone(),
+            capabilities: self.capabilities,
+            source_kind: self.source_kind,
+            source_acceptance: self.source_acceptance,
+            ordering: self.ordering,
+            diagnostics: self.diagnostics.clone(),
+            record_loss_reason: self.record_loss_reason,
+            session_cap_exceeded: self.session_cap_exceeded,
+            tools: self.tools.clone(),
+            invoked_skills: self.invoked_skills.clone(),
+            tools_cap_exceeded: self.tools_cap_exceeded,
+            skills: self.skills.clone(),
+            mcp_servers: self.mcp_servers.clone(),
+            context_sources_cap_exceeded: self.context_sources_cap_exceeded,
+            subagent_spawn_count: self.subagent_spawn_count,
+            subagent_children: self.subagent_children.clone(),
+            subagent_examples: self.subagent_examples.clone(),
+            subagents_cap_exceeded: self.subagents_cap_exceeded,
+            thread_parent_unresolved: self.thread_parent_unresolved,
+            summary_observed: self.summary_observed,
+            child_loss_reason: self.child_loss_reason,
+        }
+    }
+
+    /// Rebuilds an accumulator from a [`SessionCoverageRecord`] a prior pass
+    /// produced. The two transient fields [`Self::coverage_record`] does not
+    /// carry (`last_ts_ms`, `seen_thread_uuids`) start empty: [`Self::evidence`]
+    /// never reads them directly, only the `ordering` and
+    /// `thread_parent_unresolved` results already folded into the record.
+    pub fn from_coverage_record(record: SessionCoverageRecord) -> Self {
+        Self {
+            identity: record.identity,
+            capabilities: record.capabilities,
+            source_kind: record.source_kind,
+            source_acceptance: record.source_acceptance,
+            ordering: record.ordering,
+            diagnostics: record.diagnostics,
+            record_loss_reason: record.record_loss_reason,
+            session_cap_exceeded: record.session_cap_exceeded,
+            last_ts_ms: None,
+            tools: record.tools,
+            invoked_skills: record.invoked_skills,
+            tools_cap_exceeded: record.tools_cap_exceeded,
+            skills: record.skills,
+            mcp_servers: record.mcp_servers,
+            context_sources_cap_exceeded: record.context_sources_cap_exceeded,
+            subagent_spawn_count: record.subagent_spawn_count,
+            subagent_children: record.subagent_children,
+            subagent_examples: record.subagent_examples,
+            subagents_cap_exceeded: record.subagents_cap_exceeded,
+            seen_thread_uuids: HashSet::new(),
+            thread_parent_unresolved: record.thread_parent_unresolved,
+            summary_observed: record.summary_observed,
+            child_loss_reason: record.child_loss_reason,
+        }
     }
 
     /// Builds this session's [`SessionEvidence`] from the row-derived
@@ -1073,6 +1141,17 @@ impl CompositeSink {
             Ok(facts) => Some(self.evidence.evidence(&facts)),
             Err(_) => None,
         }
+    }
+
+    /// This residual's [`SessionCoverageRecord`] snapshot, once it can
+    /// publish — `None` under the same rule [`Self::evidence`] returns
+    /// `None`. A caller that persists a coverage record alongside turn rows
+    /// calls this instead of [`Self::evidence`], since evidence itself now
+    /// comes from replaying rows against the persisted record.
+    pub fn coverage_record(&self) -> Option<SessionCoverageRecord> {
+        self.evidence
+            .can_publish()
+            .then(|| self.evidence.coverage_record())
     }
 
     pub fn observe_source_outcome(&mut self, outcome: VisitOutcome) {

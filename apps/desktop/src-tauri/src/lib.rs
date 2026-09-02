@@ -10,6 +10,7 @@
 //! - [`agents`] — translating between the engine's two names for an agent.
 //! - [`analysis`] — turning a located transcript into what the views render.
 //! - [`commands`] — the IPC surface exposed to the webview.
+//! - [`diagnostics_export`] — the privacy-scoped support document.
 //! - [`disk_monitor`] — free-space polling, the tray readout, the low edge.
 //! - [`dto`] — the shapes that cross that boundary.
 //! - [`export`] — the derived-only session export document.
@@ -40,7 +41,8 @@
 //! by default once first-run setup is complete, runs that agent so it
 //! refreshes the file — the agent goes online on its own account, exactly as
 //! it would if the reader ran it, and this crate still only reads the file it
-//! leaves behind. Notifications are antiburn's own
+//! leaves behind. The shell downloads a public pricing catalog from models.dev.
+//! The request contains no session data or credentials. Notifications are antiburn's own
 //! window, fed by a local event; nothing about one leaves the machine. The one
 //! call this crate makes to a service of ours is the updater plugin —
 //! registered in release builds only, so a development run makes no such
@@ -52,6 +54,7 @@ mod analysis;
 mod analytics;
 mod commands;
 mod consent;
+mod diagnostics_export;
 mod disk_monitor;
 mod dto;
 mod export;
@@ -71,6 +74,8 @@ mod provider_accounts;
 mod provider_usage;
 mod repositories;
 mod retention;
+mod runtime_pricing;
+mod runtime_pricing_config;
 mod scan;
 mod settings;
 mod startup_registration;
@@ -182,6 +187,7 @@ pub fn run() {
             // engine's state helpers as an explicit argument.
             let data_dir = app.path().app_data_dir()?;
             app.manage(store::Store::open(&data_dir)?);
+            app.manage(runtime_pricing::PricingState::load(&data_dir));
             app.manage(insights_worker::WorkerHandle::default());
             app.manage(insights_ipc::InsightsController::default());
             if let Err(error) = app.state::<store::Store>().reconcile_evidence_revisions(
@@ -285,6 +291,7 @@ pub fn run() {
             };
             app.manage(live_usage);
             if let Some(schedulers) = app.try_state::<Schedulers>() {
+                schedulers.push(runtime_pricing::spawn_scheduler(app.handle()));
                 schedulers.push(scan::spawn_scheduler(app.handle()));
                 schedulers.push(retention::spawn_scheduler(app.handle()));
                 schedulers.push(insights_worker::spawn(app.handle()));

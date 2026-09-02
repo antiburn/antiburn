@@ -9,10 +9,10 @@ use antiburn_local::analysis::{
     BoundedJsonlReader, CompositeSink, ContextSourceKind, EvidenceObservation, EvidenceSource,
     MemoryTurnRowStore, NormalizedEvent, NormalizedRecord, RETAINED_EVIDENCE_BYTES_BOUND,
     RETAINED_METRICS_BYTES_BOUND, RawSource, RecordSink, RelationProvenance, Role,
-    SCAN_QUANTUM_BYTES, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SessionSummary, SourceCapabilities, SourceKind, TURN_ROW_BATCH_SIZE, ToolCall, TurnFacts,
-    TurnRow, TurnRowError, TurnRowSink, TurnRowStore, TurnScope, TurnSessionKey, Usage,
-    adapter_for, count_turn_content_rows, count_turn_rows, merge_metrics,
+    SCAN_QUANTUM_BYTES, SessionCoverageRecord, SessionEvidenceAccumulator, SessionInput,
+    SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind, TURN_ROW_BATCH_SIZE,
+    ToolCall, TurnFacts, TurnRow, TurnRowError, TurnRowSink, TurnRowStore, TurnScope,
+    TurnSessionKey, Usage, adapter_for, count_turn_content_rows, count_turn_rows, merge_metrics,
 };
 use corpus::{SessionSpec, generate_session, generate_session_of_bytes};
 
@@ -159,6 +159,14 @@ impl TurnRowStore for CountingWriter {
     }
 
     fn query_model_runs(&self) -> Result<Vec<antiburn_local::analysis::ModelRun>, TurnRowError> {
+        Err(TurnRowError("not readable".to_owned()))
+    }
+
+    fn write_coverage_record(&self, _record: &SessionCoverageRecord) -> Result<(), TurnRowError> {
+        Ok(())
+    }
+
+    fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError> {
         Err(TurnRowError("not readable".to_owned()))
     }
 }
@@ -444,6 +452,14 @@ impl TurnRowStore for CountingRealStore {
 
     fn query_model_runs(&self) -> Result<Vec<antiburn_local::analysis::ModelRun>, TurnRowError> {
         self.inner.query_model_runs()
+    }
+
+    fn write_coverage_record(&self, record: &SessionCoverageRecord) -> Result<(), TurnRowError> {
+        self.inner.write_coverage_record(record)
+    }
+
+    fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError> {
+        self.inner.query_coverage_record()
     }
 }
 

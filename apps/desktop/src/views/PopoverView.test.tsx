@@ -1003,6 +1003,24 @@ describe("PopoverView", () => {
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument())
   })
 
+  it("refetches the session list on the shell's popover-shown signal, as a defence against a missed scan event", async () => {
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+
+    const listCallsBeforeShown = invoke.mock.calls.filter(
+      ([command]) => command === "list_recent_sessions",
+    ).length
+
+    emit("popover:shown", undefined)
+
+    await waitFor(() =>
+      expect(
+        invoke.mock.calls.filter(([command]) => command === "list_recent_sessions").length,
+      ).toBeGreaterThan(listCallsBeforeShown),
+    )
+    expect(invoke).toHaveBeenCalledWith("list_recent_sessions", { windowDays: 7 })
+  })
+
   it("never renders the first-run flow, whatever the flag says", async () => {
     // The flow has its own window now (`views/OnboardingView.tsx`), and
     // the shell sends the tray click there instead of here. A popover that

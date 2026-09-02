@@ -37,10 +37,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, ModelRun, PARSER_REVISION, TurnFacts, TurnRow,
-    TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows, delete_turn_rows,
-    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_turn_rows,
-    query_model_breakdown, query_model_runs, query_turn_facts, query_turn_rows,
+    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, ModelRun, PARSER_REVISION, SessionCoverageRecord,
+    TurnFacts, TurnRow, TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows,
+    delete_turn_rows, delete_turn_rows_except_fence, delete_turn_rows_for_fence,
+    insert_coverage_record, insert_turn_rows, query_coverage_record, query_model_breakdown,
+    query_model_runs, query_turn_facts, query_turn_rows,
 };
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -52,9 +53,9 @@ pub use model::{
     EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters,
     MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement,
     ProjectionRevisions, PublishedEvidence, RETAIN_SESSION_DATA_FOREVER, RelationKind,
-    RelationRecord, RepositoryRecord, SessionActivityKey, SessionActivityState, SessionBadgeMetric,
-    SessionKey, SessionRecord, SessionUsageRecord, SessionUsageTurnRecord, SourceVersionState,
-    ThemePreference, UsageEvidenceRecord,
+    RelationRecord, RepositoryRecord, SessionActivityKey, SessionBadgeMetric, SessionKey,
+    SessionRecord, SessionUsageRecord, SessionUsageTurnRecord, SourceVersionState, ThemePreference,
+    UsageEvidenceRecord,
 };
 
 /// Evidence rows that still wait for, or sit in, processing.
@@ -767,38 +768,38 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Return the persisted activity cursor keyed by environment,
-    /// agent, and source label. A single map keeps the scan's cheap size gate
-    /// outside the SQLite lock without allowing native/WSL rows to collide.
-    pub fn session_activity_states(
-        &self,
-    ) -> Result<HashMap<SessionActivityKey, SessionActivityState>> {
+    /// Return every session's full cached record keyed by environment, agent,
+    /// and source label. A single map keeps the scan's cheap unchanged-source
+    /// gate outside the SQLite lock without allowing native/WSL rows to
+    /// collide, and lets the scan reuse a whole previous record instead of
+    /// re-describing a source that has not changed.
+    pub fn session_records(&self) -> Result<HashMap<SessionActivityKey, SessionRecord>> {
         let connection = self.lock();
         let mut statement = connection.prepare(
-            "SELECT environment_key, agent, source_label, activity_cursor,
-                    updated_at_epoch, activity_source
-               FROM session",
+            "SELECT environment_key, agent, session_id, source_kind, source_label, wsl_distro,
+                    title, title_source, cwd, surface, updated_at_epoch,
+                    activity_cursor, activity_source, subagent_count,
+                    (SELECT related_id FROM session_relation r
+                       WHERE r.environment_key = s.environment_key
+                         AND r.agent = s.agent
+                         AND r.session_id = s.session_id
+                         AND r.kind = 'forkParent'
+                       LIMIT 1),
+                    s.source_fingerprint
+               FROM session s",
         )?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                SessionActivityKey::new(
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ),
-                SessionActivityState {
-                    activity_cursor: row.get(3)?,
-                    updated_at_epoch: row.get(4)?,
-                    activity_source: row.get(5)?,
-                },
-            ))
-        })?;
-        let mut states = HashMap::new();
+        let rows = statement.query_map([], session_from_row)?;
+        let mut records = HashMap::new();
         for row in rows {
-            let (key, state) = row?;
-            states.insert(key, state);
+            let record = row?;
+            let key = SessionActivityKey::new(
+                record.key.environment_key.clone(),
+                record.key.agent.clone(),
+                record.source_label.clone(),
+            );
+            records.insert(key, record);
         }
-        Ok(states)
+        Ok(records)
     }
 
     /// One session's cached metadata, when it has been seen.
@@ -1233,6 +1234,7 @@ impl Store {
         tx.execute("DELETE FROM session_analysis", [])?;
         tx.execute("DELETE FROM session_evidence", [])?;
         tx.execute("DELETE FROM turn_content", [])?;
+        tx.execute("DELETE FROM session_coverage", [])?;
         tx.execute("DELETE FROM turn", [])?;
         let sessions = tx.execute("DELETE FROM session", [])?;
         tx.execute("DELETE FROM provider_account_seen", [])?;
@@ -1446,6 +1448,39 @@ impl Store {
             &turn_session_key(key),
             published_fence,
         )?))
+    }
+
+    /// One session's last published [`SessionCoverageRecord`], or `None`
+    /// when this session has never published.
+    ///
+    /// Mirrors [`Self::published_turn_rows`]'s contract exactly, over
+    /// `session_coverage` instead of `turn`: `published_fence` names a
+    /// complete coverage record for the same reason it names a complete row
+    /// set, and the evidence lookup and the record query run under one
+    /// lock for the same race-free guarantee.
+    pub fn published_coverage_record(
+        &self,
+        key: &SessionKey,
+    ) -> Result<Option<SessionCoverageRecord>> {
+        let connection = self.lock();
+        let Some(evidence) = connection
+            .query_row(
+                EVIDENCE_BY_KEY_SQL,
+                params![key.environment_key, key.agent, key.session_id],
+                evidence_from_row,
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let Some(published_fence) = evidence.published_fence else {
+            return Ok(None);
+        };
+        Ok(query_coverage_record(
+            &connection,
+            &turn_session_key(key),
+            published_fence,
+        )?)
     }
 
     /// Write one session's analysis columns directly, without the evidence
@@ -2433,10 +2468,10 @@ fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<bool> 
           WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
         parameters,
     )?;
-    // Same reasoning as `session_evidence` above: the v15 cascades from
-    // `session` cover `turn` and `turn_content`, but this stays explicit and
-    // pragma-independent. `turn_content` has no direct session key, so it is
-    // deleted through `turn`'s rowid.
+    // Same reasoning as `session_evidence` above: the v15 and v28 cascades
+    // from `session` cover `turn`, `turn_content`, and `session_coverage`,
+    // but this stays explicit and pragma-independent. `turn_content` has no
+    // direct session key, so it is deleted through `turn`'s rowid.
     delete_turn_rows_in(connection, key)?;
     let removed = connection.execute(
         "DELETE FROM session WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
@@ -2613,6 +2648,26 @@ impl TurnRowStore for FencedTurnRowStore {
     fn query_model_runs(&self) -> Result<Vec<ModelRun>, TurnRowError> {
         let connection = self.store.lock();
         Ok(query_model_runs(
+            &connection,
+            &turn_session_key(&self.key),
+            self.claim_fence,
+        )?)
+    }
+
+    fn write_coverage_record(&self, record: &SessionCoverageRecord) -> Result<(), TurnRowError> {
+        let connection = self.store.lock();
+        insert_coverage_record(
+            &connection,
+            &turn_session_key(&self.key),
+            self.claim_fence,
+            record,
+        )?;
+        Ok(())
+    }
+
+    fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError> {
+        let connection = self.store.lock();
+        Ok(query_coverage_record(
             &connection,
             &turn_session_key(&self.key),
             self.claim_fence,

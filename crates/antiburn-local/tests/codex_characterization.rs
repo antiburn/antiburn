@@ -20,7 +20,11 @@ use antiburn_local::insights::{
 };
 use serde_json::{Value, json};
 
+#[path = "support/pricing.rs"]
+mod pricing;
+
 fn fixture(name: &str) -> &'static str {
+    pricing::install();
     match name {
         "records_all_kinds" => {
             include_str!("fixtures/codex_characterization/records_all_kinds.jsonl")

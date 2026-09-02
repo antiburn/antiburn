@@ -70,8 +70,9 @@ See the [desktop guide](apps/desktop/README.md) for app commands and the
 
 antiburn needs no account, server, or backend operated by the project. It can
 contact coding-agent providers with credentials already held by your tools to
-read current usage. Release builds also check GitHub Releases for updates and
-can send anonymised application events. Analytics can be disabled in
+read current usage. It downloads public model prices from models.dev without
+sending session data or credentials. Release builds also check GitHub Releases
+for updates and can send anonymised application events. Analytics can be disabled in
 Settings > Privacy and never include sessions, prompts, file paths, repository
 names, or credentials. Builds from a clean checkout have no analytics endpoint.
 See the complete [analytics contract](docs/analytics.md).

@@ -10,6 +10,7 @@ use super::model::{
 };
 use super::*;
 
+mod coverage_tests;
 mod reconcile_tests;
 
 fn store() -> Store {
@@ -334,7 +335,7 @@ fn provider_hints_migration_keeps_old_analysis_unknown() {
         .unwrap()
         .expect("legacy analysis survives");
 
-    assert_eq!(store.schema_version().unwrap(), 28);
+    assert_eq!(store.schema_version().unwrap(), 29);
     assert_eq!(analysis.provider_hints_json, None);
 }
 
@@ -1301,14 +1302,14 @@ fn activity_cursors_do_not_collide_across_environments() {
         .upsert_sessions(&[native, wsl], &crate::agents::evidence_cohort())
         .unwrap();
 
-    let states = store.session_activity_states().unwrap();
-    assert_eq!(states.len(), 2);
-    assert!(states.contains_key(&SessionActivityKey::new(
+    let records = store.session_records().unwrap();
+    assert_eq!(records.len(), 2);
+    assert!(records.contains_key(&SessionActivityKey::new(
         "native",
         "claude-code",
         "/home/avery/.claude/projects/demo/shared.jsonl",
     )));
-    assert!(states.contains_key(&SessionActivityKey::new(
+    assert!(records.contains_key(&SessionActivityKey::new(
         "wsl:ubuntu",
         "claude-code",
         "/home/avery/.claude/projects/demo/shared.jsonl",
@@ -3710,10 +3711,10 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 28);
+    assert_eq!(super::schema::MIGRATIONS.len(), 29);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 28);
+    assert_eq!(store.schema_version().unwrap(), 29);
     let index_exists = store
         .lock()
         .query_row(

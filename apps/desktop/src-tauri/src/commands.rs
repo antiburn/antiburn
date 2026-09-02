@@ -61,13 +61,10 @@ fn fail(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
-/// Version stamp of the engine's bundled pricing catalog (`YYYY-MM-DD`).
-///
-/// Small on purpose, and load-bearing: it is the shell's end-to-end proof that
-/// the webview, the IPC bridge, and the linked engine all work.
+/// Version stamp of the active runtime pricing catalog.
 #[tauri::command]
-pub fn engine_catalog_version() -> &'static str {
-    antiburn_local::pricing::PRICING_CATALOG_VERSION
+pub fn engine_catalog_version(app: tauri::AppHandle) -> String {
+    crate::runtime_pricing::catalog_version(&app)
 }
 
 /// Reveal a native window after its invoking renderer commits its shell.
@@ -283,7 +280,7 @@ pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
         app_version: app.package_info().version.to_string(),
         debug_build: cfg!(debug_assertions),
         arch: std::env::consts::ARCH.to_string(),
-        pricing_catalog_version: antiburn_local::pricing::PRICING_CATALOG_VERSION.to_string(),
+        pricing_catalog_version: crate::runtime_pricing::catalog_version(&app),
         schema_version: store.schema_version().map_err(fail)?,
         data_dir: store.state_dir().to_string_lossy().to_string(),
         indexed_sessions: store.session_count().map_err(fail)?,
@@ -573,6 +570,12 @@ pub fn list_recent_sessions(
     for session in sessions {
         entries.push(activity_entry(&store, &repositories, session, now).map_err(fail)?);
     }
+    if entries
+        .iter()
+        .any(|entry| entry.cost.is_none() && !entry.models.is_empty())
+    {
+        crate::runtime_pricing::request_refresh(&app);
+    }
     Ok(entries)
 }
 
@@ -735,7 +738,7 @@ fn path_is_under(path: &str, root: &str) -> bool {
 ///
 /// Nothing here contacts a provider. Every figure comes from
 /// [`crate::provider_usage`], which reads the local database and the engine's
-/// bundled pricing table and nothing else.
+/// active runtime pricing snapshot.
 #[tauri::command]
 pub fn get_provider_usage(
     app: tauri::AppHandle,
@@ -1682,6 +1685,24 @@ async fn mirror_scan_roots(app: &tauri::AppHandle, roots: &[String]) -> anyhow::
  * Session actions
  * ---------------------------------------------------------------------- */
 
+/// Write the privacy-scoped support diagnostics to `dest_path` as JSON.
+///
+/// The export omits transcript content, titles, paths, working directories,
+/// account keys, analytics identifiers, and every `turn_content` value.
+#[tauri::command]
+pub async fn export_diagnostics(app: tauri::AppHandle, dest_path: String) -> CommandResult<String> {
+    let data_dir = app.state::<Store>().state_dir().to_path_buf();
+    let app_version = app.package_info().version.to_string();
+    let json = tauri::async_runtime::spawn_blocking(move || {
+        crate::diagnostics_export::build(&data_dir, app_version)?.to_json()
+    })
+    .await
+    .map_err(fail)?
+    .map_err(fail)?;
+    tokio::fs::write(&dest_path, json).await.map_err(fail)?;
+    Ok(dest_path)
+}
+
 /// Write one session's derived analysis to `dest_path` as JSON.
 ///
 /// The transcript is **not** copied: the document carries a reference to where
@@ -1726,6 +1747,7 @@ pub async fn export_session(
 
     let document = SessionExport::new(
         app.package_info().version.to_string(),
+        crate::runtime_pricing::catalog_version(&app),
         ExportedSession {
             agent,
             session_id,
@@ -2076,18 +2098,6 @@ mod tests {
         assert_eq!(
             request.window.end_epoch - request.window.start_epoch,
             30 * 86_400 + 1
-        );
-    }
-
-    #[test]
-    fn the_catalog_version_comes_from_the_engine_and_is_a_review_date() {
-        let version = engine_catalog_version();
-        assert_eq!(version, antiburn_local::pricing::PRICING_CATALOG_VERSION);
-        assert_eq!(version.len(), 10, "expected a YYYY-MM-DD review date");
-        assert!(
-            version
-                .split('-')
-                .all(|part| part.chars().all(|c| c.is_ascii_digit()))
         );
     }
 

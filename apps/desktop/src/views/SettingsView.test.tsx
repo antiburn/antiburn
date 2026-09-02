@@ -15,6 +15,7 @@ import { SettingsView } from "./SettingsView"
 const invoke = vi.hoisted(() => vi.fn())
 const openDialog = vi.hoisted(() => vi.fn())
 const confirmDialog = vi.hoisted(() => vi.fn())
+const saveDialog = vi.hoisted(() => vi.fn())
 const closeWindow = vi.hoisted(() => vi.fn())
 /** Mutable so a test can render the macOS chrome; jsdom itself has no OS. */
 const platform = vi.hoisted(() => ({ mac: false }))
@@ -34,7 +35,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: openDialog,
   confirm: confirmDialog,
-  save: vi.fn(),
+  save: saveDialog,
 }))
 vi.mock("../lib/platform", async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>()
@@ -165,6 +166,7 @@ describe("SettingsView", () => {
     invoke.mockReset()
     openDialog.mockReset()
     confirmDialog.mockReset()
+    saveDialog.mockReset()
     closeWindow.mockReset()
     listeners.clear()
     delete document.documentElement.dataset["theme"]
@@ -640,6 +642,45 @@ describe("SettingsView", () => {
 
     await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
     expect(invoke).not.toHaveBeenCalledWith("clear_local_index")
+  })
+
+  it("warns before exporting privacy-scoped diagnostics", async () => {
+    confirmDialog.mockResolvedValue(true)
+    saveDialog.mockResolvedValue("/tmp/antiburn-diagnostics.json")
+    mockCommands({ export_diagnostics: "/tmp/antiburn-diagnostics.json" })
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Export…" }))
+
+    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
+    const [message] = confirmDialog.mock.calls[0] as [string]
+    expect(message).toMatch(/excludes transcript bodies/i)
+    expect(message).toMatch(/derived model, tool, skill, timing, evidence, and error data/i)
+    await waitFor(() =>
+      expect(saveDialog).toHaveBeenCalledWith({
+        defaultPath: "antiburn-diagnostics.json",
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      }),
+    )
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("export_diagnostics", {
+        destPath: "/tmp/antiburn-diagnostics.json",
+      }),
+    )
+    expect(await screen.findByText("Diagnostics exported.")).toBeInTheDocument()
+  })
+
+  it("does not choose a diagnostics destination when export is declined", async () => {
+    confirmDialog.mockResolvedValue(false)
+    render(<SettingsView />)
+
+    fireEvent.click(screen.getByRole("tab", { name: "Privacy" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Export…" }))
+
+    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
+    expect(saveDialog).not.toHaveBeenCalled()
+    expect(invoke).not.toHaveBeenCalledWith("export_diagnostics", expect.anything())
   })
 
   it("defaults session retention to forever and confirms a shorter period", async () => {
