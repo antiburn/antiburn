@@ -27,7 +27,6 @@ macro_rules! with_app_commands {
             commands::get_provider_usage => "get_provider_usage",
             commands::get_scan_status => "get_scan_status",
             commands::get_session_analysis => "get_session_analysis",
-            commands::get_session_analysis_fingerprint => "get_session_analysis_fingerprint",
             commands::get_session_hygiene => "get_session_hygiene",
             commands::get_session_limit_allocations => "get_session_limit_allocations",
             commands::get_settings => "get_settings",
