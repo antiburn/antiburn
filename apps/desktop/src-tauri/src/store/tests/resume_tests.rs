@@ -2,8 +2,8 @@
 //! 3b): the snapshot write inside a winning publish, the fence restamp and
 //! replace `Store::publish_projections` runs per source, and the startup
 //! purge of stale revisions. See "R4. Fence semantics", "R5. Snapshot
-//! storage", and "R6. Invalidation" in the phase 3b build spec
-//! (`docs/plans/continuous-session-ingest.md`).
+//! storage", and "R6. Invalidation" in the phase 3b design rules in
+//! `docs/plans/continuous-session-ingest.md`.
 
 use super::*;
 
