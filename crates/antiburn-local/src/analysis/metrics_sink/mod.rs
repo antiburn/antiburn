@@ -91,7 +91,6 @@ impl OnlineTallies {
 
 #[derive(Clone, Default)]
 struct StoredSummary {
-    cache_write_tokens_available: bool,
     context_window: Option<u64>,
     model: Option<String>,
     started_at_ms: Option<i64>,
@@ -796,7 +795,6 @@ impl SessionMetricsAccumulator {
         let observed_mcp_names = count_map(&self.mcp_tool_calls, &self.mcp_interner);
         let observed_tool_names = string_count_map(&self.tool_match_counts);
         self.summary = Some(StoredSummary {
-            cache_write_tokens_available: summary.cache_write_tokens_available,
             context_window: summary.context_window,
             model: summary.model.map(|model| tally::truncate_name(&model)),
             started_at_ms: summary.started_at_ms,
@@ -815,6 +813,7 @@ impl SessionMetricsAccumulator {
     fn project(&self, axis: &ActiveSegments) -> SessionMetrics {
         let empty = StoredSummary::default();
         let summary = self.summary.as_ref().unwrap_or(&empty);
+        let use_explicit_cache_writes = self.cache.has_explicit_cache_writes();
         let active_ms = axis.active_ms();
         let mut buckets = vec![Bucket::default(); BUCKETS];
         let mut bucket_state = vec![BucketState::default(); BUCKETS];
@@ -830,7 +829,7 @@ impl SessionMetricsAccumulator {
                 &mut buckets[index],
                 &mut bucket_state[index],
                 slot,
-                summary.cache_write_tokens_available,
+                use_explicit_cache_writes,
             );
             fold_slot_compactions(
                 &mut buckets,
@@ -842,7 +841,7 @@ impl SessionMetricsAccumulator {
             );
         }
         let mut projected_cache = self.cache.clone();
-        if !summary.cache_write_tokens_available {
+        if !use_explicit_cache_writes {
             let fallback = summary.model.as_deref().map(IdentityKey::new);
             for patch in projected_cache.resolve_deferred(fallback) {
                 let index = bucket_index(
@@ -942,12 +941,12 @@ impl SessionMetricsAccumulator {
             summary.context_window.unwrap_or(CONTEXT_WINDOW),
             self.tallies.peak_context_tokens,
         );
-        let cache_rehydration_count = if summary.cache_write_tokens_available {
+        let cache_rehydration_count = if use_explicit_cache_writes {
             self.cache.mode_1_rehydrations
         } else {
             projected_cache.mode_2_rehydrations
         };
-        let cache_routing_miss_count = if summary.cache_write_tokens_available {
+        let cache_routing_miss_count = if use_explicit_cache_writes {
             self.cache.mode_1_routing_misses
         } else {
             projected_cache.mode_2_routing_misses
@@ -1053,7 +1052,7 @@ fn fold_slot(
     bucket: &mut Bucket,
     state: &mut BucketState,
     slot: &SlotAggregate,
-    cache_write_tokens_available: bool,
+    use_explicit_cache_writes: bool,
 ) {
     bucket.tokens_in = bucket.tokens_in.saturating_add(slot.tokens_in);
     bucket.tokens_out = bucket.tokens_out.saturating_add(slot.tokens_out);
@@ -1080,7 +1079,7 @@ fn fold_slot(
     {
         state.first_gap = slot.first_gap;
     }
-    let cache = if cache_write_tokens_available {
+    let cache = if use_explicit_cache_writes {
         slot.cache_mode_1
     } else {
         slot.cache_mode_2
@@ -1697,6 +1696,7 @@ fn reproject_exact_merged_cache(
     {
         return;
     }
+    let use_explicit_cache_writes = slots.iter().any(|slot| slot.cache_write_tokens > 0);
     for bucket in &mut metrics.buckets {
         bucket.is_cache_rehydration = false;
         bucket.cache_rehydration = None;
@@ -1742,7 +1742,7 @@ fn reproject_exact_merged_cache(
         {
             first_gaps[index] = Some((key.1, gap));
         }
-        if summary.cache_write_tokens_available {
+        if use_explicit_cache_writes {
             apply_projected_cache_slot(
                 &mut metrics.buckets[index],
                 &mut rehydration_gaps[index],
@@ -1754,7 +1754,7 @@ fn reproject_exact_merged_cache(
         }
     }
     mode_2_patches.extend(reducer.resolve_deferred(fallback));
-    if !summary.cache_write_tokens_available {
+    if !use_explicit_cache_writes {
         for patch in mode_2_patches {
             let index = bucket_index(
                 patch.key.0,
@@ -1775,12 +1775,12 @@ fn reproject_exact_merged_cache(
             .map(|(_, gap)| gap)
             .unwrap_or_else(|| first_gaps[index].map(|(_, gap)| gap));
     }
-    metrics.cache_rehydration_count = if summary.cache_write_tokens_available {
+    metrics.cache_rehydration_count = if use_explicit_cache_writes {
         reducer.mode_1_rehydrations
     } else {
         reducer.mode_2_rehydrations
     };
-    metrics.cache_routing_miss_count = if summary.cache_write_tokens_available {
+    metrics.cache_routing_miss_count = if use_explicit_cache_writes {
         reducer.mode_1_routing_misses
     } else {
         reducer.mode_2_routing_misses

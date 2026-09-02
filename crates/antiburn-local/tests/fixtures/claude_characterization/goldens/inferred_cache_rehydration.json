@@ -2062,13 +2062,19 @@
         },
         {
           "cacheReadTokens": 2000,
+          "cacheRehydration": {
+            "contextTokens": 32000,
+            "growthTokens": 0,
+            "rewrittenTokens": 30000,
+            "stillCachedTokens": 2000
+          },
           "cacheWriteTokens": 0,
           "compactionPostTokens": null,
           "compactionPreTokens": null,
           "compactionTrigger": null,
           "contextTokens": 32000,
           "hasThinking": false,
-          "isCacheRehydration": false,
+          "isCacheRehydration": true,
           "isCacheRoutingMiss": false,
           "isCompactionBoundary": false,
           "lastTool": null,
@@ -4043,7 +4049,7 @@
           "userPrompts": 0
         }
       ],
-      "cacheRehydrationCount": 0,
+      "cacheRehydrationCount": 1,
       "cacheRoutingMissCount": 0,
       "compactionCount": 0,
       "contextAvailable": true,

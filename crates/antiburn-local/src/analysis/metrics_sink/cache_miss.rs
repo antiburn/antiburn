@@ -5,7 +5,6 @@ use super::slots::{CacheRehydrationMark, CacheSlot};
 use super::tally::IdentityKey;
 
 pub(crate) const CACHE_REHYDRATION_MIN_CONTEXT_TOKENS: u64 = 20_000;
-pub(crate) const CACHE_REHYDRATION_MIN_GAP_SECS: u64 = 60;
 /// Model deferral spans only the transition to the first explicit model.
 pub(crate) const MAX_DEFERRED_CACHE: usize = 8;
 const CACHE_REHYDRATION_WRITE_RATIO: f64 = 0.5;
@@ -55,6 +54,7 @@ pub(crate) struct CachePatch {
 pub(crate) struct CacheReducer {
     previous_context: u64,
     previous_cache_read: u64,
+    has_explicit_cache_writes: bool,
     first_turn_after_compaction: bool,
     previous_turn_ts: Option<i64>,
     turns: VecDeque<CacheTurn>,
@@ -94,6 +94,10 @@ impl CacheReducer {
         self.first_turn_after_compaction = true;
     }
 
+    pub(crate) fn has_explicit_cache_writes(&self) -> bool {
+        self.has_explicit_cache_writes
+    }
+
     pub(crate) fn observe(
         &mut self,
         input: CacheInput,
@@ -112,6 +116,7 @@ impl CacheReducer {
             model: input.model,
         };
         let mut mode_1 = CacheSlot::default();
+        self.has_explicit_cache_writes |= input.cache_write_tokens > 0;
         if is_cache_rehydration_turn(
             input.context_tokens,
             input.cache_write_tokens,
@@ -239,13 +244,9 @@ fn count_slot(slot: CacheSlot, rehydrations: &mut u64, routing_misses: &mut u64)
 }
 
 fn classify(slot: &mut CacheSlot, rehydration: CacheRehydrationMark, gap: Option<u64>) {
-    if gap_allows_rehydration(gap) {
-        slot.is_rehydration = true;
-        slot.rehydration_gap = Some((rehydration.ordinal, gap));
-        slot.rehydration = Some(rehydration);
-    } else {
-        slot.is_routing_miss = true;
-    }
+    slot.is_rehydration = true;
+    slot.rehydration_gap = Some((rehydration.ordinal, gap));
+    slot.rehydration = Some(rehydration);
 }
 
 fn rehydration_mark(previous_context: u64, current: CacheTurn) -> CacheRehydrationMark {
@@ -262,10 +263,6 @@ fn rehydration_mark(previous_context: u64, current: CacheTurn) -> CacheRehydrati
         rewritten_tokens: uncached_tokens.saturating_sub(growth_tokens),
         growth_tokens,
     }
-}
-
-pub(crate) fn gap_allows_rehydration(gap: Option<u64>) -> bool {
-    gap.is_none_or(|seconds| seconds >= CACHE_REHYDRATION_MIN_GAP_SECS)
 }
 
 fn cache_ratio(tokens: u64, context_tokens: u64) -> f64 {
@@ -328,11 +325,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_unknown_gap_allows_rehydration() {
-        assert!(gap_allows_rehydration(None));
-    }
-
-    #[test]
     fn reorder_clamp_updates_pending_cache_keys() {
         let mut reducer = CacheReducer::default();
         reducer.observe(CacheInput {
@@ -349,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fast_gap_is_a_routing_miss() {
+    fn a_fast_gap_is_still_a_rehydration() {
         let mut slot = CacheSlot::default();
         classify(
             &mut slot,
@@ -362,8 +354,9 @@ mod tests {
             },
             Some(10),
         );
-        assert!(slot.is_routing_miss);
-        assert!(!slot.is_rehydration);
-        assert_eq!(slot.rehydration, None);
+        assert!(!slot.is_routing_miss);
+        assert!(slot.is_rehydration);
+        assert_eq!(slot.rehydration_gap, Some((4, Some(10))));
+        assert!(slot.rehydration.is_some());
     }
 }

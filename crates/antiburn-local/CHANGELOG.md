@@ -17,6 +17,12 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+### Changed
+
+- Cache rehydration now describes an observed cache rebuild without inferring
+  its cause from a fixed time gap. Zero-only cache-write fields use the
+  loss-and-recovery inference path.
+
 ## [0.4.0] - 2026-09-02
 
 ### Added

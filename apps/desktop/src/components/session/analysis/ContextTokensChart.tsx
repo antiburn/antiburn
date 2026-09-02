@@ -48,7 +48,7 @@ const REWRITE_BAR_WIDTH = 6
 const MATERIAL_REWRITE_TOKENS = 20_000
 /** Default opacity for a material rewrite. */
 const REWRITE_BAR_OPACITY = 0.6
-/** Bar opacity for a routing miss: the same cost, but not avoidable, so the mark draws lighter. */
+/** Bar opacity for a routing miss from a legacy analysis. */
 const ROUTING_MISS_BAR_OPACITY = 0.2
 
 export interface ContextTokensTooltipProps {
@@ -153,9 +153,7 @@ function legacyRehydrationLabel(point: ContextTokenPoint): string {
 }
 
 /**
- * The routing-miss tooltip line. Same event as a rehydration — the whole
- * context re-sent uncached — but it lands too soon after the prior turn for
- * a TTL lapse, so a provider-side routing miss causes it, not the session.
+ * The routing-miss tooltip line supports analyses from an older schema.
  */
 function routingMissLabel(point: ContextTokenPoint): string {
   if (point.cacheWriteTokens > 0) {

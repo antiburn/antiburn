@@ -35,11 +35,11 @@ export interface SessionBucket {
   cacheWriteTokens: number
   /** Fresh parent input that does not grow context. */
   rewriteTokens?: number
-  /** True when a turn in this bucket is a cache rehydration: the cache TTL lapsed and re-wrote. */
+  /** True when a turn in this bucket rebuilt a previously cached context. */
   isCacheRehydration: boolean
   /** The exact context composition on the latest rehydration turn in this bucket. */
   cacheRehydration?: CacheRehydration
-  /** True when a turn in this bucket is a cache routing miss: a fast re-send too soon for a TTL lapse. */
+  /** Legacy cause estimate retained for stored analysis compatibility. */
   isCacheRoutingMiss: boolean
   /** Wall-clock seconds since the prior parent turn, when this bucket contains a timed turn. */
   secsSincePriorTurn: number | null
@@ -182,9 +182,9 @@ export interface SessionMetrics {
   peakContextTokens: number
   /** Compaction boundaries in the parent transcript. */
   compactionCount?: number
-  /** Turns the engine flagged as a cache rehydration. */
+  /** Turns that rebuilt a previously cached context. */
   cacheRehydrationCount?: number
-  /** Turns the engine flagged as a cache routing miss. Not aggregated onto `ActiveSessionsSummary`. */
+  /** Legacy cause estimate retained for stored analysis compatibility. */
   cacheRoutingMissCount?: number
   /** False when the model's context window is unknown. */
   contextAvailable?: boolean

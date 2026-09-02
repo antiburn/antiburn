@@ -368,7 +368,9 @@ fn metrics_before_finish_resolve_deferred_cache_with_the_default_summary() {
     for event in [previous, current, next] {
         accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
     }
-    assert_eq!(accumulator.metrics().cache_routing_miss_count, 1);
+    let metrics = accumulator.metrics();
+    assert_eq!(metrics.cache_rehydration_count, 1);
+    assert_eq!(metrics.cache_routing_miss_count, 0);
 }
 
 #[test]
@@ -404,7 +406,8 @@ fn sidechain_models_do_not_change_the_parent_cache_model() {
         SessionSummary::default(),
     )
     .metrics();
-    assert_eq!(metrics.cache_routing_miss_count, 1);
+    assert_eq!(metrics.cache_rehydration_count, 1);
+    assert_eq!(metrics.cache_routing_miss_count, 0);
 }
 
 #[test]
@@ -664,8 +667,8 @@ fn merged_cache_detection_uses_chronological_parent_order() {
     let mut expected = super::reference::merge_metrics(&reference, &[]);
     expected.efficiency = actual.efficiency;
     expected.initial_context = None;
-    assert_eq!(actual.cache_rehydration_count, 0);
-    assert_eq!(actual.cache_routing_miss_count, 1);
+    assert_eq!(actual.cache_rehydration_count, 1);
+    assert_eq!(actual.cache_routing_miss_count, 0);
     assert_eq!(actual, expected);
 }
 

@@ -57,12 +57,12 @@ pub struct Bucket {
     /// This derived value does not depend on reported cache-write tokens.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rewrite_tokens: u64,
-    /// True when a cache rehydration turn lands in this bucket.
+    /// True when a turn rebuilds a previously cached context.
     pub is_cache_rehydration: bool,
     /// The context composition on the latest rehydration turn in this bucket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_rehydration: Option<CacheRehydration>,
-    /// True when an uncached context replay lands here too soon for a cache expiry.
+    /// Legacy cause estimate retained for serialized compatibility.
     #[serde(default)]
     pub is_cache_routing_miss: bool,
     /// Wall-clock seconds since the prior parent turn. A rehydration turn takes
@@ -156,10 +156,10 @@ pub struct SessionMetrics {
     /// Compaction boundaries in the parent transcript.
     #[serde(default)]
     pub compaction_count: u64,
-    /// Turns the engine flags as a cache routing miss.
+    /// Legacy cause estimate retained for serialized compatibility.
     #[serde(default)]
     pub cache_routing_miss_count: u64,
-    /// Turns the engine flags as a cache rehydration.
+    /// Turns that rebuild a previously cached context.
     #[serde(default)]
     pub cache_rehydration_count: u64,
     /// Whether the model context window is known well enough to present
