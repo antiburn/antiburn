@@ -18,18 +18,20 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
 
 use anyhow::Context;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::interface::{
     ContentPart, EvidenceObservation, NormalizedRecord, ProviderHint, RawSource, RecordSink,
-    SessionCollector, SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
-    bounded_provider_hint_value, push_provider_hint,
+    ResumedVisit, SessionCollector, SessionInput, SessionSummary, TurnContent, VendorAdapter,
+    VisitOutcome, bounded_provider_hint_value, push_provider_hint,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role};
 use crate::analysis::records::{
     RecordShape, extract_content_parts, parse_record, parse_ts, thread_identity_field,
 };
+use crate::analysis::resume::{AdapterResume, StreamSnapshot};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 use crate::analysis::threads::ThreadResolver;
 
@@ -53,20 +55,28 @@ impl VendorAdapter for PiAdapter {
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
         (|| -> anyhow::Result<VisitOutcome> {
-            let summary = match &input.source {
-                RawSource::File(path) => {
-                    self.visit_reader(BufReader::new(File::open(path)?), &|| false, sink)?
-                }
+            let state = match &input.source {
+                RawSource::File(path) => self.visit_reader(
+                    BufReader::new(File::open(path)?),
+                    &|| false,
+                    sink,
+                    PiStreamState::default(),
+                )?,
                 RawSource::Jsonl(content) => {
                     let suffix: &[u8] = if content.ends_with('\n') { b"" } else { b"\n" };
                     let source = Cursor::new(content.as_bytes()).chain(suffix);
-                    self.visit_reader(BufReader::new(source), &|| false, sink)?
+                    self.visit_reader(
+                        BufReader::new(source),
+                        &|| false,
+                        sink,
+                        PiStreamState::default(),
+                    )?
                 }
                 RawSource::Sqlite(_) => {
                     anyhow::bail!("sqlite source must be handled by the sqlite adapter")
                 }
             };
-            sink.finish(summary);
+            sink.finish(state.finish());
             Ok(VisitOutcome::Unvalidated)
         })()
         .context("reading Pi session")
@@ -82,9 +92,37 @@ impl VendorAdapter for PiAdapter {
     ) -> anyhow::Result<VisitOutcome> {
         PiAdapter::visit_claimed(self, input, claim, guarantee, cancel, sink)
     }
+
+    fn visit_claimed_resumed(
+        &self,
+        input: &SessionInput,
+        claim: &SourceClaim,
+        resume: &StreamSnapshot,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<ResumedVisit> {
+        PiAdapter::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
+    }
+
+    fn empty_resume_state(&self) -> Option<crate::analysis::resume::AdapterSnapshot> {
+        Some(PiAdapter::empty_adapter_snapshot())
+    }
 }
 
 impl PiAdapter {
+    /// A fresh [`PiStreamState`], serialized. Mirrors
+    /// [`crate::analysis::vendors::claude::ClaudeAdapter::empty_adapter_snapshot`]:
+    /// pairs with a [`StreamSnapshot`] whose [`ResumePoint`][rp] offset is
+    /// zero to start the first resumable pass over a source.
+    ///
+    /// [rp]: crate::analysis::source_validity::ResumePoint
+    pub fn empty_adapter_snapshot() -> crate::analysis::resume::AdapterSnapshot {
+        crate::analysis::resume::AdapterSnapshot(
+            postcard::to_allocvec(&PiStreamState::default())
+                .expect("a default PiStreamState always encodes"),
+        )
+    }
+
     pub fn visit_claimed(
         &self,
         input: &SessionInput,
@@ -105,7 +143,12 @@ impl PiAdapter {
                 AppendOnlyGuarantee::Evidenced => claim.boundary,
                 AppendOnlyGuarantee::Absent => u64::MAX,
             };
-            let summary = self.visit_reader(BufReader::new(pinned.reader(limit)), cancel, sink)?;
+            let state = self.visit_reader(
+                BufReader::new(pinned.reader(limit)),
+                cancel,
+                sink,
+                PiStreamState::default(),
+            )?;
             let outcome = match guarantee {
                 AppendOnlyGuarantee::Evidenced => match pinned.recheck_prefix()? {
                     Some(reason) => VisitOutcome::SourceChanged(reason),
@@ -121,20 +164,96 @@ impl PiAdapter {
             if matches!(outcome, VisitOutcome::SourceChanged(_)) {
                 return Ok(outcome);
             }
-            sink.finish(summary);
+            sink.finish(state.finish());
             Ok(outcome)
         })()
         .context("reading claimed Pi session")
     }
 
+    /// Streams a file from a verified [`StreamSnapshot`], restoring
+    /// [`PiStreamState`] from `resume.adapter` and reading only the bytes
+    /// past `resume.resume.offset`. Mirrors
+    /// [`crate::analysis::vendors::claude::ClaudeAdapter::visit_claimed_resumed`]
+    /// exactly; see its doc comment for the full read/recheck/snapshot shape.
+    ///
+    /// "Unsettled" rule: Pi has no case where its end-of-stream state is
+    /// unsafe to resume from. [`PiStreamState`] is forward-only — every
+    /// field only ever advances to a later observed value — so a resumed
+    /// pass keeps building it exactly as a single continuous pass would.
+    /// This method's `resume` is `None` only when `outcome` is
+    /// [`VisitOutcome::SourceChanged`].
+    pub fn visit_claimed_resumed(
+        &self,
+        input: &SessionInput,
+        claim: &SourceClaim,
+        resume: &StreamSnapshot,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<ResumedVisit> {
+        (|| -> anyhow::Result<ResumedVisit> {
+            anyhow::ensure!(
+                resume.is_current(),
+                "snapshot revision {} is not current",
+                resume.revision
+            );
+            let RawSource::File(path) = &input.source else {
+                anyhow::bail!("a claimed Pi source must be a file");
+            };
+            let mut pinned = match PinnedSource::open_resumed(path, claim.clone(), &resume.resume)?
+            {
+                Ok(pinned) => pinned,
+                Err(reason) => {
+                    return Ok(ResumedVisit {
+                        outcome: VisitOutcome::SourceChanged(reason),
+                        resume: None,
+                    });
+                }
+            };
+            let initial_state: PiStreamState =
+                postcard::from_bytes(&resume.adapter.0).context("decoding Pi adapter snapshot")?;
+            let state = self.visit_reader(
+                BufReader::new(pinned.reader_from(resume.resume.offset, u64::MAX)),
+                cancel,
+                sink,
+                initial_state,
+            )?;
+            let outcome = match pinned.recheck_full()? {
+                Some(reason) => VisitOutcome::SourceChanged(reason),
+                None => VisitOutcome::AcceptedFull,
+            };
+            if matches!(outcome, VisitOutcome::SourceChanged(_)) {
+                return Ok(ResumedVisit {
+                    outcome,
+                    resume: None,
+                });
+            }
+            let adapter = postcard::to_allocvec(&state).context("encoding Pi adapter snapshot")?;
+            let new_resume = pinned.resume_point()?;
+            sink.finish(state.finish());
+            Ok(ResumedVisit {
+                outcome,
+                resume: Some(AdapterResume {
+                    point: new_resume,
+                    adapter: crate::analysis::resume::AdapterSnapshot(adapter),
+                }),
+            })
+        })()
+        .context("reading resumed Pi session")
+    }
+
+    /// Streams `reader` starting from `state`, so a resumed pass can carry
+    /// forward the state a prior pass left off with. A first pass starts
+    /// from `PiStreamState::default()`. Returns the state at the end of the
+    /// stream, not yet reduced to a [`SessionSummary`]: the caller decides
+    /// whether to snapshot it before calling [`PiStreamState::finish`].
     fn visit_reader(
         &self,
         reader: impl BufRead,
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
-    ) -> anyhow::Result<SessionSummary> {
+        mut state: PiStreamState,
+    ) -> anyhow::Result<PiStreamState> {
         let mut reader = BoundedJsonlReader::new(reader);
-        let mut state = PiStreamState::default();
 
         while let Some(record) = reader.next_record(cancel) {
             match record {
@@ -161,11 +280,11 @@ impl PiAdapter {
             }
         }
 
-        Ok(state.finish())
+        Ok(state)
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 struct PiStreamState {
     model: Option<String>,
     current_model: Option<String>,
@@ -609,11 +728,213 @@ fn unknown_content_blocks(value: &Value) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+
     use serde_json::json;
 
     use super::*;
+    use crate::analysis::evidence::{EvidenceSource, SourceCapabilities, SourceKind};
+    use crate::analysis::evidence_sink::{EvidenceResumeState, SessionEvidenceAccumulator};
     use crate::analysis::interface::ContentKind;
+    use crate::analysis::metrics_sink::SessionMetricsAccumulator;
     use crate::analysis::model::ToolCategory;
+    use crate::analysis::resume::EvidenceSnapshot;
+    use crate::analysis::source_validity::ResumePoint;
+    use crate::analysis::{RESUME_SNAPSHOT_REVISION, SourceChangedReason};
+    use crate::discovery::source_version::head_hash_of;
+    use crate::discovery::{FingerprintInputs, SourceStat};
+    use tempfile::TempDir;
+
+    const FIRST_RECORD: &str = concat!(
+        r#"{"type":"message","timestamp":"2026-01-01T00:00:00Z","message":{"role":"assistant","content":[{"type":"text","text":"first"}]}}"#,
+        "\n",
+    );
+    const SECOND_RECORD: &str = concat!(
+        r#"{"type":"message","timestamp":"2026-01-01T00:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"second"}]}}"#,
+        "\n",
+    );
+
+    fn file_input(path: &Path) -> SessionInput {
+        SessionInput {
+            agent: "pi".to_string(),
+            session_id: "claimed-session".to_string(),
+            source: RawSource::File(path.to_path_buf()),
+        }
+    }
+
+    fn claim_for_path(path: &Path) -> SourceClaim {
+        let file = File::open(path).expect("open source for claim");
+        let stat = SourceStat::from_open_std_file(&file).expect("stat source for claim");
+        let bytes = std::fs::read(path).expect("read source for claim");
+        SourceClaim::from_fingerprint_inputs(&FingerprintInputs {
+            stat,
+            head_hash: Some(head_hash_of(&bytes)),
+        })
+    }
+
+    fn write_source(directory: &TempDir, bytes: &[u8]) -> PathBuf {
+        let path = directory.path().join("session.jsonl");
+        std::fs::write(&path, bytes).expect("write source");
+        path
+    }
+
+    /// A full [`StreamSnapshot`] around `resume` (the adapter's own half),
+    /// with fresh metrics/evidence/index state. Mirrors
+    /// `claude.rs`'s test helper of the same name.
+    fn snapshot_from(resume: AdapterResume) -> StreamSnapshot {
+        let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "pi".to_owned(),
+            session_id: "claimed-session".to_owned(),
+            kind: SourceKind::Jsonl,
+            capabilities: SourceCapabilities::pi(),
+        });
+        StreamSnapshot {
+            revision: RESUME_SNAPSHOT_REVISION,
+            resume: resume.point,
+            adapter: resume.adapter,
+            metrics: SessionMetricsAccumulator::new("pi", "claimed-session"),
+            evidence: EvidenceSnapshot {
+                record: evidence.coverage_record(),
+                resume: EvidenceResumeState::default(),
+            },
+            next_turn_index: 0,
+        }
+    }
+
+    /// A snapshot at offset zero, ready to resume a whole file from its
+    /// start: [`PinnedSource::open_resumed`]'s offset-zero case.
+    fn fresh_snapshot() -> StreamSnapshot {
+        snapshot_from(AdapterResume {
+            point: ResumePoint {
+                offset: 0,
+                tail_hash: head_hash_of(&[]),
+                tail_len: 0,
+            },
+            adapter: PiAdapter::empty_adapter_snapshot(),
+        })
+    }
+
+    #[test]
+    fn a_resumed_read_from_offset_zero_matches_a_full_read() {
+        let directory = TempDir::new().expect("tempdir");
+        let path = write_source(&directory, FIRST_RECORD.as_bytes());
+        let claim = claim_for_path(&path);
+        let input = file_input(&path);
+        let mut collector = SessionCollector::new("pi", "claimed-session");
+
+        let visit = PiAdapter
+            .visit_claimed_resumed(&input, &claim, &fresh_snapshot(), &|| false, &mut collector)
+            .expect("resumed visit of a fresh file");
+
+        assert_eq!(visit.outcome, VisitOutcome::AcceptedFull);
+        let resume = visit.resume.expect("a settled pass carries a resume");
+        assert_eq!(resume.point.offset, FIRST_RECORD.len() as u64);
+        assert_eq!(
+            collector
+                .into_session()
+                .expect("resumed read must publish")
+                .events
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_second_resumed_read_continues_from_the_first_snapshot() {
+        let directory = TempDir::new().expect("tempdir");
+        let path = write_source(&directory, FIRST_RECORD.as_bytes());
+        let input = file_input(&path);
+        let mut first_pass = SessionCollector::new("pi", "claimed-session");
+        let first_claim = claim_for_path(&path);
+        let first_visit = PiAdapter
+            .visit_claimed_resumed(
+                &input,
+                &first_claim,
+                &fresh_snapshot(),
+                &|| false,
+                &mut first_pass,
+            )
+            .expect("first resumed visit");
+        let resume = first_visit.resume.expect("a settled pass carries a resume");
+        let snapshot = snapshot_from(resume);
+
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open source for append")
+            .write_all(SECOND_RECORD.as_bytes())
+            .expect("append second record");
+        let second_claim = claim_for_path(&path);
+        let mut second_pass = SessionCollector::new("pi", "claimed-session");
+
+        let second_visit = PiAdapter
+            .visit_claimed_resumed(
+                &input,
+                &second_claim,
+                &snapshot,
+                &|| false,
+                &mut second_pass,
+            )
+            .expect("second resumed visit");
+
+        assert_eq!(second_visit.outcome, VisitOutcome::AcceptedFull);
+        assert_eq!(
+            second_pass
+                .into_session()
+                .expect("resumed read must publish")
+                .events
+                .len(),
+            1,
+            "the resumed pass reads only the newly appended record"
+        );
+    }
+
+    #[test]
+    fn a_rewritten_tail_fails_a_resumed_read_without_a_snapshot() {
+        let directory = TempDir::new().expect("tempdir");
+        let path = write_source(&directory, FIRST_RECORD.as_bytes());
+        let input = file_input(&path);
+        let first_claim = claim_for_path(&path);
+        let mut first_pass = SessionCollector::new("pi", "claimed-session");
+        let first_visit = PiAdapter
+            .visit_claimed_resumed(
+                &input,
+                &first_claim,
+                &fresh_snapshot(),
+                &|| false,
+                &mut first_pass,
+            )
+            .expect("first resumed visit");
+        let resume = first_visit.resume.expect("a settled pass carries a resume");
+        let snapshot = snapshot_from(resume);
+
+        // Same identity, a rewritten tail: the old snapshot's offset now
+        // points past a rewritten byte instead of an append. Re-claiming
+        // against the rewritten content isolates that check from the
+        // unrelated head-region check `open_resumed` also runs.
+        std::fs::write(&path, SECOND_RECORD.as_bytes()).expect("rewrite source");
+        let rewritten_claim = claim_for_path(&path);
+        let mut second_pass = SessionCollector::new("pi", "claimed-session");
+
+        let visit = PiAdapter
+            .visit_claimed_resumed(
+                &input,
+                &rewritten_claim,
+                &snapshot,
+                &|| false,
+                &mut second_pass,
+            )
+            .expect("resumed visit of a rewritten source");
+
+        assert_eq!(
+            visit.outcome,
+            VisitOutcome::SourceChanged(SourceChangedReason::ResumeTailMismatch)
+        );
+        assert!(visit.resume.is_none());
+        assert!(second_pass.into_session().is_err());
+    }
 
     #[derive(Default)]
     struct SummarySink {
