@@ -1300,14 +1300,14 @@ fn activity_cursors_do_not_collide_across_environments() {
         .upsert_sessions(&[native, wsl], &crate::agents::evidence_cohort())
         .unwrap();
 
-    let states = store.session_activity_states().unwrap();
-    assert_eq!(states.len(), 2);
-    assert!(states.contains_key(&SessionActivityKey::new(
+    let records = store.session_records().unwrap();
+    assert_eq!(records.len(), 2);
+    assert!(records.contains_key(&SessionActivityKey::new(
         "native",
         "claude-code",
         "/home/avery/.claude/projects/demo/shared.jsonl",
     )));
-    assert!(states.contains_key(&SessionActivityKey::new(
+    assert!(records.contains_key(&SessionActivityKey::new(
         "wsl:ubuntu",
         "claude-code",
         "/home/avery/.claude/projects/demo/shared.jsonl",

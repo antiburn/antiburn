@@ -52,8 +52,8 @@ pub use model::{
     EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters,
     MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement,
     ProjectionRevisions, PublishedEvidence, RETAIN_SESSION_DATA_FOREVER, RelationKind,
-    RelationRecord, RepositoryRecord, SessionActivityKey, SessionActivityState, SessionKey,
-    SessionRecord, SourceVersionState, ThemePreference, UsageEvidenceRecord,
+    RelationRecord, RepositoryRecord, SessionActivityKey, SessionKey, SessionRecord,
+    SourceVersionState, ThemePreference, UsageEvidenceRecord,
 };
 
 /// Evidence rows that still wait for, or sit in, processing.
@@ -766,38 +766,38 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Return the persisted activity cursor keyed by environment,
-    /// agent, and source label. A single map keeps the scan's cheap size gate
-    /// outside the SQLite lock without allowing native/WSL rows to collide.
-    pub fn session_activity_states(
-        &self,
-    ) -> Result<HashMap<SessionActivityKey, SessionActivityState>> {
+    /// Return every session's full cached record keyed by environment, agent,
+    /// and source label. A single map keeps the scan's cheap unchanged-source
+    /// gate outside the SQLite lock without allowing native/WSL rows to
+    /// collide, and lets the scan reuse a whole previous record instead of
+    /// re-describing a source that has not changed.
+    pub fn session_records(&self) -> Result<HashMap<SessionActivityKey, SessionRecord>> {
         let connection = self.lock();
         let mut statement = connection.prepare(
-            "SELECT environment_key, agent, source_label, activity_cursor,
-                    updated_at_epoch, activity_source
-               FROM session",
+            "SELECT environment_key, agent, session_id, source_kind, source_label, wsl_distro,
+                    title, title_source, cwd, surface, updated_at_epoch,
+                    activity_cursor, activity_source, subagent_count,
+                    (SELECT related_id FROM session_relation r
+                       WHERE r.environment_key = s.environment_key
+                         AND r.agent = s.agent
+                         AND r.session_id = s.session_id
+                         AND r.kind = 'forkParent'
+                       LIMIT 1),
+                    s.source_fingerprint
+               FROM session s",
         )?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                SessionActivityKey::new(
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ),
-                SessionActivityState {
-                    activity_cursor: row.get(3)?,
-                    updated_at_epoch: row.get(4)?,
-                    activity_source: row.get(5)?,
-                },
-            ))
-        })?;
-        let mut states = HashMap::new();
+        let rows = statement.query_map([], session_from_row)?;
+        let mut records = HashMap::new();
         for row in rows {
-            let (key, state) = row?;
-            states.insert(key, state);
+            let record = row?;
+            let key = SessionActivityKey::new(
+                record.key.environment_key.clone(),
+                record.key.agent.clone(),
+                record.source_label.clone(),
+            );
+            records.insert(key, record);
         }
-        Ok(states)
+        Ok(records)
     }
 
     /// One session's cached metadata, when it has been seen.
