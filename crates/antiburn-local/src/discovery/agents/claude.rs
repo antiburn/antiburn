@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use crate::discovery::scanner::{self, AgentKind, TitleSource};
 use crate::discovery::{
     AgentExplorer, DirectSessionSource, ResolvedTitle, SessionLog, SessionSource, SurfacePaths,
-    TitleLookupKind, app_config_dir_in, collect_dirs_with_exts, extract_json_string_field,
-    home_dir, recent_files_with_exts,
+    TitleLookupKind, WatchRoot, app_config_dir_in, collect_dirs_with_exts,
+    extract_json_string_field, home_dir, recent_files_with_exts,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -144,6 +144,17 @@ impl AgentExplorer for ClaudeExplorer {
             ide_desktop: vec![app_config_dir_in("Claude", home).join("claude-code-sessions")],
             mirror: Vec::new(),
         }
+    }
+
+    /// Transcripts, the desktop manifest dir, and interactive fork job state
+    /// all move independently: a fork's `state.json` can change with no
+    /// transcript write at all. Watch every root discovery reads.
+    fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
+        vec![
+            WatchRoot::recursive(home.join(".claude").join("projects")),
+            WatchRoot::recursive(app_config_dir_in("Claude", home).join("claude-code-sessions")),
+            WatchRoot::recursive(home.join(".claude").join("jobs")),
+        ]
     }
 
     // ---- Orchestration: Claude writes each spawned sub-agent as its own

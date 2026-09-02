@@ -10,7 +10,7 @@ use std::time::UNIX_EPOCH;
 
 use crate::discovery::scanner::AgentKind;
 use crate::discovery::{
-    AgentExplorer, SessionLog, SessionSource, SurfacePaths, app_config_dir_in, home_dir,
+    AgentExplorer, SessionLog, SessionSource, SurfacePaths, WatchRoot, app_config_dir_in, home_dir,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -62,6 +62,15 @@ impl AgentExplorer for KiroExplorer {
             ide_desktop: vec![kiro_storage_root_in(home)],
             mirror: Vec::new(),
         }
+    }
+
+    /// The same IDE storage root discovery walks.
+    fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
+        self.surface_paths(home)
+            .ide_desktop
+            .into_iter()
+            .map(WatchRoot::recursive)
+            .collect()
     }
 }
 

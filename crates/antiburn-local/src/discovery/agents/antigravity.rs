@@ -42,9 +42,9 @@ use crate::analysis::{BoundedJsonlReader, FramedRecord};
 use crate::discovery::scanner::AgentKind;
 use crate::discovery::scanner::{SessionMetadata, TitleSource};
 use crate::discovery::{
-    AgentExplorer, SessionLog, SessionMirror, SessionSource, SurfacePaths, app_config_dir_in,
-    collect_dirs_with_exts, dir_has_json_files, env_path_when_real_home, find_chat_session_dirs,
-    home_dir, recent_files_with_exts,
+    AgentExplorer, SessionLog, SessionMirror, SessionSource, SurfacePaths, WatchRoot,
+    app_config_dir_in, collect_dirs_with_exts, dir_has_json_files, env_path_when_real_home,
+    find_chat_session_dirs, home_dir, recent_files_with_exts,
 };
 use async_trait::async_trait;
 use rusqlite::{Connection, OpenFlags};
@@ -272,6 +272,16 @@ impl AgentExplorer for AntigravityExplorer {
             ],
             mirror: self.mirror.roots_in(home),
         }
+    }
+
+    /// Each brain subroot (`antigravity-cli`, `antigravity-ide`,
+    /// `antigravity`), recursive: a conversation's `.db`, its `-wal` file,
+    /// and its sibling transcript all move under the same subroot.
+    fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
+        gemini_subroots_in(home)
+            .into_iter()
+            .map(WatchRoot::recursive)
+            .collect()
     }
 
     fn recover_session_id_from_path(&self, file: &Path) -> Option<String> {

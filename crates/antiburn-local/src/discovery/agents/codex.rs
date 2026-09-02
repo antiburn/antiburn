@@ -12,7 +12,7 @@ use std::time::Duration;
 use crate::discovery::scanner::{self, AgentKind, TitleSource};
 use crate::discovery::{
     AgentExplorer, DirectSessionSource, ResolvedTitle, SessionLog, SessionSource, SurfacePaths,
-    TitleLookupKind, extract_json_string_field, home_dir, recent_files_with_exts,
+    TitleLookupKind, WatchRoot, extract_json_string_field, home_dir, recent_files_with_exts,
 };
 use async_trait::async_trait;
 use rusqlite::{Connection, OpenFlags, params};
@@ -185,6 +185,15 @@ impl AgentExplorer for CodexExplorer {
             ide_desktop: Vec::new(),
             mirror: Vec::new(),
         }
+    }
+
+    /// The same `sessions` roots discovery walks, `CODEX_HOME` included.
+    fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
+        let codex_home = std::env::var("CODEX_HOME").ok().map(PathBuf::from);
+        codex_session_roots(home, codex_home.as_deref())
+            .into_iter()
+            .map(WatchRoot::recursive)
+            .collect()
     }
 
     // ---- Orchestration: Codex records each spawned sub-agent as a row in the
@@ -568,14 +577,7 @@ async fn log_dirs_in(home: &Path) -> Vec<PathBuf> {
 }
 
 async fn log_dirs_in_with_codex_home(home: &Path, codex_home: Option<&Path>) -> Vec<PathBuf> {
-    let mut session_roots = vec![home.join(".codex").join("sessions")];
-    if let Some(custom_home) = codex_home {
-        let candidate = custom_home.join("sessions");
-        if !session_roots.contains(&candidate) {
-            session_roots.push(candidate);
-        }
-    }
-
+    let session_roots = codex_session_roots(home, codex_home);
     let mut dirs = Vec::new();
     for root in &session_roots {
         collect_dirs_with_jsonl(root, &mut dirs).await;
@@ -583,6 +585,21 @@ async fn log_dirs_in_with_codex_home(home: &Path, codex_home: Option<&Path>) -> 
     dirs.sort();
     dirs.dedup();
     dirs
+}
+
+/// The `sessions` roots discovery walks: the real home's, plus `CODEX_HOME`'s
+/// when it is set and does not already resolve to the same place. Shared by
+/// discovery and [`AgentExplorer::watch_roots`] so a watcher observes exactly
+/// what a pass reads.
+pub(crate) fn codex_session_roots(home: &Path, codex_home: Option<&Path>) -> Vec<PathBuf> {
+    let mut session_roots = vec![home.join(".codex").join("sessions")];
+    if let Some(custom_home) = codex_home {
+        let candidate = custom_home.join("sessions");
+        if !session_roots.contains(&candidate) {
+            session_roots.push(candidate);
+        }
+    }
+    session_roots
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::discovery::scanner::AgentKind;
 use crate::discovery::{
-    AgentExplorer, DesktopPlatform, SessionLog, SessionSource, SurfacePaths,
+    AgentExplorer, DesktopPlatform, SessionLog, SessionSource, SurfacePaths, WatchRoot,
     collect_dirs_with_exts, current_desktop_platform, env_path_when_real_home, home_dir,
     recent_files_with_exts,
 };
@@ -81,6 +81,15 @@ impl AgentExplorer for AmpCodeExplorer {
             ide_desktop: Vec::new(),
             mirror: Vec::new(),
         }
+    }
+
+    /// The same CLI roots discovery walks.
+    fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
+        self.surface_paths(home)
+            .cli
+            .into_iter()
+            .map(WatchRoot::recursive)
+            .collect()
     }
 }
 

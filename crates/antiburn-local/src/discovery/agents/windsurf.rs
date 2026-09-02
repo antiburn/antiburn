@@ -15,8 +15,9 @@ use std::path::{Path, PathBuf};
 
 use crate::discovery::scanner::AgentKind;
 use crate::discovery::{
-    AgentExplorer, SessionLog, SessionMirror, SessionSource, SurfacePaths, app_config_dir_in,
-    dir_has_json_files, find_chat_session_dirs, home_dir, recent_files_with_exts,
+    AgentExplorer, SessionLog, SessionMirror, SessionSource, SurfacePaths, WatchRoot,
+    app_config_dir_in, dir_has_json_files, find_chat_session_dirs, home_dir,
+    recent_files_with_exts,
 };
 use async_trait::async_trait;
 
@@ -164,6 +165,17 @@ impl AgentExplorer for WindsurfExplorer {
             ],
             mirror: self.mirror.roots_in(home),
         }
+    }
+
+    /// The IDE and Cascade roots discovery walks. The configured mirror
+    /// directory is not watched: it is an embedding application's own copy,
+    /// not a root this agent writes to.
+    fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
+        self.surface_paths(home)
+            .ide_desktop
+            .into_iter()
+            .map(WatchRoot::recursive)
+            .collect()
     }
 }
 
