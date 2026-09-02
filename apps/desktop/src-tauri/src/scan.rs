@@ -12,21 +12,22 @@
 //! antiburn is an always-running background utility. CPU time, memory, open
 //! files, and disk I/O are therefore correctness constraints, not optional
 //! optimizations: a scan must do no more work, retain no more data in memory,
-//! and run no more often than the visible feature requires.
+//! and run no more often than the visible feature requires. A pass describes
+//! a file-backed session again only when its parent and child sizes have
+//! changed since the stored record; an unchanged source is reused without
+//! opening its transcript. This is what makes the unconditional tick in the
+//! next section affordable.
 //!
 //! When a pass runs:
 //!
 //! - **At launch**, once, if onboarding is finished. A first-run install has no
 //!   sources selected yet, so scanning before the flow completes would only
 //!   spend disk on a window nobody can see.
-//! - **Every [`TICK`] while the popover is open.** The popover *is* the view of
-//!   this data; refreshing behind a closed popover would burn disk on a machine
-//!   whose owner is not looking.
-//! - **Paused entirely while the popover is hidden.** The scheduler keeps
-//!   ticking (it is one timer) but does no work, so reopening the popover
-//!   refreshes within a tick rather than after a cold start.
-//! - **The moment the popover is opened**, so a reader never looks at a stale
-//!   list while waiting out a tick.
+//! - **Every [`TICK`], unconditionally.** The popover does not gate the timer:
+//!   a pass over sources that have not changed reads no transcript, so ticking
+//!   while the popover is hidden costs stat calls, not disk reads.
+//! - **The moment the popover is opened**, as reconciliation, so a reader never
+//!   waits out a tick behind a missed event.
 //! - **On demand**, from the rescan control and after any change to the source
 //!   selection.
 //!
@@ -104,7 +105,6 @@ pub const EVENT_FINISHED: &str = "scan:finished";
 #[derive(Default)]
 pub struct ScanController {
     running: AtomicBool,
-    popover_visible: AtomicBool,
     cancel: Arc<AtomicBool>,
     status: Mutex<ScanStatus>,
     kick: Notify,
@@ -114,15 +114,6 @@ impl ScanController {
     /// Ask for a pass as soon as the scheduler can start one.
     pub fn request(&self) {
         self.kick.notify_one();
-    }
-
-    /// Record whether the popover is on screen, which is what gates the timer.
-    pub fn set_popover_visible(&self, visible: bool) {
-        self.popover_visible.store(visible, Ordering::Relaxed);
-    }
-
-    fn popover_visible(&self) -> bool {
-        self.popover_visible.load(Ordering::Relaxed)
     }
 
     /// Ask the pass in flight to stop at its next phase boundary.
@@ -157,17 +148,6 @@ impl ScanController {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum Wake {
-    Launch,
-    Tick,
-    Kick,
-}
-
-pub(crate) fn should_run_scheduled_pass(wake: Wake, popover_visible: bool, allowed: bool) -> bool {
-    allowed && (!matches!(wake, Wake::Tick) || popover_visible)
-}
-
 pub(crate) fn on_demand_start(controller: &ScanController) -> bool {
     if controller.running.swap(true, Ordering::SeqCst) {
         return false;
@@ -181,23 +161,19 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         // A fresh install has nothing to scan until the reader picks sources.
-        if should_run_scheduled_pass(Wake::Launch, false, scheduled_scanning_allowed(&app)) {
+        if scheduled_scanning_allowed(&app) {
             run_pass(&app, None).await;
         }
         loop {
             let controller = app.state::<ScanController>();
-            let wake = tokio::select! {
-                () = controller.kick.notified() => Wake::Kick,
-                () = tokio::time::sleep(TICK) => Wake::Tick,
-            };
+            tokio::select! {
+                () = controller.kick.notified() => {}
+                () = tokio::time::sleep(TICK) => {}
+            }
             // Checked after the wake-up rather than before the wait, so
             // resuming discovery takes effect at the next request or tick
             // instead of needing the app restarted.
-            if !should_run_scheduled_pass(
-                wake,
-                controller.popover_visible(),
-                scheduled_scanning_allowed(&app),
-            ) {
+            if !scheduled_scanning_allowed(&app) {
                 continue;
             }
             run_pass(&app, None).await;
@@ -2250,18 +2226,6 @@ mod tests {
     }
 
     #[test]
-    fn the_scheduled_trigger_set_is_unchanged() {
-        for wake in [Wake::Launch, Wake::Kick] {
-            assert!(should_run_scheduled_pass(wake, false, true));
-            assert!(should_run_scheduled_pass(wake, true, true));
-            assert!(!should_run_scheduled_pass(wake, true, false));
-        }
-        assert!(should_run_scheduled_pass(Wake::Tick, true, true));
-        assert!(!should_run_scheduled_pass(Wake::Tick, false, true));
-        assert!(!should_run_scheduled_pass(Wake::Tick, true, false));
-    }
-
-    #[test]
     fn an_on_demand_pass_starts_without_the_scheduler_gate() {
         let controller = ScanController::default();
         assert!(on_demand_start(&controller));
@@ -2271,11 +2235,8 @@ mod tests {
     }
 
     #[test]
-    fn the_controller_reports_the_popover_gate_and_a_clean_initial_status() {
+    fn a_fresh_controller_reports_a_clean_initial_status() {
         let controller = ScanController::default();
-        assert!(!controller.popover_visible());
-        controller.set_popover_visible(true);
-        assert!(controller.popover_visible());
 
         let status = controller.status();
         assert!(!status.running);
