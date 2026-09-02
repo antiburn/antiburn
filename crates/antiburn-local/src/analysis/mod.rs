@@ -154,7 +154,9 @@ pub const ANALYZER_REVISION: i64 = 16;
 // `session_analysis.provider_hints_json` from the bounded session summary.
 // +1 for exact cache-rehydration composition and zero-only cache-write
 // inference. Stored analyses must rerun for the corrected event data.
-pub const METRICS_SCHEMA_REVISION: i64 = 5;
+// +1 for provider-specific rehydration thresholds and exact user inactivity.
+// Stored analyses must rerun for the corrected cache-event classification.
+pub const METRICS_SCHEMA_REVISION: i64 = 6;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
 // +1 more for `RepeatedContext::paid_tokens` (part F).
 // +1 more for `SourceCapabilities::linear_record_order`.

@@ -42,6 +42,7 @@ pub(crate) struct CacheRehydrationMark {
     pub(crate) still_cached_tokens: u64,
     pub(crate) rewritten_tokens: u64,
     pub(crate) growth_tokens: u64,
+    pub(crate) user_inactive_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug)]

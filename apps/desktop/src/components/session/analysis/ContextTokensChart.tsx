@@ -50,8 +50,6 @@ const REWRITE_MARKER_WIDTH = 2
 const MATERIAL_REWRITE_TOKENS = 20_000
 /** Default opacity for a material rewrite. */
 const REWRITE_BAR_OPACITY = 0.6
-/** Bar opacity for a routing miss from a legacy analysis. */
-const ROUTING_MISS_BAR_OPACITY = 0.2
 
 export interface ContextTokensTooltipProps {
   active?: boolean
@@ -155,13 +153,16 @@ function legacyRehydrationLabel(point: ContextTokenPoint): string {
 }
 
 /**
- * The routing-miss tooltip line supports analyses from an older schema.
+ * The transport keeps the old routing-miss field name for stored analyses.
  */
 function routingMissLabel(point: ContextTokenPoint): string {
-  if (point.cacheWriteTokens > 0) {
-    return `Cache routing miss · ${formatCompact(point.cacheWriteTokens)} written`
+  if (point.cacheRehydration != null) {
+    return `Provider cache miss · ${formatCompact(point.cacheRehydration.rewrittenTokens)} old context uncached`
   }
-  return `Cache routing miss · ${formatCompact(point.tokensIn)} re-sent uncached`
+  if (point.cacheWriteTokens > 0) {
+    return `Provider cache miss · ${formatCompact(point.cacheWriteTokens)} written`
+  }
+  return `Provider cache miss · ${formatCompact(point.tokensIn)} re-sent uncached`
 }
 
 function rewriteLabel(point: ContextTokenPoint): string {
@@ -180,10 +181,10 @@ function rewriteBar(
   strokeWidth: number,
   label?: string,
 ): ReactElement {
-  const rehydration = point.cacheRehydration
-  const start = rehydration?.stillCachedTokens ?? 0
-  const end = rehydration
-    ? rehydration.stillCachedTokens + rehydration.rewrittenTokens
+  const cacheEvent = point.cacheRehydration
+  const start = cacheEvent?.stillCachedTokens ?? 0
+  const end = cacheEvent
+    ? cacheEvent.stillCachedTokens + cacheEvent.rewrittenTokens
     : point.rewriteTokens || point.contextTokens
   return hasContextAxis ? (
     <ReferenceLine
@@ -233,7 +234,7 @@ export function ContextTokensTooltip({
     activeSecs != null && bucketCount > 1
       ? formatDuration((point.index / (bucketCount - 1)) * activeSecs)
       : `${point.progress}% through`
-  const rehydration = point.cacheRehydration
+  const cacheEvent = point.cacheRehydration
   const pct =
     contextWindow != null && contextWindow > 0
       ? Math.min(1, point.contextTokens / contextWindow)
@@ -259,11 +260,11 @@ export function ContextTokensTooltip({
         {point.betweenCalls != null && (
           <span className="mt-1">{betweenCallsLabel(point.betweenCalls)}</span>
         )}
-        {point.betweenCalls == null && rehydration == null && (
+        {point.betweenCalls == null && cacheEvent == null && (
           <span className="mt-1 type-caption text-label-tertiary">Tokens</span>
         )}
         {point.betweenCalls == null &&
-          rehydration == null &&
+          cacheEvent == null &&
           TOKEN_ROWS.map((row) => (
             <span key={row.key} className="flex items-center gap-1.5">
               <span
@@ -274,7 +275,7 @@ export function ContextTokensTooltip({
             </span>
           ))}
         {point.betweenCalls == null &&
-          rehydration == null &&
+          cacheEvent == null &&
           CACHE_ROWS.filter((row) => !row.hideWhenZero || point[row.key] > 0).map((row) => (
             <span key={row.key} className="flex items-center gap-1.5">
               <span
@@ -284,36 +285,39 @@ export function ContextTokensTooltip({
               {row.label} · {formatCompact(point[row.key])}
             </span>
           ))}
-        {rehydration != null && (
+        {point.isCacheRehydration && cacheEvent != null && (
           <>
             <span style={{ color: "var(--color-context-critical)" }}>
-              Cache rehydration · {formatCompact(rehydration.contextTokens)} context
+              Cache rehydration · {formatCompact(cacheEvent.contextTokens)} context
             </span>
             <span className="pl-3">
-              Still cached · {formatCompact(rehydration.stillCachedTokens)}
+              Still cached · {formatCompact(cacheEvent.stillCachedTokens)}
             </span>
             <span className="pl-3">
-              Old context rewritten · {formatCompact(rehydration.rewrittenTokens)}
+              Old context rewritten · {formatCompact(cacheEvent.rewrittenTokens)}
             </span>
             <span className="pl-3">
-              Context growth · {formatCompact(rehydration.growthTokens)}
+              Context growth · {formatCompact(cacheEvent.growthTokens)}
             </span>
           </>
         )}
-        {point.isCacheRehydration && rehydration == null && (
+        {point.isCacheRehydration && cacheEvent == null && (
           <span style={{ color: "var(--color-context-critical)" }}>
             {legacyRehydrationLabel(point)}
           </span>
         )}
         {point.isCacheRoutingMiss && (
-          <span style={{ color: "var(--color-context-critical)", opacity: 0.6 }}>
+          <span style={{ color: "var(--color-context-critical)" }}>
             {routingMissLabel(point)}
           </span>
         )}
-        {point.rewriteTokens > 0 && rehydration == null && (
+        {point.rewriteTokens > 0 && cacheEvent == null && (
           <span style={{ color: "var(--color-context-critical)" }}>{rewriteLabel(point)}</span>
         )}
-        {point.secsSincePriorTurn != null && (
+        {cacheEvent?.userInactiveSecs != null && (
+          <span>User inactive · {formatDuration(cacheEvent.userInactiveSecs)}</span>
+        )}
+        {point.secsSincePriorTurn != null && cacheEvent?.userInactiveSecs == null && (
           <span>Since prior turn · {formatDuration(point.secsSincePriorTurn)}</span>
         )}
         {point.isCompactionBoundary && <span>{compactionLabel(point)}</span>}
@@ -447,19 +451,18 @@ export function ContextTokensChart({
               point.isCacheRoutingMiss,
           )
           .map((point) => {
-            const opacity = point.isCacheRoutingMiss
-              ? ROUTING_MISS_BAR_OPACITY
-              : REWRITE_BAR_OPACITY
-            const label = point.isCacheRehydration
-              ? "rehydration"
-              : point.isCacheRoutingMiss
-                ? "routing miss"
-                : undefined
-            const strokeWidth =
-              point.isCacheRehydration || point.isCacheRoutingMiss
-                ? CACHE_EVENT_BAR_WIDTH
-                : REWRITE_MARKER_WIDTH
-            return rewriteBar(point, "rewrite", !!contextAxis, opacity, strokeWidth, label)
+            const label = point.isCacheRehydration ? "rehydration" : undefined
+            const strokeWidth = point.isCacheRehydration
+              ? CACHE_EVENT_BAR_WIDTH
+              : REWRITE_MARKER_WIDTH
+            return rewriteBar(
+              point,
+              "rewrite",
+              !!contextAxis,
+              REWRITE_BAR_OPACITY,
+              strokeWidth,
+              label,
+            )
           })}
         {/* A mode change (model, thinking effort, or speed) draws no line at
             all — only its label, at the top of the plot — so it stays a

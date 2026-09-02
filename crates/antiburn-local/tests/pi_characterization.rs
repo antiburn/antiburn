@@ -1003,15 +1003,10 @@ fn pi_detector_eligibility_is_frozen() {
     );
 }
 
-/// The generic fallback claims no cache-write support for any vendor (plan
-/// decision 7), so it always uses the uncached-input accounting mode. That
-/// only matches Pi's own accounting on a fixture where Pi's own per-session
-/// signal also reports cache-write support unavailable — both then read the
-/// same content through the same accounting mode. A fixture where Pi's own
-/// signal reports cache-write support available is not comparable here: Pi
-/// uses the cache-write mode and the generic fallback still cannot.
+/// The generic fallback claims no cache-write support for any vendor. It uses
+/// uncached-input accounting. This matches Pi when Pi reports no write support.
 #[test]
-fn cache_rehydration_behavior_matches_the_generic_fallback_when_neither_supports_cache_writes() {
+fn provider_cache_miss_behavior_matches_the_generic_fallback_without_cache_writes() {
     for name in fixture_names() {
         if summary(name).cache_write_tokens_available {
             continue;
@@ -1023,23 +1018,30 @@ fn cache_rehydration_behavior_matches_the_generic_fallback_when_neither_supports
         assert_eq!(
             pi_metrics.metrics().cache_rehydration_count,
             generic_metrics.metrics().cache_rehydration_count,
-            "cache events for {name}"
+            "cache rehydrations for {name}"
+        );
+        assert_eq!(
+            pi_metrics.metrics().cache_routing_miss_count,
+            generic_metrics.metrics().cache_routing_miss_count,
+            "provider cache misses for {name}"
         );
     }
 
     // `mixed_api` reports cache-write support unavailable because its two
     // API families disagree on whether they report cache writes at all. Pi
     // and the generic fallback both fall back to uncached-input accounting
-    // and read the same rehydration count from it.
+    // and read the same provider cache miss count from it.
     let (evidence, pi_metrics) = composite(&input("mixed_api"));
     assert!(!evidence.capabilities.cache_write_tokens);
-    assert_eq!(pi_metrics.metrics().cache_rehydration_count, 1);
+    assert_eq!(pi_metrics.metrics().cache_rehydration_count, 0);
+    assert_eq!(pi_metrics.metrics().cache_routing_miss_count, 1);
     let (_, generic_metrics) = composite_with(
         &input("mixed_api"),
         SourceCapabilities::pi(),
         adapter_for("pi-generic-fallback"),
     );
-    assert_eq!(generic_metrics.metrics().cache_rehydration_count, 1);
+    assert_eq!(generic_metrics.metrics().cache_rehydration_count, 0);
+    assert_eq!(generic_metrics.metrics().cache_routing_miss_count, 1);
 }
 
 /// Like [`composite`], with the backing [`MemoryTurnRowStore`] returned

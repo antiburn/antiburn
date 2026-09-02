@@ -57,12 +57,14 @@ pub struct Bucket {
     /// This derived value does not depend on reported cache-write tokens.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rewrite_tokens: u64,
-    /// True when a turn rebuilds a previously cached context.
+    /// True when a user resumes after meaningful inactivity and the provider
+    /// rebuilds a previously cached context.
     pub is_cache_rehydration: bool,
-    /// The context composition on the latest rehydration turn in this bucket.
+    /// The context composition on the latest cache event in this bucket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_rehydration: Option<CacheRehydration>,
-    /// Legacy cause estimate retained for serialized compatibility.
+    /// True when a material provider cache miss occurs without meaningful
+    /// user inactivity. The serialized name stays compatible with old data.
     #[serde(default)]
     pub is_cache_routing_miss: bool,
     /// Wall-clock seconds since the prior parent turn. A rehydration turn takes
@@ -107,7 +109,7 @@ pub struct Bucket {
     pub compaction_post_tokens: Option<u64>,
 }
 
-/// The context composition on one cache rehydration turn.
+/// The context composition on one material cache event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheRehydration {
@@ -115,6 +117,8 @@ pub struct CacheRehydration {
     pub still_cached_tokens: u64,
     pub rewritten_tokens: u64,
     pub growth_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_inactive_secs: Option<u64>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -156,10 +160,10 @@ pub struct SessionMetrics {
     /// Compaction boundaries in the parent transcript.
     #[serde(default)]
     pub compaction_count: u64,
-    /// Legacy cause estimate retained for serialized compatibility.
+    /// Provider cache misses. The serialized name stays compatible with old data.
     #[serde(default)]
     pub cache_routing_miss_count: u64,
-    /// Turns that rebuild a previously cached context.
+    /// Cache rebuilds after meaningful user inactivity.
     #[serde(default)]
     pub cache_rehydration_count: u64,
     /// Whether the model context window is known well enough to present

@@ -94,8 +94,8 @@
           "compactionTrigger": null,
           "contextTokens": 72000,
           "hasThinking": false,
-          "isCacheRehydration": true,
-          "isCacheRoutingMiss": false,
+          "isCacheRehydration": false,
+          "isCacheRoutingMiss": true,
           "isCompactionBoundary": false,
           "lastTool": null,
           "model": "claude-3-5-haiku-20241022",
@@ -4049,8 +4049,8 @@
           "userPrompts": 0
         }
       ],
-      "cacheRehydrationCount": 1,
-      "cacheRoutingMissCount": 0,
+      "cacheRehydrationCount": 0,
+      "cacheRoutingMissCount": 1,
       "compactionCount": 0,
       "contextAvailable": true,
       "contextWindow": 200000,

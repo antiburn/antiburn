@@ -35,11 +35,11 @@ export interface SessionBucket {
   cacheWriteTokens: number
   /** Fresh parent input that does not grow context. */
   rewriteTokens?: number
-  /** True when a turn in this bucket rebuilt a previously cached context. */
+  /** True when a cache rebuild follows meaningful user inactivity. */
   isCacheRehydration: boolean
-  /** The exact context composition on the latest rehydration turn in this bucket. */
+  /** The exact context composition on the latest cache event in this bucket. */
   cacheRehydration?: CacheRehydration
-  /** Legacy cause estimate retained for stored analysis compatibility. */
+  /** True for a material provider cache miss without meaningful user inactivity. */
   isCacheRoutingMiss: boolean
   /** Wall-clock seconds since the prior parent turn, when this bucket contains a timed turn. */
   secsSincePriorTurn: number | null
@@ -70,6 +70,7 @@ interface CacheRehydration {
   stillCachedTokens: number
   rewrittenTokens: number
   growthTokens: number
+  userInactiveSecs?: number
 }
 
 /* -------------------------------------------------------------------------
@@ -182,9 +183,9 @@ export interface SessionMetrics {
   peakContextTokens: number
   /** Compaction boundaries in the parent transcript. */
   compactionCount?: number
-  /** Turns that rebuilt a previously cached context. */
+  /** Cache rebuilds after meaningful user inactivity. */
   cacheRehydrationCount?: number
-  /** Legacy cause estimate retained for stored analysis compatibility. */
+  /** Provider cache misses. The transport name stays compatible with stored analysis. */
   cacheRoutingMissCount?: number
   /** False when the model's context window is unknown. */
   contextAvailable?: boolean

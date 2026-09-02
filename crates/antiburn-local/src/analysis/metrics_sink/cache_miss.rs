@@ -7,21 +7,20 @@ use super::tally::IdentityKey;
 pub(crate) const CACHE_REHYDRATION_MIN_CONTEXT_TOKENS: u64 = 20_000;
 /// Model deferral spans only the transition to the first explicit model.
 pub(crate) const MAX_DEFERRED_CACHE: usize = 8;
-const CACHE_REHYDRATION_WRITE_RATIO: f64 = 0.5;
 const CACHE_REHYDRATION_PRIOR_READ_RATIO: f64 = 0.5;
-const CACHE_REHYDRATION_MISS_READ_RATIO: f64 = 0.2;
 const CACHE_REHYDRATION_CONTEXT_RETENTION_RATIO: f64 = 0.8;
-const CACHE_REHYDRATION_REPLAY_RATIO: f64 = 0.5;
 const CACHE_REHYDRATION_RECOVERY_READ_RATIO: f64 = 0.5;
+const CLAUDE_REHYDRATION_MIN_USER_INACTIVITY_SECS: u64 = 60 * 60;
+const CODEX_REHYDRATION_MIN_USER_INACTIVITY_SECS: u64 = 30 * 60;
 
 #[derive(Clone, Copy)]
 pub(crate) struct CacheTurn {
     key: (i64, u64),
     context_tokens: u64,
-    fresh_input_tokens: u64,
     cache_read_tokens: u64,
     first_turn_after_compaction: bool,
     secs_since_prior_turn: Option<u64>,
+    user_inactive_secs: Option<u64>,
     model: Option<IdentityKey>,
 }
 
@@ -29,7 +28,6 @@ pub(crate) struct CacheInput {
     pub(crate) key: (i64, u64),
     pub(crate) timestamp: Option<i64>,
     pub(crate) context_tokens: u64,
-    pub(crate) fresh_input_tokens: u64,
     pub(crate) cache_read_tokens: u64,
     pub(crate) cache_write_tokens: u64,
     pub(crate) model: Option<IdentityKey>,
@@ -52,11 +50,12 @@ pub(crate) struct CachePatch {
 
 #[derive(Clone, Default)]
 pub(crate) struct CacheReducer {
-    previous_context: u64,
-    previous_cache_read: u64,
+    rehydration_min_user_inactivity_secs: Option<u64>,
     has_explicit_cache_writes: bool,
     first_turn_after_compaction: bool,
     previous_turn_ts: Option<i64>,
+    pending_user_prompt: bool,
+    pending_user_prompt_ts: Option<i64>,
     turns: VecDeque<CacheTurn>,
     deferred: Vec<DeferredCache>,
     pub(crate) mode_1_rehydrations: u64,
@@ -66,6 +65,13 @@ pub(crate) struct CacheReducer {
 }
 
 impl CacheReducer {
+    pub(crate) fn new(agent: &str) -> Self {
+        Self {
+            rehydration_min_user_inactivity_secs: rehydration_min_user_inactivity_secs(agent),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn update_key(&mut self, ordinal: u64, key: (i64, u64)) {
         for turn in &mut self.turns {
             if turn.key.1 == ordinal {
@@ -94,6 +100,13 @@ impl CacheReducer {
         self.first_turn_after_compaction = true;
     }
 
+    pub(crate) fn observe_user_prompt(&mut self, timestamp: Option<i64>) {
+        self.pending_user_prompt = true;
+        if let Some(timestamp) = timestamp {
+            self.pending_user_prompt_ts.get_or_insert(timestamp);
+        }
+    }
+
     pub(crate) fn has_explicit_cache_writes(&self) -> bool {
         self.has_explicit_cache_writes
     }
@@ -109,25 +122,25 @@ impl CacheReducer {
         let turn = CacheTurn {
             key: input.key,
             context_tokens: input.context_tokens,
-            fresh_input_tokens: input.fresh_input_tokens,
             cache_read_tokens: input.cache_read_tokens,
             first_turn_after_compaction: self.first_turn_after_compaction,
             secs_since_prior_turn: gap,
+            user_inactive_secs: self.user_inactivity_secs(),
             model: input.model,
         };
+        self.pending_user_prompt = false;
+        self.pending_user_prompt_ts = None;
         let mut mode_1 = CacheSlot::default();
         self.has_explicit_cache_writes |= input.cache_write_tokens > 0;
-        if is_cache_rehydration_turn(
-            input.context_tokens,
-            input.cache_write_tokens,
-            self.previous_context,
-            self.previous_cache_read,
-            self.first_turn_after_compaction,
-        ) {
+        if self.turns.back().is_some_and(|previous| {
+            is_direct_cache_event(*previous, turn, input.cache_write_tokens)
+        }) {
+            let previous = *self.turns.back().expect("the prior cache turn");
             classify(
                 &mut mode_1,
-                rehydration_mark(self.previous_context, turn),
+                rehydration_mark(previous.context_tokens, turn),
                 gap,
+                self.rehydration_min_user_inactivity_secs,
             );
             count_slot(
                 mode_1,
@@ -145,11 +158,18 @@ impl CacheReducer {
         } else {
             None
         };
-        self.previous_context = input.context_tokens;
-        self.previous_cache_read = input.cache_read_tokens;
         self.first_turn_after_compaction = false;
         self.previous_turn_ts = input.timestamp;
         (mode_1, mode_2, gap)
+    }
+
+    fn user_inactivity_secs(&self) -> Option<u64> {
+        if !self.pending_user_prompt {
+            return None;
+        }
+        self.pending_user_prompt_ts
+            .zip(self.previous_turn_ts)
+            .map(|(prompt, prior)| u64::try_from((prompt - prior).max(0) / 1_000).unwrap_or(0))
     }
 
     fn resolve_window(
@@ -215,7 +235,12 @@ impl CacheReducer {
         rehydration: CacheRehydrationMark,
     ) -> CachePatch {
         let mut slot = CacheSlot::default();
-        classify(&mut slot, rehydration, gap);
+        classify(
+            &mut slot,
+            rehydration,
+            gap,
+            self.rehydration_min_user_inactivity_secs,
+        );
         count_slot(
             slot,
             &mut self.mode_2_rehydrations,
@@ -243,8 +268,18 @@ fn count_slot(slot: CacheSlot, rehydrations: &mut u64, routing_misses: &mut u64)
     }
 }
 
-fn classify(slot: &mut CacheSlot, rehydration: CacheRehydrationMark, gap: Option<u64>) {
-    slot.is_rehydration = true;
+fn classify(
+    slot: &mut CacheSlot,
+    rehydration: CacheRehydrationMark,
+    gap: Option<u64>,
+    rehydration_min_user_inactivity_secs: Option<u64>,
+) {
+    slot.is_rehydration = rehydration_min_user_inactivity_secs.is_some_and(|minimum| {
+        rehydration
+            .user_inactive_secs
+            .is_some_and(|inactivity| inactivity >= minimum)
+    });
+    slot.is_routing_miss = !slot.is_rehydration;
     slot.rehydration_gap = Some((rehydration.ordinal, gap));
     slot.rehydration = Some(rehydration);
 }
@@ -262,6 +297,7 @@ fn rehydration_mark(previous_context: u64, current: CacheTurn) -> CacheRehydrati
         still_cached_tokens,
         rewritten_tokens: uncached_tokens.saturating_sub(growth_tokens),
         growth_tokens,
+        user_inactive_secs: current.user_inactive_secs,
     }
 }
 
@@ -273,6 +309,14 @@ fn cache_ratio(tokens: u64, context_tokens: u64) -> f64 {
     }
 }
 
+fn rehydration_min_user_inactivity_secs(agent: &str) -> Option<u64> {
+    match agent {
+        "claude" => Some(CLAUDE_REHYDRATION_MIN_USER_INACTIVITY_SECS),
+        "codex" => Some(CODEX_REHYDRATION_MIN_USER_INACTIVITY_SECS),
+        _ => None,
+    }
+}
+
 fn same_known_model(left: Option<IdentityKey>, right: Option<IdentityKey>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => left == right,
@@ -280,31 +324,21 @@ fn same_known_model(left: Option<IdentityKey>, right: Option<IdentityKey>) -> bo
     }
 }
 
-fn is_cache_rehydration_turn(
-    context_tokens: u64,
-    cache_write_tokens: u64,
-    previous_context_tokens: u64,
-    previous_cache_read_tokens: u64,
-    first_turn_after_compaction: bool,
-) -> bool {
-    if first_turn_after_compaction
-        || context_tokens < CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
-        || previous_context_tokens == 0
-    {
-        return false;
-    }
-    cache_ratio(cache_write_tokens, context_tokens) >= CACHE_REHYDRATION_WRITE_RATIO
-        && cache_ratio(previous_cache_read_tokens, previous_context_tokens)
-            >= CACHE_REHYDRATION_PRIOR_READ_RATIO
+fn is_direct_cache_event(previous: CacheTurn, current: CacheTurn, cache_write_tokens: u64) -> bool {
+    cache_write_tokens >= CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
+        && is_material_cache_event(previous, current)
 }
 
 fn inferred_cache_rehydration_turn(previous: CacheTurn, current: CacheTurn) -> bool {
+    is_material_cache_event(previous, current)
+}
+
+fn is_material_cache_event(previous: CacheTurn, current: CacheTurn) -> bool {
     if current.first_turn_after_compaction
         || current.context_tokens < CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
         || cache_ratio(previous.cache_read_tokens, previous.context_tokens)
             < CACHE_REHYDRATION_PRIOR_READ_RATIO
-        || cache_ratio(current.cache_read_tokens, current.context_tokens)
-            > CACHE_REHYDRATION_MISS_READ_RATIO
+        || !same_known_model(previous.model, current.model)
     {
         return false;
     }
@@ -313,11 +347,8 @@ fn inferred_cache_rehydration_turn(previous: CacheTurn, current: CacheTurn) -> b
     {
         return false;
     }
-    let growth = current
-        .context_tokens
-        .saturating_sub(previous.context_tokens);
-    let replayed = current.fresh_input_tokens.saturating_sub(growth);
-    cache_ratio(replayed, current.context_tokens) >= CACHE_REHYDRATION_REPLAY_RATIO
+    rehydration_mark(previous.context_tokens, current).rewritten_tokens
+        >= CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
 }
 
 #[cfg(test)]
@@ -331,7 +362,6 @@ mod tests {
             key: (0, 0),
             timestamp: Some(0),
             context_tokens: 30_000,
-            fresh_input_tokens: 1_000,
             cache_read_tokens: 29_000,
             cache_write_tokens: 0,
             model: None,
@@ -341,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fast_gap_is_still_a_rehydration() {
+    fn a_fast_gap_is_a_provider_cache_miss() {
         let mut slot = CacheSlot::default();
         classify(
             &mut slot,
@@ -351,12 +381,21 @@ mod tests {
                 still_cached_tokens: 5_000,
                 rewritten_tokens: 25_000,
                 growth_tokens: 0,
+                user_inactive_secs: Some(10),
             },
             Some(10),
+            Some(CLAUDE_REHYDRATION_MIN_USER_INACTIVITY_SECS),
         );
-        assert!(!slot.is_routing_miss);
-        assert!(slot.is_rehydration);
+        assert!(slot.is_routing_miss);
+        assert!(!slot.is_rehydration);
         assert_eq!(slot.rehydration_gap, Some((4, Some(10))));
         assert!(slot.rehydration.is_some());
+    }
+
+    #[test]
+    fn meaningful_inactivity_thresholds_are_provider_specific() {
+        assert_eq!(rehydration_min_user_inactivity_secs("claude"), Some(3_600));
+        assert_eq!(rehydration_min_user_inactivity_secs("codex"), Some(1_800));
+        assert_eq!(rehydration_min_user_inactivity_secs("synthetic"), None);
     }
 }

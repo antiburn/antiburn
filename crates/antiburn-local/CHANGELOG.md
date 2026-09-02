@@ -19,9 +19,9 @@ version and refuses the release if there is none.
 
 ### Changed
 
-- Cache rehydration now describes an observed cache rebuild without inferring
-  its cause from a fixed time gap. Zero-only cache-write fields use the
-  loss-and-recovery inference path.
+- Material cache rebuilds after a user resumes are cache rehydrations after 60
+  minutes for Claude and 30 minutes for Codex. Other rebuilds are provider
+  cache misses. Zero-only cache-write fields use loss-and-recovery inference.
 
 ## [0.4.0] - 2026-09-02
 

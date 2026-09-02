@@ -150,9 +150,10 @@ pub struct SessionMetricsAccumulator {
 
 impl SessionMetricsAccumulator {
     pub fn new(agent: impl Into<String>, session_id: impl Into<String>) -> Self {
+        let agent = agent.into();
         Self {
             identity: MetricsIdentity {
-                agent: agent.into(),
+                agent: agent.clone(),
                 session_id: session_id.into(),
             },
             slots: ProgressSlots::default(),
@@ -169,7 +170,7 @@ impl SessionMetricsAccumulator {
             tallies: OnlineTallies::default(),
             summary: None,
             efficiency: EfficiencyReducer::default(),
-            cache: CacheReducer::default(),
+            cache: CacheReducer::new(&agent),
             skill_marks: Vec::new(),
             skill_duration_heap: BinaryHeap::new(),
             late_candidates: Vec::new(),
@@ -356,6 +357,9 @@ impl SessionMetricsAccumulator {
         self.observe_model_usage(&event, effective_ts, ordinal);
 
         if event.source == EventSource::Parent {
+            if event.role == Role::User {
+                self.cache.observe_user_prompt(event.ts_ms);
+            }
             if event.is_compaction_boundary {
                 self.cache.mark_compaction();
             }
@@ -365,7 +369,6 @@ impl SessionMetricsAccumulator {
                     key: (effective_ts, ordinal),
                     timestamp: event.ts_ms,
                     context_tokens,
-                    fresh_input_tokens: event.usage.input_tokens,
                     cache_read_tokens: event.usage.cache_read_tokens,
                     cache_write_tokens: event.usage.cache_creation_tokens,
                     model: self.active_model,
@@ -1173,6 +1176,7 @@ fn public_cache_rehydration(
         still_cached_tokens: mark.still_cached_tokens,
         rewritten_tokens: mark.rewritten_tokens,
         growth_tokens: mark.growth_tokens,
+        user_inactive_secs: mark.user_inactive_secs,
     }
 }
 
@@ -1710,10 +1714,13 @@ fn reproject_exact_merged_cache(
     let summary = parent.summary.as_ref().unwrap_or(&empty_summary);
     let fallback = summary.model.as_deref().map(IdentityKey::new);
     let mut active_model = fallback;
-    let mut reducer = CacheReducer::default();
+    let mut reducer = CacheReducer::new(&parent.identity.agent);
     let mut mode_2_patches = Vec::new();
 
     for slot in slots {
+        if slot.user_prompts > 0 {
+            reducer.observe_user_prompt(slot.timestamp);
+        }
         if let Some(model) = slot.model {
             let value = parent.bucket_model_interner.get(model.name);
             if !value.is_empty() {
@@ -1731,7 +1738,6 @@ fn reproject_exact_merged_cache(
             key,
             timestamp: slot.timestamp,
             context_tokens: slot.context_tokens,
-            fresh_input_tokens: slot.tokens_in.saturating_sub(slot.cache_write_tokens),
             cache_read_tokens: slot.cache_read_tokens,
             cache_write_tokens: slot.cache_write_tokens,
             model: active_model,

@@ -1117,12 +1117,12 @@ fn supplemental_metrics_fixtures_pin_order_sensitive_semantics() {
     assert_eq!(boundary.compaction_trigger, None);
     assert_eq!(boundary.compaction_pre_tokens, None);
 
-    let rehydration = stream_claude(&input("rehydration_gap_none")).metrics();
-    let cache_bucket = rehydration
+    let provider_miss = stream_claude(&input("rehydration_gap_none")).metrics();
+    let cache_bucket = provider_miss
         .buckets
         .iter()
-        .find(|bucket| bucket.is_cache_rehydration)
-        .expect("rehydration bucket");
+        .find(|bucket| bucket.is_cache_routing_miss)
+        .expect("provider cache miss bucket");
     assert_eq!(cache_bucket.secs_since_prior_turn, None);
 
     let single_timestamp = stream_claude(&input("subagent_single_timestamp")).metrics();
