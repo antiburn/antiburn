@@ -2,8 +2,8 @@
 
 `curl | sh` opens with the doom-fire burn. The flames follow the word outline,
 die down, and leave the orange **antiburn** wordmark. Then a live-updating
-install log runs underneath. Spec comes from playground v9, signed off
-2026-09-01.
+install log runs underneath. The original layout comes from playground v9,
+signed off 2026-09-01. The fire motion was revised for smoother propagation.
 
 ## Status
 
@@ -19,16 +19,17 @@ install log runs underneath. Spec comes from playground v9, signed off
 Follow-up, not in this change: port the same sim upgrades back to the
 tuning harness in antiburn_assets/fire-term, so the two do not drift.
 
-## The locked spec (playground v9)
+## The current spec
 
 | Knob | Value |
 |---|---|
 | glyph | circle ●, two cells per dot (square grid) |
+| simulation rows | 16 |
 | flame base | word contour, gap 2 cells clear of every letter dot |
-| hug pad | 5 |
-| frames / settle | 39 / 24 |
-| delay | 95 ms |
-| decay / base / gust / cap | 0.39 / 1.15 / 0.04 / 0.76 |
+| hug pad | 4 |
+| frames / settle / warm | 72 / 26 / 24 |
+| delay | 50 ms |
+| decay / base / gust / cap | 0.10 / 1.16 / 0.05 / 0.76 |
 | halo | 0 |
 | seed | random each run |
 | log style | live-updating |
@@ -56,12 +57,19 @@ New sim work, all proven in the playground port:
 - **Contour burner**: precompute the topmost dot per column; inject heat at
   `top - 1 - gap` instead of a flat floor. No heat pinned in the letter
   bodies, so nothing leaks up between letters.
+- **Coherent motion**: advect heat through narrow changing paths, vary burner
+  heat slowly, and use one bounded wind value for each frame.
+- **Tapered tips**: raise the visible heat threshold with distance from the
+  wordmark, and keep all flame cells inside the wordmark width.
+- **Smoke field**: emit smoke from each local flame tip, move it through
+  diagonal wind paths, and make it lighter as it rises.
 - **Clearance margin**: precompute chebyshev distance from every cell to the
   nearest letter dot (one BFS at startup, plain awk array). Any flame cell
   with distance ≤ 2 renders empty. This is what keeps the word readable.
-- **Hug mask**: existing wrap logic, pad 5.
+- **Hug mask**: existing wrap logic, pad 4.
 - **Circle rendering**: each sim cell prints `● ` (glyph + space) so the dot
-  grid is square. Word dots stay brand orange; flames use the existing ramp.
+  grid is square. Word dots stay brand orange; flames use the original
+  purple-to-orange ramp.
 - Bake the spec table above in as the defaults; keep the existing flags so
   values stay tunable.
 

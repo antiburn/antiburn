@@ -22,17 +22,17 @@ info() {
 # The opening banner is a fire simulation. Flames rise from the outline of
 # the wordmark, die down, and leave the word behind. The tuning harness for
 # these values lives in the antiburn_assets repository under fire-term.
-FIRE_FRAMES=39      # displayed frames
-FIRE_SETTLE=24      # the last N frames let the fire die down to the wordmark
-FIRE_WARM=16        # frames computed before the first one is shown
-FIRE_DELAY=0.095    # seconds between frames
-FIRE_DECAY=0.39     # heat lost per row; a higher value makes shorter flames
-FIRE_BASE=1.15      # heat injected at the flame base on the word outline
-FIRE_GUST=0.04      # chance that a cell cools hard, which breaks flat fronts
+FIRE_FRAMES=72      # displayed frames
+FIRE_SETTLE=26      # the last N frames let the fire die down to the wordmark
+FIRE_WARM=24        # frames computed before the first one is shown
+FIRE_DELAY=0.050    # seconds between frames
+FIRE_DECAY=0.10     # heat lost per row; a higher value makes shorter flames
+FIRE_BASE=1.16      # heat injected at the flame base on the word outline
+FIRE_GUST=0.05      # chance of a short wind gust
 FIRE_HALO=0.0       # heat drawn beside the letters, inside the word rows
 FIRE_CAP=0.76       # the hottest the flames go; the wordmark stays brighter
 FIRE_GAP=2          # clear cells between the letters and the flames
-FIRE_PAD=5          # cells the fire can reach from a letter before it fades
+FIRE_PAD=4          # cells the fire can reach from a letter before it fades
 
 fire_supported() {
   # A pipe, a redirect, or a dumb terminal gets no fire. The install tests
@@ -109,7 +109,7 @@ fire_banner() {
       -v halo="$FIRE_HALO" -v cap="$FIRE_CAP" -v gap="$FIRE_GAP" \
       -v pad="$FIRE_PAD" -v seed=$$ '
 BEGIN {
-  W = 44; H = 20; PADL = 2; WORDTOP = 13
+  W = 44; H = 16; PADL = 2; WORDTOP = 9
   ROWS = (mode == "dots") ? H : int(H / 2)
   core = ".................O......................" \
          ".............O.....O...................." \
@@ -170,8 +170,7 @@ BEGIN {
     nfr = nnew
   }
 
-  # The ramp runs from a purple ember through the brand orange to a hot
-  # tint.
+  # The ramp runs from a purple ember through the brand orange to a hot tint.
   nstop = 7
   sp[0] = 0.00; sr[0] =   0; sg[0] =   0; sb[0] =   0
   sp[1] = 0.16; sr[1] =  60; sg[1] =  18; sb[1] =  70
@@ -183,7 +182,9 @@ BEGIN {
   wordcol = paint(255, 106, 44)
 
   srand(seed)
-  for (i = 0; i < W * H; i++) heat[i] = 0
+  for (i = 0; i < W * H; i++) { heat[i] = 0; smoke[i] = 0 }
+  for (x = 0; x < W; x++) burner[x] = 0.85 + rand() * 0.30
+  wind = 0
 
   total = warm + frames
   for (f = 0; f < total; f++) {
@@ -204,27 +205,87 @@ BEGIN {
   exit 0
 }
 
-function step(fuel,   x, y, i, s, v, b) {
-  # While the fire dies down, drain what is already in the field as well.
-  if (fuel < 1) for (i = 0; i < W * H; i++) heat[i] *= 0.82
-  # Each row takes heat from the row below it, so the fire climbs.
+function step(fuel,   x, y, v, b, l, m, r, drift, source) {
+  # One slow wind value moves the complete field in a coherent direction.
+  wind = wind * 0.90 + (rand() - 0.5) * 0.16
+  if (rand() < gust) wind += (rand() - 0.5) * 0.55
+  if (wind > 0.75) wind = 0.75
+  if (wind < -0.75) wind = -0.75
+
+  drift = 0
+  if (wind > 0.25) drift = 1
+  if (wind < -0.25) drift = -1
+
+  # Follow one changing heat path. A small direct share keeps motion stable.
   for (y = 0; y < H - 1; y++) {
     for (x = 0; x < W; x++) {
-      s = x + int(rand() * 3) - 1
-      if (s < 0) s = 0
-      if (s >= W) s = W - 1
-      v = heat[(y + 1) * W + s] - rand() * decay
-      if (rand() < gust) v -= 0.30
+      m = (y + 1) * W
+      source = x - drift + int(rand() * 3) - 1
+      if (source < 0) source = 0
+      if (source >= W) source = W - 1
+      v = heat[m + source] * 0.90 + heat[m + x] * 0.10
+      v -= decay * (0.45 + rand() * 0.75)
       heat[y * W + x] = (v > 0) ? v : 0
     }
   }
+
+  # Change the burner slowly and smooth it across neighboring columns.
+  for (x = 0; x < W; x++) {
+    burner_next[x] = burner[x] * 0.82 + (0.72 + rand() * 0.50) * 0.18
+  }
+  for (x = 0; x < W; x++) {
+    l = (x > 0) ? x - 1 : x
+    r = (x < W - 1) ? x + 1 : x
+    burner[x] = burner_next[x] * 0.72 \
+              + (burner_next[l] + burner_next[r]) * 0.14
+  }
+
   # Heat enters only above the topmost dot of each column, offset by the
   # gap. The letter bodies stay cold, so no heat leaks between letters.
   for (x = 0; x < W; x++) {
     if (top[x] < 0) continue
     b = top[x] - 1 - gap
     if (b < 0) b = 0
-    heat[b * W + x] = fuel * base * (0.7 + rand() * 0.6)
+    heat[b * W + x] = fuel * base * burner[x]
+  }
+  update_smoke(fuel)
+}
+
+function update_smoke(fuel,   x, y, m, source, v, drift, left, right, sy) {
+  drift = 0
+  if (wind > 0.20) drift = 1
+  if (wind < -0.20) drift = -1
+
+  # Move smoke through discrete diagonal paths and fade it as it rises.
+  for (y = 0; y < H - 1; y++) {
+    for (x = 0; x < W; x++) {
+      m = (y + 1) * W
+      source = x - drift + int(rand() * 3) - 1
+      if (source < PADL) source = PADL
+      if (source >= PADL + 40) source = PADL + 39
+      v = smoke[m + source] * (0.66 + rand() * 0.08) \
+        - (0.045 + rand() * 0.030)
+      smoke[y * W + x] = (v > 0) ? v : 0
+    }
+  }
+
+  # Find each local flame tip and emit smoke during the active burn.
+  if (fuel <= 0.45) return
+  for (x = PADL; x < PADL + 40; x++) {
+    tip[x] = H
+    for (y = 0; y < WORDTOP; y++) {
+      if (flame_heat(y, x) > 0) { tip[x] = y; break }
+    }
+  }
+  for (x = PADL; x < PADL + 40; x++) {
+    if (tip[x] >= H) continue
+    left = (x > PADL) ? tip[x - 1] : H
+    right = (x < PADL + 39) ? tip[x + 1] : H
+    if (tip[x] > left || tip[x] > right) continue
+    if (tip[x] == left && tip[x] == right) continue
+    if ((f + x) % 3 != 0) continue
+    sy = tip[x] - 1
+    if (sy >= 0) smoke[sy * W + x] = 0.24 + rand() * 0.10
   }
 }
 
@@ -299,13 +360,22 @@ function drawhalf(   y, x, line, ct, cb, curf, curb, ch, out) {
   fflush()
 }
 
-function cell(y, x,   h, k, over) {
+function smoke_cell(y, x,   density, height, shade) {
+  density = smoke[y * W + x]
+  if (density < 0.075) return ""
+  height = WORDTOP - y
+  if (height < 0) height = 0
+  shade = 35 + height * 4
+  if (shade > 90) shade = 90
+  shade *= 0.65 + density * 0.30
+  return paint(shade, shade - 3, shade + 2)
+}
+
+function flame_heat(y, x,   h, k, over, rise, cutoff) {
   k = y * W + x
-  if (k in word) return wordcol
+  if (k in word || x < PADL || x >= PADL + 40) return 0
   h = heat[k]
-  # No flame shows within gap cells of a letter dot, so a dark margin
-  # traces the whole word outline.
-  if (dist[k] <= gap) return ""
+  if (dist[k] <= gap) return 0
   if (k in ring) {
     # A word row cell above the local letter top is open sky, so the
     # flame base can ride the outline. Other word row cells stay masked.
@@ -316,9 +386,23 @@ function cell(y, x,   h, k, over) {
     h *= 1 - over / 2.5
     if (h < 0) h = 0
   }
-  if (h < 0.07) return ""
-  if (h > cap) h = cap
-  return ramp(h)
+  # A higher cutoff removes cool edge cells as the flame rises. Hot cells
+  # remain visible and form narrow tips.
+  rise = dist[k] - gap
+  cutoff = 0.055 + ((rise > 0) ? rise * rise * 0.004 : 0)
+  return (h >= cutoff) ? h : 0
+}
+
+function cell(y, x,   h, k) {
+  k = y * W + x
+  if (k in word) return wordcol
+  if (x < PADL || x >= PADL + 40) return ""
+  h = flame_heat(y, x)
+  if (h > 0) {
+    if (h > cap) h = cap
+    return ramp(h)
+  }
+  return smoke_cell(y, x)
 }
 ' || true
 
