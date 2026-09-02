@@ -1,9 +1,10 @@
-import { useId, useState, type ReactElement } from "react"
+import { useId, useState, type CSSProperties, type ReactElement } from "react"
 import {
   Area,
   AreaChart,
   ReferenceLine,
   ResponsiveContainer,
+  Text,
   Tooltip,
   XAxis,
   YAxis,
@@ -23,6 +24,7 @@ import {
   modeChangeMarkers,
   sessionModeBaseline,
   type ContextTokenPoint,
+  type ModeChangeMarker,
   type SessionModeBaseline,
 } from "../../../lib/presentation/sessionAnalysis"
 import type { SessionBucket } from "../../../lib/types/session"
@@ -40,16 +42,166 @@ export interface ContextTokensChartProps {
 const WARM_FLOOR_TOKENS = 400_000
 /** Token level the warm ramp reaches full red at. */
 const CRITICAL_TOKENS = 1_000_000
-/** Band label text, drawn inside the plot. */
-const AXIS_LABEL = { fontSize: 9, fill: "var(--color-label-tertiary)" }
+/** Horizontal padding inside a label pill. */
+const PILL_PAD_X = 5
+/** Vertical padding above and below the label text inside its pill. */
+const PILL_PAD_Y = 2
+/** Mean glyph width at the label size, for sizing a pill to its text. */
+const PILL_CHAR_WIDTH = 6.1
+
+/**
+ * Where the text sits relative to the point recharts computes for each label
+ * position. Recharts gives a custom label the point but not the anchors, so
+ * the chart states the same anchors the built-in label uses.
+ */
+const LABEL_ANCHORS: Record<
+  string,
+  { textAnchor: "start" | "middle"; verticalAnchor: "start" | "end" }
+> = {
+  insideTopLeft: { textAnchor: "start", verticalAnchor: "start" },
+  insideTop: { textAnchor: "middle", verticalAnchor: "start" },
+  insideBottom: { textAnchor: "middle", verticalAnchor: "end" },
+  top: { textAnchor: "middle", verticalAnchor: "end" },
+}
+
+/* Recharts states a label's geometry as string-or-number, so the pill takes
+   the same shape and converts once. */
+interface PillLabelProps {
+  x?: string | number | undefined
+  y?: string | number | undefined
+  dy?: string | number | undefined
+  fontSize?: string | number | undefined
+  fill?: string | undefined
+  value?: string | number | boolean | null | undefined
+  position?: unknown
+}
+
+/**
+ * A label drawn inside the plot, on a translucent pill. The pill is the
+ * opposite of the surface, so the text stays legible over the fill, the
+ * line, and the marker bars it can land on.
+ */
+function PillLabel({
+  x,
+  y,
+  dy = 0,
+  fontSize = 11,
+  fill,
+  value,
+  position = "insideTop",
+}: PillLabelProps) {
+  const originX = Number(x)
+  const originY = Number(y)
+  const offsetY = Number(dy)
+  const size = Number(fontSize)
+  if (
+    value == null ||
+    value === false ||
+    !Number.isFinite(originX) ||
+    !Number.isFinite(originY)
+  ) {
+    return null
+  }
+  const text = String(value)
+  const anchors =
+    (typeof position === "string" ? LABEL_ANCHORS[position] : undefined) ??
+    LABEL_ANCHORS.insideTop!
+  const width = text.length * PILL_CHAR_WIDTH + PILL_PAD_X * 2
+  const height = size + PILL_PAD_Y * 2
+  const left = anchors.textAnchor === "start" ? originX - PILL_PAD_X : originX - width / 2
+  // A "start" anchor puts the text's top edge on the point, an "end" anchor
+  // puts its bottom edge there.
+  const top =
+    anchors.verticalAnchor === "start" ? originY - PILL_PAD_Y : originY + PILL_PAD_Y - height
+  return (
+    <g>
+      <rect
+        x={left}
+        y={top + offsetY}
+        width={width}
+        height={height}
+        rx={height / 2}
+        fill="var(--color-chart-label-pill)"
+      />
+      <Text
+        x={originX}
+        y={originY + offsetY}
+        textAnchor={anchors.textAnchor}
+        verticalAnchor={anchors.verticalAnchor}
+        fontSize={size}
+        fill={fill}
+      >
+        {text}
+      </Text>
+    </g>
+  )
+}
+
+/* Band label text, drawn inside the plot. The size matches the caption
+   step of the type scale, which is the legibility floor. */
+const AXIS_LABEL = {
+  fontSize: 11,
+  fill: "var(--color-label-tertiary)",
+  content: PillLabel,
+}
 /** A cache event keeps the established prominent marker. */
 const CACHE_EVENT_BAR_WIDTH = 6
-/** An ordinary rewrite uses a quiet line because the user usually cannot prevent it. */
+/** An ordinary rewrite uses a quiet line, because the user usually cannot prevent it. */
 const REWRITE_MARKER_WIDTH = 2
 /** Small rewrites stay in the tooltip and do not add chart noise. */
 const MATERIAL_REWRITE_TOKENS = 20_000
 /** Default opacity for a material rewrite. */
-const REWRITE_BAR_OPACITY = 0.6
+const REWRITE_BAR_OPACITY = 0.9
+/** Bar opacity for a routing miss: the same cost, but not avoidable, so the mark draws lighter. */
+const ROUTING_MISS_BAR_OPACITY = 0.4
+/** Vertical step between stacked mode-label rows, in pixels. */
+const MODE_LABEL_ROW_HEIGHT = 13
+/** Nearer than this fraction of the x-domain, two mode labels would collide. */
+const MODE_LABEL_MIN_GAP_FRACTION = 0.18
+
+/**
+ * Give each mode label a row, so labels close on the x-axis stack instead of
+ * overlapping. A label joins the first row with enough room, and opens a new
+ * row (up to three) when none has it.
+ */
+function staggeredModeMarkers(
+  markers: ModeChangeMarker[],
+  domainMax: number,
+): Array<ModeChangeMarker & { row: number }> {
+  const minGap = Math.max(1, domainMax) * MODE_LABEL_MIN_GAP_FRACTION
+  const lastOnRow: number[] = []
+  return markers.map((marker) => {
+    let row = lastOnRow.findIndex((last) => marker.index - last >= minGap)
+    if (row === -1) row = lastOnRow.length < 3 ? lastOnRow.length : 0
+    lastOnRow[row] = marker.index
+    return { ...marker, row }
+  })
+}
+
+/**
+ * The rewrite-family points, with a flag for which bars carry a label. Only a
+ * cache rehydration is labeled: an ordinary rewrite and a provider cache miss
+ * draw a quiet line, because the user usually cannot prevent them. A bar
+ * nearer than the mode-label gap to the last labeled bar shares that label, so
+ * the labels do not overlap each other.
+ */
+function labeledRewritePoints(
+  data: ContextTokenPoint[],
+): Array<{ point: ContextTokenPoint; showLabel: boolean }> {
+  const points = data.filter(
+    (point) =>
+      point.rewriteTokens >= MATERIAL_REWRITE_TOKENS ||
+      point.isCacheRehydration ||
+      point.isCacheRoutingMiss,
+  )
+  const minGap = Math.max(1, data.length - 1) * MODE_LABEL_MIN_GAP_FRACTION
+  let lastLabeled = Number.NEGATIVE_INFINITY
+  return points.map((point) => {
+    const showLabel = point.isCacheRehydration && point.index - lastLabeled >= minGap
+    if (showLabel) lastLabeled = point.index
+    return { point, showLabel }
+  })
+}
 
 export interface ContextTokensTooltipProps {
   active?: boolean
@@ -172,6 +324,10 @@ function rewriteLabel(point: ContextTokenPoint): string {
 /**
  * A material rewrite occupies its part of the current context. A legacy cache
  * marker reaches the context level when no rewrite quantity exists.
+ *
+ * The bar carries no label. SVG paints in document order, so a label drawn
+ * with its own bar goes under the token areas that follow it. The labels
+ * render last, through `rewriteBarLabel`.
  */
 function rewriteBar(
   point: ContextTokenPoint,
@@ -179,7 +335,6 @@ function rewriteBar(
   hasContextAxis: boolean,
   opacity: number,
   strokeWidth: number,
-  label?: string,
 ): ReactElement {
   const cacheEvent = point.cacheRehydration
   const start = cacheEvent?.stillCachedTokens ?? 0
@@ -189,29 +344,60 @@ function rewriteBar(
   return hasContextAxis ? (
     <ReferenceLine
       key={`${keyPrefix}-${point.index}`}
+      className="animate-chart-mark"
       yAxisId="context"
       segment={[
         { x: point.index, y: start },
         { x: point.index, y: end },
       ]}
-      stroke="var(--color-context-critical)"
+      stroke="var(--color-context-rewrite)"
       strokeWidth={strokeWidth}
       strokeOpacity={opacity}
-      {...(label == null
-        ? {}
-        : { label: { ...AXIS_LABEL, value: label, position: "top" as const } })}
     />
   ) : (
     <ReferenceLine
       key={`${keyPrefix}-${point.index}`}
+      className="animate-chart-mark"
       yAxisId="tokens"
       x={point.index}
-      stroke="var(--color-context-critical)"
+      stroke="var(--color-context-rewrite)"
       strokeWidth={strokeWidth}
       strokeOpacity={opacity}
-      {...(label == null
-        ? {}
-        : { label: { ...AXIS_LABEL, value: label, position: "top" as const } })}
+    />
+  )
+}
+
+/**
+ * The label of a rewrite bar, on the same anchor the bar uses but with no
+ * line of its own. The chart renders these after the plot layers, so every
+ * label stays legible over the areas.
+ */
+function rewriteBarLabel(point: ContextTokenPoint, hasContextAxis: boolean): ReactElement {
+  const cacheEvent = point.cacheRehydration
+  const label = { ...AXIS_LABEL, value: "rehydration", position: "top" as const }
+  const end = cacheEvent
+    ? cacheEvent.stillCachedTokens + cacheEvent.rewrittenTokens
+    : point.rewriteTokens || point.contextTokens
+  return hasContextAxis ? (
+    <ReferenceLine
+      key={`rewrite-label-${point.index}`}
+      className="animate-chart-mark"
+      yAxisId="context"
+      segment={[
+        { x: point.index, y: 0 },
+        { x: point.index, y: end },
+      ]}
+      stroke="none"
+      label={label}
+    />
+  ) : (
+    <ReferenceLine
+      key={`rewrite-label-${point.index}`}
+      className="animate-chart-mark"
+      yAxisId="tokens"
+      x={point.index}
+      stroke="none"
+      label={label}
     />
   )
 }
@@ -287,7 +473,7 @@ export function ContextTokensTooltip({
           ))}
         {point.isCacheRehydration && cacheEvent != null && (
           <>
-            <span style={{ color: "var(--color-context-critical)" }}>
+            <span style={{ color: "var(--color-context-warning)" }}>
               Cache rehydration · {formatCompact(cacheEvent.contextTokens)} context
             </span>
             <span className="pl-3">
@@ -302,17 +488,17 @@ export function ContextTokensTooltip({
           </>
         )}
         {point.isCacheRehydration && cacheEvent == null && (
-          <span style={{ color: "var(--color-context-critical)" }}>
+          <span style={{ color: "var(--color-context-warning)" }}>
             {legacyRehydrationLabel(point)}
           </span>
         )}
         {point.isCacheRoutingMiss && (
-          <span style={{ color: "var(--color-context-critical)" }}>
+          <span style={{ color: "var(--color-context-warning)" }}>
             {routingMissLabel(point)}
           </span>
         )}
         {point.rewriteTokens > 0 && cacheEvent == null && (
-          <span style={{ color: "var(--color-context-critical)" }}>{rewriteLabel(point)}</span>
+          <span style={{ color: "var(--color-context-warning)" }}>{rewriteLabel(point)}</span>
         )}
         {cacheEvent?.userInactiveSecs != null && (
           <span>User inactive · {formatDuration(cacheEvent.userInactiveSecs)}</span>
@@ -353,9 +539,19 @@ export function ContextTokensChart({
   const fillId = `context-tokens-fill-${useId().replace(/:/g, "")}`
   const hasContext = contextWindow != null
   const [initialBuckets] = useState(() => buckets)
-  // The first bucket set renders without motion. A later set comes from the live poll.
-  const animate = buckets !== initialBuckets && !prefersReducedMotion()
+  const animate = !prefersReducedMotion()
   const animationDurationMs = slowAnimationDurationMs()
+  // The first paint plays the session back in order: the context fill grows,
+  // the token spikes follow it, and the rewrite marks land last, on top of a
+  // chart that has finished drawing. A later bucket set comes from the live
+  // poll, where a staggered replay would read as the panel redrawing itself,
+  // so those updates animate together.
+  const entranceStepMs = buckets === initialBuckets ? Math.round(animationDurationMs / 2) : 0
+  const tokenRowStepMs = Math.round(entranceStepMs / 2)
+  const markDelayMs =
+    entranceStepMs === 0
+      ? 0
+      : entranceStepMs + TOKEN_ROWS.length * tokenRowStepMs + animationDurationMs
 
   const peak = data.reduce((m, d) => Math.max(m, d.contextTokens), 0)
   const tokenPeak = data.reduce(
@@ -377,7 +573,7 @@ export function ContextTokensChart({
   // token value peak·(1−f). The warm ramp is in absolute tokens, not a
   // fraction of the window, so a 1M-window session and a 200k-window session
   // both turn warm at the same 400k mark. Below 400k the fill stays the calm
-  // blue; from 400k up it ramps from amber to red, reaching red at 1M tokens
+  // grey; from 400k up it ramps from amber to red, reaching red at 1M tokens
   // regardless of the window size.
   const stops: ReactElement[] = []
   if (peak > WARM_FLOOR_TOKENS) {
@@ -386,7 +582,7 @@ export function ContextTokensChart({
       1,
       Math.max(0, (peak - WARM_FLOOR_TOKENS) / (CRITICAL_TOKENS - WARM_FLOOR_TOKENS)),
     )
-    const topColor = `color-mix(in oklch, var(--color-context-warning), var(--color-context-critical) ${Math.round(t * 100)}%)`
+    const topColor = `color-mix(in oklch, var(--color-context-warning), var(--color-context-warning) ${Math.round(t * 100)}%)`
     stops.push(
       <stop key="warm-top" offset={0} stopColor={topColor} stopOpacity={0.55} />,
       <stop
@@ -403,23 +599,115 @@ export function ContextTokensChart({
   stops.push(<stop key="healthy-base" offset={1} stopColor="var(--color-context-fill-base)" />)
 
   return (
-    <ResponsiveContainer width="100%" height={160}>
+    <ResponsiveContainer
+      width="100%"
+      height={220}
+      style={{ "--chart-mark-delay": `${markDelayMs}ms` } as CSSProperties}
+    >
       <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
-        {hasContext && (
-          <defs>
+        <defs>
+          {hasContext && (
             <linearGradient id={fillId} x1={0} y1={0} x2={0} y2={1}>
               {stops}
             </linearGradient>
-          </defs>
-        )}
+          )}
+        </defs>
         {/* A numeric axis on the bucket index. A category axis on the rounded
             `progress` value placed each vertical mark by its index instead of
             by its value, so marks drifted left of the points they belong to. */}
         <XAxis dataKey="index" type="number" domain={[0, Math.max(1, data.length - 1)]} hide />
         {contextAxis && <YAxis yAxisId="context" hide domain={[0, contextAxis.ceiling]} />}
         <YAxis yAxisId="tokens" hide orientation="right" domain={[0, tokenCeiling]} />
-        {/* Elapsed active time along the bottom, as labels only. The token
-            spikes sit behind them, so no line is drawn. */}
+        {/* The band lines only. Their labels draw after the plot layers. */}
+        {contextAxis?.ticks.map((value) => (
+          <ReferenceLine
+            key={`band-${value}`}
+            yAxisId="context"
+            y={value}
+            stroke="var(--color-separator)"
+            strokeDasharray="2 4"
+          />
+        ))}
+        {/* A compaction adds no separate mark because the context area shows
+            its drop. A material rewrite draws a quiet white line over the part
+            of the context it re-sent. A cache event keeps the wider marker,
+            and a routing miss draws lighter. */}
+        {labeledRewritePoints(data).map(({ point }) => {
+          const opacity = point.isCacheRoutingMiss
+            ? ROUTING_MISS_BAR_OPACITY
+            : REWRITE_BAR_OPACITY
+          const strokeWidth = point.isCacheRehydration
+            ? CACHE_EVENT_BAR_WIDTH
+            : REWRITE_MARKER_WIDTH
+          return rewriteBar(point, "rewrite", !!contextAxis, opacity, strokeWidth)
+        })}
+        <Tooltip
+          cursor={{ stroke: "var(--color-separator)" }}
+          /* No animation: the tooltip re-enters on every bucket the pointer
+             crosses, and the replayed entry reads as the panel jumping. */
+          isAnimationActive={false}
+          content={
+            <ContextTokensTooltip
+              contextWindow={contextWindow}
+              activeSecs={activeSecs}
+              bucketCount={data.length}
+              baseline={sessionModeBaseline(data)}
+            />
+          }
+        />
+        {hasContext && (
+          <Area
+            yAxisId="context"
+            type="monotone"
+            dataKey="contextTokens"
+            stroke="var(--color-context-stroke)"
+            /* A fine line: the hot color carries the mark without weight. */
+            strokeWidth={1.5}
+            fill={`url(#${fillId})`}
+            isAnimationActive={animate}
+            animationDuration={animationDurationMs}
+            animationBegin={0}
+            animationEasing="ease-out"
+          />
+        )}
+        {/* The token spikes draw after the context fill, so their color sits
+            on top of it and does not dull under the grey. */}
+        {TOKEN_ROWS.map((row, index) => (
+          <Area
+            key={row.key}
+            yAxisId="tokens"
+            type="monotone"
+            dataKey={row.key}
+            stackId="t"
+            /* A solid block of the series color. A gradient made each layer
+               fade into the one below it, so the stack lost its steps. */
+            stroke="none"
+            fill={row.colorVar}
+            isAnimationActive={animate}
+            animationDuration={animationDurationMs}
+            animationBegin={entranceStepMs + index * tokenRowStepMs}
+            animationEasing="ease-out"
+          />
+        ))}
+        {/* Every text label draws last. SVG has no z-index, so document order
+            is the only way to keep a label over the areas it annotates. Each
+            of these marks carries a label and no line of its own; the lines
+            they belong to draw before the plot layers. */}
+        {contextAxis?.ticks.map((value) => (
+          <ReferenceLine
+            key={`band-label-${value}`}
+            yAxisId="context"
+            y={value}
+            stroke="none"
+            label={{ ...AXIS_LABEL, value: formatTokenBand(value), position: "insideTopLeft" }}
+          />
+        ))}
+        {/* Bars close on the x-axis share one "rewrite" label, so the labels
+            do not overlap each other. */}
+        {labeledRewritePoints(data)
+          .filter(({ showLabel }) => showLabel)
+          .map(({ point }) => rewriteBarLabel(point, !!contextAxis))}
+        {/* Elapsed active time along the bottom, as labels only. */}
         {activeSecs != null &&
           timeAxisTicks(activeSecs, data.length, 6).map((tick) => (
             <ReferenceLine
@@ -430,92 +718,24 @@ export function ContextTokensChart({
               label={{ ...AXIS_LABEL, value: tick.label, position: "insideBottom" }}
             />
           ))}
-        {contextAxis?.ticks.map((value) => (
-          <ReferenceLine
-            key={`band-${value}`}
-            yAxisId="context"
-            y={value}
-            stroke="var(--color-separator)"
-            strokeDasharray="2 4"
-            label={{ ...AXIS_LABEL, value: formatTokenBand(value), position: "insideTopLeft" }}
-          />
-        ))}
-        {/* A compaction adds no separate mark because the context area shows
-            its drop. A material rewrite draws a thin red line to its token
-            level. Cache events keep a wider labeled marker. */}
-        {data
-          .filter(
-            (point) =>
-              point.rewriteTokens >= MATERIAL_REWRITE_TOKENS ||
-              point.isCacheRehydration ||
-              point.isCacheRoutingMiss,
-          )
-          .map((point) => {
-            const label = point.isCacheRehydration ? "rehydration" : undefined
-            const strokeWidth = point.isCacheRehydration
-              ? CACHE_EVENT_BAR_WIDTH
-              : REWRITE_MARKER_WIDTH
-            return rewriteBar(
-              point,
-              "rewrite",
-              !!contextAxis,
-              REWRITE_BAR_OPACITY,
-              strokeWidth,
-              label,
-            )
-          })}
         {/* A mode change (model, thinking effort, or speed) draws no line at
             all — only its label, at the top of the plot — so it stays a
             calm annotation rather than another vertical mark competing with
             compaction and rewrite markers. */}
-        {modeChangeMarkers(data).map((marker) => (
+        {staggeredModeMarkers(modeChangeMarkers(data), data.length - 1).map((marker) => (
           <ReferenceLine
             key={`mode-${marker.index}`}
             yAxisId={markerAxisId}
             x={marker.index}
             stroke="none"
-            label={{ ...AXIS_LABEL, value: marker.label, position: "insideTop" }}
+            label={{
+              ...AXIS_LABEL,
+              value: marker.label,
+              position: "insideTop",
+              dy: marker.row * MODE_LABEL_ROW_HEIGHT,
+            }}
           />
         ))}
-        <Tooltip
-          cursor={{ stroke: "var(--color-separator)" }}
-          content={
-            <ContextTokensTooltip
-              contextWindow={contextWindow}
-              activeSecs={activeSecs}
-              bucketCount={data.length}
-              baseline={sessionModeBaseline(data)}
-            />
-          }
-        />
-        {TOKEN_ROWS.map((row) => (
-          <Area
-            key={row.key}
-            yAxisId="tokens"
-            type="monotone"
-            dataKey={row.key}
-            stackId="t"
-            stroke="none"
-            fill={row.colorVar}
-            fillOpacity={0.22}
-            isAnimationActive={animate}
-            animationDuration={animationDurationMs}
-            animationEasing="ease-out"
-          />
-        ))}
-        {hasContext && (
-          <Area
-            yAxisId="context"
-            type="monotone"
-            dataKey="contextTokens"
-            stroke="var(--color-token-in)"
-            strokeWidth={1.5}
-            fill={`url(#${fillId})`}
-            isAnimationActive={animate}
-            animationDuration={animationDurationMs}
-            animationEasing="ease-out"
-          />
-        )}
       </AreaChart>
     </ResponsiveContainer>
   )

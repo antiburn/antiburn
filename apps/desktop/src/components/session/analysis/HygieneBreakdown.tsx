@@ -1,45 +1,53 @@
-import { Check, ChevronRight, CircleDashed, X, type LucideIcon } from "lucide-react"
+import { ChevronRight, CircleCheck, CircleDashed, CircleX, type LucideIcon } from "lucide-react"
 import { useId, useState } from "react"
 
 import { cn } from "../../../lib/cn"
 import {
   notAssessedReasonLabel,
   sessionHygieneDocumentation,
+  sessionHygieneExplainers,
   type SessionHygieneCheck,
 } from "../../../lib/presentation/sessionHygiene"
 
 export interface HygieneBreakdownProps {
   checks: SessionHygieneCheck[]
+  /**
+   * Roll the passing and not-assessed checks up behind their count, so only
+   * findings show. Set it false where the surface has room for every check,
+   * such as a tab of its own.
+   */
+  collapsePassing?: boolean
+  /**
+   * Report the explainer for the check under the pointer or focus, or null
+   * on leave. The host renders it in a helper area it shares with its other
+   * content.
+   */
+  onHoverExplainer?: (entry: { title: string; body: string } | null) => void
 }
 
 interface HygieneStatusPresentation {
   Icon: LucideIcon
-  iconSize: number
   label: string
-  strokeWidth: number
   textClass: string
 }
 
+/* One icon size for every status, so the trailing icon column lines up. */
+const STATUS_ICON_SIZE = 14
+
 const STATUS_PRESENTATION: Record<SessionHygieneCheck["status"], HygieneStatusPresentation> = {
   finding: {
-    Icon: X,
-    iconSize: 12,
+    Icon: CircleX,
     label: "failing",
-    strokeWidth: 2.5,
     textClass: "text-system-red-text",
   },
   clean: {
-    Icon: Check,
-    iconSize: 12,
+    Icon: CircleCheck,
     label: "passing",
-    strokeWidth: 2.5,
     textClass: "text-system-green",
   },
   notAssessed: {
     Icon: CircleDashed,
-    iconSize: 10,
     label: "not assessed",
-    strokeWidth: 2,
     textClass: "text-label-tertiary",
   },
 }
@@ -48,17 +56,17 @@ function HygieneGuidance({ check }: { check: SessionHygieneCheck }) {
   const documentation = sessionHygieneDocumentation(check)
 
   return (
-    <div className="space-y-1 rounded-control border-x border-b border-separator px-3 pb-3 text-pretty type-footnote text-label-secondary">
+    <div className="space-y-1 rounded-control border-x border-b border-separator px-3 pb-3 text-pretty type-callout text-label-secondary">
       {documentation.findingDetails.length > 0 && (
         <div className="mb-2">
           {documentation.findingDetails.map((sentence) => (
-            <p key={sentence} className="type-footnote font-semibold! text-system-red-text">
+            <p key={sentence} className="type-callout font-semibold! text-system-red-text">
               {sentence}
             </p>
           ))}
         </div>
       )}
-      <p className="type-footnote font-semibold! text-label-secondary">
+      <p className="type-callout font-semibold! text-label-secondary">
         {documentation.summary}
       </p>
       {check.status === "notAssessed" && check.notAssessedReason && (
@@ -67,7 +75,7 @@ function HygieneGuidance({ check }: { check: SessionHygieneCheck }) {
         </p>
       )}
       {documentation.guidance.length > 0 && (
-        <ul className="mt-2 list-disc space-y-0.5 pl-5 text-sm/5">
+        <ul className="mt-2 list-disc space-y-0.5 pl-5 type-callout">
           {documentation.guidance.map((sentence) => (
             <li key={sentence} className="mt-1">
               {sentence}
@@ -83,10 +91,13 @@ function HygieneRow({
   check,
   open,
   onToggle,
+  onHover,
 }: {
   check: SessionHygieneCheck
   open: boolean
   onToggle: () => void
+  /** Report the row the pointer or focus is on, or null on leave. */
+  onHover?: ((checkId: SessionHygieneCheck["id"] | null) => void) | undefined
 }) {
   const bodyId = useId()
   const status = STATUS_PRESENTATION[check.status]
@@ -99,17 +110,20 @@ function HygieneRow({
         aria-expanded={open}
         aria-controls={bodyId}
         onClick={onToggle}
-        className="-mx-1 grid grid-cols-[minmax(0,1fr)_max-content] items-center gap-x-3 rounded-control px-1 py-1 text-left type-caption transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
+        onMouseEnter={() => onHover?.(check.id)}
+        onMouseLeave={() => onHover?.(null)}
+        onFocus={() => onHover?.(check.id)}
+        onBlur={() => onHover?.(null)}
+        className="-mx-1 grid grid-cols-[minmax(0,1fr)_max-content_max-content] items-center gap-x-2 rounded-control px-1 py-1.5 text-left type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
       >
         <span className="truncate text-label-tertiary">{check.name}</span>
-        <span className={cn("inline-flex items-center gap-1", status.textClass)}>
-          <status.Icon
-            size={status.iconSize}
-            strokeWidth={status.strokeWidth}
-            aria-hidden="true"
-          />
-          <span>{status.label}</span>
-        </span>
+        <span className={status.textClass}>{status.label}</span>
+        <status.Icon
+          size={STATUS_ICON_SIZE}
+          strokeWidth={2}
+          aria-hidden="true"
+          className={cn("shrink-0", status.textClass)}
+        />
       </button>
 
       {open && (
@@ -126,7 +140,11 @@ function HygieneRow({
   )
 }
 
-export function HygieneBreakdown({ checks }: HygieneBreakdownProps) {
+export function HygieneBreakdown({
+  checks,
+  collapsePassing = true,
+  onHoverExplainer,
+}: HygieneBreakdownProps) {
   const [rollupOpen, setRollupOpen] = useState(false)
   const [openCheck, setOpenCheck] = useState<SessionHygieneCheck["id"] | null>(null)
   const passing = checks.filter((check) => check.status === "clean")
@@ -137,6 +155,15 @@ export function HygieneBreakdown({ checks }: HygieneBreakdownProps) {
   const rollupLabel = `${passing.length}/${assessedCount} passing${
     notAssessed.length > 0 ? `, ${notAssessed.length} not assessed` : ""
   }`
+
+  const reportHover = (checkId: SessionHygieneCheck["id"] | null) => {
+    if (!onHoverExplainer) return
+    const entry =
+      checkId == null
+        ? undefined
+        : sessionHygieneExplainers().find((explainer) => explainer.id === checkId)
+    onHoverExplainer(entry ? { title: entry.name, body: entry.explainer } : null)
+  }
 
   const toggleCheck = (checkId: SessionHygieneCheck["id"]) => {
     setOpenCheck((current) => (current === checkId ? null : checkId))
@@ -149,26 +176,36 @@ export function HygieneBreakdown({ checks }: HygieneBreakdownProps) {
     setRollupOpen((current) => !current)
   }
 
+  // Findings lead when every check shows, so a problem is the first thing
+  // read. The rolled-up layout puts them last, below the count they sit
+  // behind.
+  const shownChecks = collapsePassing ? findings : [...findings, ...rolledChecks]
+
   return (
     <div className="grid gap-y-1" aria-label="Session hygiene checks">
-      <button
-        type="button"
-        aria-expanded={rollupOpen}
-        onClick={toggleRollup}
-        className="-mx-1 flex items-center justify-between gap-x-3 rounded-control px-1 py-1 text-left type-caption text-label-tertiary cursor-pointer! transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
-      >
-        <span>{rollupLabel}</span>
-        <ChevronRight
-          size={14}
-          aria-hidden="true"
-          className={cn(
-            "shrink-0 transition-transform duration-[var(--duration-fast)] ease-out",
-            rollupOpen && "rotate-90",
-          )}
-        />
-      </button>
+      {/* The full layout skips the rollup words: every row carries its own
+          verdict mark, so a count above them restates the list. */}
+      {collapsePassing && (
+        <button
+          type="button"
+          aria-expanded={rollupOpen}
+          onClick={toggleRollup}
+          className="-mx-1 flex items-center justify-between gap-x-3 rounded-control px-1 py-1 text-left type-body text-label-tertiary cursor-pointer! transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
+        >
+          <span>{rollupLabel}</span>
+          <ChevronRight
+            size={14}
+            aria-hidden="true"
+            className={cn(
+              "shrink-0 transition-transform duration-[var(--duration-fast)] ease-out",
+              rollupOpen && "rotate-90",
+            )}
+          />
+        </button>
+      )}
 
-      {rollupOpen &&
+      {collapsePassing &&
+        rollupOpen &&
         rolledChecks.map((check) => (
           <HygieneRow
             key={check.id}
@@ -178,12 +215,13 @@ export function HygieneBreakdown({ checks }: HygieneBreakdownProps) {
           />
         ))}
 
-      {findings.map((check) => (
+      {shownChecks.map((check) => (
         <HygieneRow
           key={check.id}
           check={check}
           open={openCheck === check.id}
           onToggle={() => toggleCheck(check.id)}
+          onHover={onHoverExplainer ? reportHover : undefined}
         />
       ))}
     </div>

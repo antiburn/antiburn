@@ -78,6 +78,9 @@ colors:
   brand-tint: # antiburn orange for large fills
     light: "hsl(17.6 100% 58.6%)"
     dark: "hsl(17.6 100% 58.6%)"
+  brand-unlit: # an unlit meter segment: the brand tint, a quarter less saturated
+    light: "hsl(17.7 75% 58.6%)"
+    dark: "hsl(17.7 75% 58.6%)"
   system-green:
     light: "hsl(135 59% 34%)"
     dark: "hsl(135 70% 52.3%)"
@@ -90,9 +93,21 @@ colors:
   system-yellow:
     light: "hsl(34 100% 31.3%)"
     dark: "hsl(48 100% 57.4%)"
+  system-yellow-tint: # vivid yellow for fills (a meter's warning zone)
+    light: "hsl(45 100% 50%)"
+    dark: "hsl(48 100% 57.4%)"
+  system-yellow-unlit: # an unlit warning segment
+    light: "hsl(45 75% 50%)"
+    dark: "hsl(48 75% 57.4%)"
   system-red:
     light: "hsl(354 100% 42.1%)"
     dark: "hsl(3 100% 69%)"
+  system-red-tint: # vivid red for fills (a meter's critical zone)
+    light: "hsl(357 91% 52%)"
+    dark: "hsl(357 100% 65%)"
+  system-red-unlit: # an unlit critical segment
+    light: "hsl(357 68.2% 52%)"
+    dark: "hsl(357 75% 65%)"
   system-red-text:
     light: "hsl(353.6 100% 37.2%)"
     dark: "hsl(5 100% 75%)"
@@ -131,21 +146,39 @@ colors:
     light: "hsl(0 0% 96.4%)"
     dark: "hsl(0 0% 12.5%)"
   # Session-analysis sub-palette only (src/styles/session-analysis-colors.css)
-  context-fill-top:
-    light: "hsl(217.2 91% 59.8% / 0.6)"
-    dark: "hsl(213 94% 67.8% / 0.75)"
+  context-stroke: # the hot brand mark, unchanged between themes
+    light: "hsl(17.6 100% 58.6%)"
+    dark: "hsl(17.6 100% 58.6%)"
+  context-fill-top: # under the hot line: brand orange on light, grey on dark
+    light: "hsl(17.6 100% 58.6% / 0.5)"
+    dark: "hsl(240 33% 94% / 0.18)"
   context-fill-base:
-    light: "hsl(217.2 91% 59.8% / 0.2)"
-    dark: "hsl(213 94% 67.8% / 0.25)"
-  token-in:
-    light: "hsl(217.2 91% 59.8%)"
-    dark: "hsl(213 94% 67.8%)"
-  token-out:
-    light: "hsl(255 91% 76.2%)"
-    dark: "hsl(253 94% 85%)"
-  token-subagent:
-    light: "hsl(161.3 93% 30.4%)"
-    dark: "hsl(158 64% 51.56%)"
+    light: "hsl(17.6 100% 58.6% / 0.12)"
+    dark: "hsl(240 33% 94% / 0.03)"
+  chart-label-pill: # behind a label inside the plot; the opposite of the surface
+    light: "hsl(0 0% 100% / 0.5)"
+    dark: "hsl(0 0% 0% / 0.5)"
+  context-rewrite: # the rewrite bar over the plot; white in both themes
+    light: "hsl(0 0% 100%)"
+    dark: "hsl(0 0% 100%)"
+  token-in: # cool cyan leads the secondary series palette, complement of the flame
+    light: "hsl(199 89% 38%)"
+    dark: "hsl(199 95% 62%)"
+  token-out: # deeper blue as the companion hue
+    light: "hsl(240 6% 82%)"
+    dark: "hsl(240 10% 92%)"
+  token-subagent: # quiet label-family neutral
+    light: "hsl(240 5.5% 25% / 0.45)"
+    dark: "hsl(240 33% 94% / 0.4)"
+  share-work: # efficiency composition, real work; the very light neutral
+    light: "hsl(240 6% 82%)"
+    dark: "hsl(240 10% 92%)"
+  share-waste: # efficiency composition, rewrite waste; the warning yellow
+    light: "hsl(45 100% 50%)"
+    dark: "hsl(48 100% 57.4%)"
+  share-carry: # efficiency composition, carry; the quiet neutral
+    light: "hsl(240 5% 65%)"
+    dark: "hsl(240 6% 52%)"
   context-warning:
     light: "hsl(32 95% 43.72%)"
     dark: "hsl(36.4 100% 52%)"
@@ -196,7 +229,7 @@ rounded:
 shadow:
   popover: "0 4px 12px rgb(0 0 0 / 0.15), 0 1px 3px rgb(0 0 0 / 0.08)"
   tooltip: "0 2px 8px rgb(0 0 0 / 0.12), 0 0.5px 2px rgb(0 0 0 / 0.06)"
-  raised: "0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.04)"
+  raised: "0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.04)" # @theme-registered; consume as the `shadow-raised` utility
 motion:
   # Transition tokens. Durations are plain :root vars in src/styles/tokens.css,
   # because Tailwind has no --duration-* theme namespace; consume one as
@@ -276,6 +309,14 @@ components:
     className: "ui-progress + ui-progress-indicator"
     height: 6px
     indicatorColor: "{colors.accent}"
+  tab-bar:
+    className: "SegmentedControl variant=raised-tabs"
+    trackColor: "{colors.surface-secondary}"
+    segmentColor: "{colors.input-fill}" # the selected segment, raised on a solid fill
+    selectedInk: "{colors.brand}" # the active tab label carries the brand at 80% alpha, platform tab-bar style
+    typography: "{typography.callout}" # font-semibold! selected / font-medium! rest
+    rounded: "7px track, {rounded.control} segment" # 5px + 2px track padding keeps the curves concentric
+    shadow: "{shadow.raised}"
   scroll:
     className: "ui-scrollbar + ui-scrollbar-thumb"
     width: 6px
@@ -344,3 +385,12 @@ Notes for what isn't expressible as a token:
 - **Window chrome** — a window that hides its native title bar owns the drag strip and the matching
   top clearance in the webview; a window that keeps native decorations must not reserve that space.
   Keep that decision in the window's own layout, not in the shared primitives.
+- **Session Detail style rules** — the detail view matches the home screen's density of styles.
+  One data size per tab: every figure, row, and data label is `type-body`; hierarchy comes from ink
+  and weight, and size changes are reserved for the hero title (`type-title-3`), guidance prose
+  (`type-callout`), and footnotes. No heading that restates its content, and no caption label over
+  a self-evident value — identification that is genuinely needed uses an icon with a tooltip, the
+  session-row fork-glyph pattern. Every horizontal bar uses the usage meter (`SegmentedMeter`)
+  silhouette; judgment is carried by the band word's ink, never by a multi-color bar. Color only
+  where it means something: brand orange for cost and real work, the token series colors for
+  in/out, red for bad. Everything else stays greyscale.

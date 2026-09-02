@@ -1,32 +1,49 @@
-import { useId, useState, type ReactNode } from "react"
-
 import { cn } from "../../../lib/cn"
 import {
   efficiencyBandWord,
   efficiencyThresholdGuidance,
   efficiencyThermometer,
   formatCostPerMTok,
-  formatSharePercent,
   type EfficiencyBand,
   type EfficiencyMetric,
   type EfficiencyMetrics,
   type EfficiencyProfile,
+  type EfficiencyShareZone,
 } from "../../../lib/presentation/sessionEfficiency"
+import { Tooltip } from "../../presentation/Tooltip"
+import {
+  METER_INK,
+  SegmentedMeter,
+  type MeterInk,
+  type MeterZone,
+} from "../../ui/SegmentedMeter"
 
 export interface EfficiencyBreakdownProps {
   metrics: EfficiencyMetrics
 }
 
+/* Red marks a bad reading, in the word, because orange is the brand color
+   here and cannot also mean trouble. */
 const BAND_TEXT_CLASS: Record<EfficiencyBand, string> = {
   good: "text-system-green",
-  ok: "text-label-tertiary",
-  bad: "text-system-orange",
+  ok: "text-context-warning",
+  bad: "text-system-red-text",
 }
 
-const BAND_SEGMENT_CLASS: Record<EfficiencyBand, string> = {
-  good: "bg-system-green/50",
-  ok: "bg-separator",
-  bad: "bg-system-orange/50",
+/* The efficiency meters draw as VU meters, on the shared meter palette:
+   the track holds a fixed zone for each band, and the fill lights whichever
+   zones the reading crosses. The zones always run left to
+   right along the metric's own scale, so orange marks the good end of every
+   meter and red the bad end, whichever end the fill comes from. */
+const BAND_INK: Record<EfficiencyBand, MeterInk> = {
+  good: METER_INK.normal,
+  ok: METER_INK.warning,
+  bad: METER_INK.critical,
+}
+
+/** Ink each band zone for the segmented meter. */
+function meterZones(zones: EfficiencyShareZone[]): MeterZone[] {
+  return zones.map((zone) => ({ from: zone.from, ...BAND_INK[zone.band] }))
 }
 
 type MetricKey = "costPerMTok" | ShareMetricKey
@@ -34,7 +51,7 @@ type ShareMetricKey = "realWorkShare" | "rewriteShare" | "carryShare"
 
 const METRIC_SUMMARY: Record<MetricKey, string[]> = {
   costPerMTok: [
-    "The avg cost for each million tokens of context growth and output in this session.",
+    "The average cost for each million tokens of context growth and output in this session.",
   ],
   realWorkShare: ["The share of the session's cost spent on fresh input and output."],
   rewriteShare: [
@@ -49,7 +66,7 @@ const METRIC_GUIDANCE: Record<MetricKey, string[]> = {
     "Pay attention to which of these next three categories are out of band.",
   ],
   realWorkShare: [
-    "Maximise this by minimising the other two dimesions.",
+    "Maximise this by minimising the other two dimensions.",
     "Usually a focused and short session will be best here.",
   ],
   rewriteShare: [
@@ -58,7 +75,7 @@ const METRIC_GUIDANCE: Record<MetricKey, string[]> = {
   ],
   carryShare: [
     "Keep context down by actively compacting when the session gets too big.",
-    "It also can be handy to rewind if the session's gone in the wrong direction.",
+    "It can also be handy to rewind if the session's gone in the wrong direction.",
     "Or even ask the agent for a summary then start a clean session with that.",
   ],
 }
@@ -66,30 +83,21 @@ const METRIC_GUIDANCE: Record<MetricKey, string[]> = {
 interface ShareRow {
   key: ShareMetricKey
   label: string
-  fillColor: string
+  /* The slice keeps one color for the life of the feature, so a reader
+     recognizes it between sessions. The colors come from the composition
+     ramp, which no meaning color uses: the band word carries the judgment,
+     and a slice must not look like a verdict. */
+  inkClassName: string
 }
 
 const SHARE_ROWS: ShareRow[] = [
-  {
-    key: "realWorkShare",
-    label: "Real Work %",
-    fillColor: "bg-system-blue/50",
-  },
-  {
-    key: "rewriteShare",
-    label: "Rewrite Waste %",
-    fillColor: "bg-system-indigo/50",
-  },
-  {
-    key: "carryShare",
-    label: "Carry %",
-    fillColor: "bg-system-gold/50",
-  },
+  { key: "realWorkShare", label: "Real Work %", inkClassName: "bg-share-work" },
+  { key: "rewriteShare", label: "Rewrite Waste %", inkClassName: "bg-share-waste" },
+  { key: "carryShare", label: "Carry %", inkClassName: "bg-share-carry" },
 ]
 
 interface ShareSegment extends ShareRow {
   metric: EfficiencyMetric
-  start: number
   width: number
   displayPercent: string
 }
@@ -102,13 +110,11 @@ function shareSegments(metrics: EfficiencyMetrics): ShareSegment[] {
   const total = rows.reduce((sum, row) => sum + row.metric.value, 0)
   if (rows.length !== SHARE_ROWS.length || total <= 0) return []
 
-  let start = 0
-  const segments = rows.map((row) => {
-    const width = row.metric.value / total
-    const segment = { ...row, start, width, displayPercent: "" }
-    start += width
-    return segment
-  })
+  const segments = rows.map((row) => ({
+    ...row,
+    width: row.metric.value / total,
+    displayPercent: "",
+  }))
 
   // Round the shares as one composition so the displayed values total 100%.
   const smallestPercent = Math.min(
@@ -134,77 +140,64 @@ function shareSegments(metrics: EfficiencyMetrics): ShareSegment[] {
   }))
 }
 
-function CostThermometer({ value, profile }: { value: number; profile: EfficiencyProfile }) {
+/**
+ * The $/MTok scale in the usage meter's silhouette. The thermometer splits
+ * the track into thirds, one per band, so the zones sit at fixed positions
+ * and the fill lights up to the reading. The notch marks the same position
+ * on the track.
+ */
+function CostScaleBar({ value, profile }: { value: number; profile: EfficiencyProfile }) {
   const scale = efficiencyThermometer(value, "costPerMTok", profile)
+  const zones = meterZones(scale.segments.map((band, index) => ({ from: index / 3, band })))
   return (
     <div
-      className="relative flex h-full items-center"
       data-testid="thermometer-costPerMTok"
       data-position={scale.position.toFixed(3)}
       aria-hidden
     >
-      {scale.segments.map((segment, index) => (
-        <span
-          key={index}
-          className={cn(
-            "h-[7px] flex-1",
-            index === 0 && "rounded-s-full",
-            index === scale.segments.length - 1 && "rounded-e-full",
-            BAND_SEGMENT_CLASS[segment],
-          )}
-        />
-      ))}
-      <span
-        className="absolute h-[10px] w-1.5 -translate-x-1/2 rounded-full border border-label bg-surface opacity-80 dark:bg-separator"
-        style={{ left: `${scale.position * 100}%` }}
+      <SegmentedMeter
+        percent={scale.position * 100}
+        expectedFraction={scale.position}
+        zones={zones}
       />
     </div>
   )
 }
 
-function ShareSegmentBar({ segment }: { segment: ShareSegment }) {
-  const segmentEnd = segment.start + segment.width
-
-  const isLeftHandSegment = segment.start === 0
-  const isRightHandSegment = segmentEnd === 1
-
+/**
+ * The three shares as one composition. They are parts of a single whole, so
+ * they draw as one track: each run takes its slice of the width, in that
+ * slice's own color. Three separate meters hid the only fact that matters,
+ * which is how the session divided its cost.
+ */
+function CompositionTrack({ segments }: { segments: ShareSegment[] }) {
   return (
     <div
-      className="relative h-1.5"
-      data-testid={`share-segment-${segment.key}`}
-      data-start={segment.start.toFixed(3)}
-      data-width={segment.width.toFixed(3)}
+      data-testid="efficiency-composition"
       aria-hidden
+      className="flex h-3 gap-px overflow-hidden rounded-full bg-surface-secondary"
     >
-      {!isLeftHandSegment && (
+      {segments.map((segment) => (
         <span
-          className={cn(
-            "absolute inset-y-0 border border-separator border-dotted rounded-s-full",
-          )}
-          style={{ left: 0, width: `${segment.start * 100}%` }}
+          key={segment.key}
+          data-testid={`composition-run-${segment.key}`}
+          data-width={segment.width.toFixed(3)}
+          className={cn("h-full", segment.inkClassName)}
+          style={{ width: `${segment.width * 100}%` }}
         />
-      )}
-      <span
-        className={cn(
-          "absolute -inset-y-[1px]",
-          segment.fillColor,
-          isLeftHandSegment && "rounded-s-full",
-          isRightHandSegment && "rounded-e-full",
-        )}
-        style={{ left: `${segment.start * 100}%`, width: `${segment.width * 100}%` }}
-      />
-      {!isRightHandSegment && (
-        <span
-          className={cn(
-            "absolute inset-y-0 border border-separator border-dotted rounded-e-full",
-          )}
-          style={{ left: `${segmentEnd * 100}%`, width: `${(1 - segmentEnd) * 100}%` }}
-        />
-      )}
+      ))}
     </div>
   )
 }
 
+/**
+ * The guidance for one reading, as the body of its tooltip. It names what the
+ * reading measures, states the band it should sit in, and says what to change.
+ *
+ * The guidance lives in a tooltip so the block stays the height of its
+ * readings. A panel that grows and shrinks under the rows moves everything
+ * below it every time the pointer crosses a row.
+ */
 function MetricGuidance({
   metricKey,
   profile,
@@ -213,148 +206,139 @@ function MetricGuidance({
   profile: EfficiencyProfile
 }) {
   return (
-    <div className="space-y-1 text-pretty type-footnote text-label-secondary border-b border-x border-separator pb-3 px-3 rounded-lg">
+    <div className="space-y-1 text-pretty">
       {METRIC_SUMMARY[metricKey].map((sentence) => (
-        <p key={sentence} className="font-bold">
+        <p key={sentence} className="text-label">
           {sentence}
         </p>
       ))}
       {efficiencyThresholdGuidance(metricKey, profile).map((sentence) => (
-        <p key={sentence} className="italic">
+        <p key={sentence} className="text-label-secondary">
           {sentence}
         </p>
       ))}
       {METRIC_GUIDANCE[metricKey].map((sentence) => (
-        <p key={sentence}>{sentence}</p>
+        <p key={sentence} className="text-label-secondary">
+          {sentence}
+        </p>
       ))}
     </div>
   )
 }
 
-function EfficiencyRowLine({
-  label,
+const ROW_CLASS =
+  "-mx-1 rounded-control px-1 py-1.5 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
+
+/**
+ * The $/MTok reading: label and figure on one baseline, with its VU meter
+ * underneath. This metric is not part of the composition, so it keeps the
+ * meter the other readings gave up.
+ */
+function CostRowLine({
   metric,
-  metricKey,
   profile,
-  children,
-  formattedValue,
-  open,
-  onToggle,
-  separated = false,
 }: {
-  label: string
-  metric: EfficiencyMetric | null
-  metricKey: MetricKey
+  metric: EfficiencyMetric
   profile: EfficiencyProfile
-  children?: ReactNode
-  formattedValue?: string
-  open: boolean
-  onToggle: () => void
-  separated?: boolean
 }) {
-  const bodyId = useId()
-
   return (
-    <>
-      <button
-        type="button"
-        aria-label={`${label} details`}
-        aria-expanded={open}
-        aria-controls={bodyId}
-        onClick={onToggle}
-        className="col-span-4 grid cursor-pointer! grid-cols-subgrid items-center gap-x-3 -mx-1 px-1 py-1 rounded-control text-left type-caption transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
-      >
-        <span className="text-label-tertiary">{label}</span>
-        {metric ? children : <span />}
-        <span className="text-center text-label tabular-nums">
-          {metric
-            ? (formattedValue ??
-              (metricKey === "costPerMTok" ? formatCostPerMTok : formatSharePercent)(
-                metric.value,
-              ))
-            : "—"}
-        </span>
-        {metric && (
-          <span
-            className={cn(
-              "type-caption text-center whitespace-nowrap",
-              BAND_TEXT_CLASS[metric.band],
-            )}
-          >
-            {efficiencyBandWord(metric.band, metricKey)}
+    <Tooltip label={<MetricGuidance metricKey="costPerMTok" profile={profile} />} delayMs={150}>
+      <div className={cn(ROW_CLASS, "block")} tabIndex={0} data-testid="cost-row">
+        <span className="flex items-baseline justify-between gap-2 pb-1">
+          <span className="truncate text-label-secondary">$/MTok</span>
+          <span className="flex shrink-0 items-baseline gap-2">
+            <span className="text-label tabular-nums">{formatCostPerMTok(metric.value)}</span>
+            <span className={cn("whitespace-nowrap", BAND_TEXT_CLASS[metric.band])}>
+              {efficiencyBandWord(metric.band, "costPerMTok")}
+            </span>
           </span>
-        )}
-      </button>
+        </span>
+        <CostScaleBar value={metric.value} profile={profile} />
+      </div>
+    </Tooltip>
+  )
+}
 
-      {open && (
-        <div
-          id={bodyId}
-          role="region"
-          aria-label={`${label} guidance`}
-          className="col-span-full px-1 pb-2"
+/**
+ * One line of the composition legend: the slice's color, its name, its share,
+ * and the band word. The run in the track above carries the size, so the row
+ * carries no bar of its own.
+ */
+function ShareRowLine({
+  segment,
+  profile,
+}: {
+  segment: ShareSegment
+  profile: EfficiencyProfile
+}) {
+  return (
+    <Tooltip label={<MetricGuidance metricKey={segment.key} profile={profile} />} delayMs={150}>
+      <div
+        data-testid={`share-row-${segment.key}`}
+        className={cn(ROW_CLASS, "flex items-baseline gap-2")}
+        tabIndex={0}
+      >
+        <span
+          aria-hidden
+          className={cn("size-2 shrink-0 self-center rounded-full", segment.inkClassName)}
+        />
+        <span className="min-w-0 flex-1 truncate text-label-secondary">{segment.label}</span>
+        <span className="shrink-0 text-label tabular-nums">{segment.displayPercent}</span>
+        <span
+          className={cn(
+            "w-10 shrink-0 text-right whitespace-nowrap",
+            BAND_TEXT_CLASS[segment.metric.band],
+          )}
         >
-          <MetricGuidance metricKey={metricKey} profile={profile} />
-        </div>
-      )}
+          {efficiencyBandWord(segment.metric.band, segment.key)}
+        </span>
+      </div>
+    </Tooltip>
+  )
+}
 
-      {separated && (
-        <div className="col-span-full border-b border-separator border-dashed my-1" />
-      )}
-    </>
+/** A share with no reading yet: the name and a dash, on the same grid. */
+function ShareRowPlaceholder({ row }: { row: ShareRow }) {
+  return (
+    <div className={cn(ROW_CLASS, "flex items-baseline gap-2")}>
+      <span
+        aria-hidden
+        className={cn("size-2 shrink-0 self-center rounded-full bg-surface-tertiary")}
+      />
+      <span className="min-w-0 flex-1 truncate text-label-secondary">{row.label}</span>
+      <span className="shrink-0 text-label tabular-nums">—</span>
+      <span className="w-10 shrink-0" />
+    </div>
   )
 }
 
 export function EfficiencyBreakdown({ metrics }: EfficiencyBreakdownProps) {
   const segments = shareSegments(metrics)
-  const [openMetric, setOpenMetric] = useState<MetricKey | null>(null)
-
-  const toggleMetric = (metricKey: MetricKey) => {
-    setOpenMetric((current) => (current === metricKey ? null : metricKey))
-  }
 
   if (!metrics.costPerMTok) {
     return null
   }
 
   return (
-    <div className="grid grid-cols-[max-content_1fr_max-content_max-content] gap-y-1">
-      <EfficiencyRowLine
-        label="$/MTok"
-        metric={metrics.costPerMTok}
-        metricKey="costPerMTok"
-        profile={metrics.profile}
-        open={openMetric === "costPerMTok"}
-        onToggle={() => toggleMetric("costPerMTok")}
-        separated
-      >
-        <CostThermometer value={metrics.costPerMTok.value} profile={metrics.profile} />
-      </EfficiencyRowLine>
-      {segments.map((segment) => (
-        <EfficiencyRowLine
-          key={segment.key}
-          label={segment.label}
-          metric={segment.metric}
-          metricKey={segment.key}
-          profile={metrics.profile}
-          formattedValue={segment.displayPercent}
-          open={openMetric === segment.key}
-          onToggle={() => toggleMetric(segment.key)}
-        >
-          <ShareSegmentBar segment={segment} />
-        </EfficiencyRowLine>
-      ))}
-      {segments.length === 0 &&
-        SHARE_ROWS.map((row) => (
-          <EfficiencyRowLine
-            key={row.key}
-            label={row.label}
-            metric={metrics[row.key]}
-            metricKey={row.key}
-            profile={metrics.profile}
-            open={openMetric === row.key}
-            onToggle={() => toggleMetric(row.key)}
-          />
-        ))}
+    <div className="flex flex-col">
+      <CostRowLine metric={metrics.costPerMTok} profile={metrics.profile} />
+      <div className="my-2 border-b border-dashed border-separator" />
+      {segments.length > 0 ? (
+        <>
+          <CompositionTrack segments={segments} />
+          <div className="mt-2 flex flex-col">
+            {segments.map((segment) => (
+              <ShareRowLine key={segment.key} segment={segment} profile={metrics.profile} />
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="flex flex-col">
+          {SHARE_ROWS.map((row) => (
+            <ShareRowPlaceholder key={row.key} row={row} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

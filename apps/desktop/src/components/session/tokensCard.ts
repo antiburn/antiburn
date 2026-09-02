@@ -33,14 +33,17 @@ export interface TokensCardModel {
    * the headline. Mixing subjects would produce rows that do not add up.
    */
   split: TokensCostSplit | null
-  /** Right-hand hint: token counts, then compactions and cache events when any. */
-  hint: string
-}
-
-/** "3 compactions", "1 compaction", "2 provider cache misses". */
-function countLabel(count: number, noun: string): string {
-  if (count === 1) return `${count} ${noun}`
-  return `${count} ${noun}${noun.endsWith("s") ? "es" : "s"}`
+  /**
+   * The Context section's stat cells: token counts, then compactions and
+   * rehydrations when any. Each cell carries a category label and its value,
+   * so the section reads in the same label-over-value grid as the hero.
+   *
+   * A cell's tone names the chart series or judgment the value belongs to,
+   * so the strip doubles as the chart's legend: "in" and "out" ink the two
+   * token-series colors, "waste" inks the critical color the chart draws
+   * rehydration bars in. A toneless cell stays neutral.
+   */
+  stats: Array<{ label: string; value: string; tone?: "in" | "out" | "waste" }>
 }
 
 /** Decide what the Tokens card says, given the already-selected cost figures. */
@@ -102,12 +105,24 @@ export function tokensCardModel(input: {
         }
       : null
 
-  const parts = [`${formatCompact(tokensInTotal)} in`, `${formatCompact(tokensOutTotal)} out`]
-  if (compactionCount > 0) parts.push(countLabel(compactionCount, "compaction"))
-  if (cacheRehydrationCount > 0) parts.push(countLabel(cacheRehydrationCount, "rehydration"))
+  // A label names the category, so it stays plural whatever the count is.
+  const stats: TokensCardModel["stats"] = [
+    { label: "In", value: formatCompact(tokensInTotal), tone: "in" },
+    { label: "Out", value: formatCompact(tokensOutTotal), tone: "out" },
+  ]
+  if (compactionCount > 0) {
+    stats.push({ label: "Compactions", value: String(compactionCount) })
+  }
+  if (cacheRehydrationCount > 0) {
+    stats.push({ label: "Rehydrations", value: String(cacheRehydrationCount), tone: "waste" })
+  }
   if (cacheRoutingMissCount > 0) {
-    parts.push(countLabel(cacheRoutingMissCount, "provider cache miss"))
+    stats.push({
+      label: "Provider cache misses",
+      value: String(cacheRoutingMissCount),
+      tone: "waste",
+    })
   }
 
-  return { costTotal, split, hint: parts.join(" · ") }
+  return { costTotal, split, stats }
 }

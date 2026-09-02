@@ -278,7 +278,7 @@ function ProviderGroup({
       role="group"
       aria-label={plan ? `${displayName}, ${plan} plan` : displayName}
       data-state={activation ?? "idle"}
-      className="rounded-md px-2 py-2 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08] data-[state=hovered]:bg-brand-tint/[0.08] data-[state=selected]:bg-surface-selected"
+      className="rounded-md px-2 py-2 transition-colors duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
       onMouseEnter={(event) =>
         onHover?.(provider.provider, measureAnchorRegion(event.currentTarget))
       }
@@ -334,7 +334,7 @@ function ProviderRadial({
       onMouseLeave={() => onHover?.(null, null)}
       data-state={activation ?? "idle"}
       title={`${displayName} — ${figure}`}
-      className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08] data-[state=hovered]:bg-brand-tint/[0.08] data-[state=selected]:bg-surface-selected"
+      className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
       aria-label={`${displayName}${
         percent != null ? ` at ${Math.round(percent)} percent` : ", no stated figure"
       }`}
@@ -413,7 +413,7 @@ function UnavailableGroup({
 }
 
 /**
- * One limit window: label, segmented orange meter with the linear-use notch,
+ * One limit window: label, segmented VU meter with the linear-use notch,
  * figure.
  */
 function WindowMeterRow({

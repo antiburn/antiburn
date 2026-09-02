@@ -1,13 +1,11 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 
 import type { InitialContextBreakdown } from "../../../lib/types/session"
-import { SKILLS_MCP_COLLAPSED_ROWS, SkillsMcpChart } from "./SkillsMcpChart"
-import { skillsMcpExpandedStore } from "./useSkillsMcpExpanded"
+import { SkillsMcpChart } from "./SkillsMcpChart"
 
 afterEach(() => {
   cleanup()
-  skillsMcpExpandedStore.set(false)
 })
 
 function breakdown(sources: InitialContextBreakdown["sources"]): InitialContextBreakdown {
@@ -36,8 +34,8 @@ describe("SkillsMcpChart", () => {
         ])}
       />,
     )
-    const rows = screen.getAllByText(/^(Skill|MCP|Tool)$/)
-    expect(rows.map((el) => el.nextSibling?.textContent)).toEqual(["figma", "research"])
+    const names = screen.getAllByText(/^(figma|research)$/).map((el) => el.textContent)
+    expect(names).toEqual(["figma", "research"])
     expect(screen.getByText("Plugin")).toBeTruthy()
     expect(screen.getByText("Project")).toBeTruthy()
     expect(screen.getByText("900")).toBeTruthy()
@@ -68,15 +66,15 @@ describe("SkillsMcpChart", () => {
         ])}
       />,
     )
-    const rows = screen.getAllByText(/^(Skill|MCP|Tool)$/)
-    expect(rows.map((el) => el.nextSibling?.textContent)).toEqual(["research", "Bash"])
+    const names = screen.getAllByText(/^(research|Bash)$/).map((el) => el.textContent)
+    expect(names).toEqual(["research", "Bash"])
     expect(screen.getByText("Tool")).toBeTruthy()
     expect(screen.getByText("Bash")).toBeTruthy()
     expect(screen.getByText("Bundled")).toBeTruthy()
     expect(screen.getByText("Deferred")).toBeTruthy()
   })
 
-  it("renders an unknown origin, or a missing one, as an em dash", () => {
+  it("omits an unknown origin, or a missing one, from the detail line", () => {
     render(
       <SkillsMcpChart
         breakdown={breakdown([
@@ -96,7 +94,8 @@ describe("SkillsMcpChart", () => {
         ])}
       />,
     )
-    expect(screen.getAllByText("—")).toHaveLength(2)
+    expect(screen.queryByText("—")).toBeNull()
+    expect(screen.getAllByText(/^(Skill|MCP)$/)).toHaveLength(2)
   })
 
   it("shows a bare 'Used' when the session used a source exactly once", () => {
@@ -130,44 +129,10 @@ describe("SkillsMcpChart", () => {
     }))
   }
 
-  it("collapses to the first rows with a 'Show N more' toggle when there are more rows", () => {
-    const total = SKILLS_MCP_COLLAPSED_ROWS + 17
+  it("renders every row with no disclosure, however long the list is", () => {
+    const total = 63
     render(<SkillsMcpChart breakdown={breakdown(manyRows(total))} />)
-    expect(screen.getAllByText(/^(Skill|MCP|Tool)$/)).toHaveLength(SKILLS_MCP_COLLAPSED_ROWS)
-    expect(screen.getByText("Show 17 more")).toBeTruthy()
-    expect(screen.queryByText("Show less")).toBeNull()
-  })
-
-  it("expands to every row and shows 'Show less' after clicking the toggle", () => {
-    const total = SKILLS_MCP_COLLAPSED_ROWS + 17
-    render(<SkillsMcpChart breakdown={breakdown(manyRows(total))} />)
-    fireEvent.click(screen.getByText("Show 17 more"))
     expect(screen.getAllByText(/^(Skill|MCP|Tool)$/)).toHaveLength(total)
-    expect(screen.getByText("Show less")).toBeTruthy()
-    expect(screen.queryByText(/^Show \d+ more$/)).toBeNull()
-  })
-
-  it("renders no toggle at exactly the collapse boundary (8 rows)", () => {
-    render(<SkillsMcpChart breakdown={breakdown(manyRows(SKILLS_MCP_COLLAPSED_ROWS))} />)
-    expect(screen.getAllByText(/^(Skill|MCP|Tool)$/)).toHaveLength(SKILLS_MCP_COLLAPSED_ROWS)
     expect(screen.queryByText(/^Show/)).toBeNull()
-  })
-
-  it("shows a toggle one row past the collapse boundary (9 rows)", () => {
-    render(<SkillsMcpChart breakdown={breakdown(manyRows(SKILLS_MCP_COLLAPSED_ROWS + 1))} />)
-    expect(screen.getAllByText(/^(Skill|MCP|Tool)$/)).toHaveLength(SKILLS_MCP_COLLAPSED_ROWS)
-    expect(screen.getByText("Show 1 more")).toBeTruthy()
-  })
-
-  it("keeps the expanded state after the chart unmounts, for a chart mounted later", () => {
-    const total = SKILLS_MCP_COLLAPSED_ROWS + 17
-    const { unmount } = render(<SkillsMcpChart breakdown={breakdown(manyRows(total))} />)
-    fireEvent.click(screen.getByText("Show 17 more"))
-    expect(screen.getByText("Show less")).toBeTruthy()
-    unmount()
-
-    render(<SkillsMcpChart breakdown={breakdown(manyRows(total))} />)
-    expect(screen.getAllByText(/^(Skill|MCP|Tool)$/)).toHaveLength(total)
-    expect(screen.getByText("Show less")).toBeTruthy()
   })
 })

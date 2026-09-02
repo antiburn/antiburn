@@ -272,11 +272,11 @@ function SessionRow({
         "group relative",
         "w-full grid grid-cols-[14px_minmax(0,1fr)] gap-x-2 gap-y-1",
         "items-center",
-        "rounded-[var(--radius-popover)] bg-surface-card px-3 py-3",
+        "rounded-[var(--radius-popover)] bg-surface-card/50 px-3 py-3",
         "transition-colors duration-[var(--duration-fast)] ease-out",
         entry.isActive && "activity-row-active",
         clickable &&
-          "cursor-pointer hover:bg-surface-secondary [&:has([data-state*=open])]:bg-surface-secondary",
+          "cursor-pointer hover:bg-surface-secondary/50 [&:has([data-state*=open])]:bg-surface-secondary/50",
       )}
       {...(clickable
         ? {
@@ -327,7 +327,7 @@ function SessionRow({
         <TruncatedText
           // One ink for every title. The shimmer overlay is the only
           // difference an active session shows.
-          className="min-w-0 my-0.5 type-body-large text-label"
+          className="min-w-0 mt-px mb-0.5 type-body-large text-label"
           text={primary}
           lines={2}
           shimmer={entry.isActive}

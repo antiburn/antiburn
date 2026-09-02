@@ -1,13 +1,19 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import {
+  ArrowDownToLine,
+  ArrowUpFromLine,
   ChevronLeft,
   ChevronRight,
+  FoldVertical,
   FolderOpen,
   GitBranchPlus,
   GitFork,
   LoaderCircle,
   Moon,
+  Repeat2,
+  RotateCcw,
   Trash2,
+  type LucideIcon,
 } from "lucide-react"
 import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react"
 
@@ -15,13 +21,10 @@ import { cn } from "../../lib/cn"
 import { agentDisplayName } from "../../lib/presentation/agents"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
 import { sessionIdentityKey } from "../../lib/presentation/localIdentity"
-import {
-  sessionHygieneChecks,
-  sessionHygieneStateLabel,
-} from "../../lib/presentation/sessionHygiene"
+import { sessionHygieneChecks } from "../../lib/presentation/sessionHygiene"
 import {
   modelRunNames,
-  modelRunShortNames,
+  modelRunShortPairs,
   type PresentableModelRun,
 } from "../../lib/presentation/models"
 import { relativeTime } from "../../lib/presentation/relativeTime"
@@ -29,6 +32,7 @@ import {
   costBreakdownRows,
   costFigureLabel,
   formatCompact,
+  formatCost,
   formatDuration,
   isEmptySummary,
   skillMcpUsage,
@@ -45,6 +49,7 @@ import { useGlobalKeydown } from "../../lib/useGlobalKeydown"
 import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
+import { SegmentedControl } from "../ui/SegmentedControl"
 import { Skeleton } from "../ui/Skeleton"
 import { CostBreakdown } from "./analysis/CostBreakdown"
 import { ContextTokensChart } from "./analysis/ContextTokensChart"
@@ -164,7 +169,7 @@ function RelationControl({
           <button
             type="button"
             onClick={() => onOpen(parent, titleFor(parent))}
-            className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+            className="rounded-control p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
             aria-label="Open fork parent"
           >
             <GitFork size={14} aria-hidden="true" />
@@ -187,7 +192,7 @@ function RelationControl({
           <button
             type="button"
             onClick={() => onOpen(soleChild, titleFor(soleChild))}
-            className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+            className="rounded-control p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
             aria-label="Open forked child"
           >
             <GitBranchPlus size={14} aria-hidden="true" />
@@ -200,7 +205,7 @@ function RelationControl({
           <DropdownMenu.Trigger asChild>
             <button
               type="button"
-              className="inline-flex items-center gap-0.5 rounded-md px-1 py-0.5 type-caption text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+              className="inline-flex items-center gap-0.5 rounded-control px-1 py-0.5 type-caption text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
               aria-label={`Show ${children.length} direct forks`}
             >
               <GitBranchPlus size={14} aria-hidden="true" />
@@ -240,36 +245,179 @@ function RelationControl({
   )
 }
 
-function Card({
-  title,
-  subtitle,
-  hint,
-  children,
+/**
+ * One adjacent-session control, flanking the hero title. The circle shape
+ * separates the pair from the back chevron in the toolbar: the toolbar acts
+ * on this session, these two leave it.
+ */
+function SessionNavChevron({
+  label,
+  keyHint,
+  onNavigate,
+  Icon,
 }: {
-  title: string
-  subtitle?: string
-  hint?: string
-  children: ReactNode
+  label: string
+  keyHint: string
+  onNavigate?: (() => void) | undefined
+  Icon: LucideIcon
 }) {
   return (
-    <div className="flex flex-col gap-y-2 mx-3 mb-3 rounded-xl bg-surface-secondary/40 p-3">
-      <div className="flex items-baseline justify-between">
-        <h3 className="type-headline text-label">{title}</h3>
+    <Tooltip
+      label={
+        <span className="inline-flex items-center gap-1.5">
+          {label}
+          <kbd className="rounded bg-surface-tertiary px-1 text-label-tertiary">{keyHint}</kbd>
+        </span>
+      }
+    >
+      <button
+        type="button"
+        onClick={onNavigate}
+        disabled={!onNavigate}
+        aria-label={label}
+        className={cn(
+          "shrink-0 rounded-full bg-surface-secondary p-1.5 transition-colors duration-[var(--duration-fast)] ease-out",
+          onNavigate
+            ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+            : "cursor-default text-label-tertiary opacity-40",
+        )}
+      >
+        <Icon size={14} aria-hidden="true" />
+      </button>
+    </Tooltip>
+  )
+}
 
-        {hint && <span className="type-caption text-label-tertiary">{hint}</span>}
-      </div>
+/** The three views of one session's analysis. */
+type SessionDetailTab = "overview" | "usage" | "tools"
 
-      {subtitle && <span className="-mt-1 type-caption text-label-tertiary">{subtitle}</span>}
+const DETAIL_TABS: ReadonlyArray<{ value: SessionDetailTab; label: string }> = [
+  { value: "overview", label: "Overview" },
+  { value: "usage", label: "Usage" },
+  { value: "tools", label: "Tools" },
+]
 
-      {children}
+/** One entry for the Usage tab's shared helper area. */
+interface UsageHelpEntry {
+  title: string
+  body: string
+}
+
+/**
+ * The Usage tab's one helper area, under the cost rows and the checks. It
+ * explains whichever row the pointer is on; idle, it carries the cache
+ * pricing note.
+ */
+function UsageHelperFooter({ entry }: { entry: UsageHelpEntry | null }) {
+  return (
+    <div className="mt-2 min-h-14 border-t border-separator pt-3 text-pretty type-callout text-label-tertiary">
+      {entry ? (
+        <p>
+          <span className="font-medium! text-label-secondary">{entry.title}.</span> {entry.body}
+        </p>
+      ) : (
+        <p>
+          Cache reads bill at about 10% of the fresh-input price; cache writes about 25% more.
+          On subscription these figures are estimates at API prices.
+        </p>
+      )}
     </div>
   )
 }
 
-/** Card shell matching {@link Card}, with a placeholder in place of the heading. */
+/**
+ * The ink each stat tone carries. "brand" is the hero cost. "in", "out", and
+ * "waste" repeat the chart's series and alert colors, so a toned cell reads
+ * as that chart layer's legend entry.
+ */
+const STAT_TONE_CLASS = {
+  brand: "font-mono text-brand-tint tabular-nums",
+  in: "text-token-in tabular-nums",
+  out: "text-token-out tabular-nums",
+  waste: "text-context-critical tabular-nums",
+} as const
+
+type StatTone = keyof typeof STAT_TONE_CLASS
+
+/**
+ * One hero figure, standing alone: the value is self-evident, so the label
+ * lives in the tooltip and in a screen-reader prefix rather than as a caption
+ * above it.
+ */
+function StatCell({
+  value,
+  label,
+  tone,
+}: {
+  value: ReactNode
+  /** What the figure is, for the tooltip and assistive technology. */
+  label: string
+  tone?: StatTone
+}) {
+  return (
+    <Tooltip label={label}>
+      <span
+        className={cn(
+          "min-w-0 truncate type-headline",
+          tone ? STAT_TONE_CLASS[tone] : "text-label",
+        )}
+      >
+        <span className="sr-only">{label}: </span>
+        {value}
+      </span>
+    </Tooltip>
+  )
+}
+
+/** The icon that identifies each Context stat in place of a caption label. */
+const TOKEN_STAT_ICONS: Record<string, LucideIcon> = {
+  In: ArrowDownToLine,
+  Out: ArrowUpFromLine,
+  Compactions: FoldVertical,
+  Rehydrations: RotateCcw,
+  "Provider cache misses": Repeat2,
+}
+
+/**
+ * The Context figures as icon-and-value pairs. The icon carries the identity
+ * the caption label used to; the tooltip and a screen-reader prefix keep the
+ * word. A toned pair inks icon and value in its chart series color, so the
+ * row still doubles as the chart's legend.
+ */
+function TokenStatsRow({
+  stats,
+}: {
+  stats: ReadonlyArray<{ label: string; value: string; tone?: "in" | "out" | "waste" }>
+}) {
+  return (
+    <div className="flex items-center justify-between gap-x-4 rounded-[var(--radius-popover)] bg-surface-card/50 px-3 py-2">
+      {stats.map((stat) => {
+        const Icon = TOKEN_STAT_ICONS[stat.label]
+        return (
+          <Tooltip key={stat.label} label={stat.label}>
+            <span
+              className={cn(
+                "flex items-center gap-x-1 type-body",
+                stat.tone ? STAT_TONE_CLASS[stat.tone] : "text-label",
+              )}
+            >
+              <span className="sr-only">{stat.label}: </span>
+              {Icon && (
+                <Icon size={12} strokeWidth={2} aria-hidden="true" className="shrink-0" />
+              )}
+              {stat.value}
+            </span>
+          </Tooltip>
+        )
+      })}
+    </div>
+  )
+}
+
+/** Placeholder block matching a tab panel's content spacing. */
 function SkeletonCardShell({ children }: { children: ReactNode }) {
   return (
-    <div className="mx-3 mb-3 rounded-xl bg-surface-secondary/40 p-3">
+    <div className="mx-4 mb-4">
       <Skeleton className="mb-3 h-3.5 w-24" />
       {children}
     </div>
@@ -294,10 +442,10 @@ function SessionDetailSkeleton() {
       </div>
 
       <SkeletonCardShell>
-        <Skeleton className="h-28 w-full rounded-lg" />
+        <Skeleton className="h-28 w-full rounded-control" />
       </SkeletonCardShell>
       <SkeletonCardShell>
-        <Skeleton className="h-28 w-full rounded-lg" />
+        <Skeleton className="h-28 w-full rounded-control" />
       </SkeletonCardShell>
 
       <SkeletonCardShell>
@@ -431,9 +579,10 @@ export function SessionDetailPresentation({
   renderAgentIcon,
 }: SessionDetailPresentationProps) {
   const subagent = session.subagent
-  const modelNames = modelRunShortNames(modelRuns)
+  const [tab, setTab] = useState<SessionDetailTab>("overview")
+  const [usageHelp, setUsageHelp] = useState<UsageHelpEntry | null>(null)
+  const modelPairs = modelRunShortPairs(modelRuns)
   const hygieneChecks = sessionHygieneChecks(hygiene)
-  const hygieneStateLabel = sessionHygieneStateLabel(hygiene.evidenceState)
 
   // Left and right arrows traverse adjacent sessions, mirroring the header
   // chevrons. A missing handler is a no-op, matching the chevrons' own state.
@@ -478,6 +627,9 @@ export function SessionDetailPresentation({
   const efficiencyCard = efficiency ? efficiencyMetrics(efficiency, session.agent) : null
 
   const firstSession = summary?.sessions[0]
+  const toolsUsage = firstSession?.initialContext
+    ? skillMcpUsage(firstSession.initialContext)
+    : null
 
   const tokensCard = summary
     ? tokensCardModel({
@@ -504,7 +656,7 @@ export function SessionDetailPresentation({
 
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-popover bg-surface text-label select-none">
-      <div className="flex items-center justify-between gap-2 border-b border-separator px-4 py-3">
+      <div className="flex items-center justify-between gap-2 border-b border-separator px-3 py-3">
         {/* The control and the title are two things, not one. Wrapping the
             heading text inside the back button made a screen reader announce
             "Session Detail, button" for the control that leaves this view,
@@ -555,7 +707,7 @@ export function SessionDetailPresentation({
                 type="button"
                 onClick={onRevealSource}
                 aria-label="Reveal in file manager"
-                className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+                className="rounded-control p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
               >
                 <FolderOpen size={14} aria-hidden="true" />
               </button>
@@ -566,7 +718,7 @@ export function SessionDetailPresentation({
               type="button"
               onClick={onDeleteSession}
               aria-label="Delete this session"
-              className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-system-red-text"
+              className="rounded-control p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-system-red-text"
             >
               <Trash2 size={14} aria-hidden="true" />
             </button>
@@ -574,41 +726,46 @@ export function SessionDetailPresentation({
         </div>
       </div>
 
-      <div key={sessionIdentityKey(session)} className="min-h-0 flex-1 overflow-y-auto py-3">
-        {showSkeleton && <SessionDetailSkeleton />}
-
-        {ready && error && (
-          <p className="px-4 type-callout text-system-orange">Couldn't read this session.</p>
-        )}
-
-        {showEmptyState && (
-          <div className="flex flex-col items-center justify-center px-8 py-12 text-center">
-            <Moon size={28} aria-hidden="true" className="mb-3 text-label-tertiary" />
-            {analysisPending ? (
-              <>
-                <p className="type-body text-label">Analyzing this session…</p>
-                <p className="mt-1 type-callout text-label-tertiary">
-                  Indexing is in progress. This view updates on its own once it finishes.
-                </p>
-              </>
-            ) : !supportsAnalysis ? (
-              <p className="type-body text-label">
-                Session analysis for {agentDisplayName(session.agent)} sessions isn&apos;t
-                available yet
+      <div key={sessionIdentityKey(session)} className="flex min-h-0 flex-1 flex-col">
+        {(showSkeleton || (ready && (error || empty))) && (
+          <div className="min-h-0 flex-1 overflow-y-auto py-3">
+            {showSkeleton && <SessionDetailSkeleton />}
+            {ready && error && (
+              <p className="px-4 type-callout text-system-orange">
+                Couldn't read this session.
               </p>
-            ) : (
-              <>
-                <p className="type-body text-label">No session analysis available</p>
-                <p className="mt-1 type-callout text-label-tertiary">
-                  {relations?.parent
-                    ? "This fork has no analyzable child activity yet."
-                    : "This session has no analyzable messages in its local transcript."}
-                </p>
-              </>
             )}
-            {costBadge && (
-              <div className="mt-3">
-                <SessionCostBadge {...costBadge} />
+
+            {showEmptyState && (
+              <div className="flex flex-col items-center justify-center px-8 py-12 text-center">
+                <Moon size={28} aria-hidden="true" className="mb-3 text-label-tertiary" />
+                {analysisPending ? (
+                  <>
+                    <p className="type-body text-label">Analyzing this session…</p>
+                    <p className="mt-1 type-callout text-label-tertiary">
+                      Indexing is in progress. This view updates on its own once it finishes.
+                    </p>
+                  </>
+                ) : !supportsAnalysis ? (
+                  <p className="type-body text-label">
+                    Session analysis for {agentDisplayName(session.agent)} sessions isn&apos;t
+                    available yet
+                  </p>
+                ) : (
+                  <>
+                    <p className="type-body text-label">No session analysis available</p>
+                    <p className="mt-1 type-callout text-label-tertiary">
+                      {relations?.parent
+                        ? "This fork has no analyzable child activity yet."
+                        : "This session has no analyzable messages in its local transcript."}
+                    </p>
+                  </>
+                )}
+                {costBadge && (
+                  <div className="mt-3">
+                    <SessionCostBadge {...costBadge} />
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -616,114 +773,82 @@ export function SessionDetailPresentation({
 
         {ready && !error && !empty && summary && (
           <>
-            <div className="w-full flex flex-col gap-y-2 px-4 pb-3">
-              <div className="flex items-center gap-x-2" aria-label="Session summary">
-                <span className="shrink-0">{renderAgentIcon(session.agent, 20)}</span>
-
-                <div className="w-full flex flex-col gap-y-0.5">
-                  <div className="flex items-center gap-x-2">
-                    {session.repo && (
-                      <Tooltip label={session.repo}>
-                        <span className="truncate text-label-secondary">{session.repo}</span>
-                      </Tooltip>
-                    )}
-
-                    {costBadge && <SessionCostBadge {...costBadge} />}
-
-                    <div className="ml-auto flex shrink-0 items-center">
-                      <Tooltip
-                        label={
-                          <span className="inline-flex items-center gap-1.5">
-                            Newer session
-                            <kbd className="rounded bg-surface-tertiary px-1 text-label-tertiary">
-                              ←
-                            </kbd>
-                          </span>
-                        }
-                      >
-                        <button
-                          type="button"
-                          onClick={onPrev}
-                          disabled={!onPrev}
-                          aria-label="Newer session"
-                          className={cn(
-                            "shrink-0 rounded-md p-1 transition-colors duration-[var(--duration-fast)] ease-out",
-                            onPrev
-                              ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
-                              : "cursor-default text-label-tertiary opacity-40",
-                          )}
-                        >
-                          <ChevronLeft size={16} aria-hidden="true" />
-                        </button>
-                      </Tooltip>
-                      <Tooltip
-                        label={
-                          <span className="inline-flex items-center gap-1.5">
-                            Older session
-                            <kbd className="rounded bg-surface-tertiary px-1 text-label-tertiary">
-                              →
-                            </kbd>
-                          </span>
-                        }
-                      >
-                        <button
-                          type="button"
-                          onClick={onNext}
-                          disabled={!onNext}
-                          aria-label="Older session"
-                          className={cn(
-                            "shrink-0 rounded-md p-1 transition-colors duration-[var(--duration-fast)] ease-out",
-                            onNext
-                              ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
-                              : "cursor-default text-label-tertiary opacity-40",
-                          )}
-                        >
-                          <ChevronRight size={16} aria-hidden="true" />
-                        </button>
-                      </Tooltip>
-                    </div>
-                  </div>
-
-                  <div
-                    className="flex items-center justify-between gap-1 type-footnote text-label-tertiary"
-                    aria-label="Session timing and models"
-                  >
-                    {modelNames.length > 0 && (
-                      <div className="min-w-0" title={modelRunNames(modelRuns).join("\n")}>
-                        <TruncatedText text={modelNames.join(" · ")} />
-                      </div>
-                    )}
-
-                    <span
-                      className="shrink-0"
-                      title={`${formatDuration(summary.avgDurationSecs)} overall`}
-                    >
-                      {formatDuration(summary.avgActiveSecs)} active
-                      {session.timestamp && (
-                        <>
-                          {" · "}
-                          <time
-                            dateTime={session.timestamp}
-                            aria-label={`Last activity ${relativeTime(session.timestamp)}`}
-                            className="shrink-0 type-footnote text-label-tertiary"
-                          >
-                            last {relativeTime(session.timestamp)}
-                          </time>
-                        </>
-                      )}
-                    </span>
-
-                    <WslOriginBadge distro={session.wslDistro} />
-                  </div>
-                </div>
+            <div
+              className="flex flex-col gap-y-2 border-b border-separator px-4 pt-3 pb-4"
+              aria-label="Session summary"
+            >
+              {/* The traversal pair sits on the title line, so its circles
+                  read against the title they change. */}
+              <div className="flex items-center gap-2">
+                <SessionNavChevron
+                  label="Newer session"
+                  keyHint="←"
+                  onNavigate={onPrev}
+                  Icon={ChevronLeft}
+                />
+                <TruncatedText
+                  className="min-w-0 flex-1 type-title-3 text-label break-words"
+                  text={relations?.title?.trim() || session.title?.trim() || "Session"}
+                  lines={2}
+                />
+                <SessionNavChevron
+                  label="Older session"
+                  keyHint="→"
+                  onNavigate={onNext}
+                  Icon={ChevronRight}
+                />
               </div>
 
-              <div className="flex items-center gap-1 bg-(--color-bg-secondary) border-dashed border-1 border-(--color-border) px-3 py-2 rounded-md">
-                <TruncatedText
-                  className="min-w-0 flex-1 text-sm break-all"
-                  text={relations?.title?.trim() || session.title?.trim() || "Session"}
-                  lines={3}
-                />
+              <div className="flex min-w-0 flex-col gap-y-2">
+                <div className="flex min-w-0 items-center gap-1.5 font-mono type-caption text-label-secondary">
+                  {session.repo && (
+                    <Tooltip label={session.repo}>
+                      <span className="truncate">{session.repo}</span>
+                    </Tooltip>
+                  )}
+                  <WslOriginBadge distro={session.wslDistro} />
+                </div>
+
+                <div className="mt-2 grid grid-cols-3 gap-x-3">
+                  <StatCell
+                    label={costBadge ? costBadge.figureLabel : "Cost"}
+                    value={cost ? formatCost(cost.totalCostUsd) : "—"}
+                    {...(cost ? { tone: "brand" as const } : {})}
+                  />
+                  <StatCell
+                    label={`Active time (${formatDuration(summary.avgDurationSecs)} overall)`}
+                    value={formatDuration(summary.avgActiveSecs)}
+                  />
+                  <StatCell
+                    label="Last activity"
+                    value={
+                      session.timestamp ? (
+                        <time dateTime={session.timestamp}>
+                          {relativeTime(session.timestamp)}
+                        </time>
+                      ) : (
+                        "—"
+                      )
+                    }
+                  />
+                </div>
+
+                {modelPairs.length > 0 && (
+                  <div
+                    className="min-w-0 truncate type-callout text-label-tertiary"
+                    title={modelRunNames(modelRuns).join("\n")}
+                  >
+                    {modelPairs.map((pair, index) => (
+                      <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
+                        {index > 0 && " · "}
+                        <span className="font-medium">{pair.model}</span>
+                        {pair.thinkingMode && (
+                          <span className="type-caption"> {pair.thinkingMode}</span>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -736,53 +861,87 @@ export function SessionDetailPresentation({
               />
             )}
 
-            {efficiencyCard && (
-              <Card
-                title="Efficiency"
-                subtitle="Cost for real work: context growth and output tokens."
-              >
-                <EfficiencyBreakdown metrics={efficiencyCard} />
-              </Card>
-            )}
-
-            <Card
-              title="Burn Checks"
-              {...(hygieneStateLabel ? { hint: hygieneStateLabel } : {})}
+            <div
+              id="session-detail-tabs-panel"
+              role="tabpanel"
+              aria-labelledby={`session-detail-tabs-${tab}`}
+              className="min-h-0 flex-1 overflow-y-auto px-4 py-3"
             >
-              <HygieneBreakdown checks={hygieneChecks} />
-            </Card>
+              {tab === "overview" && (
+                <div className="divide-y divide-separator">
+                  {tokensCard && (
+                    <div className="flex flex-col gap-y-3 py-4 first:pt-0 last:pb-0">
+                      <TokenStatsRow stats={tokensCard.stats} />
+                      <ContextTokensChart
+                        buckets={summary.buckets}
+                        contextWindow={summary.contextAvailable ? summary.contextWindow : null}
+                        activeSecs={summary.avgActiveSecs}
+                      />
+                    </div>
+                  )}
 
-            {tokensCard && (
-              <Card title="Context" subtitle={tokensCard.hint}>
-                <ContextTokensChart
-                  buckets={summary.buckets}
-                  contextWindow={summary.contextAvailable ? summary.contextWindow : null}
-                  activeSecs={summary.avgActiveSecs}
-                />
-              </Card>
-            )}
+                  {efficiencyCard && (
+                    <div className="py-4 first:pt-0 last:pb-0">
+                      <EfficiencyBreakdown metrics={efficiencyCard} />
+                    </div>
+                  )}
+                </div>
+              )}
 
-            {cost && tokensCard && (
-              <Card
-                title="Cost"
-                subtitle="On subscription this is estimated cost at API prices."
-              >
-                <CostBreakdown
-                  cost={cost}
-                  split={tokensCard.split}
-                  onOpenSubagent={onOpenSubagent}
-                />
-              </Card>
-            )}
+              {tab === "usage" && (
+                <div className="flex flex-col">
+                  {cost && tokensCard ? (
+                    <CostBreakdown
+                      cost={cost}
+                      split={tokensCard.split}
+                      onOpenSubagent={onOpenSubagent}
+                      onHoverComponent={setUsageHelp}
+                    />
+                  ) : (
+                    <p className="type-callout text-label-tertiary">
+                      No cost has been recorded for this session.
+                    </p>
+                  )}
+                  <div className="mt-3 border-t border-separator pt-3">
+                    <HygieneBreakdown
+                      checks={hygieneChecks}
+                      collapsePassing={false}
+                      onHoverExplainer={setUsageHelp}
+                    />
+                  </div>
+                  <UsageHelperFooter entry={usageHelp} />
+                </div>
+              )}
 
-            {firstSession?.initialContext && (
-              <Card
-                title="Skills, MCPs and tools"
-                subtitle={`The unused items here burned ${formatCompact(skillMcpUsage(firstSession.initialContext).wastedTokens)} tokens.`}
-              >
-                <SkillsMcpChart breakdown={firstSession.initialContext} />
-              </Card>
-            )}
+              {tab === "tools" &&
+                (firstSession?.initialContext ? (
+                  <div className="flex flex-col gap-y-2">
+                    <SkillsMcpChart breakdown={firstSession.initialContext} />
+                    {toolsUsage != null && toolsUsage.wastedTokens > 0 && (
+                      <p className="type-callout text-label-tertiary">
+                        The unused items here burned {formatCompact(toolsUsage.wastedTokens)}{" "}
+                        tokens.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="type-callout text-label-tertiary">
+                    No startup context has been recorded for this session.
+                  </p>
+                ))}
+            </div>
+
+            <div className="border-t border-separator px-3 py-2">
+              <SegmentedControl
+                options={DETAIL_TABS}
+                value={tab}
+                onChange={setTab}
+                ariaLabel="Session detail sections"
+                semantics="tabs"
+                variant="raised-tabs"
+                idPrefix="session-detail-tabs"
+              />
+            </div>
           </>
         )}
       </div>

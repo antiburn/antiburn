@@ -100,7 +100,7 @@ describe("SessionStatusBar", () => {
     expect(verdict.textContent).toBe("5/6 burn checks")
     expect(verdict.className).not.toContain("rounded-full")
     expect(verdict.style.backgroundColor).toBe("")
-    expect(verdict.style.color).toContain("--color-system-red-text) 17%")
+    expect(verdict.style.color).toContain("--color-system-red-tint) 17%")
     expect(verdict.style.color).toContain("--color-system-orange")
     expect(verdict.parentElement?.className).not.toContain("bg-")
   })
@@ -109,7 +109,7 @@ describe("SessionStatusBar", () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
     const verdict = screen.getByLabelText("4 of 6 burn checks pass; 1 not assessed")
     expect(verdict.textContent).toBe("4/6 burn checks · 1 not assessed")
-    expect(verdict.style.color).toContain("--color-system-red-text) 17%")
+    expect(verdict.style.color).toContain("--color-system-red-tint) 17%")
     expect(verdict.style.color).toContain("--color-system-orange")
   })
 
@@ -121,7 +121,7 @@ describe("SessionStatusBar", () => {
     }))
     render(<SessionStatusBar checks={allFailed} />)
     const verdict = screen.getByLabelText("0 of 6 burn checks pass")
-    expect(verdict.style.color).toContain("--color-system-red-text) 100%")
+    expect(verdict.style.color).toContain("--color-system-red-tint) 100%")
   })
 
   it("shows a computing state instead of claiming a clean result", () => {

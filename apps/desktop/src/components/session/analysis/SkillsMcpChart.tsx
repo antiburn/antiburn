@@ -7,82 +7,88 @@ import {
   type SkillMcpRow,
 } from "../../../lib/presentation/sessionAnalysis"
 import type { InitialContextBreakdown } from "../../../lib/types/session"
-import { useSkillsMcpExpanded } from "./useSkillsMcpExpanded"
 
 export interface SkillsMcpChartProps {
   breakdown: InitialContextBreakdown
 }
 
-export const SKILLS_MCP_COLLAPSED_ROWS = 8
-
-/** Kind label shown before a row's name. */
+/** Kind label shown on a row's detail line. */
 function skillMcpKindLabel(kind: SkillMcpRow["kind"]): string {
   if (kind === "skill") return "Skill"
   if (kind === "mcp") return "MCP"
   return "Tool"
 }
 
+/* Token levels where an unused source's status steps up in heat. */
+const UNUSED_WARM_TOKENS = 10_000
+const UNUSED_CRITICAL_TOKENS = 40_000
+
+/* The use count where a "Used ×N" status turns red: heavy repeat use is
+   where a session's tool spend concentrates. */
+const USED_HOT_COUNT = 20
+
+/**
+ * Ink for a source's status word. A heavily used source reads red, because
+ * its repeat calls carry a large token bill. An unused source steps up in
+ * heat with the tokens it burned without a use. A deferred tool stays
+ * neutral: it cost close to nothing.
+ */
+function statusClass(row: SkillMcpRow): string | null {
+  if (row.useCount >= USED_HOT_COUNT) return "text-system-red-text"
+  if (row.useCount > 0 || row.deferred) return null
+  if (row.tokenCount >= UNUSED_CRITICAL_TOKENS) return "text-system-red-text"
+  if (row.tokenCount >= UNUSED_WARM_TOKENS) return "text-system-orange"
+  return "text-context-warning"
+}
+
+/**
+ * One source as a two-line cell: the name with its token count, then a
+ * muted detail line. The cell shape matches the session list, at half the
+ * card wash. Not a button and no hover wash — the row does nothing.
+ */
 function SkillMcpRowLine({ row }: { row: SkillMcpRow }) {
-  const used = row.useCount > 0
+  const statusInk = statusClass(row)
+  const origin = skillMcpOriginLabel(row.origin)
   return (
-    <div className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 type-caption transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
-      <span className="flex min-w-0 items-center gap-1 truncate">
-        <span className="shrink-0 text-label-tertiary">{skillMcpKindLabel(row.kind)}</span>
-        <span className="truncate text-label">{row.name}</span>
+    <div className="flex flex-col gap-y-0.5 rounded-[var(--radius-popover)] bg-surface-card/50 px-3 py-2 type-body">
+      <span className="flex items-baseline justify-between gap-x-3">
+        <span className="min-w-0 truncate font-semibold text-label">{row.name}</span>
+        <span className="shrink-0 text-label-tertiary tabular-nums">
+          {formatCompact(row.tokenCount)}
+        </span>
       </span>
-      <span className="text-center text-label-tertiary">
-        {skillMcpOriginLabel(row.origin) ?? "—"}
-      </span>
-      <span
-        className={cn("text-center text-label-tertiary tabular-nums", !used && "font-bold")}
-      >
-        {formatCompact(row.tokenCount)}
-      </span>
-      <span
-        className={cn(
-          "text-center",
-          used ? "text-label-secondary" : "text-label-tertiary font-bold",
+      <span className="flex min-w-0 items-baseline gap-x-1 text-label-tertiary">
+        <span>{skillMcpKindLabel(row.kind)}</span>
+        {origin && (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>{origin}</span>
+          </>
         )}
-      >
-        {skillMcpStatusLabel(row)}
+        <span aria-hidden="true">·</span>
+        <span className={cn(statusInk)}>{skillMcpStatusLabel(row)}</span>
       </span>
     </div>
   )
 }
 
+/**
+ * The full skills, MCPs and tools list. Every source renders as a two-line
+ * cell: the list is the tab's whole content, so it hides nothing behind a
+ * disclosure and needs no column headers.
+ */
 export function SkillsMcpChart({ breakdown }: SkillsMcpChartProps) {
   const usage = skillMcpUsage(breakdown)
-  const [expanded, setExpanded] = useSkillsMcpExpanded()
 
   if (usage.totalTokens === 0) {
     return <p className="type-footnote text-label-tertiary">No skills, MCPs or tools loaded.</p>
   }
 
-  const hiddenCount = usage.rows.length - SKILLS_MCP_COLLAPSED_ROWS
-  const visibleRows =
-    expanded || hiddenCount <= 0 ? usage.rows : usage.rows.slice(0, SKILLS_MCP_COLLAPSED_ROWS)
-
   return (
-    <div className="grid grid-cols-[1fr_max-content_max-content_max-content] gap-x-3 gap-y-1 border-t border-separator pt-2">
-      <div className="col-span-full grid grid-cols-subgrid type-caption">
-        <span>Name</span>
-        <span className="text-center">Source</span>
-        <span className="text-center">Tokens</span>
-        <span className="text-center">Check</span>
-      </div>
-
-      {visibleRows.map((row) => (
+    <div className="flex flex-col gap-y-1.5">
+      {usage.rows.map((row) => (
         <SkillMcpRowLine key={row.key} row={row} />
       ))}
-      {hiddenCount > 0 && (
-        <button
-          type="button"
-          onClick={() => setExpanded(!expanded)}
-          className="col-span-full type-caption py-1 font-medium text-accent text-right hover:bg-surface-hover"
-        >
-          {expanded ? "Show less" : `Show ${hiddenCount} more`}
-        </button>
-      )}
     </div>
   )
 }

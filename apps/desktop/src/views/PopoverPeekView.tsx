@@ -27,7 +27,7 @@ function reportConcealed(generation: number) {
 function ProviderPeekSkeleton({ testId = "popover-peek-loading" }: { testId?: string }) {
   return (
     <div className="min-h-[320px] px-4 py-3" data-testid={testId} data-loading-state="detailed">
-      <div className="flex flex-col gap-3 rounded-control bg-surface-card p-3">
+      <div className="flex flex-col gap-3 rounded-[var(--radius-popover)] bg-surface-card p-3">
         <div className="flex items-center gap-2">
           <Skeleton className="h-[18px] w-[18px] shrink-0 rounded-full" />
           <div className="flex flex-col gap-1">
@@ -105,7 +105,7 @@ class PeekLoading extends Component<{ target: PopoverPeekTarget }, { showDetails
             data-testid="popover-peek-loading"
             data-loading-state="quiet"
           >
-            <div className="flex items-center gap-2 rounded-control bg-surface-card px-3 py-2.5">
+            <div className="flex items-center gap-2 rounded-[var(--radius-popover)] bg-surface-card px-3 py-2.5">
               <ProviderGlyph displayName={displayName} provider={provider} size={18} />
               <span className="truncate type-footnote font-medium text-label">
                 {displayName}

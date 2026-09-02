@@ -3,6 +3,7 @@ import {
   cloneElement,
   isValidElement,
   type ComponentProps,
+  type CSSProperties,
   type ReactElement,
   type ReactNode,
 } from "react"
@@ -26,12 +27,26 @@ vi.mock("recharts", async (importOriginal) => {
   return {
     ...actual,
     Area: (props: ComponentProps<typeof actual.Area>) => (
-      <g data-animation-active={String(props.isAnimationActive)}>
+      <g
+        data-animation-active={String(props.isAnimationActive)}
+        data-animation-begin={String(props.animationBegin)}
+      >
         <actual.Area {...props} />
       </g>
     ),
-    ResponsiveContainer: ({ children }: { children: ReactNode }) => (
-      <div style={{ width: 600, height: 160 }}>
+    ResponsiveContainer: ({
+      children,
+      className,
+      style,
+    }: {
+      children: ReactNode
+      className?: string
+      style?: CSSProperties
+    }) => (
+      <div
+        className={`recharts-responsive-container ${className ?? ""}`}
+        style={{ ...style, width: 600, height: 160 }}
+      >
         {isValidElement(children)
           ? cloneElement(children as ReactElement<{ width?: number; height?: number }>, {
               width: 600,
@@ -71,7 +86,7 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
 }
 
 describe("ContextTokensChart", () => {
-  it("renders the first bucket set without animation and animates a replacement set", () => {
+  it("plays the first bucket set in as a sequence and animates a replacement set", () => {
     const initialBuckets = [
       bucket({ contextTokens: 100_000 }),
       bucket({ contextTokens: 120_000 }),
@@ -80,7 +95,17 @@ describe("ContextTokensChart", () => {
       <ContextTokensChart buckets={initialBuckets} contextWindow={200_000} />,
     )
 
-    expect(container.querySelectorAll('g[data-animation-active="false"]')).toHaveLength(4)
+    // Every area animates, and the token layers start after the context
+    // fill, so the chart draws itself in order.
+    expect(container.querySelectorAll('g[data-animation-active="true"]')).toHaveLength(4)
+    const wrapper = container.querySelector<HTMLElement>(".recharts-responsive-container")
+    expect(wrapper?.style.getPropertyValue("--chart-mark-delay")).not.toBe("0ms")
+    const begins = [...container.querySelectorAll("g[data-animation-begin]")].map((node) =>
+      Number(node.getAttribute("data-animation-begin")),
+    )
+    expect(begins[0]).toBe(0)
+    expect(begins.slice(1).every((begin) => begin > 0)).toBe(true)
+    expect(begins).toEqual([...begins].sort((a, b) => a - b))
 
     rerender(
       <ContextTokensChart
@@ -89,7 +114,15 @@ describe("ContextTokensChart", () => {
       />,
     )
 
+    // A live update arrives all at once: a staggered replay would read as
+    // the panel redrawing itself.
     expect(container.querySelectorAll('g[data-animation-active="true"]')).toHaveLength(4)
+    expect(wrapper?.style.getPropertyValue("--chart-mark-delay")).toBe("0ms")
+    expect(
+      [...container.querySelectorAll("g[data-animation-begin]")].every(
+        (node) => node.getAttribute("data-animation-begin") === "0",
+      ),
+    ).toBe(true)
   })
 
   it("positions a cache-rehydration bar between the cached prefix and context growth", () => {
@@ -114,7 +147,10 @@ describe("ContextTokensChart", () => {
       <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
     )
 
-    const bar = container.querySelector('line[stroke="var(--color-context-critical)"]')
+    const bar = container.querySelector('line[stroke="var(--color-context-rewrite)"]')
+    // The mark carries the entrance class, so it fades in after the areas
+    // have finished growing.
+    expect(container.querySelector(".animate-chart-mark")).toBeTruthy()
     expect(bar).not.toBeNull()
     expect(Number(bar?.getAttribute("stroke-width"))).toBeGreaterThanOrEqual(4)
     // The bar spans the bottom quarter of the plot only: 50k of a 200k peak.
@@ -136,7 +172,7 @@ describe("ContextTokensChart", () => {
     )
 
     const rehydrationLines = container.querySelectorAll(
-      'line[stroke="var(--color-context-critical)"]',
+      'line[stroke="var(--color-context-rewrite)"]',
     )
     expect(rehydrationLines.length).toBe(0)
   })
@@ -157,7 +193,7 @@ describe("ContextTokensChart", () => {
 
     const compactionLine = container.querySelector('line[stroke="var(--color-label-tertiary)"]')
     const rehydrationLine = container.querySelector(
-      'line[stroke="var(--color-context-critical)"]',
+      'line[stroke="var(--color-context-rewrite)"]',
     )
     expect(compactionLine).toBeNull()
     expect(rehydrationLine?.getAttribute("stroke-dasharray")).toBeFalsy()
@@ -204,11 +240,35 @@ describe("ContextTokensChart", () => {
       <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
     )
 
-    const bar = container.querySelector('line[stroke="var(--color-context-critical)"]')
+    const bar = container.querySelector('line[stroke="var(--color-context-rewrite)"]')
     expect(bar).not.toBeNull()
-    expect(bar?.getAttribute("stroke-opacity")).toBe("0.6")
+    expect(bar?.getAttribute("stroke-opacity")).toBe("0.4")
     expect(bar?.getAttribute("stroke-width")).toBe("2")
     expect(screen.queryByText(/miss|rewrite/)).not.toBeInTheDocument()
+  })
+
+  it("draws every text label after the plot layers, so none sits under an area", () => {
+    const buckets = [
+      bucket({ contextTokens: 113_000, tokensIn: 4_000 }),
+      bucket({ contextTokens: 150_000, rewriteTokens: 90_000, tokensIn: 9_000 }),
+      bucket({ contextTokens: 160_000, tokensIn: 4_000 }),
+    ]
+    const { container } = render(
+      <ContextTokensChart buckets={buckets} contextWindow={200_000} activeSecs={600} />,
+    )
+
+    // SVG paints in document order, so a label is only legible over the areas
+    // when its element comes after them. Compare positions in one flat list.
+    const nodes = Array.from(container.querySelectorAll("*"))
+    const areas = nodes.filter((node) => node.classList.contains("recharts-area"))
+    expect(areas.length).toBeGreaterThan(0)
+    const lastArea = nodes.indexOf(areas[areas.length - 1]!)
+
+    const labels = Array.from(container.querySelectorAll("text"))
+    expect(labels.length).toBeGreaterThan(0)
+    for (const label of labels) {
+      expect(nodes.indexOf(label)).toBeGreaterThan(lastArea)
+    }
   })
 
   it("draws consecutive material rewrites without cache-event flags", () => {
@@ -223,7 +283,7 @@ describe("ContextTokensChart", () => {
     )
 
     expect(
-      container.querySelectorAll('line[stroke="var(--color-context-critical)"]'),
+      container.querySelectorAll('line[stroke="var(--color-context-rewrite)"]'),
     ).toHaveLength(2)
     for (const line of container.querySelectorAll(
       'line[stroke="var(--color-context-critical)"]',
@@ -233,12 +293,45 @@ describe("ContextTokensChart", () => {
     expect(screen.queryByText("rewrite")).not.toBeInTheDocument()
   })
 
+  it("shares one label between cache events that sit close on a long session", () => {
+    // Two rehydrations two slices apart, in a 30-slice session: the bars would
+    // overlap their labels, so only the first bar carries one.
+    const marked = (index: number) => index === 10 || index === 12
+    const buckets = Array.from({ length: 30 }, (_, index) =>
+      bucket({
+        contextTokens: 100_000,
+        rewriteTokens: marked(index) ? 90_000 : 0,
+        isCacheRehydration: marked(index),
+        ...(marked(index)
+          ? {
+              cacheRehydration: {
+                contextTokens: 100_000,
+                stillCachedTokens: 10_000,
+                rewrittenTokens: 90_000,
+                growthTokens: 0,
+              },
+            }
+          : {}),
+      }),
+    )
+    const { container } = render(
+      <ContextTokensChart buckets={buckets} contextWindow={258_400} />,
+    )
+
+    expect(
+      container.querySelectorAll('line[stroke="var(--color-context-rewrite)"]'),
+    ).toHaveLength(2)
+    expect(screen.getAllByText("rehydration")).toHaveLength(1)
+  })
+
   it("draws sub-agent tokens as a third series on the token axis", () => {
     const buckets = [bucket({ tokensIn: 100, tokensOut: 20 }), bucket({ subagentTokens: 500 })]
     const { container } = render(
       <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
     )
 
+    // The series carries its color as a solid fill, not a gradient.
+    expect(container.querySelector('linearGradient[id$="-subagentTokens"]')).toBeNull()
     expect(container.querySelector('path[fill="var(--color-token-subagent)"]')).not.toBeNull()
   })
 })

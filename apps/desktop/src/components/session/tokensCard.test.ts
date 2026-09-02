@@ -42,34 +42,41 @@ const base = {
 }
 
 describe("tokensCardModel", () => {
-  it("states the tokens in the hint and leaves the cost to the Cost card", () => {
+  it("states the tokens as stat cells and leaves the cost to the Cost card", () => {
     const model = tokensCardModel({ ...base, hasCostSubagents: false, costScope: "topLevel" })
-    expect(model.hint).toBe("1.2M in · 34.0k out")
+    expect(model.stats).toEqual([
+      { label: "In", value: "1.2M", tone: "in" },
+      { label: "Out", value: "34.0k", tone: "out" },
+    ])
     expect(model.costTotal).toBe(41.45)
   })
 
-  it("adds compaction and rehydration counts to the hint", () => {
+  it("adds compaction and rehydration counts as their own cells", () => {
     expect(
-      tokensCardModel({ ...base, compactionCount: 3, cacheRehydrationCount: 1 }).hint,
-    ).toBe("1.2M in · 34.0k out · 3 compactions · 1 rehydration")
-    expect(tokensCardModel({ ...base, compactionCount: 1 }).hint).toBe(
-      "1.2M in · 34.0k out · 1 compaction",
-    )
-    expect(tokensCardModel({ ...base, cacheRehydrationCount: 2 }).hint).toBe(
-      "1.2M in · 34.0k out · 2 rehydrations",
-    )
+      tokensCardModel({ ...base, compactionCount: 3, cacheRehydrationCount: 1 }).stats,
+    ).toEqual([
+      { label: "In", value: "1.2M", tone: "in" },
+      { label: "Out", value: "34.0k", tone: "out" },
+      { label: "Compactions", value: "3" },
+      { label: "Rehydrations", value: "1", tone: "waste" },
+    ])
   })
 
-  it("adds the provider-cache-miss count to the hint, pluralized", () => {
-    expect(tokensCardModel({ ...base, cacheRoutingMissCount: 1 }).hint).toBe(
-      "1.2M in · 34.0k out · 1 provider cache miss",
-    )
-    expect(tokensCardModel({ ...base, cacheRoutingMissCount: 2 }).hint).toBe(
-      "1.2M in · 34.0k out · 2 provider cache misses",
-    )
-    expect(
-      tokensCardModel({ ...base, cacheRehydrationCount: 1, cacheRoutingMissCount: 2 }).hint,
-    ).toBe("1.2M in · 34.0k out · 1 rehydration · 2 provider cache misses")
+  it("keeps a count label plural whatever the count is", () => {
+    expect(tokensCardModel({ ...base, cacheRoutingMissCount: 1 }).stats).toContainEqual({
+      label: "Provider cache misses",
+      value: "1",
+      tone: "waste",
+    })
+    expect(tokensCardModel({ ...base, compactionCount: 1 }).stats).toContainEqual({
+      label: "Compactions",
+      value: "1",
+    })
+  })
+
+  it("omits a count cell when nothing of that kind happened", () => {
+    const labels = tokensCardModel(base).stats.map((stat) => stat.label)
+    expect(labels).toEqual(["In", "Out"])
   })
 
   it("keeps a null cost total when nothing was priced", () => {
@@ -80,7 +87,10 @@ describe("tokensCardModel", () => {
       hasCostSubagents: false,
     })
     expect(model.costTotal).toBeNull()
-    expect(model.hint).toBe("1.2M in · 34.0k out")
+    expect(model.stats).toEqual([
+      { label: "In", value: "1.2M", tone: "in" },
+      { label: "Out", value: "34.0k", tone: "out" },
+    ])
   })
 
   it("falls back to the summary total when no cost result exists", () => {

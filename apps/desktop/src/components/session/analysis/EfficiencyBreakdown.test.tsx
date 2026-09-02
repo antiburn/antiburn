@@ -35,33 +35,40 @@ describe("EfficiencyBreakdown", () => {
     expect(screen.getAllByText("ok")).toHaveLength(4)
   })
 
-  it("shows the cost bands and aligns the three spend components below them", () => {
+  it("keeps the VU meter for the cost reading, which is not part of the composition", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
+
+    // The cost track splits into thirds — one zone per band — on the shared
+    // meter palette: orange, then yellow, then red. The reading sits in the
+    // middle third, so the fill has crossed into the yellow.
     const cost = screen.getByTestId("thermometer-costPerMTok")
     expect(cost.dataset.position).toBe("0.383")
-    expect(cost.children).toHaveLength(4)
-    expect(cost.children[0]?.getAttribute("class")).toContain("bg-system-green")
-    expect(cost.children[1]?.getAttribute("class")).toContain("bg-separator")
-    expect(cost.children[2]?.getAttribute("class")).toContain("bg-system-orange")
+    expect(cost.querySelector('[data-testid="segmented-meter-notch"]')).toBeTruthy()
+    expect(cost.querySelectorAll(".bg-brand-tint").length).toBeGreaterThan(0)
+    expect(cost.querySelectorAll(".bg-system-yellow-tint").length).toBeGreaterThan(0)
+    expect(cost.querySelectorAll('[class~="bg-system-red-unlit/12"]').length).toBeGreaterThan(0)
+  })
 
-    const realWork = screen.getByTestId("share-segment-realWorkShare")
-    expect(realWork.dataset).toMatchObject({
-      start: "0.000",
-      width: "0.340",
-    })
-    expect(realWork.children[0]?.getAttribute("class")).toContain("bg-system-blue")
-    const rewrite = screen.getByTestId("share-segment-rewriteShare")
-    expect(rewrite.dataset).toMatchObject({
-      start: "0.340",
-      width: "0.120",
-    })
-    expect(rewrite.children[1]?.getAttribute("class")).toContain("bg-system-indigo")
-    const carry = screen.getByTestId("share-segment-carryShare")
-    expect(carry.dataset).toMatchObject({
-      start: "0.460",
-      width: "0.540",
-    })
-    expect(carry.children[1]?.getAttribute("class")).toContain("bg-system-gold")
+  it("draws the three shares as one composition track whose runs fill the width", () => {
+    render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
+
+    const track = screen.getByTestId("efficiency-composition")
+    const runs = Array.from(track.querySelectorAll<HTMLElement>("span"))
+    expect(runs).toHaveLength(3)
+
+    // The runs are the shares, in row order, and they account for the whole.
+    const widths = runs.map((run) => Number(run.dataset.width))
+    expect(widths).toEqual([0.34, 0.12, 0.54])
+    expect(widths.reduce((sum, width) => sum + width, 0)).toBeCloseTo(1, 5)
+
+    // Each slice keeps its own color so it stays recognisable between
+    // sessions. The band word, not the run, carries the judgment.
+    expect(runs[0]!.className).toContain("bg-share-work")
+    expect(runs[1]!.className).toContain("bg-share-waste")
+    expect(runs[2]!.className).toContain("bg-share-carry")
+
+    // No share draws a meter of its own any more.
+    expect(screen.queryByTestId("share-segment-realWorkShare")).toBeNull()
   })
 
   it("colours a good reading green and names a bad one by direction", () => {
@@ -75,7 +82,7 @@ describe("EfficiencyBreakdown", () => {
     )
     const high = screen.getAllByText("high")
     expect(high).toHaveLength(2)
-    expect(high[0]?.getAttribute("class")).toContain("text-system-orange")
+    expect(high[0]?.getAttribute("class")).toContain("text-system-red-text")
     expect(screen.getByText("low")).toBeTruthy()
   })
 
@@ -105,30 +112,31 @@ describe("EfficiencyBreakdown", () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it("opens one metric explanation at a time", () => {
+  it("explains a row in a tooltip, and paints nothing at rest", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "codex")} />)
-    const cost = screen.getByRole("button", { name: "$/MTok details" })
-    const realWork = screen.getByRole("button", { name: "Real Work % details" })
-    const rewrite = screen.getByRole("button", { name: "Rewrite Waste % details" })
-    const carry = screen.getByRole("button", { name: "Carry % details" })
 
-    for (const row of [cost, realWork, rewrite, carry]) {
-      expect(row.classList).toContain("cursor-pointer!")
-      expect(row.getAttribute("aria-expanded")).toBe("false")
-    }
+    // At rest no guidance is in the document, so the block stays the height
+    // of its readings.
+    expect(screen.queryByText(/fresh input and output/)).toBeNull()
 
-    fireEvent.click(cost)
-    expect(cost.getAttribute("aria-expanded")).toBe("true")
-    expect(screen.getByText(/avg cost for each million tokens/)).toBeTruthy()
+    const realWorkRow = screen.getByTestId("share-row-realWorkShare")
+    fireEvent.focus(realWorkRow)
+    expect(screen.getAllByText(/fresh input and output/).length).toBeGreaterThan(0)
+    expect(
+      screen.getAllByText("For Codex, aim for above 33%. Below 17% is too low.").length,
+    ).toBeGreaterThan(0)
 
-    fireEvent.click(realWork)
-    expect(cost.getAttribute("aria-expanded")).toBe("false")
-    expect(realWork.getAttribute("aria-expanded")).toBe("true")
-    expect(screen.queryByText(/avg cost for each million tokens/)).toBeNull()
-    expect(screen.getByText(/fresh input and output/)).toBeTruthy()
-    expect(screen.getByText("For Codex, aim for above 33%. Below 17% is too low.")).toBeTruthy()
+    fireEvent.blur(realWorkRow)
+    expect(screen.queryByText(/fresh input and output/)).toBeNull()
+  })
 
-    fireEvent.click(realWork)
-    expect(realWork.getAttribute("aria-expanded")).toBe("false")
+  it("gives the cost reading its own tooltip", () => {
+    render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
+
+    const costRow = screen.getByTestId("cost-row")
+    fireEvent.focus(costRow)
+    expect(screen.getAllByText(/average cost for each million tokens/).length).toBeGreaterThan(
+      0,
+    )
   })
 })

@@ -57,7 +57,18 @@
   --color-system-orange: var(--color-system-orange-val);
   --color-system-orange-tint: var(--color-system-orange-tint-val);
   --color-system-yellow: var(--color-system-yellow-val);
+  /* Vivid yellow and red for fills — the warning and critical zones of a
+     meter. The legible yellow and red darken for light-mode text; a lit
+     LED keeps the saturated hue in both themes. */
+  --color-system-yellow-tint: var(--color-system-yellow-tint-val);
   --color-system-red: var(--color-system-red-val);
+  --color-system-red-tint: var(--color-system-red-tint-val);
+  /* The unlit step of each meter zone. An unlit LED keeps the hue of its
+     zone but sits back: a quarter less saturation than the lit tint, so a
+     dark row of them does not compete with the reading. */
+  --color-brand-unlit: var(--color-brand-unlit-val);
+  --color-system-yellow-unlit: var(--color-system-yellow-unlit-val);
+  --color-system-red-unlit: var(--color-system-red-unlit-val);
   /* Legible red for *text/glyphs* on the red tint — the system red reads as a
      fill but dips below AA as text on a /15 pill (≈4.04:1 light), so this
      variant darkens in light mode and brightens in dark (same split as
@@ -91,6 +102,10 @@
   --radius-control: 5px;
   --radius-popover: 10px;
   --radius-small: 4px;
+
+  /* The design contract's shadow.raised, for a segment or thumb that sits on
+     a recessed track. Consume as `shadow-raised`. */
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.04);
 
   /* A strong ease-out for a control that must feel like it settles rather than
      stops. Tailwind registers `--ease-*`, so this becomes `ease-out-quart`.
@@ -139,6 +154,7 @@
      themes. On a light surface it measures 2.9:1, so text and small glyphs
      take the darkened value, which clears 4.5:1. */
   --color-brand-tint-val: hsl(17.6 100% 58.6%);
+  --color-brand-unlit-val: hsl(17.7 75% 58.6%);
   --color-brand-val: hsl(18 92% 39%);
 
   /* Status — accessible variants, tuned for contrast on a light surface */
@@ -147,7 +163,11 @@
   /* standard orange, for fills/backgrounds */
   --color-system-orange-tint-val: hsl(35 100% 50%);
   --color-system-yellow-val: hsl(34 100% 31.3%);
+  --color-system-yellow-tint-val: hsl(45 100% 50%);
+  --color-system-yellow-unlit-val: hsl(45 75% 50%);
   --color-system-red-val: hsl(354 100% 42.1%);
+  --color-system-red-tint-val: hsl(357 91% 52%);
+  --color-system-red-unlit-val: hsl(357 68.2% 52%);
   --color-system-red-text-val: hsl(353.6 100% 37.2%);
   --color-system-blue-val: hsl(211.2 100% 50%);
   --color-system-indigo-val: hsl(241 61% 58.8%);
@@ -236,12 +256,17 @@
     --color-accent-hover-val: hsl(213.5 91% 42%);
     /* The mark measures 7.4:1 on a dark surface, so text keeps it too. */
     --color-brand-tint-val: hsl(17.6 100% 58.6%);
+    --color-brand-unlit-val: hsl(17.7 75% 58.6%);
     --color-brand-val: hsl(17.6 100% 58.6%);
     --color-system-green-val: hsl(135 70% 52.3%);
     --color-system-orange-val: hsl(36 100% 62.5%);
     --color-system-orange-tint-val: hsl(36.4 100% 52%);
     --color-system-yellow-val: hsl(48 100% 57.4%);
+    --color-system-yellow-tint-val: hsl(48 100% 57.4%);
+    --color-system-yellow-unlit-val: hsl(48 75% 57.4%);
     --color-system-red-val: hsl(3 100% 69%);
+    --color-system-red-tint-val: hsl(357 100% 65%);
+    --color-system-red-unlit-val: hsl(357 75% 65%);
     --color-system-red-text-val: hsl(5 100% 75%);
     --color-system-blue-val: hsl(210 100% 51.9%);
     --color-system-indigo-val: hsl(241 73% 63%);
@@ -290,12 +315,17 @@
   --color-accent-fill-val: hsl(210 100% 44.5%);
   --color-accent-hover-val: hsl(210.4 100% 39%);
   --color-brand-tint-val: hsl(17.6 100% 58.6%);
+  --color-brand-unlit-val: hsl(17.7 75% 58.6%);
   --color-brand-val: hsl(18 92% 39%);
   --color-system-green-val: hsl(135 59% 34%);
   --color-system-orange-val: hsl(27 100% 35.1%);
   --color-system-orange-tint-val: hsl(35 100% 50%);
   --color-system-yellow-val: hsl(34 100% 31.3%);
+  --color-system-yellow-tint-val: hsl(45 100% 50%);
+  --color-system-yellow-unlit-val: hsl(45 75% 50%);
   --color-system-red-val: hsl(354 100% 42.1%);
+  --color-system-red-tint-val: hsl(357 91% 52%);
+  --color-system-red-unlit-val: hsl(357 68.2% 52%);
   --color-system-red-text-val: hsl(353.6 100% 37.2%);
   --color-system-blue-val: hsl(211.2 100% 50%);
   --color-system-indigo-val: hsl(241 61% 58.8%);
@@ -344,12 +374,17 @@
   --color-accent-fill-val: hsl(213.3 92% 48%);
   --color-accent-hover-val: hsl(213.5 91% 42%);
   --color-brand-tint-val: hsl(17.6 100% 58.6%);
+  --color-brand-unlit-val: hsl(17.7 75% 58.6%);
   --color-brand-val: hsl(17.6 100% 58.6%);
   --color-system-green-val: hsl(135 70% 52.3%);
   --color-system-orange-val: hsl(36 100% 62.5%);
   --color-system-orange-tint-val: hsl(36.4 100% 52%);
   --color-system-yellow-val: hsl(48 100% 57.4%);
+  --color-system-yellow-tint-val: hsl(48 100% 57.4%);
+  --color-system-yellow-unlit-val: hsl(48 75% 57.4%);
   --color-system-red-val: hsl(3 100% 69%);
+  --color-system-red-tint-val: hsl(357 100% 65%);
+  --color-system-red-unlit-val: hsl(357 75% 65%);
   --color-system-red-text-val: hsl(5 100% 75%);
   --color-system-blue-val: hsl(210 100% 51.9%);
   --color-system-indigo-val: hsl(241 73% 63%);

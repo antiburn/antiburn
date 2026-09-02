@@ -147,11 +147,11 @@ function view(over: Partial<SessionDetailPresentationProps> = {}) {
 }
 
 describe("SessionDetailPresentation — chrome", () => {
-  it("renders the useful card hierarchy for a settled session", () => {
+  it("renders the settled view: title, overview stats, and the tab strip", () => {
     view({ cost: cost() })
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
-    expect(screen.getByText("Context")).toBeTruthy()
-    expect(screen.getByText("Cost")).toBeTruthy()
+    expect(screen.getByText("In:")).toBeTruthy()
+    expect(screen.getByRole("tab", { name: "Usage" })).toBeTruthy()
   })
 
   it("renders every hygiene check with a distinct verdict", () => {
@@ -193,16 +193,20 @@ describe("SessionDetailPresentation — chrome", () => {
       },
     })
 
+    fireEvent.click(screen.getByRole("tab", { name: "Usage" }))
+
+    // Every check shows with its own verdict mark. No rollup count restates
+    // the list. The tab's shared helper footer explains the check under the
+    // pointer or focus.
     const hygiene = screen.getByLabelText("Session hygiene checks")
-    expect(hygiene.children).toHaveLength(2)
-    const summary = screen.getByRole("button", {
-      name: "4/5 passing, 1 not assessed",
-    })
+    expect(hygiene.children).toHaveLength(6)
+    expect(screen.queryByText("4/5 passing, 1 not assessed")).toBeNull()
+    expect(screen.queryByText(/Past about 200k tokens/)).toBeNull()
+    fireEvent.focus(screen.getByRole("button", { name: "Session overdepth details" }))
+    expect(screen.getByText(/Past about 200k tokens/)).toBeTruthy()
     expect(
       screen.getByRole("button", { name: "Overpowered subagents details" }),
     ).toHaveTextContent("failing")
-
-    fireEvent.click(summary)
 
     expect(screen.getByRole("button", { name: "Session overdepth details" })).toHaveTextContent(
       "not assessed",
@@ -212,7 +216,7 @@ describe("SessionDetailPresentation — chrome", () => {
     ).toHaveTextContent("passing")
   })
 
-  it("shows the hygiene evidence state in the card header", () => {
+  it("keeps the Usage tab free of heading and evidence-state chrome", () => {
     view({
       hygiene: {
         ...INITIAL_SESSION_HYGIENE,
@@ -220,25 +224,29 @@ describe("SessionDetailPresentation — chrome", () => {
       },
     })
 
-    expect(screen.getByText("Burn Checks")).toBeTruthy()
-    expect(screen.getByText("Refreshing")).toBeTruthy()
+    fireEvent.click(screen.getByRole("tab", { name: "Usage" }))
+    expect(screen.queryByText("Burn Checks")).toBeNull()
+    expect(screen.queryByText("Refreshing")).toBeNull()
+    expect(screen.getByLabelText("Session hygiene checks")).toBeTruthy()
   })
 
-  it("adds the routing-miss count from the session metrics to the Context hint", () => {
+  it("adds the provider-cache-miss count from the session metrics to the Context stats", () => {
     view({
       cost: cost(),
       summary: summary({ sessions: [metrics({ cacheRoutingMissCount: 2 })] }),
     })
-    expect(screen.getByText(/2 provider cache misses/)).toBeTruthy()
+    const cell = screen.getByText("Provider cache misses:").parentElement
+    expect(cell).toHaveTextContent("2")
   })
 
-  it("omits the Cost card when nothing priced the session", () => {
+  it("explains an unpriced session on the Usage tab instead of showing a Cost section", () => {
     view({ cost: null })
-    expect(screen.getByText("Context")).toBeTruthy()
-    expect(screen.queryByText("Cost")).toBeNull()
+    fireEvent.click(screen.getByRole("tab", { name: "Usage" }))
+    expect(screen.getByText("No cost has been recorded for this session.")).toBeTruthy()
+    expect(screen.queryByText("Input")).toBeNull()
   })
 
-  it("shows the Efficiency card above the Cost card with a definition", () => {
+  it("shows the efficiency readings on the Overview tab without heading chrome", () => {
     view({
       cost: cost(),
       efficiency: {
@@ -252,23 +260,20 @@ describe("SessionDetailPresentation — chrome", () => {
         unpricedTurns: 3,
       },
     })
-    expect(screen.getByText("Efficiency")).toBeTruthy()
     expect(screen.getByText("$/MTok")).toBeTruthy()
-    expect(
-      screen.getByText("Cost for real work: context growth and output tokens."),
-    ).toBeTruthy()
-    expect(
-      screen.getByText("Efficiency").compareDocumentPosition(screen.getByText("Cost")) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
-  })
-
-  it("omits the Efficiency card when the session is unpriced", () => {
-    view({ cost: null, efficiency: null })
+    expect(screen.getByText("Real Work %")).toBeTruthy()
     expect(screen.queryByText("Efficiency")).toBeNull()
+    expect(
+      screen.queryByText("Cost for real work: context growth and output tokens."),
+    ).toBeNull()
   })
 
-  it("shows the session title on no more than three lines", () => {
+  it("omits the efficiency readings when the session is unpriced", () => {
+    view({ cost: null, efficiency: null })
+    expect(screen.queryByText("$/MTok")).toBeNull()
+  })
+
+  it("shows the session title on no more than two lines", () => {
     view({
       session: {
         agent: "claude-code",
@@ -281,11 +286,11 @@ describe("SessionDetailPresentation — chrome", () => {
       "A session title that can continue across more than one line",
     )
     expect(title.className).toContain("truncated-text-lines")
-    expect(title.className).toContain("break-all")
-    expect(title.style.getPropertyValue("--truncated-text-lines")).toBe("3")
+    expect(title.className).toContain("break-words")
+    expect(title.style.getPropertyValue("--truncated-text-lines")).toBe("2")
   })
 
-  it("arranges list metadata around the session title", () => {
+  it("arranges the session facts in the hero stat strip", () => {
     const timestamp = new Date(Date.now() - 11 * 60_000).toISOString()
     view({
       session: {
@@ -300,18 +305,16 @@ describe("SessionDetailPresentation — chrome", () => {
       cost: cost(),
     })
 
-    const summaryRow = screen.getByLabelText("Session summary")
-    expect(summaryRow).toHaveTextContent("antiburn")
-    expect(summaryRow).toHaveTextContent("$2.40")
-    expect(summaryRow).toHaveTextContent("11m ago")
+    const hero = screen.getByLabelText("Session summary")
+    expect(hero).toHaveTextContent("antiburn")
+    expect(hero).toHaveTextContent("Estimated cost")
+    expect(hero).toHaveTextContent("$2.40")
+    expect(hero).toHaveTextContent("30m")
+    expect(hero).toHaveTextContent("5.6-sol high")
+    expect(hero).toHaveTextContent("11m ago")
 
-    const detailRow = screen.getByLabelText("Session timing and models")
-    expect(detailRow).toHaveTextContent("30m active")
-    expect(detailRow).toHaveTextContent("last 11m ago")
-    expect(detailRow).toHaveTextContent("5.6-sol/high")
-    const hygiene = screen.getByLabelText("Session hygiene checks")
-    expect(hygiene.children).toHaveLength(1)
-    fireEvent.click(screen.getByRole("button", { name: "6/6 passing" }))
+    fireEvent.click(screen.getByRole("tab", { name: "Usage" }))
+    expect(screen.queryByText("6/6 passing")).toBeNull()
     expect(screen.getByRole("button", { name: "Session overdepth details" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Model overthinking details" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Overpowered subagents details" })).toBeTruthy()
@@ -432,7 +435,7 @@ describe("SessionDetailPresentation — states", () => {
       session: { agent: "pi", sessionId: "pi-1", wslDistro: null },
       supportsAnalysis: true,
     })
-    expect(screen.getByText("Context")).toBeTruthy()
+    expect(screen.getByText("In:")).toBeTruthy()
     expect(screen.queryByText(/Session analysis for Pi sessions/)).toBeNull()
   })
 
@@ -457,13 +460,17 @@ describe("SessionDetailPresentation — states", () => {
 })
 
 describe("SessionDetailPresentation — session facts", () => {
-  it("shows the local cost badge and its breakdown", () => {
+  it("shows the cost in the hero and its breakdown on the Usage tab", () => {
     view({
       cost: cost(),
     })
-    expect(screen.getByLabelText("Estimated cost $2.40")).toBeTruthy()
+    const hero = screen.getByLabelText("Session summary")
+    expect(hero).toHaveTextContent("Estimated cost")
+    expect(hero).toHaveTextContent("$2.40")
+
+    fireEvent.click(screen.getByRole("tab", { name: "Usage" }))
     expect(screen.getByText("Input")).toBeTruthy()
-    // The pill and the breakdown headline are the same figure, by design.
+    // The hero stat and the breakdown headline are the same figure, by design.
     expect(screen.getAllByText("$2.40").length).toBeGreaterThan(1)
   })
 
@@ -476,7 +483,7 @@ describe("SessionDetailPresentation — session facts", () => {
     ).toBeTruthy()
   })
 
-  it("shows no orchestrator banner, and opens a sub-agent from the Cost card instead", () => {
+  it("shows no orchestrator banner, and opens a sub-agent from the Usage tab instead", () => {
     const onOpenSubagent = vi.fn()
     const members = [
       {
@@ -518,6 +525,7 @@ describe("SessionDetailPresentation — session facts", () => {
 
     expect(screen.queryByText(/Orchestrated \d+ agents/)).toBeNull()
 
+    fireEvent.click(screen.getByRole("tab", { name: "Usage" }))
     fireEvent.click(screen.getByText("2 sub-agents"))
     fireEvent.click(screen.getByText("Write tests"))
     expect(onOpenSubagent).toHaveBeenCalledWith("b", "Write tests")
@@ -594,12 +602,12 @@ describe("SessionDetailPresentation — session facts", () => {
     expect(onOpenRelatedSession).toHaveBeenCalledWith(expect.anything(), "Session abcdef1")
   })
 
-  it("still renders the Context card, with just the token layer, when context occupancy is unavailable", () => {
+  it("still renders the token stats and chart when context occupancy is unavailable", () => {
     expect(() => view({ summary: summary({ contextAvailable: false }) })).not.toThrow()
-    expect(screen.getByText("Context")).toBeTruthy()
+    expect(screen.getByText("In:")).toBeTruthy()
   })
 
-  it("adds the Skills, MCPs and tools card when the session has initial context", () => {
+  it("shows Skills, MCPs and tools on the Tools tab when the session has initial context", () => {
     const withContext = summary({
       sessions: [
         metrics({
@@ -617,11 +625,16 @@ describe("SessionDetailPresentation — session facts", () => {
       ],
     })
     const { unmount } = view({ summary: withContext })
-    expect(screen.getByText("Skills, MCPs and tools")).toBeTruthy()
+    fireEvent.click(screen.getByRole("tab", { name: "Tools" }))
+    expect(screen.getByText("research")).toBeTruthy()
     unmount()
 
     view({ summary: summary() })
-    expect(screen.queryByText("Skills, MCPs and tools")).toBeNull()
+    fireEvent.click(screen.getByRole("tab", { name: "Tools" }))
+    expect(screen.queryByText("research")).toBeNull()
+    expect(
+      screen.getByText("No startup context has been recorded for this session."),
+    ).toBeTruthy()
   })
 })
 
@@ -648,10 +661,19 @@ describe("SessionDetailPresentation — host actions", () => {
     expect(onRevealSource).toHaveBeenCalledOnce()
   })
 
-  it("renders the agent icon from the app renderer", () => {
+  it("renders the agent icon from the app renderer in the sub-agent badge", () => {
     const renderAgentIcon = vi.fn(() => <span data-testid="agent-icon" />)
-    view({ renderAgentIcon })
+    view({
+      renderAgentIcon,
+      session: {
+        agent: "claude-code",
+        sessionId: "child-1",
+        wslDistro: null,
+        subagent: { parentTitle: "Ship the release" },
+      },
+    })
+    fireEvent.click(screen.getByText("Autonomous sub-agent"))
     expect(screen.getByTestId("agent-icon")).toBeTruthy()
-    expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 20)
+    expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 14)
   })
 })
