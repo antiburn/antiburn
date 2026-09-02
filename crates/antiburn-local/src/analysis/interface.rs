@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::analysis::framing::PartialReason;
 use crate::analysis::initial_context::InitialContextBreakdown;
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall};
+use crate::analysis::resume::{AdapterResume, StreamSnapshot};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, SourceClaim};
 
 /// Where a session's raw bytes come from. Adapters choose how to read it.
@@ -350,6 +351,26 @@ pub enum SourceChangedReason {
     ResumeTailMismatch,
 }
 
+/// The result of a resumed streaming pass
+/// ([`VendorAdapter::visit_claimed_resumed`]).
+pub struct ResumedVisit {
+    pub outcome: VisitOutcome,
+    /// `None` when the adapter's end-of-stream state is not a safe resume
+    /// point (see the "unsettled" rule on
+    /// [`VendorAdapter::visit_claimed_resumed`]), or when `outcome` is
+    /// [`VisitOutcome::SourceChanged`].
+    ///
+    /// `Some` carries only the adapter's own half of a resume: the new
+    /// [`crate::analysis::source_validity::ResumePoint`] and the adapter's
+    /// own opaque state. The adapter streams new records into `sink`
+    /// through the same `RecordSink` interface every adapter uses, so it
+    /// never sees the sink's own accumulator types behind
+    /// `&mut dyn RecordSink` and cannot build a full [`StreamSnapshot`] on
+    /// its own. The caller combines this with its own sink's state via
+    /// [`crate::analysis::evidence_sink::CompositeSink::snapshot`].
+    pub resume: Option<AdapterResume>,
+}
+
 /// Implemented once per vendor format. Stateless and `Sync` so adapters can be
 /// stored as `&'static dyn VendorAdapter` in the registry.
 pub trait VendorAdapter: Sync {
@@ -414,5 +435,37 @@ pub trait VendorAdapter: Sync {
         _sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
         anyhow::bail!("claimed database streaming is unsupported for this adapter")
+    }
+
+    /// Streams a file from a verified [`StreamSnapshot`] instead of from the
+    /// start, then reports a new snapshot for the next resume.
+    ///
+    /// `resume.resume` (a [`crate::analysis::source_validity::ResumePoint`])
+    /// names the byte offset to read from; the adapter restores its own
+    /// whole-stream state from `resume.adapter` before it starts. Passing a
+    /// snapshot with `resume.resume.offset == 0` and a fresh adapter's
+    /// default state runs a full first pass that still produces a snapshot
+    /// for the next resume — the same [`PinnedSource::open_resumed`] path
+    /// handles an empty tail (see its offset-zero test) — so this one method
+    /// covers both the first snapshot-producing pass and every later
+    /// resumed pass, and `visit_claimed` needs no change to support resume.
+    ///
+    /// "Unsettled" rule: an adapter returns `resume: None` inside
+    /// [`ResumedVisit`] when its end-of-stream state is not a safe resume
+    /// point (a case a specific adapter's own doc comment must name — for
+    /// example, a fork whose ownership is still undetermined at EOF). The
+    /// default implementation here returns `Err`, so every adapter that
+    /// does not override this method is simply unsupported for resume.
+    ///
+    /// [`PinnedSource::open_resumed`]: crate::analysis::source_validity::PinnedSource::open_resumed
+    fn visit_claimed_resumed(
+        &self,
+        _input: &SessionInput,
+        _claim: &SourceClaim,
+        _resume: &StreamSnapshot,
+        _cancel: &dyn Fn() -> bool,
+        _sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<ResumedVisit> {
+        anyhow::bail!("resume is unsupported for this adapter")
     }
 }
