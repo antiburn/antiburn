@@ -10,6 +10,7 @@
 //! - [`agents`] — translating between the engine's two names for an agent.
 //! - [`analysis`] — turning a located transcript into what the views render.
 //! - [`commands`] — the IPC surface exposed to the webview.
+//! - [`diagnostics_export`] — the privacy-scoped support document.
 //! - [`disk_monitor`] — free-space polling, the tray readout, the low edge.
 //! - [`dto`] — the shapes that cross that boundary.
 //! - [`export`] — the derived-only session export document.
@@ -52,6 +53,7 @@ mod analysis;
 mod analytics;
 mod commands;
 mod consent;
+mod diagnostics_export;
 mod disk_monitor;
 mod dto;
 mod export;

@@ -13,6 +13,7 @@ macro_rules! with_app_commands {
             commands::delete_session_data => "delete_session_data",
             commands::engine_catalog_version => "engine_catalog_version",
             commands::end_popover_hold => "end_popover_hold",
+            commands::export_diagnostics => "export_diagnostics",
             commands::export_session => "export_session",
             commands::finish_onboarding => "finish_onboarding",
             commands::get_consent_diagnostics => "get_consent_diagnostics",
