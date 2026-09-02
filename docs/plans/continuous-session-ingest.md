@@ -110,10 +110,27 @@ Goal: fix the pop-in without the new architecture.
   (the discovery crate's tracked-head-read instrumentation exists for this).
 
 Known limit, accepted: a title change in a vendor index while the transcript
-size is unchanged is not picked up until the transcript grows. Phase 2
+size is unchanged is not picked up until the transcript grows. Phase 3
 replaces the size gate with a verified offset.
 
-### Phase 2: verified-resume ingest
+### Phase 2: evidence from rows
+
+Goal: layer 2 never opens a transcript.
+
+Phase 2 and phase 3 swap order from the original plan. Verified-resume ingest
+cannot skip the transcript prefix while `SessionEvidence` is still folded from
+the full record stream, so evidence must come from rows first.
+
+- Parse-time facts the evidence accumulator needs (unrecognized record types,
+  coverage reasons, diagnostic fields) are written by layer 1 as a small
+  per-session coverage record alongside the rows.
+- An evidence replay builds `SessionEvidence` from rows plus that record, with
+  a parity test against the live fold, mirroring the metrics replay.
+- The worker's stream fold stops accumulating evidence. Detectors run from
+  rows on a debounced "rows changed" trigger, immediate for an open
+  drilldown. The Insights report recomputes when the queue drains, as today.
+
+### Phase 3: verified-resume ingest
 
 Goal: an appended 4 KB costs 4 KB.
 
@@ -131,21 +148,11 @@ Goal: an appended 4 KB costs 4 KB.
   full pass.
 - Turn the `AppendOnlyGuarantee` from a static assumption into the runtime
   verification above.
+- Adapter stream state (for example `ClaudeStreamState`) must be persisted per
+  source alongside the offset, or be reconstructable from rows, or the resume
+  falls back to a full pass.
 - Test: parity. Incremental ingest over a transcript grown in steps produces
   the same rows as one full pass over the final file, for each vendor.
-
-### Phase 3: evidence from rows
-
-Goal: layer 2 never opens a transcript.
-
-- Parse-time facts the evidence accumulator needs (unrecognized record types,
-  coverage reasons, diagnostic fields) are written by layer 1 as a small
-  per-session coverage record alongside the rows.
-- An evidence replay builds `SessionEvidence` from rows plus that record, with
-  a parity test against the live fold, mirroring the metrics replay.
-- The worker's stream fold stops accumulating evidence. Detectors run from
-  rows on a debounced "rows changed" trigger, immediate for an open
-  drilldown. The Insights report recomputes when the queue drains, as today.
 
 ### Phase 4: watcher tiers, events, and the HUD fold-in
 
@@ -169,6 +176,6 @@ Goal: layer 1 is continuous and cheap, and every consumer reads one signal.
 ## Sequencing notes
 
 - Phase 1 stands alone and is reverted by two small edits if it misbehaves.
-- Phase 2 is the enabling work; phases 3 and 4 both depend on it and are
-  independent of each other.
+- Phase 2 depends only on phase 1.
+- Phase 3 is the enabling work for phase 4.
 - Default cadences are set in phase 4 and reviewed after a week of use.
