@@ -179,6 +179,15 @@ const RECENT_SESSIONS_SQL: &str = "SELECT environment_key, agent, session_id, so
       ORDER BY COALESCE(updated_at_epoch, 0) DESC, session_id DESC
       LIMIT ?2";
 
+/// [`Store::sessions_active_since`]'s query, pulled out for the same reason
+/// as [`RECENT_SESSIONS_SQL`]: a schema test can pin it to the coalesced
+/// recency index.
+const SESSIONS_ACTIVE_SINCE_SQL: &str = "SELECT environment_key, agent, session_id,
+            COALESCE(updated_at_epoch, 0)
+       FROM session
+      WHERE COALESCE(updated_at_epoch, 0) >= ?1
+      ORDER BY COALESCE(updated_at_epoch, 0) ASC";
+
 impl Store {
     /// Open (creating if absent) and migrate the database under `data_dir`.
     pub fn open(data_dir: &Path) -> Result<Store> {
@@ -702,6 +711,25 @@ impl Store {
         );
         let rows =
             statement.query_map(rusqlite::params_from_iter(values.iter()), session_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Sessions whose activity falls at or after `since_epoch`, earliest
+    /// activity first — the order [`crate::scan::idle`]'s expiry task wants,
+    /// so its earliest deadline is always the first row.
+    pub fn sessions_active_since(&self, since_epoch: i64) -> Result<Vec<(SessionKey, i64)>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(SESSIONS_ACTIVE_SINCE_SQL)?;
+        let rows = statement.query_map(params![since_epoch], |row| {
+            Ok((
+                SessionKey::new(
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ),
+                row.get::<_, i64>(3)?,
+            ))
+        })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 

@@ -95,6 +95,7 @@ use crate::repositories;
 use crate::storage_health::{self, checked};
 use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
+pub mod idle;
 pub mod watch;
 
 /// How often the scheduler wakes up.
@@ -348,6 +349,9 @@ async fn pass(
         store.upsert_sessions(&records, &agents::evidence_cohort()),
     )?;
     crate::insights_worker::wake(app);
+    // A write may have added a session the idle task was not yet watching,
+    // or moved one's deadline later; either way its sleep needs recomputing.
+    idle::wake(app);
 
     announce_changed_rows(&store, &changed, &previous_records, now, announce);
 

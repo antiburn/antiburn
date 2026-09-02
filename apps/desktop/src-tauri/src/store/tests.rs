@@ -10,6 +10,7 @@ use super::model::{
 };
 use super::*;
 
+mod activity_tests;
 mod coverage_tests;
 mod reconcile_tests;
 mod resume_tests;
