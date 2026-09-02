@@ -71,7 +71,7 @@ impl EfficiencyTotals {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct MessageKey {
     first: u64,
     second: u64,
@@ -94,14 +94,14 @@ fn hash_bytes(bytes: &[u8], seed: u64) -> u64 {
     })
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 enum ModelStatus {
     Missing,
     Priced(ModelPricing),
     Unpriced,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct Turn {
     creation: u64,
     ordinal: u64,
@@ -133,13 +133,13 @@ struct PricedAmounts {
     output: u64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub(crate) struct RewriteMark {
     pub(crate) key: (i64, u64),
     pub(crate) tokens: u64,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, Debug, Serialize, Deserialize)]
 struct FallbackOverflow {
     growth_tokens: u64,
     output_tokens: u64,
@@ -151,7 +151,7 @@ struct FallbackOverflow {
     turns: u64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct EfficiencyReducer {
     open: VecDeque<Turn>,
     evicted: VecDeque<MessageKey>,

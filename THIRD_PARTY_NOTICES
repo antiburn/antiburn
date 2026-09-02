@@ -278,6 +278,7 @@ cfb@0.7.3 | MIT | https://github.com/mdsteele/rust-cfb
 cfg-expr@0.15.8 | MIT OR Apache-2.0 | https://github.com/EmbarkStudios/cfg-expr
 cfg-expr@0.20.9 | MIT OR Apache-2.0 | https://github.com/EmbarkStudios/cfg-expr
 cfg-if@1.0.4 | MIT OR Apache-2.0 | https://github.com/rust-lang/cfg-if
+cobs@0.3.0 | MIT OR Apache-2.0 | https://github.com/jamesmunns/cobs.rs
 concurrent-queue@2.5.0 | Apache-2.0 OR MIT | https://github.com/smol-rs/concurrent-queue
 cookie@0.18.2 | MIT OR Apache-2.0 | https://github.com/SergioBenitez/cookie-rs
 core-foundation-sys@0.8.7 | MIT OR Apache-2.0 | https://github.com/servo/core-foundation-rs
@@ -509,6 +510,7 @@ plist@1.10.0 | MIT | https://github.com/ebarnard/rust-plist/
 png@0.17.16 | MIT OR Apache-2.0 | https://github.com/image-rs/image-png
 png@0.18.1 | MIT OR Apache-2.0 | https://github.com/image-rs/image-png
 polling@3.11.0 | Apache-2.0 OR MIT | https://github.com/smol-rs/polling
+postcard@1.1.3 | MIT OR Apache-2.0 | https://github.com/jamesmunns/postcard
 potential_utf@0.1.5 | Unicode-3.0 | https://github.com/unicode-org/icu4x
 powerfmt@0.2.0 | MIT OR Apache-2.0 | https://github.com/jhpratt/powerfmt
 precomputed-hash@0.1.1 | MIT | https://github.com/emilio/precomputed-hash
@@ -2262,6 +2264,31 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+========================================
+
+Used by:
+  cobs@0.3.0
+
+Copyright (c) 2015 The cobs.rs Developers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ========================================
 
@@ -6796,6 +6823,37 @@ Used by:
   png@0.18.1
 
 Copyright (c) 2015 nwin
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+========================================
+
+Used by:
+  postcard@1.1.3
+
+Copyright (c) 2019 Anthony James Munns
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated

@@ -408,6 +408,15 @@ impl TurnRowSink {
         }
     }
 
+    /// Continues `turn_index` from `index` instead of zero. A resumed sink
+    /// uses this with the `next_turn_index` a prior pass's snapshot
+    /// recorded, so its rows continue the same session's sequence instead
+    /// of restarting it.
+    pub fn with_start_index(mut self, index: u64) -> Self {
+        self.next_index = index;
+        self
+    }
+
     /// True once a write has failed. No further row reaches the store after
     /// this, but rows already accepted before the failure stay written.
     pub fn has_error(&self) -> bool {
@@ -1319,6 +1328,31 @@ mod tests {
 
         assert_eq!(writer.count(1), 10);
         assert_eq!(sink.next_index, 10);
+    }
+
+    #[test]
+    fn a_sink_restored_at_an_index_writes_the_continued_sequence() {
+        let store = MemoryTurnRowStore::new("claude", "s1");
+        let mut sink = TurnRowSink::new(Arc::clone(&store) as Arc<dyn TurnRowStore>, "s1", None)
+            .with_start_index(5);
+
+        for _ in 0..3 {
+            sink.observe(&metric_record(Role::Assistant));
+        }
+        sink.flush();
+
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        let indices: Vec<u64> = store
+            .with_connection(|conn| crate::analysis::evidence_query::query_turn_rows(conn, &key, 1))
+            .expect("query turn rows")
+            .into_iter()
+            .map(|row| row.turn_index)
+            .collect();
+        assert_eq!(indices, vec![5, 6, 7]);
     }
 
     #[test]

@@ -42,6 +42,7 @@ mod model;
 mod pricing;
 pub(crate) mod records;
 mod replay;
+mod resume;
 mod rows;
 mod source_validity;
 pub(crate) mod threads;
@@ -68,7 +69,9 @@ pub use evidence_query::{
     TurnFacts, query_model_breakdown, query_model_runs, query_turn_facts, query_turn_rows,
 };
 pub use evidence_replay::evidence_from_facts;
-pub use evidence_sink::{CompositeSink, RETAINED_EVIDENCE_BYTES_BOUND, SessionEvidenceAccumulator};
+pub use evidence_sink::{
+    CompositeSink, EvidenceResumeState, RETAINED_EVIDENCE_BYTES_BOUND, SessionEvidenceAccumulator,
+};
 pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
     SCAN_QUANTUM_BYTES,
@@ -87,6 +90,7 @@ pub use model::{
 };
 pub use pricing::{install_runtime_pricing, price_breakdown, pricing_generation};
 pub use replay::{MissingParentRows, metrics_by_source, metrics_from_rows};
+pub use resume::{AdapterResume, AdapterSnapshot, EvidenceSnapshot, StreamSnapshot};
 pub use rows::{
     MemoryTurnRowStore, SESSION_COVERAGE_SCHEMA_SQL, TURN_MIGRATIONS, TURN_ROW_BATCH_SIZE,
     TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL, TURN_SCHEMA_V3_SQL, TurnRow, TurnRowError, TurnRowSink,
@@ -164,6 +168,19 @@ pub const EVIDENCE_SCHEMA_REVISION: i64 = 12;
 /// A persisted record from an older revision cannot be trusted to replay
 /// correctly, so a reader must reparse instead of reusing it.
 pub const COVERAGE_SCHEMA_REVISION: i64 = 1;
+/// Versions [`resume::StreamSnapshot`]'s own shape. [`resume::StreamSnapshot::is_current`]
+/// rejects a persisted snapshot stamped with an older revision.
+///
+/// A bump to [`PARSER_REVISION`], [`ANALYZER_REVISION`], [`METRICS_SCHEMA_REVISION`],
+/// [`EVIDENCE_SCHEMA_REVISION`], or [`COVERAGE_SCHEMA_REVISION`] also
+/// invalidates every persisted snapshot: a snapshot's adapter and sink
+/// state was built under the old rules, and resuming it would keep
+/// producing rows, metrics, or evidence the new rules never agreed to.
+/// Phase 3b's persistence layer enforces this by checking every revision
+/// before it restores a snapshot; this constant and the rule are
+/// documented here so a future revision bump remembers to bump this one
+/// too, when the change touches resumable state.
+pub const RESUME_SNAPSHOT_REVISION: i64 = 1;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

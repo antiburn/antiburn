@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::mem::size_of;
 
+use serde::{Deserialize, Serialize};
+
 use crate::analysis::evidence::{
     CacheEvidence, ChurnCounts, CompactionEvidence, ContextEvidence, ContextSourceEvidence,
     CoverageReason, EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource,
@@ -41,6 +43,18 @@ pub const RETAINED_EVIDENCE_BYTES_BOUND: usize = 64 * 1_024;
 /// exactly one B-tree node. This estimates one entry's node overhead —
 /// pointers and per-node slack — on top of its own key or value bytes.
 const BTREE_ENTRY_OVERHEAD_BYTES: usize = 48;
+
+/// The two fields [`SessionEvidenceAccumulator::coverage_record`] leaves
+/// out because a closed pass's record already carries their final effect.
+/// A resumed, still-open accumulator needs them back:
+/// `last_ts_ms` to keep detecting out-of-order records across the resume
+/// boundary, `seen_thread_uuids` so a later record's parent link resolves
+/// against an identity an earlier, already-processed record declared.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EvidenceResumeState {
+    pub last_ts_ms: Option<i64>,
+    pub seen_thread_uuids: HashSet<String>,
+}
 
 pub struct SessionEvidenceAccumulator {
     identity: SessionEvidenceIdentity,
@@ -502,7 +516,26 @@ impl SessionEvidenceAccumulator {
     /// carry (`last_ts_ms`, `seen_thread_uuids`) start empty: [`Self::evidence`]
     /// never reads them directly, only the `ordering` and
     /// `thread_parent_unresolved` results already folded into the record.
+    ///
+    /// This is the row-replay shape: [`crate::analysis::evidence_from_facts`]
+    /// rebuilds [`SessionEvidence`] for a *closed* pass, where the record
+    /// already carries the final effect of those two fields. A resumed
+    /// accumulator that will keep observing more records instead needs
+    /// [`Self::from_coverage_record_with_resume`].
     pub fn from_coverage_record(record: SessionCoverageRecord) -> Self {
+        Self::from_coverage_record_with_resume(record, EvidenceResumeState::default())
+    }
+
+    /// Like [`Self::from_coverage_record`], but restores the two transient
+    /// fields from `resume` instead of starting them empty. Use this to
+    /// resume a still-open accumulator: an unresumed
+    /// `seen_thread_uuids` would make a later record's parent link look
+    /// unresolved even when an earlier, already-processed record declared
+    /// it.
+    pub fn from_coverage_record_with_resume(
+        record: SessionCoverageRecord,
+        resume: EvidenceResumeState,
+    ) -> Self {
         Self {
             identity: record.identity,
             capabilities: record.capabilities,
@@ -512,7 +545,7 @@ impl SessionEvidenceAccumulator {
             diagnostics: record.diagnostics,
             record_loss_reason: record.record_loss_reason,
             session_cap_exceeded: record.session_cap_exceeded,
-            last_ts_ms: None,
+            last_ts_ms: resume.last_ts_ms,
             tools: record.tools,
             invoked_skills: record.invoked_skills,
             tools_cap_exceeded: record.tools_cap_exceeded,
@@ -523,10 +556,20 @@ impl SessionEvidenceAccumulator {
             subagent_children: record.subagent_children,
             subagent_examples: record.subagent_examples,
             subagents_cap_exceeded: record.subagents_cap_exceeded,
-            seen_thread_uuids: HashSet::new(),
+            seen_thread_uuids: resume.seen_thread_uuids,
             thread_parent_unresolved: record.thread_parent_unresolved,
             summary_observed: record.summary_observed,
             child_loss_reason: record.child_loss_reason,
+        }
+    }
+
+    /// The two transient fields [`Self::coverage_record`] leaves out,
+    /// needed to resume a still-open accumulator. See
+    /// [`Self::from_coverage_record_with_resume`].
+    pub fn resume_state(&self) -> EvidenceResumeState {
+        EvidenceResumeState {
+            last_ts_ms: self.last_ts_ms,
+            seen_thread_uuids: self.seen_thread_uuids.clone(),
         }
     }
 

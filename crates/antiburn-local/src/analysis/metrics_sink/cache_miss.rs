@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use std::mem::size_of;
 
+use serde::{Deserialize, Serialize};
+
 use super::slots::CacheSlot;
 use super::tally::IdentityKey;
 
@@ -15,7 +17,7 @@ const CACHE_REHYDRATION_CONTEXT_RETENTION_RATIO: f64 = 0.8;
 const CACHE_REHYDRATION_REPLAY_RATIO: f64 = 0.5;
 const CACHE_REHYDRATION_RECOVERY_READ_RATIO: f64 = 0.5;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub(crate) struct CacheTurn {
     key: (i64, u64),
     context_tokens: u64,
@@ -36,7 +38,7 @@ pub(crate) struct CacheInput {
     pub(crate) model: Option<IdentityKey>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct DeferredCache {
     key: (i64, u64),
     gap: Option<u64>,
@@ -50,7 +52,7 @@ pub(crate) struct CachePatch {
     pub(crate) slot: CacheSlot,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub(crate) struct CacheReducer {
     previous_context: u64,
     previous_cache_read: u64,
