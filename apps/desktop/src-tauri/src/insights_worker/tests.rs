@@ -9,6 +9,8 @@ use antiburn_local::analysis::{
 use super::*;
 use crate::store::EvidenceStatus;
 
+mod resume_tests;
+
 fn store() -> Store {
     Store::open_in_memory(std::path::Path::new("/tmp/antiburn-worker-test")).unwrap()
 }
