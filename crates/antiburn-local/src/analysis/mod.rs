@@ -31,6 +31,7 @@ mod efficiency;
 mod engine;
 mod evidence;
 mod evidence_query;
+mod evidence_replay;
 mod evidence_sink;
 mod framing;
 mod initial_context;
@@ -58,14 +59,15 @@ pub use evidence::{
     EvidenceCoverage, EvidenceSource, EvidenceValue, FAST_SPEED_KEY, LoadedSource, ModelEvidence,
     ModelTokens, ModelTransition, OrderingObservation, ParseDiagnostics, QuotaConfidence,
     QuotaHitSeverity, QuotaIncident, QuotaLimitKind, RelationConfidence, RepeatedContext,
-    RepeatedContextAccounting, SessionEvidence, SessionEvidenceIdentity, SessionProvenance,
-    SessionQuotaEvidence, SessionTimeRange, SignalCoverage, SourceAcceptance, SourceCapabilities,
-    SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass, ToolEvidence, ToolUse,
-    TurnCounts,
+    RepeatedContextAccounting, SessionCoverageRecord, SessionEvidence, SessionEvidenceIdentity,
+    SessionProvenance, SessionQuotaEvidence, SessionTimeRange, SignalCoverage, SourceAcceptance,
+    SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
+    ToolEvidence, ToolUse, TurnCounts,
 };
 pub use evidence_query::{
     TurnFacts, query_model_breakdown, query_model_runs, query_turn_facts, query_turn_rows,
 };
+pub use evidence_replay::evidence_from_facts;
 pub use evidence_sink::{CompositeSink, RETAINED_EVIDENCE_BYTES_BOUND, SessionEvidenceAccumulator};
 pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
@@ -155,6 +157,12 @@ pub const METRICS_SCHEMA_REVISION: i64 = 4;
 // +1 more for `RepeatedContext::paid_tokens` (part F).
 // +1 more for `SourceCapabilities::linear_record_order`.
 pub const EVIDENCE_SCHEMA_REVISION: i64 = 12;
+/// Versions [`evidence::SessionCoverageRecord`]'s own shape, separately
+/// from [`EVIDENCE_SCHEMA_REVISION`]: the record is an internal input to
+/// evidence replay, not the published `SessionEvidence` shape itself.
+/// A persisted record from an older revision cannot be trusted to replay
+/// correctly, so a reader must reparse instead of reusing it.
+pub const COVERAGE_SCHEMA_REVISION: i64 = 1;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

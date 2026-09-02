@@ -855,6 +855,57 @@ pub struct EvidenceSource {
     pub capabilities: SourceCapabilities,
 }
 
+/// The bounded, per-session residual [`super::evidence_sink::
+/// SessionEvidenceAccumulator`] observed directly from records that never
+/// become [`super::rows::TurnRow`]s — an `Observation`, an `Unusable`
+/// record, or the end-of-stream [`super::interface::SessionSummary`].
+///
+/// [`super::evidence_replay::evidence_from_facts`] combines this with the
+/// row-derived [`super::evidence_query::TurnFacts`] to rebuild
+/// [`SessionEvidence`] without opening the transcript again. Every field
+/// here mirrors an accumulator field one for one; `coverage_record` on the
+/// accumulator builds this, and building [`SessionEvidence`] needs nothing
+/// else the accumulator held — the two transient fields the accumulator
+/// keeps only to compute `ordering` and `thread_parent_unresolved` live
+/// (`last_ts_ms`, `seen_thread_uuids`) are not carried, since only their
+/// already-folded results are.
+///
+/// Bounded the same way [`super::evidence_sink::SessionEvidenceAccumulator::
+/// retained_bytes`] bounds the accumulator: every collection here is one
+/// the accumulator already caps (`tools`, `skills`, `mcp_servers`,
+/// `subagent_children`, `subagent_examples`, and `diagnostics`'s own
+/// capped sets), so this record's serialized size is bounded the same way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCoverageRecord {
+    pub coverage_schema_revision: i64,
+    pub identity: SessionEvidenceIdentity,
+    pub capabilities: SourceCapabilities,
+    pub source_kind: SourceKind,
+    pub source_acceptance: SourceAcceptance,
+    pub ordering: OrderingObservation,
+    pub diagnostics: ParseDiagnostics,
+    pub record_loss_reason: Option<CoverageReason>,
+    pub session_cap_exceeded: bool,
+    pub tools: BTreeMap<String, ToolUse>,
+    pub invoked_skills: BTreeSet<String>,
+    pub tools_cap_exceeded: bool,
+    pub skills: BTreeMap<String, LoadedSource>,
+    pub mcp_servers: BTreeMap<String, LoadedSource>,
+    pub context_sources_cap_exceeded: bool,
+    pub subagent_spawn_count: u64,
+    pub subagent_children: Vec<SubagentChild>,
+    pub subagent_examples: Vec<SubagentExample>,
+    pub subagents_cap_exceeded: bool,
+    /// A `ThreadLink` observation's `parent_uuid` named an identity this
+    /// source never declared. Distinct from [`super::evidence_query::
+    /// TurnFacts::thread_identity_missing`]: that flags a counted turn with
+    /// no `uuid` at all; this flags a `uuid` that does not resolve.
+    pub thread_parent_unresolved: bool,
+    pub summary_observed: bool,
+    pub child_loss_reason: Option<CoverageReason>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionEvidence {
