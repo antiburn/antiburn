@@ -24,7 +24,7 @@ use crate::discovery::scanner::{AgentKind, TitleSource};
 use crate::discovery::{
     AgentExplorer, DesktopPlatform, DirectSessionSource, FORK_OBSERVATION_KEY, ForkObservation,
     ResolvedTitle, SessionLog, SessionSource, SessionTitleAndSurface, SurfacePaths,
-    TitleLookupKind, current_desktop_platform, env_path_when_real_home, home_dir,
+    TitleLookupKind, WatchRoot, current_desktop_platform, env_path_when_real_home, home_dir,
 };
 use async_trait::async_trait;
 use rusqlite::{Connection, OpenFlags, params, params_from_iter};
@@ -320,6 +320,16 @@ impl AgentExplorer for OpenCodeExplorer {
             ide_desktop: Vec::new(),
             mirror: Vec::new(),
         }
+    }
+
+    /// The same per-platform data roots, non-recursive: `opencode.db` and its
+    /// `-wal` file live directly in each root, with no subdirectory to watch.
+    fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
+        self.surface_paths(home)
+            .cli
+            .into_iter()
+            .map(WatchRoot::shallow)
+            .collect()
     }
 }
 

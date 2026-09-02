@@ -25,7 +25,10 @@ const SUBAGENT_LABEL_MAX_CHARS: usize = 80;
 
 /// Map a parent transcript path to its `subagents` directory:
 /// `<dir>/<stem>/subagents`. `None` if the path has no parent or stem.
-fn subagents_dir(parent_transcript: &Path) -> Option<PathBuf> {
+///
+/// `pub(super)` so the recency sweep in `claude.rs` can stat this directory
+/// directly, without listing or reading the sub-agent files inside it.
+pub(super) fn subagents_dir(parent_transcript: &Path) -> Option<PathBuf> {
     let dir = parent_transcript.parent()?;
     let stem = parent_transcript.file_stem()?.to_str()?;
     Some(dir.join(stem).join("subagents"))

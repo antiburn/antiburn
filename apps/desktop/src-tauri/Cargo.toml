@@ -130,6 +130,11 @@ tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 # Sixteen unpredictable bytes for the rotating installation identifier. Already
 # in the tree via the TLS stack; declared directly so the use is visible.
 getrandom = "0.4"
+# OS-native filesystem events (FSEvents / inotify / ReadDirectoryChangesW) for
+# the scan watcher (`src/scan/watch.rs`). Default features: the platform
+# backend each OS needs, with no extra channel crate (`crossbeam-channel`,
+# `flume`) — the watcher forwards events over a `std::sync::mpsc` channel.
+notify = "8"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Desktop-only: GitHub Releases update checks. Registered in release builds
@@ -172,6 +177,10 @@ windows-sys = { version = "0.61", features = ["Win32_Security_Credentials"] }
 antiburn-local = { path = "../../../crates/antiburn-local", features = ["test-instrumentation"] }
 # Synthetic agent stores for the scan-pipeline tests.
 tempfile = "3"
+# `tokio::time::pause`/`advance`, for the watcher's debounce tests
+# (`src/scan/watch.rs`). Test builds only: this feature never reaches the
+# release binary.
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 codegen-units = 1

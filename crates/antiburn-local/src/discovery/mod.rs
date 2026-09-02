@@ -414,6 +414,18 @@ pub trait AgentExplorer: Send + Sync {
         SurfacePaths::default()
     }
 
+    /// Filesystem roots a watcher should observe for this agent, for a given
+    /// `home`. Each root uses the same resolution as the agent's discovery
+    /// (including env overrides such as `CODEX_HOME` or `PI_AGENT_DIR`).
+    ///
+    /// A watcher, not discovery, calls this. It does not filter by
+    /// existence — the caller checks that before it asks the OS to watch a
+    /// path. Default returns empty so the trait stays additive; only
+    /// file-backed agents override it.
+    fn watch_roots(&self, _home: &Path) -> Vec<WatchRoot> {
+        Vec::new()
+    }
+
     /// Optional per-agent hook for recovering a session ID from the on-disk
     /// path when the scanner's content parse didn't surface one. Called from
     /// `scanner::apply_metadata_from_path` only if `metadata.session_id` is
@@ -616,6 +628,36 @@ pub struct SurfacePaths {
     pub cli: Vec<PathBuf>,
     pub ide_desktop: Vec<PathBuf>,
     pub mirror: Vec<PathBuf>,
+}
+
+/// One filesystem root a watcher observes for [`AgentExplorer::watch_roots`].
+///
+/// `recursive` says whether the watcher must observe every directory under
+/// `path`, or only `path` itself. A non-recursive root fits an agent whose
+/// session files sit directly in it, with no subdirectories the watcher
+/// needs (OpenCode's data root: `opencode.db` and its `-wal` file).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchRoot {
+    pub path: PathBuf,
+    pub recursive: bool,
+}
+
+impl WatchRoot {
+    /// A root whose subdirectories all matter to the watcher.
+    pub fn recursive(path: PathBuf) -> Self {
+        Self {
+            path,
+            recursive: true,
+        }
+    }
+
+    /// A root whose session files sit directly inside it.
+    pub fn shallow(path: PathBuf) -> Self {
+        Self {
+            path,
+            recursive: false,
+        }
+    }
 }
 
 /// VS Code-family desktop apps whose `User/globalStorage/<ext-id>/` trees
@@ -832,6 +874,12 @@ impl Explorers {
     /// The per-surface path registry for a given agent, resolved against `home`.
     pub fn surface_paths_for(&self, agent: &AgentKind, home: &Path) -> SurfacePaths {
         self.get(agent).surface_paths(home)
+    }
+
+    /// The filesystem roots a watcher should observe for a given agent,
+    /// resolved against `home`.
+    pub fn watch_roots_for(&self, agent: &AgentKind, home: &Path) -> Vec<WatchRoot> {
+        self.get(agent).watch_roots(home)
     }
 
     /// The per-agent filename-based session-id recovery hook. Called by

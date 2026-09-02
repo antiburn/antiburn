@@ -16,8 +16,8 @@ use std::time::UNIX_EPOCH;
 
 use crate::discovery::scanner::AgentKind;
 use crate::discovery::{
-    AgentExplorer, SessionLog, SessionSource, SurfacePaths, env_path_when_real_home, home_dir,
-    recent_files_with_exts,
+    AgentExplorer, SessionLog, SessionSource, SurfacePaths, WatchRoot, env_path_when_real_home,
+    home_dir, recent_files_with_exts,
 };
 use async_trait::async_trait;
 
@@ -75,6 +75,15 @@ impl AgentExplorer for PiExplorer {
             ide_desktop: Vec::new(),
             mirror: Vec::new(),
         }
+    }
+
+    /// The same sessions root discovery walks, `PI_AGENT_DIR` included.
+    fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
+        self.surface_paths(home)
+            .cli
+            .into_iter()
+            .map(WatchRoot::recursive)
+            .collect()
     }
 
     // Title lookup: inherits the `Scan` default. Pi has no per-session index

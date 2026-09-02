@@ -1006,7 +1006,7 @@ async fn test_conversation_database_scan_covers_all_native_roots() {
         expected.push(path);
     }
 
-    let databases = conversation_databases_in(home.path()).await;
+    let databases = conversation_databases_in(home.path(), 0).await;
 
     assert_eq!(databases.len(), 3);
     assert!(
@@ -1014,6 +1014,82 @@ async fn test_conversation_database_scan_covers_all_native_roots() {
             .iter()
             .all(|path| databases.iter().any(|(candidate, _, _)| candidate == path))
     );
+}
+
+/// D7 pruning: the window is applied from cheap stats, before the database is
+/// opened, so a database whose own mtime is old must still surface when its
+/// sibling transcript is recent.
+#[tokio::test]
+async fn an_old_database_with_a_recent_sibling_transcript_is_still_discovered() {
+    use crate::discovery::set_file_mtime;
+
+    let home = TempDir::new().unwrap();
+    let session_id = "recent-transcript-old-db";
+    let conversations = home
+        .path()
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("conversations");
+    std::fs::create_dir_all(&conversations).unwrap();
+    let db_path = conversations.join(format!("{session_id}.db"));
+    Connection::open(&db_path)
+        .unwrap()
+        .execute_batch("CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);")
+        .unwrap();
+    let transcript = home
+        .path()
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("brain")
+        .join(session_id)
+        .join(".system_generated")
+        .join("logs")
+        .join("transcript.jsonl");
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, "{}\n").unwrap();
+
+    let now = 1_800_000_000;
+    let cutoff = now - 3_600;
+    set_file_mtime(&db_path, cutoff - 10_000);
+    set_file_mtime(&transcript, now - 60);
+
+    let databases = conversation_databases_in(home.path(), cutoff).await;
+
+    assert_eq!(databases.len(), 1);
+    assert_eq!(databases[0].0, db_path);
+    assert_eq!(databases[0].2, now - 60);
+}
+
+/// D7 pruning: an old, quiet database (and an equally old or absent sibling
+/// transcript) never gets opened at all — the window excludes it from cheap
+/// stats alone.
+#[tokio::test]
+async fn an_old_quiet_database_is_never_opened() {
+    use crate::discovery::set_file_mtime;
+
+    let home = TempDir::new().unwrap();
+    let session_id = "old-quiet-database";
+    let conversations = home
+        .path()
+        .join(".gemini")
+        .join("antigravity-cli")
+        .join("conversations");
+    std::fs::create_dir_all(&conversations).unwrap();
+    let db_path = conversations.join(format!("{session_id}.db"));
+    Connection::open(&db_path)
+        .unwrap()
+        .execute_batch("CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);")
+        .unwrap();
+
+    let now = 1_800_000_000;
+    let cutoff = now - 3_600;
+    set_file_mtime(&db_path, cutoff - 10_000);
+
+    track_database_opens(&db_path);
+    let databases = conversation_databases_in(home.path(), cutoff).await;
+
+    assert!(databases.is_empty());
+    assert_eq!(take_tracked_database_opens(&db_path), 0);
 }
 
 /// Sidecar `.json` artifacts that share a brain `<uuid>/` dir

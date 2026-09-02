@@ -188,13 +188,36 @@ Antigravity blob hash is a discovery cost that phase 4 tiers address.
 
 Goal: layer 1 is continuous and cheap, and every consumer reads one signal.
 
-- Add `notify`. Watch each agent's roots. Classify events into "new source
-  under a root" and "known source changed". Debounce writes.
-- Polling tiers as reconciliation and fallback: active sources stat every
-  few seconds, inactive every minute, new-source leaf-directory check every
-  few seconds, full walk hourly and on demand. Per-agent leaf strategies
-  replace the unwindowed Codex tree walk and the Claude subagent sweep. WSL
-  paths get a slower tier.
+#### Phase 4a: filesystem watchers and discovery pruning (done)
+
+- Added `notify` and a watcher over each agent's `watch_roots` (the
+  `AgentExplorer` trait's per-agent recursive or shallow root set). A
+  changed path debounces into a `ScanController::request()` kick: quiet
+  window 1.5 s, maximum wait 5 s, so a burst of writes collapses into one
+  follow-up pass and a continuous stream still kicks at least every 5 s.
+  `Access`-only events and WSL-mounted paths are dropped as noise.
+- The scheduler's own tick drops from 60 s to a 15 s fallback only while
+  the watcher is unhealthy (it never started, or a root failed to watch);
+  a healthy watcher keeps the 60 s tick as pure reconciliation. Watched
+  roots are re-listed and any new one picked up every 60 s, so an agent
+  installed after startup is watched without a restart.
+  WSL paths stay on the tick; they are not watched.
+- Discovery pruning replaced the three unwindowed walks a frequent pass
+  would otherwise repeat: Codex now walks only `YYYY/MM/DD` date
+  directories inside the recency window (full-walk fallback for an
+  unparseable name), Claude's sub-agent sweep skips a session's
+  `subagents/` directory unless its parent is already in the recent set
+  or the directory's own mtime is inside the window, and Antigravity
+  checks the mtime window before opening a conversation database instead
+  of after.
+- Follow-up, not done here: Cursor's `collect_agent_transcript_dirs` and
+  `collect_cursor_chat_metadata` are still unwindowed recursive walks: a
+  Cursor watch delivers change notifications, but a kicked pass still
+  pays for the full walk underneath. Needs the same date- or mtime-gated
+  pruning the other three agents got in 4a.
+
+#### Phase 4b: per-session event, idle expiry, HUD fold-in (not started)
+
 - A discovery-level per-session event to the webview carries the refreshed
   `ActivityEntry`, so the list patches one row instead of refetching.
 - Active-to-idle expiry as a backend timer, emitted as the same event.
