@@ -170,10 +170,19 @@ Antigravity blob hash is a discovery cost that phase 4 tiers address.
 - Turn the `AppendOnlyGuarantee` from a static assumption into the runtime
   verification phase 3a adds.
 
-#### Phase 3c: Codex and Pi snapshots
+#### Phase 3c: Codex and Pi snapshots (done)
 
-- Extend `visit_claimed_resumed` to `CodexAdapter` and `PiAdapter`, covering
-  Codex's pending fork-row buffer.
+- Extended `visit_claimed_resumed` to `CodexAdapter` and `PiAdapter`,
+  covering Codex's pending fork-row buffer. The resume parity harness now
+  sweeps every Codex and Pi characterization fixture, not just Claude's.
+- Codex unsettled rule: a fork sub-agent rollout can still have
+  `ForkOwnership::Pending` at end of stream. `finish` still flushes those
+  buffered rows as owned, so a settled read publishes every row, but a
+  later full pass could resolve the same rows differently. So
+  `visit_claimed_resumed` reports `resume: None` whenever ownership is
+  still `Pending` right before `finish`, even though the read still
+  settles. The next change to that source costs one full pass instead of
+  a resume.
 
 ### Phase 4: watcher tiers, events, and the HUD fold-in
 

@@ -695,3 +695,99 @@ fn a_serialized_snapshot_for_the_largest_corpus_tier_stays_bounded() {
         encoded.len()
     );
 }
+
+/// An encoded [`StreamSnapshot`] for a full pass over the largest Codex
+/// characterization fixture stays under a documented bound.
+///
+/// `corpus.rs` only generates Claude-shaped JSONL — see its module doc — so
+/// this test cannot build a Codex-shaped corpus the way
+/// [`a_serialized_snapshot_for_the_largest_corpus_tier_stays_bounded`] does
+/// for Claude with `generate_session_of_bytes`. It measures the largest
+/// Codex characterization fixture instead: `collab_agent_records.jsonl`
+/// (5,550 bytes), the largest Codex-shaped session this crate ships.
+#[test]
+fn a_serialized_codex_snapshot_for_the_largest_fixture_stays_bounded() {
+    /// Measured: `collab_agent_records.jsonl`'s `StreamSnapshot` encodes to
+    /// 1,335 bytes with `postcard`. This bound rounds the measured size up
+    /// generously (over 3x), the same margin `RESUMED_SNAPSHOT_BYTES_BOUND`
+    /// above uses for the Claude case.
+    const RESUMED_CODEX_SNAPSHOT_BYTES_BOUND: usize = 4 * 1024;
+
+    let jsonl = include_str!("fixtures/codex_characterization/collab_agent_records.jsonl");
+    let directory = tempfile::TempDir::new().expect("tempdir");
+    let path = directory.path().join("session.jsonl");
+    std::fs::write(&path, jsonl).expect("write source");
+    let input = SessionInput {
+        agent: "codex".to_string(),
+        session_id: "codex-snapshot-bound".to_string(),
+        source: RawSource::File(path.clone()),
+    };
+
+    let file = std::fs::File::open(&path).expect("open source for claim");
+    let stat = SourceStat::from_open_std_file(&file).expect("stat source for claim");
+    let claim = SourceClaim::from_fingerprint_inputs(&FingerprintInputs {
+        stat,
+        head_hash: Some(head_hash_of(jsonl.as_bytes())),
+    });
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: "codex".to_owned(),
+        session_id: "codex-snapshot-bound".to_owned(),
+        kind: SourceKind::Jsonl,
+        capabilities: SourceCapabilities::codex(),
+    });
+    let empty_snapshot = StreamSnapshot {
+        revision: RESUME_SNAPSHOT_REVISION,
+        resume: ResumePoint {
+            offset: 0,
+            tail_hash: head_hash_of(&[]),
+            tail_len: 0,
+        },
+        adapter: adapter_for("codex")
+            .empty_resume_state()
+            .expect("codex adapter must support resume"),
+        metrics: SessionMetricsAccumulator::new("codex", "codex-snapshot-bound"),
+        evidence: EvidenceSnapshot {
+            record: evidence.coverage_record(),
+            resume: Default::default(),
+        },
+        next_turn_index: 0,
+    };
+
+    let store = MemoryTurnRowStore::new("codex", "codex-snapshot-bound");
+    let mut composite = CompositeSink::with_turn_rows(
+        SessionMetricsAccumulator::new("codex", "codex-snapshot-bound"),
+        SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "codex".to_owned(),
+            session_id: "codex-snapshot-bound".to_owned(),
+            kind: SourceKind::Jsonl,
+            capabilities: SourceCapabilities::codex(),
+        }),
+        TurnRowSink::new(
+            Arc::clone(&store) as Arc<dyn TurnRowStore>,
+            "codex-snapshot-bound".to_owned(),
+            None,
+        ),
+    );
+    let visit = adapter_for("codex")
+        .visit_claimed_resumed(&input, &claim, &empty_snapshot, &|| false, &mut composite)
+        .expect("full pass over the largest Codex fixture must stream");
+    assert_eq!(
+        visit.outcome,
+        antiburn_local::analysis::VisitOutcome::AcceptedFull
+    );
+    composite.observe_source_outcome(visit.outcome);
+    assert!(!composite.turn_row_write_failed());
+    let resume = visit
+        .resume
+        .expect("a settled pass over a quiescent source carries a resume");
+    let snapshot = composite
+        .snapshot(resume)
+        .expect("full pass must publish to snapshot");
+
+    let encoded = snapshot.encode();
+    assert!(
+        encoded.len() <= RESUMED_CODEX_SNAPSHOT_BYTES_BOUND,
+        "encoded snapshot was {} bytes, bound is {RESUMED_CODEX_SNAPSHOT_BYTES_BOUND}",
+        encoded.len()
+    );
+}

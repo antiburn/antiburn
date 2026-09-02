@@ -380,7 +380,7 @@ fn parse_codex(payload: &str, catalog: &ToolCatalog) -> InitialContextTokenParse
     InitialContextTokenParseResult::Supported(normalize_breakdown(source_rows))
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CodexContextAccumulator {
     source_rows: Vec<InitialContextTokenSourceCount>,
     skill_descriptions: HashMap<String, String>,
