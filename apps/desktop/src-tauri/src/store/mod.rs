@@ -733,6 +733,18 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// The newest recorded session activity, epoch seconds. `None` when no
+    /// session has one yet — an empty store, or every row still on its
+    /// filesystem-mtime fallback with a missing source.
+    pub fn latest_session_activity(&self) -> Result<Option<i64>> {
+        let connection = self.lock();
+        Ok(
+            connection.query_row("SELECT MAX(updated_at_epoch) FROM session", [], |row| {
+                row.get(0)
+            })?,
+        )
+    }
+
     /// The analysis state of every session in the activity window, for the
     /// aggregate hygiene summary.
     ///

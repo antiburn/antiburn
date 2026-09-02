@@ -268,8 +268,8 @@ pub fn set_hud_detail_size(app: tauri::AppHandle, height: f64) {
 
 /// Return the newest recent transcript write as epoch seconds.
 #[tauri::command]
-pub async fn get_latest_session_activity() -> Option<i64> {
-    crate::hud::latest_session_activity().await
+pub fn get_latest_session_activity(app: tauri::AppHandle) -> Option<i64> {
+    crate::hud::latest_session_activity(&app.state::<Store>())
 }
 
 /// Where the app came from and what it is running against.

@@ -5,8 +5,7 @@
 //! owns where the HUD's remembered position is kept, and the watcher that
 //! reacts when a display connects or disconnects.
 
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use antiburn_hud::Placement;
 use serde::{Deserialize, Serialize};
@@ -115,30 +114,11 @@ fn promote(entries: Vec<Placement>, placement: Placement) -> Vec<Placement> {
 }
 
 /// Return the newest recent transcript write as epoch seconds.
-pub async fn latest_session_activity() -> Option<i64> {
-    static MEMO: Mutex<Option<(Instant, Option<i64>)>> = Mutex::new(None);
-    const MEMO_TTL: Duration = Duration::from_secs(60);
-
-    if let Ok(memo) = MEMO.lock()
-        && let Some((at, value)) = *memo
-        && at.elapsed() < MEMO_TTL
-    {
-        return value;
-    }
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0);
-    let logs = antiburn_local::discovery::Explorers::DISK
-        .discover_recent_sessions(now, antiburn_local::discovery::ACTIVE_SESSION_WINDOW_SECS)
-        .await;
-    let latest = logs.iter().filter_map(|log| log.updated_at).max();
-
-    if let Ok(mut memo) = MEMO.lock() {
-        *memo = Some((Instant::now(), latest));
-    }
-    latest
+///
+/// One indexed query against [`Store`], so the overlay's poll costs no more
+/// than the scan pass's own writes already do — no memo needed.
+pub fn latest_session_activity(store: &Store) -> Option<i64> {
+    store.latest_session_activity().ok().flatten()
 }
 
 #[cfg(test)]
