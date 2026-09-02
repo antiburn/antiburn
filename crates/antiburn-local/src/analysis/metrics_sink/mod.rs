@@ -381,7 +381,10 @@ impl SessionMetricsAccumulator {
         if event.may_resolve_late_tool || event.late_tool_candidate_is_builtin {
             self.reserve_late_candidate(&event, ordinal, effective_ts);
         }
-        if let Some(ready) = self.reorder.push(slot) {
+        if let Some(ready) =
+            self.reorder
+                .push(slot, &self.identity.agent, &self.identity.session_id)
+        {
             self.fold_ready_slot(ready);
         }
     }
@@ -716,7 +719,10 @@ impl SessionMetricsAccumulator {
         for patch in self.cache.resolve_deferred(fallback) {
             self.apply_cache_patch(patch);
         }
-        for slot in self.reorder.drain_sorted() {
+        for slot in self
+            .reorder
+            .drain_sorted(&self.identity.agent, &self.identity.session_id)
+        {
             self.fold_ready_slot(slot);
         }
         for (ordinal, tool) in summary.late_tools.drain(..) {
