@@ -20,6 +20,38 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-02
+
+### Added
+
+- Hovering or focusing a provider limit in the tray popover now opens its
+  detailed usage view beside the originating row.
+- Native Antigravity IDE and `agy` sessions now receive local analysis with
+  token, model, cache, retry, timing, and Insights evidence.
+- Settings now exports a bounded diagnostic report that omits transcript
+  content, titles, paths, repository names, and account identifiers.
+- The terminal installer now opens with an animated antiburn wordmark on
+  supported terminals while the release downloads.
+
+### Changed
+
+- Provider usage is now grouped by account for Antigravity, OpenCode, and Pi.
+  Antigravity can also show Google plan limits from the current IDE or CLI login.
+- Model pricing now refreshes from models.dev at startup and hourly, so new
+  models can receive cost estimates without an application update. The last
+  valid catalog remains available when the service cannot be reached.
+- Background scans now continue while the popover is hidden, avoid rereading
+  unchanged session sources, and show the current session list immediately when
+  the popover opens.
+
+### Fixed
+
+- Clicking the tray icon now dismisses the current notification nudge before
+  opening or closing the popover.
+- Long model and thinking-mode lists no longer extend beyond session cards.
+- The macOS terminal installer no longer requests administrator access when the
+  destination is already writable.
+
 ## [0.3.1] - 2026-09-01
 
 ### Fixed
