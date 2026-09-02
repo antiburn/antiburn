@@ -107,42 +107,10 @@ function thermometerFor(value: number, edges: BandEdges): EfficiencyThermometer 
   }
 }
 
-/** One zone of a share meter: the band that holds from `from` (0–1) upward. */
+/** One zone of a meter track: the band that holds from `from` (0–1) upward. */
 export interface EfficiencyShareZone {
   from: number
   band: EfficiencyBand
-}
-
-/**
- * The band zones along a share meter's own 0–1 axis. A share meter draws
- * its scale from the metric's band edges, so the zones sit where the band
- * words change.
- */
-export function efficiencyShareZones(
-  metricKey: Exclude<keyof ProfileEdges, "costPerMTok">,
-  profile: EfficiencyProfile,
-): EfficiencyShareZone[] {
-  const edges = EDGES[profile][metricKey]
-  if (edges.higherIsBetter) {
-    return [
-      { from: 0, band: "bad" },
-      { from: edges.bad, band: "ok" },
-      { from: edges.good, band: "good" },
-    ]
-  }
-  return [
-    { from: 0, band: "good" },
-    { from: edges.good, band: "ok" },
-    { from: edges.bad, band: "bad" },
-  ]
-}
-
-/** True when a higher reading is the better one for this metric. */
-export function efficiencyHigherIsBetter(
-  metricKey: keyof ProfileEdges,
-  profile: EfficiencyProfile,
-): boolean {
-  return EDGES[profile][metricKey].higherIsBetter
 }
 
 /** Build the thermometer for one metric and agent profile. */

@@ -35,7 +35,7 @@ export type MeterInk = (typeof METER_INK)[keyof typeof METER_INK]
  * Unlit segments keep a faint tint of their zone, so the scale shows its
  * bands before the reading reaches them.
  */
-export const USAGE_METER_ZONES: MeterZone[] = [
+const USAGE_METER_ZONES: MeterZone[] = [
   { from: 0, ...METER_INK.normal },
   { from: 0.8, ...METER_INK.warning },
   { from: 0.9, ...METER_INK.critical },
