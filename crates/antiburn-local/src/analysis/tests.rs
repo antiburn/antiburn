@@ -1153,17 +1153,17 @@ fn two_compactions_sharing_a_bucket_keep_the_last_triggers_and_sizes() {
     assert_eq!(boundary.compaction_post_tokens, Some(5_000));
 }
 
-/// A Claude session where a cached turn (large cache-read ratio) is followed
-/// by a turn that rewrites almost the whole context back to the cache — the
-/// TTL-lapse pattern a cache rehydration should catch.
+/// A Claude session where a cached turn is followed by a large cache write.
 const CLAUDE_CACHE_REHYDRATION_FIXTURE: &str = concat!(
     r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_read_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
     "\n",
-    r#"{"type":"assistant","timestamp":"2024-06-01T12:05:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_creation_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
+    r#"{"type":"user","timestamp":"2024-06-01T13:00:00Z","message":{"role":"user","content":"continue"}}"#,
+    "\n",
+    r#"{"type":"assistant","timestamp":"2024-06-01T13:00:05Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_creation_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
 );
 
 #[test]
-fn cache_rehydration_is_detected_after_a_ttl_lapse() {
+fn cache_rehydration_is_detected_from_an_explicit_cache_write() {
     let session =
         normalize_source(&jsonl_input("claude", CLAUDE_CACHE_REHYDRATION_FIXTURE)).unwrap();
     let m = analyze_session(&session);
@@ -1180,17 +1180,17 @@ fn cache_rehydration_is_detected_after_a_ttl_lapse() {
 }
 
 /// Same shape as CLAUDE_CACHE_REHYDRATION_FIXTURE, but the second turn comes
-/// 5 seconds after the first. No provider TTL is that short, so the gap gate
-/// must block the rehydration flag even though the read and write ratios
-/// still match. The engine reports the turn as a routing miss instead.
+/// 5 seconds after the first. The write still proves that the cache rebuilt.
 const CLAUDE_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE: &str = concat!(
     r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_read_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+    "\n",
+    r#"{"type":"user","timestamp":"2024-06-01T12:00:04Z","message":{"role":"user","content":"continue"}}"#,
     "\n",
     r#"{"type":"assistant","timestamp":"2024-06-01T12:00:05Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_creation_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
 );
 
 #[test]
-fn cache_miss_inside_a_fast_burst_is_a_routing_miss() {
+fn claude_short_user_resume_is_a_provider_cache_miss() {
     let session = normalize_source(&jsonl_input(
         "claude",
         CLAUDE_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE,
@@ -1198,16 +1198,17 @@ fn cache_miss_inside_a_fast_burst_is_a_routing_miss() {
     .unwrap();
     let m = analyze_session(&session);
 
-    assert!(
-        m.buckets.iter().all(|b| !b.is_cache_rehydration),
-        "a 5-second gap is a routing miss, not a TTL lapse"
+    let bucket = m
+        .buckets
+        .iter()
+        .find(|bucket| bucket.is_cache_routing_miss)
+        .expect("the provider cache miss bucket");
+    assert_eq!(bucket.secs_since_prior_turn, Some(5));
+    assert_eq!(
+        bucket.cache_rehydration.unwrap().user_inactive_secs,
+        Some(4)
     );
     assert_eq!(m.cache_rehydration_count, 0);
-    assert_eq!(
-        m.buckets.iter().filter(|b| b.is_cache_routing_miss).count(),
-        1,
-        "exactly one bucket must carry the routing-miss flag"
-    );
     assert_eq!(m.cache_routing_miss_count, 1);
 }
 
@@ -1216,6 +1217,8 @@ fn cache_miss_inside_a_fast_burst_is_a_routing_miss() {
 /// re-writes, so the write share is 76%, not close to 100%.
 const CLAUDE_CACHE_REHYDRATION_WITH_CACHED_PREFIX_FIXTURE: &str = concat!(
     r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":101,"output_tokens":50,"cache_read_input_tokens":99584,"cache_creation_input_tokens":1879},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
+    "\n",
+    r#"{"type":"user","timestamp":"2024-06-01T14:34:55Z","message":{"role":"user","content":"continue"}}"#,
     "\n",
     r#"{"type":"assistant","timestamp":"2024-06-01T14:35:00Z","message":{"role":"assistant","usage":{"input_tokens":2,"output_tokens":50,"cache_read_input_tokens":24682,"cache_creation_input_tokens":77040},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"b.rs"}}]}}"#,
 );
@@ -1273,6 +1276,14 @@ fn cache_rehydration_is_detected_when_the_prefix_stays_cached() {
         .find(|bucket| bucket.is_cache_rehydration)
         .expect("the rehydration bucket");
     assert_eq!(bucket.secs_since_prior_turn, Some(155 * 60));
+    let expected_rehydration = Some(crate::analysis::engine::CacheRehydration {
+        context_tokens: 101_724,
+        still_cached_tokens: 24_682,
+        rewritten_tokens: 76_882,
+        growth_tokens: 160,
+        user_inactive_secs: Some(155 * 60 - 5),
+    });
+    assert_eq!(bucket.cache_rehydration, expected_rehydration);
     assert_eq!(m.cache_rehydration_count, 1);
     assert_eq!(m.cache_routing_miss_count, 0);
     assert_eq!(m.compaction_count, 0);
@@ -1284,41 +1295,37 @@ fn cache_rehydration_is_detected_when_the_prefix_stays_cached() {
         .find(|bucket| bucket.is_cache_rehydration)
         .expect("the summary rehydration bucket");
     assert_eq!(summary_bucket.secs_since_prior_turn, Some(155 * 60));
+    assert_eq!(summary_bucket.cache_rehydration, expected_rehydration);
 }
 
-/// A multi-session summary bucket must OR each contributing session's flag
-/// independently: one session's rehydration must not hide another session's
-/// routing miss, and vice versa.
+/// A multi-session summary bucket must keep a contributing rehydration.
 #[test]
-fn summary_buckets_or_rehydration_and_routing_miss_across_sessions() {
+fn summary_buckets_keep_rehydrations_across_sessions() {
     let rehydrated_session =
         normalize_source(&jsonl_input("claude", CLAUDE_CACHE_REHYDRATION_FIXTURE)).unwrap();
-    let routing_miss_session = normalize_source(&jsonl_input(
+    let fast_rehydration_session = normalize_source(&jsonl_input(
         "claude",
         CLAUDE_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE,
     ))
     .unwrap();
     let rehydrated_metrics = analyze_session(&rehydrated_session);
-    let routing_miss_metrics = analyze_session(&routing_miss_session);
+    let fast_rehydration_metrics = analyze_session(&fast_rehydration_session);
 
     let summary =
-        crate::analysis::aggregate_metrics(vec![rehydrated_metrics, routing_miss_metrics]);
+        crate::analysis::aggregate_metrics(vec![rehydrated_metrics, fast_rehydration_metrics]);
 
     assert!(
         summary.buckets.iter().any(|b| b.is_cache_rehydration),
         "the rehydration session's flag must survive the merge"
     );
-    assert!(
-        summary.buckets.iter().any(|b| b.is_cache_routing_miss),
-        "the routing-miss session's flag must survive the merge"
-    );
+    assert_eq!(summary.cache_rehydration_count, 1);
 }
 
 #[test]
 fn first_turn_after_compaction_is_not_flagged_as_rehydration() {
     // Same shape as the rehydration fixture, but a compaction boundary sits
     // between the cached turn and the full-rewrite turn — the rewrite is
-    // explained by the compaction, not a cache TTL lapse.
+    // explained by the compaction, not a cache rebuild.
     let fixture = concat!(
         r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":50,"cache_read_input_tokens":25000},"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#,
         "\n",
@@ -1446,15 +1453,12 @@ fn codex_resume_does_not_repeat_the_last_token_count_as_a_turn() {
     );
 }
 
-/// These values come from a Codex session after a long idle gap. The miss
-/// replays the old context, and the next turn confirms that the cache
-/// returns. No usage object carries a `cache_write_input_tokens` key, so
-/// `cache_write_tokens_available` stays false and mode 1 (the direct
-/// signal) never overrides mode 2 (this inference); see
-/// `known_zero_cache_writes_do_not_use_rehydration_inference` for the case
-/// where the source does confirm a zero cache write.
+/// These values come from a Codex session after an idle gap. The miss replays
+/// the old context, and the next turn confirms that the cache returns.
 const CODEX_INFERRED_CACHE_REHYDRATION_FIXTURE: &str = concat!(
     r#"{"timestamp":"2026-08-22T07:55:39.907Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151715,"cached_input_tokens":150400,"output_tokens":194},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-22T11:24:16.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}}"#,
     "\n",
     r#"{"timestamp":"2026-08-22T11:24:21.967Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":151941,"cached_input_tokens":6912,"output_tokens":577},"model_context_window":258400}}}"#,
     "\n",
@@ -1475,6 +1479,13 @@ fn codex_cache_rehydration_is_inferred_from_replay_and_recovery() {
     assert_eq!(
         m.buckets
             .iter()
+            .find(|bucket| bucket.is_cache_rehydration)
+            .and_then(|bucket| bucket.secs_since_prior_turn),
+        Some(12_522)
+    );
+    assert_eq!(
+        m.buckets
+            .iter()
             .filter(|bucket| bucket.is_cache_rehydration)
             .count(),
         1
@@ -1482,7 +1493,33 @@ fn codex_cache_rehydration_is_inferred_from_replay_and_recovery() {
 }
 
 #[test]
-fn known_zero_cache_writes_do_not_use_rehydration_inference() {
+fn codex_partial_cache_loss_after_thirty_minutes_is_a_rehydration() {
+    let fixture = concat!(
+        r#"{"timestamp":"2026-08-22T12:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100000,"cached_input_tokens":90000,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T12:30:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T12:30:05Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100000,"cached_input_tokens":30000,"output_tokens":100},"model_context_window":258400}}}"#,
+        "\n",
+        r#"{"timestamp":"2026-08-22T12:30:10Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":101000,"cached_input_tokens":100000,"output_tokens":100},"model_context_window":258400}}}"#,
+    );
+    let session = normalize_source(&jsonl_input("codex", fixture)).unwrap();
+    let metrics = analyze_session(&session);
+
+    assert_eq!(metrics.cache_rehydration_count, 1);
+    assert_eq!(metrics.cache_routing_miss_count, 0);
+    let event = metrics
+        .buckets
+        .iter()
+        .find_map(|bucket| bucket.cache_rehydration)
+        .expect("the partial cache event");
+    assert_eq!(event.still_cached_tokens, 30_000);
+    assert_eq!(event.rewritten_tokens, 70_000);
+    assert_eq!(event.user_inactive_secs, Some(30 * 60));
+}
+
+#[test]
+fn known_zero_cache_writes_still_use_rehydration_inference() {
     let mut session = normalize_source(&jsonl_input(
         "codex",
         CODEX_INFERRED_CACHE_REHYDRATION_FIXTURE,
@@ -1491,7 +1528,17 @@ fn known_zero_cache_writes_do_not_use_rehydration_inference() {
     session.cache_write_tokens_available = true;
     let m = analyze_session(&session);
 
-    assert_eq!(m.cache_rehydration_count, 0);
+    assert_eq!(m.cache_rehydration_count, 1);
+    let rehydration = m
+        .buckets
+        .iter()
+        .find_map(|bucket| bucket.cache_rehydration)
+        .expect("the inferred rehydration breakdown");
+    assert_eq!(rehydration.context_tokens, 151_941);
+    assert_eq!(rehydration.still_cached_tokens, 6_912);
+    assert_eq!(rehydration.rewritten_tokens, 144_803);
+    assert_eq!(rehydration.growth_tokens, 226);
+    assert_eq!(rehydration.user_inactive_secs, Some(12_516));
 }
 
 /// Two consecutive uncached replays remain visible when Codex reports zero
@@ -1532,12 +1579,10 @@ fn codex_consecutive_uncached_replays_keep_distinct_rewrite_tokens() {
 /// A real `cache_write_input_tokens` count now reaches mode 1 (the direct
 /// signal) for Codex, the same way it already does for a source that always
 /// reported cache writes. Turn one's cache read covers most of its context
-/// (20000 / 30000); turn two's cache write covers most of its own context
-/// (25000 / 40000) after a 90-second gap, past the rehydration gap gate —
-/// `is_cache_rehydration_turn` in `metrics_sink::cache_miss` reads this
-/// straight from `event.usage.cache_creation_tokens`, no inference needed.
+/// (20000 / 30000); turn two's cache write covers most of its own context.
+/// The direct detector reads the explicit cache creation count.
 #[test]
-fn codex_confirmed_cache_write_is_read_as_a_direct_signal_rehydration() {
+fn codex_confirmed_cache_write_inside_a_short_gap_is_a_provider_miss() {
     let fixture = concat!(
         r#"{"timestamp":"2026-08-22T07:55:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30000,"cached_input_tokens":20000,"cache_write_input_tokens":0,"output_tokens":50},"model_context_window":258400}}}"#,
         "\n",
@@ -1547,15 +1592,15 @@ fn codex_confirmed_cache_write_is_read_as_a_direct_signal_rehydration() {
     assert!(session.cache_write_tokens_available);
     let m = analyze_session(&session);
 
-    assert_eq!(m.cache_rehydration_count, 1);
-    assert_eq!(m.cache_routing_miss_count, 0);
-    let rehydration = m
+    assert_eq!(m.cache_rehydration_count, 0);
+    assert_eq!(m.cache_routing_miss_count, 1);
+    let provider_miss = m
         .buckets
         .iter()
-        .find(|bucket| bucket.is_cache_rehydration)
-        .expect("the rehydration bucket");
-    assert_eq!(rehydration.cache_write_tokens, 25_000);
-    assert_eq!(rehydration.rewrite_tokens, 30_000);
+        .find(|bucket| bucket.is_cache_routing_miss)
+        .expect("the provider cache miss bucket");
+    assert_eq!(provider_miss.cache_write_tokens, 25_000);
+    assert_eq!(provider_miss.rewrite_tokens, 30_000);
 }
 
 #[test]
@@ -1571,6 +1616,7 @@ fn codex_large_new_input_is_not_inferred_as_cache_rehydration() {
     let m = analyze_session(&session);
 
     assert_eq!(m.cache_rehydration_count, 0);
+    assert_eq!(m.cache_routing_miss_count, 1);
 }
 
 #[test]
@@ -1605,12 +1651,8 @@ fn codex_first_turn_after_compaction_is_not_an_inferred_rehydration() {
     assert_eq!(m.cache_rehydration_count, 0);
 }
 
-/// Real numbers from a Codex rollout. The miss comes 6 seconds after the
-/// prior turn, so the gap gate must block the inferred rehydration flag even
-/// though the replay and recovery ratios match the pattern. The engine
-/// reports the turn as a routing miss instead. No usage object carries a
-/// `cache_write_input_tokens` key, so `cache_write_tokens_available` stays
-/// false and this exercises mode 2 (inference), not the direct signal.
+/// Real numbers from a Codex rollout. The replay and recovery prove that the
+/// cache rebuilt even though the miss comes 6 seconds after the prior turn.
 const CODEX_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE: &str = concat!(
     r#"{"timestamp":"2026-08-24T21:10:40.986Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":37100,"cached_input_tokens":25344,"output_tokens":168},"model_context_window":258400}}}"#,
     "\n",
@@ -1620,7 +1662,7 @@ const CODEX_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE: &str = concat!(
 );
 
 #[test]
-fn codex_cache_miss_inside_a_fast_burst_is_a_routing_miss() {
+fn codex_cache_loss_during_agent_work_is_a_provider_miss() {
     let session = normalize_source(&jsonl_input(
         "codex",
         CODEX_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE,
@@ -1630,15 +1672,21 @@ fn codex_cache_miss_inside_a_fast_burst_is_a_routing_miss() {
 
     assert_eq!(m.cache_rehydration_count, 0);
     assert_eq!(m.cache_routing_miss_count, 1);
+    assert_eq!(
+        m.buckets
+            .iter()
+            .find(|bucket| bucket.is_cache_routing_miss)
+            .and_then(|bucket| bucket.secs_since_prior_turn),
+        Some(5)
+    );
 }
 
-/// The same values as CODEX_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE, but the
-/// second and third turns move 5 minutes later. The gap now clears the TTL
-/// gate, so the inferred rehydration flag fires — the gap is the only thing
-/// that changed between this test and the one above. Same note on the
-/// missing `cache_write_input_tokens` key: this exercises mode 2.
-const CODEX_CACHE_MISS_AFTER_A_TTL_LAPSE_FIXTURE: &str = concat!(
+/// The same values as CODEX_CACHE_MISS_INSIDE_A_FAST_BURST_FIXTURE, but a user
+/// resumes after five minutes. This is below the Codex inactivity threshold.
+const CODEX_CACHE_MISS_AFTER_A_LONGER_GAP_FIXTURE: &str = concat!(
     r#"{"timestamp":"2026-08-24T21:10:40.986Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":37100,"cached_input_tokens":25344,"output_tokens":168},"model_context_window":258400}}}"#,
+    "\n",
+    r#"{"timestamp":"2026-08-24T21:15:40.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}}"#,
     "\n",
     r#"{"timestamp":"2026-08-24T21:15:46.474Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":46361,"cached_input_tokens":6912,"output_tokens":177},"model_context_window":258400}}}"#,
     "\n",
@@ -1646,16 +1694,30 @@ const CODEX_CACHE_MISS_AFTER_A_TTL_LAPSE_FIXTURE: &str = concat!(
 );
 
 #[test]
-fn codex_cache_miss_after_a_ttl_lapse_is_inferred_as_rehydration() {
+fn codex_short_user_resume_is_a_provider_cache_miss() {
     let session = normalize_source(&jsonl_input(
         "codex",
-        CODEX_CACHE_MISS_AFTER_A_TTL_LAPSE_FIXTURE,
+        CODEX_CACHE_MISS_AFTER_A_LONGER_GAP_FIXTURE,
     ))
     .unwrap();
     let m = analyze_session(&session);
 
-    assert_eq!(m.cache_rehydration_count, 1);
-    assert_eq!(m.cache_routing_miss_count, 0);
+    assert_eq!(m.cache_rehydration_count, 0);
+    assert_eq!(m.cache_routing_miss_count, 1);
+    assert_eq!(
+        m.buckets
+            .iter()
+            .find(|bucket| bucket.is_cache_routing_miss)
+            .and_then(|bucket| bucket.secs_since_prior_turn),
+        Some(305)
+    );
+    assert_eq!(
+        m.buckets
+            .iter()
+            .find_map(|bucket| bucket.cache_rehydration)
+            .and_then(|event| event.user_inactive_secs),
+        Some(299)
+    );
 }
 
 /// An OpenCode session as the discovery layer emits it: `message` rows (role +
@@ -2502,7 +2564,7 @@ fn subagent_launch_marker_counts_only_parent_task_calls() {
 
 #[test]
 fn rehydration_detection_ignores_subagent_turns() {
-    // Same two parent turns as `cache_rehydration_is_detected_after_a_ttl_lapse`,
+    // Same two parent turns as `cache_rehydration_is_detected_from_an_explicit_cache_write`,
     // with a sub-agent turn carrying its own large cache-write in between. If
     // that turn fed the parent-only rehydration state machine, it would
     // either wrongly flag itself or reset the state so the real parent
@@ -2529,7 +2591,7 @@ fn rehydration_detection_ignores_subagent_turns() {
     );
     assert_eq!(
         m.buckets[rehydrated[0]].secs_since_prior_turn,
-        Some(5 * 60),
+        Some(60 * 60 + 5),
         "the sub-agent turn must not reset the parent turn gap"
     );
     assert_eq!(m.cache_routing_miss_count, 0);

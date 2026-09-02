@@ -358,7 +358,7 @@ fn inferred_cache_turn(timestamp: i64, read: u64, fresh: u64) -> NormalizedEvent
 }
 
 #[test]
-fn metrics_before_finish_resolve_deferred_cache_with_the_default_summary() {
+fn metrics_before_finish_resolve_deferred_provider_miss_with_the_default_summary() {
     let previous = inferred_cache_turn(0, 25_000, 5_000);
     let mut current = inferred_cache_turn(1_000, 0, 30_000);
     current.model = Some("claude-sonnet-4-6".to_string());
@@ -368,7 +368,9 @@ fn metrics_before_finish_resolve_deferred_cache_with_the_default_summary() {
     for event in [previous, current, next] {
         accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
     }
-    assert_eq!(accumulator.metrics().cache_routing_miss_count, 1);
+    let metrics = accumulator.metrics();
+    assert_eq!(metrics.cache_rehydration_count, 0);
+    assert_eq!(metrics.cache_routing_miss_count, 1);
 }
 
 #[test]
@@ -404,6 +406,7 @@ fn sidechain_models_do_not_change_the_parent_cache_model() {
         SessionSummary::default(),
     )
     .metrics();
+    assert_eq!(metrics.cache_rehydration_count, 0);
     assert_eq!(metrics.cache_routing_miss_count, 1);
 }
 
@@ -431,11 +434,14 @@ fn cache_gap_keeps_values_larger_than_u32() {
 fn cache_modes_preserve_rehydration_gap_priority() {
     let mut first = event(Some(0), Role::Assistant, 1_000, 1);
     first.usage.cache_read_tokens = 29_000;
-    let mut second = event(Some(120_000), Role::Assistant, 1_000, 1);
+    let prompt = event(Some(3_600_000), Role::User, 0, 0);
+    let mut second = event(Some(3_601_000), Role::Assistant, 1_000, 1);
     second.usage.cache_read_tokens = 9_000;
     second.usage.cache_creation_tokens = 20_000;
-    let metrics = finished(
-        vec![first, second],
+    let metrics = SessionMetricsAccumulator::from_parts(
+        "claude".to_string(),
+        "rehydration-gap".to_string(),
+        vec![first, prompt, second],
         SessionSummary {
             cache_write_tokens_available: true,
             ..SessionSummary::default()
@@ -444,7 +450,7 @@ fn cache_modes_preserve_rehydration_gap_priority() {
     .metrics();
     assert_eq!(metrics.cache_rehydration_count, 1);
     assert!(metrics.buckets[179].is_cache_rehydration);
-    assert_eq!(metrics.buckets[179].secs_since_prior_turn, Some(120));
+    assert_eq!(metrics.buckets[179].secs_since_prior_turn, Some(3_601));
 }
 
 #[test]
@@ -667,6 +673,42 @@ fn merged_cache_detection_uses_chronological_parent_order() {
     assert_eq!(actual.cache_rehydration_count, 0);
     assert_eq!(actual.cache_routing_miss_count, 1);
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn merged_cache_rehydration_keeps_its_turn_composition() {
+    let mut previous = event(Some(0), Role::Assistant, 101, 50);
+    previous.usage.cache_read_tokens = 99_584;
+    previous.usage.cache_creation_tokens = 1_879;
+    let mut current = event(Some(155 * 60 * 1_000), Role::Assistant, 2, 50);
+    current.usage.cache_read_tokens = 24_682;
+    current.usage.cache_creation_tokens = 77_040;
+    let mut next = event(Some(155 * 60 * 1_000 + 1), Role::Assistant, 1_000, 50);
+    next.usage.cache_read_tokens = 101_724;
+    let parent = finished(
+        vec![previous, current, next],
+        SessionSummary {
+            cache_write_tokens_available: true,
+            ..SessionSummary::default()
+        },
+    );
+    let child = finished(
+        vec![event(Some(60_000), Role::Assistant, 500, 20)],
+        SessionSummary::default(),
+    );
+
+    let merged = merge_metrics(&parent, &[child]);
+    let bucket = merged
+        .buckets
+        .iter()
+        .find(|bucket| bucket.cache_rehydration.is_some())
+        .expect("the rehydration bucket");
+    assert!(bucket.cache_read_tokens > bucket.context_tokens);
+    let rehydration = bucket.cache_rehydration.expect("the rehydration breakdown");
+    assert_eq!(rehydration.context_tokens, 101_724);
+    assert_eq!(rehydration.still_cached_tokens, 24_682);
+    assert_eq!(rehydration.rewritten_tokens, 76_882);
+    assert_eq!(rehydration.growth_tokens, 160);
 }
 
 #[test]

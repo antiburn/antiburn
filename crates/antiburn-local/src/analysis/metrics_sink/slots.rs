@@ -34,6 +34,17 @@ pub(crate) struct CacheSlot {
     pub(crate) is_rehydration: bool,
     pub(crate) is_routing_miss: bool,
     pub(crate) rehydration_gap: Option<(u64, Option<u64>)>,
+    pub(crate) rehydration: Option<CacheRehydrationMark>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CacheRehydrationMark {
+    pub(crate) ordinal: u64,
+    pub(crate) context_tokens: u64,
+    pub(crate) still_cached_tokens: u64,
+    pub(crate) rewritten_tokens: u64,
+    pub(crate) growth_tokens: u64,
+    pub(crate) user_inactive_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -161,6 +172,13 @@ fn merge_cache(target: &mut CacheSlot, incoming: CacheSlot) {
             .is_none_or(|current| value.0 > current.0)
     }) {
         target.rehydration_gap = incoming.rehydration_gap;
+    }
+    if incoming.rehydration.is_some_and(|value| {
+        target
+            .rehydration
+            .is_none_or(|current| value.ordinal > current.ordinal)
+    }) {
+        target.rehydration = incoming.rehydration;
     }
 }
 

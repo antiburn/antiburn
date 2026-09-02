@@ -826,14 +826,20 @@
         },
         {
           "cacheReadTokens": 1000,
+          "cacheRehydration": {
+            "contextTokens": 41500,
+            "growthTokens": 6500,
+            "rewrittenTokens": 34000,
+            "stillCachedTokens": 1000
+          },
           "cacheWriteTokens": 40000,
           "compactionPostTokens": null,
           "compactionPreTokens": null,
           "compactionTrigger": null,
           "contextTokens": 41500,
           "hasThinking": false,
-          "isCacheRehydration": true,
-          "isCacheRoutingMiss": false,
+          "isCacheRehydration": false,
+          "isCacheRoutingMiss": true,
           "isCompactionBoundary": false,
           "lastTool": null,
           "model": "claude-3-5-haiku-20241022",
@@ -4108,14 +4114,20 @@
         },
         {
           "cacheReadTokens": 1000,
+          "cacheRehydration": {
+            "contextTokens": 37500,
+            "growthTokens": 7100,
+            "rewrittenTokens": 29400,
+            "stillCachedTokens": 1000
+          },
           "cacheWriteTokens": 36000,
           "compactionPostTokens": null,
           "compactionPreTokens": null,
           "compactionTrigger": null,
           "contextTokens": 37500,
           "hasThinking": false,
-          "isCacheRehydration": true,
-          "isCacheRoutingMiss": false,
+          "isCacheRehydration": false,
+          "isCacheRoutingMiss": true,
           "isCompactionBoundary": false,
           "lastTool": null,
           "model": "claude-3-5-haiku-20241022",
@@ -4130,8 +4142,8 @@
           "userPrompts": 0
         }
       ],
-      "cacheRehydrationCount": 2,
-      "cacheRoutingMissCount": 0,
+      "cacheRehydrationCount": 0,
+      "cacheRoutingMissCount": 2,
       "compactionCount": 1,
       "contextAvailable": true,
       "contextWindow": 200000,

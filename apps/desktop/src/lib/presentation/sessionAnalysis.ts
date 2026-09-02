@@ -32,6 +32,7 @@ export interface ContextTokenPoint {
   cacheWriteTokens: number
   rewriteTokens: number
   isCacheRehydration: boolean
+  cacheRehydration: SessionBucket["cacheRehydration"] | null
   isCacheRoutingMiss: boolean
   secsSincePriorTurn: number | null
   subagentLaunches: number
@@ -108,6 +109,7 @@ export function contextTokenSeries(buckets: SessionBucket[]): ContextTokenPoint[
     cacheWriteTokens: bucket.cacheWriteTokens,
     rewriteTokens: bucket.rewriteTokens ?? 0,
     isCacheRehydration: bucket.isCacheRehydration,
+    cacheRehydration: bucket.cacheRehydration ?? null,
     isCacheRoutingMiss: bucket.isCacheRoutingMiss,
     secsSincePriorTurn: bucket.secsSincePriorTurn,
     subagentLaunches: bucket.subagentLaunches,

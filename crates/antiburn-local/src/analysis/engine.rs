@@ -57,9 +57,14 @@ pub struct Bucket {
     /// This derived value does not depend on reported cache-write tokens.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rewrite_tokens: u64,
-    /// True when a cache rehydration turn lands in this bucket.
+    /// True when a user resumes after meaningful inactivity and the provider
+    /// rebuilds a previously cached context.
     pub is_cache_rehydration: bool,
-    /// True when an uncached context replay lands here too soon for a cache expiry.
+    /// The context composition on the latest cache event in this bucket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_rehydration: Option<CacheRehydration>,
+    /// True when a material provider cache miss occurs without meaningful
+    /// user inactivity. The serialized name stays compatible with old data.
     #[serde(default)]
     pub is_cache_routing_miss: bool,
     /// Wall-clock seconds since the prior parent turn. A rehydration turn takes
@@ -104,6 +109,18 @@ pub struct Bucket {
     pub compaction_post_tokens: Option<u64>,
 }
 
+/// The context composition on one material cache event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheRehydration {
+    pub context_tokens: u64,
+    pub still_cached_tokens: u64,
+    pub rewritten_tokens: u64,
+    pub growth_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_inactive_secs: Option<u64>,
+}
+
 fn is_zero(value: &u64) -> bool {
     *value == 0
 }
@@ -143,10 +160,10 @@ pub struct SessionMetrics {
     /// Compaction boundaries in the parent transcript.
     #[serde(default)]
     pub compaction_count: u64,
-    /// Turns the engine flags as a cache routing miss.
+    /// Provider cache misses. The serialized name stays compatible with old data.
     #[serde(default)]
     pub cache_routing_miss_count: u64,
-    /// Turns the engine flags as a cache rehydration.
+    /// Cache rebuilds after meaningful user inactivity.
     #[serde(default)]
     pub cache_rehydration_count: u64,
     /// Whether the model context window is known well enough to present
@@ -436,6 +453,7 @@ pub fn aggregate_metrics(metrics: Vec<SessionMetrics>) -> ActiveSessionsSummary 
         // them.
         if count == 1 {
             let own = &metrics[0].buckets[bi];
+            bucket.cache_rehydration = own.cache_rehydration;
             bucket.secs_since_prior_turn = own.secs_since_prior_turn;
             bucket.model = own.model.clone();
             bucket.thinking_mode = own.thinking_mode.clone();

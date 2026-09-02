@@ -92,14 +92,21 @@ describe("ContextTokensChart", () => {
     expect(container.querySelectorAll('g[data-animation-active="true"]')).toHaveLength(4)
   })
 
-  it("draws a wide red bar up to the context level for a cache-rehydration bucket", () => {
+  it("positions a cache-rehydration bar between the cached prefix and context growth", () => {
     const buckets = [
       bucket({ contextTokens: 200_000 }),
       bucket({
-        contextTokens: 50_000,
-        cacheWriteTokens: 40_000,
-        rewriteTokens: 40_000,
+        contextTokens: 160_000,
+        cacheReadTokens: 50_000,
+        cacheWriteTokens: 110_000,
+        rewriteTokens: 100_000,
         isCacheRehydration: true,
+        cacheRehydration: {
+          contextTokens: 160_000,
+          stillCachedTokens: 50_000,
+          rewrittenTokens: 100_000,
+          growthTokens: 10_000,
+        },
       }),
       bucket({ contextTokens: 200_000 }),
     ]
@@ -115,8 +122,11 @@ describe("ContextTokensChart", () => {
     const y2 = Number(bar?.getAttribute("y2"))
     const top = Math.min(y1, y2)
     const bottom = Math.max(y1, y2)
-    expect(bottom - top).toBeGreaterThan(0)
-    expect(bottom - top).toBeLessThan(160 / 2)
+    // The cached 50k keeps the bar off the baseline. The 10k growth keeps it below 160k.
+    expect(bottom).toBeLessThan(160 * 0.85)
+    expect(top).toBeGreaterThan(160 * 0.15)
+    expect(bottom - top).toBeGreaterThan(160 / 3)
+    expect(screen.getByText("rehydration")).toBeInTheDocument()
   })
 
   it("draws no cache-rehydration marker when no bucket is flagged", () => {
@@ -173,7 +183,7 @@ describe("ContextTokensChart", () => {
     expect(screen.queryAllByText(/→|effort |^fast$/)).toEqual([])
   })
 
-  it("draws a lighter bar up to the context level for a cache-routing-miss bucket", () => {
+  it("draws a provider cache miss as a thin unlabeled rewrite", () => {
     const buckets = [
       bucket({ contextTokens: 200_000 }),
       bucket({
@@ -181,6 +191,12 @@ describe("ContextTokensChart", () => {
         cacheWriteTokens: 40_000,
         rewriteTokens: 40_000,
         isCacheRoutingMiss: true,
+        cacheRehydration: {
+          contextTokens: 50_000,
+          stillCachedTokens: 10_000,
+          rewrittenTokens: 40_000,
+          growthTokens: 0,
+        },
       }),
       bucket({ contextTokens: 200_000 }),
     ]
@@ -190,7 +206,9 @@ describe("ContextTokensChart", () => {
 
     const bar = container.querySelector('line[stroke="var(--color-context-critical)"]')
     expect(bar).not.toBeNull()
-    expect(bar?.getAttribute("stroke-opacity")).toBe("0.2")
+    expect(bar?.getAttribute("stroke-opacity")).toBe("0.6")
+    expect(bar?.getAttribute("stroke-width")).toBe("2")
+    expect(screen.queryByText(/miss|rewrite/)).not.toBeInTheDocument()
   })
 
   it("draws consecutive material rewrites without cache-event flags", () => {
@@ -207,7 +225,12 @@ describe("ContextTokensChart", () => {
     expect(
       container.querySelectorAll('line[stroke="var(--color-context-critical)"]'),
     ).toHaveLength(2)
-    expect(screen.getAllByText("rewrite")).toHaveLength(2)
+    for (const line of container.querySelectorAll(
+      'line[stroke="var(--color-context-critical)"]',
+    )) {
+      expect(line.getAttribute("stroke-width")).toBe("2")
+    }
+    expect(screen.queryByText("rewrite")).not.toBeInTheDocument()
   })
 
   it("draws sub-agent tokens as a third series on the token axis", () => {
@@ -233,6 +256,7 @@ function point(over: Partial<ContextTokenPoint> = {}): ContextTokenPoint {
     cacheWriteTokens: 0,
     rewriteTokens: 0,
     isCacheRehydration: false,
+    cacheRehydration: null,
     isCacheRoutingMiss: false,
     secsSincePriorTurn: null,
     subagentLaunches: 0,
@@ -367,19 +391,47 @@ describe("ContextTokensTooltip", () => {
     expect(screen.queryByText("25% through")).not.toBeInTheDocument()
   })
 
-  it("names a cache rehydration by its cache write", () => {
+  it("explains a cache rehydration as the current context composition", () => {
     render(
       <ContextTokensTooltip
         active
         contextWindow={200_000}
-        payload={[{ payload: point({ isCacheRehydration: true, cacheWriteTokens: 40_000 }) }]}
+        payload={[
+          {
+            payload: point({
+              contextTokens: 63_888,
+              tokensIn: 37_537,
+              cacheReadTokens: 26_351,
+              cacheWriteTokens: 37_535,
+              rewriteTokens: 35_397,
+              isCacheRehydration: true,
+              cacheRehydration: {
+                contextTokens: 63_888,
+                stillCachedTokens: 26_351,
+                rewrittenTokens: 35_397,
+                growthTokens: 2_140,
+                userInactiveSecs: 9_295,
+              },
+            }),
+          },
+        ]}
       />,
     )
 
-    expect(screen.getByText("Cache rehydrated · 40.0k written")).toBeInTheDocument()
+    expect(screen.getByText("Cache rehydration · 63.9k context")).toBeInTheDocument()
+    expect(screen.getByText("Context · 63.9k (32%)")).toBeInTheDocument()
+    expect(screen.getByText("Still cached · 26.4k")).toBeInTheDocument()
+    expect(screen.getByText("Old context rewritten · 35.4k")).toBeInTheDocument()
+    expect(screen.getByText("Context growth · 2.1k")).toBeInTheDocument()
+    expect(screen.getByText("User inactive · 2h 35m")).toBeInTheDocument()
+    expect(screen.queryByText(/^Cache read/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Cache write/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Context rewrite/)).not.toBeInTheDocument()
+    expect(screen.queryByText("Tokens")).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Parent in/)).not.toBeInTheDocument()
   })
 
-  it("names a cache routing miss by its re-sent input when no write is reported", () => {
+  it("names a provider cache miss by its rewritten old context", () => {
     render(
       <ContextTokensTooltip
         active
@@ -389,14 +441,22 @@ describe("ContextTokensTooltip", () => {
             payload: point({
               isCacheRoutingMiss: true,
               cacheWriteTokens: 0,
-              tokensIn: 12_000,
+              tokensIn: 42_296,
+              cacheRehydration: {
+                contextTokens: 64_696,
+                stillCachedTokens: 22_400,
+                rewrittenTokens: 41_724,
+                growthTokens: 572,
+              },
             }),
           },
         ]}
       />,
     )
 
-    expect(screen.getByText("Cache routing miss · 12.0k re-sent uncached")).toBeInTheDocument()
+    expect(
+      screen.getByText("Provider cache miss · 41.7k old context uncached"),
+    ).toBeInTheDocument()
   })
 
   it("names a derived rewrite separately from a reported cache write", () => {

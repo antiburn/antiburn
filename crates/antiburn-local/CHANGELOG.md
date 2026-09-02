@@ -34,6 +34,9 @@ version and refuses the release if there is none.
 
 ### Changed
 
+- Material cache rebuilds after a user resumes are cache rehydrations after 60
+  minutes for Claude and 30 minutes for Codex. Other rebuilds are provider
+  cache misses. Zero-only cache-write fields use loss-and-recovery inference.
 - **Breaking:** `Explorers::discover_recent_sessions` is removed; callers use
   `discover_recent_sessions_with_progress`.
 - The evidence fold keeps one accumulator per input and rebuilds the folded

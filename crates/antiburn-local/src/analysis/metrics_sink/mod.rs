@@ -93,7 +93,6 @@ impl OnlineTallies {
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 struct StoredSummary {
-    cache_write_tokens_available: bool,
     context_window: Option<u64>,
     model: Option<String>,
     started_at_ms: Option<i64>,
@@ -153,9 +152,10 @@ pub struct SessionMetricsAccumulator {
 
 impl SessionMetricsAccumulator {
     pub fn new(agent: impl Into<String>, session_id: impl Into<String>) -> Self {
+        let agent = agent.into();
         Self {
             identity: MetricsIdentity {
-                agent: agent.into(),
+                agent: agent.clone(),
                 session_id: session_id.into(),
             },
             slots: ProgressSlots::default(),
@@ -172,7 +172,7 @@ impl SessionMetricsAccumulator {
             tallies: OnlineTallies::default(),
             summary: None,
             efficiency: EfficiencyReducer::default(),
-            cache: CacheReducer::default(),
+            cache: CacheReducer::new(&agent),
             skill_marks: Vec::new(),
             skill_duration_heap: BinaryHeap::new(),
             late_candidates: Vec::new(),
@@ -390,6 +390,9 @@ impl SessionMetricsAccumulator {
         self.observe_model_usage(&event, effective_ts, ordinal);
 
         if event.source == EventSource::Parent {
+            if event.role == Role::User {
+                self.cache.observe_user_prompt(event.ts_ms);
+            }
             if event.is_compaction_boundary {
                 self.cache.mark_compaction();
             }
@@ -399,7 +402,6 @@ impl SessionMetricsAccumulator {
                     key: (effective_ts, ordinal),
                     timestamp: event.ts_ms,
                     context_tokens,
-                    fresh_input_tokens: event.usage.input_tokens,
                     cache_read_tokens: event.usage.cache_read_tokens,
                     cache_write_tokens: event.usage.cache_creation_tokens,
                     model: self.active_model,
@@ -829,7 +831,6 @@ impl SessionMetricsAccumulator {
         let observed_mcp_names = count_map(&self.mcp_tool_calls, &self.mcp_interner);
         let observed_tool_names = string_count_map(&self.tool_match_counts);
         self.summary = Some(StoredSummary {
-            cache_write_tokens_available: summary.cache_write_tokens_available,
             context_window: summary.context_window,
             model: summary.model.map(|model| tally::truncate_name(&model)),
             started_at_ms: summary.started_at_ms,
@@ -848,6 +849,7 @@ impl SessionMetricsAccumulator {
     fn project(&self, axis: &ActiveSegments) -> SessionMetrics {
         let empty = StoredSummary::default();
         let summary = self.summary.as_ref().unwrap_or(&empty);
+        let use_explicit_cache_writes = self.cache.has_explicit_cache_writes();
         let active_ms = axis.active_ms();
         let mut buckets = vec![Bucket::default(); BUCKETS];
         let mut bucket_state = vec![BucketState::default(); BUCKETS];
@@ -863,7 +865,7 @@ impl SessionMetricsAccumulator {
                 &mut buckets[index],
                 &mut bucket_state[index],
                 slot,
-                summary.cache_write_tokens_available,
+                use_explicit_cache_writes,
             );
             fold_slot_compactions(
                 &mut buckets,
@@ -875,7 +877,7 @@ impl SessionMetricsAccumulator {
             );
         }
         let mut projected_cache = self.cache.clone();
-        if !summary.cache_write_tokens_available {
+        if !use_explicit_cache_writes {
             let fallback = summary.model.as_deref().map(IdentityKey::new);
             for patch in projected_cache.resolve_deferred(fallback) {
                 let index = bucket_index(
@@ -975,12 +977,12 @@ impl SessionMetricsAccumulator {
             summary.context_window.unwrap_or(CONTEXT_WINDOW),
             self.tallies.peak_context_tokens,
         );
-        let cache_rehydration_count = if summary.cache_write_tokens_available {
+        let cache_rehydration_count = if use_explicit_cache_writes {
             self.cache.mode_1_rehydrations
         } else {
             projected_cache.mode_2_rehydrations
         };
-        let cache_routing_miss_count = if summary.cache_write_tokens_available {
+        let cache_routing_miss_count = if use_explicit_cache_writes {
             self.cache.mode_1_routing_misses
         } else {
             projected_cache.mode_2_routing_misses
@@ -1079,13 +1081,14 @@ struct BucketState {
     compaction: Option<CompactionMark>,
     first_gap: Option<(u64, u64)>,
     rehydration_gap: Option<(u64, Option<u64>)>,
+    rehydration: Option<slots::CacheRehydrationMark>,
 }
 
 fn fold_slot(
     bucket: &mut Bucket,
     state: &mut BucketState,
     slot: &SlotAggregate,
-    cache_write_tokens_available: bool,
+    use_explicit_cache_writes: bool,
 ) {
     bucket.tokens_in = bucket.tokens_in.saturating_add(slot.tokens_in);
     bucket.tokens_out = bucket.tokens_out.saturating_add(slot.tokens_out);
@@ -1112,7 +1115,7 @@ fn fold_slot(
     {
         state.first_gap = slot.first_gap;
     }
-    let cache = if cache_write_tokens_available {
+    let cache = if use_explicit_cache_writes {
         slot.cache_mode_1
     } else {
         slot.cache_mode_2
@@ -1155,6 +1158,13 @@ fn fold_cache_slot(bucket: &mut Bucket, state: &mut BucketState, cache: slots::C
     }) {
         state.rehydration_gap = cache.rehydration_gap;
     }
+    if cache.rehydration.is_some_and(|value| {
+        state
+            .rehydration
+            .is_none_or(|current| value.ordinal > current.ordinal)
+    }) {
+        state.rehydration = cache.rehydration;
+    }
 }
 
 fn finish_bucket_state(
@@ -1187,6 +1197,19 @@ fn finish_bucket_state(
             .rehydration_gap
             .map(|(_, gap)| gap)
             .unwrap_or_else(|| state.first_gap.map(|(_, gap)| gap));
+        bucket.cache_rehydration = state.rehydration.map(public_cache_rehydration);
+    }
+}
+
+fn public_cache_rehydration(
+    mark: slots::CacheRehydrationMark,
+) -> crate::analysis::engine::CacheRehydration {
+    crate::analysis::engine::CacheRehydration {
+        context_tokens: mark.context_tokens,
+        still_cached_tokens: mark.still_cached_tokens,
+        rewritten_tokens: mark.rewritten_tokens,
+        growth_tokens: mark.growth_tokens,
+        user_inactive_secs: mark.user_inactive_secs,
     }
 }
 
@@ -1710,8 +1733,10 @@ fn reproject_exact_merged_cache(
     {
         return;
     }
+    let use_explicit_cache_writes = slots.iter().any(|slot| slot.cache_write_tokens > 0);
     for bucket in &mut metrics.buckets {
         bucket.is_cache_rehydration = false;
+        bucket.cache_rehydration = None;
         bucket.is_cache_routing_miss = false;
         bucket.secs_since_prior_turn = None;
     }
@@ -1722,10 +1747,13 @@ fn reproject_exact_merged_cache(
     let summary = parent.summary.as_ref().unwrap_or(&empty_summary);
     let fallback = summary.model.as_deref().map(IdentityKey::new);
     let mut active_model = fallback;
-    let mut reducer = CacheReducer::default();
+    let mut reducer = CacheReducer::new(&parent.identity.agent);
     let mut mode_2_patches = Vec::new();
 
     for slot in slots {
+        if slot.user_prompts > 0 {
+            reducer.observe_user_prompt(slot.timestamp);
+        }
         if let Some(model) = slot.model {
             let value = parent.bucket_model_interner.get(model.name);
             if !value.is_empty() {
@@ -1743,7 +1771,6 @@ fn reproject_exact_merged_cache(
             key,
             timestamp: slot.timestamp,
             context_tokens: slot.context_tokens,
-            fresh_input_tokens: slot.tokens_in.saturating_sub(slot.cache_write_tokens),
             cache_read_tokens: slot.cache_read_tokens,
             cache_write_tokens: slot.cache_write_tokens,
             model: active_model,
@@ -1754,7 +1781,7 @@ fn reproject_exact_merged_cache(
         {
             first_gaps[index] = Some((key.1, gap));
         }
-        if summary.cache_write_tokens_available {
+        if use_explicit_cache_writes {
             apply_projected_cache_slot(
                 &mut metrics.buckets[index],
                 &mut rehydration_gaps[index],
@@ -1766,7 +1793,7 @@ fn reproject_exact_merged_cache(
         }
     }
     mode_2_patches.extend(reducer.resolve_deferred(fallback));
-    if !summary.cache_write_tokens_available {
+    if !use_explicit_cache_writes {
         for patch in mode_2_patches {
             let index = bucket_index(
                 patch.key.0,
@@ -1787,12 +1814,12 @@ fn reproject_exact_merged_cache(
             .map(|(_, gap)| gap)
             .unwrap_or_else(|| first_gaps[index].map(|(_, gap)| gap));
     }
-    metrics.cache_rehydration_count = if summary.cache_write_tokens_available {
+    metrics.cache_rehydration_count = if use_explicit_cache_writes {
         reducer.mode_1_rehydrations
     } else {
         reducer.mode_2_rehydrations
     };
-    metrics.cache_routing_miss_count = if summary.cache_write_tokens_available {
+    metrics.cache_routing_miss_count = if use_explicit_cache_writes {
         reducer.mode_1_routing_misses
     } else {
         reducer.mode_2_routing_misses
@@ -1806,11 +1833,12 @@ fn apply_projected_cache_slot(
 ) {
     bucket.is_cache_rehydration |= cache.is_rehydration;
     bucket.is_cache_routing_miss |= cache.is_routing_miss;
-    if cache
+    let replaces_rehydration = cache
         .rehydration_gap
-        .is_some_and(|incoming| rehydration_gap.is_none_or(|current| incoming.0 > current.0))
-    {
+        .is_some_and(|incoming| rehydration_gap.is_none_or(|current| incoming.0 > current.0));
+    if replaces_rehydration {
         *rehydration_gap = cache.rehydration_gap;
+        bucket.cache_rehydration = cache.rehydration.map(public_cache_rehydration);
     }
 }
 

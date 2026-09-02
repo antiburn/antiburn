@@ -3,7 +3,7 @@ use std::mem::size_of;
 
 use crate::analysis::efficiency::EfficiencyTotals;
 use crate::analysis::engine::{
-    BUCKETS, Bucket, CONTEXT_WINDOW, IDLE_GAP_MS, SessionMetrics, SkillUse,
+    BUCKETS, Bucket, CONTEXT_WINDOW, CacheRehydration, IDLE_GAP_MS, SessionMetrics, SkillUse,
 };
 use crate::analysis::interface::{NormalizedRecord, RecordSink, SessionSummary};
 use crate::analysis::model::{
@@ -14,16 +14,11 @@ use crate::pricing::ModelTokens;
 
 const CONTEXT_WINDOW_TIERS: [u64; 2] = [200_000, 1_000_000];
 const CACHE_REHYDRATION_MIN_CONTEXT_TOKENS: u64 = 20_000;
-/// The gap since the prior parent turn must reach this many seconds. No
-/// provider TTL is shorter than five minutes, so a faster miss is a routing
-/// miss and not a lapse. A turn with no timestamp counts as a rehydration.
-const CACHE_REHYDRATION_MIN_GAP_SECS: u64 = 60;
-const CACHE_REHYDRATION_WRITE_RATIO: f64 = 0.5;
 const CACHE_REHYDRATION_PRIOR_READ_RATIO: f64 = 0.5;
-const CACHE_REHYDRATION_MISS_READ_RATIO: f64 = 0.2;
 const CACHE_REHYDRATION_CONTEXT_RETENTION_RATIO: f64 = 0.8;
-const CACHE_REHYDRATION_REPLAY_RATIO: f64 = 0.5;
 const CACHE_REHYDRATION_RECOVERY_READ_RATIO: f64 = 0.5;
+const CLAUDE_REHYDRATION_MIN_USER_INACTIVITY_SECS: u64 = 60 * 60;
+const CODEX_REHYDRATION_MIN_USER_INACTIVITY_SECS: u64 = 30 * 60;
 
 pub(crate) struct MetricsIdentity {
     pub(crate) agent: String,
@@ -285,36 +280,38 @@ fn push_stream<'a>(
 struct CacheTurn<'a> {
     event_index: usize,
     context_tokens: u64,
-    fresh_input_tokens: u64,
     cache_read_tokens: u64,
     first_turn_after_compaction: bool,
-    secs_since_prior_turn: Option<u64>,
+    user_inactive_secs: Option<u64>,
     model: Option<&'a str>,
 }
 
-/// A candidate turn is a rehydration when its gap can hold a TTL lapse.
-/// Otherwise it is a routing miss: the provider missed the cache inside a
-/// fast tool burst. That costs the same, but the user cannot avoid it.
-fn gap_allows_rehydration(secs_since_prior_turn: Option<u64>) -> bool {
-    secs_since_prior_turn.is_none_or(|secs| secs >= CACHE_REHYDRATION_MIN_GAP_SECS)
-}
-
-/// The turns that re-sent their context uncached, split by cause.
+/// The material cache events and their user-inactivity classification.
 #[derive(Default)]
 struct CacheMissEvents {
-    /// Event indices of turns that follow a TTL lapse.
     rehydrations: HashSet<usize>,
-    /// Event indices of turns that miss the cache inside a fast burst.
-    routing_misses: HashSet<usize>,
+    provider_misses: HashSet<usize>,
+    compositions: HashMap<usize, CacheRehydration>,
 }
 
 impl CacheMissEvents {
-    fn insert(&mut self, turn: CacheTurn<'_>) {
-        if gap_allows_rehydration(turn.secs_since_prior_turn) {
+    fn insert(
+        &mut self,
+        previous_context: u64,
+        turn: CacheTurn<'_>,
+        minimum_user_inactivity_secs: Option<u64>,
+    ) {
+        let is_rehydration = minimum_user_inactivity_secs.is_some_and(|minimum| {
+            turn.user_inactive_secs
+                .is_some_and(|inactivity| inactivity >= minimum)
+        });
+        if is_rehydration {
             self.rehydrations.insert(turn.event_index);
         } else {
-            self.routing_misses.insert(turn.event_index);
+            self.provider_misses.insert(turn.event_index);
         }
+        self.compositions
+            .insert(turn.event_index, cache_rehydration(previous_context, turn));
     }
 }
 
@@ -325,6 +322,22 @@ fn cache_ratio(tokens: u64, context_tokens: u64) -> f64 {
     tokens as f64 / context_tokens as f64
 }
 
+fn cache_rehydration(previous_context: u64, turn: CacheTurn<'_>) -> CacheRehydration {
+    let context_tokens = turn.context_tokens;
+    let still_cached_tokens = turn.cache_read_tokens.min(context_tokens);
+    let uncached_tokens = context_tokens.saturating_sub(still_cached_tokens);
+    let growth_tokens = context_tokens
+        .saturating_sub(previous_context)
+        .min(uncached_tokens);
+    CacheRehydration {
+        context_tokens,
+        still_cached_tokens,
+        rewritten_tokens: uncached_tokens.saturating_sub(growth_tokens),
+        growth_tokens,
+        user_inactive_secs: turn.user_inactive_secs,
+    }
+}
+
 fn same_known_model(left: Option<&str>, right: Option<&str>) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => left == right,
@@ -332,31 +345,24 @@ fn same_known_model(left: Option<&str>, right: Option<&str>) -> bool {
     }
 }
 
-fn is_cache_rehydration_turn(
-    context_tokens: u64,
+fn is_direct_cache_event(
+    previous: CacheTurn<'_>,
+    current: CacheTurn<'_>,
     cache_write_tokens: u64,
-    previous_context_tokens: u64,
-    previous_cache_read_tokens: u64,
-    first_turn_after_compaction: bool,
 ) -> bool {
-    if first_turn_after_compaction
-        || context_tokens < CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
-        || previous_context_tokens == 0
-    {
-        return false;
-    }
-    cache_ratio(cache_write_tokens, context_tokens) >= CACHE_REHYDRATION_WRITE_RATIO
-        && cache_ratio(previous_cache_read_tokens, previous_context_tokens)
-            >= CACHE_REHYDRATION_PRIOR_READ_RATIO
+    cache_write_tokens >= CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
+        && is_material_cache_event(previous, current)
 }
 
 fn inferred_cache_rehydration_turn(previous: CacheTurn<'_>, current: CacheTurn<'_>) -> bool {
+    is_material_cache_event(previous, current)
+}
+
+fn is_material_cache_event(previous: CacheTurn<'_>, current: CacheTurn<'_>) -> bool {
     if current.first_turn_after_compaction
         || current.context_tokens < CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
         || cache_ratio(previous.cache_read_tokens, previous.context_tokens)
             < CACHE_REHYDRATION_PRIOR_READ_RATIO
-        || cache_ratio(current.cache_read_tokens, current.context_tokens)
-            > CACHE_REHYDRATION_MISS_READ_RATIO
         || !same_known_model(previous.model, current.model)
     {
         return false;
@@ -365,28 +371,42 @@ fn inferred_cache_rehydration_turn(previous: CacheTurn<'_>, current: CacheTurn<'
     if retained_context_ratio < CACHE_REHYDRATION_CONTEXT_RETENTION_RATIO {
         return false;
     }
-    let context_growth = current
-        .context_tokens
-        .saturating_sub(previous.context_tokens);
-    let replayed_input = current.fresh_input_tokens.saturating_sub(context_growth);
-    cache_ratio(replayed_input, current.context_tokens) >= CACHE_REHYDRATION_REPLAY_RATIO
+    cache_rehydration(previous.context_tokens, current).rewritten_tokens
+        >= CACHE_REHYDRATION_MIN_CONTEXT_TOKENS
+}
+
+fn rehydration_min_user_inactivity_secs(agent: &str) -> Option<u64> {
+    match agent {
+        "claude" => Some(CLAUDE_REHYDRATION_MIN_USER_INACTIVITY_SECS),
+        "codex" => Some(CODEX_REHYDRATION_MIN_USER_INACTIVITY_SECS),
+        _ => None,
+    }
 }
 
 fn cache_miss_events(
     turns: &[(EventSource, &MetricTurn)],
     summary: &SessionSummary,
+    agent: &str,
 ) -> CacheMissEvents {
     let mut events = CacheMissEvents::default();
     let mut cache_turns = Vec::new();
-    let mut previous_context = 0u64;
-    let mut previous_cache_read = 0u64;
     let mut first_turn_after_compaction = false;
-    let mut previous_turn_ts: Option<i64> = None;
+    let mut has_explicit_cache_writes = false;
     let mut active_model = summary.model.as_deref();
+    let mut previous_turn_ts: Option<i64> = None;
+    let mut pending_user_prompt = false;
+    let mut pending_user_prompt_ts = None;
+    let minimum_user_inactivity_secs = rehydration_min_user_inactivity_secs(agent);
 
     for (event_index, (source, turn)) in turns.iter().enumerate() {
         if *source != EventSource::Parent {
             continue;
+        }
+        if turn.role == Role::User {
+            pending_user_prompt = true;
+            if let Some(timestamp) = turn.ts_ms {
+                pending_user_prompt_ts.get_or_insert(timestamp);
+            }
         }
         if let Some(model) = turn.model.as_deref().filter(|model| !model.is_empty()) {
             active_model = Some(model);
@@ -398,38 +418,40 @@ fn cache_miss_events(
         if context_tokens == 0 {
             continue;
         }
-        let secs_since_prior_turn = turn
-            .ts_ms
-            .zip(previous_turn_ts)
-            .map(|(current, prior)| u64::try_from((current - prior).max(0) / 1000).unwrap_or(0));
         let cache_turn = CacheTurn {
             event_index,
             context_tokens,
-            fresh_input_tokens: turn.usage.input_tokens,
             cache_read_tokens: turn.usage.cache_read_tokens,
             first_turn_after_compaction,
-            secs_since_prior_turn,
+            user_inactive_secs: pending_user_prompt
+                .then(|| {
+                    pending_user_prompt_ts
+                        .zip(previous_turn_ts)
+                        .map(|(prompt, previous)| {
+                            u64::try_from((prompt - previous).max(0) / 1_000).unwrap_or(0)
+                        })
+                })
+                .flatten(),
             model: active_model,
         };
-        if summary.cache_write_tokens_available
-            && is_cache_rehydration_turn(
-                context_tokens,
-                turn.usage.cache_creation_tokens,
-                previous_context,
-                previous_cache_read,
-                first_turn_after_compaction,
-            )
+        pending_user_prompt = false;
+        pending_user_prompt_ts = None;
+        has_explicit_cache_writes |= turn.usage.cache_creation_tokens > 0;
+        if let Some(previous) = cache_turns.last().copied()
+            && is_direct_cache_event(previous, cache_turn, turn.usage.cache_creation_tokens)
         {
-            events.insert(cache_turn);
+            events.insert(
+                previous.context_tokens,
+                cache_turn,
+                minimum_user_inactivity_secs,
+            );
         }
         cache_turns.push(cache_turn);
-        previous_context = context_tokens;
-        previous_cache_read = turn.usage.cache_read_tokens;
-        first_turn_after_compaction = false;
         previous_turn_ts = turn.ts_ms;
+        first_turn_after_compaction = false;
     }
 
-    if summary.cache_write_tokens_available {
+    if has_explicit_cache_writes {
         return events;
     }
     for window in cache_turns.windows(3) {
@@ -444,7 +466,11 @@ fn cache_miss_events(
             && recovery_retention >= CACHE_REHYDRATION_CONTEXT_RETENTION_RATIO
             && same_known_model(current.model, next.model)
         {
-            events.insert(*current);
+            events.insert(
+                previous.context_tokens,
+                *current,
+                minimum_user_inactivity_secs,
+            );
         }
     }
     events
@@ -694,11 +720,11 @@ pub(crate) fn finalize_metrics(
     let mut mcp_tool_calls: HashMap<String, u32> = HashMap::new();
     let mut tool_calls_by_name: HashMap<String, u32> = HashMap::new();
     let mut buckets = vec![Bucket::default(); BUCKETS];
-    let cache_miss_events = cache_miss_events(turns, summary);
+    let cache_miss_events = cache_miss_events(turns, summary, &identity.agent);
     let mut last_progress = 0.0f32;
     let mut previous_turn_ts: Option<i64> = None;
     let mut cache_rehydration_count = 0u64;
-    let mut cache_routing_miss_count = 0u64;
+    let mut provider_cache_miss_count = 0u64;
 
     for (index, (source, turn)) in turns.iter().enumerate() {
         if active_ms > 0
@@ -747,15 +773,20 @@ pub(crate) fn finalize_metrics(
                         u64::try_from((current - prior).max(0) / 1000).unwrap_or(0)
                     });
                 let is_cache_rehydration = cache_miss_events.rehydrations.contains(&index);
+                let is_provider_cache_miss = cache_miss_events.provider_misses.contains(&index);
                 if is_cache_rehydration {
                     bucket.is_cache_rehydration = true;
                     cache_rehydration_count = cache_rehydration_count.saturating_add(1);
                 }
-                if cache_miss_events.routing_misses.contains(&index) {
+                if is_provider_cache_miss {
                     bucket.is_cache_routing_miss = true;
-                    cache_routing_miss_count = cache_routing_miss_count.saturating_add(1);
+                    provider_cache_miss_count = provider_cache_miss_count.saturating_add(1);
+                }
+                if let Some(composition) = cache_miss_events.compositions.get(&index) {
+                    bucket.cache_rehydration = Some(*composition);
                 }
                 if is_cache_rehydration
+                    || is_provider_cache_miss
                     || (!bucket.is_cache_rehydration && bucket.secs_since_prior_turn.is_none())
                 {
                     bucket.secs_since_prior_turn = secs_since_prior_turn;
@@ -900,7 +931,7 @@ pub(crate) fn finalize_metrics(
         tokens_out: tallies.tokens_out,
         peak_context_tokens: tallies.peak_context_tokens,
         compaction_count: tallies.compaction_count,
-        cache_routing_miss_count,
+        cache_routing_miss_count: provider_cache_miss_count,
         cache_rehydration_count,
         context_available,
         context_window,
