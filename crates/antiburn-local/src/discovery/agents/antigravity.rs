@@ -104,15 +104,12 @@ impl AgentExplorer for AntigravityExplorer {
             None => HashSet::new(),
         };
 
-        let databases = conversation_databases_in(&home).await;
+        let cutoff = now.saturating_sub(since_secs.max(0));
+        let databases = conversation_databases_in(&home, cutoff).await;
         let database_paths: HashSet<PathBuf> =
             databases.iter().map(|(path, _, _)| path.clone()).collect();
-        let cutoff = now.saturating_sub(since_secs.max(0));
         let mut logs: Vec<SessionLog> = Vec::with_capacity(files.len() + databases.len());
         for (db_path, session_id, mtime_epoch) in databases {
-            if mtime_epoch < cutoff {
-                continue;
-            }
             if child_ids.contains(&session_id) {
                 continue;
             }
@@ -404,7 +401,11 @@ fn gemini_subroots_in(home: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-async fn conversation_databases_in(home: &Path) -> Vec<(PathBuf, String, i64)> {
+/// Conversation databases within `cutoff`, each with its combined db + sibling
+/// transcript mtime. `cutoff` is applied from cheap stats alone, before
+/// [`database_has_usage_tables`] opens the database — an old, quiet
+/// conversation is never opened just to find out it is old and quiet.
+async fn conversation_databases_in(home: &Path, cutoff: i64) -> Vec<(PathBuf, String, i64)> {
     let mut databases = Vec::new();
     for root in gemini_subroots_in(home) {
         let Ok(mut entries) = tokio::fs::read_dir(root.join("conversations")).await else {
@@ -430,6 +431,18 @@ async fn conversation_databases_in(home: &Path) -> Vec<(PathBuf, String, i64)> {
             else {
                 continue;
             };
+            // The sibling transcript can be newer than the database; a stat
+            // is cheap, so check it before deciding this entry is stale.
+            let transcript_mtime = match sibling_brain_transcript(&path, &session_id) {
+                Some(transcript) => database_mtime_epoch(&transcript)
+                    .await
+                    .unwrap_or(mtime_epoch),
+                None => mtime_epoch,
+            };
+            let combined_mtime = mtime_epoch.max(transcript_mtime);
+            if combined_mtime < cutoff {
+                continue;
+            }
             let fingerprint_path = path.clone();
             if !tokio::task::spawn_blocking(move || database_has_usage_tables(&fingerprint_path))
                 .await
@@ -437,13 +450,7 @@ async fn conversation_databases_in(home: &Path) -> Vec<(PathBuf, String, i64)> {
             {
                 continue;
             }
-            let transcript_mtime = match sibling_brain_transcript(&path, &session_id) {
-                Some(transcript) => database_mtime_epoch(&transcript)
-                    .await
-                    .unwrap_or(mtime_epoch),
-                None => mtime_epoch,
-            };
-            databases.push((path, session_id, mtime_epoch.max(transcript_mtime)));
+            databases.push((path, session_id, combined_mtime));
         }
     }
     databases.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.0.cmp(&right.0)));
@@ -489,6 +496,8 @@ fn open_database(path: &Path) -> rusqlite::Result<Connection> {
 }
 
 fn database_has_usage_tables(path: &Path) -> bool {
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    record_tracked_database_open(path);
     let Ok(connection) = open_database(path) else {
         return false;
     };
@@ -498,6 +507,46 @@ fn database_has_usage_tables(path: &Path) -> bool {
     ]
     .into_iter()
     .any(|query| connection.prepare(query).is_ok())
+}
+
+/// How many times [`database_has_usage_tables`] opened a tracked path since
+/// the matching [`track_database_opens`] call. Backs the discovery-pruning
+/// test that an old, quiet conversation is never opened.
+#[cfg(any(test, feature = "test-instrumentation"))]
+static TRACKED_DATABASE_OPENS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Arm open-counting for `path`. [`take_tracked_database_opens`] reports the
+/// count since this call.
+#[doc(hidden)]
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub fn track_database_opens(path: &Path) {
+    TRACKED_DATABASE_OPENS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(path.to_path_buf(), 0);
+}
+
+#[cfg(any(test, feature = "test-instrumentation"))]
+fn record_tracked_database_open(path: &Path) {
+    let mut opens = TRACKED_DATABASE_OPENS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(count) = opens.get_mut(path) {
+        *count += 1;
+    }
+}
+
+/// Take the tracked open count for `path` and stop tracking it.
+#[doc(hidden)]
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub fn take_tracked_database_opens(path: &Path) -> usize {
+    TRACKED_DATABASE_OPENS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(path)
+        .unwrap_or(0)
 }
 
 pub(crate) fn db_fingerprint(path: &Path, session_id: &str) -> Option<(u64, u64)> {

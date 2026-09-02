@@ -6,7 +6,7 @@
 //! platform-equivalent config directory), which can advance a session's recency
 //! even when the underlying transcript file is not the freshest file on disk.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::discovery::scanner::{self, AgentKind, TitleSource};
@@ -360,7 +360,27 @@ fn file_mtime_epoch_blocking(path: &Path) -> Option<i64> {
         .map(|duration| duration.as_secs() as i64)
 }
 
+/// Cheap recency probe for a session's `subagents/` directory: one stat, no
+/// per-file listing or read. The directory's own mtime moves whenever a
+/// sub-agent transcript is added or removed, so this stands in for "has
+/// recent sub-agent activity" without opening every file inside.
+fn subagents_dir_mtime_epoch_blocking(parent_transcript: &Path) -> Option<i64> {
+    let dir = super::claude_subagents::subagents_dir(parent_transcript)?;
+    let metadata = std::fs::metadata(&dir).ok()?;
+    if !metadata.is_dir() {
+        return None;
+    }
+    metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs() as i64)
+}
+
 fn max_subagent_mtime_blocking(parent_transcript: &Path) -> Option<i64> {
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    record_tracked_subagent_sweep(parent_transcript);
     let subagents = super::claude_subagents::list_subagents_blocking(parent_transcript);
     let mut max_mtime = None;
     for subagent in subagents {
@@ -370,6 +390,46 @@ fn max_subagent_mtime_blocking(parent_transcript: &Path) -> Option<i64> {
         max_mtime = Some(max_mtime.map_or(mtime, |current: i64| current.max(mtime)));
     }
     max_mtime
+}
+
+/// How many times [`max_subagent_mtime_blocking`] swept a tracked parent's
+/// sub-agent files since the matching [`track_subagent_sweeps`] call. Backs
+/// the discovery-pruning test that an old, quiet session is never swept.
+#[cfg(any(test, feature = "test-instrumentation"))]
+static TRACKED_SUBAGENT_SWEEPS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Arm sweep-counting for `parent_transcript`. [`take_tracked_subagent_sweeps`]
+/// reports the count since this call.
+#[doc(hidden)]
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub fn track_subagent_sweeps(parent_transcript: &Path) {
+    TRACKED_SUBAGENT_SWEEPS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(parent_transcript.to_path_buf(), 0);
+}
+
+#[cfg(any(test, feature = "test-instrumentation"))]
+fn record_tracked_subagent_sweep(parent_transcript: &Path) {
+    let mut sweeps = TRACKED_SUBAGENT_SWEEPS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(count) = sweeps.get_mut(parent_transcript) {
+        *count += 1;
+    }
+}
+
+/// Take the tracked sweep count for `parent_transcript` and stop tracking it.
+#[doc(hidden)]
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub fn take_tracked_subagent_sweeps(parent_transcript: &Path) -> usize {
+    TRACKED_SUBAGENT_SWEEPS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(parent_transcript)
+        .unwrap_or(0)
 }
 
 /// Bump each discovered session's recency to its newest sub-agent transcript,
@@ -409,8 +469,20 @@ async fn update_discovered_with_subagent_mtimes(discovered: &mut HashMap<String,
 
 /// Find parents whose *sub-agents* are recent even when the parent transcript
 /// itself is not. One `spawn_blocking` for the whole project-dir walk.
-async fn recent_subagent_parent_logs(project_dirs: &[PathBuf], cutoff: i64) -> Vec<SessionLog> {
+///
+/// A parent already in `already_discovered` is skipped: its sub-agent
+/// recency is already folded in by `update_discovered_with_subagent_mtimes`.
+/// For every other session directory, a single stat of its `subagents/`
+/// directory gates the expensive per-file sweep, so a project with many old,
+/// quiet sessions costs one stat each rather than a full listing and read of
+/// every sub-agent transcript.
+async fn recent_subagent_parent_logs(
+    project_dirs: &[PathBuf],
+    already_discovered: &HashSet<String>,
+    cutoff: i64,
+) -> Vec<SessionLog> {
     let project_dirs = project_dirs.to_vec();
+    let already_discovered = already_discovered.clone();
     tokio::task::spawn_blocking(move || {
         let mut logs = Vec::new();
         for project_dir in &project_dirs {
@@ -430,6 +502,15 @@ async fn recent_subagent_parent_logs(project_dirs: &[PathBuf], cutoff: i64) -> V
                 };
                 let parent = project_dir.join(format!("{session_id}.jsonl"));
                 if !parent.try_exists().unwrap_or(false) {
+                    continue;
+                }
+                if already_discovered.contains(&parent.to_string_lossy().to_string()) {
+                    continue;
+                }
+                let Some(dir_mtime) = subagents_dir_mtime_epoch_blocking(&parent) else {
+                    continue;
+                };
+                if dir_mtime < cutoff {
                     continue;
                 }
                 let Some(subagent_mtime) = max_subagent_mtime_blocking(&parent) else {
@@ -461,7 +542,8 @@ async fn merge_recent_subagent_parent_logs(
     project_dirs: &[PathBuf],
     cutoff: i64,
 ) {
-    for log in recent_subagent_parent_logs(project_dirs, cutoff).await {
+    let already_discovered: HashSet<String> = discovered.keys().cloned().collect();
+    for log in recent_subagent_parent_logs(project_dirs, &already_discovered, cutoff).await {
         merge_session_log(discovered, log);
     }
 }
@@ -1065,6 +1147,90 @@ mod tests {
             SessionSource::ProviderDb { .. } => panic!("expected transcript file source"),
         }
         assert_eq!(logs[0].updated_at, Some(now - 5));
+    }
+
+    /// D7: an old, idle parent whose `subagents/` directory was touched
+    /// within the window is swept and its parent still surfaces. The sweep
+    /// count proves the per-file walk actually ran, not just that the
+    /// result looks right.
+    #[tokio::test]
+    async fn a_stale_parent_with_a_recently_touched_subagents_dir_is_swept_and_discovered() {
+        let home = TempDir::new().unwrap();
+        let now: i64 = 1_700_000_000;
+        let since_secs: i64 = 86_400;
+
+        let project = home
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join("-Users-foo-bar");
+        let subagents = project.join("sess-1").join("subagents");
+        tokio::fs::create_dir_all(&subagents).await.unwrap();
+
+        let parent = project.join("sess-1.jsonl");
+        tokio::fs::write(&parent, "{}\n").await.unwrap();
+        set_file_mtime(&parent, now - (since_secs + 10));
+
+        let subagent = subagents.join("agent-aaa.jsonl");
+        tokio::fs::write(&subagent, "{}\n").await.unwrap();
+        set_file_mtime(&subagent, now - 5);
+        // The directory keeps the real mtime it got from the write above,
+        // which is within the window: no need to override it.
+
+        track_subagent_sweeps(&parent);
+
+        let logs = discover_recent_including_subagent_parents(home.path(), now, since_secs).await;
+
+        assert_eq!(logs.len(), 1);
+        assert!(matches!(&logs[0].source, SessionSource::File(path) if path == &parent));
+        assert!(
+            take_tracked_subagent_sweeps(&parent) >= 1,
+            "a subagents dir touched within the window must be swept"
+        );
+    }
+
+    /// D7: an old, idle parent whose `subagents/` directory has also been
+    /// quiet since before the window is pruned before the per-file sweep
+    /// ever runs.
+    #[tokio::test]
+    async fn a_stale_parent_with_a_quiet_subagents_dir_is_pruned_and_never_swept() {
+        let home = TempDir::new().unwrap();
+        let now: i64 = 1_700_000_000;
+        let since_secs: i64 = 86_400;
+
+        let project = home
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join("-Users-foo-bar");
+        let subagents = project.join("sess-1").join("subagents");
+        tokio::fs::create_dir_all(&subagents).await.unwrap();
+
+        let parent = project.join("sess-1.jsonl");
+        tokio::fs::write(&parent, "{}\n").await.unwrap();
+        set_file_mtime(&parent, now - (since_secs + 10));
+
+        let subagent = subagents.join("agent-aaa.jsonl");
+        tokio::fs::write(&subagent, "{}\n").await.unwrap();
+        set_file_mtime(&subagent, now - (since_secs + 10));
+        // Back-date the directory itself: nothing has been added or
+        // removed since before the window, so the cheap probe must prune
+        // it without listing or stating the file inside.
+        set_file_mtime(&subagents, now - (since_secs + 10));
+
+        track_subagent_sweeps(&parent);
+
+        let logs = discover_recent_including_subagent_parents(home.path(), now, since_secs).await;
+
+        assert!(
+            logs.is_empty(),
+            "a stale parent with a quiet subagents dir must not be discovered"
+        );
+        assert_eq!(
+            take_tracked_subagent_sweeps(&parent),
+            0,
+            "a quiet subagents dir must be pruned before any per-file sweep"
+        );
     }
 
     #[tokio::test]

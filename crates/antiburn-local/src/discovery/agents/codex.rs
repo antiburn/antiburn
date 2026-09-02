@@ -42,7 +42,13 @@ pub struct CodexExplorer;
 #[async_trait]
 impl AgentExplorer for CodexExplorer {
     async fn discover_recent(&self, now: i64, since_secs: i64) -> Vec<SessionLog> {
-        let dirs = all_log_dirs().await;
+        let dirs = match home_dir() {
+            Some(home) => {
+                let codex_home = std::env::var("CODEX_HOME").ok().map(PathBuf::from);
+                log_dirs_in_windowed(&home, codex_home.as_deref(), now, since_secs).await
+            }
+            None => Vec::new(),
+        };
         // Spawned sub-agents are ordinary rollouts in this same tree. Drop them
         // so they never surface as top-level sessions or upload (Claude gets
         // this for free via its `subagents/` subdir). Empty set → no-op in the
@@ -622,38 +628,187 @@ async fn collect_dirs_with_jsonl(root: &Path, results: &mut Vec<PathBuf>) {
     let root = root.to_path_buf();
     let found = tokio::task::spawn_blocking(move || {
         let mut found = Vec::new();
-        let mut stack = vec![root];
-        while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-
-            let mut has_jsonl = false;
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let Ok(file_type) = entry.file_type() else {
-                    continue;
-                };
-                if file_type.is_dir() {
-                    stack.push(path);
-                } else if file_type.is_file()
-                    && !has_jsonl
-                    && path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-                {
-                    has_jsonl = true;
-                }
-            }
-
-            if has_jsonl {
-                found.push(dir);
-            }
-        }
+        collect_dirs_with_jsonl_blocking(&root, &mut found);
         found
     })
     .await
     .unwrap_or_default();
 
     results.extend(found);
+}
+
+/// The blocking core of [`collect_dirs_with_jsonl`]: a full, unwindowed walk
+/// from `root`, collecting every directory that directly holds a `.jsonl`
+/// file. Also the fallback a windowed walk uses below a directory whose name
+/// does not parse as its expected date component.
+fn collect_dirs_with_jsonl_blocking(root: &Path, found: &mut Vec<PathBuf>) {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let (subdirs, has_jsonl) = list_dir_jsonl_split(&dir);
+        if has_jsonl {
+            found.push(dir);
+        }
+        stack.extend(subdirs);
+    }
+}
+
+/// Read `dir` once, splitting its entries into subdirectories and whether it
+/// directly holds a `.jsonl` file. `(Vec::new(), false)` for a directory that
+/// cannot be read (missing, permission denied).
+fn list_dir_jsonl_split(dir: &Path) -> (Vec<PathBuf>, bool) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (Vec::new(), false);
+    };
+    let mut subdirs = Vec::new();
+    let mut has_jsonl = false;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            subdirs.push(path);
+        } else if file_type.is_file()
+            && !has_jsonl
+            && path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+        {
+            has_jsonl = true;
+        }
+    }
+    (subdirs, has_jsonl)
+}
+
+/// The `sessions` roots discovery walks for `discover_recent`, pruned to the
+/// `YYYY/MM/DD` date directories that can hold activity within `[now -
+/// since_secs, now]`. A date component that does not parse as its expected
+/// part (year, month, or day) falls back to a full, unpruned walk below it,
+/// so an irregular tree is never silently skipped.
+async fn log_dirs_in_windowed(
+    home: &Path,
+    codex_home: Option<&Path>,
+    now: i64,
+    since_secs: i64,
+) -> Vec<PathBuf> {
+    let session_roots = codex_session_roots(home, codex_home);
+    let window = date_window(now, since_secs);
+    let mut dirs = Vec::new();
+    for root in &session_roots {
+        collect_dirs_with_jsonl_in_window(root, window, &mut dirs).await;
+    }
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+/// The inclusive calendar-day range a `YYYY/MM/DD` directory name must fall
+/// in to be walked, with a one-day margin on each side for drift between the
+/// directory's local-time name and this window's UTC boundary. `None` when
+/// either boundary's date cannot be computed, so the caller falls back to an
+/// unpruned walk rather than risk excluding a real directory.
+fn date_window(now: i64, since_secs: i64) -> Option<(time::Date, time::Date)> {
+    let latest = epoch_to_date(now)?;
+    let earliest = epoch_to_date(now.saturating_sub(since_secs.max(0)))?;
+    Some((
+        earliest.previous_day().unwrap_or(earliest),
+        latest.next_day().unwrap_or(latest),
+    ))
+}
+
+fn epoch_to_date(epoch_secs: i64) -> Option<time::Date> {
+    time::OffsetDateTime::from_unix_timestamp(epoch_secs)
+        .ok()
+        .map(|dt| dt.date())
+}
+
+async fn collect_dirs_with_jsonl_in_window(
+    root: &Path,
+    window: Option<(time::Date, time::Date)>,
+    results: &mut Vec<PathBuf>,
+) {
+    let root = root.to_path_buf();
+    let found = tokio::task::spawn_blocking(move || {
+        let mut found = Vec::new();
+        match window {
+            Some(window) => collect_date_pruned_dirs_blocking(&root, window, &mut found),
+            None => collect_dirs_with_jsonl_blocking(&root, &mut found),
+        }
+        found
+    })
+    .await
+    .unwrap_or_default();
+    results.extend(found);
+}
+
+/// Walk the `sessions` root, pruning whole `YYYY/MM/DD` directories outside
+/// `window`. Each level is read once; a directory that directly holds a
+/// `.jsonl` file at the year or month level (an irregular layout) is still
+/// collected, matching the unwindowed walk.
+fn collect_date_pruned_dirs_blocking(
+    root: &Path,
+    window: (time::Date, time::Date),
+    found: &mut Vec<PathBuf>,
+) {
+    let (year_dirs, has_jsonl) = list_dir_jsonl_split(root);
+    if has_jsonl {
+        found.push(root.to_path_buf());
+    }
+    for year_dir in year_dirs {
+        match dir_name_as::<i32>(&year_dir) {
+            Some(year) => walk_codex_month_dirs(&year_dir, year, window, found),
+            None => collect_dirs_with_jsonl_blocking(&year_dir, found),
+        }
+    }
+}
+
+fn walk_codex_month_dirs(
+    year_dir: &Path,
+    year: i32,
+    window: (time::Date, time::Date),
+    found: &mut Vec<PathBuf>,
+) {
+    let (month_dirs, has_jsonl) = list_dir_jsonl_split(year_dir);
+    if has_jsonl {
+        found.push(year_dir.to_path_buf());
+    }
+    for month_dir in month_dirs {
+        match dir_name_as::<u8>(&month_dir).and_then(|m| time::Month::try_from(m).ok()) {
+            Some(month) => walk_codex_day_dirs(&month_dir, year, month, window, found),
+            None => collect_dirs_with_jsonl_blocking(&month_dir, found),
+        }
+    }
+}
+
+fn walk_codex_day_dirs(
+    month_dir: &Path,
+    year: i32,
+    month: time::Month,
+    window: (time::Date, time::Date),
+    found: &mut Vec<PathBuf>,
+) {
+    let (day_dirs, has_jsonl) = list_dir_jsonl_split(month_dir);
+    if has_jsonl {
+        found.push(month_dir.to_path_buf());
+    }
+    for day_dir in day_dirs {
+        let date = dir_name_as::<u8>(&day_dir)
+            .and_then(|day| time::Date::from_calendar_date(year, month, day).ok());
+        match date {
+            // A real calendar date outside the window is pruned: never
+            // listed, so a session under it is never opened for this pass.
+            Some(date) if date < window.0 || date > window.1 => {}
+            Some(_) => collect_dirs_with_jsonl_blocking(&day_dir, found),
+            // Not a real calendar date (or not numeric): keep the old,
+            // unpruned behaviour rather than guess.
+            None => collect_dirs_with_jsonl_blocking(&day_dir, found),
+        }
+    }
+}
+
+/// Parse a directory's file name as `T`, rejecting anything that is not
+/// purely numeric (so a name like `2026-backup` falls back rather than
+/// silently parsing a prefix).
+fn dir_name_as<T: std::str::FromStr>(path: &Path) -> Option<T> {
+    path.file_name()?.to_str()?.parse::<T>().ok()
 }
 
 async fn indexed_session_title_in(
@@ -1279,6 +1434,123 @@ mod tests {
         let result = log_dirs_in_with_codex_home(home.path(), Some(&shared_home)).await;
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], day);
+    }
+
+    /// D7: a day directory at the earliest edge of the window, with a
+    /// session inside it, is still discovered. The pruning margin must not
+    /// cut off real activity at the boundary.
+    ///
+    /// Serialised because it mutates the `HOME` env var.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_day_directory_at_the_window_edge_is_still_discovered() {
+        let home = TempDir::new().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        // SAFETY: serialised via `serial_test::serial`; no other test
+        // thread can observe the partial env state.
+        unsafe {
+            std::env::set_var("HOME", home.path());
+        }
+
+        let now = 1_800_000_000i64;
+        let since_secs = 14 * 86_400i64;
+        let earliest_date = time::OffsetDateTime::from_unix_timestamp(now - since_secs)
+            .unwrap()
+            .date();
+        let day_dir = home
+            .path()
+            .join(".codex")
+            .join("sessions")
+            .join(format!("{:04}", earliest_date.year()))
+            .join(format!("{:02}", earliest_date.month() as u8))
+            .join(format!("{:02}", earliest_date.day()));
+        tokio::fs::create_dir_all(&day_dir).await.unwrap();
+        let session_path = day_dir.join("rollout-edge-session.jsonl");
+        tokio::fs::write(
+            &session_path,
+            r#"{"type":"session_meta","payload":{"id":"edge-session"}}"#,
+        )
+        .await
+        .unwrap();
+        crate::discovery::set_file_mtime(&session_path, now);
+
+        let logs = CodexExplorer.discover_recent(now, since_secs).await;
+
+        // SAFETY: restore HOME within the serialised section.
+        unsafe {
+            match prev_home {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
+        assert!(
+            logs.iter().any(
+                |log| matches!(&log.source, SessionSource::File(path) if path == &session_path)
+            ),
+            "a session at the window edge must still be discovered"
+        );
+    }
+
+    /// D7: a day directory well outside the window is pruned before its
+    /// entries are even listed, so a session under it is never opened for
+    /// a head read.
+    ///
+    /// Serialised because it mutates the `HOME` env var.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn an_old_quiet_day_directory_is_pruned_and_never_opened() {
+        let home = TempDir::new().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        // SAFETY: serialised via `serial_test::serial`; no other test
+        // thread can observe the partial env state.
+        unsafe {
+            std::env::set_var("HOME", home.path());
+        }
+
+        let now = 1_800_000_000i64;
+        let since_secs = 14 * 86_400i64;
+        let old_epoch = now - since_secs - 5 * 86_400;
+        let old_date = time::OffsetDateTime::from_unix_timestamp(old_epoch)
+            .unwrap()
+            .date();
+        let day_dir = home
+            .path()
+            .join(".codex")
+            .join("sessions")
+            .join(format!("{:04}", old_date.year()))
+            .join(format!("{:02}", old_date.month() as u8))
+            .join(format!("{:02}", old_date.day()));
+        tokio::fs::create_dir_all(&day_dir).await.unwrap();
+        let session_path = day_dir.join("rollout-old-session.jsonl");
+        tokio::fs::write(
+            &session_path,
+            r#"{"type":"session_meta","payload":{"id":"old-session"}}"#,
+        )
+        .await
+        .unwrap();
+        crate::discovery::set_file_mtime(&session_path, old_epoch);
+        crate::discovery::track_head_reads(&session_path);
+
+        let logs = CodexExplorer.discover_recent(now, since_secs).await;
+
+        // SAFETY: restore HOME within the serialised section.
+        unsafe {
+            match prev_home {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
+        assert!(
+            logs.is_empty(),
+            "an old, quiet day directory must be pruned before any file is listed"
+        );
+        assert_eq!(
+            crate::discovery::take_tracked_head_reads(&session_path),
+            0,
+            "a pruned session must never be opened for a head read"
+        );
     }
 
     #[test]
