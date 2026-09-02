@@ -4,17 +4,17 @@
 //! query the durable rows instead of streaming an accumulator, and lets a
 //! catalog or policy change requery rows instead of reparsing a transcript.
 //!
-//! This module owns only the `turn`, `turn_content`, and `session_coverage`
-//! DDL and the read/write functions over a borrowed [`rusqlite::Connection`].
-//! The crate does not open the app database and does not know any other app
-//! table.
+//! This module owns only the `turn`, `turn_content`, `session_coverage`, and
+//! `source_resume` DDL and the read/write functions over a borrowed
+//! [`rusqlite::Connection`]. The crate does not open the app database and
+//! does not know any other app table.
 
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::analysis::evidence::SessionCoverageRecord;
-use crate::analysis::evidence_query::{TurnFacts, query_turn_facts};
+use crate::analysis::evidence_query::{FenceScope, TurnFacts, query_turn_facts};
 use crate::analysis::interface::{ContentPart, NormalizedRecord, RecordSink, SessionSummary};
 use crate::analysis::model::{CompactionTrigger, EventSource, NormalizedEvent, Role};
 
@@ -132,19 +132,59 @@ CREATE TABLE session_coverage (
 ) STRICT;
 "#;
 
-/// Every migration that builds the `turn`, `turn_content`, and
-/// `session_coverage` schema, in order. A caller that creates this schema
-/// from scratch (a test, an in-memory store) applies every entry in order;
-/// the app applies [`TURN_SCHEMA_SQL`], [`TURN_SCHEMA_V2_SQL`],
-/// [`TURN_SCHEMA_V3_SQL`], [`SESSION_COVERAGE_SCHEMA_SQL`], and
-/// [`TURN_SCHEMA_V4_SQL`] as its own separately numbered migrations instead,
-/// since [`TURN_SCHEMA_SQL`] is already applied on user machines.
+/// DDL for the `source_resume` table: one row per `(environment_key,
+/// agent, session_id, source_key)`, holding the source's persisted
+/// [`crate::analysis::resume::StreamSnapshot`] and the revisions it was
+/// captured under.
+///
+/// A reader trusts `snapshot` only when every revision column still equals
+/// the current constant — see [`ResumeRevisions`] and
+/// [`delete_stale_source_resume`]. `source_fingerprint` is descriptive only
+/// (diagnostics, not a resume gate): [`crate::analysis::source_validity::ResumePoint`]
+/// inside `snapshot` is what a resumed open actually verifies against the
+/// live file.
+///
+/// Carries the same `ON DELETE CASCADE` foreign key to `session` that
+/// `turn` does. A row is written only inside a winning publish
+/// transaction — see the `store/schema.rs` migration comment and the
+/// `published_turn_rows` doc in the desktop crate for the fence contract
+/// this table sits outside of.
+pub const SOURCE_RESUME_SCHEMA_SQL: &str = r#"
+CREATE TABLE source_resume (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    snapshot BLOB NOT NULL,
+    snapshot_revision INTEGER NOT NULL,
+    parser_revision INTEGER NOT NULL,
+    analyzer_revision INTEGER NOT NULL,
+    metrics_schema_revision INTEGER NOT NULL,
+    evidence_schema_revision INTEGER NOT NULL,
+    coverage_schema_revision INTEGER NOT NULL,
+    source_fingerprint TEXT NOT NULL,
+    written_at_epoch INTEGER NOT NULL,
+    PRIMARY KEY (environment_key, agent, session_id, source_key),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+"#;
+
+/// Every migration that builds the `turn`, `turn_content`,
+/// `session_coverage`, and `source_resume` schema, in order. A caller that
+/// creates this schema from scratch (a test, an in-memory store) applies
+/// every entry in order; the app applies [`TURN_SCHEMA_SQL`],
+/// [`TURN_SCHEMA_V2_SQL`], [`TURN_SCHEMA_V3_SQL`],
+/// [`SESSION_COVERAGE_SCHEMA_SQL`], [`TURN_SCHEMA_V4_SQL`], and
+/// [`SOURCE_RESUME_SCHEMA_SQL`] as its own separately numbered migrations
+/// instead, since [`TURN_SCHEMA_SQL`] is already applied on user machines.
 pub const TURN_MIGRATIONS: &[&str] = &[
     TURN_SCHEMA_SQL,
     TURN_SCHEMA_V2_SQL,
     TURN_SCHEMA_V3_SQL,
     SESSION_COVERAGE_SCHEMA_SQL,
     TURN_SCHEMA_V4_SQL,
+    SOURCE_RESUME_SCHEMA_SQL,
 ];
 
 /// Number of rows a [`TurnRowSink`] buffers before it writes them, unless the
@@ -358,6 +398,42 @@ pub trait TurnRowStore: Send + Sync {
     /// Reads the coverage record this store wrote under its own session key
     /// and fence. `None` when nothing has written one yet under this fence.
     fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError>;
+
+    /// Reads this store's own session's stored resume snapshot for
+    /// `source_key`. `None` when no pass has ever written one for it.
+    /// Unlike every method above, not scoped to a fence — see
+    /// [`SOURCE_RESUME_SCHEMA_SQL`].
+    fn read_resume(&self, source_key: &str) -> Result<Option<StoredResume>, TurnRowError>;
+
+    /// Writes `resume` for `source_key`, replacing any snapshot already
+    /// stored for it. A caller must write this only inside a winning
+    /// publish transaction — see [`SOURCE_RESUME_SCHEMA_SQL`]'s doc
+    /// comment.
+    fn write_resume(&self, source_key: &str, resume: StoredResume) -> Result<(), TurnRowError>;
+
+    /// Deletes the stored resume snapshot for `source_key`, if any.
+    fn drop_resume(&self, source_key: &str) -> Result<(), TurnRowError>;
+
+    /// Deletes every row this store wrote for `source_key` under its own
+    /// claim fence, and their `turn_content`. A resumed pass calls this
+    /// before it retries a source with a full read: a resumed visit that
+    /// reports `SourceChanged` can already have flushed some of the new
+    /// rows it read before detecting the change, and a full read's own
+    /// rows must not join or duplicate them.
+    fn delete_rows_for_source(&self, source_key: &str) -> Result<(), TurnRowError>;
+
+    /// Notes that `source_key` resumed this pass, before any row-fact
+    /// read runs. [`Self::query_turn_facts`], [`Self::query_model_breakdown`],
+    /// and [`Self::query_model_runs`] must then widen their read for this
+    /// source to include its rows already published, not only the new
+    /// rows this pass itself wrote under the claim fence — see
+    /// [`crate::analysis::evidence_query::FenceScope`].
+    ///
+    /// Default: does nothing. Only a store whose reads are fence-scoped
+    /// needs to track this.
+    fn note_resumed_source(&self, source_key: &str) {
+        let _ = source_key;
+    }
 }
 
 /// A [`RecordSink`] that turns `MetricsEvent` records into [`TurnRow`]s,
@@ -662,6 +738,245 @@ pub fn delete_turn_rows_for_fence(
     )
 }
 
+/// Re-stamps every row for `key` and `source_key` from `from_fence` to
+/// `to_fence`, leaving every other source's rows untouched.
+///
+/// Used when a resumed source's newly appended rows (written under the new
+/// claim fence, like every row is) join the fence that already holds that
+/// same source's earlier, still-published rows: the two ranges become one
+/// fence's row set instead of the append staying stranded under a fence
+/// nothing else names. See "R4. Fence semantics" in the phase 3b build
+/// spec.
+pub fn restamp_source_rows(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    source_key: &str,
+    from_fence: i64,
+    to_fence: i64,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE turn SET claim_fence = ?1
+          WHERE environment_key = ?2 AND agent = ?3 AND session_id = ?4
+            AND source_key = ?5 AND claim_fence = ?6",
+        params![
+            to_fence,
+            key.environment_key,
+            key.agent,
+            key.session_id,
+            source_key,
+            from_fence,
+        ],
+    )
+}
+
+/// Deletes every row for `key` and `source_key` stamped with `fence`,
+/// leaving every other source's rows untouched. Also deletes that source's
+/// rows' `turn_content`.
+///
+/// Used when a source reads fully instead of resuming: its earlier
+/// published rows are replaced outright by the new full read, rather than
+/// appended to. See "R4. Fence semantics" in the phase 3b build spec.
+pub fn delete_source_rows_at_fence(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    source_key: &str,
+    fence: i64,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM turn_content WHERE turn_rowid IN (
+             SELECT rowid FROM turn
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND source_key = ?4 AND claim_fence = ?5
+         )",
+        params![
+            key.environment_key,
+            key.agent,
+            key.session_id,
+            source_key,
+            fence
+        ],
+    )?;
+    conn.execute(
+        "DELETE FROM turn
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+            AND source_key = ?4 AND claim_fence = ?5",
+        params![
+            key.environment_key,
+            key.agent,
+            key.session_id,
+            source_key,
+            fence
+        ],
+    )
+}
+
+/// One source's persisted resume snapshot, with the revisions it was
+/// captured under. See [`SOURCE_RESUME_SCHEMA_SQL`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredResume {
+    pub snapshot: Vec<u8>,
+    pub snapshot_revision: i64,
+    pub parser_revision: i64,
+    pub analyzer_revision: i64,
+    pub metrics_schema_revision: i64,
+    pub evidence_schema_revision: i64,
+    pub coverage_schema_revision: i64,
+    /// Descriptive only. A resume decision never gates on this field — see
+    /// [`SOURCE_RESUME_SCHEMA_SQL`]'s doc comment.
+    pub source_fingerprint: String,
+}
+
+/// The current revisions a stored [`StoredResume`] must match to be
+/// trusted. Mirrors the six revision columns [`SOURCE_RESUME_SCHEMA_SQL`]
+/// stamps every row with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResumeRevisions {
+    pub snapshot_revision: i64,
+    pub parser_revision: i64,
+    pub analyzer_revision: i64,
+    pub metrics_schema_revision: i64,
+    pub evidence_schema_revision: i64,
+    pub coverage_schema_revision: i64,
+}
+
+impl ResumeRevisions {
+    /// True when every one of `stored`'s six revision columns equals this
+    /// value's own. A caller rejects a stored resume that fails this check
+    /// instead of restoring it, falling back to a full read of that
+    /// source — see "R2. Resume conditions" in the phase 3b build spec.
+    pub fn matches(&self, stored: &StoredResume) -> bool {
+        self.snapshot_revision == stored.snapshot_revision
+            && self.parser_revision == stored.parser_revision
+            && self.analyzer_revision == stored.analyzer_revision
+            && self.metrics_schema_revision == stored.metrics_schema_revision
+            && self.evidence_schema_revision == stored.evidence_schema_revision
+            && self.coverage_schema_revision == stored.coverage_schema_revision
+    }
+}
+
+const UPSERT_SOURCE_RESUME_SQL: &str = "INSERT INTO source_resume (
+    environment_key, agent, session_id, source_key, snapshot,
+    snapshot_revision, parser_revision, analyzer_revision,
+    metrics_schema_revision, evidence_schema_revision,
+    coverage_schema_revision, source_fingerprint, written_at_epoch
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+ON CONFLICT (environment_key, agent, session_id, source_key) DO UPDATE SET
+    snapshot = excluded.snapshot,
+    snapshot_revision = excluded.snapshot_revision,
+    parser_revision = excluded.parser_revision,
+    analyzer_revision = excluded.analyzer_revision,
+    metrics_schema_revision = excluded.metrics_schema_revision,
+    evidence_schema_revision = excluded.evidence_schema_revision,
+    coverage_schema_revision = excluded.coverage_schema_revision,
+    source_fingerprint = excluded.source_fingerprint,
+    written_at_epoch = excluded.written_at_epoch";
+
+/// Writes `resume` for `key` and `source_key`, replacing any snapshot
+/// already stored for that source. Stamps `written_at_epoch` with the
+/// current time.
+pub fn insert_source_resume(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    source_key: &str,
+    resume: &StoredResume,
+) -> rusqlite::Result<()> {
+    let written_at_epoch = time::OffsetDateTime::now_utc().unix_timestamp();
+    conn.execute(
+        UPSERT_SOURCE_RESUME_SQL,
+        params![
+            key.environment_key,
+            key.agent,
+            key.session_id,
+            source_key,
+            resume.snapshot,
+            resume.snapshot_revision,
+            resume.parser_revision,
+            resume.analyzer_revision,
+            resume.metrics_schema_revision,
+            resume.evidence_schema_revision,
+            resume.coverage_schema_revision,
+            resume.source_fingerprint,
+            written_at_epoch,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Reads the [`StoredResume`] written for `key` and `source_key`. `None`
+/// when no pass has ever written one, or it was since dropped.
+pub fn query_source_resume(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    source_key: &str,
+) -> rusqlite::Result<Option<StoredResume>> {
+    conn.query_row(
+        "SELECT snapshot, snapshot_revision, parser_revision, analyzer_revision,
+                metrics_schema_revision, evidence_schema_revision,
+                coverage_schema_revision, source_fingerprint
+           FROM source_resume
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+            AND source_key = ?4",
+        params![key.environment_key, key.agent, key.session_id, source_key],
+        |row| {
+            Ok(StoredResume {
+                snapshot: row.get(0)?,
+                snapshot_revision: row.get(1)?,
+                parser_revision: row.get(2)?,
+                analyzer_revision: row.get(3)?,
+                metrics_schema_revision: row.get(4)?,
+                evidence_schema_revision: row.get(5)?,
+                coverage_schema_revision: row.get(6)?,
+                source_fingerprint: row.get(7)?,
+            })
+        },
+    )
+    .optional()
+}
+
+/// Deletes the stored resume snapshot for `key` and `source_key`, if any.
+/// Used when a full read of that source returns no `AdapterResume` — an
+/// unsupported adapter, or an unsettled end-of-stream state — so a later
+/// pass never restores state a full read already discarded.
+pub fn delete_source_resume(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    source_key: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM source_resume
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+            AND source_key = ?4",
+        params![key.environment_key, key.agent, key.session_id, source_key],
+    )?;
+    Ok(())
+}
+
+/// Deletes every `source_resume` row anywhere in the database whose
+/// revisions do not match `current`, regardless of session. A parser,
+/// analyzer, metrics, evidence, or coverage revision bump invalidates
+/// every persisted snapshot at once; the next winning publish for a source
+/// writes it a fresh one under the new revisions. See "R6. Invalidation"
+/// in the phase 3b build spec.
+pub fn delete_stale_source_resume(
+    conn: &Connection,
+    current: &ResumeRevisions,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM source_resume
+          WHERE snapshot_revision != ?1 OR parser_revision != ?2
+             OR analyzer_revision != ?3 OR metrics_schema_revision != ?4
+             OR evidence_schema_revision != ?5 OR coverage_schema_revision != ?6",
+        params![
+            current.snapshot_revision,
+            current.parser_revision,
+            current.analyzer_revision,
+            current.metrics_schema_revision,
+            current.evidence_schema_revision,
+            current.coverage_schema_revision,
+        ],
+    )
+}
+
 const UPSERT_SESSION_COVERAGE_SQL: &str = "INSERT INTO session_coverage (
     environment_key, agent, session_id, claim_fence,
     coverage_json, coverage_schema_revision
@@ -695,19 +1010,30 @@ pub fn insert_coverage_record(
 }
 
 /// Reads the [`SessionCoverageRecord`] written for `key` under
-/// `claim_fence`. `None` when nothing has been written under that key and
-/// fence.
+/// `scope.claim_fence`. `None` when nothing has been written under that
+/// key and fence.
+///
+/// Takes a [`FenceScope`] for the same public surface every fence-scoped
+/// read shares, but never widens to `scope.published`: a coverage record
+/// is rebuilt from the live residual and written complete under the claim
+/// fence every pass (R3), so it is never split across two fences the way
+/// row-derived facts can be for a resumed source.
 pub fn query_coverage_record(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
-    claim_fence: i64,
+    scope: &FenceScope<'_>,
 ) -> rusqlite::Result<Option<SessionCoverageRecord>> {
     let coverage_json: Option<String> = conn
         .query_row(
             "SELECT coverage_json FROM session_coverage
               WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
                 AND claim_fence = ?4",
-            params![key.environment_key, key.agent, key.session_id, claim_fence],
+            params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                scope.claim_fence
+            ],
             |row| row.get(0),
         )
         .optional()?;
@@ -803,6 +1129,13 @@ pub struct MemoryTurnRowStore {
     agent: String,
     session_id: String,
     claim_fence: i64,
+    /// Every source key [`TurnRowStore::note_resumed_source`] has
+    /// recorded. This store has one claim fence for its whole life (no
+    /// publish step ever moves rows to a separate published fence), so a
+    /// resumed source's rows are never split across two fences here — the
+    /// list is kept only so a test can assert a resumed source was noted,
+    /// the same call the desktop worker makes.
+    resumed_sources: Mutex<Vec<String>>,
 }
 
 impl MemoryTurnRowStore {
@@ -835,6 +1168,7 @@ impl MemoryTurnRowStore {
             agent,
             session_id,
             claim_fence: 1,
+            resumed_sources: Mutex::new(Vec::new()),
         })
     }
 
@@ -863,7 +1197,12 @@ impl TurnRowStore for MemoryTurnRowStore {
 
     fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
         let connection = self.connection.lock().expect("lock");
-        query_turn_facts(&connection, &self.key(), self.claim_fence).map_err(TurnRowError::from)
+        query_turn_facts(
+            &connection,
+            &self.key(),
+            &FenceScope::single(self.claim_fence),
+        )
+        .map_err(TurnRowError::from)
     }
 
     fn query_model_breakdown(
@@ -873,7 +1212,7 @@ impl TurnRowStore for MemoryTurnRowStore {
         crate::analysis::evidence_query::query_model_breakdown(
             &connection,
             &self.key(),
-            self.claim_fence,
+            &FenceScope::single(self.claim_fence),
         )
         .map_err(TurnRowError::from)
     }
@@ -883,7 +1222,7 @@ impl TurnRowStore for MemoryTurnRowStore {
         crate::analysis::evidence_query::query_model_runs(
             &connection,
             &self.key(),
-            self.claim_fence,
+            &FenceScope::single(self.claim_fence),
         )
         .map_err(TurnRowError::from)
     }
@@ -896,8 +1235,42 @@ impl TurnRowStore for MemoryTurnRowStore {
 
     fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError> {
         let connection = self.connection.lock().expect("lock");
-        query_coverage_record(&connection, &self.key(), self.claim_fence)
+        query_coverage_record(
+            &connection,
+            &self.key(),
+            &FenceScope::single(self.claim_fence),
+        )
+        .map_err(TurnRowError::from)
+    }
+
+    fn read_resume(&self, source_key: &str) -> Result<Option<StoredResume>, TurnRowError> {
+        let connection = self.connection.lock().expect("lock");
+        query_source_resume(&connection, &self.key(), source_key).map_err(TurnRowError::from)
+    }
+
+    fn write_resume(&self, source_key: &str, resume: StoredResume) -> Result<(), TurnRowError> {
+        let connection = self.connection.lock().expect("lock");
+        insert_source_resume(&connection, &self.key(), source_key, &resume)
             .map_err(TurnRowError::from)
+    }
+
+    fn drop_resume(&self, source_key: &str) -> Result<(), TurnRowError> {
+        let connection = self.connection.lock().expect("lock");
+        delete_source_resume(&connection, &self.key(), source_key).map_err(TurnRowError::from)
+    }
+
+    fn delete_rows_for_source(&self, source_key: &str) -> Result<(), TurnRowError> {
+        let connection = self.connection.lock().expect("lock");
+        delete_source_rows_at_fence(&connection, &self.key(), source_key, self.claim_fence)
+            .map_err(TurnRowError::from)?;
+        Ok(())
+    }
+
+    fn note_resumed_source(&self, source_key: &str) {
+        self.resumed_sources
+            .lock()
+            .expect("lock")
+            .push(source_key.to_owned());
     }
 }
 
@@ -1112,6 +1485,174 @@ mod tests {
         assert_eq!(row.subagent_launches, 0);
     }
 
+    #[test]
+    fn restamp_source_rows_moves_only_the_matching_source() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        let parent_row = sample_row(0);
+        let child_row = TurnRow {
+            source_key: "child-1".to_owned(),
+            thread_id: "child-1".to_owned(),
+            ..sample_row(0)
+        };
+        insert_turn_rows(&conn, &key, 5, &[parent_row, child_row]).expect("insert claim rows");
+
+        let moved = restamp_source_rows(&conn, &key, "child-1", 5, 3).expect("restamp");
+        assert_eq!(moved, 1);
+        assert_eq!(count_turn_rows(&conn, &key, 3).expect("count"), 1);
+        assert_eq!(
+            count_turn_rows(&conn, &key, 5).expect("count"),
+            1,
+            "the parent's row must stay at the claim fence"
+        );
+    }
+
+    #[test]
+    fn delete_source_rows_at_fence_removes_only_the_matching_source() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        let parent_row = sample_row(0);
+        let child_row = TurnRow {
+            source_key: "child-1".to_owned(),
+            thread_id: "child-1".to_owned(),
+            ..sample_row(0)
+        };
+        insert_turn_rows(&conn, &key, 3, &[parent_row, child_row]).expect("insert published rows");
+
+        let removed = delete_source_rows_at_fence(&conn, &key, "child-1", 3).expect("delete");
+        assert_eq!(removed, 1);
+        assert_eq!(count_turn_rows(&conn, &key, 3).expect("count"), 1);
+    }
+
+    fn sample_resume(source_fingerprint: &str) -> StoredResume {
+        StoredResume {
+            snapshot: vec![1, 2, 3],
+            snapshot_revision: 1,
+            parser_revision: 1,
+            analyzer_revision: 1,
+            metrics_schema_revision: 1,
+            evidence_schema_revision: 1,
+            coverage_schema_revision: 1,
+            source_fingerprint: source_fingerprint.to_owned(),
+        }
+    }
+
+    #[test]
+    fn source_resume_round_trips_and_replaces_on_a_second_write() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+
+        insert_source_resume(&conn, &key, "s1", &sample_resume("fp1")).expect("insert resume");
+        assert_eq!(
+            query_source_resume(&conn, &key, "s1").expect("query"),
+            Some(sample_resume("fp1"))
+        );
+        assert_eq!(
+            query_source_resume(&conn, &key, "child-1").expect("query"),
+            None
+        );
+
+        insert_source_resume(&conn, &key, "s1", &sample_resume("fp2")).expect("replace resume");
+        assert_eq!(
+            query_source_resume(&conn, &key, "s1").expect("query"),
+            Some(sample_resume("fp2")),
+            "a second write replaces the first instead of erroring on the primary key"
+        );
+    }
+
+    #[test]
+    fn delete_source_resume_removes_only_the_matching_source() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        insert_source_resume(&conn, &key, "s1", &sample_resume("fp1")).expect("insert parent");
+        insert_source_resume(&conn, &key, "child-1", &sample_resume("fp2")).expect("insert child");
+
+        delete_source_resume(&conn, &key, "s1").expect("delete parent resume");
+
+        assert_eq!(query_source_resume(&conn, &key, "s1").expect("query"), None);
+        assert_eq!(
+            query_source_resume(&conn, &key, "child-1").expect("query"),
+            Some(sample_resume("fp2")),
+            "an unrelated source's resume must survive"
+        );
+    }
+
+    #[test]
+    fn deleting_the_session_cascades_to_its_source_resume_rows() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        insert_source_resume(&conn, &key, "s1", &sample_resume("fp1")).expect("insert resume");
+
+        conn.execute(
+            "DELETE FROM session WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            params![key.environment_key, key.agent, key.session_id],
+        )
+        .expect("delete session");
+
+        assert_eq!(query_source_resume(&conn, &key, "s1").expect("query"), None);
+    }
+
+    #[test]
+    fn delete_stale_source_resume_purges_every_mismatched_revision() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "claude",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        insert_source_resume(&conn, &key, "s1", &sample_resume("fp1")).expect("insert current");
+        let mut stale = sample_resume("fp2");
+        stale.analyzer_revision = 2;
+        insert_source_resume(&conn, &key, "child-1", &stale).expect("insert stale");
+
+        let current = ResumeRevisions {
+            snapshot_revision: 1,
+            parser_revision: 1,
+            analyzer_revision: 1,
+            metrics_schema_revision: 1,
+            evidence_schema_revision: 1,
+            coverage_schema_revision: 1,
+        };
+        let removed = delete_stale_source_resume(&conn, &current).expect("purge stale");
+        assert_eq!(removed, 1);
+        assert!(
+            query_source_resume(&conn, &key, "s1")
+                .expect("query")
+                .is_some()
+        );
+        assert!(
+            query_source_resume(&conn, &key, "child-1")
+                .expect("query")
+                .is_none()
+        );
+    }
+
     /// A store that always fails to write, so the sink's error path can be
     /// tested without a real connection. Never read, so
     /// [`TurnRowStore::query_turn_facts`] need not really work.
@@ -1146,6 +1687,26 @@ mod tests {
 
         fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError> {
             Err(TurnRowError("not readable".to_owned()))
+        }
+
+        fn read_resume(&self, _source_key: &str) -> Result<Option<StoredResume>, TurnRowError> {
+            Err(TurnRowError("not readable".to_owned()))
+        }
+
+        fn write_resume(
+            &self,
+            _source_key: &str,
+            _resume: StoredResume,
+        ) -> Result<(), TurnRowError> {
+            Err(TurnRowError("boom".to_owned()))
+        }
+
+        fn drop_resume(&self, _source_key: &str) -> Result<(), TurnRowError> {
+            Err(TurnRowError("boom".to_owned()))
+        }
+
+        fn delete_rows_for_source(&self, _source_key: &str) -> Result<(), TurnRowError> {
+            Err(TurnRowError("boom".to_owned()))
         }
     }
 
@@ -1244,7 +1805,7 @@ mod tests {
                     agent: "claude",
                     session_id: &self.key,
                 },
-                1,
+                &FenceScope::single(1),
             )
             .map_err(TurnRowError::from)
         }
@@ -1261,7 +1822,7 @@ mod tests {
                     agent: "claude",
                     session_id: &self.key,
                 },
-                1,
+                &FenceScope::single(1),
             )
             .map_err(TurnRowError::from)
         }
@@ -1275,7 +1836,7 @@ mod tests {
                     agent: "claude",
                     session_id: &self.key,
                 },
-                1,
+                &FenceScope::single(1),
             )
             .map_err(TurnRowError::from)
         }
@@ -1307,9 +1868,68 @@ mod tests {
                     agent: "claude",
                     session_id: &self.key,
                 },
-                1,
+                &FenceScope::single(1),
             )
             .map_err(TurnRowError::from)
+        }
+
+        fn read_resume(&self, source_key: &str) -> Result<Option<StoredResume>, TurnRowError> {
+            let conn = self.conn.lock().expect("lock");
+            query_source_resume(
+                &conn,
+                &TurnSessionKey {
+                    environment_key: "native",
+                    agent: "claude",
+                    session_id: &self.key,
+                },
+                source_key,
+            )
+            .map_err(TurnRowError::from)
+        }
+
+        fn write_resume(&self, source_key: &str, resume: StoredResume) -> Result<(), TurnRowError> {
+            let conn = self.conn.lock().expect("lock");
+            insert_source_resume(
+                &conn,
+                &TurnSessionKey {
+                    environment_key: "native",
+                    agent: "claude",
+                    session_id: &self.key,
+                },
+                source_key,
+                &resume,
+            )
+            .map_err(TurnRowError::from)
+        }
+
+        fn drop_resume(&self, source_key: &str) -> Result<(), TurnRowError> {
+            let conn = self.conn.lock().expect("lock");
+            delete_source_resume(
+                &conn,
+                &TurnSessionKey {
+                    environment_key: "native",
+                    agent: "claude",
+                    session_id: &self.key,
+                },
+                source_key,
+            )
+            .map_err(TurnRowError::from)
+        }
+
+        fn delete_rows_for_source(&self, source_key: &str) -> Result<(), TurnRowError> {
+            let conn = self.conn.lock().expect("lock");
+            delete_source_rows_at_fence(
+                &conn,
+                &TurnSessionKey {
+                    environment_key: "native",
+                    agent: "claude",
+                    session_id: &self.key,
+                },
+                source_key,
+                1,
+            )
+            .map_err(TurnRowError::from)?;
+            Ok(())
         }
     }
 
@@ -1361,7 +1981,9 @@ mod tests {
             session_id: "s1",
         };
         let indices: Vec<u64> = store
-            .with_connection(|conn| crate::analysis::evidence_query::query_turn_rows(conn, &key, 1))
+            .with_connection(|conn| {
+                crate::analysis::evidence_query::query_turn_rows(conn, &key, &FenceScope::single(1))
+            })
             .expect("query turn rows")
             .into_iter()
             .map(|row| row.turn_index)

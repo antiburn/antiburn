@@ -12,7 +12,7 @@
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
-    V22, V23, V24, V25, V26, V27, V28, V29,
+    V22, V23, V24, V25, V26, V27, V28, V29, V30,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -550,3 +550,41 @@ const V28: &str = antiburn_local::analysis::SESSION_COVERAGE_SCHEMA_SQL;
 
 /// v29 indexes the timestamp range used by session limit allocations.
 const V29: &str = antiburn_local::analysis::TURN_SCHEMA_V4_SQL;
+
+/// v30 adds the `source_resume` table (continuous ingest, phase 3b). Each
+/// row holds one source's persisted resume snapshot, keyed by
+/// `(environment_key, agent, session_id, source_key)` — the parent
+/// transcript's own session id, or a discovered child's own id.
+///
+/// Unlike `turn` and `session_coverage`, this table carries no
+/// `claim_fence`: it names one current snapshot per source, not a row set
+/// per pass. [`super::Store::publish_projections`] writes and replaces a
+/// row only inside a winning publish transaction, so a losing or
+/// in-flight pass never clobbers the snapshot a prior winning pass left
+/// behind.
+///
+/// `published_fence` (`v21`) itself changes meaning as of this migration:
+/// a winning publish no longer always stamps it to the pass's own claim
+/// fence. When a source resumes, its newly claimed rows are re-stamped
+/// onto the session's *existing* `published_fence` instead — the append
+/// joins the row set already there — so `published_fence` stays put across
+/// a resumed pass and only becomes the claim fence the first time a
+/// session ever publishes. A source that reads fully still has its old
+/// published rows deleted and its new rows stamped onto that same
+/// `published_fence`. Either way, every source's rows for a session share
+/// one fence once a pass publishes: [`antiburn_local::analysis::delete_turn_rows_except_fence`]
+/// keeps this true, and finds nothing left to delete on a resumed pass.
+///
+/// During the pass itself, before that publish transaction runs, a
+/// resumed source's rows are genuinely split: its new rows sit under
+/// `claim_fence` and its old rows stay under `published_fence` until
+/// re-stamped. A mid-pass fact read must still see both, so it uses
+/// [`antiburn_local::analysis::FenceScope`] to union the claim fence with
+/// the published fence, restricted to the sources that resumed this
+/// pass — never by re-stamping early, which would break claim-race
+/// safety.
+///
+/// `antiburn_local::analysis::SOURCE_RESUME_SCHEMA_SQL` owns the column
+/// list, for the same reason [`V15`] re-exports `TURN_SCHEMA_SQL` instead of
+/// stating its own DDL.
+const V30: &str = antiburn_local::analysis::SOURCE_RESUME_SCHEMA_SQL;

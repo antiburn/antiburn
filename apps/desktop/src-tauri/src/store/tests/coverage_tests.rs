@@ -1,6 +1,6 @@
 use antiburn_local::analysis::{
-    EvidenceSource, SessionCoverageRecord, SessionEvidenceAccumulator, SourceCapabilities,
-    SourceKind, TurnRowStore,
+    EvidenceSource, FenceScope, SessionCoverageRecord, SessionEvidenceAccumulator,
+    SourceCapabilities, SourceKind, TurnRowStore,
 };
 
 use super::*;
@@ -34,11 +34,13 @@ fn a_fenced_coverage_writer_writes_a_record_the_store_can_read() {
 
     let connection = store.lock();
     assert_eq!(
-        query_coverage_record(&connection, &turn_session_key(&key), 7).unwrap(),
+        query_coverage_record(&connection, &turn_session_key(&key), &FenceScope::single(7))
+            .unwrap(),
         Some(written)
     );
     assert_eq!(
-        query_coverage_record(&connection, &turn_session_key(&key), 8).unwrap(),
+        query_coverage_record(&connection, &turn_session_key(&key), &FenceScope::single(8))
+            .unwrap(),
         None
     );
 }
@@ -67,18 +69,28 @@ fn publishing_evidence_keeps_only_the_current_fence_coverage_record() {
 
     assert!(
         store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 
     let connection = store.lock();
     assert_eq!(
-        query_coverage_record(&connection, &turn_session_key(&key), claim.claim_fence - 1).unwrap(),
+        query_coverage_record(
+            &connection,
+            &turn_session_key(&key),
+            &FenceScope::single(claim.claim_fence - 1)
+        )
+        .unwrap(),
         None,
         "the superseded fence's coverage record must be gone"
     );
     assert_eq!(
-        query_coverage_record(&connection, &turn_session_key(&key), claim.claim_fence).unwrap(),
+        query_coverage_record(
+            &connection,
+            &turn_session_key(&key),
+            &FenceScope::single(claim.claim_fence)
+        )
+        .unwrap(),
         Some(current)
     );
     drop(connection);
@@ -125,18 +137,28 @@ fn a_lost_publish_race_deletes_only_its_own_fences_coverage_record() {
 
     assert!(
         !store
-            .publish_projections(&record, None, &completion, &[])
+            .publish_projections(&record, None, &completion, &[], &[])
             .unwrap()
     );
 
     let connection = store.lock();
     assert_eq!(
-        query_coverage_record(&connection, &turn_session_key(&key), claim.claim_fence).unwrap(),
+        query_coverage_record(
+            &connection,
+            &turn_session_key(&key),
+            &FenceScope::single(claim.claim_fence)
+        )
+        .unwrap(),
         None,
         "the losing pass's own coverage record must be gone"
     );
     assert_eq!(
-        query_coverage_record(&connection, &turn_session_key(&key), claim.claim_fence - 1).unwrap(),
+        query_coverage_record(
+            &connection,
+            &turn_session_key(&key),
+            &FenceScope::single(claim.claim_fence - 1)
+        )
+        .unwrap(),
         Some(coverage_record("lost-race-coverage")),
         "a record the lost race does not own must be untouched"
     );

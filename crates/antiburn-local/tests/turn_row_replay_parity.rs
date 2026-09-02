@@ -33,8 +33,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    Bucket, CompositeSink, EvidenceSource, MemoryTurnRowStore, NormalizedRecord, RawSource,
-    RecordSink, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
+    Bucket, CompositeSink, EvidenceSource, FenceScope, MemoryTurnRowStore, NormalizedRecord,
+    RawSource, RecordSink, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
     SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind, TurnRowSink,
     TurnRowStore, TurnScope, TurnSessionKey, adapter_for, merge_metrics, metrics_by_source,
     metrics_from_rows, query_turn_rows,
@@ -132,8 +132,9 @@ fn run_fixture_and_replay(
         agent,
         session_id: &input.session_id,
     };
-    let rows = store
-        .with_connection(|conn| query_turn_rows(conn, &key, 1).expect("query rows must succeed"));
+    let rows = store.with_connection(|conn| {
+        query_turn_rows(conn, &key, &FenceScope::single(1)).expect("query rows must succeed")
+    });
 
     let mut capture = SummaryCapture::default();
     adapter_for(agent)
@@ -1027,8 +1028,9 @@ fn metrics_by_source_and_metrics_from_rows_match_the_accumulators_for_a_parent_a
         agent: "claude",
         session_id: &parent_input.session_id,
     };
-    let rows = store
-        .with_connection(|conn| query_turn_rows(conn, &key, 1).expect("query rows must succeed"));
+    let rows = store.with_connection(|conn| {
+        query_turn_rows(conn, &key, &FenceScope::single(1)).expect("query rows must succeed")
+    });
 
     let summary_for = |source_key: &str| {
         if source_key == parent_input.session_id {

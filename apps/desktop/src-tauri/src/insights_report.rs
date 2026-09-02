@@ -294,7 +294,7 @@ mod tests {
         };
         assert!(
             store
-                .publish_projections(&analysis, Some(started_at_epoch), &completion, &[])
+                .publish_projections(&analysis, Some(started_at_epoch), &completion, &[], &[])
                 .unwrap()
         );
     }

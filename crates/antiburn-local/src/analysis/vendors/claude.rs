@@ -303,6 +303,10 @@ impl VendorAdapter for ClaudeAdapter {
     ) -> anyhow::Result<ResumedVisit> {
         ClaudeAdapter::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
     }
+
+    fn empty_resume_state(&self) -> Option<crate::analysis::resume::AdapterSnapshot> {
+        Some(ClaudeAdapter::empty_adapter_snapshot())
+    }
 }
 
 impl ClaudeAdapter {

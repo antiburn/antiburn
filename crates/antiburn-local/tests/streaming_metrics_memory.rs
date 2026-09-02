@@ -11,7 +11,7 @@ use antiburn_local::analysis::{
     RESUME_SNAPSHOT_REVISION, RETAINED_EVIDENCE_BYTES_BOUND, RETAINED_METRICS_BYTES_BOUND,
     RawSource, RecordSink, RelationProvenance, ResumePoint, Role, SCAN_QUANTUM_BYTES,
     SessionCoverageRecord, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SessionSummary, SourceCapabilities, SourceClaim, SourceKind, StreamSnapshot,
+    SessionSummary, SourceCapabilities, SourceClaim, SourceKind, StoredResume, StreamSnapshot,
     TURN_ROW_BATCH_SIZE, ToolCall, TurnFacts, TurnRow, TurnRowError, TurnRowSink, TurnRowStore,
     TurnScope, TurnSessionKey, Usage, adapter_for, count_turn_content_rows, count_turn_rows,
     merge_metrics,
@@ -172,6 +172,22 @@ impl TurnRowStore for CountingWriter {
 
     fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError> {
         Err(TurnRowError("not readable".to_owned()))
+    }
+
+    fn read_resume(&self, _source_key: &str) -> Result<Option<StoredResume>, TurnRowError> {
+        Err(TurnRowError("not readable".to_owned()))
+    }
+
+    fn write_resume(&self, _source_key: &str, _resume: StoredResume) -> Result<(), TurnRowError> {
+        Ok(())
+    }
+
+    fn drop_resume(&self, _source_key: &str) -> Result<(), TurnRowError> {
+        Ok(())
+    }
+
+    fn delete_rows_for_source(&self, _source_key: &str) -> Result<(), TurnRowError> {
+        Ok(())
     }
 }
 
@@ -464,6 +480,22 @@ impl TurnRowStore for CountingRealStore {
 
     fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError> {
         self.inner.query_coverage_record()
+    }
+
+    fn read_resume(&self, source_key: &str) -> Result<Option<StoredResume>, TurnRowError> {
+        self.inner.read_resume(source_key)
+    }
+
+    fn write_resume(&self, source_key: &str, resume: StoredResume) -> Result<(), TurnRowError> {
+        self.inner.write_resume(source_key, resume)
+    }
+
+    fn drop_resume(&self, source_key: &str) -> Result<(), TurnRowError> {
+        self.inner.drop_resume(source_key)
+    }
+
+    fn delete_rows_for_source(&self, source_key: &str) -> Result<(), TurnRowError> {
+        self.inner.delete_rows_for_source(source_key)
     }
 }
 
