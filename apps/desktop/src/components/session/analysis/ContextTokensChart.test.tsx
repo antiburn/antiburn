@@ -217,7 +217,12 @@ describe("ContextTokensChart", () => {
     expect(
       container.querySelectorAll('line[stroke="var(--color-context-critical)"]'),
     ).toHaveLength(2)
-    expect(screen.getAllByText("rewrite")).toHaveLength(2)
+    for (const line of container.querySelectorAll(
+      'line[stroke="var(--color-context-critical)"]',
+    )) {
+      expect(line.getAttribute("stroke-width")).toBe("2")
+    }
+    expect(screen.queryByText("rewrite")).not.toBeInTheDocument()
   })
 
   it("draws sub-agent tokens as a third series on the token axis", () => {

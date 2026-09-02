@@ -42,8 +42,10 @@ const WARM_FLOOR_TOKENS = 400_000
 const CRITICAL_TOKENS = 1_000_000
 /** Band label text, drawn inside the plot. */
 const AXIS_LABEL = { fontSize: 9, fill: "var(--color-label-tertiary)" }
-// A rewrite bar is a few pixels wide so it reads as a block of cost.
-const REWRITE_BAR_WIDTH = 6
+/** A cache event keeps the established prominent marker. */
+const CACHE_EVENT_BAR_WIDTH = 6
+/** An ordinary rewrite uses a quiet line because the user usually cannot prevent it. */
+const REWRITE_MARKER_WIDTH = 2
 /** Small rewrites stay in the tooltip and do not add chart noise. */
 const MATERIAL_REWRITE_TOKENS = 20_000
 /** Default opacity for a material rewrite. */
@@ -175,7 +177,8 @@ function rewriteBar(
   keyPrefix: string,
   hasContextAxis: boolean,
   opacity: number,
-  label: string,
+  strokeWidth: number,
+  label?: string,
 ): ReactElement {
   const rehydration = point.cacheRehydration
   const start = rehydration?.stillCachedTokens ?? 0
@@ -191,9 +194,11 @@ function rewriteBar(
         { x: point.index, y: end },
       ]}
       stroke="var(--color-context-critical)"
-      strokeWidth={REWRITE_BAR_WIDTH}
+      strokeWidth={strokeWidth}
       strokeOpacity={opacity}
-      label={{ ...AXIS_LABEL, value: label, position: "top" }}
+      {...(label == null
+        ? {}
+        : { label: { ...AXIS_LABEL, value: label, position: "top" as const } })}
     />
   ) : (
     <ReferenceLine
@@ -201,9 +206,11 @@ function rewriteBar(
       yAxisId="tokens"
       x={point.index}
       stroke="var(--color-context-critical)"
-      strokeWidth={REWRITE_BAR_WIDTH}
+      strokeWidth={strokeWidth}
       strokeOpacity={opacity}
-      label={{ ...AXIS_LABEL, value: label, position: "top" }}
+      {...(label == null
+        ? {}
+        : { label: { ...AXIS_LABEL, value: label, position: "top" as const } })}
     />
   )
 }
@@ -430,8 +437,8 @@ export function ContextTokensChart({
           />
         ))}
         {/* A compaction adds no separate mark because the context area shows
-            its drop. A material rewrite draws a wide red bar to its token
-            level. Cache classification changes the opacity only. */}
+            its drop. A material rewrite draws a thin red line to its token
+            level. Cache events keep a wider labeled marker. */}
         {data
           .filter(
             (point) =>
@@ -447,8 +454,12 @@ export function ContextTokensChart({
               ? "rehydration"
               : point.isCacheRoutingMiss
                 ? "routing miss"
-                : "rewrite"
-            return rewriteBar(point, "rewrite", !!contextAxis, opacity, label)
+                : undefined
+            const strokeWidth =
+              point.isCacheRehydration || point.isCacheRoutingMiss
+                ? CACHE_EVENT_BAR_WIDTH
+                : REWRITE_MARKER_WIDTH
+            return rewriteBar(point, "rewrite", !!contextAxis, opacity, strokeWidth, label)
           })}
         {/* A mode change (model, thinking effort, or speed) draws no line at
             all — only its label, at the top of the plot — so it stays a
