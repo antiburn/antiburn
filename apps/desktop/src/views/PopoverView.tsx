@@ -53,13 +53,18 @@ function createPopoverPeekTriggers(): AnchoredTriggerController<
   PopoverPeekTarget,
   PopoverPeekData
 > {
-  return new AnchoredTriggerController(POPOVER_PEEK_LABEL, samePopoverPeekTarget, {
-    request: (target, anchor, presentation) =>
-      showPopoverPeek(target, anchor, presentation ?? null),
-    conceal: hidePopoverPeek,
-    listen: onPopoverPeekLifecycle,
-    state: getPopoverPeekAnchorState,
-  })
+  return new AnchoredTriggerController(
+    POPOVER_PEEK_LABEL,
+    samePopoverPeekTarget,
+    {
+      request: (target, anchor, presentation) =>
+        showPopoverPeek(target, anchor, presentation ?? null),
+      conceal: hidePopoverPeek,
+      listen: onPopoverPeekLifecycle,
+      state: getPopoverPeekAnchorState,
+    },
+    { hoverDelayMs: 150 },
+  )
 }
 
 function selectedProviderPresentation(
@@ -398,7 +403,7 @@ export function PopoverView() {
               }}
               refreshing={state.usageRefreshing}
               onViewAll={() => {
-                void hidePopoverPeek().catch(() => undefined)
+                void peekTriggers.leave()
                 // A provider pill is the one place the reader asks for the full
                 // Usage view from the activity surface. Counts and a three-value
                 // evidence label, never a per-provider list.
@@ -445,7 +450,7 @@ export function PopoverView() {
               days={windowDays}
               onOpenSession={(entry) => {
                 if (!entry.sessionId) return
-                void hidePopoverPeek().catch(() => undefined)
+                void peekTriggers.leave()
                 // The card click, not the traversal inside a session — the
                 // question is how often the list leads anywhere, and the
                 // newer/older arrows would drown that out. Instrumented here

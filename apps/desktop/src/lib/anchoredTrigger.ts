@@ -33,6 +33,10 @@ export interface AnchoredTriggerSnapshot<T> {
   generation: number
 }
 
+export interface AnchoredTriggerOptions {
+  hoverDelayMs?: number
+}
+
 export interface AnchoredTriggerBridge<T, P = undefined> {
   request: (
     target: T,
@@ -52,6 +56,13 @@ interface ScheduledRequest<T, P> {
   resolve: () => void
 }
 
+interface DelayedHover<T, P> {
+  target: T
+  anchor: AnchorRegion
+  presentation: P | undefined
+  resolve: () => void
+}
+
 const LISTENER_RETRY_MS = 250
 
 /** Retains one trigger's activation while its anchored window remains active. */
@@ -65,6 +76,8 @@ export class AnchoredTriggerController<T, P = undefined> {
   private stopListening: (() => void) | null = null
   private listenerGeneration = 0
   private retryTimer: ReturnType<typeof setTimeout> | null = null
+  private hoverTimer: ReturnType<typeof setTimeout> | null = null
+  private delayedHover: DelayedHover<T, P> | null = null
   private requestRevision = 0
   private lastLeaveRevision = 0
   private activeRequest: ScheduledRequest<T, P> | null = null
@@ -73,15 +86,19 @@ export class AnchoredTriggerController<T, P = undefined> {
   private readonly companionLabel: string
   private readonly sameTarget: (left: T, right: T) => boolean
   private readonly bridge: AnchoredTriggerBridge<T, P>
+  private readonly hoverDelayMs: number
 
   constructor(
     companionLabel: string,
     sameTarget: (left: T, right: T) => boolean,
     bridge: AnchoredTriggerBridge<T, P>,
+    options: AnchoredTriggerOptions = {},
   ) {
     this.companionLabel = companionLabel
     this.sameTarget = sameTarget
     this.bridge = bridge
+    const hoverDelayMs = options.hoverDelayMs ?? 0
+    this.hoverDelayMs = Number.isFinite(hoverDelayMs) && hoverDelayMs > 0 ? hoverDelayMs : 0
   }
 
   getSnapshot = (): AnchoredTriggerSnapshot<T> => this.snapshot
@@ -100,6 +117,13 @@ export class AnchoredTriggerController<T, P = undefined> {
       this.matchesSnapshot(target) && this.snapshot.activation === "selected"
         ? "selected"
         : "hovered"
+    if (
+      activation === "hovered" &&
+      this.snapshot.activation === "idle" &&
+      this.hoverDelayMs > 0
+    ) {
+      return this.delayHover(target, anchor, presentation)
+    }
     return this.activate(target, anchor, activation, presentation)
   }
 
@@ -108,8 +132,34 @@ export class AnchoredTriggerController<T, P = undefined> {
   }
 
   leave(): Promise<void> {
+    this.cancelDelayedHover()
     this.lastLeaveRevision = this.requestRevision
     return this.bridge.conceal().catch(() => undefined)
+  }
+
+  private delayHover(
+    target: T,
+    anchor: AnchorRegion,
+    presentation: P | undefined,
+  ): Promise<void> {
+    this.cancelDelayedHover()
+    return new Promise((resolve) => {
+      const delayedHover = { target, anchor, presentation, resolve }
+      this.delayedHover = delayedHover
+      this.hoverTimer = setTimeout(() => {
+        if (this.delayedHover !== delayedHover) return
+        this.delayedHover = null
+        this.hoverTimer = null
+        void this.activate(target, anchor, "hovered", presentation).then(resolve)
+      }, this.hoverDelayMs)
+    })
+  }
+
+  private cancelDelayedHover(): void {
+    if (this.hoverTimer != null) clearTimeout(this.hoverTimer)
+    this.hoverTimer = null
+    this.delayedHover?.resolve()
+    this.delayedHover = null
   }
 
   private activate(
@@ -118,6 +168,7 @@ export class AnchoredTriggerController<T, P = undefined> {
     activation: Exclude<AnchoredTriggerActivation, "idle">,
     presentation: P | undefined,
   ): Promise<void> {
+    this.cancelDelayedHover()
     const revision = ++this.requestRevision
     this.setSnapshot({ ...this.snapshot, activation, target })
     return new Promise((resolve) => {
@@ -225,6 +276,7 @@ export class AnchoredTriggerController<T, P = undefined> {
 
   private stop(): void {
     this.listenerGeneration += 1
+    this.cancelDelayedHover()
     if (this.retryTimer != null) clearTimeout(this.retryTimer)
     this.retryTimer = null
     this.stopListening?.()
