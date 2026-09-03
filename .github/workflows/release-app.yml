@@ -581,6 +581,26 @@ jobs:
           test -f apps/desktop/src-tauri/icons/icon.icns
           test -f apps/desktop/src-tauri/icons/icon.ico
 
+      # Tauri 2.11.4 caches a 2024 linuxdeploy build that bundles libwayland-client.
+      # This pinned build follows the AppImage graphics-library exclusions.
+      - name: Install the pinned Linux AppImage bundler
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          LINUXDEPLOY_ASSET_ID: "538917371"
+          LINUXDEPLOY_SHA256: "36a2d7e274d12e1050d0e9ecfe11d339ed54720b2bec464c286d53f8b07f5c62"
+        run: |
+          set -euo pipefail
+          tools="${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
+          destination="${tools}/linuxdeploy-x86_64.AppImage"
+          mkdir -p "$tools"
+          curl --fail --location --retry 3 \
+            --header 'Accept: application/octet-stream' \
+            "https://api.github.com/repos/linuxdeploy/linuxdeploy/releases/assets/${LINUXDEPLOY_ASSET_ID}" \
+            --output "$destination"
+          echo "${LINUXDEPLOY_SHA256}  ${destination}" | sha256sum --check --strict
+          chmod +x "$destination"
+
       - name: Build and sign
         shell: bash
         env:
@@ -635,6 +655,22 @@ jobs:
             pnpm --filter @antiburn/desktop exec tauri build \
               --features distribution,analytics --target "$TARGET" --bundles "$BUNDLES"
           fi
+
+      # Host graphics drivers must use the host Wayland client ABI.
+      - name: Verify the Linux AppImage graphics boundary
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          bundle="apps/desktop/src-tauri/target/${TARGET}/release/bundle/appimage"
+          mapfile -t images < <(find "$bundle" -maxdepth 1 -type f -name '*.AppImage' | sort)
+          if [[ "${#images[@]}" -ne 1 ]]; then
+            echo "::error::Expected one AppImage to verify, found ${#images[@]}."
+            exit 1
+          fi
+          node scripts/verify-linux-appimage.mjs "${images[0]}"
 
       # Signing that is not verified is a claim, not a fact.
       - name: Verify the macOS signature and notarization ticket
