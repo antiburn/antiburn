@@ -415,9 +415,9 @@ scheduler task, so passes never overlap and the store sees one writer.
 ## Follow-ups
 
 - Cursor's `collect_agent_transcript_dirs` and `collect_cursor_chat_metadata`
-  are still unwindowed recursive walks. Scheduled as phase 5c (F2); done by
-  bounding the walk's depth to the documented layout, not by mtime, since a
-  new session file bumps only its immediate parent's mtime.
+  were unbounded recursive walks. Done in phase 5c (F2) by bounding each
+  walk's depth to the documented layout, not by mtime, since a new session
+  file bumps only its immediate parent's mtime.
 - `AppendOnlyGuarantee` is still hard-coded to `Absent`. The resumed path no
   longer needs it; either evidence it per agent or remove it and let a full
   read always re-check its whole prefix.
