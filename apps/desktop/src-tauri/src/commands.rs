@@ -45,7 +45,7 @@ use crate::insights_report::ReportRequest;
 use crate::popover;
 use crate::provider_usage;
 use crate::repositories;
-use crate::scan::{self, ScanController};
+use crate::scan::{self, ScanController, ScanTrigger};
 use crate::settings;
 use crate::store::model::environment_key;
 use crate::store::{
@@ -451,7 +451,8 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
         || saved.activity_window_days > previous.activity_window_days
         || (previous.discovery_paused && !saved.discovery_paused);
     if wants_scan && !saved.discovery_paused {
-        app.state::<ScanController>().request();
+        app.state::<ScanController>()
+            .request(ScanTrigger::SettingsTransition);
     }
 
     // Put the first-run window away and say where the app went. Done here
@@ -960,7 +961,7 @@ pub async fn get_session_analysis(
     // — so this command never caches one itself or emits
     // `SESSION_ENTRY_CHANGED_EVENT` for it.
     let (analysis, analysis_pending, analysis_stale) =
-        match analysis::analysis_from_rows(&store, &key, &session_id, &agent) {
+        match analysis::analysis_from_rows(&store, &key, &session_id, kind) {
             Some(replayed) => {
                 let fingerprint_mismatch = nudge_if_evidence_stale(
                     &app,
@@ -1042,7 +1043,7 @@ pub async fn get_subagent_analysis(
         &parent_key,
         &parent_session_id,
         &subagent_id,
-        &agent,
+        kind,
     ) {
         Some(replayed) => {
             let evidence_status = store
@@ -1205,7 +1206,7 @@ pub async fn scan_now(
     app: tauri::AppHandle,
     activity_window_days: Option<u32>,
 ) -> CommandResult<ScanStatus> {
-    Ok(scan::run_pass(&app, activity_window_days).await)
+    Ok(scan::run_pass(&app, activity_window_days, ScanTrigger::ManualRescan).await)
 }
 
 /// Ask the scan in flight to stop at its next phase boundary.
@@ -1284,7 +1285,8 @@ pub async fn get_insights_report(app: tauri::AppHandle) -> CommandResult<Insight
     // waiting out a tick. This is a further call site of the shipped
     // on-demand trigger — the same kick the popover and the other
     // commands fire — not a new trigger class and not queue reordering.
-    app.state::<ScanController>().request();
+    app.state::<ScanController>()
+        .request(ScanTrigger::InsightsPane);
     let data_dir = app.state::<Store>().state_dir().to_path_buf();
     let request = insights_report_request(epoch_now());
     let report = app
@@ -1558,7 +1560,8 @@ pub async fn set_repository_enabled(
     // a pass so the rows come back without the reader doing anything.
     let _ = app.emit(SESSIONS_INVALIDATED_EVENT, ());
     if enabled {
-        app.state::<ScanController>().request();
+        app.state::<ScanController>()
+            .request(ScanTrigger::RepositoryToggle);
     }
     list_repositories(app)
 }
@@ -1608,7 +1611,8 @@ pub async fn add_scan_root(app: tauri::AppHandle, path: String) -> CommandResult
         store.scan_roots().map_err(fail)?
     };
     mirror_scan_roots(&app, &roots).await.map_err(fail)?;
-    app.state::<ScanController>().request();
+    app.state::<ScanController>()
+        .request(ScanTrigger::ScanRootAdded);
     Ok(roots)
 }
 
@@ -1765,7 +1769,8 @@ pub fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
         .map_err(fail)?;
     // The index is empty and the popover is showing it. Refill it rather than
     // leaving a reader looking at an empty list until the next tick.
-    app.state::<ScanController>().request();
+    app.state::<ScanController>()
+        .request(ScanTrigger::IndexCleared);
     Ok(removed)
 }
 
@@ -1863,7 +1868,8 @@ pub async fn request_folder_access(
     recorded.map_err(fail)?;
 
     if matches!(outcome, consent::ProbeOutcome::Granted { .. }) {
-        app.state::<ScanController>().request();
+        app.state::<ScanController>()
+            .request(ScanTrigger::FolderAccessGranted);
     }
 
     Ok(FolderAccessOutcome {
@@ -1944,7 +1950,8 @@ pub async fn recheck_folder_permissions(app: tauri::AppHandle) -> CommandResult<
     };
 
     if !discovered.is_empty() {
-        app.state::<ScanController>().request();
+        app.state::<ScanController>()
+            .request(ScanTrigger::FolderAccessGranted);
     }
     let mut discovered: Vec<String> = discovered.into_iter().collect();
     discovered.sort();
