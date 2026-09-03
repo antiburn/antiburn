@@ -230,6 +230,54 @@ describe("SessionList — rows", () => {
     expect(screen.queryByRole("radio", { name: "% 5h" })).toBeNull()
   })
 
+  it("offers five-hour mode when the usage panel shows an empty five-hour window", () => {
+    list({
+      onBadgeMetricChange: vi.fn(),
+      liveUsage: {
+        generatedAt: NOW.toISOString(),
+        errors: [],
+        meters: [],
+        providers: [
+          {
+            provider: "anthropic",
+            accountKey: null,
+            displayName: "Claude",
+            support: "live",
+            freshness: "fresh",
+            sourceLabel: "test",
+            observedAt: NOW.toISOString(),
+            windows: [
+              {
+                id: "five-hour",
+                role: "primaryShort",
+                kind: "rolling",
+                scopeModel: null,
+                usedPercent: 0,
+                startsAt: null,
+                resetsAt: null,
+                hasNonzeroUsageInCurrentPeriod: false,
+                forecast: {
+                  unavailableReason: "sparseHistory",
+                  confidence: null,
+                  consumptionRate: null,
+                  paceRatio: null,
+                  paceTrend: null,
+                  runwayAt: null,
+                  usedToday: null,
+                },
+              },
+            ],
+            extraUsage: null,
+            resetCredits: null,
+            plan: null,
+          },
+        ],
+      },
+    })
+
+    expect(screen.getByRole("radio", { name: "% 5h" })).toBeInTheDocument()
+  })
+
   it("shows a five-hour allocation when the provider exposes that window", () => {
     const props: SessionListProps = {
       entries: [entry()],
