@@ -23,6 +23,7 @@ import type {
   LiveProviderUsagePayload,
   LiveUsageFreshness,
   LiveUsagePlanPayload,
+  LiveUsageSourceErrorPayload,
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
 } from "../ipc"
@@ -41,6 +42,9 @@ import { relativeTime } from "./relativeTime"
 const ANTHROPIC = "anthropic"
 const GOOGLE = "google"
 const OPENAI = "openai"
+
+/** How long a failed source's last good reading still stands in for a live one. */
+export const LIVE_USAGE_GRACE_MS = 10 * 60_000
 
 /** Provider window ids whose product names carry the clearest label. */
 const WINDOW_LABEL_BY_ID: Readonly<Record<string, string>> = {
@@ -415,6 +419,86 @@ export function liveForProvider(
   return summary.providers.find((entry) => entry.provider === provider) ?? null
 }
 
+/** Whether a provider's reading is live, standing in during its grace period, or too old to show. */
+export type LiveProviderStatus =
+  | { kind: "live" }
+  | { kind: "grace"; category: string; ageMs: number }
+  | { kind: "failed"; category: string }
+
+/**
+ * A provider's live status: live, within grace after a failed check, or
+ * failed past the grace.
+ *
+ * Age is measured from `summary.generatedAt`, the snapshot's own moment,
+ * never from `Date.now()` — a render must not read the clock. When either
+ * timestamp cannot be parsed, the age cannot be proven past the grace, so
+ * the reading stays in grace rather than being hidden on a guess.
+ */
+export function liveProviderStatus(
+  summary: { errors: readonly LiveUsageSourceErrorPayload[]; generatedAt: string },
+  provider: LiveProviderUsagePayload,
+): LiveProviderStatus {
+  const error = summary.errors.find((entry) => entry.provider === provider.provider)
+  if (!error) return { kind: "live" }
+  const ageMs = Date.parse(summary.generatedAt) - Date.parse(provider.observedAt)
+  if (Number.isNaN(ageMs) || ageMs <= LIVE_USAGE_GRACE_MS) {
+    return { kind: "grace", category: error.category, ageMs: Number.isNaN(ageMs) ? 0 : ageMs }
+  }
+  return { kind: "failed", category: error.category }
+}
+
+/**
+ * The live providers worth showing on screen: every reading whose status is
+ * not `failed`.
+ *
+ * Every surface that lists live providers reads this instead of
+ * `summary.providers` directly, so a provider past its grace period drops
+ * out of all of them at once and appears only through
+ * `liveUnavailableProviders`.
+ */
+export function liveDisplayableProviders(
+  summary: LiveUsageSummaryPayload,
+): LiveProviderUsagePayload[] {
+  return summary.providers.filter(
+    (provider) => liveProviderStatus(summary, provider).kind !== "failed",
+  )
+}
+
+/** `"4 min"` at a minute and above, `"under 1 min"` below. */
+function formatGraceAge(ageMs: number): string {
+  const minutes = Math.floor(ageMs / 60_000)
+  return minutes < 1 ? "under 1 min" : `${minutes} min`
+}
+
+/** The first sentence of a grace note, per failure category. */
+function graceVerb(category: string): string {
+  switch (category) {
+    case "rateLimited":
+      return "rate limited the last check"
+    case "authentication":
+      return "rejected the sign-in on the last check"
+    case "schema":
+      return "sent an unreadable reply"
+    default:
+      return "did not answer the last check"
+  }
+}
+
+/**
+ * The one sentence a grace-period reading needs: still shown, and why.
+ *
+ * Reuses `liveErrorNote`'s provider naming, so the two notes name a provider
+ * the same way.
+ */
+export function liveGraceNote(
+  category: string,
+  provider: string | undefined,
+  ageMs: number,
+): string {
+  const name = liveProviderDisplayName(provider) ?? "Your provider"
+  return `${name} ${graceVerb(category)}. Showing the reading from ${formatGraceAge(ageMs)} ago.`
+}
+
 /**
  * The banner one failed source deserves, or null.
  *
@@ -433,17 +517,19 @@ export function liveAuthNote(summary: LiveUsageSummaryPayload): string | null {
  * exactly the ones the limits surfaces would otherwise drop without a word.
  *
  * A failed source with a cached last-good reading still appears in
- * `providers`, carrying its stale figures; the staleness treatment covers
- * that case and no entry appears here. This list is for the cold-start
- * failure — first fetch rejected, nothing cached — where the error is the
- * only trace of the provider. An error without a provider id (a snapshot
- * cached before the field existed) cannot name a section and is skipped.
+ * `providers`, carrying its stale figures; while that reading is within its
+ * grace period, the staleness treatment covers it and no entry appears
+ * here. This list covers two cases instead: the cold-start failure — first
+ * fetch rejected, nothing cached — and a reading that has aged past its
+ * grace period, which is treated the same way. An error without a provider
+ * id (a snapshot cached before the field existed) cannot name a section and
+ * is skipped.
  */
 export function liveUnavailableProviders(
   summary: LiveUsageSummaryPayload,
 ): UnavailableLiveProvider[] {
   const showing = new Set(
-    summary.providers
+    liveDisplayableProviders(summary)
       .filter((provider) => liveWindows(provider).length > 0)
       .map((provider) => provider.provider),
   )
@@ -475,16 +561,20 @@ export function liveUnavailableReason(category: string): string {
   }
 }
 
+/** The provider's product name, or null when the id is not one this app names. */
+function liveProviderDisplayName(provider?: string): string | null {
+  return provider === GOOGLE
+    ? "Google"
+    : provider === ANTHROPIC
+      ? "Claude"
+      : provider === OPENAI
+        ? "Codex"
+        : null
+}
+
 /** One action for a failed source, with the provider name when it is known. */
 export function liveErrorNote(category: string, provider?: string): string {
-  const providerName =
-    provider === GOOGLE
-      ? "Google"
-      : provider === ANTHROPIC
-        ? "Claude"
-        : provider === OPENAI
-          ? "Codex"
-          : null
+  const providerName = liveProviderDisplayName(provider)
   switch (category) {
     case "authentication":
       return providerName
