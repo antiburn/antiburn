@@ -137,9 +137,7 @@ export function SessionStatusBar({
   const showStateText = stateLabel !== null && assessedCount === 0
   const checkNoun = assessedCount === 1 ? "burn check" : "burn checks"
   const countText =
-    assessedCount === 0
-      ? "Not assessed"
-      : `${passed.length}/${assessedCount} ${checkNoun}`
+    assessedCount === 0 ? "Not assessed" : `${passed.length}/${assessedCount} ${checkNoun}`
   // A transient state next to an assessed verdict still names itself, as a
   // prefix on the aria label and the tooltip text.
   const verdictPrefix = stateLabel && !showStateText ? `${stateLabel} — ` : ""
