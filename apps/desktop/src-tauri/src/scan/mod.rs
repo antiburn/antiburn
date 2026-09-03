@@ -184,6 +184,33 @@ impl ScanTrigger {
             ScanTrigger::ManualRescan => "manual_rescan",
         }
     }
+
+    /// R4: whether a full pass should pay to refresh the repository list for
+    /// this trigger, on top of the `list_changed` check every trigger gets.
+    ///
+    /// The tick and the watcher triggers cannot plausibly have introduced a
+    /// repository the list has not already seen — a new `cwd` only arrives
+    /// through a session's own upsert, and `list_changed` already covers
+    /// that case for them. Every other trigger names an action that can
+    /// change the repository set directly (a toggle, a new scan root, a
+    /// settings transition), so it refreshes unconditionally. Matched
+    /// exhaustively, with no `_` arm, so a new variant forces this decision
+    /// rather than defaulting into it silently.
+    pub fn refreshes_repositories(&self) -> bool {
+        match self {
+            ScanTrigger::Tick
+            | ScanTrigger::WatcherAgents { .. }
+            | ScanTrigger::WatcherOverflow => false,
+            ScanTrigger::Launch
+            | ScanTrigger::SettingsTransition
+            | ScanTrigger::InsightsPane
+            | ScanTrigger::RepositoryToggle
+            | ScanTrigger::ScanRootAdded
+            | ScanTrigger::FolderAccessGranted
+            | ScanTrigger::IndexCleared
+            | ScanTrigger::ManualRescan => true,
+        }
+    }
 }
 
 /// What one pass discovers: every agent, or only a burst-named subset.
@@ -597,7 +624,7 @@ pub(crate) async fn try_run_pass(
     let announce = move |entry: ActivityEntry| {
         let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
     };
-    let outcome = pass(app, activity_window_days, &scope, &announce).await;
+    let outcome = pass(app, activity_window_days, &trigger, &scope, &announce).await;
 
     let controller = app.state::<ScanController>();
     let cancelled = controller.cancelled();
@@ -704,10 +731,13 @@ struct PassSummary {
 ///
 /// `scope` narrows discovery, the upsert's evidence cohort, and per-agent
 /// scan bookkeeping to a burst-named subset of agents (T3/T5); everything
-/// else runs exactly as a full pass. See [`PassScope`].
+/// else runs exactly as a full pass. See [`PassScope`]. `trigger` decides
+/// only whether this pass refreshes the repository list (R4); it plays no
+/// other part here.
 async fn pass(
     app: &AppHandle,
     _activity_window_days: Option<u32>,
+    trigger: &ScanTrigger,
     scope: &PassScope,
     announce: &(dyn Fn(ActivityEntry) + Send + Sync),
 ) -> anyhow::Result<PassSummary> {
@@ -767,13 +797,24 @@ async fn pass(
         PassScope::Full => agents::evidence_cohort(),
         PassScope::Agents(agents) => agents.iter().map(|agent| agent.slug()).collect(),
     };
+    // R3: an idle pass writes nothing. A row this pass reused verbatim is
+    // byte-identical to what is already stored, and `last_seen_at` is only
+    // retention's fallback for a row with no activity epoch, so rewriting an
+    // unchanged row buys nothing. `returned` is the one exception: its row
+    // may also be unchanged, but its evidence last failed on a missing
+    // source, and only a write re-runs `upsert_sessions`'s own
+    // `source_returned` check to re-queue it.
+    let returned = store.sessions_with_missing_source()?;
     // Every write below is routed through the storage-health check, so a
     // database that has stopped accepting writes becomes a banner in the
     // popover rather than a list that silently stops changing.
     checked(
         app,
         "The session index",
-        store.upsert_sessions(&records, &evidence_agents),
+        store.upsert_sessions(
+            &records_to_persist(&records, &changed, &returned),
+            &evidence_agents,
+        ),
     )?;
     crate::insights_worker::wake(app);
     // A write may have added a session the idle task was not yet watching,
@@ -814,10 +855,13 @@ async fn pass(
         });
     }
 
-    // A full pass always refreshes the repository list. An agent-scoped pass
-    // only pays for it when a session's arrival or eviction could plausibly
-    // have introduced a new cwd.
-    if matches!(scope, PassScope::Full) || list_changed {
+    // R4: repositories refresh only when it can matter. `list_changed`
+    // covers every trigger, since a session's arrival or eviction can
+    // introduce a new cwd regardless of what asked for the pass;
+    // `refreshes_repositories` additionally covers triggers that name an
+    // action which can change the repository set on its own — a toggle, a
+    // new scan root — even on a pass that redescribed nothing.
+    if trigger.refreshes_repositories() || list_changed {
         repositories::refresh(app).await?;
     }
 
@@ -826,6 +870,28 @@ async fn pass(
         list_changed,
         re_described: changed.len(),
     })
+}
+
+/// R3: which of this pass's records are actually worth writing.
+///
+/// A record earns a write by being in `changed` (this pass re-described it —
+/// new, or its cursor moved) or in `returned` (its evidence last failed on a
+/// missing source, so even an unchanged row needs a write to re-queue it).
+/// Every other record is a row reused verbatim, and rewriting it would only
+/// cost a write for no observable change. Order follows `records`, and a key
+/// named by both `changed` and `returned` still yields one copy.
+fn records_to_persist(
+    records: &[SessionRecord],
+    changed: &[SessionKey],
+    returned: &[SessionKey],
+) -> Vec<SessionRecord> {
+    let worth_writing: std::collections::HashSet<&SessionKey> =
+        changed.iter().chain(returned).collect();
+    records
+        .iter()
+        .filter(|record| worth_writing.contains(&record.key))
+        .cloned()
+        .collect()
 }
 
 /// [`PassScope::Agents`]'s discovery: only the named agents, concurrently,

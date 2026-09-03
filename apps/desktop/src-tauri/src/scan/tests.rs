@@ -1338,6 +1338,38 @@ fn record(agent: &str, session_id: &str, updated_at: Option<i64>) -> SessionReco
 }
 
 #[test]
+fn records_to_persist_keeps_only_changed_or_returned_rows() {
+    let a = record("claude-code", "a", Some(1_000));
+    let b = record("claude-code", "b", Some(2_000));
+    let c = record("codex", "c", Some(3_000));
+    let records = vec![a.clone(), b.clone(), c.clone()];
+
+    assert_eq!(records_to_persist(&records, &[], &[]), Vec::new());
+
+    assert_eq!(
+        records_to_persist(&records, std::slice::from_ref(&a.key), &[]),
+        vec![a.clone()],
+        "changed only"
+    );
+
+    assert_eq!(
+        records_to_persist(&records, &[], std::slice::from_ref(&c.key)),
+        vec![c.clone()],
+        "returned only"
+    );
+
+    assert_eq!(
+        records_to_persist(
+            &records,
+            &[a.key.clone(), b.key.clone()],
+            std::slice::from_ref(&b.key),
+        ),
+        vec![a, b],
+        "a key named by both changed and returned still yields one copy"
+    );
+}
+
+#[test]
 fn per_agent_totals_count_sessions_and_keep_the_newest_activity() {
     let records = vec![
         record("claude-code", "a", Some(1_000)),
@@ -1469,6 +1501,44 @@ async fn a_second_request_before_the_scheduler_wakes_is_coalesced() {
     // ...and a second wait finds nothing further queued.
     let second = tokio::time::timeout(Duration::from_millis(0), controller.kick.notified()).await;
     assert!(second.is_err(), "only one notify should have been queued");
+}
+
+/// R4: the tick and the watcher triggers cannot plausibly have introduced a
+/// repository the list has not already seen, so they alone skip the refresh.
+#[test]
+fn refreshes_repositories_is_false_only_for_the_tick_and_the_watcher_triggers() {
+    let cheap = [
+        ScanTrigger::Tick,
+        ScanTrigger::WatcherAgents {
+            agents: vec!["claude-code"],
+        },
+        ScanTrigger::WatcherOverflow,
+    ];
+    for trigger in &cheap {
+        assert!(
+            !trigger.refreshes_repositories(),
+            "{} should not refresh repositories",
+            trigger.label()
+        );
+    }
+
+    let refreshing = [
+        ScanTrigger::Launch,
+        ScanTrigger::SettingsTransition,
+        ScanTrigger::InsightsPane,
+        ScanTrigger::RepositoryToggle,
+        ScanTrigger::ScanRootAdded,
+        ScanTrigger::FolderAccessGranted,
+        ScanTrigger::IndexCleared,
+        ScanTrigger::ManualRescan,
+    ];
+    for trigger in &refreshing {
+        assert!(
+            trigger.refreshes_repositories(),
+            "{} should refresh repositories",
+            trigger.label()
+        );
+    }
 }
 
 #[test]
