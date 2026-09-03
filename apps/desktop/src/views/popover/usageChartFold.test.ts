@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { foldUsageChart } from "./usageChartFold"
+import { foldActivityHeader } from "./usageChartFold"
 
 const CHART_HEIGHT = 120
 
@@ -34,13 +34,13 @@ function scene(listHeight: number, viewportWhenOpen: number) {
     scrollTo(top: number) {
       const max = () => Math.max(0, listHeight - viewport.clientHeight)
       viewport.scrollTop = Math.min(top, max())
-      foldUsageChart(wrap, viewport)
+      foldActivityHeader(wrap, viewport)
       return { scrollTop: viewport.scrollTop, clamped: viewport.scrollTop > max() }
     },
   }
 }
 
-describe("foldUsageChart", () => {
+describe("foldActivityHeader", () => {
   it("folds the whole chart away once a long list scrolls past the range", () => {
     const s = scene(3000, 400)
     s.scrollTo(96)
@@ -104,7 +104,7 @@ describe("foldUsageChart", () => {
     // WebKit can report a temporary offset beyond the real scroll range
     // during the bottom bounce.
     s.viewport.scrollTop = 60
-    foldUsageChart(s.wrap, s.viewport)
+    foldActivityHeader(s.wrap, s.viewport)
 
     expect(s.folded()).toBe(folded)
   })

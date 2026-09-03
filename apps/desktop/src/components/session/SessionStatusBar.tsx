@@ -1,9 +1,8 @@
-import { Check, CircleDashed, Flame, X, type LucideIcon } from "lucide-react"
+import { Check, Flame, X, type LucideIcon } from "lucide-react"
 import { Fragment } from "react"
 
 import type { SessionHygieneEvidenceState } from "../../lib/insightsIpc"
 import {
-  notAssessedReasonLabel,
   sessionHygieneStateIsTransient,
   sessionHygieneStateLabel,
   type SessionHygieneCheck,
@@ -59,16 +58,15 @@ interface StatusMark {
   label: string
 }
 
-const STATUS_MARK: Record<SessionHygieneCheck["status"], StatusMark> = {
+type AssessedHygieneCheck = SessionHygieneCheck & { status: "finding" | "clean" }
+
+function isAssessed(check: SessionHygieneCheck): check is AssessedHygieneCheck {
+  return check.status !== "notAssessed"
+}
+
+const STATUS_MARK: Record<AssessedHygieneCheck["status"], StatusMark> = {
   finding: { Icon: X, size: 12, strokeWidth: 2.5, label: "Finding" },
-  clean: { Icon: Check, size: 12, strokeWidth: 2.5, label: "Pass" },
-  // An open, broken outline reads as "not filled in". A dash reads as
-  // punctuation next to the two solid marks.
-  //
-  // The circle draws to the edge of its box, but a check or a cross does
-  // not. So the circle needs a smaller box and a thinner stroke to carry
-  // the same visual weight, and to keep its gaps legible.
-  notAssessed: { Icon: CircleDashed, size: 10, strokeWidth: 2, label: "Not assessed" },
+  clean: { Icon: Check, size: 12, strokeWidth: 2.5, label: "Passed" },
 }
 
 const INK_CLASS: Record<SessionHygieneCheck["ink"], string> = {
@@ -77,12 +75,8 @@ const INK_CLASS: Record<SessionHygieneCheck["ink"], string> = {
   "label-tertiary": "text-label-tertiary",
 }
 
-function renderTooltip(
-  failed: SessionHygieneCheck[],
-  passed: SessionHygieneCheck[],
-  notAssessed: SessionHygieneCheck[],
-) {
-  const groups = [failed, passed, notAssessed].filter((group) => group.length > 0)
+function renderTooltip(failed: AssessedHygieneCheck[], passed: AssessedHygieneCheck[]) {
+  const groups = [failed, passed].filter((group) => group.length > 0)
   return (
     <div className="grid grid-cols-[1fr_max-content] gap-x-2.5 gap-y-0 items-center font-mono [word-spacing:-2px]">
       {groups.map((group, index) => (
@@ -92,11 +86,7 @@ function renderTooltip(
             const mark = STATUS_MARK[check.status]
             return (
               <Fragment key={check.id}>
-                {/* A not-assessed check names itself only. The reason line below
-                    carries the verdict, so the two do not repeat each other. */}
-                <span className={INK_CLASS[check.ink]}>
-                  {check.status === "notAssessed" ? check.name : check.title}
-                </span>
+                <span className={INK_CLASS[check.ink]}>{check.title}</span>
                 <mark.Icon
                   size={mark.size}
                   strokeWidth={mark.strokeWidth}
@@ -104,13 +94,6 @@ function renderTooltip(
                   aria-label={mark.label}
                   className={`justify-self-center ${INK_CLASS[check.ink]}`}
                 />
-                {/* The reason stays in the name column. A full-width line would
-                    run under the mark column and break the right edge. */}
-                {check.status === "notAssessed" && check.notAssessedReason && (
-                  <span className="col-start-1 type-caption text-label-tertiary">
-                    {notAssessedReasonLabel(check.notAssessedReason)}
-                  </span>
-                )}
               </Fragment>
             )
           })}
@@ -130,15 +113,13 @@ export function SessionStatusBar({
   limitBadge,
   onLimitBadgeHover,
 }: SessionStatusBarProps) {
-  const failed = checks.filter((check) => check.status === "finding")
-  const passed = checks.filter((check) => check.status === "clean")
-  const notAssessed = checks.filter((check) => check.status === "notAssessed")
+  const assessedChecks = checks.filter(isAssessed)
+  const failed = assessedChecks.filter((check) => check.status === "finding")
+  const passed = assessedChecks.filter((check) => check.status === "clean")
   const assessedCount = passed.length + failed.length
-  // The denominator is every check the session has, not only the assessed
-  // ones. A denominator that moves with the assessed count contradicts the
-  // not-assessed tail beside it.
-  const failedShare = checks.length === 0 ? 0 : failed.length / checks.length
-  const allPassed = passed.length === checks.length && checks.length > 0
+  const failedShare = assessedCount === 0 ? 0 : failed.length / assessedCount
+  const allPassed = passed.length === assessedCount && assessedCount > 0
+  const hasUnavailableChecks = assessedCount < checks.length
   const stateLabel = sessionHygieneStateLabel(evidenceState)
   // A transient state ends on its own, so its label carries an ellipsis.
   const stateText = stateLabel
@@ -148,12 +129,10 @@ export function SessionStatusBar({
   // state label — a stale or refreshing session still has a last result. Only
   // the never-assessed case keeps the plain state text in the count's place.
   const showStateText = stateLabel !== null && assessedCount === 0
-  const checkNoun = checks.length === 1 ? "burn check" : "burn checks"
-  const notAssessedText = notAssessed.length > 0 ? ` · ${notAssessed.length} not assessed` : ""
-  const countText =
-    assessedCount === 0
-      ? "Not assessed"
-      : `${passed.length}/${checks.length} ${checkNoun}${notAssessedText}`
+  const checkNoun = assessedCount === 1 ? "burn check" : "burn checks"
+  const countText = `${passed.length}/${assessedCount} ${
+    allPassed && hasUnavailableChecks ? "assessed " : ""
+  }${checkNoun}`
   // A transient state next to an assessed verdict still names itself, as a
   // prefix on the aria label and the tooltip text.
   const verdictPrefix = stateLabel && !showStateText ? `${stateLabel} — ` : ""
@@ -161,30 +140,31 @@ export function SessionStatusBar({
     ? `${stateLabel} session hygiene checks`
     : `${verdictPrefix}${
         allPassed
-          ? "All checks pass"
-          : assessedCount === 0
-            ? "No checks assessed"
-            : `${passed.length} of ${checks.length} ${checkNoun} pass${
-                notAssessed.length > 0 ? `; ${notAssessed.length} not assessed` : ""
-              }`
+          ? hasUnavailableChecks
+            ? "All assessed checks passed"
+            : "All checks passed"
+          : `${passed.length} of ${assessedCount} ${checkNoun} passed`
       }`
-  const tooltip = showStateText ? verdictLabel : renderTooltip(failed, passed, notAssessed)
+  const tooltip = showStateText ? verdictLabel : renderTooltip(failed, passed)
+  const showVerdict = showStateText || assessedCount > 0
   const isHighLimitShare = (limitBadge?.percent ?? 0) >= 5
 
   return (
     <div className="flex w-full items-center justify-between gap-x-1.5 text-label-secondary">
-      <Tooltip label={tooltip} delayMs={150}>
-        <span
-          // The modifiers remove the wider sans spacing from type-footnote.
-          // Monospace text already adds enough space between characters.
-          // Negative word spacing keeps the count together.
-          aria-label={verdictLabel}
-          className="font-mono type-footnote font-medium! tracking-tight! [word-spacing:-2px] leading-[13px] tabular-nums"
-          style={{ color: verdictInk(failedShare, assessedCount) }}
-        >
-          {showStateText ? stateText : countText}
-        </span>
-      </Tooltip>
+      {showVerdict && (
+        <Tooltip label={tooltip} delayMs={150}>
+          <span
+            // The modifiers remove the wider sans spacing from type-footnote.
+            // Monospace text already adds enough space between characters.
+            // Negative word spacing keeps the count together.
+            aria-label={verdictLabel}
+            className="font-mono type-footnote font-medium! tracking-tight! [word-spacing:-2px] leading-[13px] tabular-nums"
+            style={{ color: verdictInk(failedShare, assessedCount) }}
+          >
+            {showStateText ? stateText : countText}
+          </span>
+        </Tooltip>
+      )}
 
       {limitBadge ? (
         <Tooltip label={limitBadge.label} delayMs={150}>

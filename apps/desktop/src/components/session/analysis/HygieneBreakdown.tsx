@@ -1,9 +1,8 @@
-import { Check, ChevronRight, CircleDashed, X, type LucideIcon } from "lucide-react"
+import { Check, ChevronRight, X, type LucideIcon } from "lucide-react"
 import { useId, useState } from "react"
 
 import { cn } from "../../../lib/cn"
 import {
-  notAssessedReasonLabel,
   sessionHygieneDocumentation,
   type SessionHygieneCheck,
 } from "../../../lib/presentation/sessionHygiene"
@@ -20,7 +19,13 @@ interface HygieneStatusPresentation {
   textClass: string
 }
 
-const STATUS_PRESENTATION: Record<SessionHygieneCheck["status"], HygieneStatusPresentation> = {
+type AssessedHygieneCheck = SessionHygieneCheck & { status: "finding" | "clean" }
+
+function isAssessed(check: SessionHygieneCheck): check is AssessedHygieneCheck {
+  return check.status !== "notAssessed"
+}
+
+const STATUS_PRESENTATION: Record<AssessedHygieneCheck["status"], HygieneStatusPresentation> = {
   finding: {
     Icon: X,
     iconSize: 12,
@@ -31,20 +36,13 @@ const STATUS_PRESENTATION: Record<SessionHygieneCheck["status"], HygieneStatusPr
   clean: {
     Icon: Check,
     iconSize: 12,
-    label: "passing",
+    label: "passed",
     strokeWidth: 2.5,
     textClass: "text-system-green",
   },
-  notAssessed: {
-    Icon: CircleDashed,
-    iconSize: 10,
-    label: "not assessed",
-    strokeWidth: 2,
-    textClass: "text-label-tertiary",
-  },
 }
 
-function HygieneGuidance({ check }: { check: SessionHygieneCheck }) {
+function HygieneGuidance({ check }: { check: AssessedHygieneCheck }) {
   const documentation = sessionHygieneDocumentation(check)
 
   return (
@@ -61,11 +59,6 @@ function HygieneGuidance({ check }: { check: SessionHygieneCheck }) {
       <p className="type-footnote font-semibold! text-label-secondary">
         {documentation.summary}
       </p>
-      {check.status === "notAssessed" && check.notAssessedReason && (
-        <p className="italic">
-          Not assessed: {notAssessedReasonLabel(check.notAssessedReason)}.
-        </p>
-      )}
       {documentation.guidance.length > 0 && (
         <ul className="mt-2 list-disc space-y-0.5 pl-5 text-sm/5">
           {documentation.guidance.map((sentence) => (
@@ -84,7 +77,7 @@ function HygieneRow({
   open,
   onToggle,
 }: {
-  check: SessionHygieneCheck
+  check: AssessedHygieneCheck
   open: boolean
   onToggle: () => void
 }) {
@@ -129,14 +122,16 @@ function HygieneRow({
 export function HygieneBreakdown({ checks }: HygieneBreakdownProps) {
   const [rollupOpen, setRollupOpen] = useState(false)
   const [openCheck, setOpenCheck] = useState<SessionHygieneCheck["id"] | null>(null)
-  const passing = checks.filter((check) => check.status === "clean")
-  const notAssessed = checks.filter((check) => check.status === "notAssessed")
-  const findings = checks.filter((check) => check.status === "finding")
-  const rolledChecks = checks.filter((check) => check.status !== "finding")
+  const assessedChecks = checks.filter(isAssessed)
+  const passing = assessedChecks.filter((check) => check.status === "clean")
+  const findings = assessedChecks.filter((check) => check.status === "finding")
+  const rolledChecks = passing
   const assessedCount = passing.length + findings.length
-  const rollupLabel = `${passing.length}/${assessedCount} passing${
-    notAssessed.length > 0 ? `, ${notAssessed.length} not assessed` : ""
-  }`
+  const allAssessedPass = passing.length === assessedCount
+  const rollupLabel =
+    allAssessedPass && assessedCount < checks.length
+      ? "All assessed checks passed"
+      : `${passing.length}/${assessedCount} passed`
 
   const toggleCheck = (checkId: SessionHygieneCheck["id"]) => {
     setOpenCheck((current) => (current === checkId ? null : checkId))
@@ -148,6 +143,8 @@ export function HygieneBreakdown({ checks }: HygieneBreakdownProps) {
     }
     setRollupOpen((current) => !current)
   }
+
+  if (assessedCount === 0) return null
 
   return (
     <div className="grid gap-y-1" aria-label="Session hygiene checks">

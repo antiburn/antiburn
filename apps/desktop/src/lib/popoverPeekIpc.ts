@@ -9,15 +9,18 @@ import type {
   AnchoredWindowState,
 } from "./anchoredTrigger"
 import { hasShell, type LiveUsageSummaryPayload, type ProviderUsageSummaryPayload } from "./ipc"
+import type { ChecksPresentation } from "./presentation/checks"
 
 export const POPOVER_PEEK_LABEL = "popover-peek"
 
-/** A passive preview target owned by the popover. */
-export type PopoverPeekTarget = {
-  kind: "provider"
-  provider: string
-  utcOffsetMinutes: number
-}
+/** A companion target owned by the popover. */
+export type PopoverPeekTarget =
+  | {
+      kind: "provider"
+      provider: string
+      utcOffsetMinutes: number
+    }
+  | { kind: "checks" }
 
 /** One activation returned to the popover instigator. */
 export type PopoverPeekActivation = AnchoredWindowRequest<PopoverPeekTarget>
@@ -30,14 +33,16 @@ export type PopoverPeekState = AnchoredWindowState<PopoverPeekTarget>
 
 export type PopoverPeekLifecycleEvent = AnchoredWindowLifecycleEvent<PopoverPeekTarget>
 
-/** Fresh data loaded by the shell for one validated preview generation. */
-export interface PopoverPeekData {
-  kind: "provider"
-  summary: ProviderUsageSummaryPayload
-  live: LiveUsageSummaryPayload
-}
+/** Fresh data loaded by the shell for one validated companion generation. */
+export type PopoverPeekData =
+  | {
+      kind: "provider"
+      summary: ProviderUsageSummaryPayload
+      live: LiveUsageSummaryPayload
+    }
+  | { kind: "checks"; presentation: ChecksPresentation }
 
-/** Retarget the passive preview beside the popover. */
+/** Retarget the companion beside the popover. */
 export async function showPopoverPeek(
   target: PopoverPeekTarget,
   anchor: AnchorRegion,

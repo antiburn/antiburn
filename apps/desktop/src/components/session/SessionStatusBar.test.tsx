@@ -87,7 +87,7 @@ afterEach(cleanup)
 describe("SessionStatusBar", () => {
   it("inks a fill-free line green with the full pass count when every check passes", () => {
     render(<SessionStatusBar checks={ALL_PASSED} />)
-    const verdict = screen.getByLabelText("All checks pass")
+    const verdict = screen.getByLabelText("All checks passed")
     expect(verdict.textContent).toBe("6/6 burn checks")
     expect(verdict.style.color).toBe("var(--color-system-green)")
     expect(verdict.className).not.toContain("bg-")
@@ -96,7 +96,7 @@ describe("SessionStatusBar", () => {
 
   it("inks a minority failure toward the orange end of the ramp", () => {
     render(<SessionStatusBar checks={CHECKS} />)
-    const verdict = screen.getByLabelText("5 of 6 burn checks pass")
+    const verdict = screen.getByLabelText("5 of 6 burn checks passed")
     expect(verdict.textContent).toBe("5/6 burn checks")
     expect(verdict.className).not.toContain("rounded-full")
     expect(verdict.style.backgroundColor).toBe("")
@@ -105,12 +105,24 @@ describe("SessionStatusBar", () => {
     expect(verdict.parentElement?.className).not.toContain("bg-")
   })
 
-  it("keeps the denominator on every check, so it never contradicts the tail", () => {
+  it("excludes unavailable checks from the result", () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
-    const verdict = screen.getByLabelText("4 of 6 burn checks pass; 1 not assessed")
-    expect(verdict.textContent).toBe("4/6 burn checks · 1 not assessed")
-    expect(verdict.style.color).toContain("--color-system-red-text) 17%")
+    const verdict = screen.getByLabelText("4 of 5 burn checks passed")
+    expect(verdict.textContent).toBe("4/5 burn checks")
+    expect(verdict.style.color).toContain("--color-system-red-text) 20%")
     expect(verdict.style.color).toContain("--color-system-orange")
+  })
+
+  it("qualifies an all-pass result when unavailable checks are hidden", () => {
+    const checks = WITH_NOT_ASSESSED.map((check) =>
+      check.status === "finding"
+        ? { ...check, status: "clean" as const, ink: "system-green" as const }
+        : check,
+    )
+    render(<SessionStatusBar checks={checks} />)
+    const verdict = screen.getByLabelText("All assessed checks passed")
+    expect(verdict.textContent).toBe("5/5 assessed burn checks")
+    expect(screen.queryByLabelText("All checks passed")).toBeNull()
   })
 
   it("reaches full red ink only when every check fails", () => {
@@ -120,7 +132,7 @@ describe("SessionStatusBar", () => {
       ink: "system-red-text" as const,
     }))
     render(<SessionStatusBar checks={allFailed} />)
-    const verdict = screen.getByLabelText("0 of 6 burn checks pass")
+    const verdict = screen.getByLabelText("0 of 6 burn checks passed")
     expect(verdict.style.color).toContain("--color-system-red-text) 100%")
   })
 
@@ -145,18 +157,18 @@ describe("SessionStatusBar", () => {
 
   it("shows the verdict, not the state text, once at least one check is assessed", () => {
     render(<SessionStatusBar checks={CHECKS} evidenceState="processing" />)
-    const verdict = screen.getByLabelText("Computing — 5 of 6 burn checks pass")
+    const verdict = screen.getByLabelText("Computing — 5 of 6 burn checks passed")
     expect(verdict.textContent).toBe("5/6 burn checks")
   })
 
   it("prefixes the transient state onto an assessed but stale verdict", () => {
     render(<SessionStatusBar checks={CHECKS} evidenceState="stale" />)
-    const verdict = screen.getByLabelText("Refreshing — 5 of 6 burn checks pass")
+    const verdict = screen.getByLabelText("Refreshing — 5 of 6 burn checks passed")
     expect(verdict.textContent).toBe("5/6 burn checks")
     expect(verdict.style.color).toContain("--color-system-orange")
   })
 
-  it("never shows a denominator smaller than the not-assessed tail", () => {
+  it("uses only the assessed checks for a singular result", () => {
     const oneAssessed: SessionHygieneCheck[] = [
       CHECKS[0]!,
       { ...WITH_NOT_ASSESSED[2]! },
@@ -169,11 +181,12 @@ describe("SessionStatusBar", () => {
       },
     ]
     render(<SessionStatusBar checks={oneAssessed} />)
-    const verdict = screen.getByLabelText("0 of 3 burn checks pass; 2 not assessed")
-    expect(verdict.textContent).toBe("0/3 burn checks · 2 not assessed")
+    const verdict = screen.getByLabelText("0 of 1 burn check passed")
+    expect(verdict.textContent).toBe("0/1 burn check")
+    expect(verdict.style.color).toContain("--color-system-red-text) 100%")
   })
 
-  it("replaces a zero-over-zero fraction with a plain not-assessed verdict", () => {
+  it("omits a settled result when no checks were assessed", () => {
     const noneAssessed = CHECKS.map((check) => ({
       ...check,
       status: "notAssessed" as const,
@@ -181,33 +194,29 @@ describe("SessionStatusBar", () => {
       ink: "label-tertiary" as const,
     }))
     render(<SessionStatusBar checks={noneAssessed} evidenceState="ready" />)
-    const verdict = screen.getByLabelText("No checks assessed")
-    expect(verdict.textContent).toBe("Not assessed")
-    expect(verdict.style.color).toBe("var(--color-label-tertiary)")
+    expect(screen.queryByText(/burn check/i)).toBeNull()
+    expect(screen.queryByText("0/0")).toBeNull()
+    expect(screen.queryByLabelText(/assessed/i)).toBeNull()
   })
 
-  it("splits a not-assessed check into a bare name and its reason", async () => {
+  it("omits unavailable checks from the tooltip", async () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
-    fireEvent.focus(screen.getByLabelText("4 of 6 burn checks pass; 1 not assessed"))
+    fireEvent.focus(screen.getByLabelText("4 of 5 burn checks passed"))
 
-    // The name carries no verdict, so it does not repeat the reason below it.
-    const name = await screen.findByText("Overpowered subagents detected")
-    expect(name.textContent).not.toContain("not assessed")
-    const reason = await screen.findByText("couldn't read the whole session log")
-    // The reason shares the name's column and never runs under the mark.
-    expect(reason.className).toContain("col-start-1")
-    expect(reason.className).not.toContain("col-span-full")
-    expect(reason.className).toContain("text-label-tertiary")
+    expect(await screen.findByText("Session overdepth detected")).toBeTruthy()
+    expect(screen.queryByText("Overpowered subagents detected")).toBeNull()
+    expect(screen.queryByText("couldn't read the whole session log")).toBeNull()
   })
 
-  it("marks every check status with a named icon, not a text glyph", async () => {
+  it("marks each assessed status with a named icon, not a text glyph", async () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
-    fireEvent.focus(screen.getByLabelText("4 of 6 burn checks pass; 1 not assessed"))
+    fireEvent.focus(screen.getByLabelText("4 of 5 burn checks passed"))
 
-    for (const label of ["Finding", "Pass", "Not assessed"]) {
+    for (const label of ["Finding", "Passed"]) {
       const marks = await screen.findAllByLabelText(label)
       expect(marks.every((mark) => mark.tagName.toLowerCase() === "svg")).toBe(true)
     }
+    expect(screen.queryByLabelText("Not assessed")).toBeNull()
   })
 
   it("shows a usual cost figure without pill chrome", () => {

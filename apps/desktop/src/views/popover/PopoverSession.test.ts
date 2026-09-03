@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../../lib/ipc"
+import type * as InsightsIpc from "../../lib/insightsIpc"
 import type { ActivityEntryPayload, ScanStatus, SessionAnalysisPayload } from "../../lib/ipc"
 import { PopoverSession, sessionKey } from "./PopoverSession"
 import type { SessionSubject } from "./SessionPane"
@@ -12,6 +13,8 @@ const setPopoverHeight = vi.hoisted(() => vi.fn())
 const listRecentSessions = vi.hoisted(() => vi.fn())
 const onSessionEntryChanged = vi.hoisted(() => vi.fn())
 const onScanEvent = vi.hoisted(() => vi.fn())
+const onChecksReportChanged = vi.hoisted(() => vi.fn())
+const getChecksReport = vi.hoisted(() => vi.fn())
 
 // The analysis, list, and event-subscription commands are overridden. All
 // other wrappers keep their real no-shell fallback because `hasShell()` is
@@ -28,6 +31,11 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     onSessionEntryChanged,
     onScanEvent,
   }
+})
+
+vi.mock("../../lib/insightsIpc", async (importOriginal) => {
+  const actual = await importOriginal<typeof InsightsIpc>()
+  return { ...actual, getChecksReport, onChecksReportChanged }
 })
 
 type EntryChangedHandler = (entry: ActivityEntryPayload) => void
@@ -61,6 +69,10 @@ beforeEach(() => {
       scanEventHandler = null
     }
   })
+  onChecksReportChanged.mockReset()
+  onChecksReportChanged.mockResolvedValue(() => {})
+  getChecksReport.mockReset()
+  getChecksReport.mockResolvedValue(null)
   getSessionLimitAllocations.mockReset()
   getSessionLimitAllocations.mockResolvedValue({
     generatedAt: "2027-01-15T08:00:00Z",
@@ -78,6 +90,16 @@ describe("PopoverSession surface presentation", () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.useRealTimers()
+  })
+
+  it("ends the initial Checks loading state after a report failure", async () => {
+    getChecksReport.mockRejectedValue(new Error("report failed"))
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+
+    await vi.waitFor(() => expect(session.getSnapshot().checksUnavailable).toBe(true))
+
+    unsubscribe()
   })
 
   it("keeps Usage presented until the winning resize presents the requested session", async () => {

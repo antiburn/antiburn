@@ -27,7 +27,7 @@ fn report_context() -> ReportContext {
 }
 
 #[test]
-fn an_inert_unknown_session_enters_the_denominator_and_is_assessed() {
+fn an_inert_unknown_session_enters_the_denominator_but_has_no_effort_signal() {
     let composite = stream_composite("unrecognized_inert_records");
     let metrics = composite.metrics().expect("metrics must publish");
     let evidence = composite.evidence().expect("evidence must publish");
@@ -43,7 +43,8 @@ fn an_inert_unknown_session_enters_the_denominator_and_is_assessed() {
     let report = accumulator.finish(report_context());
     let counts = report.detectors[DetectorId::ModelOverthinking.index()];
     assert_eq!(counts.eligible, 1);
-    assert_eq!(counts.assessed, 1);
+    assert_eq!(counts.assessed, 0);
+    assert_eq!(counts.unavailable, 1);
     // The session carries zero assistant turns, so zero turns are
     // eligible to carry an effort value: the signal reads as missing.
     assert_eq!(
@@ -310,10 +311,8 @@ fn a_session_of_only_inert_unknowns_is_a_zero_work_session() {
     let report = accumulator.finish(report_context());
     for detector in [
         DetectorId::SessionsOverDepth,
-        DetectorId::ModelOverthinking,
         DetectorId::OverpoweredSubagents,
         DetectorId::OldModelUsage,
-        DetectorId::OveruseOfFastMode,
         DetectorId::CacheChurn,
     ] {
         assert_eq!(
@@ -326,9 +325,18 @@ fn a_session_of_only_inert_unknowns_is_a_zero_work_session() {
             1,
             "{detector:?}"
         );
+        assert_eq!(report.detectors[detector.index()].clean, 1, "{detector:?}");
+    }
+    for detector in [DetectorId::ModelOverthinking, DetectorId::OveruseOfFastMode] {
+        let counts = report.detectors[detector.index()];
+        assert_eq!(counts.eligible, 1, "{detector:?}");
+        assert_eq!(counts.assessed, 0, "{detector:?}");
+        assert_eq!(counts.unavailable, 1, "{detector:?}");
     }
     for detector in [DetectorId::UnusedMcpServers, DetectorId::UnusedSkills] {
-        assert_eq!(report.detectors[detector.index()].eligible, 0);
+        let counts = report.detectors[detector.index()];
+        assert_eq!(counts.eligible, 0);
+        assert_eq!(counts.not_applicable, 1);
     }
     // The inert sidechain marker never becomes a turn row, so it carries no
     // delegated turn or spawn: a real clean verdict, not a contract gap.

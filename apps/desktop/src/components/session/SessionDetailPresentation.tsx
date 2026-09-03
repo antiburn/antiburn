@@ -437,6 +437,7 @@ export function SessionDetailPresentation({
   const subagent = session.subagent
   const modelNames = modelRunShortNames(modelRuns)
   const hygieneChecks = sessionHygieneChecks(hygiene)
+  const hasAssessedHygieneChecks = hygieneChecks.some((check) => check.status !== "notAssessed")
   const hygieneStateLabel = sessionHygieneStateLabel(hygiene.evidenceState)
 
   // Left and right arrows traverse adjacent sessions, mirroring the header
@@ -759,12 +760,14 @@ export function SessionDetailPresentation({
               </Card>
             )}
 
-            <Card
-              title="Burn Checks"
-              {...(hygieneStateLabel ? { hint: hygieneStateLabel } : {})}
-            >
-              <HygieneBreakdown checks={hygieneChecks} />
-            </Card>
+            {(hasAssessedHygieneChecks || hygieneStateLabel) && (
+              <Card
+                title="Burn Checks"
+                {...(hygieneStateLabel ? { hint: hygieneStateLabel } : {})}
+              >
+                <HygieneBreakdown checks={hygieneChecks} />
+              </Card>
+            )}
 
             {tokensCard && (
               <Card title="Context" subtitle={tokensCard.hint}>

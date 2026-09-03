@@ -1,6 +1,6 @@
 import type { AnchorRegion } from "./anchorRegion"
 
-export type AnchoredTriggerActivation = "idle" | "hovered" | "selected"
+export type AnchoredTriggerActivation = "idle" | "hovered"
 
 export interface AnchoredWindowRequest<T> {
   generation: number
@@ -96,15 +96,7 @@ export class AnchoredTriggerController<T, P = undefined> {
   }
 
   hover(target: T, anchor: AnchorRegion, presentation?: P): Promise<void> {
-    const activation =
-      this.matchesSnapshot(target) && this.snapshot.activation === "selected"
-        ? "selected"
-        : "hovered"
-    return this.activate(target, anchor, activation, presentation)
-  }
-
-  select(target: T, anchor: AnchorRegion, presentation?: P): Promise<void> {
-    return this.activate(target, anchor, "selected", presentation)
+    return this.activate(target, anchor, "hovered", presentation)
   }
 
   leave(): Promise<void> {

@@ -116,7 +116,7 @@ describe("AnchoredTriggerController", () => {
     })
   })
 
-  it("retains hover and selection until native lifecycle concealment", async () => {
+  it("retains hover until native lifecycle concealment", async () => {
     const { bridge, controller, emit, unsubscribe } = harness()
     const target = { id: "alpha" }
 
@@ -127,12 +127,8 @@ describe("AnchoredTriggerController", () => {
     expect(controller.getSnapshot().activation).toBe("hovered")
     expect(bridge.conceal).toHaveBeenCalledOnce()
 
-    await controller.select(target, ANCHOR)
-    await controller.hover(target, ANCHOR)
-    expect(controller.getSnapshot()).toMatchObject({ activation: "selected", generation: 1 })
-
     emit(state(1, target))
-    expect(controller.getSnapshot().activation).toBe("selected")
+    expect(controller.getSnapshot().activation).toBe("hovered")
     emit(state(2, null))
     expect(controller.getSnapshot()).toEqual({
       activation: "idle",

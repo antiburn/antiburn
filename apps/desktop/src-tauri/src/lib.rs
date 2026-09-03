@@ -708,9 +708,14 @@ mod tests {
         let task_store = Arc::clone(&store);
         let task_handle = Arc::clone(&handle);
         let task = tauri::async_runtime::spawn(async move {
-            worker_loop(&task_store, &task_handle, &|| 100, &runner, &|entry| {
-                task_announced.lock().unwrap().push(entry)
-            })
+            worker_loop(
+                &task_store,
+                &task_handle,
+                &|| 100,
+                &runner,
+                &|entry| task_announced.lock().unwrap().push(entry),
+                &|| {},
+            )
             .await;
         });
         pass_entered

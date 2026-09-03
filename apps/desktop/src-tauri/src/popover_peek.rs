@@ -27,6 +27,33 @@ pub enum PopoverPeekTarget {
         provider: String,
         utc_offset_minutes: i32,
     },
+    Checks,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChecksCategory {
+    id: String,
+    finding: u64,
+    clean: u64,
+    unavailable: u64,
+    estimated_token_burn_basis_points: Option<u16>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChecksEstimate {
+    token_burn_basis_points: Option<u16>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChecksPresentation {
+    failures: Vec<ChecksCategory>,
+    wins: Vec<ChecksCategory>,
+    unavailable: Vec<ChecksCategory>,
+    refresh_unavailable: bool,
+    estimate: ChecksEstimate,
 }
 
 /// Fresh data returned only to the current companion generation.
@@ -38,8 +65,11 @@ pub enum PopoverPeekTarget {
 )]
 pub enum PopoverPeekData {
     Provider {
-        summary: ProviderUsageSummary,
-        live: LiveUsageSummary,
+        summary: Box<ProviderUsageSummary>,
+        live: Box<LiveUsageSummary>,
+    },
+    Checks {
+        presentation: ChecksPresentation,
     },
 }
 
@@ -103,15 +133,79 @@ pub fn show_popover_peek(
     manager: tauri::State<'_, PopoverPeekManager>,
 ) -> Result<AnchoredWindowRequest<PopoverPeekTarget>, String> {
     validate_popover_caller(window.label())?;
-    let presentation = initial_presentation.map(|presentation| match (&target, presentation) {
-        (
-            PopoverPeekTarget::Provider { provider, .. },
-            PopoverPeekData::Provider { summary, live },
-        ) => selected_provider_data(provider, summary, live),
-    });
+    let presentation = match initial_presentation {
+        Some(presentation) => Some(match (&target, presentation) {
+            (
+                PopoverPeekTarget::Provider { provider, .. },
+                PopoverPeekData::Provider { summary, live },
+            ) => selected_provider_data(provider, *summary, *live),
+            (PopoverPeekTarget::Checks, PopoverPeekData::Checks { presentation }) => {
+                validate_checks_presentation(&presentation)?;
+                PopoverPeekData::Checks { presentation }
+            }
+            _ => return Err("popover peek presentation does not match its target".to_string()),
+        }),
+        None => None,
+    };
     manager
         .request_with_presentation(window.app_handle(), target, anchor, presentation)
         .map_err(|error| error.to_string())
+}
+
+fn validate_checks_presentation(presentation: &ChecksPresentation) -> Result<(), String> {
+    if presentation.failures.len() + presentation.wins.len() + presentation.unavailable.len() > 9 {
+        return Err("checks preview has too many categories".to_string());
+    }
+    let mut ids = std::collections::HashSet::new();
+    for (category, section) in presentation
+        .failures
+        .iter()
+        .map(|category| (category, "failures"))
+        .chain(presentation.wins.iter().map(|category| (category, "wins")))
+        .chain(
+            presentation
+                .unavailable
+                .iter()
+                .map(|category| (category, "unavailable")),
+        )
+    {
+        if !matches!(
+            category.id.as_str(),
+            "sessionsOverDepth"
+                | "modelOverthinking"
+                | "overpoweredSubagents"
+                | "unusedMcpServers"
+                | "unusedBuiltInTools"
+                | "unusedSkills"
+                | "oldModelUsage"
+                | "overuseOfFastMode"
+                | "cacheChurn"
+        ) || !ids.insert(category.id.as_str())
+            || category
+                .estimated_token_burn_basis_points
+                .is_some_and(|value| {
+                    value > antiburn_local::insights::MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS
+                })
+            || (section == "failures" && category.finding == 0)
+            || (section == "wins" && (category.finding != 0 || category.clean == 0))
+            || (section == "unavailable"
+                && (category.finding != 0
+                    || category.clean != 0
+                    || category.estimated_token_burn_basis_points.is_some()))
+        {
+            return Err("checks preview category is invalid".to_string());
+        }
+    }
+    if presentation
+        .estimate
+        .token_burn_basis_points
+        .is_some_and(|value| {
+            value > antiburn_local::insights::MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS
+        })
+    {
+        return Err("checks preview estimate is invalid".to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -154,6 +248,9 @@ pub fn get_popover_peek_data(
             current_target(&manager, generation)?;
             Ok(selected_provider_data(&provider, local, live))
         }
+        PopoverPeekTarget::Checks => {
+            Err("checks preview requires an initial presentation".to_string())
+        }
     }
 }
 
@@ -163,7 +260,7 @@ fn selected_provider_data(
     live: LiveUsageSummary,
 ) -> PopoverPeekData {
     PopoverPeekData::Provider {
-        summary: ProviderUsageSummary {
+        summary: Box::new(ProviderUsageSummary {
             providers: local
                 .providers
                 .into_iter()
@@ -172,8 +269,8 @@ fn selected_provider_data(
             totals: local.totals,
             agents: local.agents,
             generated_at: local.generated_at,
-        },
-        live: LiveUsageSummary {
+        }),
+        live: Box::new(LiveUsageSummary {
             providers: live
                 .providers
                 .into_iter()
@@ -190,7 +287,7 @@ fn selected_provider_data(
                 .filter(|meter| meter.provider == provider)
                 .collect(),
             generated_at: live.generated_at,
-        },
+        }),
     }
 }
 
@@ -332,6 +429,120 @@ mod tests {
     }
 
     #[test]
+    fn checks_target_and_data_have_bounded_shapes() {
+        assert_eq!(
+            serde_json::to_value(PopoverPeekTarget::Checks).unwrap(),
+            serde_json::json!({ "kind": "checks" })
+        );
+        let value = serde_json::json!({
+            "kind": "checks",
+            "presentation": {
+                "failures": [],
+                "wins": [],
+                "unavailable": [],
+                "refreshUnavailable": false,
+                "estimate": {
+                    "tokenBurnBasisPoints": 1000
+                }
+            }
+        });
+        let data: PopoverPeekData = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(data).unwrap(), value);
+    }
+
+    #[test]
+    fn checks_data_rejects_unbounded_or_unknown_content() {
+        let unknown = serde_json::json!({
+            "kind": "checks",
+            "presentation": {
+                "failures": [],
+                "wins": [],
+                "unavailable": [],
+                "refreshUnavailable": false,
+                "estimate": {
+                    "tokenBurnBasisPoints": 1000
+                },
+                "transcript": "must not cross this boundary"
+            }
+        });
+        assert!(serde_json::from_value::<PopoverPeekData>(unknown).is_err());
+
+        let invalid = ChecksPresentation {
+            failures: Vec::new(),
+            wins: Vec::new(),
+            unavailable: Vec::new(),
+            refresh_unavailable: false,
+            estimate: ChecksEstimate {
+                token_burn_basis_points: Some(5_001),
+            },
+        };
+        assert!(validate_checks_presentation(&invalid).is_err());
+
+        let duplicate = ChecksCategory {
+            id: "cacheChurn".to_string(),
+            finding: 1,
+            clean: 0,
+            unavailable: 0,
+            estimated_token_burn_basis_points: Some(2_500),
+        };
+        let valid = ChecksPresentation {
+            failures: vec![duplicate.clone()],
+            wins: Vec::new(),
+            unavailable: Vec::new(),
+            refresh_unavailable: false,
+            estimate: ChecksEstimate {
+                token_burn_basis_points: Some(1_000),
+            },
+        };
+        assert!(validate_checks_presentation(&valid).is_ok());
+
+        let valid = ChecksPresentation {
+            failures: Vec::new(),
+            wins: vec![ChecksCategory {
+                id: "sessionsOverDepth".to_string(),
+                finding: 0,
+                clean: 1,
+                unavailable: 0,
+                estimated_token_burn_basis_points: Some(0),
+            }],
+            unavailable: Vec::new(),
+            refresh_unavailable: false,
+            estimate: ChecksEstimate {
+                token_burn_basis_points: Some(0),
+            },
+        };
+        assert!(validate_checks_presentation(&valid).is_ok());
+
+        let invalid = ChecksPresentation {
+            failures: vec![duplicate.clone(), duplicate],
+            wins: Vec::new(),
+            unavailable: Vec::new(),
+            refresh_unavailable: false,
+            estimate: ChecksEstimate {
+                token_burn_basis_points: Some(1_000),
+            },
+        };
+        assert!(validate_checks_presentation(&invalid).is_err());
+
+        let invalid = ChecksPresentation {
+            failures: vec![ChecksCategory {
+                id: "cacheChurn".to_string(),
+                finding: 1,
+                clean: 0,
+                unavailable: 0,
+                estimated_token_burn_basis_points: Some(5_001),
+            }],
+            wins: Vec::new(),
+            unavailable: Vec::new(),
+            refresh_unavailable: false,
+            estimate: ChecksEstimate {
+                token_burn_basis_points: Some(1_000),
+            },
+        };
+        assert!(validate_checks_presentation(&invalid).is_err());
+    }
+
+    #[test]
     fn provider_data_contains_only_the_selected_provider() {
         let data = selected_provider_data(
             "openai",
@@ -360,7 +571,9 @@ mod tests {
             },
         );
 
-        let PopoverPeekData::Provider { summary, live } = data;
+        let PopoverPeekData::Provider { summary, live } = data else {
+            panic!("expected provider data");
+        };
         assert_eq!(summary.providers.len(), 1);
         assert_eq!(summary.providers[0].provider, "openai");
         assert_eq!(live.providers.len(), 1);

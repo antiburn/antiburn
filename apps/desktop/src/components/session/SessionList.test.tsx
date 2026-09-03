@@ -379,7 +379,7 @@ describe("SessionList — rows", () => {
     const verdict = screen.getByLabelText("Computing session hygiene checks")
     expect(verdict.textContent).toBe("Computing checks…")
     expect(verdict.style.color).toBe("var(--color-label-tertiary)")
-    expect(screen.queryByLabelText("All checks pass")).toBeNull()
+    expect(screen.queryByLabelText("All checks passed")).toBeNull()
   })
 
   it("renders finding and clean statuses returned by the batched IPC path", async () => {
@@ -423,7 +423,7 @@ describe("SessionList — rows", () => {
     list({ entries: [entry({ sessionId: "synthetic-hygiene-result" })] })
 
     await waitFor(() => {
-      expect(screen.getByLabelText("5 of 6 burn checks pass").textContent).toBe(
+      expect(screen.getByLabelText("5 of 6 burn checks passed").textContent).toBe(
         "5/6 burn checks",
       )
     })
@@ -453,7 +453,7 @@ describe("SessionList — rows", () => {
     list({ entries: [entry({ sessionId: "synthetic-hygiene-stale" })] })
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Refreshing — 5 of 6 burn checks pass").textContent).toBe(
+      expect(screen.getByLabelText("Refreshing — 5 of 6 burn checks passed").textContent).toBe(
         "5/6 burn checks",
       )
     })
@@ -728,7 +728,7 @@ describe("SessionList — shared tooltips", () => {
         }),
       ],
     })
-    const status = await screen.findByLabelText("5 of 6 burn checks pass")
+    const status = await screen.findByLabelText("5 of 6 burn checks passed")
     const cost = screen.getByLabelText("Estimated cost $2.40")
     const fork = screen.getByLabelText("Forked from another session")
     const repository = screen.getByText("avery/widgets +1")
