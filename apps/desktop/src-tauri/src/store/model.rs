@@ -237,8 +237,17 @@ pub struct EvidenceClaim {
 /// The two failure outcomes available after a claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceFailure {
-    Retry { next_attempt_at_epoch: i64 },
-    Failed { revisions: ProjectionRevisions },
+    Retry {
+        next_attempt_at_epoch: i64,
+        /// Whether this retry consumes one of the claim's attempts. `false`
+        /// for a pass abandoned before it read anything — cancellation, for
+        /// example — so it cannot exhaust the attempt cap for a source that
+        /// was never actually tried.
+        counts_as_attempt: bool,
+    },
+    Failed {
+        revisions: ProjectionRevisions,
+    },
 }
 
 /// The two successful publication states.

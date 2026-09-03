@@ -391,7 +391,13 @@ fn an_unreadable_source_is_terminal_after_the_attempt_cap() {
                 .unwrap()
                 .unwrap()
         };
-        apply_outcome(&store, &claim, &failed_pass(PassOutcome::Unreadable), now).unwrap();
+        apply_outcome(
+            &store,
+            &claim,
+            &failed_pass(PassOutcome::Unreadable(UnreadableReason::AdapterFailed)),
+            now,
+        )
+        .unwrap();
         let row = store.evidence(&claim.key).unwrap().unwrap();
         if attempt == MAX_EVIDENCE_ATTEMPTS {
             assert_eq!(row.status, EvidenceStatus::Failed);
@@ -400,6 +406,46 @@ fn an_unreadable_source_is_terminal_after_the_attempt_cap() {
             now = row.next_attempt_at_epoch.unwrap();
         }
     }
+}
+
+#[test]
+fn a_cancelled_pass_does_not_consume_a_retry() {
+    let store = store();
+    let claim = claim(&store, "cancelled", 100);
+    apply_outcome(
+        &store,
+        &claim,
+        &failed_pass(PassOutcome::Unreadable(UnreadableReason::Cancelled)),
+        100,
+    )
+    .unwrap();
+    let row = store.evidence(&claim.key).unwrap().unwrap();
+    assert_eq!(row.status, EvidenceStatus::Pending);
+    assert_eq!(row.retry_count, 0);
+    assert_eq!(
+        row.last_error.as_deref(),
+        Some("source-unreadable:cancelled")
+    );
+}
+
+#[test]
+fn an_unreadable_last_error_carries_the_reason_suffix() {
+    let store = store();
+    let claim = claim(&store, "no-events", 100);
+    apply_outcome(
+        &store,
+        &claim,
+        &failed_pass(PassOutcome::Unreadable(UnreadableReason::NoEvents)),
+        100,
+    )
+    .unwrap();
+    let row = store.evidence(&claim.key).unwrap().unwrap();
+    assert_eq!(row.status, EvidenceStatus::Pending);
+    assert_eq!(row.retry_count, 1);
+    assert_eq!(
+        row.last_error.as_deref(),
+        Some("source-unreadable:no-events")
+    );
 }
 
 #[test]
@@ -932,7 +978,8 @@ async fn an_unreadable_source_reaches_the_cap_through_the_worker() {
         .unwrap();
     let clock = AtomicI64::new(100);
     let runner = |_: &SessionRecord, _: PassSignal, _: i64| {
-        Box::pin(async { failed_pass(PassOutcome::Unreadable) }) as PassFuture
+        Box::pin(async { failed_pass(PassOutcome::Unreadable(UnreadableReason::AdapterFailed)) })
+            as PassFuture
     };
     let key = SessionKey::new("native", "claude-code", "worker-unreadable");
 
@@ -1153,16 +1200,20 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
 #[test]
 fn errors_carry_no_transcript_content() {
     const SOURCE_CONTENT: &str = "PRIVATE_TRANSCRIPT_MARKER";
+    const EVIDENCE_ERROR_UNREADABLE_ADAPTER_FAILED: &str = "source-unreadable:adapter-failed";
     let mappings = [
         (PassOutcome::SourceChanged, EVIDENCE_ERROR_SOURCE_CHANGED),
         (PassOutcome::SourceMissing, EVIDENCE_ERROR_SOURCE_MISSING),
-        (PassOutcome::Unreadable, EVIDENCE_ERROR_UNREADABLE),
+        (
+            PassOutcome::Unreadable(UnreadableReason::AdapterFailed),
+            EVIDENCE_ERROR_UNREADABLE_ADAPTER_FAILED,
+        ),
         (PassOutcome::Unsupported, EVIDENCE_ERROR_UNSUPPORTED),
     ];
     let allowed = [
         EVIDENCE_ERROR_SOURCE_CHANGED,
         EVIDENCE_ERROR_SOURCE_MISSING,
-        EVIDENCE_ERROR_UNREADABLE,
+        EVIDENCE_ERROR_UNREADABLE_ADAPTER_FAILED,
         EVIDENCE_ERROR_UNSUPPORTED,
     ];
 
