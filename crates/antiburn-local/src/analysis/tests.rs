@@ -108,6 +108,23 @@ fn an_unknown_model_leaves_by_model_unattributed_not_invented() {
     assert!(models.by_model.is_empty());
 }
 
+#[test]
+fn a_zero_usage_synthetic_record_does_not_block_the_models_group() {
+    // Claude Code writes a harness-injected `<synthetic>` assistant record
+    // with all-zero usage for text such as "No response requested." It has
+    // no tokens to attribute to a model, so it must not mark the `models`
+    // group `Partial`.
+    let evidence = claude_evidence(concat!(
+        r#"{"type":"assistant","timestamp":1,"message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":2,"message":{"role":"assistant","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[]}}"#,
+    ));
+    let EvidenceValue::Complete(models) = evidence.models else {
+        panic!("zero-usage synthetic record must not block the models group");
+    };
+    assert_eq!(models.unattributed_turns, 0);
+}
+
 #[derive(Default)]
 struct CountingSink {
     records: usize,
