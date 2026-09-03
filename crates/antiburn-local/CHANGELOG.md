@@ -69,6 +69,9 @@ version and refuses the release if there is none.
   `discovery::session_log_metadata`, and
   `discovery::agents::opencode::discover_cwds_in_wsl`. Nothing called them
   once the merged repository-discovery pipeline above was removed.
+- `AgentExplorer::discover_cwds` and its default implementation. Nothing
+  called the trait method once the fast CWD-only discovery path above was
+  removed; each vendor's own optimized override went with it.
 
 ## [0.4.0] - 2026-09-02
 

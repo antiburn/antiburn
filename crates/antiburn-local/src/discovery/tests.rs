@@ -3,9 +3,6 @@
 
 use super::*;
 use serial_test::serial;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
 use tempfile::TempDir;
 
 #[tokio::test]
@@ -135,46 +132,6 @@ fn resolved_titles_are_normalized_and_unicode_safely_bounded() {
     assert!(resolved.text.starts_with("Reader request 🧪"));
     assert!(!resolved.text.contains('\n'));
     assert!(!resolved.text.contains('\t'));
-}
-
-#[tokio::test]
-async fn bounded_log_tasks_preserves_order_and_limits_concurrency() {
-    let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let logs = (0..40)
-        .map(|index| SessionLog {
-            environment: Default::default(),
-            agent_type: AgentKind::Claude,
-            source: SessionSource::Inline {
-                label: index.to_string(),
-                content: String::new(),
-            },
-            updated_at: None,
-        })
-        .collect();
-
-    let results = bounded_log_tasks(logs, |log| {
-        let active = Arc::clone(&active);
-        let peak = Arc::clone(&peak);
-        async move {
-            let current = active.fetch_add(1, Ordering::SeqCst) + 1;
-            peak.fetch_max(current, Ordering::SeqCst);
-            tokio::time::sleep(Duration::from_millis(2)).await;
-            active.fetch_sub(1, Ordering::SeqCst);
-            let SessionSource::Inline { label, .. } = log.source else {
-                unreachable!()
-            };
-            Some(label)
-        }
-    })
-    .await;
-
-    assert_eq!(
-        results,
-        (0..40).map(|index| index.to_string()).collect::<Vec<_>>()
-    );
-    assert!(peak.load(Ordering::SeqCst) <= LOG_METADATA_CONCURRENCY);
-    assert!(peak.load(Ordering::SeqCst) > 1);
 }
 
 fn timed_file_log(agent: AgentKind, path: &str, updated_at: Option<i64>) -> SessionLog {

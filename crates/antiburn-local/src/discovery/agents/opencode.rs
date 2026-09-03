@@ -179,11 +179,6 @@ impl AgentExplorer for OpenCodeExplorer {
         db_session_fingerprint(db_path.to_path_buf(), session_id.to_string()).await
     }
 
-    async fn discover_cwds(&self, now: i64, since_secs: i64) -> Vec<String> {
-        let roots = data_roots();
-        discover_cwds_in(&roots, now, since_secs).await
-    }
-
     fn title_lookup_kind(&self) -> TitleLookupKind {
         TitleLookupKind::Direct
     }
@@ -364,37 +359,6 @@ fn query_all_session_titles_from_db(path: &Path) -> Vec<(String, Option<String>)
             (id, trimmed)
         })
         .collect()
-}
-
-fn query_recent_session_directories_from_db(path: &Path, cutoff: i64) -> Vec<String> {
-    let Ok(conn) = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for query in [
-        "SELECT directory FROM session WHERE COALESCE(time_updated, time_created) >= ?1",
-        "SELECT directory FROM session WHERE time_updated >= ?1 OR time_created >= ?1",
-    ] {
-        let Ok(mut stmt) = conn.prepare(query) else {
-            continue;
-        };
-        let Ok(rows) = stmt.query_map(params![cutoff * 1000], |row| row.get::<_, String>(0)) else {
-            continue;
-        };
-        for directory in rows.flatten() {
-            let trimmed = directory.trim();
-            if !trimmed.is_empty() {
-                out.push(trimmed.to_string());
-            }
-        }
-        if !out.is_empty() {
-            break;
-        }
-    }
-    out
 }
 
 pub fn data_roots() -> Vec<PathBuf> {
@@ -1548,46 +1512,6 @@ async fn discover_recent_in_impl(
     .unwrap_or_default();
     output.extend(file_logs);
     output
-}
-
-async fn discover_cwds_in(roots: &[PathBuf], now: i64, since_secs: i64) -> Vec<String> {
-    let cutoff = now - since_secs;
-    let mut cwds = HashSet::new();
-
-    for root in roots {
-        let db_path = root.join("opencode.db");
-        if tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
-            let db_path_for_query = db_path.clone();
-            let directories = tokio::task::spawn_blocking(move || {
-                query_recent_session_directories_from_db(&db_path_for_query, cutoff)
-            })
-            .await
-            .unwrap_or_default();
-            for directory in directories {
-                cwds.insert(directory);
-            }
-        }
-
-        let session_dir = root.join("storage").join("session");
-        for candidate in collect_recent_json_files(&session_dir, cutoff).await {
-            let Some(value) = read_json(&candidate.path).await else {
-                continue;
-            };
-            let cwd = value
-                .get("directory")
-                .or_else(|| value.get("cwd"))
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-            if let Some(cwd) = cwd {
-                cwds.insert(cwd.to_string());
-            }
-        }
-    }
-
-    let mut out: Vec<String> = cwds.into_iter().collect();
-    out.sort();
-    out
 }
 
 fn parse_session_record(

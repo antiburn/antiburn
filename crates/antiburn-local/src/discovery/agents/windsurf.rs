@@ -110,41 +110,6 @@ impl AgentExplorer for WindsurfExplorer {
             || self.mirror.owns(path_lower)
     }
 
-    /// CWD discovery straight from workspace storage and the mirror, skipping
-    /// the `discover_recent` round-trip.
-    async fn discover_cwds(&self, now: i64, since_secs: i64) -> Vec<String> {
-        let home = match home_dir() {
-            Some(h) => h,
-            None => return Vec::new(),
-        };
-        let mut dirs = Vec::new();
-        let ws_root = app_config_dir_in("Windsurf", &home)
-            .join("User")
-            .join("workspaceStorage");
-        dirs.extend(find_chat_session_dirs(&ws_root).await);
-        if let Some(mirror) = self.populated_mirror_dir(&home).await {
-            dirs.push(mirror);
-        }
-        // Fall back to default: read files for CWDs.
-        let logs = recent_files_with_exts(&dirs, now, since_secs, &["json"]).await;
-        let mut set = tokio::task::JoinSet::new();
-        for file in logs {
-            let path = file.path;
-            set.spawn(async move {
-                crate::discovery::scanner::parse_session_metadata(&path)
-                    .await
-                    .cwd
-            });
-        }
-        let mut cwds = Vec::new();
-        while let Some(result) = set.join_next().await {
-            if let Ok(Some(cwd)) = result {
-                cwds.push(cwd);
-            }
-        }
-        cwds
-    }
-
     // Windsurf IDE chatSessions only. Devin CLI bundled into Windsurf 2.0 is a
     // P1 spike in the 2026-05-25 audit.
     fn unmatched_surface(&self) -> &'static str {

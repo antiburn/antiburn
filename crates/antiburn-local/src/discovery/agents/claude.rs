@@ -9,7 +9,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::discovery::scanner::{self, AgentKind};
+#[cfg(test)]
+use crate::discovery::scanner;
+use crate::discovery::scanner::AgentKind;
 use crate::discovery::{
     AgentExplorer, DirectSessionSource, SessionLog, SessionSource, SurfacePaths, TitleLookupKind,
     WatchRoot, app_config_dir_in, collect_dirs_with_exts, extract_json_string_field, home_dir,
@@ -44,14 +46,6 @@ impl AgentExplorer for ClaudeExplorer {
             None => return Vec::new(),
         };
         discover_recent_in(&home, now, since_secs).await
-    }
-
-    async fn discover_cwds(&self, now: i64, since_secs: i64) -> Vec<String> {
-        let home = match home_dir() {
-            Some(h) => h,
-            None => return Vec::new(),
-        };
-        discover_cwds_in(&home, now, since_secs).await
     }
 
     /// Claude is the fallback agent: `infer_agent_type` returns
@@ -253,69 +247,6 @@ async fn all_log_dirs_in(home: &Path) -> Vec<PathBuf> {
     })
     .await
     .unwrap_or_default()
-}
-
-/// Fast CWD-only discovery: decode project directory names without reading files.
-/// Falls back to reading the first .jsonl file when path decoding fails
-/// (e.g., TCC-protected paths where filesystem validation can't confirm segments).
-async fn discover_cwds_in(home: &Path, now: i64, since_secs: i64) -> Vec<String> {
-    let cutoff = now - since_secs;
-    let project_dirs = all_log_dirs_in(home).await;
-    let mut cwds = Vec::new();
-
-    for dir in &project_dirs {
-        let recent_jsonl = first_recent_jsonl(dir, cutoff).await;
-        if recent_jsonl.is_none() {
-            continue;
-        }
-
-        let encoded = match dir.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n,
-            None => continue,
-        };
-
-        // Try fast decode from directory name first.
-        if let Some(decoded) = scanner::decode_hyphenated_absolute_path(encoded, home).await {
-            cwds.push(decoded.to_string_lossy().to_string());
-            continue;
-        }
-
-        // Fallback: read the session file to extract CWD (handles TCC paths
-        // where the decode can't validate segments against the filesystem).
-        if let Some(jsonl_path) = recent_jsonl
-            && let Some(cwd) = scanner::parse_session_metadata(&jsonl_path).await.cwd
-        {
-            cwds.push(cwd);
-        }
-    }
-    cwds
-}
-
-/// Return the first `.jsonl` file in `dir` modified after `cutoff`, if any.
-/// One `spawn_blocking` for the whole directory scan.
-async fn first_recent_jsonl(dir: &Path, cutoff: i64) -> Option<PathBuf> {
-    let dir = dir.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let entries = std::fs::read_dir(&dir).ok()?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            if let Ok(meta) = entry.metadata()
-                && meta.is_file()
-                && let Ok(mtime) = meta.modified()
-                && let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH)
-                && (dur.as_secs() as i64) >= cutoff
-            {
-                return Some(path);
-            }
-        }
-        None
-    })
-    .await
-    .ok()
-    .flatten()
 }
 
 /// Blocking-context helpers for the subagent-recency sweep: the callers batch

@@ -34,7 +34,6 @@ pub mod source_version;
 use crate::model::AgentKind;
 use crate::platform::environment::{DiscoveryEnvironment, WslEnvironmentInfo};
 use async_trait::async_trait;
-use futures_util::{StreamExt as _, stream};
 use scanner::TitleSource;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -43,10 +42,6 @@ pub use fork::{DuplicateForkDetector, FORK_OBSERVATION_KEY, ForkObservation};
 pub use source_version::{
     FingerprintInputs, SourceDescriptor, SourceStat, SourceVersion, Streamability,
 };
-
-/// How many session logs may have their metadata read concurrently. Bounds the
-/// open-file and blocking-pool pressure of a whole-machine scan.
-const LOG_METADATA_CONCURRENCY: usize = 16;
 
 /// Upper bound on how much of a session file the metadata path reads.
 ///
@@ -274,19 +269,6 @@ pub trait AgentExplorer: Send + Sync {
     /// Pair with [`Self::surface_paths`] for home-anchored classification.
     fn owns_path(&self, path_lower: &str) -> bool;
 
-    /// Fast CWD-only discovery for repo detection.
-    /// Default falls back to discover_recent + parse_session_metadata (parallel).
-    async fn discover_cwds(&self, now: i64, since_secs: i64) -> Vec<String> {
-        let logs = self.discover_recent(now, since_secs).await;
-        bounded_log_tasks(logs, |log| async move {
-            let source = log.source;
-            session_source_metadata(&source, None)
-                .await
-                .and_then(|m| m.cwd)
-        })
-        .await
-    }
-
     /// Lookup-kind hint for title-fetch routing. See [`TitleLookupKind`].
     /// Defaults to `Scan` so a new agent inherits the safe batched-scan
     /// behavior without an explicit override.
@@ -463,19 +445,6 @@ pub trait AgentExplorer: Send + Sync {
     async fn subagent_meta(&self, _path: &Path) -> Option<SubagentMeta> {
         None
     }
-}
-
-async fn bounded_log_tasks<T, F, Fut>(logs: Vec<SessionLog>, task: F) -> Vec<T>
-where
-    F: FnMut(SessionLog) -> Fut,
-    Fut: std::future::Future<Output = Option<T>>,
-{
-    stream::iter(logs)
-        .map(task)
-        .buffered(LOG_METADATA_CONCURRENCY)
-        .filter_map(std::future::ready)
-        .collect()
-        .await
 }
 
 /// Lowercase + forward-slash a path / label string for prefix or substring
@@ -1065,15 +1034,6 @@ pub async fn session_log_read(log: &SessionLog) -> Option<SourceRead> {
         );
     }
     Some(read)
-}
-
-async fn session_source_metadata(
-    source: &SessionSource,
-    agent_type: Option<AgentKind>,
-) -> Option<scanner::SessionMetadata> {
-    session_source_read(source, agent_type)
-        .await
-        .map(|read| read.metadata)
 }
 
 async fn session_source_read(

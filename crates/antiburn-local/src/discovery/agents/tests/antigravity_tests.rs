@@ -706,16 +706,6 @@ async fn test_discover_recent_keeps_brain_transcript_as_file() {
         metadata.title.as_deref(),
         Some("hello world from Antigravity CLI")
     );
-
-    watch_history_reads(
-        home.path()
-            .join(".gemini")
-            .join("antigravity-cli")
-            .join("history.jsonl"),
-    );
-    let cwds = DISK_ANTIGRAVITY.discover_cwds(now, since_secs).await;
-    assert_eq!(take_history_reads(), 1);
-    assert!(cwds.iter().any(|cwd| cwd == "/Users/avery/demo-app"));
 }
 
 #[tokio::test(flavor = "current_thread")]
