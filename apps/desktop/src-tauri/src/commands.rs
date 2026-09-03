@@ -39,7 +39,6 @@ use crate::dto::{
     SessionHygieneRequest, SessionIdentity, SessionLimitAllocationSummary, SessionRelation,
     SessionRelations, SubagentMember,
 };
-use crate::export::{ExportedSession, SessionExport};
 use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
 use crate::popover;
@@ -1656,75 +1655,6 @@ pub async fn export_diagnostics(app: tauri::AppHandle, dest_path: String) -> Com
     .await
     .map_err(fail)?
     .map_err(fail)?;
-    tokio::fs::write(&dest_path, json).await.map_err(fail)?;
-    Ok(dest_path)
-}
-
-/// Write one session's derived analysis to `dest_path` as JSON.
-///
-/// The transcript is **not** copied: the document carries a reference to where
-/// it lives instead. It can still describe real work — titles, paths,
-/// repository names — which is why the caller confirms before choosing a
-/// destination.
-#[tauri::command]
-pub async fn export_session(
-    app: tauri::AppHandle,
-    agent: String,
-    session_id: String,
-    wsl_distro: Option<String>,
-    dest_path: String,
-) -> CommandResult<String> {
-    let Some(kind) = kind_from_slug(&agent) else {
-        return Err(format!("unknown agent {agent}"));
-    };
-    let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
-    let store = app.state::<Store>();
-    let claimed = store
-        .session_source_state(&key)
-        .ok()
-        .flatten()
-        .map(|state| analysis::ClaimedSource {
-            fingerprint: state.source_fingerprint,
-            generation: state.source_generation,
-        })
-        .unwrap_or(analysis::ClaimedSource {
-            fingerprint: None,
-            generation: 0,
-        });
-    let analysis = analysis::analyze(
-        kind,
-        &session_id,
-        wsl_distro.as_deref(),
-        claimed,
-        analysis::CancelFlag::never(),
-    )
-    .await;
-
-    let stored = store.session(&key).ok().flatten();
-
-    let document = SessionExport::new(
-        app.package_info().version.to_string(),
-        crate::runtime_pricing::catalog_version(&app),
-        ExportedSession {
-            agent,
-            session_id,
-            wsl_distro,
-            title: stored.as_ref().and_then(|record| record.title.clone()),
-            cwd: stored.as_ref().and_then(|record| record.cwd.clone()),
-            surface: stored
-                .as_ref()
-                .map(|record| record.surface.clone())
-                .unwrap_or_else(|| "unknown".to_string()),
-            last_activity: stored
-                .as_ref()
-                .and_then(|record| record.updated_at_epoch)
-                .map(|epoch| iso_from_epoch(Some(epoch))),
-            source_path: analysis.source_path.clone(),
-        },
-        &analysis,
-    );
-
-    let json = document.to_json().map_err(fail)?;
     tokio::fs::write(&dest_path, json).await.map_err(fail)?;
     Ok(dest_path)
 }

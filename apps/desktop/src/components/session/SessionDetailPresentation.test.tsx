@@ -136,7 +136,6 @@ function presentationProps(
     onOpenSubagent: () => {},
     onOpenOrchestrator: () => {},
     onOpenRelatedSession: () => {},
-    onExportSession: () => {},
     onDeleteSession: () => {},
     renderAgentIcon: () => null,
     ...over,
@@ -627,23 +626,24 @@ describe("SessionDetailPresentation — session facts", () => {
 })
 
 describe("SessionDetailPresentation — host actions", () => {
-  it("always shows export and delete, but only shows reveal when it is available", () => {
+  it("always shows delete, but only shows reveal when it is available", () => {
     view()
-    expect(screen.getByLabelText("Export this session")).toBeTruthy()
     expect(screen.getByLabelText("Delete this session")).toBeTruthy()
     expect(screen.queryByLabelText("Reveal in file manager")).toBeNull()
   })
 
-  it("wires export, delete, and reveal to their callbacks", () => {
-    const onExportSession = vi.fn()
+  it("shows reveal when onRevealSource is set", () => {
+    view({ onRevealSource: () => {} })
+    expect(screen.getByLabelText("Reveal in file manager")).toBeTruthy()
+  })
+
+  it("wires delete and reveal to their callbacks", () => {
     const onDeleteSession = vi.fn()
     const onRevealSource = vi.fn()
-    view({ onExportSession, onDeleteSession, onRevealSource })
+    view({ onDeleteSession, onRevealSource })
 
-    fireEvent.click(screen.getByLabelText("Export this session"))
     fireEvent.click(screen.getByLabelText("Delete this session"))
     fireEvent.click(screen.getByLabelText("Reveal in file manager"))
-    expect(onExportSession).toHaveBeenCalledOnce()
     expect(onDeleteSession).toHaveBeenCalledOnce()
     expect(onRevealSource).toHaveBeenCalledOnce()
   })

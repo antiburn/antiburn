@@ -23,9 +23,9 @@ use antiburn_local::analysis::{
     METRICS_SCHEMA_REVISION, ModelRun, PARSER_REVISION, ProviderHint, RESUME_SNAPSHOT_REVISION,
     RawSource, ResumePoint, ResumeRevisions, ResumedVisit, SessionCost, SessionEvidence,
     SessionEvidenceAccumulator, SessionInput, SessionMetrics, SessionMetricsAccumulator,
-    SessionSummary, SkillUse, SourceCapabilities, SourceClaim, SourceKind, StoredResume,
-    StreamSnapshot, TurnRow, TurnRowSink, TurnRowStore, TurnScope, VendorAdapter, VisitOutcome,
-    adapter_for, aggregate_metrics, append_only_guarantee, evidence_from_facts, merge_metrics,
+    SessionSummary, SourceCapabilities, SourceClaim, SourceKind, StoredResume, StreamSnapshot,
+    TurnRow, TurnRowSink, TurnRowStore, TurnScope, VendorAdapter, VisitOutcome, adapter_for,
+    aggregate_metrics, append_only_guarantee, evidence_from_facts, merge_metrics,
     metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation,
 };
 use antiburn_local::discovery::{
@@ -60,9 +60,16 @@ pub struct ClaimedSource {
     pub generation: i64,
 }
 
+// `CancelFlag` has no production caller left: `analyze_for_evidence` takes a
+// `PassSignal` instead, and the worker builds that signal directly with
+// `PassSignal::new()`. Every remaining caller is test scaffolding for
+// `stream_vendor_with_claim_hook` — see its own comment for the same
+// treatment.
+#[cfg(test)]
 #[derive(Clone)]
 pub struct CancelFlag(Arc<AtomicBool>);
 
+#[cfg(test)]
 impl CancelFlag {
     pub fn never() -> Self {
         Self(Arc::new(AtomicBool::new(false)))
@@ -70,10 +77,6 @@ impl CancelFlag {
 
     pub fn cancelled(&self) -> bool {
         self.0.load(Ordering::SeqCst)
-    }
-
-    pub(crate) fn flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.0)
     }
 }
 
@@ -90,17 +93,6 @@ impl PassSignal {
             cancel: Arc::new(AtomicBool::new(false)),
             progress: Arc::new(AtomicU64::new(0)),
         }
-    }
-
-    pub fn from_cancel(cancel: CancelFlag) -> Self {
-        let signal = Self {
-            cancel: cancel.flag(),
-            progress: Arc::new(AtomicU64::new(0)),
-        };
-        if cancel.cancelled() {
-            signal.cancel();
-        }
-        signal
     }
 
     pub fn cancel(&self) {
@@ -212,41 +204,8 @@ enum ComputedAnalysis {
     Unavailable,
 }
 
-/// Longest a skill description may be once it leaves this module.
-///
-/// A skill's description comes from the transcript's skill listing.
-/// The engine applies this limit before metrics leave its accumulator.
-/// The app applies it again before values reach the store or an export.
-pub const SKILL_DESCRIPTION_MAX_CHARS: usize = 300;
-
-/// The character appended to a description this module had to shorten, so a
-/// reader can see that they are looking at the front of something longer.
-const TRUNCATION_MARK: char = '…';
-
-/// Hold every skill description to [`SKILL_DESCRIPTION_MAX_CHARS`].
-///
-/// Applied before skill invocations enter an export.
-fn cap_skill_descriptions(skills: &mut [SkillUse]) {
-    for skill in skills {
-        if let Some(description) = skill.description.take() {
-            skill.description = Some(cap_excerpt(&description, SKILL_DESCRIPTION_MAX_CHARS));
-        }
-    }
-}
-
-/// `text` shortened to at most `max` characters, counting characters rather
-/// than bytes so a multi-byte description cannot be cut mid-character.
-fn cap_excerpt(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let mut capped: String = text.chars().take(max.saturating_sub(1)).collect();
-    capped.push(TRUNCATION_MARK);
-    capped
-}
-
-/// One session's analysis, before it is split between the wire payload, the
-/// store, and the export document.
+/// One session's analysis, before it is split between the wire payload and
+/// the store.
 pub struct SessionAnalysis {
     /// The parent session's own metrics.
     pub metrics: Option<SessionMetrics>,
@@ -285,7 +244,6 @@ pub struct SessionAnalysis {
     /// every sub-agent. The cache stores this map, so a later pass can
     /// re-price the session without reading any transcript again.
     pub inclusive_model_breakdown: HashMap<String, ModelTokens>,
-    pub skills: Vec<SkillUse>,
     pub orchestration: Option<OrchestrationStatus>,
     /// The transcript this analysis was read from, when it is a file.
     pub source_path: Option<String>,
@@ -320,7 +278,6 @@ impl SessionAnalysis {
             models: Vec::new(),
             model_runs: Vec::new(),
             inclusive_model_breakdown: HashMap::new(),
-            skills: Vec::new(),
             orchestration: None,
             source_path: None,
             fingerprint: MISSING_FINGERPRINT.to_string(),
@@ -1267,42 +1224,6 @@ fn sort_members(members: &mut [SubagentMember]) {
     members.sort_by_key(|member| (member.started_at_epoch.is_none(), member.started_at_epoch));
 }
 
-/// Analyze one session and, in the same pass, every sub-agent it launched.
-///
-/// One pass avoids an extra analysis call for each sub-agent. The engine
-/// returns the parent and sub-agent metrics in one batch, analyzed
-/// independently, which this function uses for the top-level/sub-agents cost
-/// split. Separately, this merges every stream's events into one
-/// time-aligned session (sub-agents are an implementation detail of the
-/// parent, per the product rule) and analyzes that once more for the
-/// session's own headline metrics — buckets, token totals, tool mix — so the
-/// detail view's chart and header sum a sub-agent's activity into the same
-/// session instead of hiding it.
-///
-/// `export_session` (`commands.rs`) is this function's only caller now. The
-/// drilldown itself reads rows instead — see `analysis_from_rows` — because
-/// export wants a live parse: a fresh fingerprint and a `source_path` an
-/// exported document can point to, neither of which a row replay carries.
-pub async fn analyze(
-    agent: AgentKind,
-    session_id: &str,
-    wsl_distro: Option<&str>,
-    claimed: ClaimedSource,
-    cancel: CancelFlag,
-) -> SessionAnalysis {
-    let pass = analyze_for_evidence(
-        agent,
-        session_id,
-        wsl_distro,
-        claimed,
-        PassSignal::from_cancel(cancel),
-        None,
-    )
-    .await;
-    debug_assert!(pass.evidence.is_none() || pass.outcome == PassOutcome::Published);
-    pass.analysis
-}
-
 /// `turn_row_store` is `Some` only for a pass the durable worker runs under
 /// a claimed evidence fence — see `insights_worker::run_record_pass`. Every
 /// other caller (an on-demand session view, a scan-triggered pass with no
@@ -1595,7 +1516,6 @@ fn assemble_session_analysis(input: AssembledMetrics) -> SessionAnalysis {
     // The views key icons and copy off the discovery slug, so the vendor label
     // the adapter registry dispatches on never leaves this module.
     metrics.agent = agent_slug.clone();
-    cap_skill_descriptions(&mut metrics.skill_uses);
 
     let mut members: Vec<SubagentMember> = roster
         .into_iter()
@@ -1667,7 +1587,6 @@ fn assemble_session_analysis(input: AssembledMetrics) -> SessionAnalysis {
     let models = sorted_models(&inclusive_model_breakdown);
     let inclusive_tokens = Some(sum_billable_tokens(&inclusive_model_breakdown));
     let subagents_tokens = has_subagents.then(|| sum_billable_tokens(&subagents_model_breakdown));
-    let skills = metrics.skill_uses.clone();
     let summary = aggregate_metrics(vec![metrics.clone()]);
 
     SessionAnalysis {
@@ -1682,7 +1601,6 @@ fn assemble_session_analysis(input: AssembledMetrics) -> SessionAnalysis {
         models,
         model_runs,
         inclusive_model_breakdown,
-        skills,
         orchestration,
         source_path,
         fingerprint,
@@ -1932,14 +1850,12 @@ fn standalone_session_analysis(
     started_at_epoch: Option<i64>,
 ) -> SessionAnalysis {
     metrics.agent = agent_slug;
-    cap_skill_descriptions(&mut metrics.skill_uses);
 
     let cost = price_breakdown(&metrics.model_breakdown);
     let models = sorted_models(&metrics.model_breakdown);
     let model_runs = model_runs_for_metrics(&metrics);
     let inclusive_model_breakdown = metrics.model_breakdown.clone();
     let inclusive_tokens = Some(sum_billable_tokens(&inclusive_model_breakdown));
-    let skills = metrics.skill_uses.clone();
     let summary = aggregate_metrics(vec![metrics.clone()]);
 
     SessionAnalysis {
@@ -1954,7 +1870,6 @@ fn standalone_session_analysis(
         models,
         model_runs,
         inclusive_model_breakdown,
-        skills,
         orchestration: None,
         source_path,
         fingerprint,

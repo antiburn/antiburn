@@ -25,6 +25,11 @@ CI changes, and documentation that no user acts on stay out — see
 - Context charts now distinguish provider cache misses from cache rehydration
   after meaningful user inactivity, using provider-specific timing.
 
+### Removed
+
+- "Export session analysis" is gone. The session drilldown no longer offers a
+  way to write a session's derived analysis to a JSON file.
+
 ## [0.3.2] - 2026-09-02
 
 ### Added

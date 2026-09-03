@@ -154,8 +154,7 @@ pub struct SessionAnalysis {
     pub is_active: bool,
     /// Cost of the parent transcript plus every sub-agent it launched.
     ///
-    /// This is the session's total cost. The activity list and the export
-    /// document show this figure.
+    /// This is the session's total cost. The activity list shows this figure.
     ///
     /// The value is `None` when a model in the combined breakdown has no
     /// price. A partial total hides real cost.
