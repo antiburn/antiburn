@@ -143,6 +143,13 @@ export interface AppSettings {
    * where the reader last left it.
    */
   overviewLimitsExpanded: boolean
+  /**
+   * Whether a session's Skills & MCPs table shows every row, rather than only
+   * the first group behind a "Show more" button. One answer for the whole
+   * app, across every session and every launch. It defaults closed and stays
+   * where the reader last left it.
+   */
+  skillsMcpExpanded: boolean
   /** The metric shown in each activity-session badge. */
   sessionBadgeMetric: "cost" | "weeklyPercent" | "fiveHourPercent"
 }
@@ -478,6 +485,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   disabledAgents: [],
   analyticsEnabled: true,
   overviewLimitsExpanded: true,
+  skillsMcpExpanded: false,
   sessionBadgeMetric: "cost",
 }
 
