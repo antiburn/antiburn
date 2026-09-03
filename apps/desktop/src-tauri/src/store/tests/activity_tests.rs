@@ -77,3 +77,32 @@ fn latest_session_activity_ignores_null_epochs() {
         .unwrap();
     assert_eq!(store.latest_session_activity().unwrap(), Some(5_000));
 }
+
+#[test]
+fn session_record_by_source_label_round_trips() {
+    let store = store();
+    let record = session("by-label", 4_000);
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    let (key, found) = store
+        .session_record_by_source_label(&record.source_label)
+        .unwrap()
+        .expect("a stored session is found by its source label");
+    assert_eq!(key.environment_key, "native");
+    assert_eq!(key.agent, "claude-code");
+    assert_eq!(key.source_label, record.source_label);
+    assert_eq!(found.key.session_id, "by-label");
+
+    assert!(
+        store
+            .session_record_by_source_label("/nowhere/unknown.jsonl")
+            .unwrap()
+            .is_none(),
+        "an unknown source label finds nothing"
+    );
+}

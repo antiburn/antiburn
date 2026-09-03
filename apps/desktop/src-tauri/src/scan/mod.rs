@@ -97,6 +97,7 @@ use crate::storage_health::{self, checked};
 use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
 pub mod idle;
+pub mod scoped;
 pub mod watch;
 
 /// How often the scheduler wakes up.
