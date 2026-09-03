@@ -11,7 +11,7 @@ use antiburn_local::model::AgentKind;
 use tauri::{Emitter, Manager};
 use tokio::sync::{Notify, Semaphore};
 
-use crate::analysis::{self, EvidencePass, PassOutcome, PassSignal};
+use crate::analysis::{self, EvidencePass, PassOutcome, PassSignal, UnreadableReason};
 use crate::commands;
 use crate::dto::ActivityEntry;
 use crate::store::{
@@ -29,6 +29,14 @@ pub(crate) const EVIDENCE_ERROR_SOURCE_CHANGED: &str = "source-changed";
 pub(crate) const EVIDENCE_ERROR_SOURCE_MISSING: &str = "source-missing";
 pub(crate) const EVIDENCE_ERROR_UNREADABLE: &str = "source-unreadable";
 pub(crate) const EVIDENCE_ERROR_UNSUPPORTED: &str = "source-unsupported";
+/// Joins [`EVIDENCE_ERROR_UNREADABLE`] to an [`UnreadableReason`]'s suffix
+/// (`reason.as_error_suffix()`) in a persisted `lastError`, for example
+/// `source-unreadable:no-events`. No stored or reachable code compares
+/// `lastError` against the bare `EVIDENCE_ERROR_UNREADABLE` string — see
+/// `sessions_with_missing_source` for the one exact-match query, which
+/// targets `EVIDENCE_ERROR_SOURCE_MISSING` instead — so the prefix can carry
+/// this suffix safely.
+const UNREADABLE_REASON_SEPARATOR: &str = ":";
 
 struct Permits {
     cpu: Semaphore,
@@ -246,6 +254,7 @@ pub(crate) fn apply_outcome(
             claim,
             EvidenceFailure::Retry {
                 next_attempt_at_epoch: now + backoff_secs(claim.retry_count),
+                counts_as_attempt: true,
             },
             EVIDENCE_ERROR_SOURCE_CHANGED,
         ),
@@ -263,21 +272,41 @@ pub(crate) fn apply_outcome(
             },
             EVIDENCE_ERROR_UNSUPPORTED,
         ),
-        PassOutcome::Unreadable if claim.retry_count < MAX_EVIDENCE_ATTEMPTS => store
-            .fail_evidence(
-                claim,
-                EvidenceFailure::Retry {
-                    next_attempt_at_epoch: now + backoff_secs(claim.retry_count),
-                },
-                EVIDENCE_ERROR_UNREADABLE,
-            ),
-        PassOutcome::Unreadable => store.fail_evidence(
-            claim,
-            EvidenceFailure::Failed {
-                revisions: analysis::projection_revisions(),
-            },
-            EVIDENCE_ERROR_UNREADABLE,
-        ),
+        PassOutcome::Unreadable(reason) => {
+            let last_error = format!(
+                "{EVIDENCE_ERROR_UNREADABLE}{UNREADABLE_REASON_SEPARATOR}{}",
+                reason.as_error_suffix()
+            );
+            if reason == UnreadableReason::Cancelled {
+                // The source was never actually tried, so this retry must
+                // not consume one of the claim's attempts.
+                store.fail_evidence(
+                    claim,
+                    EvidenceFailure::Retry {
+                        next_attempt_at_epoch: now + backoff_secs(claim.retry_count),
+                        counts_as_attempt: false,
+                    },
+                    &last_error,
+                )
+            } else if claim.retry_count < MAX_EVIDENCE_ATTEMPTS {
+                store.fail_evidence(
+                    claim,
+                    EvidenceFailure::Retry {
+                        next_attempt_at_epoch: now + backoff_secs(claim.retry_count),
+                        counts_as_attempt: true,
+                    },
+                    &last_error,
+                )
+            } else {
+                store.fail_evidence(
+                    claim,
+                    EvidenceFailure::Failed {
+                        revisions: analysis::projection_revisions(),
+                    },
+                    &last_error,
+                )
+            }
+        }
     }
 }
 

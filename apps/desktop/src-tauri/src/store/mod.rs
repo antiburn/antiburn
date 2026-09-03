@@ -1241,9 +1241,10 @@ impl Store {
         let updated = match failure {
             EvidenceFailure::Retry {
                 next_attempt_at_epoch,
+                counts_as_attempt,
             } => connection.execute(
                 "UPDATE session_evidence AS evidence
-                    SET status = 'pending', retry_count = retry_count + 1,
+                    SET status = 'pending', retry_count = retry_count + ?8,
                         last_error = ?6, claimed_at_epoch = NULL,
                         lease_expires_at_epoch = NULL, next_attempt_at_epoch = ?7
                   WHERE evidence.environment_key = ?1
@@ -1264,6 +1265,7 @@ impl Store {
                     claim.source_generation,
                     last_error,
                     next_attempt_at_epoch,
+                    i64::from(counts_as_attempt),
                 ],
             )?,
             EvidenceFailure::Failed { revisions } => connection.execute(

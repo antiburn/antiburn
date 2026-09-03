@@ -3222,6 +3222,7 @@ fn failing_session_evidence_with_retry_returns_it_to_pending_with_backoff() {
                 &claim,
                 EvidenceFailure::Retry {
                     next_attempt_at_epoch: 300,
+                    counts_as_attempt: true,
                 },
                 "try later",
             )
