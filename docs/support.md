@@ -163,12 +163,17 @@ the credential your coding tool already keeps on this machine (for example, the
 Claude CLI's own OAuth credential, or the Codex CLI's own). It runs by default
 because this is your own traffic: your usage, from a provider you already use,
 with a credential you already hold, over your own connection — no antiburn
-server sees the request or the response. When a provider's endpoint cannot be
+server sees the request or the response. Where your coding tool has already
+saved the same figures on this machine, antiburn reads that copy first and
+skips the request when the copy is recent enough: Claude Code keeps the last
+reading it fetched in its own config file, and the Codex CLI records the
+account's limits in each session log. When a provider's endpoint cannot be
 reached directly, antiburn falls back to asking your coding tool's own local
-process the same question, over its own protocol, rather than leaving the
-reading blank. Turn the switch off if you want none of this — no background
-traffic at all, whatever the reason — and antiburn stops asking, reads no
-credential, and has no plan limits to show.
+process the same question, over its own protocol, or to the reading the tool
+saved most recently, rather than leaving the reading blank. Turn the switch off
+if you want none of this — no background traffic at all, whatever the reason —
+and antiburn stops asking, reads no credential or saved reading, and has no
+plan limits to show.
 
 **Notifications are local.** antiburn shows them in its own small notification
 window and posts exactly these: an update check that found a newer version, the
