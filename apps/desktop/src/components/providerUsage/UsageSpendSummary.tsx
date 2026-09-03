@@ -35,7 +35,7 @@ function figure(window: UsageWindow): string {
 
 /**
  * The line under the figure: the token count behind a cost, or the unit alone
- * when the tokens are the figure. The Today column also carries the hedge.
+ * when the tokens are the figure. The first column includes the token unit.
  */
 function caption(window: UsageWindow, first: boolean): string {
   if (window.estimatedUsd == null) return "tokens"

@@ -24,7 +24,7 @@ describe("UsageSpendSummary", () => {
     )
 
     expect(screen.getAllByText("$1.25")).toHaveLength(3)
-    expect(screen.getByText("1.25k tokens · est.")).toBeInTheDocument()
+    expect(screen.getByText("1.25k tokens")).toBeInTheDocument()
     expect(screen.getAllByText("1.25k")).toHaveLength(2)
     expect(screen.getByText("Today")).toBeInTheDocument()
     expect(screen.getByText("Last 7 days")).toBeInTheDocument()
@@ -50,7 +50,7 @@ describe("UsageSpendSummary", () => {
 
     expect(screen.getByRole("region", { name: "Usage and spend" })).toHaveAttribute(
       "title",
-      "Estimated locally at API rates. Your provider bill may differ.",
+      "You're on subscription, so these are just estimated dollar values.",
     )
   })
 

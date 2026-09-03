@@ -644,7 +644,7 @@ describe("PopoverView", () => {
 
     expect(
       await screen.findByTitle(
-        "Estimated locally at API rates. Your provider bill may differ.",
+        "You're on subscription, so these are just estimated dollar values.",
       ),
     ).toHaveAccessibleName("Usage and spend")
   })
