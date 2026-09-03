@@ -856,31 +856,11 @@ pub async fn refresh_live_usage(
     // boundary for all of it.
     let utc_offset_minutes = utc_offset_minutes.unwrap_or(0);
     tauri::async_runtime::spawn_blocking(move || {
-        // Read here rather than before the hop: this summary is stamped with
-        // the moment it was produced, and a caller queued behind another
-        // summarization can wait a while for its turn.
-        let now = scan::unix_now();
-        let Some(live) = app.try_state::<crate::usage_alerts::LiveUsage>() else {
-            return LiveUsageSummary {
-                generated_at: crate::store::iso_from_epoch(Some(now)),
-                ..LiveUsageSummary::default()
-            };
-        };
-        let store = app.try_state::<Store>();
-        // Held for the whole pass: two of these can now genuinely overlap,
-        // and the reading history they append to is not written atomically.
-        let _summarizing = live.summarizing();
-        live.set_utc_offset_minutes(utc_offset_minutes, store.as_deref());
-        let summary = provider_usage::live::summarize(
-            &live.sources,
-            store.as_deref(),
-            now,
-            utc_offset_minutes,
+        crate::usage_alerts::refresh_publish_and_evaluate(
+            &app,
             POPOVER_LIVE_USAGE_MAX_AGE,
-        );
-        live.replace_snapshot(summary.clone(), store.as_deref());
-        let _ = app.emit(crate::usage_alerts::EVENT_CHANGED, &summary);
-        summary
+            Some(utc_offset_minutes),
+        )
     })
     .await
     .map_err(fail)

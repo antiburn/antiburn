@@ -848,9 +848,9 @@ impl AppSettings {
     /// half exists so the credential read this feature depends on — and, on
     /// macOS, the Keychain prompt that read can trigger — never happens
     /// before the reader has seen what this app is. Every call site that
-    /// might collect or fetch a live usage source must go through this
-    /// rather than reading `live_usage_enabled` alone; see
-    /// `provider_usage::live::summarize` and `usage_alerts::background_pass`.
+    /// might collect or fetch a live usage source must go through this rather
+    /// than reading `live_usage_enabled` alone. App refreshes use
+    /// `usage_alerts::refresh_publish_and_evaluate`.
     pub fn live_usage_active(&self) -> bool {
         self.live_usage_enabled && self.onboarding_completed
     }
