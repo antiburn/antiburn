@@ -353,11 +353,10 @@ impl SessionEvidenceAccumulator {
         }
         let capped_description = description_field.and_then(|description_field| {
             description.map(|value| {
-                let capped = cap_string(description_field, value, &mut self.diagnostics);
-                if capped.len() != value.len() {
-                    self.context_sources_cap_exceeded = true;
-                }
-                capped
+                // A description is display-only. Truncation does not lose
+                // evidence about which context source loaded or ran, so it
+                // does not degrade the context_sources group.
+                cap_string(description_field, value, &mut self.diagnostics)
             })
         });
         if let Some(existing) = map.get_mut(&capped_name) {
@@ -1934,10 +1933,13 @@ mod tests {
     }
 
     #[test]
-    fn context_sources_skill_description_overflows_to_partial() {
+    fn context_sources_skill_description_overflow_stays_complete() {
         let evidence = source_string_overflow(ContextSourceKind::Skill, true);
         assert_truncated_string(&evidence, "context_sources.skills.description");
-        let sources = assert_cap_partial(evidence.context_sources);
+        assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+        let EvidenceValue::Complete(sources) = evidence.context_sources else {
+            panic!("a truncated description must not degrade context_sources");
+        };
         assert_eq!(
             sources
                 .skills
