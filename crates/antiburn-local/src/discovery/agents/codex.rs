@@ -118,6 +118,14 @@ impl AgentExplorer for CodexExplorer {
         indexed_session_titles_in(&home, codex_home.as_deref(), agent_session_ids).await
     }
 
+    fn indexed_title_watch_files(&self, home: &Path) -> Vec<PathBuf> {
+        let codex_home = std::env::var("CODEX_HOME").ok().map(PathBuf::from);
+        state_db_paths(home, codex_home.as_deref())
+            .into_iter()
+            .chain(session_index_paths(home, codex_home.as_deref()))
+            .collect()
+    }
+
     /// Point query: every rollout embeds its thread id as the filename suffix
     /// (`rollout-<ts>-<id>.jsonl`), so a filename scan replaces the default
     /// full-tree discover (which also stats every file). Preserves
@@ -1215,6 +1223,17 @@ mod tests {
             index_title_for_rollout(&rollout, "thread").await.as_deref(),
             Some("Latest")
         );
+    }
+
+    #[test]
+    fn title_watch_files_include_the_state_database_and_jsonl_index() {
+        let home = TempDir::new().unwrap();
+        let codex = home.path().join(".codex");
+
+        let files = CodexExplorer.indexed_title_watch_files(home.path());
+
+        assert!(files.contains(&codex.join("state_5.sqlite")));
+        assert!(files.contains(&codex.join("session_index.jsonl")));
     }
 
     /// The child-thread exclusion that `discover_recent` applies must also
