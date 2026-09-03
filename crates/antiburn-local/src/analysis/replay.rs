@@ -10,16 +10,18 @@
 use crate::analysis::engine::SessionMetrics;
 use crate::analysis::interface::{NormalizedRecord, RecordSink, SessionSummary};
 use crate::analysis::metrics_sink::{SessionMetricsAccumulator, merge_metrics};
-use crate::analysis::model::{EventSource, NormalizedEvent, Role, ToolCall, Usage};
+use crate::analysis::model::{
+    EventSource, NormalizedEvent, Role, ToolCall, Usage, is_subagent_launch_tool,
+};
 use crate::analysis::rows::{TurnRow, TurnScope};
 
 /// Builds the smallest `Vec<ToolCall>` that reproduces the two reads
 /// `SessionMetricsAccumulator::observe_parent_fields` makes over a row's
 /// tools: `tools.last().name` (the row's own [`TurnRow::last_tool`]) and the
-/// count of tool names equal to `"task"`, case-insensitive (the row's own
-/// [`TurnRow::subagent_launches`]).
+/// count of tool names that are a `Task` or `Agent` call, case-insensitive
+/// (the row's own [`TurnRow::subagent_launches`]).
 ///
-/// A turn's [`TurnRow::last_tool`] that itself reads as `"task"` already
+/// A turn's [`TurnRow::last_tool`] that itself reads as a launch already
 /// counts toward [`TurnRow::subagent_launches`] — `turn_row_from_event`
 /// derives both from the same `event.tools`, and the last tool is one of
 /// the tools. So this function reserves that last slot for the row's own
@@ -31,7 +33,7 @@ fn synthesize_tools(row: &TurnRow) -> Vec<ToolCall> {
     let last_is_task = row
         .last_tool
         .as_deref()
-        .is_some_and(|name| name.eq_ignore_ascii_case("task"));
+        .is_some_and(is_subagent_launch_tool);
     let generic_launches = if last_is_task {
         row.subagent_launches.saturating_sub(1)
     } else {
@@ -332,7 +334,7 @@ mod tests {
         assert_eq!(
             tools
                 .iter()
-                .filter(|tool| tool.name.eq_ignore_ascii_case("task"))
+                .filter(|tool| is_subagent_launch_tool(&tool.name))
                 .count(),
             0
         );
@@ -350,7 +352,7 @@ mod tests {
         assert_eq!(
             tools
                 .iter()
-                .filter(|tool| tool.name.eq_ignore_ascii_case("task"))
+                .filter(|tool| is_subagent_launch_tool(&tool.name))
                 .count(),
             3
         );
@@ -373,7 +375,28 @@ mod tests {
         assert_eq!(
             tools
                 .iter()
-                .filter(|tool| tool.name.eq_ignore_ascii_case("task"))
+                .filter(|tool| is_subagent_launch_tool(&tool.name))
+                .count(),
+            1
+        );
+    }
+
+    /// Mirrors `synthesize_tools_does_not_double_count_when_the_last_tool_is_itself_a_task_launch`
+    /// for Claude Code's renamed `Agent` tool: the last tool call is an
+    /// `Agent` launch, so it already counts toward `subagent_launches`.
+    #[test]
+    fn synthesize_tools_does_not_double_count_when_the_last_tool_is_itself_an_agent_launch() {
+        let mut row = base_row();
+        row.last_tool = Some("Agent".to_owned());
+        row.subagent_launches = 1;
+
+        let tools = synthesize_tools(&row);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools.last().map(|tool| tool.name.as_str()), Some("Agent"));
+        assert_eq!(
+            tools
+                .iter()
+                .filter(|tool| is_subagent_launch_tool(&tool.name))
                 .count(),
             1
         );

@@ -125,6 +125,19 @@ fn a_zero_usage_synthetic_record_does_not_block_the_models_group() {
     assert_eq!(models.unattributed_turns, 0);
 }
 
+/// Claude Code renamed its subagent launch tool from `Task` to `Agent`. An
+/// `Agent` tool call must still evidence a subagent spawn.
+#[test]
+fn claude_agent_tool_use_counts_as_a_subagent_spawn() {
+    let evidence = claude_evidence(
+        r#"{"type":"assistant","uuid":"33333333-3333-4333-8333-000000000002","parentUuid":null,"timestamp":1,"message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1},"content":[{"type":"tool_use","name":"Agent","input":{"description":"not retained","prompt":"not retained"}}]}}"#,
+    );
+    let EvidenceValue::Complete(subagents) = evidence.subagents else {
+        panic!("subagents must be complete");
+    };
+    assert_eq!(subagents.spawn_count, 1);
+}
+
 #[derive(Default)]
 struct CountingSink {
     records: usize,
@@ -2577,6 +2590,22 @@ fn subagent_launch_marker_counts_only_parent_task_calls() {
 
     let total_launches: u32 = m.buckets.iter().map(|b| b.subagent_launches).sum();
     assert_eq!(total_launches, 1, "only the parent's own Task call counts");
+}
+
+/// Mirrors `subagent_launch_marker_counts_only_parent_task_calls` for
+/// Claude Code's renamed `Agent` tool.
+#[test]
+fn subagent_launch_marker_counts_parent_agent_calls_too() {
+    let parent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Agent","input":{"prompt":"go look"}},{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#;
+    let subagent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Agent","input":{"prompt":"nested"}}]}}"#;
+
+    let parent = normalize_source(&jsonl_input("claude", parent_fixture)).unwrap();
+    let subagent = normalize_source(&jsonl_input("claude", subagent_fixture)).unwrap();
+    let merged = merge_subagent_events(parent, vec![subagent]);
+    let m = analyze_session(&merged);
+
+    let total_launches: u32 = m.buckets.iter().map(|b| b.subagent_launches).sum();
+    assert_eq!(total_launches, 1, "only the parent's own Agent call counts");
 }
 
 #[test]

@@ -21,7 +21,7 @@ use crate::analysis::interface::{
     ContentKind, ContentPart, ContextSourceKind, EvidenceObservation, RelationProvenance,
 };
 use crate::analysis::model::{
-    CompactionTrigger, EventSource, NormalizedEvent, Role, ToolCall, Usage,
+    CompactionTrigger, EventSource, NormalizedEvent, Role, ToolCall, Usage, is_subagent_launch_tool,
 };
 
 /// The record layout a caller expects. Each variant names the key locations that
@@ -158,7 +158,7 @@ pub(crate) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
                 && item
                     .get("name")
                     .and_then(Value::as_str)
-                    .is_some_and(|name| name.eq_ignore_ascii_case("task"))
+                    .is_some_and(is_subagent_launch_tool)
             {
                 observations.push(EvidenceObservation::SubagentSpawn {
                     ts_ms,
@@ -1460,5 +1460,57 @@ mod tests {
         let test = tool_call_from_input("Bash", Some(&json!({"command": "cargo test"})));
         assert_eq!(test.category, ToolCategory::Test);
         assert_eq!(test.detail, None);
+    }
+
+    fn claude_assistant_record_with_tool(tool_name: &str) -> Value {
+        json!({
+            "type": "assistant",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {
+                "role": "assistant",
+                "model": "claude-opus-4-6",
+                "content": [
+                    {"type": "tool_use", "name": tool_name, "input": {}}
+                ]
+            }
+        })
+    }
+
+    #[test]
+    fn evidence_observations_emits_subagent_spawn_for_an_agent_tool_use() {
+        let record = claude_assistant_record_with_tool("Agent");
+        let observations = evidence_observations(&record);
+        assert!(observations.iter().any(|observation| matches!(
+            observation,
+            EvidenceObservation::SubagentSpawn {
+                provenance: RelationProvenance::TaskToolUse,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn evidence_observations_emits_subagent_spawn_for_a_lowercase_agent_tool_use() {
+        let record = claude_assistant_record_with_tool("agent");
+        let observations = evidence_observations(&record);
+        assert!(observations.iter().any(|observation| matches!(
+            observation,
+            EvidenceObservation::SubagentSpawn {
+                provenance: RelationProvenance::TaskToolUse,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn evidence_observations_does_not_emit_subagent_spawn_for_an_unrelated_tool_use() {
+        let record = claude_assistant_record_with_tool("Read");
+        let observations = evidence_observations(&record);
+        assert!(
+            !observations.iter().any(|observation| matches!(
+                observation,
+                EvidenceObservation::SubagentSpawn { .. }
+            ))
+        );
     }
 }
