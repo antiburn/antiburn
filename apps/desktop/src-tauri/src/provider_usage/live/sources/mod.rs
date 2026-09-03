@@ -6,9 +6,11 @@
 //!
 //! # What is registered
 //!
-//! [`anthropic_fetch`] asks Claude's own usage endpoint with the credential
-//! the Claude CLI already keeps on this machine; [`codex_fetch`] does the
-//! same for Codex, retrying once with a token it refreshes itself before
+//! [`anthropic_fetch`] first reads the Claude CLI's own cached reading of its
+//! usage endpoint — see [`claude_config_cache`] — before asking that endpoint
+//! itself with the credential the CLI already keeps on this machine;
+//! [`codex_fetch`] asks the analogous endpoint for Codex directly, retrying
+//! once with a token it refreshes itself before
 //! falling back to [`codex_app_server`] — the Codex CLI's own process, asked
 //! over its own protocol — when neither attempt lands. [`antigravity_fetch`]
 //! reads Antigravity's provider-owned access token and asks Google Code Assist

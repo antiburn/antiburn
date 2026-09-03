@@ -52,6 +52,28 @@
 //! every poll: see that module for the retry and last-good-reading contract
 //! every direct-fetch source shares, and for how a caller's own `max_age`
 //! decides how often "every poll" actually reaches the network.
+//!
+//! # The CLI's own cache
+//!
+//! Before any of the above, this source checks [`claude_config_cache`] — the
+//! same reading the Claude CLI itself cached the last time it called the
+//! usage endpoint. Two tiers follow, in order:
+//!
+//! 1. **Cache pre-empts the network.** When the cached reading is no older
+//!    than the caller's own `max_age`, it is returned as-is and no request is
+//!    made at all — the cache is already at least as fresh as what the
+//!    caller would have accepted from a live call.
+//! 2. **Cache seeds a failure.** When the cache is not fresh enough to
+//!    pre-empt the request, the live endpoint is still asked as normal. If
+//!    that call fails and the cache is no older than [`cooldown::MAX_AGE`],
+//!    the cached reading rides along as [`cooldown::FetchFailure::last_known`]
+//!    — a real figure to show instead of nothing, while the error itself
+//!    still reports that the endpoint did not just answer.
+//!
+//! Both tiers stamp the resulting snapshot with this source's own
+//! [`SOURCE_ID`] and a label naming the cache, not the network — one
+//! registered source, two ways of answering, the same pattern
+//! [`super::codex_app_server`] uses for Codex's fallback.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -65,7 +87,8 @@ use crate::provider_usage::live::model::{
 };
 use crate::provider_usage::live::{LiveUsageSource, SourceOutcome};
 
-use super::cooldown::Cooldown;
+use super::claude_config_cache::{self, CachedUsage};
+use super::cooldown::{self, Cooldown, FetchFailure};
 use super::http;
 
 /// The credentials file is a small, purpose-built OAuth token store, not a
@@ -277,7 +300,9 @@ mod macos_keychain {
     }
 }
 
-/// Asks `GET /api/oauth/usage` with the CLI's own access token.
+/// Asks `GET /api/oauth/usage` with the CLI's own access token, after first
+/// checking the CLI's own cached reading — see the module doc's "The CLI's
+/// own cache" section.
 pub struct ClaudeDirectFetch {
     credentials_path: Option<PathBuf>,
     /// Whether to consult the macOS Keychain before falling back to the
@@ -288,6 +313,11 @@ pub struct ClaudeDirectFetch {
     /// to hold. Unused, and absent from the struct, on every other platform.
     #[cfg(target_os = "macos")]
     try_keychain: bool,
+    /// Where the Claude CLI's own cached usage reading lives. `None` means
+    /// no cache is consulted — the ordinary state for a test that has no
+    /// reason to exercise it, not a special mode.
+    config_cache_path: Option<PathBuf>,
+    transport: Box<dyn AnthropicTransport>,
     cooldown: Cooldown,
 }
 
@@ -297,18 +327,47 @@ impl ClaudeDirectFetch {
             credentials_path: default_credentials_path(),
             #[cfg(target_os = "macos")]
             try_keychain: true,
+            config_cache_path: claude_config_cache::default_config_path(),
+            transport: Box::new(LiveAnthropicTransport),
             cooldown: Cooldown::new(),
         }
     }
 
     /// A source rooted at an explicit path, with the Keychain carrier
     /// disabled — see the `try_keychain` field doc for why tests need that.
+    /// Reads no config cache; see `at_with_config_cache` for a test that
+    /// needs one.
     #[cfg(test)]
     pub fn at(path: PathBuf) -> ClaudeDirectFetch {
         ClaudeDirectFetch {
             credentials_path: Some(path),
             #[cfg(target_os = "macos")]
             try_keychain: false,
+            config_cache_path: None,
+            transport: Box::new(LiveAnthropicTransport),
+            cooldown: Cooldown::new(),
+        }
+    }
+
+    /// A source rooted at an explicit credentials path, also reading the
+    /// CLI's own cache from an explicit path — for a test that exercises the
+    /// cache through the full source rather than through `fetch_with_cache`
+    /// directly.
+    ///
+    /// The transport is explicit so the test never reaches the network
+    /// when its timing assumption fails.
+    #[cfg(test)]
+    fn at_with_config_cache(
+        credentials_path: PathBuf,
+        config_cache_path: PathBuf,
+        transport: Box<dyn AnthropicTransport>,
+    ) -> ClaudeDirectFetch {
+        ClaudeDirectFetch {
+            credentials_path: Some(credentials_path),
+            #[cfg(target_os = "macos")]
+            try_keychain: false,
+            config_cache_path: Some(config_cache_path),
+            transport,
             cooldown: Cooldown::new(),
         }
     }
@@ -367,19 +426,155 @@ impl LiveUsageSource for ClaudeDirectFetch {
 
     fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome {
         let now = OffsetDateTime::now_utc();
-        // The credential read sits inside the cooldown gate on purpose: on
-        // macOS it spawns a `security` subprocess, and a poll that the
-        // cooldown is going to skip anyway should not pay for one — nor
-        // re-raise a Keychain access prompt the reader has already seen.
-        self.cooldown
-            .poll(now, max_age, || match self.read_credentials()? {
-                Some(credentials) => Ok(Some(fetch_live(&credentials, now)?)),
-                None => Ok(None),
-            })
+        // The credential read, and the config-cache read, both sit inside
+        // the cooldown gate on purpose: on macOS the former spawns a
+        // `security` subprocess, and a poll that the cooldown is going to
+        // skip anyway should not pay for either — nor re-raise a Keychain
+        // access prompt the reader has already seen.
+        self.cooldown.poll(now, max_age, || {
+            let Some(credentials) = self.read_credentials()? else {
+                return Ok(None);
+            };
+            let cached = self
+                .config_cache_path
+                .as_deref()
+                .and_then(claude_config_cache::read_cached_usage);
+            fetch_with_cache(self.transport.as_ref(), &credentials, cached, max_age, now)
+        })
+    }
+}
+
+/// The network calls the live path needs, as a trait so a test can supply
+/// them without a socket — the same seam `codex_fetch`'s `CodexTransport`
+/// gives that source.
+trait AnthropicTransport: Send + Sync {
+    fn usage(&self, access_token: &str) -> Result<String, ProviderUsageError>;
+    /// The account id from the profile endpoint. `None` on any failure: this
+    /// is a best-effort enrichment, never a reason to fail the snapshot.
+    fn profile(&self, access_token: &str) -> Option<String>;
+}
+
+struct LiveAnthropicTransport;
+
+impl AnthropicTransport for LiveAnthropicTransport {
+    fn usage(&self, access_token: &str) -> Result<String, ProviderUsageError> {
+        let response = http::client()
+            .get(USAGE_ENDPOINT)
+            .bearer_auth(access_token)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header("anthropic-beta", "oauth-2025-04-20")
+            .send()
+            .map_err(|_| ProviderUsageError::Unavailable)?;
+        if let Some(error) = http::status_error(response.status()) {
+            return Err(error);
+        }
+        http::read_capped_body(response)
+    }
+
+    fn profile(&self, access_token: &str) -> Option<String> {
+        let response = http::client()
+            .get(PROFILE_ENDPOINT)
+            .bearer_auth(access_token)
+            .header(reqwest::header::ACCEPT, "application/json")
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header("anthropic-beta", "oauth-2025-04-20")
+            .send()
+            .ok()?;
+        if http::status_error(response.status()).is_some() {
+            return None;
+        }
+        let body = http::read_capped_body(response).ok()?;
+        profile_subject(&body)
+    }
+}
+
+/// The two-tier decision the module doc's "The CLI's own cache" section
+/// describes. A free function over [`AnthropicTransport`] rather than a
+/// method, so a test calls it with a fake transport and nothing else this
+/// source owns — mirrors `codex_fetch::fetch_direct`.
+fn fetch_with_cache(
+    transport: &dyn AnthropicTransport,
+    credentials: &ClaudeCredentials,
+    cached: Option<CachedUsage>,
+    max_age: std::time::Duration,
+    now: OffsetDateTime,
+) -> Result<Option<ProviderUsageSnapshot>, FetchFailure> {
+    if let Some(cached) = cached.clone()
+        && cache_covers(now, cached.observed_at, max_age)
+    {
+        log_cache_reading_used(&cached, now, "fresh");
+        return Ok(Some(snapshot_from_cache(cached, credentials)));
+    }
+
+    match fetch_live(transport, credentials, now) {
+        Ok(snapshot) => Ok(Some(snapshot)),
+        Err(error) => {
+            let last_known = cached
+                .filter(|cached| now - cached.observed_at <= cooldown::MAX_AGE)
+                .map(|cached| {
+                    log_cache_reading_used(&cached, now, "seed");
+                    Box::new(snapshot_from_cache(cached, credentials))
+                });
+            Err(FetchFailure { error, last_known })
+        }
+    }
+}
+
+/// Whether `observed_at` is no older than `max_age`, converting the
+/// caller's `std::time::Duration` into `time`'s own type for the
+/// comparison. A `max_age` too large to convert cannot be satisfied, so the
+/// cache does not pre-empt the network in that case either.
+fn cache_covers(
+    now: OffsetDateTime,
+    observed_at: OffsetDateTime,
+    max_age: std::time::Duration,
+) -> bool {
+    time::Duration::try_from(max_age)
+        .map(|max_age| now - observed_at <= max_age)
+        .unwrap_or(false)
+}
+
+/// The `live_cache_reading_used` tracing event, at the two points the
+/// cached reading is used — see the module doc's "The CLI's own cache"
+/// section. `debug`, not `warn`: reading a cache is the ordinary path, not a
+/// problem.
+fn log_cache_reading_used(cached: &CachedUsage, now: OffsetDateTime, reason: &'static str) {
+    ::tracing::debug!(
+        event = "live_cache_reading_used",
+        provider = crate::provider_usage::providers::ANTHROPIC,
+        age_secs = (now - cached.observed_at).whole_seconds(),
+        reason
+    );
+}
+
+/// Build a snapshot from the CLI's own cached reading. Used both when the
+/// cache pre-empts the network and when it seeds a failure — see the module
+/// doc's "The CLI's own cache" section.
+fn snapshot_from_cache(
+    cached: CachedUsage,
+    credentials: &ClaudeCredentials,
+) -> ProviderUsageSnapshot {
+    ProviderUsageSnapshot {
+        provider: crate::provider_usage::providers::ANTHROPIC,
+        account: Some(cached.account),
+        plan: credentials.subscription_type.clone(),
+        plan_tier: credentials.rate_limit_tier.clone(),
+        observed_at: cached.observed_at,
+        source: UsageSource {
+            id: SOURCE_ID,
+            label: "Read from the Claude CLI's own cache".into(),
+            confidence: Confidence::High,
+            freshness: Freshness::Fresh,
+        },
+        windows: cached.usage.windows,
+        supplemental: cached.usage.supplemental,
+        reset_credits: None,
     }
 }
 
 fn fetch_live(
+    transport: &dyn AnthropicTransport,
     credentials: &ClaudeCredentials,
     now: OffsetDateTime,
 ) -> Result<ProviderUsageSnapshot, ProviderUsageError> {
@@ -389,21 +584,9 @@ fn fetch_live(
         return Err(ProviderUsageError::Authentication);
     }
 
-    let response = http::client()
-        .get(USAGE_ENDPOINT)
-        .bearer_auth(&credentials.access_token)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .header("anthropic-beta", "oauth-2025-04-20")
-        .send()
-        .map_err(|_| ProviderUsageError::Unavailable)?;
-
-    if let Some(error) = http::status_error(response.status()) {
-        return Err(error);
-    }
-    let body = http::read_capped_body(response)?;
+    let body = transport.usage(&credentials.access_token)?;
     let usage = anthropic::parse_usage(&body)?;
-    let account = fetch_profile_subject(&credentials.access_token);
+    let account = transport.profile(&credentials.access_token);
 
     Ok(ProviderUsageSnapshot {
         provider: crate::provider_usage::providers::ANTHROPIC,
@@ -423,22 +606,6 @@ fn fetch_live(
         supplemental: usage.supplemental,
         reset_credits: None,
     })
-}
-
-fn fetch_profile_subject(access_token: &str) -> Option<String> {
-    let response = http::client()
-        .get(PROFILE_ENDPOINT)
-        .bearer_auth(access_token)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .header("anthropic-beta", "oauth-2025-04-20")
-        .send()
-        .ok()?;
-    if http::status_error(response.status()).is_some() {
-        return None;
-    }
-    let body = http::read_capped_body(response).ok()?;
-    profile_subject(&body)
 }
 
 fn profile_subject(body: &str) -> Option<String> {
@@ -462,6 +629,197 @@ mod tests {
     /// whether a reading is found, not how the cooldown's freshness budget
     /// behaves — `cooldown.rs`'s own suite owns that.
     const TEST_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(600);
+
+    /// A popover-shaped `max_age` — well under a minute, matching
+    /// `cooldown.rs`'s own `SHORT_MAX_AGE` — for the `fetch_with_cache`
+    /// tests below, which care whether the cache is fresh enough to
+    /// pre-empt the network, not the cooldown's own gating.
+    const SHORT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(50);
+
+    fn now() -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(NOW).unwrap()
+    }
+
+    fn valid_credentials() -> ClaudeCredentials {
+        ClaudeCredentials {
+            access_token: "synthetic-token".into(),
+            expires_at_ms: (NOW + 3_600) * 1_000,
+            subscription_type: Some("max".into()),
+            rate_limit_tier: Some("default_claude_max_5x".into()),
+        }
+    }
+
+    fn cached_usage(observed_at: OffsetDateTime) -> CachedUsage {
+        CachedUsage {
+            observed_at,
+            account: "cached-account-uuid".into(),
+            usage: anthropic::AnthropicUsage::default(),
+        }
+    }
+
+    /// A transport that panics if called — for a test asserting the cache
+    /// pre-empted the network entirely.
+    struct UnreachableTransport;
+
+    impl AnthropicTransport for UnreachableTransport {
+        fn usage(&self, _access_token: &str) -> Result<String, ProviderUsageError> {
+            unreachable!("the cache should have pre-empted the network")
+        }
+        fn profile(&self, _access_token: &str) -> Option<String> {
+            unreachable!("the cache should have pre-empted the network")
+        }
+    }
+
+    const LIVE_USAGE_BODY: &str = r#"{"five_hour": {"utilization": 40}}"#;
+
+    /// A transport whose `usage` call returns a fixed result, for tests that
+    /// only care whether the live call was reached and what it answered.
+    struct FakeTransport {
+        usage_result: Result<String, ProviderUsageError>,
+    }
+
+    impl AnthropicTransport for FakeTransport {
+        fn usage(&self, _access_token: &str) -> Result<String, ProviderUsageError> {
+            self.usage_result.clone()
+        }
+        fn profile(&self, _access_token: &str) -> Option<String> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_fresh_cache_pre_empts_the_network() {
+        let cached = cached_usage(now() - time::Duration::seconds(10));
+        let outcome = fetch_with_cache(
+            &UnreachableTransport,
+            &valid_credentials(),
+            Some(cached.clone()),
+            SHORT_MAX_AGE,
+            now(),
+        )
+        .expect("no live call, so no failure")
+        .expect("a snapshot from the cache");
+
+        assert_eq!(outcome.source.label, "Read from the Claude CLI's own cache");
+        assert_eq!(outcome.observed_at, cached.observed_at);
+    }
+
+    #[test]
+    fn a_cache_older_than_max_age_falls_through_to_a_live_call_that_succeeds() {
+        let cached = cached_usage(now() - time::Duration::seconds(100));
+        let transport = FakeTransport {
+            usage_result: Ok(LIVE_USAGE_BODY.to_string()),
+        };
+        let outcome = fetch_with_cache(
+            &transport,
+            &valid_credentials(),
+            Some(cached),
+            SHORT_MAX_AGE,
+            now(),
+        )
+        .expect("the live call succeeded")
+        .expect("a live snapshot");
+
+        assert_eq!(outcome.source.label, "Asked Claude directly");
+        assert_eq!(outcome.observed_at, now());
+    }
+
+    #[test]
+    fn a_cache_older_than_max_age_but_within_the_hour_seeds_a_failed_live_call() {
+        let cached = cached_usage(now() - time::Duration::minutes(30));
+        let transport = FakeTransport {
+            usage_result: Err(ProviderUsageError::RateLimited),
+        };
+        let failure = fetch_with_cache(
+            &transport,
+            &valid_credentials(),
+            Some(cached.clone()),
+            SHORT_MAX_AGE,
+            now(),
+        )
+        .expect_err("the live call failed");
+
+        assert_eq!(failure.error, ProviderUsageError::RateLimited);
+        let last_known = failure.last_known.expect("the cache seeds the failure");
+        assert_eq!(last_known.observed_at, cached.observed_at);
+    }
+
+    #[test]
+    fn a_cache_older_than_the_hour_budget_does_not_seed_a_failed_live_call() {
+        let cached = cached_usage(now() - time::Duration::minutes(90));
+        let transport = FakeTransport {
+            usage_result: Err(ProviderUsageError::Unavailable),
+        };
+        let failure = fetch_with_cache(
+            &transport,
+            &valid_credentials(),
+            Some(cached),
+            SHORT_MAX_AGE,
+            now(),
+        )
+        .expect_err("the live call failed");
+
+        assert!(failure.last_known.is_none());
+    }
+
+    #[test]
+    fn no_cache_never_seeds_a_failed_live_call() {
+        let transport = FakeTransport {
+            usage_result: Err(ProviderUsageError::Unavailable),
+        };
+        let failure =
+            fetch_with_cache(&transport, &valid_credentials(), None, SHORT_MAX_AGE, now())
+                .expect_err("the live call failed");
+
+        assert!(failure.last_known.is_none());
+    }
+
+    #[test]
+    fn fetch_prefers_a_fresh_cache_over_a_live_call() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let credentials_path = dir.path().join(".credentials.json");
+        let real_now = OffsetDateTime::now_utc();
+        fs::write(
+            &credentials_path,
+            credentials_file((real_now.unix_timestamp() + 3_600) * 1_000, "max"),
+        )
+        .expect("write");
+
+        let config_cache_path = dir.path().join(".claude.json");
+        let fetched_at_ms = (real_now.unix_timestamp() - 10) * 1_000;
+        fs::write(
+            &config_cache_path,
+            format!(
+                r#"{{
+                  "oauthAccount": {{"accountUuid": "cached-account-uuid"}},
+                  "cachedUsageUtilization": {{
+                    "fetchedAtMs": {fetched_at_ms},
+                    "accountUuid": "cached-account-uuid",
+                    "utilization": {{"five_hour": {{"utilization": 25}}}}
+                  }}
+                }}"#
+            ),
+        )
+        .expect("write");
+
+        let outcome = ClaudeDirectFetch::at_with_config_cache(
+            credentials_path,
+            config_cache_path,
+            Box::new(UnreachableTransport),
+        )
+        .fetch(TEST_MAX_AGE);
+
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.snapshots.len(), 1);
+        assert_eq!(
+            outcome.snapshots[0].source.label,
+            "Read from the Claude CLI's own cache"
+        );
+        assert_eq!(
+            outcome.snapshots[0].account.as_deref(),
+            Some("cached-account-uuid")
+        );
+    }
 
     #[test]
     fn profile_identity_uses_only_the_account_uuid() {
@@ -532,7 +890,7 @@ mod tests {
             rate_limit_tier: None,
         };
         assert_eq!(
-            fetch_live(&credentials, now),
+            fetch_live(&UnreachableTransport, &credentials, now),
             Err(ProviderUsageError::Authentication)
         );
     }
