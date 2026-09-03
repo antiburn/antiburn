@@ -1150,7 +1150,13 @@ pub async fn scan_now(
     app: tauri::AppHandle,
     activity_window_days: Option<u32>,
 ) -> CommandResult<ScanStatus> {
-    Ok(scan::run_pass(&app, activity_window_days, ScanTrigger::ManualRescan).await)
+    Ok(scan::run_pass(
+        &app,
+        activity_window_days,
+        ScanTrigger::ManualRescan,
+        scan::PassScope::Full,
+    )
+    .await)
 }
 
 /// Ask the scan in flight to stop at its next phase boundary.

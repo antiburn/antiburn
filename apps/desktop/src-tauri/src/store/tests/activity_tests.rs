@@ -106,3 +106,41 @@ fn session_record_by_source_label_round_trips() {
         "an unknown source label finds nothing"
     );
 }
+
+#[test]
+fn an_agent_scoped_upsert_leaves_another_agents_rows_intact() {
+    let store = store();
+    let claude = session("claude-session", 1_000);
+    let codex = SessionRecord {
+        key: SessionKey::new("native", "codex", "codex-session"),
+        source_label: "/home/avery/.codex/sessions/codex-session.jsonl".into(),
+        ..session("codex-session", 2_000)
+    };
+    store
+        .upsert_sessions(
+            &[claude.clone(), codex.clone()],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    // An agent-scoped pass upserts only Claude's row, naming Claude alone as
+    // the evidence cohort for this pass.
+    let renamed_claude = SessionRecord {
+        title: Some("Renamed during a scoped pass".into()),
+        ..claude.clone()
+    };
+    store
+        .upsert_sessions(&[renamed_claude], &["claude-code"])
+        .unwrap();
+
+    let stored_claude = store.session(&claude.key).unwrap().expect("claude row");
+    assert_eq!(
+        stored_claude.title.as_deref(),
+        Some("Renamed during a scoped pass")
+    );
+    let stored_codex = store
+        .session(&codex.key)
+        .unwrap()
+        .expect("codex row is untouched by a Claude-scoped pass");
+    assert_eq!(stored_codex.key.session_id, "codex-session");
+}

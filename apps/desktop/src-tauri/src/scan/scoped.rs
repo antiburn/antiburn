@@ -7,7 +7,8 @@
 //! database-backed session appeared under their root (T3, T5), or paths
 //! nothing claims (T6). [`Floors`] then admits the part of that work that has
 //! not run too recently, per session and per agent (T2, T4, T5), and defers
-//! the rest without dropping it (T7).
+//! the rest without dropping it (T7). [`rediscover_agents`] runs the
+//! agent-scoped lane.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -15,9 +16,13 @@ use std::time::Duration;
 
 use antiburn_local::discovery::{Explorers, WatchRoot};
 use antiburn_local::model::AgentKind;
+use tauri::AppHandle;
 use tokio::time::Instant;
 
+use crate::dto::ScanStatus;
 use crate::store::SessionActivityKey;
+
+use super::{PassScope, ScanTrigger};
 
 /// T2: a re-described session is not re-described again before this many
 /// seconds pass.
@@ -296,6 +301,20 @@ impl<K: Ord> Admission<'_, K> {
             }
         }
     }
+}
+
+/// T3, T5: rediscover exactly `agents`, reusing [`super::run_pass`] scoped to
+/// them so `scan:started` / `scan:finished` and the log lines it already
+/// emits come for free.
+///
+/// Returns `None` when [`super::on_demand_start`] finds a pass already
+/// running — the caller keeps `agents` pending and retries (T7).
+pub(super) async fn rediscover_agents(
+    app: &AppHandle,
+    agents: &BTreeSet<AgentKind>,
+    trigger: ScanTrigger,
+) -> Option<ScanStatus> {
+    super::try_run_pass(app, None, trigger, PassScope::Agents(agents.clone())).await
 }
 
 #[cfg(test)]

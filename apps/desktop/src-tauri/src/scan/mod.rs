@@ -72,6 +72,7 @@
 //! scheduler is a single handle the app aborts on exit, so nothing outlives
 //! the process.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -134,6 +135,12 @@ pub enum ScanTrigger {
         /// fixed constant — see [`watch::WatchBurst`].
         paths: Vec<PathBuf>,
     },
+    /// T3/T5: a burst named one or more agents to rediscover, with no full
+    /// discovery walk over the rest.
+    WatcherAgents {
+        /// The rediscovered agents' slugs, for the log line.
+        agents: Vec<&'static str>,
+    },
     /// The popover reached the screen.
     PopoverShown,
     /// A settings save that finished onboarding, widened the activity
@@ -160,6 +167,7 @@ impl ScanTrigger {
             ScanTrigger::Launch => "launch",
             ScanTrigger::Tick => "tick",
             ScanTrigger::Watcher { .. } => "watcher",
+            ScanTrigger::WatcherAgents { .. } => "watcher_agents",
             ScanTrigger::PopoverShown => "popover_shown",
             ScanTrigger::SettingsTransition => "settings_transition",
             ScanTrigger::InsightsPane => "insights_pane",
@@ -170,6 +178,18 @@ impl ScanTrigger {
             ScanTrigger::ManualRescan => "manual_rescan",
         }
     }
+}
+
+/// What one pass discovers: every agent, or only a burst-named subset.
+///
+/// T3/T5: an agent-scoped pass reuses [`run_pass`] and [`pass`] wholesale —
+/// same status machinery, same events — so the only thing it changes is which
+/// agents discovery asks and which agents' rows the upsert and per-agent scan
+/// bookkeeping touch.
+#[derive(Debug, Clone)]
+pub enum PassScope {
+    Full,
+    Agents(BTreeSet<AgentKind>),
 }
 
 /// The scheduler's shared state, registered as Tauri managed state.
@@ -270,7 +290,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         let tick = tick_for(&watch::spawn_watcher(&app));
         // A fresh install has nothing to scan until the reader picks sources.
         if scheduled_scanning_allowed(&app) {
-            run_pass(&app, None, ScanTrigger::Launch).await;
+            run_pass(&app, None, ScanTrigger::Launch, PassScope::Full).await;
         }
         loop {
             let controller = app.state::<ScanController>();
@@ -289,7 +309,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
             let trigger = controller
                 .take_pending_trigger()
                 .unwrap_or(ScanTrigger::Tick);
-            run_pass(&app, None, trigger).await;
+            run_pass(&app, None, trigger, PassScope::Full).await;
         }
     })
 }
@@ -325,7 +345,24 @@ pub async fn run_pass(
     app: &AppHandle,
     activity_window_days: Option<u32>,
     trigger: ScanTrigger,
+    scope: PassScope,
 ) -> ScanStatus {
+    try_run_pass(app, activity_window_days, trigger, scope)
+        .await
+        .unwrap_or_else(|| app.state::<ScanController>().status())
+}
+
+/// [`run_pass`]'s body, returning `None` rather than a stale status when
+/// [`on_demand_start`] finds one already running. The scoped lanes in
+/// `scoped.rs` use this directly to tell "ran" from "skipped, retry soon"
+/// (T7) — a distinction [`run_pass`]'s callers do not need, since they always
+/// treat "already running" as "nothing more to do here".
+pub(crate) async fn try_run_pass(
+    app: &AppHandle,
+    activity_window_days: Option<u32>,
+    trigger: ScanTrigger,
+    scope: PassScope,
+) -> Option<ScanStatus> {
     log_scan_pass_requested(&trigger);
     {
         let controller = app.state::<ScanController>();
@@ -335,7 +372,7 @@ pub async fn run_pass(
             // the tick. Logging the trigger turns that into a visible stream
             // of drops instead.
             ::tracing::debug!(event = "scan_request_dropped", trigger = trigger.label());
-            return controller.status();
+            return None;
         }
         let started = controller.update(|status| {
             status.running = true;
@@ -355,7 +392,7 @@ pub async fn run_pass(
     let announce = move |entry: ActivityEntry| {
         let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
     };
-    let outcome = pass(app, activity_window_days, &announce).await;
+    let outcome = pass(app, activity_window_days, &scope, &announce).await;
 
     let controller = app.state::<ScanController>();
     let cancelled = controller.cancelled();
@@ -420,7 +457,7 @@ pub async fn run_pass(
         outcome.as_ref().ok().map(|summary| summary.sessions as u64),
     );
     crate::notifications::note_scan_outcome(app, &finished);
-    finished
+    Some(finished)
 }
 
 /// Log `scan_pass_requested`. Every call to [`run_pass`] gets one, whether it
@@ -445,6 +482,14 @@ fn log_scan_pass_requested(trigger: &ScanTrigger) {
                 path_count = paths.len(),
             );
         }
+        ScanTrigger::WatcherAgents { agents } => {
+            ::tracing::debug!(
+                event = "scan_pass_requested",
+                trigger = trigger.label(),
+                agents = %agents.join(","),
+                agent_count = agents.len(),
+            );
+        }
         other => {
             ::tracing::debug!(event = "scan_pass_requested", trigger = other.label());
         }
@@ -465,9 +510,14 @@ struct PassSummary {
 
 /// The body of one pass. Split out so [`run_pass`] owns only the in-flight
 /// bookkeeping and the events.
+///
+/// `scope` narrows discovery, the upsert's evidence cohort, and per-agent
+/// scan bookkeeping to a burst-named subset of agents (T3/T5); everything
+/// else runs exactly as a full pass. See [`PassScope`].
 async fn pass(
     app: &AppHandle,
     _activity_window_days: Option<u32>,
+    scope: &PassScope,
     announce: &(dyn Fn(ActivityEntry) + Send + Sync),
 ) -> anyhow::Result<PassSummary> {
     let store = app.state::<Store>();
@@ -480,45 +530,66 @@ async fn pass(
     let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
     let home = home_dir().unwrap_or_default();
 
-    let progress_app = app.clone();
-    let logs = Explorers::DISK
-        .discover_recent_sessions_with_progress(
-            now,
-            since_secs,
-            move |agent, found, completed, total| {
-                let controller = progress_app.state::<ScanController>();
-                let status = controller.update(|status| {
-                    status.completed_agents = completed;
-                    status.total_agents = total;
-                    status.sessions += found;
-                });
-                let _ = progress_app.emit(EVENT_PROGRESS, status);
-                let _ = agent;
-            },
-        )
-        .await;
+    let logs = match scope {
+        PassScope::Full => {
+            let progress_app = app.clone();
+            Explorers::DISK
+                .discover_recent_sessions_with_progress(
+                    now,
+                    since_secs,
+                    move |agent, found, completed, total| {
+                        let controller = progress_app.state::<ScanController>();
+                        let status = controller.update(|status| {
+                            status.completed_agents = completed;
+                            status.total_agents = total;
+                            status.sessions += found;
+                        });
+                        let _ = progress_app.emit(EVENT_PROGRESS, status);
+                        let _ = agent;
+                    },
+                )
+                .await
+        }
+        PassScope::Agents(agents) => discover_scoped_agents(app, agents, now, since_secs).await,
+    };
 
     let previous_records = store.session_records()?;
+    let scoped_previous_records;
+    let previous_records_for_pass = match scope {
+        PassScope::Full => &previous_records,
+        PassScope::Agents(agents) => {
+            scoped_previous_records = previous_records
+                .iter()
+                .filter(|(key, _)| agents.iter().any(|agent| agent.slug() == key.agent))
+                .map(|(key, record)| (key.clone(), record.clone()))
+                .collect();
+            &scoped_previous_records
+        }
+    };
     let Described {
         records,
         rejected,
         changed,
         list_changed,
-    } = describe_with_states(logs, &home, &ignored, &previous_records).await;
+    } = describe_with_states(logs, &home, &ignored, previous_records_for_pass).await;
+    let evidence_agents: Vec<&str> = match scope {
+        PassScope::Full => agents::evidence_cohort(),
+        PassScope::Agents(agents) => agents.iter().map(|agent| agent.slug()).collect(),
+    };
     // Every write below is routed through the storage-health check, so a
     // database that has stopped accepting writes becomes a banner in the
     // popover rather than a list that silently stops changing.
     checked(
         app,
         "The session index",
-        store.upsert_sessions(&records, &agents::evidence_cohort()),
+        store.upsert_sessions(&records, &evidence_agents),
     )?;
     crate::insights_worker::wake(app);
     // A write may have added a session the idle task was not yet watching,
     // or moved one's deadline later; either way its sleep needs recomputing.
     idle::wake(app);
 
-    announce_changed_rows(&store, &changed, &previous_records, now, announce);
+    announce_changed_rows(&store, &changed, previous_records_for_pass, now, announce);
 
     // A transcript the gate rejected may have been indexed by an earlier
     // version of the app that did not gate; the row is removed rather than
@@ -531,6 +602,8 @@ async fn pass(
         )?;
     }
 
+    // `records` already holds only the scoped agents' sessions when `scope`
+    // is [`PassScope::Agents`], since discovery itself was scoped.
     for (agent, seen, cursor) in per_agent_totals(&records) {
         checked(
             app,
@@ -550,13 +623,51 @@ async fn pass(
         });
     }
 
-    repositories::refresh(app).await?;
+    // A full pass always refreshes the repository list. An agent-scoped pass
+    // only pays for it when a session's arrival or eviction could plausibly
+    // have introduced a new cwd.
+    if matches!(scope, PassScope::Full) || list_changed {
+        repositories::refresh(app).await?;
+    }
 
     Ok(PassSummary {
         sessions: records.len(),
         list_changed,
         re_described: changed.len(),
     })
+}
+
+/// [`PassScope::Agents`]'s discovery: only the named agents, concurrently,
+/// with no WSL file-session walk — WSL sessions are a full-pass concern; a
+/// scoped pass exists because a native watch root fired.
+async fn discover_scoped_agents(
+    app: &AppHandle,
+    agents: &BTreeSet<AgentKind>,
+    now: i64,
+    since_secs: i64,
+) -> Vec<SessionLog> {
+    let mut set = JoinSet::new();
+    for agent in agents {
+        let explorer = Explorers::DISK.get(agent);
+        set.spawn(async move { explorer.discover_recent(now, since_secs).await });
+    }
+    let total = agents.len();
+    let mut completed = 0;
+    let mut logs = Vec::new();
+    while let Some(result) = set.join_next().await {
+        completed += 1;
+        if let Ok(found) = result {
+            let controller = app.state::<ScanController>();
+            let status = controller.update(|status| {
+                status.completed_agents = completed;
+                status.total_agents = total;
+                status.sessions += found.len();
+            });
+            let _ = app.emit(EVENT_PROGRESS, status);
+            logs.extend(found);
+        }
+    }
+    logs
 }
 
 /// Emit `SESSION_ENTRY_CHANGED_EVENT` for every re-described row the reader's
