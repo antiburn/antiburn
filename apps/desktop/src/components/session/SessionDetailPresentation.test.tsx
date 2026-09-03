@@ -346,11 +346,9 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(onBack).toHaveBeenCalledOnce()
   })
 
-  it("disables traversal that has no adjacent session, and wires the arrow keys", () => {
+  it("wires the arrow keys to session traversal", () => {
     const onNext = vi.fn()
     view({ onNext })
-    expect(screen.getByLabelText("Newer session").hasAttribute("disabled")).toBe(true)
-    expect(screen.getByLabelText("Older session").hasAttribute("disabled")).toBe(false)
 
     fireEvent.keyDown(document, { key: "ArrowRight" })
     expect(onNext).toHaveBeenCalledOnce()

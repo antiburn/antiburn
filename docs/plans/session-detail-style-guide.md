@@ -183,3 +183,5 @@ Cost tab, bottom line:
 | Round 16 revision: composition runs in a very light grey, the warning yellow, and a mid grey | done |
 | Round 16 revision: guidance goes back into tooltips, so the block keeps the height of its readings | done |
 | Verify round 16 revision: prettier, type-check, lint, tests, drift check | done (1015/1015 tests, drift in sync) |
+| Round 17: hero newer/older session chevrons removed; arrow-key traversal kept | done |
+| Verify round 17: type-check, lint, tests, drift check | done (1054/1054 tests, drift in sync) |

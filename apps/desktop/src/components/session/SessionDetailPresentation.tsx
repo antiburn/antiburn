@@ -3,7 +3,6 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   ChevronLeft,
-  ChevronRight,
   FoldVertical,
   FolderOpen,
   GitBranchPlus,
@@ -242,49 +241,6 @@ function RelationControl({
         </DropdownMenu.Root>
       )}
     </div>
-  )
-}
-
-/**
- * One adjacent-session control, flanking the hero title. The circle shape
- * separates the pair from the back chevron in the toolbar: the toolbar acts
- * on this session, these two leave it.
- */
-function SessionNavChevron({
-  label,
-  keyHint,
-  onNavigate,
-  Icon,
-}: {
-  label: string
-  keyHint: string
-  onNavigate?: (() => void) | undefined
-  Icon: LucideIcon
-}) {
-  return (
-    <Tooltip
-      label={
-        <span className="inline-flex items-center gap-1.5">
-          {label}
-          <kbd className="rounded bg-surface-tertiary px-1 text-label-tertiary">{keyHint}</kbd>
-        </span>
-      }
-    >
-      <button
-        type="button"
-        onClick={onNavigate}
-        disabled={!onNavigate}
-        aria-label={label}
-        className={cn(
-          "shrink-0 rounded-full bg-surface-secondary p-1.5 transition-colors duration-[var(--duration-fast)] ease-out",
-          onNavigate
-            ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
-            : "cursor-default text-label-tertiary opacity-40",
-        )}
-      >
-        <Icon size={14} aria-hidden="true" />
-      </button>
-    </Tooltip>
   )
 }
 
@@ -584,8 +540,8 @@ export function SessionDetailPresentation({
   const modelPairs = modelRunShortPairs(modelRuns)
   const hygieneChecks = sessionHygieneChecks(hygiene)
 
-  // Left and right arrows traverse adjacent sessions, mirroring the header
-  // chevrons. A missing handler is a no-op, matching the chevrons' own state.
+  // Left and right arrows traverse adjacent sessions. A missing handler is a
+  // no-op.
   useGlobalKeydown(true, (event) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return
     const target = event.target as HTMLElement | null
@@ -777,27 +733,11 @@ export function SessionDetailPresentation({
               className="flex flex-col gap-y-2 border-b border-separator px-4 pt-3 pb-4"
               aria-label="Session summary"
             >
-              {/* The traversal pair sits on the title line, so its circles
-                  read against the title they change. */}
-              <div className="flex items-center gap-2">
-                <SessionNavChevron
-                  label="Newer session"
-                  keyHint="←"
-                  onNavigate={onPrev}
-                  Icon={ChevronLeft}
-                />
-                <TruncatedText
-                  className="min-w-0 flex-1 type-title-3 text-label break-words"
-                  text={relations?.title?.trim() || session.title?.trim() || "Session"}
-                  lines={2}
-                />
-                <SessionNavChevron
-                  label="Older session"
-                  keyHint="→"
-                  onNavigate={onNext}
-                  Icon={ChevronRight}
-                />
-              </div>
+              <TruncatedText
+                className="min-w-0 type-title-3 text-label break-words"
+                text={relations?.title?.trim() || session.title?.trim() || "Session"}
+                lines={2}
+              />
 
               <div className="flex min-w-0 flex-col gap-y-2">
                 <div className="flex min-w-0 items-center gap-1.5 font-mono type-caption text-label-secondary">
