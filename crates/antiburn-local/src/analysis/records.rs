@@ -124,13 +124,13 @@ pub(crate) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
 
     // Per-record thread identity (Claude's top-level `uuid` / `parentUuid`).
     // Emitted for every record that carries either field, so the evidence
-    // sink can verify parent links even through eventless records. A null
-    // `parentUuid` falls back to `logicalParentUuid`, Claude's link across a
-    // compaction boundary, so a boundary record does not read as an
-    // unlinked root.
+    // sink can verify parent links even through eventless records. Read
+    // `parentUuid` only, with no fallback to `logicalParentUuid`: a
+    // compaction boundary's logical parent can sit in another file or later
+    // in this file, so it is not a link this source can verify, and the
+    // sink checks only `parentUuid`.
     let uuid = thread_identity_field(value, "uuid");
-    let parent_uuid = thread_identity_field(value, "parentUuid")
-        .or_else(|| thread_identity_field(value, "logicalParentUuid"));
+    let parent_uuid = thread_identity_field(value, "parentUuid");
     if uuid.is_some() || parent_uuid.is_some() {
         observations.push(EvidenceObservation::ThreadLink { uuid, parent_uuid });
     }
