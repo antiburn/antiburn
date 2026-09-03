@@ -163,13 +163,13 @@ Settings teardown, and the memory rules behind those policies.
   is never modified or deleted. Migrations are embedded and versioned by the
   `user_version` pragma.
 - **Scanning.** A single background task refreshes what the app knows: once at
-  launch (after onboarding), whenever the popover is opened, every 60s whether
-  or not it is visible, shortly after a watched transcript directory changes,
-  and on demand. A pass over unchanged sources costs stat calls, not disk
-  reads, which is what makes the unconditional tick affordable. Passes never
-  overlap and are bounded. CPU, memory, and disk I/O are product constraints:
-  background work must be no more frequent or intensive than the visible
-  feature requires. See the policy at the top of `src-tauri/src/scan/mod.rs`.
+  launch (after onboarding), shortly after a watched transcript changes, every
+  five minutes as a reconciliation fallback, and on demand. Watcher refreshes
+  target the affected sessions or agents. A full pass over unchanged sources
+  costs stat calls, not transcript reads. Passes never overlap and are bounded.
+  CPU, memory, and disk I/O are product constraints: background work must be no
+  more frequent or intensive than the visible feature requires. See the policy
+  at the top of `src-tauri/src/scan/mod.rs`.
 - **Notifications.** Six kinds, all posted by the shell and never by the webview
   (which is granted no notification permission): an automatic update, a failed
   scan, low disk space, a crossed usage milestone, the first-run menu-bar

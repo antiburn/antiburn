@@ -17,6 +17,8 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-03
+
 ### Added
 
 - Snapshot resume: `AdapterResume`, `AdapterSnapshot`, `EvidenceSnapshot`,
