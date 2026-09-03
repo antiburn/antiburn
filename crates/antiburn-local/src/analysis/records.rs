@@ -70,31 +70,60 @@ pub fn parse_jsonl(content: &str) -> Vec<NormalizedEvent> {
 
 pub(crate) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
     let mut observations = Vec::new();
-    if let Some(attachment) = value.get("attachment")
-        && attachment.get("type").and_then(Value::as_str) == Some("mcp_instructions_delta")
+    if let Some(attachment) = value.get("attachment") {
+        let attachment_type = attachment.get("type").and_then(Value::as_str);
+        if attachment_type == Some("mcp_instructions_delta") {
+            let names = attachment
+                .get("addedNames")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten();
+            observations.extend(names.filter_map(|name| {
+                let name = name.as_str()?.trim();
+                if name.is_empty() {
+                    return None;
+                }
+                // Only the server name is kept (#228, Option B). The
+                // paired `addedBlocks` entry is the server's full injected
+                // instruction text, not a description: persisting a prefix
+                // of it stretched the "names and descriptions" evidence
+                // invariant, and nothing downstream reads MCP descriptions
+                // (the Unused MCP Servers detector only needs `invoked`).
+                Some(EvidenceObservation::ContextSource {
+                    kind: ContextSourceKind::McpServer,
+                    name: name.to_owned(),
+                    description: None,
+                })
+            }));
+        } else if attachment_type == Some("deferred_tools_delta") {
+            let names = attachment
+                .get("addedNames")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten();
+            observations.extend(names.filter_map(|name| {
+                let name = name.as_str()?.trim();
+                if name.is_empty() {
+                    return None;
+                }
+                Some(EvidenceObservation::DeferredTool {
+                    name: name.to_owned(),
+                })
+            }));
+        }
+    }
+
+    // The harness's own version, Claude's top-level `version` field. The
+    // sink keeps only the first-seen value, mirroring
+    // `initial_context::ClaudeContextAccumulator::observe`.
+    if let Some(version) = value
+        .get("version")
+        .and_then(Value::as_str)
+        .filter(|version| !version.is_empty())
     {
-        let names = attachment
-            .get("addedNames")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten();
-        observations.extend(names.filter_map(|name| {
-            let name = name.as_str()?.trim();
-            if name.is_empty() {
-                return None;
-            }
-            // Only the server name is kept (#228, Option B). The
-            // paired `addedBlocks` entry is the server's full injected
-            // instruction text, not a description: persisting a prefix
-            // of it stretched the "names and descriptions" evidence
-            // invariant, and nothing downstream reads MCP descriptions
-            // (the Unused MCP Servers detector only needs `invoked`).
-            Some(EvidenceObservation::ContextSource {
-                kind: ContextSourceKind::McpServer,
-                name: name.to_owned(),
-                description: None,
-            })
-        }));
+        observations.push(EvidenceObservation::HarnessVersion {
+            version: version.to_owned(),
+        });
     }
 
     let is_sidechain = value

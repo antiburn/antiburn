@@ -149,6 +149,16 @@ pub enum EvidenceObservation {
         discriminator: String,
         inert: bool,
     },
+    /// The harness's own version, from a source's top-level version
+    /// field. The sink keeps only the first-seen value.
+    HarnessVersion {
+        version: String,
+    },
+    /// One tool name the harness deferred at least once this session
+    /// (Claude's `deferred_tools_delta` attachment).
+    DeferredTool {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

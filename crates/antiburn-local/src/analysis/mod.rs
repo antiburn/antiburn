@@ -63,7 +63,7 @@ pub use evidence::{
     RepeatedContextAccounting, SessionCoverageRecord, SessionEvidence, SessionEvidenceIdentity,
     SessionProvenance, SessionQuotaEvidence, SessionTimeRange, SignalCoverage, SourceAcceptance,
     SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
-    ToolEvidence, ToolUse, TurnCounts,
+    ToolDefinition, ToolEvidence, ToolUse, TurnCounts,
 };
 pub use evidence_query::{
     FenceScope, PublishedScope, TurnFacts, query_model_breakdown, query_model_runs,
@@ -136,7 +136,13 @@ pub use vendors::{adapter_for, has_dedicated_adapter};
 // (`records::evidence_observations`), so a stored session must re-ingest to
 // clear a stale `thread_parent_unresolved` flag and its degraded `cache`
 // group.
-pub const PARSER_REVISION: i64 = 23;
+// +1 for built-in tool definitions: the Claude adapter now emits a
+// `HarnessVersion` observation from the top-level `version` field and a
+// `DeferredTool` observation from `deferred_tools_delta` attachments
+// (`records::evidence_observations`), so a stored Claude session must
+// re-ingest to populate `context_sources.tool_definitions` and
+// `provenance.harness_version`.
+pub const PARSER_REVISION: i64 = 24;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
@@ -191,7 +197,10 @@ pub const METRICS_SCHEMA_REVISION: i64 = 6;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
 // +1 more for `RepeatedContext::paid_tokens` (part F).
 // +1 more for `SourceCapabilities::linear_record_order`.
-pub const EVIDENCE_SCHEMA_REVISION: i64 = 12;
+// +1 for built-in tool definitions: `ContextSourceEvidence::tool_definitions`
+// carries a named `ToolDefinition` map instead of a bare marker, and
+// `SourceCapabilities::claude().tool_definitions` is now `true`.
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 13;
 /// Versions [`evidence::SessionCoverageRecord`]'s own shape, separately
 /// from [`EVIDENCE_SCHEMA_REVISION`]: the record is an internal input to
 /// evidence replay, not the published `SessionEvidence` shape itself.
