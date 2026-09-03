@@ -178,24 +178,26 @@ describe("UsageLimitsBar — the disclosure", () => {
     expect(screen.getByRole("region", { name: "Usage limits" })).toBeInTheDocument()
   })
 
-  it("drops the ring row and moves itself into the meters while open", () => {
+  it("drops the ring row and stays in the header while open", () => {
     // The point of the open state is the space the row gives back. The
     // meters restate every ring, so keeping both spends the popover's height
-    // on one reading twice.
+    // on one reading twice. The disclosure keeps its seat in the header row,
+    // so it does not move under the pointer that clicked it.
     bar({ expanded: true })
     expect(
       screen.queryByRole("button", { name: "Claude at 42 percent" }),
     ).not.toBeInTheDocument()
     const region = screen.getByRole("region", { name: "Usage limits" })
-    expect(region).toContainElement(
+    expect(region).not.toContainElement(
       screen.getByRole("button", { name: "Collapse usage limits" }),
     )
   })
 
-  it("carries the refresh spinner with it into the open meters", () => {
+  it("keeps the refresh spinner beside it while open", () => {
     bar({ expanded: true, refreshing: true })
     const region = screen.getByRole("region", { name: "Usage limits" })
-    expect(region).toContainElement(screen.getByRole("status"))
+    expect(region).not.toContainElement(screen.getByRole("status"))
+    expect(screen.getByRole("status")).toBeInTheDocument()
   })
 
   it("keeps the settings gear's treatment in both states", () => {
@@ -504,5 +506,23 @@ describe("UsageLimitsBar — grace period", () => {
     })
     expect(screen.getByRole("button", { name: /Claude at 42 percent/ })).toBeInTheDocument()
     expect(screen.queryByTestId("usage-limits-unavailable")).not.toBeInTheDocument()
+  })
+})
+
+describe("UsageLimitsBar — the heading", () => {
+  it("names the meters only while open", () => {
+    const { rerender } = bar()
+    expect(screen.queryByText("Limits")).not.toBeInTheDocument()
+
+    rerender(
+      <UsageLimitsBar
+        live={liveSummary()}
+        expanded
+        onToggleExpanded={vi.fn()}
+        refreshing={false}
+        onViewAll={vi.fn()}
+      />,
+    )
+    expect(screen.getByText("Limits")).toBeInTheDocument()
   })
 })

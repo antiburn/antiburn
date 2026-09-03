@@ -80,6 +80,56 @@ export function usageValueLabel(window: ProviderUsageWindowPayload): string {
   return "—"
 }
 
+/**
+ * Three significant figures with the trailing zero kept: 1.00, 57.0, 999.
+ * The thresholds sit just under the round values, so a value that rounds up
+ * to the next digit count does not print four figures.
+ */
+function threeSignificant(value: number): string {
+  if (value < 9.995) return value.toFixed(2)
+  if (value < 99.95) return value.toFixed(1)
+  return value.toFixed(0)
+}
+
+/**
+ * Scale a value through the units at three significant figures. A mantissa
+ * that rounds to 1000 moves up a unit, so 999.6k prints as 1.00M.
+ */
+function tiered(value: number, units: ReadonlyArray<string>): string {
+  let mantissa = value
+  let index = 0
+  while (mantissa >= 999.5 && index < units.length - 1) {
+    mantissa /= 1000
+    index += 1
+  }
+  return `${threeSignificant(mantissa)}${units[index]}`
+}
+
+/**
+ * The spend figure on the popover card. The precision follows the size:
+ * cents under $100, whole dollars with separators to $99,999, then k and M
+ * at three significant figures. The figure carries no prefix. The caption
+ * and the section title say that the cost is an estimate.
+ *
+ * `formatCost` stays as it is for the session surfaces that share it.
+ */
+export function formatSpendFigure(usd: number): string {
+  if (!Number.isFinite(usd) || usd <= 0) return "$0.00"
+  if (usd < 0.005) return "<$0.01"
+  if (usd < 99.995) return `$${usd.toFixed(2)}`
+  if (usd < 99_999.5) return `$${Math.round(usd).toLocaleString("en-US")}`
+  return `$${tiered(usd / 1000, ["k", "M", "B"])}`
+}
+
+/**
+ * The token figure on the popover card: digits to 999, then k, M, B and T at
+ * three significant figures. Every scaled count is five characters wide.
+ */
+export function formatTokenFigure(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens < 1000) return `${Math.max(0, Math.round(tokens))}`
+  return tiered(tokens, ["", "k", "M", "B", "T"])
+}
+
 /** A local cost followed by its token count, when the cost is available. */
 export function usageMetricLabel(window: ProviderUsageWindowPayload): string {
   const tokens = windowTokens(window)
