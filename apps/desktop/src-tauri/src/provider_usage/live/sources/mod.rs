@@ -98,6 +98,12 @@ pub fn collect(
         }
         let outcome = source.fetch(max_age);
         if let Some(error) = outcome.error {
+            ::tracing::warn!(
+                event = "live_source_failed",
+                source = source.id(),
+                provider = source.provider(),
+                category = error.category()
+            );
             collected.errors.push(SourceFailure {
                 source: source.id(),
                 provider: source.provider(),
