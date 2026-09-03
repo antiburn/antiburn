@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// Contains only the ratified v1 discovery agents. Serialization uses the
 /// stable kebab-case slug (e.g. `"claude-code"`, `"amp-code"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// `Ord` gives a stable order for a `BTreeSet<AgentKind>`, which the scoped
+/// scan passes use to keep a burst's admitted agents deterministic (phase 5b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum AgentKind {
     #[serde(rename = "claude-code")]
     Claude,

@@ -30,13 +30,22 @@
 //!   waits out a tick behind a missed event.
 //! - **On demand**, from the rescan control and after any change to the source
 //!   selection.
-//! - **Shortly after a watched file changes.** [`watch::spawn_watcher`] starts
-//!   an OS filesystem watcher over every agent's watch roots
-//!   (`AgentExplorer::watch_roots`), debounces the events it sees, and
-//!   requests a pass after a quiet period — see the `watch` module doc for
-//!   the debounce shape. [`TICK`] stays as reconciliation for what the
-//!   watcher cannot cover (a root the OS refuses to watch, a change the
-//!   debounce window swallowed). When the watcher is not fully healthy the
+//! - **Shortly after a watched file changes — narrowly, not as a full pass.**
+//!   [`watch::spawn_watcher`] starts an OS filesystem watcher over every
+//!   agent's watch roots (`AgentExplorer::watch_roots`), debounces the events
+//!   it sees, and hands the scheduler's loop one [`watch::WatchBurst`] after
+//!   each quiet period — see the `watch` module doc for the debounce shape.
+//!   The `scoped` module classifies that burst into up to three lanes: a
+//!   known session refreshed directly with no discovery walk, a plain
+//!   agent rediscovered on its own, or a database-backed agent rediscovered
+//!   at a longer floor because every write near its store looks like a new
+//!   session. Each lane has its own minimum re-run interval, and a burst
+//!   that arrives inside one is folded into the next admitted run rather
+//!   than dropped — see the `scoped` module doc for the full contract.
+//!   [`TICK`] stays as reconciliation for what the watcher cannot cover (a
+//!   root the OS refuses to watch, a change the debounce window swallowed),
+//!   and it runs a full pass, which supersedes any scoped work still
+//!   waiting on its floor. When the watcher is not fully healthy the
 //!   scheduler ticks at [`watch::FALLBACK_TICK`] instead, so polling alone
 //!   still finds new sessions at a reasonable cadence.
 //!
@@ -72,7 +81,7 @@
 //! scheduler is a single handle the app aborts on exit, so nothing outlives
 //! the process.
 
-use std::path::PathBuf;
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -97,6 +106,7 @@ use crate::storage_health::{self, checked};
 use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
 pub mod idle;
+pub mod scoped;
 pub mod watch;
 
 /// How often the scheduler wakes up.
@@ -124,15 +134,15 @@ pub enum ScanTrigger {
     Launch,
     /// The scheduler's unconditional [`TICK`].
     Tick,
-    /// A filesystem change the watcher's debouncer coalesced into one burst.
-    Watcher {
-        /// Relevant events folded into the burst, including any past the
-        /// stored path sample's bound.
-        events: usize,
-        /// The burst's deduplicated paths, in first-seen order, bounded at a
-        /// fixed constant — see [`watch::WatchBurst`].
-        paths: Vec<PathBuf>,
+    /// T3/T5: a burst named one or more agents to rediscover, with no full
+    /// discovery walk over the rest.
+    WatcherAgents {
+        /// The rediscovered agents' slugs, for the log line.
+        agents: Vec<&'static str>,
     },
+    /// A burst reached [`watch::MAX_BURST_PATHS`] and may have dropped
+    /// paths, so only a full pass can be sure to cover it.
+    WatcherOverflow,
     /// The popover reached the screen.
     PopoverShown,
     /// A settings save that finished onboarding, widened the activity
@@ -158,7 +168,8 @@ impl ScanTrigger {
         match self {
             ScanTrigger::Launch => "launch",
             ScanTrigger::Tick => "tick",
-            ScanTrigger::Watcher { .. } => "watcher",
+            ScanTrigger::WatcherAgents { .. } => "watcher_agents",
+            ScanTrigger::WatcherOverflow => "watcher_overflow",
             ScanTrigger::PopoverShown => "popover_shown",
             ScanTrigger::SettingsTransition => "settings_transition",
             ScanTrigger::InsightsPane => "insights_pane",
@@ -169,6 +180,18 @@ impl ScanTrigger {
             ScanTrigger::ManualRescan => "manual_rescan",
         }
     }
+}
+
+/// What one pass discovers: every agent, or only a burst-named subset.
+///
+/// T3/T5: an agent-scoped pass reuses [`run_pass`] and [`pass`] wholesale —
+/// same status machinery, same events — so the only thing it changes is which
+/// agents discovery asks and which agents' rows the upsert and per-agent scan
+/// bookkeeping touch.
+#[derive(Debug, Clone)]
+pub enum PassScope {
+    Full,
+    Agents(BTreeSet<AgentKind>),
 }
 
 /// The scheduler's shared state, registered as Tauri managed state.
@@ -184,6 +207,11 @@ pub struct ScanController {
     /// rather than queued, because the waiting request already covers
     /// "scan again soon".
     pending_trigger: Mutex<Option<ScanTrigger>>,
+    /// Watcher bursts waiting for the scheduler loop to classify them. A
+    /// `Vec` rather than a channel: the scheduler drains every burst at once
+    /// per wake, and classification needs the whole batch together to fold
+    /// correctly into one [`scoped::ScopedWork`] (T7).
+    burst_inbox: Mutex<Vec<watch::WatchBurst>>,
 }
 
 impl ScanController {
@@ -217,6 +245,28 @@ impl ScanController {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
+    }
+
+    /// Hand the scheduler loop a debounced burst, and wake it. Called from
+    /// the watcher's own task, not the scheduler's, so this only queues the
+    /// burst — classification and admission happen on the scheduler's loop.
+    fn push_burst(&self, burst: watch::WatchBurst) {
+        self.burst_inbox
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(burst);
+        self.kick.notify_one();
+    }
+
+    /// Take every burst queued since the last drain, for the scheduler to
+    /// classify together.
+    fn take_bursts(&self) -> Vec<watch::WatchBurst> {
+        std::mem::take(
+            &mut self
+                .burst_inbox
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 
     /// Ask the pass in flight to stop at its next phase boundary.
@@ -259,6 +309,16 @@ pub(crate) fn on_demand_start(controller: &ScanController) -> bool {
     true
 }
 
+/// Which `tokio::select!` arm woke the scheduler loop. The loop needs to
+/// tell its own unconditional [`TICK`] apart from a burst-triggered or
+/// retry-triggered wake, since only the tick (or an explicit request) runs a
+/// full pass; a plain burst or retry wake only advances scoped work.
+enum Wake {
+    Kick,
+    Tick,
+    Deferred,
+}
+
 /// Start the scheduler. The returned handle is aborted when the app exits.
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
@@ -269,28 +329,190 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         let tick = tick_for(&watch::spawn_watcher(&app));
         // A fresh install has nothing to scan until the reader picks sources.
         if scheduled_scanning_allowed(&app) {
-            run_pass(&app, None, ScanTrigger::Launch).await;
+            run_pass(&app, None, ScanTrigger::Launch, PassScope::Full).await;
         }
+
+        // T1-T7: the backlog a watcher burst can answer without a full
+        // discovery walk. `pending_work` is floor-gated (T2/T4/T5, T7);
+        // `retry_work` already cleared its floor but found a command's pass
+        // running, and is retried directly at `scoped::SCOPED_RETRY` — see
+        // the `scoped` module doc.
+        let mut floors = scoped::Floors::default();
+        let mut pending_work = scoped::ScopedWork::default();
+        let mut retry_work = scoped::ScopedWork::default();
+        let mut deferred_due: Option<tokio::time::Instant> = None;
+        // The tick is a fixed deadline, not a sleep restarted on every
+        // wake. A scoped wake every few seconds must not push the
+        // reconciliation pass back forever.
+        let mut next_tick = tokio::time::Instant::now() + tick;
+
         loop {
             let controller = app.state::<ScanController>();
-            tokio::select! {
-                () = controller.kick.notified() => {}
-                () = tokio::time::sleep(tick) => {}
+            let woke = tokio::select! {
+                () = controller.kick.notified() => Wake::Kick,
+                () = tokio::time::sleep_until(next_tick) => Wake::Tick,
+                () = sleep_until_due(deferred_due) => Wake::Deferred,
+            };
+            if matches!(woke, Wake::Tick) {
+                next_tick = tokio::time::Instant::now() + tick;
             }
             // Checked after the wake-up rather than before the wait, so
             // resuming discovery takes effect at the next request or tick
             // instead of needing the app restarted.
             if !scheduled_scanning_allowed(&app) {
+                let dropped = controller.take_bursts();
+                if !dropped.is_empty() {
+                    ::tracing::debug!(
+                        event = "scan_bursts_dropped_while_paused",
+                        bursts = dropped.len(),
+                    );
+                }
+                // `Floors` keeps real last-run timestamps, so admission
+                // recomputes correct due times once scanning resumes. A
+                // stale `deferred_due` left set here would otherwise wake
+                // this loop again immediately, on every iteration, for as
+                // long as discovery stays paused.
+                deferred_due = None;
                 continue;
             }
-            // A trigger is pending unless this woke from the sleep arm with
-            // nothing requested, which is the unconditional tick itself.
-            let trigger = controller
-                .take_pending_trigger()
-                .unwrap_or(ScanTrigger::Tick);
-            run_pass(&app, None, trigger).await;
+
+            // Fold in any bursts queued since the last wake before deciding
+            // what runs: a full pass below covers them for free, and a
+            // scoped wake needs them for admission.
+            let bursts = controller.take_bursts();
+            let mut overflowed = false;
+            if !bursts.is_empty() {
+                let home = home_dir().unwrap_or_default();
+                let store = app.state::<Store>();
+                for burst in bursts {
+                    // A burst at the path bound may have dropped paths, so a
+                    // scoped pass could miss one. Only a full pass is safe.
+                    if burst.paths.len() >= watch::MAX_BURST_PATHS {
+                        ::tracing::debug!(
+                            event = "scan_burst_overflowed",
+                            events = burst.events,
+                            path_count = burst.paths.len(),
+                        );
+                        overflowed = true;
+                        continue;
+                    }
+                    let work = scoped::classify_burst(&burst.paths, &home, &|label: &str| {
+                        store
+                            .session_record_by_source_label(label)
+                            .ok()
+                            .flatten()
+                            .map(|(key, _)| key)
+                    });
+                    pending_work.merge(work);
+                }
+            }
+
+            // A trigger is pending unless this woke from the tick's own
+            // sleep arm with nothing requested. Either way a full pass
+            // supersedes every floor-gated or retrying scoped item: it
+            // re-describes everything they would have, so their floors are
+            // stamped as satisfied rather than left to run again soon.
+            let full_trigger = controller.take_pending_trigger();
+            if full_trigger.is_some() || overflowed || matches!(woke, Wake::Tick) {
+                let trigger = full_trigger.unwrap_or(if overflowed {
+                    ScanTrigger::WatcherOverflow
+                } else {
+                    ScanTrigger::Tick
+                });
+                run_pass(&app, None, trigger, PassScope::Full).await;
+                let now = tokio::time::Instant::now();
+                floors.stamp(&pending_work, now);
+                floors.stamp(&retry_work, now);
+                pending_work = scoped::ScopedWork::default();
+                retry_work = scoped::ScopedWork::default();
+                deferred_due = None;
+                // A full pass just ran, so the next tick can wait a whole
+                // interval.
+                next_tick = now + tick;
+                continue;
+            }
+
+            // T7: retry work a prior admission already stamped as run, but
+            // that found a command's pass in the way, before admitting more
+            // — it does not need to clear its floor again, only wait for
+            // the pass that was busy.
+            if !retry_work.is_empty() {
+                retry_work = run_admitted_work(&app, std::mem::take(&mut retry_work)).await;
+            }
+
+            let now = tokio::time::Instant::now();
+            let (run_now, deferred, earliest_due) =
+                floors.admit(std::mem::take(&mut pending_work), now);
+            pending_work = deferred;
+            if !run_now.is_empty() {
+                let busy = run_admitted_work(&app, run_now).await;
+                retry_work.merge(busy);
+            }
+
+            deferred_due = match (earliest_due, retry_work.is_empty()) {
+                (Some(due), true) => Some(due),
+                (Some(due), false) => Some(due.min(now + scoped::SCOPED_RETRY)),
+                (None, true) => None,
+                (None, false) => Some(now + scoped::SCOPED_RETRY),
+            };
         }
     })
+}
+
+/// Sleep until `due`, or forever when nothing is due. A `tokio::select!` arm
+/// with nothing pending must never fire, so this never resolves on `None`
+/// rather than resolving immediately.
+async fn sleep_until_due(due: Option<tokio::time::Instant>) {
+    match due {
+        Some(instant) => tokio::time::sleep_until(instant).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Run one wake's admitted [`scoped::ScopedWork`]: [`scoped::refresh_sessions`]
+/// for the sessions (T1), [`scoped::rediscover_agents`] for the plain and
+/// database-backed agents together (T3/T5) — both floors lead to the same
+/// rediscovery call, so one combined set avoids running it twice. Returns the
+/// part that found a command's pass already running, for the caller to retry
+/// (T7) without re-admitting it through [`scoped::Floors`].
+async fn run_admitted_work(app: &AppHandle, work: scoped::ScopedWork) -> scoped::ScopedWork {
+    let mut busy = scoped::ScopedWork::default();
+
+    if !work.sessions.is_empty() {
+        match scoped::refresh_sessions(app, &work.sessions).await {
+            Ok(Some(summary)) => {
+                ::tracing::debug!(
+                    event = "scan_targeted_admitted",
+                    sessions = work.sessions.len(),
+                    re_described = summary.re_described,
+                );
+            }
+            Ok(None) => busy.sessions = work.sessions,
+            Err(error) => {
+                ::tracing::debug!(event = "scan_targeted_failed", error = %error);
+            }
+        }
+    }
+
+    let rediscover: BTreeSet<AgentKind> = work
+        .agents
+        .iter()
+        .chain(work.db_agents.iter())
+        .copied()
+        .collect();
+    if !rediscover.is_empty() {
+        let labels: Vec<&'static str> = rediscover.iter().map(|agent| agent.slug()).collect();
+        let trigger = ScanTrigger::WatcherAgents { agents: labels };
+        if scoped::rediscover_agents(app, &rediscover, trigger)
+            .await
+            .is_none()
+        {
+            busy.agents = work.agents;
+            busy.db_agents = work.db_agents;
+        }
+    }
+
+    busy
 }
 
 /// The scheduler's fixed poll interval for this run, chosen once from the
@@ -324,7 +546,24 @@ pub async fn run_pass(
     app: &AppHandle,
     activity_window_days: Option<u32>,
     trigger: ScanTrigger,
+    scope: PassScope,
 ) -> ScanStatus {
+    try_run_pass(app, activity_window_days, trigger, scope)
+        .await
+        .unwrap_or_else(|| app.state::<ScanController>().status())
+}
+
+/// [`run_pass`]'s body, returning `None` rather than a stale status when
+/// [`on_demand_start`] finds one already running. The scoped lanes in
+/// `scoped.rs` use this directly to tell "ran" from "skipped, retry soon"
+/// (T7) — a distinction [`run_pass`]'s callers do not need, since they always
+/// treat "already running" as "nothing more to do here".
+pub(crate) async fn try_run_pass(
+    app: &AppHandle,
+    activity_window_days: Option<u32>,
+    trigger: ScanTrigger,
+    scope: PassScope,
+) -> Option<ScanStatus> {
     log_scan_pass_requested(&trigger);
     {
         let controller = app.state::<ScanController>();
@@ -334,7 +573,7 @@ pub async fn run_pass(
             // the tick. Logging the trigger turns that into a visible stream
             // of drops instead.
             ::tracing::debug!(event = "scan_request_dropped", trigger = trigger.label());
-            return controller.status();
+            return None;
         }
         let started = controller.update(|status| {
             status.running = true;
@@ -354,7 +593,7 @@ pub async fn run_pass(
     let announce = move |entry: ActivityEntry| {
         let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
     };
-    let outcome = pass(app, activity_window_days, &announce).await;
+    let outcome = pass(app, activity_window_days, &scope, &announce).await;
 
     let controller = app.state::<ScanController>();
     let cancelled = controller.cancelled();
@@ -419,7 +658,7 @@ pub async fn run_pass(
         outcome.as_ref().ok().map(|summary| summary.sessions as u64),
     );
     crate::notifications::note_scan_outcome(app, &finished);
-    finished
+    Some(finished)
 }
 
 /// Log `scan_pass_requested`. Every call to [`run_pass`] gets one, whether it
@@ -429,19 +668,12 @@ pub async fn run_pass(
 /// picked up (see [`ScanController::request`]).
 fn log_scan_pass_requested(trigger: &ScanTrigger) {
     match trigger {
-        ScanTrigger::Watcher { events, paths } => {
-            let sample = paths
-                .iter()
-                .take(8)
-                .map(|path| path.to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(",");
+        ScanTrigger::WatcherAgents { agents } => {
             ::tracing::debug!(
                 event = "scan_pass_requested",
                 trigger = trigger.label(),
-                events,
-                paths = %sample,
-                path_count = paths.len(),
+                agents = %agents.join(","),
+                agent_count = agents.len(),
             );
         }
         other => {
@@ -464,9 +696,14 @@ struct PassSummary {
 
 /// The body of one pass. Split out so [`run_pass`] owns only the in-flight
 /// bookkeeping and the events.
+///
+/// `scope` narrows discovery, the upsert's evidence cohort, and per-agent
+/// scan bookkeeping to a burst-named subset of agents (T3/T5); everything
+/// else runs exactly as a full pass. See [`PassScope`].
 async fn pass(
     app: &AppHandle,
     _activity_window_days: Option<u32>,
+    scope: &PassScope,
     announce: &(dyn Fn(ActivityEntry) + Send + Sync),
 ) -> anyhow::Result<PassSummary> {
     let store = app.state::<Store>();
@@ -479,45 +716,66 @@ async fn pass(
     let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
     let home = home_dir().unwrap_or_default();
 
-    let progress_app = app.clone();
-    let logs = Explorers::DISK
-        .discover_recent_sessions_with_progress(
-            now,
-            since_secs,
-            move |agent, found, completed, total| {
-                let controller = progress_app.state::<ScanController>();
-                let status = controller.update(|status| {
-                    status.completed_agents = completed;
-                    status.total_agents = total;
-                    status.sessions += found;
-                });
-                let _ = progress_app.emit(EVENT_PROGRESS, status);
-                let _ = agent;
-            },
-        )
-        .await;
+    let logs = match scope {
+        PassScope::Full => {
+            let progress_app = app.clone();
+            Explorers::DISK
+                .discover_recent_sessions_with_progress(
+                    now,
+                    since_secs,
+                    move |agent, found, completed, total| {
+                        let controller = progress_app.state::<ScanController>();
+                        let status = controller.update(|status| {
+                            status.completed_agents = completed;
+                            status.total_agents = total;
+                            status.sessions += found;
+                        });
+                        let _ = progress_app.emit(EVENT_PROGRESS, status);
+                        let _ = agent;
+                    },
+                )
+                .await
+        }
+        PassScope::Agents(agents) => discover_scoped_agents(app, agents, now, since_secs).await,
+    };
 
     let previous_records = store.session_records()?;
+    let scoped_previous_records;
+    let previous_records_for_pass = match scope {
+        PassScope::Full => &previous_records,
+        PassScope::Agents(agents) => {
+            scoped_previous_records = previous_records
+                .iter()
+                .filter(|(key, _)| agents.iter().any(|agent| agent.slug() == key.agent))
+                .map(|(key, record)| (key.clone(), record.clone()))
+                .collect();
+            &scoped_previous_records
+        }
+    };
     let Described {
         records,
         rejected,
         changed,
         list_changed,
-    } = describe_with_states(logs, &home, &ignored, &previous_records).await;
+    } = describe_with_states(logs, &home, &ignored, previous_records_for_pass).await;
+    let evidence_agents: Vec<&str> = match scope {
+        PassScope::Full => agents::evidence_cohort(),
+        PassScope::Agents(agents) => agents.iter().map(|agent| agent.slug()).collect(),
+    };
     // Every write below is routed through the storage-health check, so a
     // database that has stopped accepting writes becomes a banner in the
     // popover rather than a list that silently stops changing.
     checked(
         app,
         "The session index",
-        store.upsert_sessions(&records, &agents::evidence_cohort()),
+        store.upsert_sessions(&records, &evidence_agents),
     )?;
     crate::insights_worker::wake(app);
     // A write may have added a session the idle task was not yet watching,
     // or moved one's deadline later; either way its sleep needs recomputing.
     idle::wake(app);
 
-    announce_changed_rows(&store, &changed, &previous_records, now, announce);
+    announce_changed_rows(&store, &changed, previous_records_for_pass, now, announce);
 
     // A transcript the gate rejected may have been indexed by an earlier
     // version of the app that did not gate; the row is removed rather than
@@ -530,6 +788,8 @@ async fn pass(
         )?;
     }
 
+    // `records` already holds only the scoped agents' sessions when `scope`
+    // is [`PassScope::Agents`], since discovery itself was scoped.
     for (agent, seen, cursor) in per_agent_totals(&records) {
         checked(
             app,
@@ -549,13 +809,51 @@ async fn pass(
         });
     }
 
-    repositories::refresh(app).await?;
+    // A full pass always refreshes the repository list. An agent-scoped pass
+    // only pays for it when a session's arrival or eviction could plausibly
+    // have introduced a new cwd.
+    if matches!(scope, PassScope::Full) || list_changed {
+        repositories::refresh(app).await?;
+    }
 
     Ok(PassSummary {
         sessions: records.len(),
         list_changed,
         re_described: changed.len(),
     })
+}
+
+/// [`PassScope::Agents`]'s discovery: only the named agents, concurrently,
+/// with no WSL file-session walk — WSL sessions are a full-pass concern; a
+/// scoped pass exists because a native watch root fired.
+async fn discover_scoped_agents(
+    app: &AppHandle,
+    agents: &BTreeSet<AgentKind>,
+    now: i64,
+    since_secs: i64,
+) -> Vec<SessionLog> {
+    let mut set = JoinSet::new();
+    for agent in agents {
+        let explorer = Explorers::DISK.get(agent);
+        set.spawn(async move { explorer.discover_recent(now, since_secs).await });
+    }
+    let total = agents.len();
+    let mut completed = 0;
+    let mut logs = Vec::new();
+    while let Some(result) = set.join_next().await {
+        completed += 1;
+        if let Ok(found) = result {
+            let controller = app.state::<ScanController>();
+            let status = controller.update(|status| {
+                status.completed_agents = completed;
+                status.total_agents = total;
+                status.sessions += found.len();
+            });
+            let _ = app.emit(EVENT_PROGRESS, status);
+            logs.extend(found);
+        }
+    }
+    logs
 }
 
 /// Emit `SESSION_ENTRY_CHANGED_EVENT` for every re-described row the reader's

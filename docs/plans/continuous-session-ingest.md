@@ -288,7 +288,7 @@ Goal: layer 1 is continuous and cheap, and every consumer reads one signal.
   `get_session_analysis_fingerprint` command, `poll_fingerprint_with_subagents`,
   and their tests are deleted along with the poll.
 
-### Phase 5: scoped passes (in progress)
+### Phase 5: scoped passes (5a and 5c merged 2026-09-03; 5b in review)
 
 Goal: a watcher event costs work proportional to what changed, not a
 whole-machine pass. Found on 2026-09-03 after phase 4 had run for a day:
@@ -411,6 +411,9 @@ scheduler task, so passes never overlap and the store sees one writer.
 - Default cadences are set in phase 4 and reviewed after a week of use.
 - Phase 5a stands alone. 5b stacks on 5a (it consumes the burst paths 5a
   passes through). 5c's two items are independent of each other and of 5b.
+- 5b keeps the tick as a fixed deadline that only a full pass resets, so
+  scoped wakes every few seconds cannot starve reconciliation. A burst at
+  the watcher's path bound forces a full pass, since paths were dropped.
 
 ## Follow-ups
 
