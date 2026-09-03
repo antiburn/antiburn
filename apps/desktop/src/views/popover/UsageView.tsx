@@ -25,7 +25,9 @@ import { isMacOS } from "../../lib/platform"
 import {
   liveAuthNote,
   liveErrorNote,
+  liveGraceNote,
   livePlanLabel,
+  liveProviderStatus,
   liveWindows,
   orderedLiveAccounts,
 } from "../../lib/presentation/liveUsage"
@@ -331,8 +333,20 @@ export function UsageView({
           </p>
         ) : (
           <>
-            <UsageSection title="Recently used" cards={recent} now={at} showTitle={!embedded} />
-            <UsageSection title="All detected" cards={rest} now={at} showTitle={!embedded} />
+            <UsageSection
+              title="Recently used"
+              cards={recent}
+              now={at}
+              generatedAt={live.generatedAt}
+              showTitle={!embedded}
+            />
+            <UsageSection
+              title="All detected"
+              cards={rest}
+              now={at}
+              generatedAt={live.generatedAt}
+              showTitle={!embedded}
+            />
           </>
         )}
       </ScrollPane>
@@ -369,11 +383,14 @@ function UsageSection({
   title,
   cards,
   now,
+  generatedAt,
   showTitle,
 }: {
   title: string
   cards: readonly UsageCardEntry[]
   now: number
+  /** The snapshot's own moment, for measuring a grace-period reading's age. */
+  generatedAt: string
   showTitle: boolean
 }) {
   if (cards.length === 0) return null
@@ -386,7 +403,7 @@ function UsageSection({
       )}
       <ul className="space-y-2">
         {cards.map(({ key, ...card }) => (
-          <ProviderCard key={key} {...card} now={now} />
+          <ProviderCard key={key} {...card} now={now} generatedAt={generatedAt} />
         ))}
       </ul>
     </section>
@@ -398,13 +415,22 @@ function ProviderCard({
   live,
   errors,
   now,
+  generatedAt,
 }: {
   local: readonly ProviderUsagePayload[]
   live: readonly LiveProviderUsagePayload[]
   errors: readonly LiveUsageSourceErrorPayload[]
   now: number
+  /** The snapshot's own moment, for measuring a grace-period reading's age. */
+  generatedAt: string
 }) {
-  const accounts = orderedLiveAccounts(live)
+  // A reading whose status is `failed` is dropped here, the same as the
+  // cold-start case where no reading arrived at all: its matching local
+  // usage, if any, falls through to `unmatchedLocal` below, and its error
+  // keeps the orange note rather than the grace note.
+  const accounts = orderedLiveAccounts(live).filter(
+    ({ reading }) => liveProviderStatus({ errors, generatedAt }, reading).kind !== "failed",
+  )
   const shownLocal = simplifiedLocalUsage(
     local,
     accounts.map(({ reading }) => reading),
@@ -525,6 +551,11 @@ function ProviderCard({
                   : "Unassigned account"
                 : undefined
             const primaryWindow = liveWindows(reading)[0]
+            const status = liveProviderStatus({ errors, generatedAt }, reading)
+            const graceNote =
+              status.kind === "grace"
+                ? liveGraceNote(status.category, reading.provider, status.ageMs)
+                : null
             return (
               <div key={key} className="space-y-1.5">
                 <LiveUsageDetail
@@ -534,6 +565,7 @@ function ProviderCard({
                   showRunway={!matchingLocal}
                   {...(accountLabel ? { accountLabel } : {})}
                 />
+                {graceNote && <p className="type-caption text-label-tertiary">{graceNote}</p>}
                 {matchingLocal && (
                   <LocalUsageDetail
                     provider={matchingLocal}
@@ -545,15 +577,28 @@ function ProviderCard({
             )
           })}
 
-          {errors.map((error, index) => (
-            <p
-              key={`${error.source}:${index}`}
-              role="status"
-              className="rounded-control bg-system-orange/10 px-2 py-1.5 type-caption text-system-orange"
-            >
-              {liveErrorNote(error.category, error.provider)}
-            </p>
-          ))}
+          {/* A provider in grace already carries its explanation as the note
+              above, directly under its reading — not as a second, orange one
+              here. A failed or reading-less provider's error keeps this
+              note, which is the only trace of the failure it has. */}
+          {errors
+            .filter(
+              (error) =>
+                !accounts.some(
+                  ({ reading }) =>
+                    reading.provider === error.provider &&
+                    liveProviderStatus({ errors, generatedAt }, reading).kind === "grace",
+                ),
+            )
+            .map((error, index) => (
+              <p
+                key={`${error.source}:${index}`}
+                role="status"
+                className="rounded-control bg-system-orange/10 px-2 py-1.5 type-caption text-system-orange"
+              >
+                {liveErrorNote(error.category, error.provider)}
+              </p>
+            ))}
 
           {unmatchedLocal.map((entry) => {
             const key = entry.accountKey

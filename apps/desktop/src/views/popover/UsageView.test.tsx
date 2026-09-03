@@ -1113,6 +1113,93 @@ describe("UsageView — plan limits layered over local estimates", () => {
   })
 })
 
+describe("UsageView — the grace period", () => {
+  function withGracedReading(observedAt: string) {
+    return live({
+      providers: [{ ...liveProvider(), observedAt }],
+      errors: [
+        {
+          source: "claude-usage-fetch",
+          provider: "anthropic",
+          displayName: "Claude",
+          category: "rateLimited",
+        },
+      ],
+    })
+  }
+
+  it("shows the reading and a grace note instead of the orange failure note", () => {
+    // 4 minutes before `live()`'s generatedAt of 12:00:00Z.
+    render(
+      <UsageView
+        summary={summary()}
+        live={withGracedReading("2027-01-15T11:56:00Z")}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    const card = screen.getByText("Anthropic").closest("li")!
+    expect(
+      within(card).getByRole("region", { name: "Anthropic plan limits" }),
+    ).toBeInTheDocument()
+    expect(
+      within(card).getByText("Claude rate limited the last check; reading from 4 min ago."),
+    ).toBeInTheDocument()
+    expect(within(card).queryByRole("status")).not.toBeInTheDocument()
+  })
+
+  it("hides a reading past its grace period and keeps the orange failure note", () => {
+    // 11 minutes before `live()`'s generatedAt of 12:00:00Z.
+    render(
+      <UsageView
+        summary={summary()}
+        live={withGracedReading("2027-01-15T11:49:00Z")}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    const card = screen.getByText("Anthropic").closest("li")!
+    expect(
+      within(card).queryByRole("region", { name: "Anthropic plan limits" }),
+    ).not.toBeInTheDocument()
+    expect(within(card).getByRole("status")).toHaveTextContent(
+      "Claude rate limited usage checks. Wait, then retry.",
+    )
+  })
+
+  it("reads exactly the grace boundary as still shown", () => {
+    // Exactly 10 minutes before `live()`'s generatedAt — LIVE_USAGE_GRACE_MS
+    // itself.
+    render(
+      <UsageView
+        summary={summary()}
+        live={withGracedReading("2027-01-15T11:50:00Z")}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    const card = screen.getByText("Anthropic").closest("li")!
+    expect(
+      within(card).getByRole("region", { name: "Anthropic plan limits" }),
+    ).toBeInTheDocument()
+    expect(within(card).queryByRole("status")).not.toBeInTheDocument()
+  })
+
+  it("changes nothing about a live reading with no error", () => {
+    render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />)
+
+    const card = screen.getByText("Anthropic").closest("li")!
+    expect(
+      within(card).getByRole("region", { name: "Anthropic plan limits" }),
+    ).toBeInTheDocument()
+    expect(within(card).queryByRole("status")).not.toBeInTheDocument()
+    expect(within(card).queryByText(/rate limited/)).not.toBeInTheDocument()
+  })
+})
+
 describe("UsageView — what history says about a limit", () => {
   const withForecast = (overrides: Partial<LiveUsageForecastPayload>) =>
     live({

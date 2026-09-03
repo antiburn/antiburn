@@ -9,10 +9,14 @@ import type {
 } from "../ipc"
 import {
   liveAuthNote,
+  liveDisplayableProviders,
   liveErrorNote,
   liveExtraUsageLabel,
   liveForProvider,
   liveFreshnessToneClass,
+  liveGraceNote,
+  LIVE_USAGE_GRACE_MS,
+  liveProviderStatus,
   liveResetLabel,
   liveSourceNote,
   liveStalenessNote,
@@ -718,6 +722,87 @@ describe("the failure surface", () => {
     )
     expect(liveErrorNote("unavailable", "google")).toBe(
       "Google usage is unavailable. Check your connection, then retry.",
+    )
+  })
+})
+
+describe("the grace period", () => {
+  const GENERATED_AT = "2027-01-15T12:00:00Z"
+
+  it("stands in for a live reading within the grace window", () => {
+    // 4 minutes old.
+    const reading = provider({ observedAt: "2027-01-15T11:56:00Z" })
+    const status = liveProviderStatus(
+      { errors: [sourceError()], generatedAt: GENERATED_AT },
+      reading,
+    )
+    expect(status).toEqual({ kind: "grace", category: "rateLimited", ageMs: 4 * 60_000 })
+  })
+
+  it("drops the reading once it is older than the grace window", () => {
+    // 11 minutes old.
+    const reading = provider({ observedAt: "2027-01-15T11:49:00Z" })
+    const status = liveProviderStatus(
+      { errors: [sourceError()], generatedAt: GENERATED_AT },
+      reading,
+    )
+    expect(status).toEqual({ kind: "failed", category: "rateLimited" })
+  })
+
+  it("reads exactly the grace boundary as still grace", () => {
+    // Exactly 10 minutes old — LIVE_USAGE_GRACE_MS itself.
+    const reading = provider({ observedAt: "2027-01-15T11:50:00Z" })
+    const status = liveProviderStatus(
+      { errors: [sourceError()], generatedAt: GENERATED_AT },
+      reading,
+    )
+    expect(status.kind).toBe("grace")
+    expect(status.kind === "grace" && status.ageMs).toBe(LIVE_USAGE_GRACE_MS)
+  })
+
+  it("is live when the provider has no error", () => {
+    const reading = provider()
+    expect(liveProviderStatus({ errors: [], generatedAt: GENERATED_AT }, reading)).toEqual({
+      kind: "live",
+    })
+  })
+
+  it("keeps a graced reading visible and out of the unavailable list", () => {
+    const reading = provider({ observedAt: "2027-01-15T11:56:00Z" })
+    const graced = summary({
+      providers: [reading],
+      errors: [sourceError()],
+      generatedAt: GENERATED_AT,
+    })
+    expect(liveDisplayableProviders(graced)).toEqual([reading])
+    expect(liveUnavailableProviders(graced)).toEqual([])
+  })
+
+  it("drops a failed reading from the displayable list and lists it as unavailable", () => {
+    const reading = provider({ observedAt: "2027-01-15T11:49:00Z" })
+    const failed = summary({
+      providers: [reading],
+      errors: [sourceError()],
+      generatedAt: GENERATED_AT,
+    })
+    expect(liveDisplayableProviders(failed)).toEqual([])
+    expect(liveUnavailableProviders(failed)).toEqual([
+      { provider: "anthropic", displayName: "Claude", category: "rateLimited" },
+    ])
+  })
+
+  it("phrases the grace note per category, and the age in words", () => {
+    expect(liveGraceNote("rateLimited", "anthropic", 4 * 60_000)).toBe(
+      "Claude rate limited the last check; reading from 4 min ago.",
+    )
+    expect(liveGraceNote("authentication", "google", 30_000)).toBe(
+      "Google rejected the sign-in on the last check; reading from under 1 min ago.",
+    )
+    expect(liveGraceNote("schema", "openai", 9 * 60_000)).toBe(
+      "Codex sent an unreadable reply; reading from 9 min ago.",
+    )
+    expect(liveGraceNote("unavailable", undefined, 60_000)).toBe(
+      "Your provider didn't answer the last check; reading from 1 min ago.",
     )
   })
 })

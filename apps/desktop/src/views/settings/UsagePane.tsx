@@ -17,7 +17,13 @@ import {
 } from "../../lib/ipc"
 import { HudVisibilitySession } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
-import { liveErrorNote, liveSourceNote } from "../../lib/presentation/liveUsage"
+import {
+  liveDisplayableProviders,
+  liveErrorNote,
+  liveGraceNote,
+  liveProviderStatus,
+  liveSourceNote,
+} from "../../lib/presentation/liveUsage"
 import type { AppSettingsController } from "./useAppSettings"
 
 /**
@@ -128,7 +134,7 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
       <SectionGroup title="Show Meter">
         <Card>
           {meters.map((meter) => {
-            const reading = live.providers.find(
+            const reading = liveDisplayableProviders(live).find(
               (provider) => provider.provider === meter.provider,
             )
             const failure = live.errors.find((error) => error.provider === meter.provider)
@@ -143,6 +149,7 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
                   reading,
                   failure,
                   name: meter.displayName,
+                  generatedAt: live.generatedAt,
                 })}
                 dimmed={!on}
                 trailing={
@@ -215,12 +222,15 @@ function meterNote({
   reading,
   failure,
   name,
+  generatedAt,
 }: {
   shown: boolean
   on: boolean
   reading: LiveUsageSummaryPayload["providers"][number] | undefined
   failure: LiveUsageSummaryPayload["errors"][number] | undefined
   name: string
+  /** The snapshot's own moment, for measuring a grace-period reading's age. */
+  generatedAt: string
 }): string {
   if (!shown) {
     return `antiburn does not ask ${name} for usage, and ${name} milestone notifications do not fire.`
@@ -237,7 +247,18 @@ function meterNote({
       } reported.`,
     )
   }
-  if (failure) parts.push(liveErrorNote(failure.category))
+  if (failure) {
+    // `reading` here has already dropped a `failed` status — see
+    // `liveDisplayableProviders` above — so only `grace` is left to detect.
+    const status = reading
+      ? liveProviderStatus({ errors: [failure], generatedAt }, reading)
+      : null
+    parts.push(
+      status?.kind === "grace"
+        ? liveGraceNote(status.category, failure.provider, status.ageMs)
+        : liveErrorNote(failure.category),
+    )
+  }
   if (parts.length > 0) return parts.join(" ")
   if (!on) return "Turn the switch above back on to ask for current plan limits."
   return `No readings yet. Sign in with ${name} and this fills in.`
