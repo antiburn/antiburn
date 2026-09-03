@@ -3,7 +3,6 @@ import { Fragment } from "react"
 
 import type { SessionHygieneEvidenceState } from "../../lib/insightsIpc"
 import {
-  notAssessedReasonLabel,
   sessionHygieneStateIsTransient,
   sessionHygieneStateLabel,
   type SessionHygieneCheck,
@@ -92,8 +91,6 @@ function renderTooltip(
             const mark = STATUS_MARK[check.status]
             return (
               <Fragment key={check.id}>
-                {/* A not-assessed check names itself only. The reason line below
-                    carries the verdict, so the two do not repeat each other. */}
                 <span className={INK_CLASS[check.ink]}>
                   {check.status === "notAssessed" ? check.name : check.title}
                 </span>
@@ -104,13 +101,6 @@ function renderTooltip(
                   aria-label={mark.label}
                   className={`justify-self-center ${INK_CLASS[check.ink]}`}
                 />
-                {/* The reason stays in the name column. A full-width line would
-                    run under the mark column and break the right edge. */}
-                {check.status === "notAssessed" && check.notAssessedReason && (
-                  <span className="col-start-1 type-caption text-label-tertiary">
-                    {notAssessedReasonLabel(check.notAssessedReason)}
-                  </span>
-                )}
               </Fragment>
             )
           })}
@@ -134,11 +124,8 @@ export function SessionStatusBar({
   const passed = checks.filter((check) => check.status === "clean")
   const notAssessed = checks.filter((check) => check.status === "notAssessed")
   const assessedCount = passed.length + failed.length
-  // The denominator is every check the session has, not only the assessed
-  // ones. A denominator that moves with the assessed count contradicts the
-  // not-assessed tail beside it.
-  const failedShare = checks.length === 0 ? 0 : failed.length / checks.length
-  const allPassed = passed.length === checks.length && checks.length > 0
+  const failedShare = assessedCount === 0 ? 0 : failed.length / assessedCount
+  const allPassed = assessedCount > 0 && passed.length === assessedCount
   const stateLabel = sessionHygieneStateLabel(evidenceState)
   // A transient state ends on its own, so its label carries an ellipsis.
   const stateText = stateLabel
@@ -148,12 +135,11 @@ export function SessionStatusBar({
   // state label — a stale or refreshing session still has a last result. Only
   // the never-assessed case keeps the plain state text in the count's place.
   const showStateText = stateLabel !== null && assessedCount === 0
-  const checkNoun = checks.length === 1 ? "burn check" : "burn checks"
-  const notAssessedText = notAssessed.length > 0 ? ` · ${notAssessed.length} not assessed` : ""
+  const checkNoun = assessedCount === 1 ? "burn check" : "burn checks"
   const countText =
     assessedCount === 0
       ? "Not assessed"
-      : `${passed.length}/${checks.length} ${checkNoun}${notAssessedText}`
+      : `${passed.length}/${assessedCount} ${checkNoun}`
   // A transient state next to an assessed verdict still names itself, as a
   // prefix on the aria label and the tooltip text.
   const verdictPrefix = stateLabel && !showStateText ? `${stateLabel} — ` : ""
@@ -164,7 +150,7 @@ export function SessionStatusBar({
           ? "All checks pass"
           : assessedCount === 0
             ? "No checks assessed"
-            : `${passed.length} of ${checks.length} ${checkNoun} pass${
+            : `${passed.length} of ${assessedCount} ${checkNoun} pass${
                 notAssessed.length > 0 ? `; ${notAssessed.length} not assessed` : ""
               }`
       }`
