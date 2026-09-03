@@ -151,7 +151,12 @@ pub const PARSER_REVISION: i64 = 19;
 // from line order alone, for a source with no per-record id
 // (`evidence_sink::SessionEvidenceAccumulator::evidence`), so a Codex
 // session already assessed as `CapabilityMissing` may now assess clean.
-pub const ANALYZER_REVISION: i64 = 16;
+// +1 for the zero-usage synthetic turn fix: a no-model assistant row with
+// no billable tokens, such as a Claude Code `<synthetic>` record, no
+// longer counts toward `unattributed_turns` or `delegated_model_missing`
+// (`evidence_query::CORE_SQL`), so a session with such a record may now
+// assess `models` and `subagents` clean.
+pub const ANALYZER_REVISION: i64 = 17;
 // +1 for seam R2: the worker path now derives `inclusive_model_breakdown`
 // and `model_runs` from published turn rows instead of the accumulator
 // (`query_model_breakdown`, `query_model_runs`), so every session in the
