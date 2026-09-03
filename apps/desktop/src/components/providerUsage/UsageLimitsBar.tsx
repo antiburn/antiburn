@@ -158,34 +158,36 @@ export function UsageLimitsBar({
           // meters. The gutter splits between this region and each group, so
           // a group's hover highlight has room without moving the text.
           //
-          // The top padding also holds the disclosure still. The button moves
-          // from this bar's own row onto the first provider's name line, and
-          // the two must sit at the same height, or the control jumps under
-          // the pointer that just clicked it.
+          // The disclosure sits on the first provider's name line, inside the
+          // meter group it opens. The button therefore moves down when the
+          // bar opens. The eyebrow above it marks the new position.
           className="space-y-1 px-2 pt-3 pb-2"
         >
-          <div className="flex h-7 items-center justify-between px-1">
+          <div className="flex h-7 items-center px-1">
             <span className="type-caption font-medium tracking-wide uppercase text-label">
               Usage limits
             </span>
-            {disclosure(false)}
           </div>
-          {limited.map(({ reading, key }) => (
+          {limited.map(({ reading, key }, index) => (
             <ProviderGroup
               key={key}
               provider={reading}
               displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
               status={liveProviderStatus(live, reading)}
               now={at}
-              action={undefined}
+              action={index === 0 ? disclosure(true) : undefined}
               activation={
                 activeProvider?.provider === reading.provider ? activeProvider.activation : null
               }
               {...(onHoverProvider ? { onHover: onHoverProvider } : {})}
             />
           ))}
-          {unavailable.map((entry) => (
-            <UnavailableGroup key={entry.provider} entry={entry} action={undefined} />
+          {unavailable.map((entry, index) => (
+            <UnavailableGroup
+              key={entry.provider}
+              entry={entry}
+              action={limited.length === 0 && index === 0 ? disclosure(true) : undefined}
+            />
           ))}
         </div>
       )}

@@ -37,20 +37,23 @@ export function UsageSpendSummary({
           Total usage
         </h2>
       </div>
+      {/* Each cell holds its text off its own left edge. The inset makes the
+          three readings sit nearer the middle of their columns. The text stays
+          left-aligned, so the figures still line up down the column. */}
       <dl className="mt-2 grid grid-cols-3 gap-3">
-        <div className="min-w-0">
+        <div className="min-w-0 pl-2">
           <dt className="type-caption text-label-secondary">Today</dt>
           <dd className="truncate type-footnote tabular-nums text-label">
             {metric(totals.today)}
           </dd>
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 pl-2">
           <dt className="type-caption text-label-secondary">This week</dt>
           <dd className="truncate type-footnote tabular-nums text-label">
             {metric(totals.week)}
           </dd>
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 pl-2">
           <dt className="type-caption text-label-secondary">Last 30 days</dt>
           <dd className="truncate type-footnote tabular-nums text-label">
             {metric(totals.last30Days)}
