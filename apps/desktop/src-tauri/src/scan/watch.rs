@@ -86,7 +86,9 @@ pub fn spawn_watcher(app: &AppHandle) -> WatcherStatus {
         return WatcherStatus::default();
     };
     let app = app.clone();
-    spawn_watcher_over(home, move || {
+    // The burst is threaded through in full starting here (W2); the next
+    // change wires its paths and event count into a named request trigger.
+    spawn_watcher_over(home, move |_burst: WatchBurst| {
         app.state::<crate::scan::ScanController>().request();
     })
 }
@@ -106,7 +108,7 @@ fn all_watch_roots(home: &Path) -> Vec<WatchRoot> {
 /// tests, under `tokio::time::pause()`, without a running app.
 fn spawn_watcher_over(
     home: PathBuf,
-    on_relevant_change: impl Fn() + Send + Sync + 'static,
+    on_relevant_change: impl Fn(WatchBurst) + Send + Sync + 'static,
 ) -> WatcherStatus {
     let roots = all_watch_roots(&home);
     let (tx, rx) = unbounded_channel::<Event>();
@@ -187,25 +189,65 @@ async fn run_root_recheck_loop(
     }
 }
 
+/// W2: the paths a debounce burst that stores has become this large stops
+/// growing. A pass request still names the trigger and its event count past
+/// this point; only the path sample is capped, so a runaway burst cannot grow
+/// the debouncer's memory with the size of the change.
+const MAX_BURST_PATHS: usize = 64;
+
+/// One coalesced run of relevant filesystem events, handed to
+/// `on_relevant_change` after the burst's quiet period ends.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct WatchBurst {
+    /// Relevant paths seen in this burst, deduplicated, in first-seen order,
+    /// bounded at [`MAX_BURST_PATHS`].
+    pub paths: Vec<PathBuf>,
+    /// Every relevant event coalesced into this burst. Counts past
+    /// [`MAX_BURST_PATHS`] even after the path sample stops growing.
+    pub events: usize,
+}
+
+impl WatchBurst {
+    /// Fold one relevant event's paths into the burst.
+    fn record(&mut self, event: &Event) {
+        self.events += 1;
+        for path in &event.paths {
+            if self.paths.len() >= MAX_BURST_PATHS {
+                break;
+            }
+            if !self.paths.contains(path) {
+                self.paths.push(path.clone());
+            }
+        }
+    }
+}
+
 /// Consume events until the channel closes, requesting one pass after each
 /// quiet period. See the module doc for the debounce shape.
-async fn run_debounce_loop(mut events: UnboundedReceiver<Event>, on_relevant_change: impl Fn()) {
+async fn run_debounce_loop(
+    mut events: UnboundedReceiver<Event>,
+    on_relevant_change: impl Fn(WatchBurst),
+) {
     while let Some(first) = events.recv().await {
         if !is_relevant(&first) {
             continue;
         }
-        wait_for_quiet(&mut events, QUIET_WINDOW, MAX_WAIT).await;
-        on_relevant_change();
+        let mut burst = WatchBurst::default();
+        burst.record(&first);
+        wait_for_quiet(&mut events, QUIET_WINDOW, MAX_WAIT, &mut burst).await;
+        on_relevant_change(burst);
     }
 }
 
 /// After a relevant event, keep consuming events while more relevant ones
 /// keep arriving inside the quiet window, up to the maximum wait. Only a
-/// relevant event resets the quiet window; noise never extends it.
+/// relevant event resets the quiet window; noise never extends it. Every
+/// relevant event folds its paths into `burst` (W2).
 async fn wait_for_quiet(
     events: &mut UnboundedReceiver<Event>,
     quiet: Duration,
     max_wait: Duration,
+    burst: &mut WatchBurst,
 ) {
     let deadline = Instant::now() + max_wait;
     let mut quiet_deadline = Instant::now() + quiet;
@@ -217,6 +259,7 @@ async fn wait_for_quiet(
                     return;
                 };
                 if is_relevant(&event) {
+                    burst.record(&event);
                     quiet_deadline = Instant::now() + quiet;
                 }
                 if Instant::now() >= deadline {
@@ -230,9 +273,17 @@ async fn wait_for_quiet(
     }
 }
 
-/// Drop `Access`-only events (including antiburn's own reads) and events
-/// whose every path sits under a WSL mount — WSL sessions run through the
-/// tick's own discovery walk, not this watcher.
+/// Drop `Access`-only events (including antiburn's own reads), events whose
+/// every path sits under a WSL mount — WSL sessions run through the tick's
+/// own discovery walk, not this watcher — and events whose every path is a
+/// SQLite `-shm` sidecar.
+///
+/// W1: a WAL reader takes read marks in the `-shm` file, which bumps its
+/// mtime. antiburn's own read-only open of a vendor database (Cursor's
+/// `state.vscdb`) therefore modifies `-shm` on every pass, and without this
+/// rule the watcher would re-kick a pass the moment the previous one finished
+/// reading. `-wal` stays relevant: only a real writer appends to it, and a
+/// WAL database's committed rows live there until a checkpoint.
 fn is_relevant(event: &Event) -> bool {
     if matches!(event.kind, EventKind::Access(_)) {
         return false;
@@ -240,11 +291,20 @@ fn is_relevant(event: &Event) -> bool {
     if event.paths.is_empty() {
         return true;
     }
+    if event.paths.iter().all(|path| is_shm_sidecar_path(path)) {
+        return false;
+    }
     !event.paths.iter().all(|path| is_wsl_mount_path(path))
 }
 
 fn is_wsl_mount_path(path: &Path) -> bool {
     environment_from_mounted_path(path).is_some()
+}
+
+fn is_shm_sidecar_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with("-shm"))
 }
 
 #[cfg(test)]
@@ -267,7 +327,7 @@ mod tests {
         let (tx, rx) = unbounded_channel();
         let fires = Arc::new(AtomicUsize::new(0));
         let counter = fires.clone();
-        tokio::spawn(run_debounce_loop(rx, move || {
+        tokio::spawn(run_debounce_loop(rx, move |_burst: WatchBurst| {
             counter.fetch_add(1, Ordering::SeqCst);
         }));
 
@@ -298,7 +358,7 @@ mod tests {
         let (tx, rx) = unbounded_channel();
         let fires = Arc::new(AtomicUsize::new(0));
         let counter = fires.clone();
-        tokio::spawn(run_debounce_loop(rx, move || {
+        tokio::spawn(run_debounce_loop(rx, move |_burst: WatchBurst| {
             counter.fetch_add(1, Ordering::SeqCst);
         }));
 
@@ -320,13 +380,33 @@ mod tests {
         let (tx, rx) = unbounded_channel();
         let fires = Arc::new(AtomicUsize::new(0));
         let counter = fires.clone();
-        tokio::spawn(run_debounce_loop(rx, move || {
+        tokio::spawn(run_debounce_loop(rx, move |_burst: WatchBurst| {
             counter.fetch_add(1, Ordering::SeqCst);
         }));
 
         tx.send(access_event(Path::new("/tmp/a"))).unwrap();
         tokio::time::sleep(MAX_WAIT + Duration::from_secs(1)).await;
         assert_eq!(fires.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn two_events_for_the_same_path_yield_one_path_and_two_events() {
+        let (tx, rx) = unbounded_channel();
+        let bursts: Arc<std::sync::Mutex<Vec<WatchBurst>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let collected = bursts.clone();
+        tokio::spawn(run_debounce_loop(rx, move |burst: WatchBurst| {
+            collected.lock().unwrap().push(burst);
+        }));
+
+        tx.send(modify_event(Path::new("/tmp/a"))).unwrap();
+        tx.send(modify_event(Path::new("/tmp/a"))).unwrap();
+        tokio::time::sleep(QUIET_WINDOW + Duration::from_millis(100)).await;
+
+        let bursts = bursts.lock().unwrap();
+        assert_eq!(bursts.len(), 1);
+        assert_eq!(bursts[0].paths, vec![PathBuf::from("/tmp/a")]);
+        assert_eq!(bursts[0].events, 2);
     }
 
     #[test]
@@ -338,6 +418,26 @@ mod tests {
 
         let native = modify_event(Path::new("/home/avery/.claude/projects/p/s.jsonl"));
         assert!(is_relevant(&native));
+    }
+
+    #[test]
+    fn an_event_confined_to_shm_sidecars_is_not_relevant() {
+        let shm_only = modify_event(Path::new("/home/avery/.cursor/state.vscdb-shm"));
+        assert!(!is_relevant(&shm_only));
+    }
+
+    #[test]
+    fn an_event_with_one_shm_path_and_one_relevant_path_is_relevant() {
+        let mixed = Event::new(EventKind::Modify(ModifyKind::Any))
+            .add_path(PathBuf::from("/home/avery/.cursor/state.vscdb-shm"))
+            .add_path(PathBuf::from("/home/avery/.claude/projects/p/s.jsonl"));
+        assert!(is_relevant(&mixed));
+    }
+
+    #[test]
+    fn a_wal_event_is_relevant() {
+        let wal = modify_event(Path::new("/home/avery/.cursor/state.vscdb-wal"));
+        assert!(is_relevant(&wal));
     }
 
     #[test]
@@ -392,7 +492,7 @@ mod tests {
 
         let fired = Arc::new(AtomicUsize::new(0));
         let counter = fired.clone();
-        let status = spawn_watcher_over(home.path().to_path_buf(), move || {
+        let status = spawn_watcher_over(home.path().to_path_buf(), move |_burst: WatchBurst| {
             counter.fetch_add(1, Ordering::SeqCst);
         });
         assert!(status.active);
