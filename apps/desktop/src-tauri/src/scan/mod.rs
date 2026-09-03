@@ -30,13 +30,22 @@
 //!   waits out a tick behind a missed event.
 //! - **On demand**, from the rescan control and after any change to the source
 //!   selection.
-//! - **Shortly after a watched file changes.** [`watch::spawn_watcher`] starts
-//!   an OS filesystem watcher over every agent's watch roots
-//!   (`AgentExplorer::watch_roots`), debounces the events it sees, and
-//!   requests a pass after a quiet period — see the `watch` module doc for
-//!   the debounce shape. [`TICK`] stays as reconciliation for what the
-//!   watcher cannot cover (a root the OS refuses to watch, a change the
-//!   debounce window swallowed). When the watcher is not fully healthy the
+//! - **Shortly after a watched file changes — narrowly, not as a full pass.**
+//!   [`watch::spawn_watcher`] starts an OS filesystem watcher over every
+//!   agent's watch roots (`AgentExplorer::watch_roots`), debounces the events
+//!   it sees, and hands the scheduler's loop one [`watch::WatchBurst`] after
+//!   each quiet period — see the `watch` module doc for the debounce shape.
+//!   The `scoped` module classifies that burst into up to three lanes: a
+//!   known session refreshed directly with no discovery walk, a plain
+//!   agent rediscovered on its own, or a database-backed agent rediscovered
+//!   at a longer floor because every write near its store looks like a new
+//!   session. Each lane has its own minimum re-run interval, and a burst
+//!   that arrives inside one is folded into the next admitted run rather
+//!   than dropped — see the `scoped` module doc for the full contract.
+//!   [`TICK`] stays as reconciliation for what the watcher cannot cover (a
+//!   root the OS refuses to watch, a change the debounce window swallowed),
+//!   and it runs a full pass, which supersedes any scoped work still
+//!   waiting on its floor. When the watcher is not fully healthy the
 //!   scheduler ticks at [`watch::FALLBACK_TICK`] instead, so polling alone
 //!   still finds new sessions at a reasonable cadence.
 //!
