@@ -56,6 +56,9 @@ const EMPTY_REQUEST: PopoverPeekRequest = {
 
 function sameTarget(left: PopoverPeekTarget | null, right: PopoverPeekTarget | null): boolean {
   if (left === null || right === null) return left === right
+  if (left.kind !== right.kind) return false
+  if (left.kind === "checks" && right.kind === "checks") return true
+  if (left.kind === "checks" || right.kind === "checks") return false
   return left.provider === right.provider && left.utcOffsetMinutes === right.utcOffsetMinutes
 }
 

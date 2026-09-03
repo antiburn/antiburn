@@ -119,7 +119,7 @@ export function UsageLimitsBar({
   )
 
   return (
-    <div data-testid="usage-limits-bar" className="relative shrink-0 border-b border-separator">
+    <div data-testid="usage-limits-bar" className="relative shrink-0">
       {!expanded && (
         <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -283,7 +283,7 @@ function ProviderGroup({
       role="group"
       aria-label={plan ? `${displayName}, ${plan} plan` : displayName}
       data-state={activation ?? "idle"}
-      className="rounded-md px-2 py-2 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08] data-[state=hovered]:bg-brand-tint/[0.08] data-[state=selected]:bg-surface-selected"
+      className="rounded-md px-2 py-2 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08] data-[state=hovered]:bg-brand-tint/[0.08]"
       onMouseEnter={(event) =>
         onHover?.(provider.provider, measureAnchorRegion(event.currentTarget))
       }
@@ -354,7 +354,7 @@ function ProviderRadial({
       onMouseLeave={() => onHover?.(null, null)}
       data-state={activation ?? "idle"}
       title={title}
-      className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08] data-[state=hovered]:bg-brand-tint/[0.08] data-[state=selected]:bg-surface-selected"
+      className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08] data-[state=hovered]:bg-brand-tint/[0.08]"
       aria-label={ariaLabel}
     >
       <UsageRing

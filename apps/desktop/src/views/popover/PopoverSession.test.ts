@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../../lib/ipc"
+import type * as InsightsIpc from "../../lib/insightsIpc"
 import {
   EMPTY_PROVIDER_USAGE,
   type ActivityEntryPayload,
@@ -18,6 +19,8 @@ const setPopoverHeight = vi.hoisted(() => vi.fn())
 const listRecentSessions = vi.hoisted(() => vi.fn())
 const onSessionEntryChanged = vi.hoisted(() => vi.fn())
 const onScanEvent = vi.hoisted(() => vi.fn())
+const onChecksReportChanged = vi.hoisted(() => vi.fn())
+const getChecksReport = vi.hoisted(() => vi.fn())
 const onPopoverShown = vi.hoisted(() => vi.fn())
 const onPopoverHidden = vi.hoisted(() => vi.fn())
 
@@ -39,6 +42,11 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     onPopoverShown,
     onPopoverHidden,
   }
+})
+
+vi.mock("../../lib/insightsIpc", async (importOriginal) => {
+  const actual = await importOriginal<typeof InsightsIpc>()
+  return { ...actual, getChecksReport, onChecksReportChanged }
 })
 
 type EntryChangedHandler = (entry: ActivityEntryPayload) => void
@@ -76,6 +84,10 @@ beforeEach(() => {
       scanEventHandler = null
     }
   })
+  onChecksReportChanged.mockReset()
+  onChecksReportChanged.mockResolvedValue(() => {})
+  getChecksReport.mockReset()
+  getChecksReport.mockResolvedValue(null)
   onPopoverShown.mockReset()
   onPopoverShown.mockImplementation(async (handler: () => void) => {
     popoverShownHandler = handler
@@ -109,6 +121,16 @@ describe("PopoverSession surface presentation", () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.useRealTimers()
+  })
+
+  it("ends the initial Checks loading state after a report failure", async () => {
+    getChecksReport.mockRejectedValue(new Error("report failed"))
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+
+    await vi.waitFor(() => expect(session.getSnapshot().checksUnavailable).toBe(true))
+
+    unsubscribe()
   })
 
   it("keeps Usage presented until the winning resize presents the requested session", async () => {

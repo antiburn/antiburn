@@ -12,7 +12,7 @@
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
-    V22, V23, V24, V25, V26, V27, V28, V29, V30,
+    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -588,3 +588,9 @@ const V29: &str = antiburn_local::analysis::TURN_SCHEMA_V4_SQL;
 /// list, for the same reason [`V15`] re-exports `TURN_SCHEMA_SQL` instead of
 /// stating its own DDL.
 const V30: &str = antiburn_local::analysis::SOURCE_RESUME_SCHEMA_SQL;
+
+/// v31 supports the bounded Insights cohort range and recency order.
+const V31: &str = r#"
+CREATE INDEX session_insights_window
+    ON session (environment_key, started_at_epoch DESC, session_id DESC);
+"#;

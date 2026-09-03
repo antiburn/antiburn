@@ -4,6 +4,8 @@
   "description": "Control capability for the popover that owns the passive companion anchor.",
   "windows": ["popover"],
   "permissions": [
+    "allow-cancel-checks-report",
+    "allow-get-checks-report",
     "allow-get-popover-peek-state",
     "allow-hide-popover-peek",
     "allow-show-popover-peek"

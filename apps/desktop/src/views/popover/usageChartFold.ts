@@ -1,12 +1,12 @@
 /**
- * How far the list scrolls before the usage chart is fully folded away, in
+ * How far the list scrolls before the Activity header is fully folded away, in
  * pixels.
  */
 const USAGE_CHART_FOLD_RANGE = 96
 
 /**
- * Fold the usage chart in step with the list scroll. The wrapper's height
- * closes while the chart lifts, shrinks a little, and fades. At the top
+ * Fold the Activity header in step with the list scroll. The wrapper's height
+ * closes while the header lifts, shrinks a little, and fades. At the top
  * every override clears and the chart keeps its natural height.
  *
  * The values are scroll-linked, so no transition applies — each frame paints
@@ -18,18 +18,18 @@ const USAGE_CHART_FOLD_RANGE = 96
  * again — a list barely longer than the viewport then oscillates. So the
  * fold never takes more room than the list has left below the reader.
  */
-export function foldUsageChart(wrap: HTMLDivElement | null, viewport: HTMLDivElement) {
-  const chart = wrap?.firstElementChild
-  if (!wrap || !(chart instanceof HTMLElement)) return
+export function foldActivityHeader(wrap: HTMLDivElement | null, viewport: HTMLDivElement) {
+  const header = wrap?.firstElementChild
+  if (!wrap || !(header instanceof HTMLElement)) return
   const scrollTop = viewport.scrollTop
   const progress = Math.min(1, Math.max(0, scrollTop / USAGE_CHART_FOLD_RANGE))
   if (progress === 0) {
     wrap.style.height = ""
-    chart.style.transform = ""
-    chart.style.opacity = ""
+    header.style.transform = ""
+    header.style.opacity = ""
     return
   }
-  const height = chart.offsetHeight
+  const height = header.offsetHeight
   // What the list could scroll with the chart open: its present range plus
   // the room the current fold already handed over.
   const currentRange = Math.max(0, viewport.scrollHeight - viewport.clientHeight)
@@ -46,13 +46,13 @@ export function foldUsageChart(wrap: HTMLDivElement | null, viewport: HTMLDivEle
   const folded = height - wrapHeight
   if (folded <= 0) {
     wrap.style.height = ""
-    chart.style.transform = ""
-    chart.style.opacity = ""
+    header.style.transform = ""
+    header.style.opacity = ""
     return
   }
   const shown = folded / height
   wrap.style.height = `${wrapHeight}px`
-  chart.style.transformOrigin = "top center"
-  chart.style.transform = `translateY(${Math.round(-height * shown * 0.35)}px) scale(${(1 - 0.04 * shown).toFixed(3)})`
-  chart.style.opacity = `${1 - shown}`
+  header.style.transformOrigin = "top center"
+  header.style.transform = `translateY(${Math.round(-height * shown * 0.35)}px) scale(${(1 - 0.04 * shown).toFixed(3)})`
+  header.style.opacity = `${1 - shown}`
 }

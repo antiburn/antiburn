@@ -49,6 +49,33 @@ const PROVIDER_DATA: PopoverPeekData = {
   live: { providers: [], errors: [], meters: [], generatedAt: "2026-08-27T00:00:00Z" },
 }
 
+const CHECKS_DATA: PopoverPeekData = {
+  kind: "checks",
+  presentation: {
+    failures: [
+      {
+        id: "cacheChurn",
+        finding: 7,
+        clean: 7,
+        unavailable: 0,
+        estimatedTokenBurnBasisPoints: 1_250,
+      },
+    ],
+    wins: [
+      {
+        id: "sessionsOverDepth",
+        finding: 0,
+        clean: 12,
+        unavailable: 0,
+        estimatedTokenBurnBasisPoints: 0,
+      },
+    ],
+    unavailable: [],
+    refreshUnavailable: false,
+    estimate: { tokenBurnBasisPoints: 1_625 },
+  },
+}
+
 function providerData(provider: string, displayName: string) {
   const usage = {
     tokensIn: 1,
@@ -189,6 +216,29 @@ describe("PopoverPeekView", () => {
     )
     expect(getPopoverPeekData).not.toHaveBeenCalled()
     await waitFor(() => expect(popoverPeekPresented).toHaveBeenCalledWith(1, 196))
+  })
+
+  it("renders seeded real checks without loading provider data", async () => {
+    getPopoverPeekState.mockImplementation(() => new Promise(() => undefined))
+    render(<PopoverPeekView />)
+    await waitFor(() => expect(harness.emit).not.toBeNull())
+
+    act(() =>
+      harness.emit?.({
+        generation: 1,
+        target: { kind: "checks" },
+        retargetCommitRequired: false,
+        initialPresentation: CHECKS_DATA,
+      }),
+    )
+
+    expect(screen.getByText("Failed checks")).toBeInTheDocument()
+    expect(screen.getByText("Passed checks")).toBeInTheDocument()
+    expect(getPopoverPeekData).not.toHaveBeenCalled()
+    await waitFor(() => expect(popoverPeekPresented).toHaveBeenCalledWith(1, 196))
+    expect(screen.getByText("Failed checks").closest("[data-slot-state]")).toHaveClass(
+      "pointer-events-none",
+    )
   })
 
   it("replaces hydrated loading with a same-generation seed", async () => {

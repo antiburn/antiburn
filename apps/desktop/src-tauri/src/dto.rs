@@ -585,6 +585,28 @@ pub struct InsightsReportPayload {
     pub catalog_revision: i64,
 }
 
+/// One detector rendered by All checks.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChecksCategoryPayload {
+    pub id: &'static str,
+    pub finding: u64,
+    pub clean: u64,
+    pub unavailable: u64,
+    /// Hundredths of one percent, bounded to `0..=5000`.
+    pub estimated_token_burn_basis_points: Option<u16>,
+}
+
+/// The bounded subset of the local report needed by the Checks feature.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChecksReportPayload {
+    pub evidence_settled: bool,
+    /// Hundredths of one percent, bounded to `0..=5000`.
+    pub estimated_token_burn_basis_points: Option<u16>,
+    pub categories: Vec<ChecksCategoryPayload>,
+}
+
 /// Report calculation state plus the evidence backlog counts.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1083,6 +1105,30 @@ impl From<EfficiencyReport> for InsightsReportPayload {
     }
 }
 
+impl ChecksReportPayload {
+    pub fn from_report(report: &EfficiencyReport, evidence_settled: bool) -> Self {
+        let categories = DetectorId::ALL
+            .iter()
+            .map(|&id| {
+                let counts = report.detectors[id.index()];
+                ChecksCategoryPayload {
+                    id: detector_id_str(id),
+                    finding: counts.finding,
+                    clean: counts.clean,
+                    unavailable: counts.unavailable,
+                    estimated_token_burn_basis_points: report
+                        .detector_estimated_token_burn_basis_points[id.index()],
+                }
+            })
+            .collect();
+        Self {
+            evidence_settled,
+            estimated_token_burn_basis_points: report.estimated_token_burn_basis_points,
+            categories,
+        }
+    }
+}
+
 /// Where the app came from and what it is running against.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1350,8 +1396,8 @@ mod tests {
             SubagentChild, TurnCounts, TurnFacts,
         };
         use antiburn_local::insights::{
-            CoverageCounts, DetectorFindings, EfficiencyReportAccumulator, QuotaPressureFindings,
-            ReportContext, ReportWindow, session_badges,
+            CoverageCounts, DetectorCounts, DetectorFindings, EfficiencyReportAccumulator,
+            QuotaPressureFindings, ReportContext, ReportWindow, SessionExample, session_badges,
         };
 
         use super::*;
@@ -1373,7 +1419,7 @@ mod tests {
 
         /// The wire shape is the privacy contract: the payload names
         /// exactly these keys, and none of them can carry transcript
-        /// content, session identifiers, or evidence text.
+        /// content or evidence text. Session identities are bounded navigation targets.
         #[test]
         fn the_report_payload_serializes_camel_case_counts_and_nothing_else() {
             let mut report = report();
@@ -1486,6 +1532,80 @@ mod tests {
                     "typesTruncated",
                 ]
             );
+        }
+
+        #[test]
+        fn checks_report_serializes_only_display_fields() {
+            let mut report = report();
+            report.estimated_token_burn_basis_points = Some(1_625);
+            report.detector_estimated_token_burn_basis_points[0] = Some(500);
+            report.detector_statuses[0] = DetectorStatus::Findings(DetectorFindings {
+                finding_sessions: 2,
+                examples: vec![SessionExample {
+                    agent: "claude-code".to_owned(),
+                    session_id: "session-1".to_owned(),
+                }],
+            });
+            report.detectors[0] = DetectorCounts {
+                eligible: 4,
+                assessed: 3,
+                finding: 2,
+                clean: 1,
+                unavailable: 1,
+                not_applicable: 0,
+            };
+
+            let value =
+                serde_json::to_value(ChecksReportPayload::from_report(&report, true)).unwrap();
+            assert!(value["categories"][0].get("examples").is_none());
+            assert!(value.get("coverage").is_none());
+            assert!(value.get("quotaPressure").is_none());
+            assert_eq!(value["evidenceSettled"], true);
+            assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_625);
+            assert_eq!(value["categories"][0]["estimatedTokenBurnBasisPoints"], 500);
+            assert_eq!(
+                value["categories"][1]["estimatedTokenBurnBasisPoints"],
+                serde_json::Value::Null
+            );
+
+            let top_keys: Vec<&str> = value
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                top_keys,
+                [
+                    "categories",
+                    "estimatedTokenBurnBasisPoints",
+                    "evidenceSettled"
+                ]
+            );
+            let category_keys: Vec<&str> = value["categories"][0]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                category_keys,
+                [
+                    "clean",
+                    "estimatedTokenBurnBasisPoints",
+                    "finding",
+                    "id",
+                    "unavailable",
+                ]
+            );
+            assert_eq!(value["categories"][0]["finding"], 2);
+            assert_eq!(value["categories"][0]["clean"], 1);
+            assert_eq!(value["categories"][0]["unavailable"], 1);
+
+            let value =
+                serde_json::to_value(ChecksReportPayload::from_report(&report, false)).unwrap();
+            assert_eq!(value["evidenceSettled"], false);
+            assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_625);
         }
 
         #[test]
