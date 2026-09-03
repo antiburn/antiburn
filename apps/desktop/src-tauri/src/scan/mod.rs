@@ -140,6 +140,9 @@ pub enum ScanTrigger {
         /// The rediscovered agents' slugs, for the log line.
         agents: Vec<&'static str>,
     },
+    /// A burst reached [`watch::MAX_BURST_PATHS`] and may have dropped
+    /// paths, so only a full pass can be sure to cover it.
+    WatcherOverflow,
     /// The popover reached the screen.
     PopoverShown,
     /// A settings save that finished onboarding, widened the activity
@@ -166,6 +169,7 @@ impl ScanTrigger {
             ScanTrigger::Launch => "launch",
             ScanTrigger::Tick => "tick",
             ScanTrigger::WatcherAgents { .. } => "watcher_agents",
+            ScanTrigger::WatcherOverflow => "watcher_overflow",
             ScanTrigger::PopoverShown => "popover_shown",
             ScanTrigger::SettingsTransition => "settings_transition",
             ScanTrigger::InsightsPane => "insights_pane",
@@ -337,14 +341,21 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         let mut pending_work = scoped::ScopedWork::default();
         let mut retry_work = scoped::ScopedWork::default();
         let mut deferred_due: Option<tokio::time::Instant> = None;
+        // The tick is a fixed deadline, not a sleep restarted on every
+        // wake. A scoped wake every few seconds must not push the
+        // reconciliation pass back forever.
+        let mut next_tick = tokio::time::Instant::now() + tick;
 
         loop {
             let controller = app.state::<ScanController>();
             let woke = tokio::select! {
                 () = controller.kick.notified() => Wake::Kick,
-                () = tokio::time::sleep(tick) => Wake::Tick,
+                () = tokio::time::sleep_until(next_tick) => Wake::Tick,
                 () = sleep_until_due(deferred_due) => Wake::Deferred,
             };
+            if matches!(woke, Wake::Tick) {
+                next_tick = tokio::time::Instant::now() + tick;
+            }
             // Checked after the wake-up rather than before the wait, so
             // resuming discovery takes effect at the next request or tick
             // instead of needing the app restarted.
@@ -369,10 +380,22 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
             // what runs: a full pass below covers them for free, and a
             // scoped wake needs them for admission.
             let bursts = controller.take_bursts();
+            let mut overflowed = false;
             if !bursts.is_empty() {
                 let home = home_dir().unwrap_or_default();
                 let store = app.state::<Store>();
                 for burst in bursts {
+                    // A burst at the path bound may have dropped paths, so a
+                    // scoped pass could miss one. Only a full pass is safe.
+                    if burst.paths.len() >= watch::MAX_BURST_PATHS {
+                        ::tracing::debug!(
+                            event = "scan_burst_overflowed",
+                            events = burst.events,
+                            path_count = burst.paths.len(),
+                        );
+                        overflowed = true;
+                        continue;
+                    }
                     let work = scoped::classify_burst(&burst.paths, &home, &|label: &str| {
                         store
                             .session_record_by_source_label(label)
@@ -390,8 +413,12 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
             // re-describes everything they would have, so their floors are
             // stamped as satisfied rather than left to run again soon.
             let full_trigger = controller.take_pending_trigger();
-            if full_trigger.is_some() || matches!(woke, Wake::Tick) {
-                let trigger = full_trigger.unwrap_or(ScanTrigger::Tick);
+            if full_trigger.is_some() || overflowed || matches!(woke, Wake::Tick) {
+                let trigger = full_trigger.unwrap_or(if overflowed {
+                    ScanTrigger::WatcherOverflow
+                } else {
+                    ScanTrigger::Tick
+                });
                 run_pass(&app, None, trigger, PassScope::Full).await;
                 let now = tokio::time::Instant::now();
                 floors.stamp(&pending_work, now);
@@ -399,6 +426,9 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 pending_work = scoped::ScopedWork::default();
                 retry_work = scoped::ScopedWork::default();
                 deferred_due = None;
+                // A full pass just ran, so the next tick can wait a whole
+                // interval.
+                next_tick = now + tick;
                 continue;
             }
 

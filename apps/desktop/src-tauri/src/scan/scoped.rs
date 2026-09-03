@@ -51,6 +51,9 @@ pub const SCOPED_RETRY: Duration = Duration::from_millis(500);
 const DATABASE_EXTENSIONS: [&str; 4] = ["vscdb", "db", "sqlite", "sqlite3"];
 const DATABASE_SIDECAR_SUFFIXES: [&str; 2] = ["-wal", "-journal"];
 
+/// How many of a burst's paths the classification log line shows.
+const LOG_PATH_SAMPLE: usize = 8;
+
 /// What one path in a burst means for the scheduler, in the classification
 /// order T1, T5, T3, T6 apply.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,12 +121,20 @@ pub fn classify_burst(
     // database-triggered rediscovery: both lead to the same
     // `discover_recent` call, and the shorter T3 floor already covers it.
     work.db_agents.retain(|agent| !work.agents.contains(agent));
+    let sample = paths
+        .iter()
+        .take(LOG_PATH_SAMPLE)
+        .map(|path| path.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(",");
     ::tracing::debug!(
         event = "scan_burst_classified",
         sessions = work.sessions.len(),
         agents = work.agents.len(),
         db_agents = work.db_agents.len(),
         ignored,
+        paths = %sample,
+        path_count = paths.len(),
     );
     work
 }
