@@ -373,7 +373,7 @@ impl LiveUsageSource for ClaudeDirectFetch {
         // re-raise a Keychain access prompt the reader has already seen.
         self.cooldown
             .poll(now, max_age, || match self.read_credentials()? {
-                Some(credentials) => fetch_live(&credentials, now).map(Some),
+                Some(credentials) => Ok(Some(fetch_live(&credentials, now)?)),
                 None => Ok(None),
             })
     }

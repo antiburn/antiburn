@@ -21,6 +21,12 @@
 //! the last good snapshot, restamped for how old it now is, and the last
 //! attempt's error if that attempt failed. Never a blank while a good
 //! reading exists, and never one pretending to be fresher than it is.
+//!
+//! A failed attempt can still carry a reading. A source that finds a copy
+//! of the provider's own figures on disk — the one the reader's CLI cached
+//! for itself — hands it over as [`FetchFailure::last_known`]. It stands in
+//! for the missing fresh reading when there is nothing better: see
+//! [`seed_takes_over`] for the rule.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -47,6 +53,17 @@ const MIN_FAILURE_COOLDOWN: Duration = Duration::from_secs(60);
 /// caller who wants fresher successes should not be made to wait as long for
 /// a retry after a failure either.
 pub const FAILURE_COOLDOWN: Duration = Duration::from_secs(300);
+
+/// How old a cached reading must be before a failed attempt's
+/// [`FetchFailure::last_known`] replaces it.
+///
+/// Matches `LIVE_USAGE_GRACE_MS` in `lib/presentation/liveUsage.ts`: the
+/// views keep showing a reading through a failure for ten minutes, then
+/// hide it. Up to that point the reading already on screen is the better
+/// one to keep — it may carry windows the on-disk copy does not, and
+/// swapping readings mid-outage makes rows come and go. Past it, the view
+/// is about to blank, and a newer reading from disk is the better answer.
+const SEED_TAKEOVER_AGE: time::Duration = time::Duration::minutes(10);
 
 /// How old a fetched reading may be and still describe the present.
 ///
@@ -93,6 +110,12 @@ impl Cooldown {
     /// describes this account, so keeping it on screen would be the one
     /// thing worse than reporting nothing.
     ///
+    /// `fetch` fails with a [`FetchFailure`]: a bare [`ProviderUsageError`]
+    /// converts into one with `?` or `.into()`, and a source that also found
+    /// a reading on disk attaches it as `last_known`. The reading is kept
+    /// when [`seed_takes_over`] says so; the error is reported either way,
+    /// so the views can say the figure did not just get fresher.
+    ///
     /// Returns the outcome this source should report this pass: the best
     /// snapshot it can currently vouch for — restamped against `now` — and
     /// the error from the most recent attempt, when that attempt is the one
@@ -103,7 +126,7 @@ impl Cooldown {
         &self,
         now: OffsetDateTime,
         max_age: Duration,
-        fetch: impl FnOnce() -> Result<Option<ProviderUsageSnapshot>, ProviderUsageError>,
+        fetch: impl FnOnce() -> Result<Option<ProviderUsageSnapshot>, FetchFailure>,
     ) -> SourceOutcome {
         let mut inner = self
             .inner
@@ -116,8 +139,13 @@ impl Cooldown {
                     inner.error = None;
                     inner.last_attempt = Some((Instant::now(), true));
                 }
-                Err(error) => {
-                    inner.error = Some(error);
+                Err(failure) => {
+                    if let Some(known) = failure.last_known
+                        && seed_takes_over(inner.snapshot.as_ref(), &known, now)
+                    {
+                        inner.snapshot = Some(*known);
+                    }
+                    inner.error = Some(failure.error);
                     inner.last_attempt = Some((Instant::now(), false));
                 }
             }
@@ -134,6 +162,47 @@ impl Cooldown {
             },
             (None, Some(error)) => SourceOutcome::failed(error),
             (None, None) => SourceOutcome::absent(),
+        }
+    }
+}
+
+/// A failed attempt, with the best reading the source found without the
+/// network.
+///
+/// `last_known` is a copy of the provider's own figures that the reader's
+/// CLI saved on disk for itself. It is optional and it is never a reason to
+/// hide `error`: the figures are real, but they did not just get fresher.
+#[derive(Debug)]
+pub struct FetchFailure {
+    pub error: ProviderUsageError,
+    /// Boxed so that a failure stays small on the `Err` path.
+    pub last_known: Option<Box<ProviderUsageSnapshot>>,
+}
+
+impl From<ProviderUsageError> for FetchFailure {
+    fn from(error: ProviderUsageError) -> FetchFailure {
+        FetchFailure {
+            error,
+            last_known: None,
+        }
+    }
+}
+
+/// Whether a failed attempt's on-disk reading replaces the cached one.
+///
+/// With no cached reading, always: the alternative is a blank. With one,
+/// only when the on-disk reading is newer *and* the cached one is older than
+/// [`SEED_TAKEOVER_AGE`] — see that constant for why the reading already on
+/// screen is kept through a short failure.
+fn seed_takes_over(
+    cached: Option<&ProviderUsageSnapshot>,
+    known: &ProviderUsageSnapshot,
+    now: OffsetDateTime,
+) -> bool {
+    match cached {
+        None => true,
+        Some(cached) => {
+            known.observed_at > cached.observed_at && now - cached.observed_at > SEED_TAKEOVER_AGE
         }
     }
 }
@@ -297,10 +366,88 @@ mod tests {
             inner.last_attempt = Some((Instant::now() - FAILURE_COOLDOWN, false));
         }
         let outcome = cooldown.poll(at(2_000), DEFAULT_MAX_AGE, || {
-            Err(ProviderUsageError::Unavailable)
+            Err(ProviderUsageError::Unavailable.into())
         });
 
         assert_eq!(outcome.error, Some(ProviderUsageError::Unavailable));
+        assert_eq!(outcome.snapshots[0].windows[0].used_percent, Some(40.0));
+    }
+
+    fn open_the_cooldown(cooldown: &Cooldown) {
+        let mut inner = cooldown.inner.lock().unwrap();
+        inner.last_attempt = Some((Instant::now() - FAILURE_COOLDOWN, false));
+    }
+
+    #[test]
+    fn a_failure_carrying_a_reading_seeds_an_empty_cache_and_still_reports_the_error() {
+        let cooldown = Cooldown::new();
+        let outcome = cooldown.poll(at(1_000), DEFAULT_MAX_AGE, || {
+            Err(FetchFailure {
+                error: ProviderUsageError::RateLimited,
+                last_known: Some(Box::new(snapshot(at(700), 55.0))),
+            })
+        });
+
+        assert_eq!(outcome.error, Some(ProviderUsageError::RateLimited));
+        assert_eq!(outcome.snapshots[0].windows[0].used_percent, Some(55.0));
+        assert_eq!(outcome.snapshots[0].observed_at, at(700));
+    }
+
+    #[test]
+    fn a_failure_carrying_a_reading_keeps_a_recent_cached_one() {
+        let cooldown = Cooldown::new();
+        cooldown.poll(at(1_000), DEFAULT_MAX_AGE, || {
+            Ok(Some(snapshot(at(1_000), 40.0)))
+        });
+        open_the_cooldown(&cooldown);
+        // Five minutes on: inside `SEED_TAKEOVER_AGE`, so the reading already
+        // on screen stays even though the on-disk one is newer.
+        let outcome = cooldown.poll(at(1_300), DEFAULT_MAX_AGE, || {
+            Err(FetchFailure {
+                error: ProviderUsageError::RateLimited,
+                last_known: Some(Box::new(snapshot(at(1_200), 55.0))),
+            })
+        });
+
+        assert_eq!(outcome.error, Some(ProviderUsageError::RateLimited));
+        assert_eq!(outcome.snapshots[0].windows[0].used_percent, Some(40.0));
+    }
+
+    #[test]
+    fn a_failure_carrying_a_newer_reading_replaces_a_cached_one_past_the_takeover_age() {
+        let cooldown = Cooldown::new();
+        cooldown.poll(at(1_000), DEFAULT_MAX_AGE, || {
+            Ok(Some(snapshot(at(1_000), 40.0)))
+        });
+        open_the_cooldown(&cooldown);
+        // Eleven minutes on: the view is about to hide the cached reading,
+        // and a newer one from disk is the better answer.
+        let outcome = cooldown.poll(at(1_660), DEFAULT_MAX_AGE, || {
+            Err(FetchFailure {
+                error: ProviderUsageError::RateLimited,
+                last_known: Some(Box::new(snapshot(at(1_500), 55.0))),
+            })
+        });
+
+        assert_eq!(outcome.error, Some(ProviderUsageError::RateLimited));
+        assert_eq!(outcome.snapshots[0].windows[0].used_percent, Some(55.0));
+        assert_eq!(outcome.snapshots[0].observed_at, at(1_500));
+    }
+
+    #[test]
+    fn a_failure_carrying_an_older_reading_never_replaces_the_cached_one() {
+        let cooldown = Cooldown::new();
+        cooldown.poll(at(1_000), DEFAULT_MAX_AGE, || {
+            Ok(Some(snapshot(at(1_000), 40.0)))
+        });
+        open_the_cooldown(&cooldown);
+        let outcome = cooldown.poll(at(2_000), DEFAULT_MAX_AGE, || {
+            Err(FetchFailure {
+                error: ProviderUsageError::Unavailable,
+                last_known: Some(Box::new(snapshot(at(900), 55.0))),
+            })
+        });
+
         assert_eq!(outcome.snapshots[0].windows[0].used_percent, Some(40.0));
     }
 

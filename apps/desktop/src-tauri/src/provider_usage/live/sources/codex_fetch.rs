@@ -304,7 +304,9 @@ impl LiveUsageSource for CodexDirectFetch {
                 Ok(snapshot) => Ok(Some(snapshot)),
                 Err(direct_error) => match codex_app_server::fetch(now) {
                     Ok(snapshot) => Ok(snapshot),
-                    Err(fallback_error) => Err(preferred_error(direct_error, fallback_error)),
+                    Err(fallback_error) => {
+                        Err(preferred_error(direct_error, fallback_error).into())
+                    }
                 },
             }
         })
