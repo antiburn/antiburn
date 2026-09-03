@@ -119,7 +119,11 @@ pub use vendors::{adapter_for, has_dedicated_adapter};
 // `collab_resume_begin`, and `collab_resume_end` are now recognized as
 // eventless (`vendors::codex::is_recognized_eventless`), so a stored Codex
 // collab session must re-ingest to clear its degraded `Partial` coverage.
-pub const PARSER_REVISION: i64 = 19;
+// +1 for Claude housekeeping recognition: `history-suppression` and
+// `artifact-autoreact-ledger` are now recognized as eventless
+// (`analysis::records::is_recognized_eventless`), so a stored Claude session
+// must re-ingest to clear the two names from `unrecognized_types`.
+pub const PARSER_REVISION: i64 = 20;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to

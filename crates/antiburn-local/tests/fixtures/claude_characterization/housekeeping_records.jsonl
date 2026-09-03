@@ -15,4 +15,6 @@
 {"type":"frame-link","timestamp":"2026-08-01T09:00:11Z","frame":"frame-0001"}
 {"type":"cost-state","timestamp":"2026-08-01T09:00:12Z","totalCostUsd":0.0123}
 {"type":"agent-name","timestamp":"2026-08-01T09:00:13Z","name":"orbit-helper"}
-{"type":"assistant","timestamp":"2026-08-01T09:00:14Z","message":{"id":"msg-housekeeping-1","role":"assistant","model":"claude-3-5-haiku-20241022","usage":{"input_tokens":24,"output_tokens":12},"content":[{"type":"text","text":"The fictional orbit is stable."}]}}
+{"type":"history-suppression","timestamp":"2026-08-01T09:00:14Z","suppressed":true}
+{"type":"artifact-autoreact-ledger","v":1,"timestamp":"2026-08-01T09:00:15Z","sessionId":"session-housekeeping-1","accountUuid":"00000000-0000-0000-0000-000000000000","artifacts":{"artifact-0001":{"savedAt":1700000000000,"stampHighWater":null,"everBaselined":true,"everHadThreads":false,"turnTimestamps":[],"threads":[]}}}
+{"type":"assistant","timestamp":"2026-08-01T09:00:16Z","message":{"id":"msg-housekeeping-1","role":"assistant","model":"claude-3-5-haiku-20241022","usage":{"input_tokens":24,"output_tokens":12},"content":[{"type":"text","text":"The fictional orbit is stable."}]}}
