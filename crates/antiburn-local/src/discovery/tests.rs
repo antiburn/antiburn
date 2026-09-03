@@ -5,6 +5,7 @@ use super::*;
 use serial_test::serial;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tempfile::TempDir;
 
 #[tokio::test]

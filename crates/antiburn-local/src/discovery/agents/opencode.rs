@@ -537,67 +537,6 @@ pub async fn discover_recent_in_wsl(
     }
 }
 
-/// Discovers one CWD per recent root session without exporting transcripts.
-///
-/// Repository discovery needs only location/count metadata. Keeping it on the
-/// single CLI metadata query avoids the much more expensive export and chunked
-/// reconstruction path used by upload, detail, and analysis. Legacy fragmented
-/// storage remains the fallback when the distro CLI cannot provide metadata.
-pub async fn discover_cwds_in_wsl(
-    info: &WslEnvironmentInfo,
-    now: i64,
-    since_secs: i64,
-) -> Vec<String> {
-    let executable = opencode_executable(info).await;
-    let cutoff = now.saturating_sub(since_secs.max(0));
-    let query = cli_session_metadata_query(cutoff);
-    let cli_cwds = async {
-        let metadata = run_opencode_cli(
-            &info.context.environment,
-            &executable,
-            &["db", query.as_str(), "--format", "json"],
-            CLI_METADATA_MAX_BYTES,
-        )
-        .await?;
-        let rows = parse_cli_session_rows(&metadata)?;
-        Ok::<_, CliBridgeError>(
-            cli_root_directories(rows)
-                .into_iter()
-                .filter_map(|cwd| {
-                    crate::platform::environment::wsl_to_windows_path(&info.distribution, &cwd)
-                        .ok()
-                        .map(|path| path.to_string_lossy().to_string())
-                })
-                .collect::<Vec<_>>(),
-        )
-    }
-    .await;
-    match cli_cwds {
-        Ok(cwds) => cwds,
-        Err(error) => {
-            tracing::warn!(
-                event = "opencode_wsl_cli_cwd_unavailable",
-                distro = info.distribution,
-                error = %error,
-                "OpenCode WSL metadata-only CWD discovery failed; trying fragmented storage"
-            );
-            let roots = [info.context.home.join(".local/share/opencode")];
-            let mut logs = discover_recent_in_impl(&roots, now, since_secs, false).await;
-            let mut cwds = Vec::new();
-            for log in &mut logs {
-                log.environment = info.context.environment.clone();
-                if let Some(cwd) = crate::discovery::session_log_metadata(log)
-                    .await
-                    .and_then(|metadata| metadata.cwd)
-                {
-                    cwds.push(cwd);
-                }
-            }
-            cwds
-        }
-    }
-}
-
 /// Resolves requested WSL OpenCode titles with one metadata query and no
 /// transcript exports. Missing IDs are omitted from the result.
 pub async fn session_titles_in_wsl(
@@ -673,15 +612,6 @@ fn cli_title_query(requested_ids: &HashSet<String>) -> Option<String> {
             ids.join(",")
         )
     })
-}
-
-/// Root directories represent the same clustered session units emitted by full
-/// OpenCode discovery; descendants must not inflate Local Repos session counts.
-fn cli_root_directories(rows: Vec<CliSessionRow>) -> Vec<String> {
-    rows.into_iter()
-        .filter(|row| row.parent_id.is_none())
-        .filter_map(|row| row.directory)
-        .collect()
 }
 
 /// Loads all recently changed clusters with one metadata query, then exports
@@ -3668,26 +3598,6 @@ fn chunked_db_reconstruction_caps_individual_and_aggregate_data() {
         cli_record(CLI_EXPORT_MAX_BYTES),
         cli_record(1),
     ]));
-}
-
-#[cfg(test)]
-#[test]
-fn metadata_only_cwds_count_roots_not_descendants() {
-    let row = |id: &str, parent_id: Option<&str>, directory: Option<&str>| CliSessionRow {
-        id: id.into(),
-        parent_id: parent_id.map(str::to_string),
-        directory: directory.map(str::to_string),
-        title: None,
-        time_created: None,
-        time_updated: None,
-    };
-    let directories = cli_root_directories(vec![
-        row("ses_root", None, Some("/home/dev/repo")),
-        row("ses_child", Some("ses_root"), Some("/home/dev/repo")),
-        row("ses_no_cwd", None, None),
-    ]);
-
-    assert_eq!(directories, vec!["/home/dev/repo"]);
 }
 
 #[cfg(test)]

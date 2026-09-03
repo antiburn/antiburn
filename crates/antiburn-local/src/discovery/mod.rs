@@ -37,7 +37,7 @@ use async_trait::async_trait;
 use futures_util::{StreamExt as _, stream};
 use scanner::TitleSource;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 pub use fork::{DuplicateForkDetector, FORK_OBSERVATION_KEY, ForkObservation};
 pub use source_version::{
@@ -1067,10 +1067,6 @@ pub async fn session_log_read(log: &SessionLog) -> Option<SourceRead> {
     Some(read)
 }
 
-pub async fn session_log_metadata(log: &SessionLog) -> Option<scanner::SessionMetadata> {
-    session_log_read(log).await.map(|read| read.metadata)
-}
-
 async fn session_source_metadata(
     source: &SessionSource,
     agent_type: Option<AgentKind>,
@@ -1537,9 +1533,6 @@ fn dedupe_environment_sessions(logs: &mut Vec<SessionLog>) {
     logs.retain(|log| seen.insert(log.dedupe_key()));
 }
 
-/// Per-agent timeout for the fast CWD path.
-const AGENT_CWD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
-
 impl Explorers {
     /// Discover file-backed agent stores exposed through WSL's mounted namespace.
     /// SQLite-backed stores are deliberately left to their provider-specific reader;
@@ -1603,37 +1596,6 @@ impl Explorers {
         logs
     }
 
-    /// Per-session WSL CWDs. OpenCode uses its single metadata query; other
-    /// file-backed agents retain their normal metadata parsing.
-    async fn discover_wsl_cwds_for_repo_discovery(&self, now: i64, since_secs: i64) -> Vec<String> {
-        let mut set = tokio::task::JoinSet::new();
-        for info in crate::platform::environment::discover_wsl_environments().await {
-            let explorers = *self;
-            set.spawn(async move {
-                let (mut cwds, logs) = tokio::join!(
-                    agents::opencode::discover_cwds_in_wsl(&info, now, since_secs),
-                    explorers.discover_wsl_non_opencode_sessions_in(&info, now, since_secs),
-                );
-                for log in logs {
-                    if let Some(cwd) = session_log_metadata(&log)
-                        .await
-                        .and_then(|metadata| metadata.cwd)
-                    {
-                        cwds.push(cwd);
-                    }
-                }
-                cwds
-            });
-        }
-        let mut cwds = Vec::new();
-        while let Some(result) = set.join_next().await {
-            if let Ok(found) = result {
-                cwds.extend(found);
-            }
-        }
-        cwds
-    }
-
     /// Collect every agent's recent session logs, native and WSL, deduped.
     /// Calls `on_agent_done` each time an agent explorer completes, enabling
     /// per-agent progress reporting.
@@ -1675,73 +1637,6 @@ impl Explorers {
         logs.extend(self.discover_wsl_file_sessions(now, since_secs).await);
         dedupe_environment_sessions(&mut logs);
         logs
-    }
-
-    /// Fast CWD-only discovery for repo detection. Calls `discover_cwds()` on each
-    /// agent in parallel. The callback receives `(agent_name, cwds_found, completed, total)`.
-    pub async fn discover_cwds_with_progress(
-        &self,
-        now: i64,
-        since_secs: i64,
-        mut on_agent_done: impl FnMut(&str, usize, usize, usize),
-    ) -> Vec<String> {
-        use tokio::task::JoinSet;
-        use tokio::time::timeout;
-
-        async fn with_cwd_timeout<F>(agent: &'static str, future: F) -> (&'static str, Vec<String>)
-        where
-            F: std::future::Future<Output = Vec<String>>,
-        {
-            match timeout(AGENT_CWD_DISCOVERY_TIMEOUT, future).await {
-                Ok(cwds) => (agent, cwds),
-                Err(_) => {
-                    ::tracing::warn!(
-                        event = "repo_discovery_agent_timeout",
-                        agent,
-                        timeout_secs = AGENT_CWD_DISCOVERY_TIMEOUT.as_secs(),
-                        "agent CWD discovery timed out"
-                    );
-                    (agent, Vec::new())
-                }
-            }
-        }
-
-        let mut set = JoinSet::new();
-        for t in AgentKind::ALL {
-            let explorer = self.get(t);
-            let label = t.display_label();
-            set.spawn(async move {
-                with_cwd_timeout(label, explorer.discover_cwds(now, since_secs)).await
-            });
-        }
-
-        let total = set.len();
-        let mut completed = 0;
-        let mut all_cwds = Vec::new();
-
-        while let Some(result) = set.join_next().await {
-            completed += 1;
-            if let Ok((name, cwds)) = result {
-                ::tracing::debug!(
-                    event = "repo_discovery_agent_done",
-                    agent = name,
-                    cwds = cwds.len(),
-                    completed,
-                    total,
-                );
-                on_agent_done(name, cwds.len(), completed, total);
-                all_cwds.extend(cwds);
-            }
-        }
-
-        all_cwds.extend(
-            self.discover_wsl_cwds_for_repo_discovery(now, since_secs)
-                .await,
-        );
-        all_cwds.sort();
-        all_cwds.dedup();
-
-        all_cwds
     }
 
     /// Locate a single session's transcript source by `(agent, session_id)`,

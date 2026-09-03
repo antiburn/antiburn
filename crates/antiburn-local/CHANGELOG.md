@@ -65,6 +65,10 @@ version and refuses the release if there is none.
   Assembling repositories from session working directories is now the
   embedding application's job; `repositories::resolve_granted_repos` and
   `repositories::scan_roots_for_repos` remain as building blocks for it.
+- The fast CWD-only discovery path: `Explorers::discover_cwds_with_progress`,
+  `discovery::session_log_metadata`, and
+  `discovery::agents::opencode::discover_cwds_in_wsl`. Nothing called them
+  once the merged repository-discovery pipeline above was removed.
 
 ## [0.4.0] - 2026-09-02
 

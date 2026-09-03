@@ -696,7 +696,10 @@ async fn test_discover_recent_keeps_brain_transcript_as_file() {
         .find(|log| matches!(&log.source, SessionSource::File(candidate) if candidate == &path))
         .expect("expected a file SessionLog for the brain transcript");
 
-    let metadata = crate::discovery::session_log_metadata(file).await.unwrap();
+    let metadata = crate::discovery::session_log_read(file)
+        .await
+        .unwrap()
+        .metadata;
     assert_eq!(metadata.session_id.as_deref(), Some(uuid));
     assert_eq!(metadata.cwd.as_deref(), Some("/Users/avery/demo-app"));
     assert_eq!(
@@ -773,9 +776,10 @@ async fn test_native_database_replaces_matching_brain_transcript() {
         } if path == &db_path && id == session_id
     ));
     assert_eq!(logs[0].surface_label(home.path()), "ide_desktop");
-    let metadata = crate::discovery::session_log_metadata(&logs[0])
+    let metadata = crate::discovery::session_log_read(&logs[0])
         .await
-        .unwrap();
+        .unwrap()
+        .metadata;
     assert_eq!(metadata.session_id.as_deref(), Some(session_id));
     assert_eq!(metadata.cwd.as_deref(), Some("/tmp/project"));
     assert_eq!(metadata.title.as_deref(), Some("inspect database"));
