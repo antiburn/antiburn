@@ -113,36 +113,6 @@ async fn the_preview_output_is_unchanged() {
     );
 }
 
-#[tokio::test]
-async fn bounded_whole_document_fallback_reads_past_the_preview() {
-    let dir = TempDir::new().expect("tempdir");
-    let path = dir.path().join("large-session.json");
-    let padding = "x".repeat(SOURCE_PREVIEW_BYTES as usize);
-    let content = format!(r#"{{"padding":"{padding}","sessionId":"large-session"}}"#);
-    tokio::fs::write(&path, content)
-        .await
-        .expect("write source");
-
-    let preview = session_source_preview(&SessionSource::File(path.clone()))
-        .await
-        .expect("preview");
-    assert!(
-        scanner::parse_session_metadata_str(&preview)
-            .session_id
-            .is_none()
-    );
-
-    let full = bounded_file_content(&path, WHOLE_DOCUMENT_METADATA_BYTES)
-        .await
-        .expect("bounded document");
-    assert_eq!(
-        scanner::parse_session_metadata_str(&full)
-            .session_id
-            .as_deref(),
-        Some("large-session")
-    );
-}
-
 #[test]
 fn the_preview_conversion_consumes_its_buffer() {
     let mut bytes = Vec::with_capacity(64);
@@ -164,19 +134,6 @@ fn resolved_titles_are_normalized_and_unicode_safely_bounded() {
     assert!(resolved.text.starts_with("Reader request 🧪"));
     assert!(!resolved.text.contains('\n'));
     assert!(!resolved.text.contains('\t'));
-}
-
-#[test]
-fn cwd_occurrences_merge_native_and_wsl_counts() {
-    let mut counts = std::collections::HashMap::new();
-    add_cwd_occurrences(&mut counts, ["/repo".into(), "/repo".into()]);
-    add_cwd_occurrences(
-        &mut counts,
-        ["/repo".into(), r"\\wsl.localhost\Ubuntu\repo".into()],
-    );
-
-    assert_eq!(counts.get("/repo"), Some(&3));
-    assert_eq!(counts.get(r"\\wsl.localhost\Ubuntu\repo"), Some(&1));
 }
 
 #[tokio::test]
@@ -217,19 +174,6 @@ async fn bounded_log_tasks_preserves_order_and_limits_concurrency() {
     );
     assert!(peak.load(Ordering::SeqCst) <= LOG_METADATA_CONCURRENCY);
     assert!(peak.load(Ordering::SeqCst) > 1);
-}
-
-#[tokio::test]
-async fn cwd_session_discovery_timeout_preserves_agent_label() {
-    let (agent, cwds) = cwds_per_recent_session(
-        "Test Agent",
-        std::future::pending(),
-        Duration::from_millis(1),
-    )
-    .await;
-
-    assert_eq!(agent, "Test Agent");
-    assert!(cwds.is_empty());
 }
 
 fn timed_file_log(agent: AgentKind, path: &str, updated_at: Option<i64>) -> SessionLog {

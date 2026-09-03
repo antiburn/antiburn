@@ -23,8 +23,8 @@ use std::time::UNIX_EPOCH;
 use crate::discovery::scanner::{AgentKind, TitleSource};
 use crate::discovery::{
     AgentExplorer, DesktopPlatform, DirectSessionSource, FORK_OBSERVATION_KEY, ForkObservation,
-    ResolvedTitle, SessionLog, SessionSource, SessionTitleAndSurface, SurfacePaths,
-    TitleLookupKind, WatchRoot, current_desktop_platform, env_path_when_real_home, home_dir,
+    ResolvedTitle, SessionLog, SessionSource, SurfacePaths, TitleLookupKind, WatchRoot,
+    current_desktop_platform, env_path_when_real_home, home_dir,
 };
 use async_trait::async_trait;
 use rusqlite::{Connection, OpenFlags, params, params_from_iter};
@@ -184,37 +184,6 @@ impl AgentExplorer for OpenCodeExplorer {
         discover_cwds_in(&roots, now, since_secs).await
     }
 
-    /// OpenCode override of the batched title+surface scan. Pulls every
-    /// session's title from `opencode.db` in a single SQL query rather
-    /// than reading transcript files (which don't carry titles). Surface
-    /// is always `"cli"` — OpenCode is a single binary serving both CLI
-    /// and TUI from the same store.
-    async fn session_titles_and_surfaces(&self) -> Vec<SessionTitleAndSurface> {
-        let mut out = Vec::new();
-        for root in data_roots() {
-            let db_path = root.join("opencode.db");
-            if !db_path.exists() {
-                continue;
-            }
-            let rows =
-                tokio::task::spawn_blocking(move || query_all_session_titles_from_db(&db_path))
-                    .await
-                    .unwrap_or_default();
-            for (session_id, title) in rows {
-                // OpenCode's SQLite schema has no rename concept — every
-                // non-empty `session.title` is tagged `Explicit`.
-                let title_source = title.as_ref().map(|_| TitleSource::Explicit);
-                out.push(SessionTitleAndSurface {
-                    session_id,
-                    title,
-                    title_source,
-                    surface: "cli",
-                });
-            }
-        }
-        out
-    }
-
     fn title_lookup_kind(&self) -> TitleLookupKind {
         TitleLookupKind::Direct
     }
@@ -269,10 +238,6 @@ impl AgentExplorer for OpenCodeExplorer {
             }
         }
         resolved
-    }
-
-    async fn session_title(&self, agent_session_id: &str) -> Option<ResolvedTitle> {
-        self.indexed_session_title(agent_session_id).await
     }
 
     /// Owns the per-platform OpenCode data dir (XDG `share/opencode/`, macOS

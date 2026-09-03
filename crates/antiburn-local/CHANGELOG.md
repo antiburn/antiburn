@@ -47,6 +47,25 @@ version and refuses the release if there is none.
   parent is not recent and whose `subagents` directory is old, and
   Antigravity checks a database's mtime before opening it.
 
+### Removed
+
+- The whole-file session time-range readers: `scanner::session_time_range`
+  and `scanner::session_time_range_str`. Nothing used them outside their own
+  tests.
+- The batched title-and-surface scan path: `AgentExplorer::session_title`,
+  `AgentExplorer::session_titles_and_surfaces`, `SessionTitleAndSurface`,
+  `Explorers::session_title_for`, and `Explorers::session_titles_and_surfaces_for`.
+  Title lookups now go through `AgentExplorer::indexed_session_title` /
+  `indexed_session_titles` (`Explorers::indexed_session_titles_for`), which
+  read a durable per-agent index instead of scanning transcript content.
+- The merged session-and-scan repository-discovery pipeline:
+  `repositories::discover_repositories`, `DiscoveryRequest`,
+  `SessionCwdSource`, `ExplorerCwdSource`, `AgentProgress`,
+  `default_concurrency`, and `Explorers::discover_cwd_counts_with_progress`.
+  Assembling repositories from session working directories is now the
+  embedding application's job; `repositories::resolve_granted_repos` and
+  `repositories::scan_roots_for_repos` remain as building blocks for it.
+
 ## [0.4.0] - 2026-09-02
 
 ### Added

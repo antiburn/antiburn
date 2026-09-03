@@ -2,11 +2,11 @@
 //!
 //! # Why this is assembled here rather than taken whole from the engine
 //!
-//! The engine's merged pipeline (`repositories::discover_repositories`) is
-//! **owner-scoped**: the forward scan keeps a clone only when its git remote
-//! names a specific owner, and the session pass that would supply that owner is
-//! crate-private. antiburn has no account and therefore no owner to supply, so
-//! it assembles the same two passes from the engine's public parts:
+//! The engine's repository-discovery building blocks are owner-scoped: the
+//! forward scan ([`scan_roots_for_repos`]) keeps a clone only when its git
+//! remote names a specific owner. antiburn has no account and therefore no
+//! owner to supply, so it assembles the same two passes from the engine's
+//! public parts:
 //!
 //! 1. **From sessions.** Every working directory the store has seen resolves to
 //!    a canonical repository root through the engine's git helpers. This is the

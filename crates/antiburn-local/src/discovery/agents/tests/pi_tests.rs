@@ -274,9 +274,9 @@ async fn test_surface_paths_only_populates_cli() {
 }
 
 /// End-to-end title extraction: a Pi-shaped JSONL is parsed by the
-/// shared scanner and the title comes back tagged as `FirstMessage`.
-/// This is the path `default_session_titles_and_surfaces` (in `agents::
-/// mod`) exercises for every Pi session under the `Scan` lookup branch.
+/// shared scanner and the title comes back tagged as `FirstMessage`. Pi is
+/// a `Scan`-kind agent with no durable title index, so this transcript
+/// metadata path is how every Pi session's title is resolved at ingest.
 #[tokio::test]
 async fn test_parse_session_metadata_tags_pi_title_as_first_message() {
     let home = TempDir::new().unwrap();

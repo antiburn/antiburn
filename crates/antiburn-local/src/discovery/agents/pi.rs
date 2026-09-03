@@ -254,8 +254,9 @@ async fn cwd_from_first_line(path: &Path) -> Option<String> {
 /// Find a session file by UUID suffix across all log directories.
 ///
 /// Test-only helper retained for the session-id / title-extraction tests that
-/// model the on-disk layout end-to-end. Production lookups go through the
-/// shared `default_session_titles_and_surfaces` scan in `agents::mod`.
+/// model the on-disk layout end-to-end. Pi has no durable title index, so
+/// production titles come from transcript metadata recorded at ingest time,
+/// not from a lookup through this helper.
 #[cfg(test)]
 async fn find_session_file_by_id(dirs: &[PathBuf], session_id: &str) -> Option<PathBuf> {
     let suffix = format!("_{session_id}.jsonl");

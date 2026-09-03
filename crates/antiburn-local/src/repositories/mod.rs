@@ -1,33 +1,34 @@
-//! Finding the repositories a developer actually works in, on this machine.
+//! Building blocks for finding the repositories a developer actually works
+//! in, on this machine.
 //!
-//! Discovery answers one question: *which repositories belonging to `owner` are
-//! cloned here, where, and can we read them?* It answers it two ways and merges
-//! the results:
+//! This module does not run a discovery pipeline itself; it gives the
+//! embedding application the parts to assemble one:
 //!
-//! 1. **Forward** — walk the directories developers keep clones in
-//!    ([`scan`]), matching each repository by its git remote. This finds
-//!    repositories with no agent sessions at all, and clones whose folder name
-//!    differs from the repository name.
-//! 2. **From sessions** — resolve the working directories of recent agent
-//!    sessions to repository roots ([`sessions`]). This finds clones outside the
-//!    scanned directories and yields the per-repository session count.
+//! - **Identity** ([`repo_root_identity`], [`normalize_remote_url`],
+//!   [`parse_repo_name_from_url`], …) — recognizing that a worktree, a
+//!   differently-cased path, or a re-cloned copy is the same repository.
+//! - **Matching** ([`merge_located_repos`], [`match_known_repos`],
+//!   [`located_repos_for_owner`], [`RepoDiscoveryResult`],
+//!   [`DiscoveryMode`]) — deduping locations found by different passes and,
+//!   optionally, reconciling them against a caller-supplied
+//!   [`RepositoryDescriptor`] list into a gap analysis: which are cloned,
+//!   which are blocked by the operating system, and which are missing.
+//! - **Scan-root walk** ([`scan_roots_for_repos`], [`sibling_scan_roots`],
+//!   [`parent_scan_roots`]) — walking the directories developers keep clones
+//!   in, owner-scoped, matching each repository by its git remote.
+//! - **Session-cwd resolution** ([`sessions`]) — bounded-concurrency
+//!   primitives that resolve a working directory to a canonical repository
+//!   root, for callers that already have their own source of recent session
+//!   working directories (the desktop app resolves these from its session
+//!   store; see `apps/desktop/src-tauri/src/repositories.rs`).
+//! - **Consent** ([`ConsentGrants`], [`partition_cwds_by_grants`],
+//!   [`verify_dir_access`], [`is_access_protected`], [`protected_dir_name`],
+//!   the settings-URL helpers) — which OS-protected directories the user
+//!   already allowed, and where that record is kept. The engine never raises
+//!   a consent dialog on its own initiative and never persists a grant.
 //!
-//! Optionally, the caller supplies a list of repositories it already knows about
-//! ([`RepositoryDescriptor`]) and gets a gap analysis: which are cloned, which
-//! are blocked by the operating system, and which are missing.
-//!
-//! # What the engine does not decide
-//!
-//! Three things are the embedding application's, and reach the engine only as
-//! seams:
-//!
-//! - **Consent** ([`ConsentGrants`]) — which OS-protected directories the user
-//!   already allowed, and where that record is kept. The engine never raises a
-//!   consent dialog on its own initiative and never persists a grant.
-//! - **Progress** ([`ProgressSink`]) — the engine reports phases as data; the
-//!   application owns wording and transport.
-//! - **Sessions** ([`SessionCwdSource`]) — where recent session working
-//!   directories come from. [`ExplorerCwdSource`] is the built-in answer.
+//! [`ProgressSink`] lets a caller assembling its own pipeline report phases
+//! as data; the application owns wording and transport.
 //!
 //! Nothing here knows about hosting providers, accounts, uploads, or selection
 //! policy beyond the opt-out flag the caller sets on each descriptor.
@@ -45,7 +46,6 @@ mod sessions;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashSet;
 use std::path::Path;
 
 pub use access::verify_dir_access;
@@ -70,175 +70,7 @@ pub use scan::{
     MAX_PARENT_SCAN_ROOTS, SCAN_DEPTH, parent_scan_roots, persist_confirmed_parent_roots,
     scan_roots_for_repos, sibling_scan_roots,
 };
-pub use sessions::{
-    AgentProgress, ExplorerCwdSource, SessionCwdSource, concurrency_from, default_concurrency,
-    resolve_granted_repos,
-};
-
-/// One discovery run's inputs.
-pub struct DiscoveryRequest<'a> {
-    /// Remote owner (organization or user login) a clone's git remote must
-    /// name for it to be reported. Compared case-insensitively.
-    pub owner: &'a str,
-    /// Repositories the caller already knows about. `Some` produces a
-    /// [`DiscoveryMode::Full`] gap analysis; `None` reports only what is on
-    /// disk ([`DiscoveryMode::SessionsOnly`]).
-    pub known_repos: Option<Vec<RepositoryDescriptor>>,
-    /// How far back to look for agent sessions, in seconds.
-    pub since_secs: i64,
-    /// Re-probe consent-protected directories to pick up grants made outside
-    /// the application.
-    ///
-    /// **This can raise the native consent dialog**, so it must only ever be
-    /// `true` in response to an explicit user action. Background runs pass
-    /// `false`.
-    pub probe_protected: bool,
-    /// Directory holding the user's declared extra scan roots (see
-    /// [`crate::paths::scan_roots`]). Roots confirmed to contain a repository
-    /// are persisted back here.
-    pub state_dir: &'a Path,
-    /// Maximum concurrent repository probes. `None` uses
-    /// [`default_concurrency`].
-    pub concurrency: Option<usize>,
-}
-
-/// Discover the `owner`'s repositories on the local machine.
-///
-/// Runs the session pass, then the directory scan, merges the two by canonical
-/// repository root, and matches the result against
-/// [`known_repos`](DiscoveryRequest::known_repos) when one was supplied.
-///
-/// Deferred (consent-protected) paths are filtered before being returned: with
-/// a known-repository list, only paths whose folder name matches a known
-/// repository survive, so unrelated local projects are never reported. Scan
-/// roots bypass that filter — a directory like `~/Documents/GitHub` never
-/// correlates by folder name, yet it is exactly what consent must be asked for.
-pub async fn discover_repositories(
-    request: DiscoveryRequest<'_>,
-    sessions: &dyn SessionCwdSource,
-    consent: &dyn ConsentGrants,
-    progress: &dyn ProgressSink,
-) -> RepoDiscoveryResult {
-    let DiscoveryRequest {
-        owner,
-        known_repos,
-        since_secs,
-        probe_protected,
-        state_dir,
-        concurrency,
-    } = request;
-    let concurrency = concurrency.unwrap_or_else(default_concurrency);
-
-    let t0 = std::time::Instant::now();
-    ::tracing::info!(
-        event = "repo_discovery_start",
-        owner,
-        window_days = since_secs / 86400,
-        has_known_repos = known_repos.is_some(),
-    );
-
-    let session_result = sessions::discover_repos_from_sessions(
-        owner,
-        since_secs,
-        probe_protected,
-        concurrency,
-        sessions,
-        consent,
-        progress,
-    )
-    .await;
-
-    ::tracing::info!(
-        event = "repo_discovery_sessions_done",
-        repos_found = session_result.repos.len(),
-        deferred = session_result.deferred.len(),
-        elapsed_ms = t0.elapsed().as_millis() as u64,
-    );
-
-    let (scan_repos, scan_deferred) = match crate::paths::home_dir() {
-        Some(home) => {
-            // Extra scan roots beyond the common directories: parents of
-            // session-located repositories (so a sibling with no sessions,
-            // cloned alongside an active repository, is found), plus the
-            // directories the user declared.
-            let mut extra_roots = scan::sibling_scan_roots(&session_result.repos, &home);
-            extra_roots.extend(crate::paths::scan_roots::load_scan_roots(state_dir));
-            // A session whose working directory is a *parent folder above the
-            // repositories* (not itself a repository) resolves to nothing and is
-            // dropped. Scan those parents so the child repositories beneath them
-            // are discovered.
-            let parent_roots = scan::parent_scan_roots(&session_result.unresolved_cwds, &home);
-            extra_roots.extend(parent_roots.iter().cloned());
-            let (scan_repos, scan_deferred) =
-                scan::scan_roots_for_repos(&home, owner, probe_protected, &extra_roots, consent)
-                    .await;
-            // Persist parents that actually contained a repository so they keep
-            // being scanned after the originating sessions age out of the
-            // lookback window. Only confirmed parents are stored, to avoid
-            // polluting the declared-root list with one-off directories.
-            scan::persist_confirmed_parent_roots(state_dir, &parent_roots, &scan_repos).await;
-            (scan_repos, scan_deferred)
-        }
-        None => (Vec::new(), Vec::new()),
-    };
-
-    ::tracing::info!(
-        event = "repo_discovery_scan_done",
-        scanned_repos = scan_repos.len(),
-        scan_deferred = scan_deferred.len(),
-        elapsed_ms = t0.elapsed().as_millis() as u64,
-    );
-
-    // Merge session + scan locations, deduped by canonical repository root.
-    // Sessions carry the session count; scan-only repositories contribute `0`
-    // (found on disk, no agent activity yet).
-    let located = merge_located_repos(session_result.repos, scan_repos);
-
-    // Capture the known repository names before `known_repos` is moved, so
-    // protected directories that cannot be read can still be correlated. Empty
-    // without a list, which drops every deferred path.
-    let known_repo_names: HashSet<String> = known_repos
-        .as_ref()
-        .map(|repos| {
-            repos
-                .iter()
-                .map(|repo| repo.name.to_ascii_lowercase())
-                .collect()
-        })
-        .unwrap_or_default();
-    // Whether an authoritative list exists at all. This is distinct from
-    // `known_repo_names` being empty: a caller with zero repositories still has
-    // a list, and uncorrelated protected folders must be dropped, not shown.
-    let has_known_list = known_repos.is_some();
-
-    let mut result = match known_repos {
-        Some(known) => match_known_repos(known, &located, owner),
-        None => located_repos_for_owner(owner, &located),
-    };
-
-    // Session working directories under protected directories correlate to
-    // known repositories by folder name, dropping uncorrelated ones. Scan roots
-    // never correlate by folder name yet are exactly what consent must be asked
-    // for, so they bypass the filter and are always kept.
-    let mut deferred =
-        filter_deferred_by_known(session_result.deferred, &known_repo_names, has_known_list);
-    deferred.extend(scan_deferred);
-    dedup_deferred_by_cwd(&mut deferred);
-    result.deferred_protected = deferred;
-
-    ::tracing::info!(
-        event = "repo_discovery_complete",
-        mode = ?result.discovery_mode,
-        total_repos = result.repos.len(),
-        accessible = result.repos.iter().filter(|r| r.status == RepoAccessStatus::Accessible).count(),
-        permission_denied = result.repos.iter().filter(|r| r.status == RepoAccessStatus::PermissionDenied).count(),
-        not_cloned = result.repos.iter().filter(|r| r.status == RepoAccessStatus::NotCloned).count(),
-        deferred = result.deferred_protected.len(),
-        elapsed_ms = t0.elapsed().as_millis() as u64,
-    );
-
-    result
-}
+pub use sessions::{concurrency_from, resolve_granted_repos};
 
 /// Whether a path is under an OS-level access-control mechanism (for example
 /// macOS TCC). Returns `false` on platforms without such controls.

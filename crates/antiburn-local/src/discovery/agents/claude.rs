@@ -9,11 +9,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::discovery::scanner::{self, AgentKind, TitleSource};
+use crate::discovery::scanner::{self, AgentKind};
 use crate::discovery::{
-    AgentExplorer, DirectSessionSource, ResolvedTitle, SessionLog, SessionSource, SurfacePaths,
-    TitleLookupKind, WatchRoot, app_config_dir_in, collect_dirs_with_exts,
-    extract_json_string_field, home_dir, recent_files_with_exts,
+    AgentExplorer, DirectSessionSource, SessionLog, SessionSource, SurfacePaths, TitleLookupKind,
+    WatchRoot, app_config_dir_in, collect_dirs_with_exts, extract_json_string_field, home_dir,
+    recent_files_with_exts,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -73,22 +73,12 @@ impl AgentExplorer for ClaudeExplorer {
         TitleLookupKind::Direct
     }
 
-    /// Direct file lookup by transcript filename stem. Avoids the default
-    /// implementation's O(N) walk across all recent logs — Claude transcripts
-    /// are named `{session_id}.jsonl`, so we can read the one file we care
-    /// about. Keeps frontend title fetches fast even for trays full of rows.
-    async fn session_title(&self, agent_session_id: &str) -> Option<ResolvedTitle> {
-        let home = home_dir()?;
-        let project_dirs = all_log_dirs_in(&home).await;
-        session_title_with_dirs(&project_dirs, agent_session_id).await
-    }
-
-    /// Point query, same shape as `session_title`: a transcript lives at
-    /// `<project_dir>/{session_id}.jsonl`, so an existence check against the
-    /// project dirs replaces the default full-tree discover. A miss returns
-    /// `Unsupported` (not `Missing`): a desktop-manifest session whose CLI
-    /// transcript is gone doesn't exist at that path, so the caller must still
-    /// fall back to the full discover to resolve it to its Inline source.
+    /// Point query: a transcript lives at `<project_dir>/{session_id}.jsonl`,
+    /// so an existence check against the project dirs replaces the default
+    /// full-tree discover. A miss returns `Unsupported` (not `Missing`): a
+    /// desktop-manifest session whose CLI transcript is gone doesn't exist
+    /// at that path, so the caller must still fall back to the full
+    /// discover to resolve it to its Inline source.
     async fn direct_session_source(&self, session_id: &str) -> DirectSessionSource {
         if let Some(home) = home_dir()
             && let Some(path) = locate_transcript_in(&home, session_id).await
@@ -236,22 +226,6 @@ pub(crate) fn sample_log_path(home: &Path) -> PathBuf {
         .join("projects")
         .join("-Users-foo-bar")
         .join("session.jsonl")
-}
-
-/// Resolve a Claude session title given a pre-fetched list of project
-/// directories. Reads the transcript named `{session_id}.jsonl` directly
-/// (point query) and wraps the parsed title + provenance into a
-/// [`ResolvedTitle`]. Returns `None` when no transcript matches or the
-/// transcript has no extractable title.
-pub async fn session_title_with_dirs(
-    project_dirs: &[PathBuf],
-    agent_session_id: &str,
-) -> Option<ResolvedTitle> {
-    let path = resolve_cli_transcript_path(project_dirs, agent_session_id).await?;
-    let metadata = scanner::parse_session_metadata(&path).await;
-    let text = metadata.title?;
-    let source = metadata.title_source.unwrap_or(TitleSource::Explicit);
-    Some(ResolvedTitle::new(text, source))
 }
 
 /// Point-locate a session transcript under a given home directory:
@@ -1340,30 +1314,5 @@ mod tests {
         for bad in ["../etc/passwd", "..\\..\\windows", "abc/../def", ""] {
             assert!(resolve_cli_transcript_path(&dirs, bad).await.is_none());
         }
-    }
-
-    #[tokio::test]
-    async fn test_session_title_with_dirs_returns_resolved_title_and_source() {
-        use crate::discovery::scanner::TitleSource;
-
-        let home = TempDir::new().unwrap();
-        let project = home
-            .path()
-            .join(".claude")
-            .join("projects")
-            .join("-Users-foo-bar");
-        tokio::fs::create_dir_all(&project).await.unwrap();
-        let session_id = "11111111-2222-3333-4444-555555555555";
-        let body = format!(
-            r#"{{"type":"custom-title","sessionId":"{session_id}","customTitle":"Renamed manually"}}"#,
-        );
-        tokio::fs::write(project.join(format!("{session_id}.jsonl")), body)
-            .await
-            .unwrap();
-
-        let dirs = vec![project.clone()];
-        let resolved = session_title_with_dirs(&dirs, session_id).await.unwrap();
-        assert_eq!(resolved.text, "Renamed manually");
-        assert_eq!(resolved.source, TitleSource::UserRename);
     }
 }

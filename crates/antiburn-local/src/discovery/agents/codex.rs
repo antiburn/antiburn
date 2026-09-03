@@ -118,25 +118,6 @@ impl AgentExplorer for CodexExplorer {
         indexed_session_titles_in(&home, codex_home.as_deref(), agent_session_ids).await
     }
 
-    /// Resolve a Codex session title from Codex's own stores, in order of
-    /// authority:
-    ///
-    /// 1. `~/.codex/state_5.sqlite` `threads.name` — the user-set name.
-    /// 2. A generated `threads.title`, then `session_index.jsonl#thread_name`.
-    /// 3. A first-message `threads.title`, then the rollout transcript.
-    async fn session_title(&self, agent_session_id: &str) -> Option<ResolvedTitle> {
-        if let Some(title) = self.indexed_session_title(agent_session_id).await {
-            return Some(title);
-        }
-
-        let dirs = all_log_dirs().await;
-        let path = find_session_file_by_id(&dirs, agent_session_id).await?;
-        let metadata = scanner::parse_session_metadata(&path).await;
-        let text = metadata.title?;
-        let source = metadata.title_source.unwrap_or(TitleSource::Explicit);
-        Some(ResolvedTitle::new(text, source))
-    }
-
     /// Point query: every rollout embeds its thread id as the filename suffix
     /// (`rollout-<ts>-<id>.jsonl`), so a filename scan replaces the default
     /// full-tree discover (which also stats every file). Preserves
@@ -823,8 +804,8 @@ async fn indexed_session_title_in(
 
 /// Filename is pinned to the schema version Codex Desktop ships today
 /// (`state_5.sqlite`). If a future release writes `state_6.sqlite`, this
-/// lookup misses and `session_title` falls through to the JSONL index plus
-/// rollout parser — preferable to silently reading from an unverified schema.
+/// lookup misses and falls through to the JSONL index — preferable to
+/// silently reading from an unverified schema.
 fn state_db_paths(home: &Path, codex_home: Option<&Path>) -> Vec<PathBuf> {
     let mut paths = vec![home.join(".codex").join("state_5.sqlite")];
     if let Some(custom_home) = codex_home {
