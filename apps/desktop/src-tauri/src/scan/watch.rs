@@ -9,10 +9,9 @@
 //!
 //! # Roots
 //!
-//! Each agent's [`AgentExplorer::watch_roots`](antiburn_local::discovery::AgentExplorer::watch_roots)
-//! lists the directories its own discovery reads. Only roots that exist are
-//! watched at start. A periodic re-check adds roots that appear later (a
-//! freshly installed agent), on the same cadence as [`super::TICK`].
+//! Each agent lists its discovery roots and indexed-title files.
+//! The watcher observes title files through their parent directories.
+//! A periodic re-check adds roots that appear later.
 //!
 //! # Debouncing
 //!
@@ -94,13 +93,22 @@ pub fn spawn_watcher(app: &AppHandle) -> WatcherStatus {
     })
 }
 
-/// The roots every agent's discovery reads, for a given home. One list, so
-/// the watcher and its periodic re-check share one source of truth.
+/// Return every discovery root and indexed-title parent for a home.
 fn all_watch_roots(home: &Path) -> Vec<WatchRoot> {
-    AgentKind::ALL
+    let mut roots: Vec<WatchRoot> = AgentKind::ALL
         .iter()
         .flat_map(|agent| Explorers::DISK.watch_roots_for(agent, home))
-        .collect()
+        .collect();
+    roots.extend(AgentKind::ALL.iter().flat_map(|agent| {
+        Explorers::DISK
+            .indexed_title_watch_files_for(agent, home)
+            .into_iter()
+            .filter_map(|file| file.parent().map(Path::to_path_buf))
+            .map(WatchRoot::shallow)
+    }));
+    roots.sort_by(|left, right| left.path.cmp(&right.path));
+    roots.dedup_by(|left, right| left.path == right.path);
+    roots
 }
 
 /// Testable core of [`spawn_watcher`]: build the roots, start the OS watcher,
@@ -461,6 +469,18 @@ mod tests {
     }
 
     #[test]
+    fn codex_title_stores_add_one_shallow_parent_root() {
+        let home = Path::new("/home/avery");
+        let codex = home.join(".codex");
+
+        let roots = all_watch_roots(home);
+        let matching: Vec<&WatchRoot> = roots.iter().filter(|root| root.path == codex).collect();
+
+        assert_eq!(matching.len(), 1);
+        assert!(!matching[0].recursive);
+    }
+
+    #[test]
     fn a_root_that_does_not_exist_yet_is_skipped_rather_than_failed() {
         let home = tempfile::TempDir::new().unwrap();
         let (tx, _rx) = unbounded_channel::<Event>();
@@ -512,5 +532,37 @@ mod tests {
             1,
             "creating a transcript under a watched root should request one pass"
         );
+    }
+
+    #[tokio::test]
+    async fn the_watcher_reports_codex_title_store_changes() {
+        let home = tempfile::TempDir::new().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+
+        let (tx, mut rx) = unbounded_channel();
+        let status = spawn_watcher_over(home.path().to_path_buf(), move |burst| {
+            let _ = tx.send(burst);
+        });
+        assert!(status.active);
+        assert!(status.failed_roots.is_empty());
+
+        let index = codex.join("session_index.jsonl");
+        std::fs::write(
+            &index,
+            b"{\"id\":\"synthetic\",\"thread_name\":\"New title\"}\n",
+        )
+        .unwrap();
+        let wal = codex.join("state_5.sqlite-wal");
+        std::fs::write(&wal, b"synthetic WAL change").unwrap();
+
+        let burst = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("title changes should reach the watcher")
+            .expect("watcher should stay connected");
+        let canonical_index = std::fs::canonicalize(index).unwrap();
+        let canonical_wal = std::fs::canonicalize(wal).unwrap();
+        assert!(burst.paths.contains(&canonical_index));
+        assert!(burst.paths.contains(&canonical_wal));
     }
 }

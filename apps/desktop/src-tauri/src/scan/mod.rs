@@ -36,11 +36,10 @@
 //!   agent's watch roots (`AgentExplorer::watch_roots`), debounces the events
 //!   it sees, and hands the scheduler's loop one [`watch::WatchBurst`] after
 //!   each quiet period — see the `watch` module doc for the debounce shape.
-//!   The `scoped` module classifies that burst into up to three lanes: a
-//!   known session refreshed directly with no discovery walk, a plain
-//!   agent rediscovered on its own, or a database-backed agent rediscovered
-//!   at a longer floor because every write near its store looks like a new
-//!   session. Each lane has its own minimum re-run interval, and a burst
+//!   The `scoped` module classifies that burst into four lanes: a known
+//!   session refresh, an indexed-title refresh, a plain agent rediscovery,
+//!   or a database-backed agent rediscovery. Each lane has its own minimum
+//!   re-run interval, and a burst
 //!   that arrives inside one is folded into the next admitted run rather
 //!   than dropped — see the `scoped` module doc for the full contract.
 //!   [`TICK`] stays as reconciliation for what the watcher cannot cover (a
@@ -500,12 +499,8 @@ async fn sleep_until_due(due: Option<tokio::time::Instant>) {
     }
 }
 
-/// Run one wake's admitted [`scoped::ScopedWork`]: [`scoped::refresh_sessions`]
-/// for the sessions (T1), [`scoped::rediscover_agents`] for the plain and
-/// database-backed agents together (T3/T5) — both floors lead to the same
-/// rediscovery call, so one combined set avoids running it twice. Returns the
-/// part that found a command's pass already running, for the caller to retry
-/// (T7) without re-admitting it through [`scoped::Floors`].
+/// Run each lane admitted for one scheduler wake.
+/// Return work that found another pass running, so the scheduler can retry it.
 async fn run_admitted_work(app: &AppHandle, work: scoped::ScopedWork) -> scoped::ScopedWork {
     let mut busy = scoped::ScopedWork::default();
 
@@ -521,6 +516,22 @@ async fn run_admitted_work(app: &AppHandle, work: scoped::ScopedWork) -> scoped:
             Ok(None) => busy.sessions = work.sessions,
             Err(error) => {
                 ::tracing::debug!(event = "scan_targeted_failed", error = %error);
+            }
+        }
+    }
+
+    if !work.title_agents.is_empty() {
+        match scoped::refresh_indexed_titles(app, &work.title_agents).await {
+            Ok(Some(summary)) => {
+                ::tracing::debug!(
+                    event = "scan_titles_admitted",
+                    agents = work.title_agents.len(),
+                    changed = summary.re_described,
+                );
+            }
+            Ok(None) => busy.title_agents = work.title_agents,
+            Err(error) => {
+                ::tracing::debug!(event = "scan_titles_failed", error = %error);
             }
         }
     }
@@ -727,8 +738,7 @@ struct PassSummary {
     /// patch: this pass indexed a session the list has never shown, or
     /// evicted a rejected one.
     list_changed: bool,
-    /// [`Described::changed`]'s length: rows this pass re-described, new or
-    /// with a moved cursor, never a row reused verbatim.
+    /// [`Described::changed`]'s length: new or refreshed rows.
     re_described: usize,
 }
 
@@ -880,9 +890,8 @@ async fn pass(
 
 /// R3: which of this pass's records are actually worth writing.
 ///
-/// A record earns a write by being in `changed` (this pass re-described it —
-/// new, or its cursor moved) or in `returned` (its evidence last failed on a
-/// missing source, so even an unchanged row needs a write to re-queue it).
+/// A record earns a write when it is new, refreshed, or returned.
+/// A returned record previously failed because its source was missing.
 /// Every other record is a row reused verbatim, and rewriting it would only
 /// cost a write for no observable change. Order follows `records`, and a key
 /// named by both `changed` and `returned` still yields one copy.
@@ -933,7 +942,7 @@ async fn discover_scoped_agents(
     logs
 }
 
-/// Emit `SESSION_ENTRY_CHANGED_EVENT` for every re-described row the reader's
+/// Emit `SESSION_ENTRY_CHANGED_EVENT` for every refreshed row the reader's
 /// list has already shown, so a row already on screen patches in place
 /// instead of waiting for the next full refetch. A brand-new session is not
 /// announced this way: it has no row to patch, and [`Described::list_changed`]
@@ -961,8 +970,7 @@ fn announce_changed_rows(
 struct Described {
     records: Vec<SessionRecord>,
     rejected: Vec<SessionKey>,
-    /// Keys of every record this pass re-described — new, or its cursor
-    /// moved — never a row this pass reused verbatim.
+    /// Keys of every new or refreshed record.
     changed: Vec<SessionKey>,
     /// True when a reader's list needs a full refetch rather than a row
     /// patch: this pass indexed a session absent from `previous_records`, or
@@ -1006,8 +1014,11 @@ async fn describe_with_states(
             let indexed_title = recovered_id(&log)
                 .and_then(|session_id| indexed_titles.get(&(log.agent_type, session_id)).cloned());
             set.spawn(async move {
-                if let Some(reused) = reuse_unchanged_record(&log, previous.as_ref()).await {
-                    return (DescribeOutcome::Session(Box::new(reused)), false);
+                if let Some(reused) =
+                    reuse_unchanged_record(&log, previous.as_ref(), indexed_title.as_ref()).await
+                {
+                    let changed = previous.as_ref().is_some_and(|stored| stored != &reused);
+                    return (DescribeOutcome::Session(Box::new(reused)), changed);
                 }
                 let outcome = describe_one_with_activity(log, &home, indexed_title, previous).await;
                 (outcome, true)
@@ -1015,14 +1026,14 @@ async fn describe_with_states(
         }
         while let Some(joined) = set.join_next().await {
             match joined {
-                Ok((DescribeOutcome::Session(record), re_described)) => {
+                Ok((DescribeOutcome::Session(record), changed_record)) => {
                     let cwd = record.cwd.as_deref();
                     // The engine's opt-out gate, applied once here so every
                     // surface that reads the store inherits it.
                     if cwd.is_some_and(|cwd| ignored_paths::set_contains(ignored, cwd)) {
                         continue;
                     }
-                    if re_described {
+                    if changed_record {
                         changed.push(record.key.clone());
                     }
                     records.push(*record);
@@ -1158,13 +1169,12 @@ async fn stat_activity_cursor(log: &SessionLog) -> Option<String> {
     Some(activity_cursor(path, size, &child_sizes))
 }
 
-/// Reuse a previous record verbatim when its source has not changed, so the
-/// pass never opens the transcript. Only a native file source with a stored
-/// record is eligible; provider-database, inline, and WSL sources always
-/// describe.
+/// Reuse a previous record when its source has not changed.
+/// Apply a fresh indexed title without opening the transcript.
 async fn reuse_unchanged_record(
     log: &SessionLog,
     previous: Option<&SessionRecord>,
+    indexed_title: Option<&ResolvedTitle>,
 ) -> Option<SessionRecord> {
     let previous = previous?;
     let cursor = stat_activity_cursor(log).await?;
@@ -1177,7 +1187,14 @@ async fn reuse_unchanged_record(
     // discovered mtime before the pass can reuse it.
     let mtime_matches =
         previous.activity_source == "event" || previous.updated_at_epoch == log.updated_at;
-    mtime_matches.then(|| previous.clone())
+    if !mtime_matches {
+        return None;
+    }
+    let mut reused = previous.clone();
+    if let Some(indexed_title) = indexed_title {
+        apply_indexed_title(&mut reused, &log.agent_type, indexed_title.clone());
+    }
+    Some(reused)
 }
 
 /// Resolve the display timestamp from transcript events while using the
@@ -1433,6 +1450,20 @@ fn select_title_pair(
         .and(fallback_source)
         .map(|source| source.as_str().to_string());
     (title, source)
+}
+
+fn apply_indexed_title(
+    record: &mut SessionRecord,
+    agent: &AgentKind,
+    indexed_title: ResolvedTitle,
+) -> bool {
+    let (title, title_source) = select_title_pair(Some(indexed_title), None, None, agent, None);
+    if record.title == title && record.title_source == title_source {
+        return false;
+    }
+    record.title = title;
+    record.title_source = title_source;
+    true
 }
 
 /// Whether this transcript belongs to a sub-agent rather than a top-level

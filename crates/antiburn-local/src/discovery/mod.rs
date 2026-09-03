@@ -300,6 +300,12 @@ pub trait AgentExplorer: Send + Sync {
         titles
     }
 
+    /// Return vendor files whose changes can alter indexed session titles.
+    /// The watcher observes their parent directories and filters exact paths.
+    fn indexed_title_watch_files(&self, _home: &Path) -> Vec<PathBuf> {
+        Vec::new()
+    }
+
     /// Classify a `SessionLog` produced by this explorer to a stable surface
     /// label suitable for `tracing` fields and wire types. Returns
     /// one of `"cli"`, `"ide_desktop"`, or `"unknown"`.
@@ -696,6 +702,11 @@ impl Explorers {
     /// and the batched scan path without taking a scan lock just to ask.
     pub fn title_lookup_kind_for(&self, agent: &AgentKind) -> TitleLookupKind {
         self.get(agent).title_lookup_kind()
+    }
+
+    /// Return the files that can change indexed titles for one agent.
+    pub fn indexed_title_watch_files_for(&self, agent: &AgentKind, home: &Path) -> Vec<PathBuf> {
+        self.get(agent).indexed_title_watch_files(home)
     }
 
     /// Infer the agent from a file path using each agent's `owns_path`.

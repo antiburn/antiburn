@@ -544,6 +544,33 @@ async fn a_second_pass_over_an_unchanged_source_performs_no_head_read() {
 }
 
 #[tokio::test]
+async fn an_unchanged_rollout_accepts_a_fresh_indexed_title_without_a_head_read() {
+    let home = tempfile::TempDir::new().unwrap();
+    let path = write_codex_session(home.path(), "indexed-after-discovery");
+    let log = log(AgentKind::Codex, path.clone(), 1_800_000_000);
+    let DescribeOutcome::Session(cached) = describe_one(log.clone(), home.path(), None).await
+    else {
+        panic!("session should be described");
+    };
+    antiburn_local::discovery::track_head_reads(&path);
+
+    let refreshed = reuse_unchanged_record(
+        &log,
+        Some(&cached),
+        Some(&ResolvedTitle::new(
+            "Review scan freshness",
+            TitleSource::AiGenerated,
+        )),
+    )
+    .await
+    .expect("unchanged source should be reused");
+
+    assert_eq!(refreshed.title.as_deref(), Some("Review scan freshness"));
+    assert_eq!(refreshed.title_source.as_deref(), Some("aiGenerated"));
+    assert_eq!(antiburn_local::discovery::take_tracked_head_reads(&path), 0);
+}
+
+#[tokio::test]
 async fn an_mtime_row_is_described_again_when_only_its_mtime_moved() {
     let home = tempfile::TempDir::new().unwrap();
     let path = write_claude_session(home.path(), "mtime-source");
@@ -1335,6 +1362,38 @@ fn record(agent: &str, session_id: &str, updated_at: Option<i64>) -> SessionReco
         fork_parent_session_id: None,
         source_fingerprint: None,
     }
+}
+
+#[test]
+fn a_fresh_indexed_title_updates_a_cached_record() {
+    let mut cached = record("codex", "cached-title", Some(1_000));
+    cached.title = Some("The first message".into());
+    cached.title_source = Some("firstMessage".into());
+
+    let changed = apply_indexed_title(
+        &mut cached,
+        &AgentKind::Codex,
+        ResolvedTitle::new("Review scan freshness", TitleSource::AiGenerated),
+    );
+
+    assert!(changed);
+    assert_eq!(cached.title.as_deref(), Some("Review scan freshness"));
+    assert_eq!(cached.title_source.as_deref(), Some("aiGenerated"));
+}
+
+#[test]
+fn an_equal_indexed_title_keeps_a_cached_record_unchanged() {
+    let mut cached = record("codex", "steady-title", Some(1_000));
+    cached.title = Some("Review scan freshness".into());
+    cached.title_source = Some("aiGenerated".into());
+
+    let changed = apply_indexed_title(
+        &mut cached,
+        &AgentKind::Codex,
+        ResolvedTitle::new("Review scan freshness", TitleSource::AiGenerated),
+    );
+
+    assert!(!changed);
 }
 
 #[test]
