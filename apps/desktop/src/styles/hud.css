@@ -7,12 +7,20 @@
   --color-burn: var(--color-burn-val);
   --color-burn-muted: var(--color-burn-muted-val);
   --color-bg-hud: var(--color-bg-hud-val);
+  --color-led-off: var(--color-led-off-val);
 }
 
 :root {
   --color-burn-val: hsl(18 100% 50%);
   --color-burn-muted-val: hsl(18.1 88% 51.4%);
   --color-bg-hud-val: hsl(0 0% 96.4%);
+
+  /*
+   * The unlit LED segment. The same grey in each theme, because the HUD
+   * paints no surface: a segment sits directly on the desktop. The dark
+   * theme used white, which disappeared on a light document.
+   */
+  --color-led-off-val: hsl(0 0% 0% / 0.22);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -20,6 +28,7 @@
     --color-burn-val: hsl(25 100% 50%);
     --color-burn-muted-val: hsl(23 88.8% 54%);
     --color-bg-hud-val: hsl(0 0% 12.5%);
+    --color-led-off-val: hsl(0 0% 0% / 0.22);
   }
 }
 
@@ -27,12 +36,14 @@
   --color-burn-val: hsl(18 100% 50%);
   --color-burn-muted-val: hsl(18.1 88% 51.4%);
   --color-bg-hud-val: hsl(0 0% 96.4%);
+  --color-led-off-val: hsl(0 0% 0% / 0.22);
 }
 
 :root[data-theme="dark"] {
   --color-burn-val: hsl(25 100% 50%);
   --color-burn-muted-val: hsl(23 88.8% 54%);
   --color-bg-hud-val: hsl(0 0% 12.5%);
+  --color-led-off-val: hsl(0 0% 0% / 0.22);
 }
 
 /*
@@ -69,7 +80,7 @@ body[data-transparent-window] #root {
 
   50%,
   100% {
-    background-color: var(--color-surface-tertiary);
+    background-color: var(--color-led-off);
   }
 }
 
