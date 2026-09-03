@@ -12,6 +12,52 @@ pub(crate) struct Point {
     pub y: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CursorProximity {
+    Inside,
+    WithinTolerance,
+    Outside,
+}
+
+pub(crate) fn classify_cursor(
+    bounds: Rect,
+    point: Point,
+    logical_tolerance: f64,
+    scale_factor: f64,
+) -> CursorProximity {
+    let inside = point.x >= bounds.x
+        && point.x < bounds.x + bounds.width
+        && point.y >= bounds.y
+        && point.y < bounds.y + bounds.height;
+    if inside {
+        return CursorProximity::Inside;
+    }
+
+    let tolerance = if logical_tolerance.is_finite() && logical_tolerance > 0.0 {
+        logical_tolerance
+    } else {
+        0.0
+    };
+    if tolerance == 0.0 {
+        return CursorProximity::Outside;
+    }
+    let scale = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
+    let tolerance = tolerance * scale;
+    let within_tolerance = point.x >= bounds.x - tolerance
+        && point.x <= bounds.x + bounds.width + tolerance
+        && point.y >= bounds.y - tolerance
+        && point.y <= bounds.y + bounds.height + tolerance;
+    if within_tolerance {
+        CursorProximity::WithinTolerance
+    } else {
+        CursorProximity::Outside
+    }
+}
+
 pub(crate) fn place_left_preferred(
     anchor: Rect,
     work_area: Rect,

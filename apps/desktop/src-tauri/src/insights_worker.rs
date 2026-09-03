@@ -11,7 +11,7 @@ use antiburn_local::model::AgentKind;
 use tauri::{Emitter, Manager};
 use tokio::sync::{Notify, Semaphore};
 
-use crate::analysis::{self, EvidencePass, PassOutcome, PassSignal};
+use crate::analysis::{self, EvidencePass, PassOutcome, PassSignal, UnreadableReason};
 use crate::commands;
 use crate::dto::ActivityEntry;
 use crate::store::{
@@ -29,6 +29,14 @@ pub(crate) const EVIDENCE_ERROR_SOURCE_CHANGED: &str = "source-changed";
 pub(crate) const EVIDENCE_ERROR_SOURCE_MISSING: &str = "source-missing";
 pub(crate) const EVIDENCE_ERROR_UNREADABLE: &str = "source-unreadable";
 pub(crate) const EVIDENCE_ERROR_UNSUPPORTED: &str = "source-unsupported";
+/// Joins [`EVIDENCE_ERROR_UNREADABLE`] to an [`UnreadableReason`]'s suffix
+/// (`reason.as_error_suffix()`) in a persisted `lastError`, for example
+/// `source-unreadable:no-events`. No stored or reachable code compares
+/// `lastError` against the bare `EVIDENCE_ERROR_UNREADABLE` string — see
+/// `sessions_with_missing_source` for the one exact-match query, which
+/// targets `EVIDENCE_ERROR_SOURCE_MISSING` instead — so the prefix can carry
+/// this suffix safely.
+const UNREADABLE_REASON_SEPARATOR: &str = ":";
 
 struct Permits {
     cpu: Semaphore,
@@ -147,10 +155,22 @@ pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
         let announce = move |entry: ActivityEntry| {
             let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
         };
+        let report_app = app.clone();
+        let announce_idle = move || {
+            let _ = report_app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
+        };
         let clock = || unix_now();
         let store = app.state::<Store>();
         let handle = app.state::<WorkerHandle>();
-        worker_loop(&store, &handle, &clock, &run_pass, &announce).await;
+        worker_loop(
+            &store,
+            &handle,
+            &clock,
+            &run_pass,
+            &announce,
+            &announce_idle,
+        )
+        .await;
     })
 }
 
@@ -246,6 +266,7 @@ pub(crate) fn apply_outcome(
             claim,
             EvidenceFailure::Retry {
                 next_attempt_at_epoch: now + backoff_secs(claim.retry_count),
+                counts_as_attempt: true,
             },
             EVIDENCE_ERROR_SOURCE_CHANGED,
         ),
@@ -263,21 +284,41 @@ pub(crate) fn apply_outcome(
             },
             EVIDENCE_ERROR_UNSUPPORTED,
         ),
-        PassOutcome::Unreadable if claim.retry_count < MAX_EVIDENCE_ATTEMPTS => store
-            .fail_evidence(
-                claim,
-                EvidenceFailure::Retry {
-                    next_attempt_at_epoch: now + backoff_secs(claim.retry_count),
-                },
-                EVIDENCE_ERROR_UNREADABLE,
-            ),
-        PassOutcome::Unreadable => store.fail_evidence(
-            claim,
-            EvidenceFailure::Failed {
-                revisions: analysis::projection_revisions(),
-            },
-            EVIDENCE_ERROR_UNREADABLE,
-        ),
+        PassOutcome::Unreadable(reason) => {
+            let last_error = format!(
+                "{EVIDENCE_ERROR_UNREADABLE}{UNREADABLE_REASON_SEPARATOR}{}",
+                reason.as_error_suffix()
+            );
+            if reason == UnreadableReason::Cancelled {
+                // The source was never actually tried, so this retry must
+                // not consume one of the claim's attempts.
+                store.fail_evidence(
+                    claim,
+                    EvidenceFailure::Retry {
+                        next_attempt_at_epoch: now + backoff_secs(claim.retry_count),
+                        counts_as_attempt: false,
+                    },
+                    &last_error,
+                )
+            } else if claim.retry_count < MAX_EVIDENCE_ATTEMPTS {
+                store.fail_evidence(
+                    claim,
+                    EvidenceFailure::Retry {
+                        next_attempt_at_epoch: now + backoff_secs(claim.retry_count),
+                        counts_as_attempt: true,
+                    },
+                    &last_error,
+                )
+            } else {
+                store.fail_evidence(
+                    claim,
+                    EvidenceFailure::Failed {
+                        revisions: analysis::projection_revisions(),
+                    },
+                    &last_error,
+                )
+            }
+        }
     }
 }
 
@@ -363,11 +404,20 @@ pub(crate) async fn worker_loop(
     clock: &(dyn Fn() -> i64 + Send + Sync),
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(ActivityEntry) + Send + Sync),
+    announce_idle: &(dyn Fn() + Send + Sync),
 ) {
+    let mut processed = false;
     loop {
         match process_next(store, handle, clock, run_pass, announce).await {
-            Ok(true) => continue,
+            Ok(true) => {
+                processed = true;
+                continue;
+            }
             Ok(false) => {
+                if processed {
+                    processed = false;
+                    announce_idle();
+                }
                 tokio::select! {
                     () = handle.wake.notified() => {}
                     () = tokio::time::sleep(Duration::from_secs(IDLE_POLL_SECS)) => {}

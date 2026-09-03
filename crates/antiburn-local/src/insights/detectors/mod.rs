@@ -383,11 +383,10 @@ pub(crate) fn in_denominator(detector: DetectorId, evidence: &SessionEvidence) -
 
 /// Reduces one detector's counts and fold state to its one status.
 ///
-/// Findings win first: partial coverage may still support an observed
-/// finding. Clean requires eligible sessions where every one is fully
-/// assessed, no rule hit contract limits, and no finding exists.
-/// Everything else is not assessed with a structured reason, so
-/// incomplete absence never reads as clean (FR-14).
+/// Findings win first because partial coverage can support an observed
+/// finding. Clean requires at least one eligible session and a clean outcome
+/// for every eligible session. Capability gaps outside that denominator do
+/// not invalidate the clean result. Everything else is not assessed.
 pub(crate) fn status(
     counts: DetectorCounts,
     fold: DetectorFold,
@@ -411,7 +410,7 @@ pub(crate) fn status(
     if fold.signal_missing > 0 {
         return DetectorStatus::NotAssessed(NotAssessedReason::SignalMissing);
     }
-    if counts.assessed == counts.eligible {
+    if counts.clean == counts.eligible {
         return DetectorStatus::Clean;
     }
     DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
@@ -459,8 +458,15 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
 
-    fn counts(eligible: u64, assessed: u64) -> DetectorCounts {
-        DetectorCounts { eligible, assessed }
+    fn counts(eligible: u64, finding: u64, clean: u64, unavailable: u64) -> DetectorCounts {
+        DetectorCounts {
+            eligible,
+            assessed: finding + clean,
+            finding,
+            clean,
+            unavailable,
+            not_applicable: 0,
+        }
     }
 
     #[test]
@@ -473,7 +479,7 @@ mod tests {
         };
 
         assert!(matches!(
-            status(counts(3, 1), fold, 3),
+            status(counts(3, 2, 0, 1), fold, 3),
             DetectorStatus::Findings(DetectorFindings {
                 finding_sessions: 2,
                 ..
@@ -484,7 +490,7 @@ mod tests {
     #[test]
     fn empty_cohort_is_not_assessed() {
         assert_eq!(
-            status(counts(0, 0), DetectorFold::default(), 0),
+            status(counts(0, 0, 0, 0), DetectorFold::default(), 0),
             DetectorStatus::NotAssessed(NotAssessedReason::NoSessionsInWindow)
         );
     }
@@ -492,7 +498,7 @@ mod tests {
     #[test]
     fn missing_capabilities_are_not_assessed() {
         assert_eq!(
-            status(counts(0, 0), DetectorFold::default(), 4),
+            status(counts(0, 0, 0, 4), DetectorFold::default(), 4),
             DetectorStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
         );
     }
@@ -502,7 +508,7 @@ mod tests {
         // One of two eligible sessions carries only partial evidence.
         // The zero-finding result must not read as clean.
         assert_eq!(
-            status(counts(2, 1), DetectorFold::default(), 2),
+            status(counts(2, 0, 1, 1), DetectorFold::default(), 2),
             DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
         );
     }
@@ -517,7 +523,7 @@ mod tests {
         };
 
         assert_eq!(
-            status(counts(2, 2), fold, 2),
+            status(counts(2, 0, 1, 1), fold, 2),
             DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete)
         );
     }
@@ -532,7 +538,7 @@ mod tests {
         };
 
         assert_eq!(
-            status(counts(2, 2), fold, 2),
+            status(counts(2, 0, 1, 1), fold, 2),
             DetectorStatus::NotAssessed(NotAssessedReason::SignalMissing)
         );
     }
@@ -540,7 +546,7 @@ mod tests {
     #[test]
     fn complete_absence_yields_clean() {
         assert_eq!(
-            status(counts(2, 2), DetectorFold::default(), 2),
+            status(counts(2, 0, 2, 0), DetectorFold::default(), 2),
             DetectorStatus::Clean
         );
     }

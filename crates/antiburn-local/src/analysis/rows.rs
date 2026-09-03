@@ -16,7 +16,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::analysis::evidence::SessionCoverageRecord;
 use crate::analysis::evidence_query::{FenceScope, TurnFacts, query_turn_facts};
 use crate::analysis::interface::{ContentPart, NormalizedRecord, RecordSink, SessionSummary};
-use crate::analysis::model::{CompactionTrigger, EventSource, NormalizedEvent, Role};
+use crate::analysis::model::{
+    CompactionTrigger, EventSource, NormalizedEvent, Role, is_subagent_launch_tool,
+};
 
 /// DDL for the `turn` and `turn_content` tables.
 ///
@@ -253,9 +255,10 @@ pub struct TurnRow {
     /// The name of `event.tools`'s last entry, when the event carries any
     /// tool call. Mirrors `observe_parent_fields`'s `slot.last_tool`.
     pub last_tool: Option<String>,
-    /// The count of `event.tools` entries whose name is `"task"`,
-    /// case-insensitive. Mirrors `observe_parent_fields`'s
-    /// `slot.subagent_launches`.
+    /// The count of `event.tools` entries whose name is a subagent launch
+    /// (`"task"` or `"agent"`, case-insensitive; see
+    /// [`crate::analysis::model::is_subagent_launch_tool`]). Mirrors
+    /// `observe_parent_fields`'s `slot.subagent_launches`.
     pub subagent_launches: u32,
     /// This turn's captured message content, when the source adapter emitted
     /// a `TurnContent` record for it. Attached by [`TurnRowSink`] after
@@ -332,7 +335,7 @@ pub fn turn_row_from_event(event: &NormalizedEvent, source_key: &str, turn_index
         subagent_launches: event
             .tools
             .iter()
-            .filter(|tool| tool.name.eq_ignore_ascii_case("task"))
+            .filter(|tool| is_subagent_launch_tool(&tool.name))
             .count()
             .try_into()
             .unwrap_or(u32::MAX),
@@ -1475,6 +1478,21 @@ mod tests {
         assert!(row.has_thinking);
         assert_eq!(row.last_tool.as_deref(), Some("Task"));
         assert_eq!(row.subagent_launches, 1);
+    }
+
+    #[test]
+    fn turn_row_from_event_counts_agent_tool_calls_as_subagent_launches() {
+        let mut event = NormalizedEvent::new(Role::Assistant);
+        event.tools = vec![
+            ToolCall::new("Task"),
+            ToolCall::new("Agent"),
+            ToolCall::new("agent"),
+            ToolCall::new("Read"),
+        ];
+
+        let row = turn_row_from_event(&event, "parent-1", 0);
+        assert_eq!(row.last_tool.as_deref(), Some("Read"));
+        assert_eq!(row.subagent_launches, 3);
     }
 
     #[test]

@@ -154,7 +154,7 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.getByText("Cost")).toBeTruthy()
   })
 
-  it("renders every hygiene check with a distinct verdict", () => {
+  it("renders only assessed hygiene checks", () => {
     view({
       hygiene: {
         badges: [
@@ -196,7 +196,7 @@ describe("SessionDetailPresentation — chrome", () => {
     const hygiene = screen.getByLabelText("Session hygiene checks")
     expect(hygiene.children).toHaveLength(2)
     const summary = screen.getByRole("button", {
-      name: "4/5 passing, 1 not assessed",
+      name: "4/5 passed",
     })
     expect(
       screen.getByRole("button", { name: "Overpowered subagents details" }),
@@ -204,12 +204,31 @@ describe("SessionDetailPresentation — chrome", () => {
 
     fireEvent.click(summary)
 
-    expect(screen.getByRole("button", { name: "Session overdepth details" })).toHaveTextContent(
-      "not assessed",
-    )
+    expect(screen.queryByRole("button", { name: "Session overdepth details" })).toBeNull()
     expect(
       screen.getByRole("button", { name: "Model overthinking details" }),
-    ).toHaveTextContent("passing")
+    ).toHaveTextContent("passed")
+  })
+
+  it("qualifies an all-pass result when unavailable checks are hidden", () => {
+    const hygiene = presentationProps().hygiene
+    view({
+      hygiene: {
+        ...hygiene,
+        badges: hygiene.badges.map((badge, index) =>
+          index === 0
+            ? {
+                ...badge,
+                status: "notAssessed" as const,
+                notAssessedReason: "capabilityMissing" as const,
+              }
+            : badge,
+        ),
+      },
+    })
+
+    expect(screen.getByRole("button", { name: "All assessed checks passed" })).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "5/5 passed" })).toBeNull()
   })
 
   it("shows the hygiene evidence state in the card header", () => {
@@ -222,6 +241,20 @@ describe("SessionDetailPresentation — chrome", () => {
 
     expect(screen.getByText("Burn Checks")).toBeTruthy()
     expect(screen.getByText("Refreshing")).toBeTruthy()
+    expect(screen.queryByText("0/0")).toBeNull()
+  })
+
+  it("omits a settled Burn Checks result when no checks were assessed", () => {
+    view({
+      hygiene: {
+        ...INITIAL_SESSION_HYGIENE,
+        evidenceState: "ready",
+      },
+    })
+
+    expect(screen.queryByText("Burn Checks")).toBeNull()
+    expect(screen.queryByText("0/0")).toBeNull()
+    expect(screen.queryByText(/not assessed/i)).toBeNull()
   })
 
   it("adds the routing-miss count from the session metrics to the Context hint", () => {
@@ -311,7 +344,7 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(detailRow).toHaveTextContent("5.6-sol/high")
     const hygiene = screen.getByLabelText("Session hygiene checks")
     expect(hygiene.children).toHaveLength(1)
-    fireEvent.click(screen.getByRole("button", { name: "6/6 passing" }))
+    fireEvent.click(screen.getByRole("button", { name: "6/6 passed" }))
     expect(screen.getByRole("button", { name: "Session overdepth details" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Model overthinking details" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Overpowered subagents details" })).toBeTruthy()

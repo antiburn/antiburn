@@ -122,7 +122,7 @@ pub enum PassOutcome {
     SourceChanged,
     SourceMissing,
     Unsupported,
-    Unreadable,
+    Unreadable(UnreadableReason),
 }
 
 pub struct EvidencePass {
@@ -175,6 +175,52 @@ pub struct RowProjections {
     pub model_runs: Vec<ModelRun>,
 }
 
+/// Why a pass could not read its parent source through to a publishable
+/// result. Threaded from [`StreamOutcome::ParentUnreadable`] through
+/// [`ComputedAnalysis::Unavailable`] to [`PassOutcome::Unreadable`], so the
+/// worker can record a specific cause instead of one opaque failure and
+/// decide whether the failure consumed a retry attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnreadableReason {
+    /// The pass was cancelled before or during the read. The source was
+    /// never actually tried, so this must not consume a retry attempt.
+    Cancelled,
+    /// Deleting this source's already-flushed rows, ahead of a full retry
+    /// read, failed.
+    RowsDeleteFailed,
+    /// Opening or fingerprinting the parent file failed for a reason other
+    /// than "not found" (that maps to `ParentMissing` instead).
+    ClaimFailed,
+    /// Writing this pass's rows or coverage record failed.
+    RowsWriteFailed,
+    /// Reading this pass's own rows, coverage record, or model projections
+    /// back — after writing them — failed.
+    RowsReadbackFailed,
+    /// The parent source produced no events this pass could publish.
+    NoEvents,
+    /// The vendor adapter returned an error reading the parent.
+    AdapterFailed,
+    /// No parent input was given to stream at all.
+    NoParent,
+}
+
+impl UnreadableReason {
+    /// The `lastError` suffix persisted after `source-unreadable:` — see
+    /// `insights_worker::EVIDENCE_ERROR_UNREADABLE`.
+    pub fn as_error_suffix(self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::RowsDeleteFailed => "rows-delete-failed",
+            Self::ClaimFailed => "claim-failed",
+            Self::RowsWriteFailed => "rows-write-failed",
+            Self::RowsReadbackFailed => "rows-readback-failed",
+            Self::NoEvents => "no-events",
+            Self::AdapterFailed => "adapter-failed",
+            Self::NoParent => "no-parent",
+        }
+    }
+}
+
 enum StreamOutcome {
     Published {
         session: Box<StreamedSession>,
@@ -183,7 +229,7 @@ enum StreamOutcome {
     SourceChanged,
     ParentMissing,
     ParentUnsupported,
-    ParentUnreadable,
+    ParentUnreadable(UnreadableReason),
 }
 
 enum ComputedAnalysis {
@@ -201,7 +247,7 @@ enum ComputedAnalysis {
     SourceChanged,
     Missing,
     Unsupported,
-    Unavailable,
+    Unavailable(UnreadableReason),
 }
 
 /// One session's analysis, before it is split between the wire payload and
@@ -706,7 +752,9 @@ fn delete_then_full_read(
     accumulator: &mut CompositeSink,
 ) -> Result<FullReadRetry, StreamOutcome> {
     if store.delete_rows_for_source(&input.session_id).is_err() {
-        return Err(StreamOutcome::ParentUnreadable);
+        return Err(StreamOutcome::ParentUnreadable(
+            UnreadableReason::RowsDeleteFailed,
+        ));
     }
     if let Some(snapshot) = bootstrap_snapshot(
         adapter,
@@ -738,7 +786,9 @@ fn delete_then_full_read(
                 // before failing partway through. The plain fallback below
                 // must not join them.
                 if store.delete_rows_for_source(&input.session_id).is_err() {
-                    return Err(StreamOutcome::ParentUnreadable);
+                    return Err(StreamOutcome::ParentUnreadable(
+                        UnreadableReason::RowsDeleteFailed,
+                    ));
                 }
             }
         }
@@ -786,7 +836,7 @@ fn stream_vendor_with_hooks(
     let current_revisions = resume_revisions();
     for (index, input) in inputs.iter().enumerate() {
         if cancelled() {
-            return StreamOutcome::ParentUnreadable;
+            return StreamOutcome::ParentUnreadable(UnreadableReason::Cancelled);
         }
         // Every vendor label now resolves to a real (possibly all-unset)
         // capability profile, so this can never fall through to
@@ -829,7 +879,9 @@ fn stream_vendor_with_hooks(
             RawSource::File(path) => {
                 let claim = match claim_file(path) {
                     Ok(claim) => claim,
-                    Err(_) if cancelled() => return StreamOutcome::ParentUnreadable,
+                    Err(_) if cancelled() => {
+                        return StreamOutcome::ParentUnreadable(UnreadableReason::Cancelled);
+                    }
                     Err(error)
                         if index == 0
                             && error.downcast_ref::<std::io::Error>().is_some_and(|error| {
@@ -838,7 +890,9 @@ fn stream_vendor_with_hooks(
                     {
                         return StreamOutcome::ParentMissing;
                     }
-                    Err(_) if index == 0 => return StreamOutcome::ParentUnreadable,
+                    Err(_) if index == 0 => {
+                        return StreamOutcome::ParentUnreadable(UnreadableReason::ClaimFailed);
+                    }
                     Err(_) => {
                         child_folds.push(ChildFold::Unreadable);
                         continue;
@@ -1014,13 +1068,13 @@ fn stream_vendor_with_hooks(
             Ok(outcome) => {
                 accumulator.observe_source_outcome(outcome);
                 if cancelled() {
-                    return StreamOutcome::ParentUnreadable;
+                    return StreamOutcome::ParentUnreadable(UnreadableReason::Cancelled);
                 }
                 // A turn-row write failure must fail the whole pass rather
                 // than publish metrics and evidence the rows disagree with.
                 // Retried like any other unreadable source.
                 if accumulator.turn_row_write_failed() {
-                    return StreamOutcome::ParentUnreadable;
+                    return StreamOutcome::ParentUnreadable(UnreadableReason::RowsWriteFailed);
                 }
                 if turn_row_store.is_some()
                     && let Some(summary) = accumulator.summary()
@@ -1048,7 +1102,7 @@ fn stream_vendor_with_hooks(
                         });
                 let Some((metrics, residual)) = accumulator.into_parts() else {
                     if index == 0 {
-                        return StreamOutcome::ParentUnreadable;
+                        return StreamOutcome::ParentUnreadable(UnreadableReason::NoEvents);
                     }
                     child_folds.push(ChildFold::Unreadable);
                     continue;
@@ -1067,8 +1121,11 @@ fn stream_vendor_with_hooks(
                     });
                 }
             }
-            Err(_) if cancelled() || index == 0 => {
-                return StreamOutcome::ParentUnreadable;
+            Err(_) if cancelled() => {
+                return StreamOutcome::ParentUnreadable(UnreadableReason::Cancelled);
+            }
+            Err(_) if index == 0 => {
+                return StreamOutcome::ParentUnreadable(UnreadableReason::AdapterFailed);
             }
             Err(_) => {
                 child_folds.push(ChildFold::Unreadable);
@@ -1077,10 +1134,10 @@ fn stream_vendor_with_hooks(
         }
     }
     if cancelled() {
-        return StreamOutcome::ParentUnreadable;
+        return StreamOutcome::ParentUnreadable(UnreadableReason::Cancelled);
     }
     let Some((parent, children)) = metrics_accumulators.split_first() else {
-        return StreamOutcome::ParentUnreadable;
+        return StreamOutcome::ParentUnreadable(UnreadableReason::NoParent);
     };
     let started_at_epoch = metrics_accumulators
         .iter()
@@ -1126,15 +1183,23 @@ fn stream_vendor_with_hooks(
                 Some(residual) => {
                     let record = residual.coverage_record();
                     if store.write_coverage_record(&record).is_err() {
-                        return StreamOutcome::ParentUnreadable;
+                        return StreamOutcome::ParentUnreadable(UnreadableReason::RowsWriteFailed);
                     }
                     let facts = match store.query_turn_facts() {
                         Ok(facts) => facts,
-                        Err(_) => return StreamOutcome::ParentUnreadable,
+                        Err(_) => {
+                            return StreamOutcome::ParentUnreadable(
+                                UnreadableReason::RowsReadbackFailed,
+                            );
+                        }
                     };
                     let record = match store.query_coverage_record() {
                         Ok(Some(record)) => record,
-                        Ok(None) | Err(_) => return StreamOutcome::ParentUnreadable,
+                        Ok(None) | Err(_) => {
+                            return StreamOutcome::ParentUnreadable(
+                                UnreadableReason::RowsReadbackFailed,
+                            );
+                        }
                     };
                     Some(evidence_from_facts(&facts, &record))
                 }
@@ -1142,11 +1207,15 @@ fn stream_vendor_with_hooks(
             };
             let model_breakdown = match store.query_model_breakdown() {
                 Ok(model_breakdown) => model_breakdown,
-                Err(_) => return StreamOutcome::ParentUnreadable,
+                Err(_) => {
+                    return StreamOutcome::ParentUnreadable(UnreadableReason::RowsReadbackFailed);
+                }
             };
             let model_runs = match store.query_model_runs() {
                 Ok(model_runs) => model_runs,
-                Err(_) => return StreamOutcome::ParentUnreadable,
+                Err(_) => {
+                    return StreamOutcome::ParentUnreadable(UnreadableReason::RowsReadbackFailed);
+                }
             };
             (
                 evidence,
@@ -1212,8 +1281,11 @@ pub async fn analyze_for_evidence(
         return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
     };
     let Some(raw) = raw_source(&source).await else {
+        // Only a provider-database source reaches here: `raw_source` reads
+        // its content directly, so a `None` means that read failed. Treated
+        // the same as a file claim failure — the source could not be opened.
         return unavailable_evidence_pass(
-            PassOutcome::Unreadable,
+            PassOutcome::Unreadable(UnreadableReason::ClaimFailed),
             source_path(&source),
             Some(fingerprint_of(&source)),
         );
@@ -1311,14 +1383,20 @@ pub async fn analyze_for_evidence(
             StreamOutcome::SourceChanged => ComputedAnalysis::SourceChanged,
             StreamOutcome::ParentMissing => ComputedAnalysis::Missing,
             StreamOutcome::ParentUnsupported => ComputedAnalysis::Unsupported,
-            StreamOutcome::ParentUnreadable => ComputedAnalysis::Unavailable,
+            StreamOutcome::ParentUnreadable(reason) => ComputedAnalysis::Unavailable(reason),
         }
     })
     .await;
 
     debug_assert!(signal.progress() > 0);
     let Ok(computed) = computed else {
-        return unavailable_evidence_pass(PassOutcome::Unreadable, source_path, Some(fingerprint));
+        // The blocking task itself did not return — it panicked or the
+        // runtime dropped it. The adapter never got a chance to finish.
+        return unavailable_evidence_pass(
+            PassOutcome::Unreadable(UnreadableReason::AdapterFailed),
+            source_path,
+            Some(fingerprint),
+        );
     };
     let (
         parent_metrics,
@@ -1379,9 +1457,9 @@ pub async fn analyze_for_evidence(
                 Some(fingerprint),
             );
         }
-        ComputedAnalysis::Unavailable => {
+        ComputedAnalysis::Unavailable(reason) => {
             return unavailable_evidence_pass(
-                PassOutcome::Unreadable,
+                PassOutcome::Unreadable(reason),
                 source_path,
                 Some(fingerprint),
             );
@@ -1781,8 +1859,8 @@ fn evidence_pass_with_hook(
         StreamOutcome::ParentUnsupported => {
             unavailable_evidence_pass(PassOutcome::Unsupported, None, None)
         }
-        StreamOutcome::ParentUnreadable => {
-            unavailable_evidence_pass(PassOutcome::Unreadable, None, None)
+        StreamOutcome::ParentUnreadable(reason) => {
+            unavailable_evidence_pass(PassOutcome::Unreadable(reason), None, None)
         }
     }
 }

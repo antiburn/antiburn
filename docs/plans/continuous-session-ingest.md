@@ -111,9 +111,9 @@ Goal: fix the pop-in without the new architecture.
 - Test: a second pass over an unchanged transcript performs no head read
   (the discovery crate's tracked-head-read instrumentation exists for this).
 
-Known limit, accepted: a title change in a vendor index while the transcript
-size is unchanged is not picked up until the transcript grows. Phase 3
-replaces the size gate with a verified offset.
+This phase initially accepted one limit: a vendor index title change did not
+refresh an unchanged transcript. The indexed-title lane in Phase 5b now
+resolves that limit.
 
 ### Phase 2: evidence from rows (done)
 
@@ -369,6 +369,13 @@ scheduler task, so passes never overlap and the store sees one writer.
   are coalesced into one deferred refresh at the floor's end, never dropped,
   so a session that keeps writing is refreshed every 10 s and a session that
   writes once is refreshed once.
+- T2a. Indexed titles. An agent can list vendor files whose changes can alter
+  session titles. The watcher observes their parent directories and accepts
+  only the listed files or their SQLite write sidecars. A change batches title
+  lookups for the agent's known native sessions, updates changed rows through
+  `sessions:entry-changed`, and does not run discovery or read transcripts.
+  Each agent runs this lane at most once per 10 seconds, with events inside the
+  floor coalesced into one deferred refresh.
 - T3. New session. A path under an agent's watch root that matches no stored
   session means that agent has a session the store has never seen. The
   agent-scoped pass runs `discover_recent` for that one agent, describes the

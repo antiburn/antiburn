@@ -36,6 +36,9 @@ colors:
   surface-card:
     light: "hsl(0 0% 0% / 0.04)"
     dark: "hsl(0 0% 100% / 0.08)"
+  surface-header: # the quiet band at the head of the menu-bar popover; fainter than a card
+    light: "hsl(0 0% 0% / 0.025)"
+    dark: "hsl(0 0% 100% / 0.03)"
   surface-hover: # stays clear of surface-selected, so a hover never reads as a selection
     light: "hsl(0 0% 0% / 0.04)"
     dark: "hsl(0 0% 100% / 0.04)" # @media dark: hsl(0 0% 100% / 0.07)
@@ -130,6 +133,9 @@ colors:
   bg-hud:
     light: "hsl(0 0% 96.4%)"
     dark: "hsl(0 0% 12.5%)"
+  led-off: # unlit LED segment; one mid grey for both themes, because the HUD paints no surface and floats over any background
+    light: "hsl(0 0% 50% / 0.45)"
+    dark: "hsl(0 0% 50% / 0.45)"
   # Session-analysis sub-palette only (src/styles/session-analysis-colors.css)
   context-fill-top:
     light: "hsl(217.2 91% 59.8% / 0.6)"

@@ -178,24 +178,24 @@ describe("UsageLimitsBar — the disclosure", () => {
     expect(screen.getByRole("region", { name: "Usage limits" })).toBeInTheDocument()
   })
 
-  it("drops the ring row and moves itself into the meters while open", () => {
-    // The point of the open state is the space the row gives back. The
-    // meters restate every ring, so keeping both spends the popover's height
-    // on one reading twice.
+  it("drops the ring row and moves the disclosure beside the first provider", () => {
     bar({ expanded: true })
     expect(
       screen.queryByRole("button", { name: "Claude at 42 percent" }),
     ).not.toBeInTheDocument()
     const region = screen.getByRole("region", { name: "Usage limits" })
-    expect(region).toContainElement(
-      screen.getByRole("button", { name: "Collapse usage limits" }),
+    const group = within(region).getByRole("group", { name: "Claude" })
+    const providerRow = within(group).getByRole("heading").parentElement
+    expect(providerRow).toContainElement(
+      within(group).getByRole("button", { name: "Collapse usage limits" }),
     )
+    expect(screen.queryByText("Limits")).not.toBeInTheDocument()
   })
 
-  it("carries the refresh spinner with it into the open meters", () => {
+  it("carries the refresh spinner into the first provider row", () => {
     bar({ expanded: true, refreshing: true })
-    const region = screen.getByRole("region", { name: "Usage limits" })
-    expect(region).toContainElement(screen.getByRole("status"))
+    const group = screen.getByRole("group", { name: "Claude" })
+    expect(group).toContainElement(screen.getByRole("status"))
   })
 
   it("keeps the settings gear's treatment in both states", () => {
@@ -451,7 +451,7 @@ describe("UsageLimitsBar — degraded state", () => {
 })
 
 describe("UsageLimitsBar — grace period", () => {
-  const GRACE_NOTE = "Claude rate limited the last check. Showing the reading from 4 min ago."
+  const GRACE_NOTE = "Claude rate limited the last check; reading from 4 min ago."
 
   it("keeps a graced reading on the ring, muted, with the grace note attached", () => {
     bar({

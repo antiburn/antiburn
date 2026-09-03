@@ -20,8 +20,24 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-03
+
+### Added
+
+- Usage now summarizes total tokens and estimated cost for today, the last
+  seven days, and the last 30 days.
+- Activity rows can show each session's estimated share of the current weekly
+  or 5-hour provider limit, with the matching usage detail available from
+  the row.
+
 ### Changed
 
+- The popover now presents usage totals as a compact header with separate cost
+  and token figures, while the provider-limit header stays in place when its
+  meters expand.
+- Session activity, open details, and the HUD now update as transcript files
+  change. Analysis of growing Claude, Codex, and Pi transcripts resumes from
+  prior work instead of rereading the full file.
 - Context charts now distinguish provider cache misses from cache rehydration
   after meaningful user inactivity, using provider-specific timing.
 
@@ -35,6 +51,10 @@ CI changes, and documentation that no user acts on stay out — see
   skill came from after the session invoked it, instead of showing an em
   dash. Skills you installed for yourself keep their source after the
   session's working directory is deleted, such as a removed git worktree.
+- Session hygiene scores now count only assessed checks in their denominator;
+  checks without enough evidence remain identified separately.
+- When a live usage check fails, its last successful reading remains visible
+  for up to ten minutes and shows its age instead of disappearing immediately.
 
 ### Removed
 

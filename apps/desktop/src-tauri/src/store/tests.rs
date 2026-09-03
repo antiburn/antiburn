@@ -338,7 +338,7 @@ fn provider_hints_migration_keeps_old_analysis_unknown() {
         .unwrap()
         .expect("legacy analysis survives");
 
-    assert_eq!(store.schema_version().unwrap(), 30);
+    assert_eq!(store.schema_version().unwrap(), 31);
     assert_eq!(analysis.provider_hints_json, None);
 }
 
@@ -3222,6 +3222,7 @@ fn failing_session_evidence_with_retry_returns_it_to_pending_with_backoff() {
                 &claim,
                 EvidenceFailure::Retry {
                     next_attempt_at_epoch: 300,
+                    counts_as_attempt: true,
                 },
                 "try later",
             )
@@ -3738,10 +3739,10 @@ fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pinned so this test fails loudly if a future migration is appended
     // without also being counted here — the number is the whole point of
     // the assertion, not an incidental detail.
-    assert_eq!(super::schema::MIGRATIONS.len(), 30);
+    assert_eq!(super::schema::MIGRATIONS.len(), 31);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 30);
+    assert_eq!(store.schema_version().unwrap(), 31);
     let index_exists = store
         .lock()
         .query_row(

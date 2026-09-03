@@ -84,6 +84,8 @@ describe("UsagePane", () => {
     // at all *and* it lets milestone notifications fire.
     pane()
     const row = screen.getByText("Keep my plan limits current").closest("div")!
+    expect(row).toHaveTextContent(/every five minutes in the background/i)
+    expect(row).toHaveTextContent(/more often while visible/i)
     expect(row).toHaveTextContent(/that.s your own connection, made as you/i)
     expect(row).toHaveTextContent(/no antiburn server is involved/i)
     expect(row).toHaveTextContent(/milestone notifications/i)
@@ -291,7 +293,7 @@ describe("UsagePane — the grace period", () => {
     await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
     expect(
       screen.getByText(
-        "Asked Claude directly. 0 limits reported. Claude rate limited the last check. Showing the reading from 4 min ago.",
+        "Asked Claude directly. 0 limits reported. Claude rate limited the last check; reading from 4 min ago.",
       ),
     ).toBeInTheDocument()
     expect(screen.queryByText(/Wait, then retry/)).not.toBeInTheDocument()

@@ -11,12 +11,38 @@ use super::{CoverageBucket, DetectorId};
 
 pub const MAX_EXAMPLES_PER_DETECTOR: usize = 3;
 pub const MAX_REPORT_UNRECOGNIZED_TYPES: usize = 16;
+pub const MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS: u16 = 5_000;
 const UNRECOGNIZED_TYPES_DIAGNOSTIC: &str = "diagnostics.unrecognized_types";
+const BASIS_POINTS_SCALE: u16 = 10_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+const fn detector_token_burn_share(detector: DetectorId) -> u16 {
+    match detector {
+        DetectorId::SessionsOverDepth => 1_000,
+        DetectorId::ModelOverthinking => 2_500,
+        DetectorId::OverpoweredSubagents => 3_500,
+        DetectorId::UnusedMcpServers => 500,
+        DetectorId::UnusedBuiltInTools => 500,
+        DetectorId::UnusedSkills => 300,
+        DetectorId::OldModelUsage => 2_000,
+        DetectorId::OveruseOfFastMode => 2_000,
+        DetectorId::CacheChurn => 2_500,
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DetectorCounts {
+    /// Sessions with the facts needed to detect a finding.
     pub eligible: u64,
+    /// Applicable sessions with a confirmed finding or clean result.
     pub assessed: u64,
+    /// Applicable sessions with a confirmed finding.
+    pub finding: u64,
+    /// Applicable sessions with complete facts and no finding.
+    pub clean: u64,
+    /// Applicable sessions without enough evidence for an outcome.
+    pub unavailable: u64,
+    /// Sessions excluded by a proven detector denominator rule.
+    pub not_applicable: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -370,6 +396,134 @@ pub struct EfficiencyReport {
     pub unrecognized_records: UnrecognizedRecords,
     pub capability_gaps: BTreeMap<DetectorId, u64>,
     pub capability_gap_examples: BTreeMap<DetectorId, Vec<SessionExample>>,
+    /// Token burn is estimated avoidable tokens divided by total used tokens.
+    pub estimated_token_burn_basis_points: Option<u16>,
+    /// Each detector's token burn uses the same ratio.
+    pub detector_estimated_token_burn_basis_points: [Option<u16>; 9],
+}
+
+#[derive(Default)]
+struct TokenBurnAccumulator {
+    complete: bool,
+    total_tokens: u128,
+    combined_weighted_basis_points: u128,
+    detector_weighted_basis_points: [u128; 9],
+}
+
+impl TokenBurnAccumulator {
+    fn new() -> Self {
+        Self {
+            complete: true,
+            ..Self::default()
+        }
+    }
+
+    fn observe(&mut self, evidence: &SessionEvidence, findings: [bool; 9]) {
+        let EvidenceValue::Complete(models) = &evidence.models else {
+            self.complete = false;
+            return;
+        };
+        if models.unattributed_turns != 0 {
+            self.complete = false;
+            return;
+        }
+
+        let Some(session_tokens) = models.by_model.values().try_fold(0_u128, |total, tokens| {
+            total
+                .checked_add(u128::from(tokens.input))?
+                .checked_add(u128::from(tokens.output))?
+                .checked_add(u128::from(tokens.cache_read))?
+                .checked_add(u128::from(tokens.cache_creation))
+        }) else {
+            self.complete = false;
+            return;
+        };
+        let Some(total_tokens) = self.total_tokens.checked_add(session_tokens) else {
+            self.complete = false;
+            return;
+        };
+        self.total_tokens = total_tokens;
+
+        let mut remaining_basis_points = BASIS_POINTS_SCALE;
+        for detector in DetectorId::ALL {
+            if !findings[detector.index()] {
+                continue;
+            }
+            let share = detector_token_burn_share(detector);
+            let Some(weighted) = session_tokens.checked_mul(u128::from(share)) else {
+                self.complete = false;
+                return;
+            };
+            let detector_total = &mut self.detector_weighted_basis_points[detector.index()];
+            let Some(total) = detector_total.checked_add(weighted) else {
+                self.complete = false;
+                return;
+            };
+            *detector_total = total;
+            remaining_basis_points = u16::try_from(
+                u32::from(remaining_basis_points) * u32::from(BASIS_POINTS_SCALE - share)
+                    / u32::from(BASIS_POINTS_SCALE),
+            )
+            .expect("the complement product stays within the basis-point scale");
+        }
+
+        let combined_basis_points = (BASIS_POINTS_SCALE - remaining_basis_points)
+            .min(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS);
+        let Some(weighted) = session_tokens.checked_mul(u128::from(combined_basis_points)) else {
+            self.complete = false;
+            return;
+        };
+        let Some(total) = self.combined_weighted_basis_points.checked_add(weighted) else {
+            self.complete = false;
+            return;
+        };
+        self.combined_weighted_basis_points = total;
+    }
+
+    fn finish(self, covers_ready_cohort: bool) -> (Option<u16>, [Option<u16>; 9]) {
+        if !covers_ready_cohort || !self.complete || self.total_tokens == 0 {
+            return (None, [None; 9]);
+        }
+        let percentage = |weighted: u128| {
+            u16::try_from(weighted / self.total_tokens)
+                .ok()
+                .map(|value| value.min(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS))
+        };
+        (
+            percentage(self.combined_weighted_basis_points),
+            core::array::from_fn(|index| percentage(self.detector_weighted_basis_points[index])),
+        )
+    }
+}
+
+fn finding_rate_token_burn_estimate(
+    detectors: [DetectorCounts; 9],
+    statuses: &[DetectorStatus; 9],
+) -> (u16, [Option<u16>; 9]) {
+    let estimates = core::array::from_fn(|index| match &statuses[index] {
+        DetectorStatus::Findings(findings) if detectors[index].eligible > 0 => {
+            let share = u128::from(detector_token_burn_share(DetectorId::ALL[index]));
+            let finding_sessions = u128::from(findings.finding_sessions);
+            let eligible = u128::from(detectors[index].eligible);
+            Some(u16::try_from(share * finding_sessions / eligible).unwrap_or(0))
+        }
+        DetectorStatus::Clean => Some(0),
+        DetectorStatus::Findings(_) | DetectorStatus::NotAssessed(_) => None,
+    });
+    let remaining = estimates
+        .iter()
+        .flatten()
+        .fold(BASIS_POINTS_SCALE, |remaining, estimate| {
+            u16::try_from(
+                u32::from(remaining) * u32::from(BASIS_POINTS_SCALE - estimate)
+                    / u32::from(BASIS_POINTS_SCALE),
+            )
+            .expect("the complement product stays within the basis-point scale")
+        });
+    (
+        (BASIS_POINTS_SCALE - remaining).min(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS),
+        estimates,
+    )
 }
 
 pub struct EfficiencyReportAccumulator {
@@ -383,6 +537,7 @@ pub struct EfficiencyReportAccumulator {
     capability_gaps: BTreeMap<DetectorId, u64>,
     capability_gap_examples: BTreeMap<DetectorId, Vec<SessionExample>>,
     actively_growing: u64,
+    token_burn: TokenBurnAccumulator,
 }
 
 impl Default for EfficiencyReportAccumulator {
@@ -401,10 +556,7 @@ impl EfficiencyReportAccumulator {
     pub fn with_catalogs(catalogs: ReportCatalogs) -> Self {
         Self {
             assessed_sessions: 0,
-            detectors: [DetectorCounts {
-                eligible: 0,
-                assessed: 0,
-            }; 9],
+            detectors: [DetectorCounts::default(); 9],
             folds: core::array::from_fn(|_| DetectorFold::default()),
             quota: QuotaPressureAccumulator::default(),
             catalogs,
@@ -413,6 +565,7 @@ impl EfficiencyReportAccumulator {
             capability_gaps: BTreeMap::new(),
             capability_gap_examples: BTreeMap::new(),
             actively_growing: 0,
+            token_burn: TokenBurnAccumulator::new(),
         }
     }
 
@@ -437,34 +590,47 @@ impl EfficiencyReportAccumulator {
 
         // Lazily allocate the identity example only if this session has a detector gap.
         let mut bounded_example: Option<SessionExample> = None;
+        let mut findings = [false; 9];
 
         for detector in DetectorId::ALL {
-            let is_eligible = eligible(detector, &evidence);
-            if is_eligible && !detectors::in_denominator(detector, &evidence) {
-                // A zero-work session is neither eligible nor a capability gap.
+            let counts = &mut self.detectors[detector.index()];
+            if !detectors::in_denominator(detector, &evidence) {
+                counts.not_applicable += 1;
                 continue;
             }
-            if is_eligible {
-                let counts = &mut self.detectors[detector.index()];
-                counts.eligible += 1;
-                if clean_facts_complete(detector, &evidence) {
-                    counts.assessed += 1;
+            if !eligible(detector, &evidence) {
+                counts.unavailable += 1;
+                *self.capability_gaps.entry(detector).or_default() += 1;
+                let examples = self.capability_gap_examples.entry(detector).or_default();
+                if examples.len() < MAX_EXAMPLES_PER_DETECTOR {
+                    let example = bounded_example.get_or_insert_with(|| SessionExample {
+                        agent: evidence.identity.agent.clone(),
+                        session_id: evidence.identity.session_id.clone(),
+                    });
+                    examples.push(example.clone());
                 }
-                let observation = detectors::evaluate(detector, &evidence, &self.catalogs);
-                self.folds[detector.index()].observe(observation, &evidence);
                 continue;
             }
 
-            *self.capability_gaps.entry(detector).or_default() += 1;
-            let examples = self.capability_gap_examples.entry(detector).or_default();
-            if examples.len() < MAX_EXAMPLES_PER_DETECTOR {
-                let example = bounded_example.get_or_insert_with(|| SessionExample {
-                    agent: evidence.identity.agent.clone(),
-                    session_id: evidence.identity.session_id.clone(),
-                });
-                examples.push(example.clone());
+            counts.eligible += 1;
+            let observation = detectors::evaluate(detector, &evidence, &self.catalogs);
+            match observation {
+                detectors::Observation::Finding => {
+                    counts.finding += 1;
+                    counts.assessed += 1;
+                    findings[detector.index()] = true;
+                }
+                detectors::Observation::NoFinding if clean_facts_complete(detector, &evidence) => {
+                    counts.clean += 1;
+                    counts.assessed += 1;
+                }
+                detectors::Observation::NoFinding
+                | detectors::Observation::ContractIncomplete
+                | detectors::Observation::SignalMissing => counts.unavailable += 1,
             }
+            self.folds[detector.index()].observe(observation, &evidence);
         }
+        self.token_burn.observe(&evidence, findings);
     }
 
     fn observe_unrecognized_records(&mut self, evidence: &SessionEvidence) {
@@ -512,6 +678,15 @@ impl EfficiencyReportAccumulator {
                 self.assessed_sessions,
             )
         });
+        let covers_ready_cohort = self.assessed_sessions == context.coverage.ready;
+        let (mut estimated_token_burn_basis_points, mut detector_estimates) =
+            self.token_burn.finish(covers_ready_cohort);
+        if estimated_token_burn_basis_points.is_none() {
+            let (fallback, fallback_detectors) =
+                finding_rate_token_burn_estimate(self.detectors, &detector_statuses);
+            estimated_token_burn_basis_points = Some(fallback);
+            detector_estimates = fallback_detectors;
+        }
         EfficiencyReport {
             context,
             assessed_sessions: self.assessed_sessions,
@@ -523,6 +698,8 @@ impl EfficiencyReportAccumulator {
             unrecognized_records: self.unrecognized_records,
             capability_gaps: self.capability_gaps,
             capability_gap_examples: self.capability_gap_examples,
+            estimated_token_burn_basis_points,
+            detector_estimated_token_burn_basis_points: detector_estimates,
         }
     }
 }
@@ -531,11 +708,11 @@ impl EfficiencyReportAccumulator {
 mod tests {
     use super::*;
     use crate::analysis::{
-        ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, EvidenceSource, FAST_SPEED_KEY, LoadedSource,
-        ModelTokens, PARSER_REVISION, QuotaConfidence, QuotaHitSeverity, QuotaIncident,
-        QuotaLimitKind, RepeatedContext, RepeatedContextAccounting, SessionEvidenceAccumulator,
-        SessionQuotaEvidence, SignalCoverage, SourceCapabilities, SourceKind, TurnCounts,
-        TurnFacts,
+        ANALYZER_REVISION, ContextEvidence, EVIDENCE_SCHEMA_REVISION, EvidenceSource,
+        FAST_SPEED_KEY, LoadedSource, ModelTokens, PARSER_REVISION, QuotaConfidence,
+        QuotaHitSeverity, QuotaIncident, QuotaLimitKind, RepeatedContext,
+        RepeatedContextAccounting, SessionEvidenceAccumulator, SessionQuotaEvidence,
+        SignalCoverage, SourceCapabilities, SourceKind, TurnCounts, TurnFacts,
     };
     use crate::insights::detectors::{ModelFamily, ModelReplacementEntry, NotAssessedReason};
     use crate::insights::quota::QuotaPressureSection;
@@ -590,6 +767,167 @@ mod tests {
             evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
             coverage,
         }
+    }
+
+    #[test]
+    fn token_burn_estimates_weight_session_findings_by_all_token_kinds() {
+        let mut finding = evidence_with_work("finding");
+        finding.context = EvidenceValue::Complete(ContextEvidence {
+            max_request_context_tokens: 400_001,
+            top_depth_examples: Vec::new(),
+        });
+        let EvidenceValue::Complete(models) = &mut finding.models else {
+            unreachable!()
+        };
+        models.effort_tiers.insert(
+            "max".to_owned(),
+            TurnCounts {
+                main_loop: 1,
+                delegated: 0,
+            },
+        );
+        models.by_model.insert(
+            "claude-sonnet-4-5".to_owned(),
+            ModelTokens {
+                input: 100,
+                output: 200,
+                cache_read: 300,
+                cache_creation: 400,
+                ..ModelTokens::default()
+            },
+        );
+
+        let mut clean = evidence_with_work("clean");
+        let EvidenceValue::Complete(models) = &mut clean.models else {
+            unreachable!()
+        };
+        models.by_model.insert(
+            "claude-sonnet-4-5".to_owned(),
+            ModelTokens {
+                input: 250,
+                output: 250,
+                cache_read: 250,
+                cache_creation: 250,
+                ..ModelTokens::default()
+            },
+        );
+
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session(finding);
+        accumulator.observe_session(clean);
+        let report = accumulator.finish(context(CoverageCounts {
+            ready: 2,
+            discovered: 2,
+            ..CoverageCounts::default()
+        }));
+
+        assert_eq!(report.estimated_token_burn_basis_points, Some(1_625));
+        assert_eq!(
+            report.detector_estimated_token_burn_basis_points
+                [DetectorId::SessionsOverDepth.index()],
+            Some(500)
+        );
+        assert_eq!(
+            report.detector_estimated_token_burn_basis_points
+                [DetectorId::ModelOverthinking.index()],
+            Some(1_250)
+        );
+        assert_eq!(
+            report.detector_estimated_token_burn_basis_points[DetectorId::UnusedSkills.index()],
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn token_burn_estimates_fall_back_to_finding_rates_for_incomplete_tokens() {
+        let complete = evidence_with_work("complete");
+        let mut unattributed = evidence_with_work("unattributed");
+        unattributed.context = EvidenceValue::Complete(ContextEvidence {
+            max_request_context_tokens: 400_001,
+            top_depth_examples: Vec::new(),
+        });
+        let EvidenceValue::Complete(models) = &mut unattributed.models else {
+            unreachable!()
+        };
+        models.unattributed_turns = 1;
+
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session(complete);
+        accumulator.observe_session(unattributed);
+        let report = accumulator.finish(context(CoverageCounts {
+            ready: 2,
+            discovered: 2,
+            ..CoverageCounts::default()
+        }));
+
+        assert_eq!(
+            report.detector_estimated_token_burn_basis_points
+                [DetectorId::SessionsOverDepth.index()],
+            Some(500)
+        );
+        assert!(report.estimated_token_burn_basis_points.unwrap() >= 500);
+    }
+
+    #[test]
+    fn token_burn_estimates_fall_back_when_the_ready_cohort_is_incomplete() {
+        let mut evidence = evidence_with_work("observed");
+        let EvidenceValue::Complete(models) = &mut evidence.models else {
+            unreachable!()
+        };
+        models.by_model.insert(
+            "claude-sonnet-4-5".to_owned(),
+            ModelTokens {
+                input: 100,
+                ..ModelTokens::default()
+            },
+        );
+
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session(evidence);
+        let report = accumulator.finish(context(CoverageCounts {
+            ready: 2,
+            discovered: 2,
+            ..CoverageCounts::default()
+        }));
+
+        assert_eq!(report.estimated_token_burn_basis_points, Some(0));
+    }
+
+    #[test]
+    fn detector_token_burn_shares_match_the_fixed_policy() {
+        assert_eq!(
+            DetectorId::ALL.map(detector_token_burn_share),
+            [1_000, 2_500, 3_500, 500, 500, 300, 2_000, 2_000, 2_500]
+        );
+    }
+
+    #[test]
+    fn combined_token_burn_is_capped_per_session() {
+        let mut evidence = evidence_with_work("finding");
+        let EvidenceValue::Complete(models) = &mut evidence.models else {
+            unreachable!()
+        };
+        models.by_model.insert(
+            "claude-sonnet-4-5".to_owned(),
+            ModelTokens {
+                input: 100,
+                ..ModelTokens::default()
+            },
+        );
+        let mut findings = [false; 9];
+        findings[DetectorId::SessionsOverDepth.index()] = true;
+        findings[DetectorId::ModelOverthinking.index()] = true;
+        findings[DetectorId::OverpoweredSubagents.index()] = true;
+
+        let mut token_burn = TokenBurnAccumulator::new();
+        token_burn.observe(&evidence, findings);
+        let (combined, per_detector) = token_burn.finish(true);
+
+        assert_eq!(combined, Some(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS));
+        assert_eq!(
+            per_detector[DetectorId::OverpoweredSubagents.index()],
+            Some(3_500)
+        );
     }
 
     #[test]
@@ -803,9 +1141,9 @@ mod tests {
 
     #[test]
     fn group_states_separate_eligibility_from_assessment() {
-        let mut unsupported = evidence("unsupported");
+        let mut unsupported = evidence_with_work("unsupported");
         unsupported.models = EvidenceValue::Unsupported;
-        let mut partial = evidence("partial");
+        let mut partial = evidence_with_work("partial");
         partial.models = match partial.models {
             EvidenceValue::Complete(observed) => EvidenceValue::Partial {
                 observed,
@@ -813,7 +1151,7 @@ mod tests {
             },
             _ => unreachable!(),
         };
-        let complete = evidence("complete");
+        let complete = evidence_with_work("complete");
         let mut accumulator = EfficiencyReportAccumulator::new();
         accumulator.observe_session(unsupported);
         accumulator.observe_session(partial);
@@ -823,6 +1161,8 @@ mod tests {
 
         assert_eq!(counts.eligible, 2);
         assert_eq!(counts.assessed, 1);
+        assert_eq!(counts.clean, 1);
+        assert_eq!(counts.unavailable, 2);
     }
 
     #[test]
@@ -922,6 +1262,11 @@ mod tests {
             let counts = report.detectors[detector.index()];
             assert!(counts.eligible <= report.assessed_sessions);
             assert!(counts.assessed <= counts.eligible);
+            assert_eq!(counts.assessed, counts.finding + counts.clean);
+            assert_eq!(
+                report.assessed_sessions,
+                counts.finding + counts.clean + counts.unavailable + counts.not_applicable
+            );
         }
         assert_eq!(report.context.coverage.unknown_start, 4);
         assert_eq!(report.context.coverage.pending, 5);
@@ -971,7 +1316,10 @@ mod tests {
         let report = accumulator.finish(context(CoverageCounts::default()));
 
         for detector in [DetectorId::UnusedMcpServers, DetectorId::UnusedSkills] {
-            assert_eq!(report.detectors[detector.index()].eligible, 0);
+            let counts = report.detectors[detector.index()];
+            assert_eq!(counts.eligible, 0);
+            assert_eq!(counts.not_applicable, 2);
+            assert_eq!(counts.unavailable, 0);
             assert_eq!(
                 report.detector_statuses[detector.index()],
                 DetectorStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
@@ -1004,6 +1352,8 @@ mod tests {
             let counts = report.detectors[detector.index()];
             assert_eq!(counts.eligible, 2, "{detector:?}");
             assert_eq!(counts.assessed, 1, "{detector:?}");
+            assert_eq!(counts.clean, 1, "{detector:?}");
+            assert_eq!(counts.unavailable, 1, "{detector:?}");
             assert_eq!(
                 report.detector_statuses[detector.index()],
                 DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
@@ -1397,11 +1747,76 @@ mod tests {
         accumulator.observe_session(evidence_with_work("complete"));
         accumulator.observe_session(partial);
         let report = accumulator.finish(context(CoverageCounts::default()));
+        let counts = report.detectors[DetectorId::ModelOverthinking.index()];
 
+        assert_eq!(counts.clean, 1);
+        assert_eq!(counts.unavailable, 1);
+        assert_eq!(counts.assessed, 1);
         assert_eq!(
             report.detector_statuses[DetectorId::ModelOverthinking.index()],
             DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
         );
+    }
+
+    #[test]
+    fn partial_findings_are_assessed_and_keep_clean_session_counts() {
+        let clean = complete_row("clean");
+        let mut finding = complete_row("partial-finding");
+        let EvidenceValue::Complete(context_evidence) = &mut finding.context else {
+            unreachable!()
+        };
+        context_evidence.max_request_context_tokens =
+            ReportCatalogs::default().depth_cap_tokens + 1;
+        to_partial(&mut finding.context);
+
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session(clean);
+        accumulator.observe_session(finding);
+        let report = accumulator.finish(context(CoverageCounts::default()));
+        let counts = report.detectors[DetectorId::SessionsOverDepth.index()];
+
+        assert_eq!(counts.finding, 1);
+        assert_eq!(counts.clean, 1);
+        assert_eq!(counts.assessed, 2);
+        assert_eq!(counts.unavailable, 0);
+        assert!(matches!(
+            report.detector_statuses[DetectorId::SessionsOverDepth.index()],
+            DetectorStatus::Findings(_)
+        ));
+    }
+
+    #[test]
+    fn detector_outcomes_partition_the_ready_cohort() {
+        let mut partial = complete_row("partial");
+        to_partial(&mut partial.models);
+        let cohort = [
+            complete_row("complete"),
+            evidence("idle-with-capability-gaps"),
+            partial,
+        ];
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        for row in cohort {
+            accumulator.observe_session(row);
+        }
+        let report = accumulator.finish(context(CoverageCounts {
+            ready: 3,
+            discovered: 3,
+            ..CoverageCounts::default()
+        }));
+
+        for detector in DetectorId::ALL {
+            let counts = report.detectors[detector.index()];
+            assert_eq!(
+                counts.assessed,
+                counts.finding + counts.clean,
+                "{detector:?}"
+            );
+            assert_eq!(
+                report.assessed_sessions,
+                counts.finding + counts.clean + counts.unavailable + counts.not_applicable,
+                "{detector:?}"
+            );
+        }
     }
 
     #[test]

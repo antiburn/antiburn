@@ -229,6 +229,12 @@ fn note_collection_cap(diagnostics: &mut ParseDiagnostics, field: &'static str) 
 /* --------------------------------------------------------------------
  * Core aggregate: eligibility, context depth, time range, cache sums,
  * unattributed turns, delegated turns, and the two identity flags.
+ *
+ * An assistant row with no model counts toward `unattributed_turns` (and,
+ * when delegated, `delegated_model_missing`) only if it carries at least
+ * one billable token. A zero-usage no-model row, such as a harness
+ * `<synthetic>` record, has no tokens to attribute to a model, so it does
+ * not count.
  * ----------------------------------------------------------------- */
 
 struct Core {
@@ -258,9 +264,9 @@ const CORE_SQL: &str = "SELECT
     COALESCE(SUM(cache_read_tokens), 0),
     COALESCE(SUM(cache_write_tokens), 0),
     COALESCE(SUM(input_tokens), 0),
-    COALESCE(SUM(role = 'assistant' AND model IS NULL), 0),
+    COALESCE(SUM(role = 'assistant' AND model IS NULL AND (input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) > 0), 0),
     COALESCE(SUM(scope = 'delegated'), 0),
-    COALESCE(SUM(scope = 'delegated' AND role = 'assistant' AND model IS NULL), 0),
+    COALESCE(SUM(scope = 'delegated' AND role = 'assistant' AND model IS NULL AND (input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) > 0), 0),
     COALESCE(SUM(uuid IS NULL), 0)
   FROM turn
  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))";
@@ -1639,6 +1645,67 @@ mod tests {
         assert_eq!(facts.effort_signal.present_turns, 1);
         assert_eq!(facts.speed_signal.eligible_turns, 1);
         assert_eq!(facts.speed_signal.present_turns, 1);
+    }
+
+    #[test]
+    fn a_zero_usage_no_model_row_does_not_count_as_unattributed() {
+        // A harness `<synthetic>` record parses to a no-model assistant row
+        // with all-zero usage. It has no tokens to attribute to a model, so
+        // it must not count toward `unattributed_turns`.
+        let conn = test_connection();
+        let modelled = base_row("s1", 0);
+        let mut synthetic = base_row("s1", 1);
+        synthetic.model = None;
+        synthetic.input_tokens = 0;
+        synthetic.output_tokens = 0;
+        synthetic.cache_read_tokens = 0;
+        synthetic.cache_write_tokens = 0;
+        insert(&conn, &[modelled, synthetic]);
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
+        assert_eq!(facts.unattributed_turns, 0);
+    }
+
+    #[test]
+    fn a_no_model_row_with_tokens_still_counts_as_unattributed() {
+        // A no-model row that carries tokens has usage that cannot be
+        // attributed to a model, so it stays unattributed.
+        let conn = test_connection();
+        let modelled = base_row("s1", 0);
+        let mut unattributed = base_row("s1", 1);
+        unattributed.model = None;
+        unattributed.input_tokens = 1;
+        insert(&conn, &[modelled, unattributed]);
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
+        assert_eq!(facts.unattributed_turns, 1);
+    }
+
+    #[test]
+    fn a_zero_usage_no_model_delegated_row_does_not_flag_delegated_model_missing() {
+        let conn = test_connection();
+        let mut synthetic = base_row("s1", 0);
+        synthetic.scope = TurnScope::Delegated;
+        synthetic.child_id = Some("s1".to_owned());
+        synthetic.model = None;
+        synthetic.input_tokens = 0;
+        synthetic.output_tokens = 0;
+        synthetic.cache_read_tokens = 0;
+        synthetic.cache_write_tokens = 0;
+        insert(&conn, &[synthetic]);
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
+        assert!(!facts.delegated_model_missing);
+    }
+
+    #[test]
+    fn a_no_model_delegated_row_with_tokens_still_flags_delegated_model_missing() {
+        let conn = test_connection();
+        let mut unattributed = base_row("s1", 0);
+        unattributed.scope = TurnScope::Delegated;
+        unattributed.child_id = Some("s1".to_owned());
+        unattributed.model = None;
+        unattributed.input_tokens = 1;
+        insert(&conn, &[unattributed]);
+        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
+        assert!(facts.delegated_model_missing);
     }
 
     #[test]

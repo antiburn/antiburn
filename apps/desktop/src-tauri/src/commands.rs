@@ -32,11 +32,11 @@ use crate::agents::kind_from_slug;
 use crate::analysis;
 use crate::consent;
 use crate::dto::{
-    ActivityEntry, AgentScanState, AppInfo, DeferredPermissionDir, HygieneSummaryPayload,
-    InsightsReportPayload, InsightsStatusPayload, LiveUsageSummary, OrchestrationStatus,
-    ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload,
-    SessionHygieneRequest, SessionIdentity, SessionLimitAllocationSummary, SessionRelation,
-    SessionRelations, SubagentMember,
+    ActivityEntry, AgentScanState, AppInfo, ChecksReportPayload, DeferredPermissionDir,
+    HygieneSummaryPayload, InsightsReportPayload, InsightsStatusPayload, LiveUsageSummary,
+    OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis,
+    SessionHygienePayload, SessionHygieneRequest, SessionIdentity, SessionLimitAllocationSummary,
+    SessionRelation, SessionRelations, SubagentMember,
 };
 use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
@@ -856,31 +856,11 @@ pub async fn refresh_live_usage(
     // boundary for all of it.
     let utc_offset_minutes = utc_offset_minutes.unwrap_or(0);
     tauri::async_runtime::spawn_blocking(move || {
-        // Read here rather than before the hop: this summary is stamped with
-        // the moment it was produced, and a caller queued behind another
-        // summarization can wait a while for its turn.
-        let now = scan::unix_now();
-        let Some(live) = app.try_state::<crate::usage_alerts::LiveUsage>() else {
-            return LiveUsageSummary {
-                generated_at: crate::store::iso_from_epoch(Some(now)),
-                ..LiveUsageSummary::default()
-            };
-        };
-        let store = app.try_state::<Store>();
-        // Held for the whole pass: two of these can now genuinely overlap,
-        // and the reading history they append to is not written atomically.
-        let _summarizing = live.summarizing();
-        live.set_utc_offset_minutes(utc_offset_minutes, store.as_deref());
-        let summary = provider_usage::live::summarize(
-            &live.sources,
-            store.as_deref(),
-            now,
-            utc_offset_minutes,
+        crate::usage_alerts::refresh_publish_and_evaluate(
+            &app,
             POPOVER_LIVE_USAGE_MAX_AGE,
-        );
-        live.replace_snapshot(summary.clone(), store.as_deref());
-        let _ = app.emit(crate::usage_alerts::EVENT_CHANGED, &summary);
-        summary
+            Some(utc_offset_minutes),
+        )
     })
     .await
     .map_err(fail)
@@ -1239,12 +1219,57 @@ pub async fn get_insights_report(app: tauri::AppHandle) -> CommandResult<Insight
         .request(ScanTrigger::InsightsPane);
     let data_dir = app.state::<Store>().state_dir().to_path_buf();
     let request = insights_report_request(epoch_now());
-    let report = app
+    let reduced = app
         .state::<InsightsController>()
-        .report(data_dir, request)
+        .settings_report(data_dir, request)
         .await?;
+    let report = reduced.report;
     crate::analytics::record_unrecognized_records(&app, &report.unrecognized_records);
     Ok(report.into())
+}
+
+/// The bounded report data used by the popover All checks summary.
+#[tauri::command]
+pub async fn get_checks_report(
+    window: tauri::WebviewWindow,
+    consumer_id: String,
+) -> CommandResult<ChecksReportPayload> {
+    if window.label() != popover::LABEL {
+        return Err(fail("only the popover can read the Checks report"));
+    }
+    if consumer_id.is_empty() || consumer_id.len() > 128 {
+        return Err(fail("the Checks consumer ID is invalid"));
+    }
+    let app = window.app_handle();
+    let data_dir = app.state::<Store>().state_dir().to_path_buf();
+    let request = insights_report_request(epoch_now());
+    let reduced = app
+        .state::<InsightsController>()
+        .checks_report(data_dir, request, consumer_id)
+        .await?;
+    Ok(ChecksReportPayload::from_report(
+        &reduced.report,
+        reduced.evidence_settled,
+    ))
+}
+
+/// Cancel Checks work when the popover renderer is released.
+#[tauri::command]
+pub fn cancel_checks_report(
+    window: tauri::WebviewWindow,
+    consumer_id: String,
+) -> CommandResult<()> {
+    if window.label() != popover::LABEL {
+        return Err(fail("only the popover can cancel the Checks report"));
+    }
+    if consumer_id.is_empty() || consumer_id.len() > 128 {
+        return Err(fail("the Checks consumer ID is invalid"));
+    }
+    window
+        .app_handle()
+        .state::<InsightsController>()
+        .release_checks(&consumer_id);
+    Ok(())
 }
 
 /// Report calculation state plus the evidence backlog for the report's scope.
@@ -1479,7 +1504,7 @@ fn session_hygiene_payload(
 /// evidence state untouched.
 #[tauri::command]
 pub fn cancel_insights_report(app: tauri::AppHandle) {
-    app.state::<InsightsController>().cancel();
+    app.state::<InsightsController>().release_settings();
 }
 
 /* -------------------------------------------------------------------------
@@ -1524,6 +1549,7 @@ pub const SESSIONS_INVALIDATED_EVENT: &str = "sessions:invalidated";
 /// scan. The payload is the fresh [`ActivityEntry`] for that session, so the
 /// popover can update the one row without a re-query.
 pub const SESSION_ENTRY_CHANGED_EVENT: &str = "sessions:entry-changed";
+pub const CHECKS_REPORT_CHANGED_EVENT: &str = "checks:report-changed";
 
 /// Re-derive the repository list from what is on disk right now.
 #[tauri::command]

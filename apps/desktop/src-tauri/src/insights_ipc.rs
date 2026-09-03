@@ -13,10 +13,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use antiburn_local::insights::EfficiencyReport;
 use tokio::sync::watch;
 
-use crate::insights_report::{self, ReportRequest, reduce_report};
+use crate::insights_report::{self, ReducedReport, ReportRequest, reduce_report};
 
 /// The stable error string a cancelled report crosses the IPC edge with.
 pub const REPORT_CANCELLED_ERROR: &str = "insights report cancelled";
@@ -27,7 +26,7 @@ const NO_RESULT_ERROR: &str = "insights report task ended without a result";
 struct Run {
     cancel: Arc<AtomicBool>,
     done: watch::Receiver<bool>,
-    outcome: OnceLock<Result<EfficiencyReport, String>>,
+    outcome: OnceLock<Result<ReducedReport, String>>,
 }
 
 impl Run {
@@ -40,8 +39,15 @@ impl Run {
 #[derive(Default)]
 pub struct InsightsController {
     slot: Mutex<Option<Arc<Run>>>,
+    consumers: Mutex<Consumers>,
     #[cfg(test)]
     cancel_requests: std::sync::atomic::AtomicUsize,
+}
+
+#[derive(Default)]
+struct Consumers {
+    settings_active: bool,
+    checks: Option<String>,
 }
 
 impl InsightsController {
@@ -62,6 +68,26 @@ impl InsightsController {
         }
     }
 
+    pub fn release_settings(&self) {
+        let mut consumers = self.lock_consumers();
+        consumers.settings_active = false;
+        self.cancel_if_unused(&consumers);
+    }
+
+    pub fn release_checks(&self, consumer_id: &str) {
+        let mut consumers = self.lock_consumers();
+        if consumers.checks.as_deref() == Some(consumer_id) {
+            consumers.checks = None;
+        }
+        self.cancel_if_unused(&consumers);
+    }
+
+    fn cancel_if_unused(&self, consumers: &Consumers) {
+        if !consumers.settings_active && consumers.checks.is_none() {
+            self.cancel();
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn cancel_requests(&self) -> usize {
         self.cancel_requests.load(Ordering::SeqCst)
@@ -72,21 +98,40 @@ impl InsightsController {
         &self,
         data_dir: PathBuf,
         request: ReportRequest,
-    ) -> Result<EfficiencyReport, String> {
+    ) -> Result<ReducedReport, String> {
         self.report_with(request, move |request, cancel| {
             reduce_report(data_dir, request, cancel)
         })
         .await
     }
 
+    pub async fn settings_report(
+        &self,
+        data_dir: PathBuf,
+        request: ReportRequest,
+    ) -> Result<ReducedReport, String> {
+        self.lock_consumers().settings_active = true;
+        self.report(data_dir, request).await
+    }
+
+    pub async fn checks_report(
+        &self,
+        data_dir: PathBuf,
+        request: ReportRequest,
+        consumer_id: String,
+    ) -> Result<ReducedReport, String> {
+        self.lock_consumers().checks = Some(consumer_id);
+        self.report(data_dir, request).await
+    }
+
     async fn report_with<F, Fut>(
         &self,
         request: ReportRequest,
         reduce: F,
-    ) -> Result<EfficiencyReport, String>
+    ) -> Result<ReducedReport, String>
     where
         F: FnOnce(ReportRequest, Arc<AtomicBool>) -> Fut,
-        Fut: Future<Output = anyhow::Result<EfficiencyReport>> + Send + 'static,
+        Fut: Future<Output = anyhow::Result<ReducedReport>> + Send + 'static,
     {
         let run = {
             let mut slot = self.lock_slot();
@@ -141,6 +186,12 @@ impl InsightsController {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    fn lock_consumers(&self) -> MutexGuard<'_, Consumers> {
+        self.consumers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 #[cfg(test)]
@@ -165,16 +216,19 @@ mod tests {
         }
     }
 
-    fn empty_report(request: &ReportRequest) -> EfficiencyReport {
-        EfficiencyReportAccumulator::new().finish(ReportContext {
-            environment_key: request.environment_key.clone(),
-            window: request.window,
-            computed_at_epoch: request.computed_at_epoch,
-            parser_revision: 1,
-            analyzer_revision: 1,
-            evidence_schema_revision: 1,
-            coverage: CoverageCounts::default(),
-        })
+    fn empty_report(request: &ReportRequest) -> ReducedReport {
+        ReducedReport {
+            report: EfficiencyReportAccumulator::new().finish(ReportContext {
+                environment_key: request.environment_key.clone(),
+                window: request.window,
+                computed_at_epoch: request.computed_at_epoch,
+                parser_revision: 1,
+                analyzer_revision: 1,
+                evidence_schema_revision: 1,
+                coverage: CoverageCounts::default(),
+            }),
+            evidence_settled: true,
+        }
     }
 
     #[tokio::test]
@@ -323,5 +377,26 @@ mod tests {
 
         assert_eq!(reductions.load(Ordering::SeqCst), 2);
         assert!(!controller.is_calculating());
+    }
+
+    #[test]
+    fn one_consumer_cannot_cancel_a_reduction_needed_by_the_other() {
+        let controller = InsightsController::default();
+        controller.lock_consumers().checks = Some("checks-1".to_string());
+
+        controller.release_settings();
+        assert_eq!(controller.cancel_requests(), 0);
+
+        controller.release_checks("checks-1");
+        assert_eq!(controller.cancel_requests(), 1);
+    }
+
+    #[test]
+    fn an_old_checks_release_cannot_cancel_a_new_consumer() {
+        let controller = InsightsController::default();
+        controller.lock_consumers().checks = Some("new".to_string());
+
+        controller.release_checks("old");
+        assert_eq!(controller.cancel_requests(), 0);
     }
 }

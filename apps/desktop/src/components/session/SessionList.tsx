@@ -9,6 +9,7 @@ import { useCallback, useRef, useState, type ReactNode } from "react"
 import { cn } from "../../lib/cn"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
 import { agentDisplayName, type AgentSurface } from "../../lib/presentation/agents"
+import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import {
   INITIAL_SESSION_HYGIENE,
@@ -131,31 +132,12 @@ function isFiveHourWindow(provider: string, id: string): boolean {
   return false
 }
 
-function hasCurrentFiveHourWindow(
-  live: LiveUsageSummaryPayload | undefined,
-  now: number,
-): boolean {
-  return (
-    live?.providers.some((provider) => {
-      const observedAt = Date.parse(provider.observedAt)
-      return (
-        provider.freshness === "fresh" &&
-        provider.windows.some((window) => {
-          const resetsAt = Date.parse(window.resetsAt ?? "")
-          return (
-            isFiveHourWindow(provider.provider, window.id) &&
-            window.usedPercent != null &&
-            Number.isFinite(window.usedPercent) &&
-            window.usedPercent >= 0 &&
-            window.usedPercent <= 100 &&
-            Number.isFinite(observedAt) &&
-            observedAt < resetsAt &&
-            now < resetsAt
-          )
-        })
+function hasDisplayedFiveHourWindow(live: LiveUsageSummaryPayload | undefined): boolean {
+  return live
+    ? liveDisplayableProviders(live).some((provider) =>
+        liveWindows(provider).some((window) => isFiveHourWindow(provider.provider, window.id)),
       )
-    }) ?? false
-  )
+    : false
 }
 
 function sessionLimitBadge(
@@ -454,7 +436,7 @@ export function SessionList({
   const currentTime = now?.getTime() ?? Date.now()
   const fiveHourAvailable =
     badgeMetric === "fiveHourPercent" ||
-    hasCurrentFiveHourWindow(liveUsage, currentTime) ||
+    hasDisplayedFiveHourWindow(liveUsage) ||
     (sessionLimitAllocations?.allocations.some(
       (allocation) =>
         allocation.metric === "fiveHour" && allocationIsCurrent(allocation, currentTime),

@@ -9,12 +9,15 @@ use crate::analysis::model::{
 use crate::analysis::rows::{MemoryTurnRowStore, TurnRowSink, TurnRowStore};
 use crate::analysis::{
     CompositeSink, EvidenceSource, EvidenceValue, NormalizedRecord, PartialReason, RawSource,
-    RecordCoverage, RecordSink, SessionCollector, SessionEvidence, SessionEvidenceAccumulator,
-    SessionInput, SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind,
-    VisitOutcome, adapter_for, analyze_sources, normalize_source,
+    RecordCoverage, RecordSink, SessionCollector, SessionCoverageRecord, SessionEvidence,
+    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
+    SourceCapabilities, SourceKind, VisitOutcome, adapter_for, analyze_sources, normalize_source,
 };
 
-fn claude_evidence(jsonl: &str) -> SessionEvidence {
+/// Runs `jsonl` through the Claude adapter into a [`CompositeSink`], the
+/// shared setup [`claude_evidence`] and [`claude_evidence_and_coverage`]
+/// build on.
+fn claude_composite(jsonl: &str) -> CompositeSink {
     let input = jsonl_input("claude", jsonl);
     let store = MemoryTurnRowStore::new("claude", "s");
     let turn_rows = TurnRowSink::new(Arc::clone(&store) as Arc<dyn TurnRowStore>, "s", None);
@@ -32,7 +35,22 @@ fn claude_evidence(jsonl: &str) -> SessionEvidence {
         .visit(&input, &mut composite)
         .expect("Claude source must parse");
     composite.observe_source_outcome(outcome);
-    composite.evidence().expect("evidence must publish")
+    composite
+}
+
+fn claude_evidence(jsonl: &str) -> SessionEvidence {
+    claude_composite(jsonl)
+        .evidence()
+        .expect("evidence must publish")
+}
+
+fn claude_evidence_and_coverage(jsonl: &str) -> (SessionEvidence, SessionCoverageRecord) {
+    let composite = claude_composite(jsonl);
+    let coverage = composite
+        .coverage_record()
+        .expect("coverage record must publish");
+    let evidence = composite.evidence().expect("evidence must publish");
+    (evidence, coverage)
 }
 
 fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
@@ -106,6 +124,36 @@ fn an_unknown_model_leaves_by_model_unattributed_not_invented() {
     };
     assert_eq!(models.unattributed_turns, 1);
     assert!(models.by_model.is_empty());
+}
+
+#[test]
+fn a_zero_usage_synthetic_record_does_not_block_the_models_group() {
+    // Claude Code writes a harness-injected `<synthetic>` assistant record
+    // with all-zero usage for text such as "No response requested." It has
+    // no tokens to attribute to a model, so it must not mark the `models`
+    // group `Partial`.
+    let evidence = claude_evidence(concat!(
+        r#"{"type":"assistant","timestamp":1,"message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[]}}"#,
+        "\n",
+        r#"{"type":"assistant","timestamp":2,"message":{"role":"assistant","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[]}}"#,
+    ));
+    let EvidenceValue::Complete(models) = evidence.models else {
+        panic!("zero-usage synthetic record must not block the models group");
+    };
+    assert_eq!(models.unattributed_turns, 0);
+}
+
+/// Claude Code renamed its subagent launch tool from `Task` to `Agent`. An
+/// `Agent` tool call must still evidence a subagent spawn.
+#[test]
+fn claude_agent_tool_use_counts_as_a_subagent_spawn() {
+    let evidence = claude_evidence(
+        r#"{"type":"assistant","uuid":"33333333-3333-4333-8333-000000000002","parentUuid":null,"timestamp":1,"message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1},"content":[{"type":"tool_use","name":"Agent","input":{"description":"not retained","prompt":"not retained"}}]}}"#,
+    );
+    let EvidenceValue::Complete(subagents) = evidence.subagents else {
+        panic!("subagents must be complete");
+    };
+    assert_eq!(subagents.spawn_count, 1);
 }
 
 #[derive(Default)]
@@ -926,6 +974,55 @@ fn claude_marked_compaction_without_metadata_leaves_trigger_and_sizes_none() {
     assert_eq!(boundary.compaction_trigger, None);
     assert_eq!(boundary.compaction_pre_tokens, None);
     assert_eq!(boundary.compaction_post_tokens, None);
+}
+
+/// A `compact_boundary` record's `logicalParentUuid` names a uuid absent
+/// from the whole file (the pre-compaction record lives in an earlier,
+/// different file on a resumed session). The `ThreadLink` for this record
+/// must come from its `parentUuid` (always null) alone, so the absent
+/// `logicalParentUuid` must not degrade the cache group.
+#[test]
+fn a_compaction_boundarys_absent_logical_parent_does_not_degrade_cache() {
+    let (evidence, coverage) = claude_evidence_and_coverage(concat!(
+        r#"{"type":"user","uuid":"11111111-1111-4111-8111-000000000001","parentUuid":null,"timestamp":"2024-06-01T12:00:00Z","message":{"role":"user","content":"start"}}"#,
+        "\n",
+        r#"{"type":"assistant","uuid":"22222222-2222-4222-8222-000000000001","parentUuid":"11111111-1111-4111-8111-000000000001","timestamp":"2024-06-01T12:00:01Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"output_tokens":10},"content":[{"type":"text","text":"ok"}]}}"#,
+        "\n",
+        r#"{"type":"system","subtype":"compact_boundary","level":"info","uuid":"33333333-3333-4333-8333-000000000001","parentUuid":null,"logicalParentUuid":"99999999-9999-4999-8999-000000000009","timestamp":"2024-06-01T12:00:02Z","content":"Compacted conversation","compactMetadata":{"trigger":"auto","preTokens":1}}"#,
+        "\n",
+        r#"{"type":"user","uuid":"44444444-4444-4444-8444-000000000001","parentUuid":"33333333-3333-4333-8333-000000000001","timestamp":"2024-06-01T12:00:03Z","message":{"role":"user","content":"continue"}}"#,
+        "\n",
+        r#"{"type":"assistant","uuid":"55555555-5555-4555-8555-000000000001","parentUuid":"44444444-4444-4444-8444-000000000001","timestamp":"2024-06-01T12:00:04Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"output_tokens":10},"content":[{"type":"text","text":"ok"}]}}"#,
+    ));
+    assert!(!coverage.thread_parent_unresolved);
+    let EvidenceValue::Complete(_) = evidence.cache else {
+        panic!("an absent logical parent on a compaction boundary must keep cache complete");
+    };
+}
+
+/// Same as above, but the `logicalParentUuid` names a record that appears
+/// LATER in the same file (the boundary is written before the record it
+/// logically points to). This must not degrade the cache group either: the
+/// fix reads only `parentUuid`, so it never looks at `logicalParentUuid`.
+#[test]
+fn a_compaction_boundarys_later_logical_parent_does_not_degrade_cache() {
+    let (evidence, coverage) = claude_evidence_and_coverage(concat!(
+        r#"{"type":"user","uuid":"11111111-1111-4111-8111-000000000001","parentUuid":null,"timestamp":"2024-06-01T12:00:00Z","message":{"role":"user","content":"start"}}"#,
+        "\n",
+        r#"{"type":"assistant","uuid":"22222222-2222-4222-8222-000000000001","parentUuid":"11111111-1111-4111-8111-000000000001","timestamp":"2024-06-01T12:00:01Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"output_tokens":10},"content":[{"type":"text","text":"ok"}]}}"#,
+        "\n",
+        r#"{"type":"system","subtype":"compact_boundary","level":"info","uuid":"33333333-3333-4333-8333-000000000001","parentUuid":null,"logicalParentUuid":"55555555-5555-4555-8555-000000000001","timestamp":"2024-06-01T12:00:02Z","content":"Compacted conversation","compactMetadata":{"trigger":"auto","preTokens":1}}"#,
+        "\n",
+        r#"{"type":"user","uuid":"44444444-4444-4444-8444-000000000001","parentUuid":"33333333-3333-4333-8333-000000000001","timestamp":"2024-06-01T12:00:03Z","message":{"role":"user","content":"continue"}}"#,
+        "\n",
+        r#"{"type":"assistant","uuid":"55555555-5555-4555-8555-000000000001","parentUuid":"44444444-4444-4444-8444-000000000001","timestamp":"2024-06-01T12:00:04Z","message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":10,"output_tokens":10},"content":[{"type":"text","text":"ok"}]}}"#,
+    ));
+    assert!(!coverage.thread_parent_unresolved);
+    let EvidenceValue::Complete(_) = evidence.cache else {
+        panic!(
+            "a later-appearing logical parent on a compaction boundary must keep cache complete"
+        );
+    };
 }
 
 /// Codex's compaction event carries no trigger or size info at all.
@@ -2560,6 +2657,22 @@ fn subagent_launch_marker_counts_only_parent_task_calls() {
 
     let total_launches: u32 = m.buckets.iter().map(|b| b.subagent_launches).sum();
     assert_eq!(total_launches, 1, "only the parent's own Task call counts");
+}
+
+/// Mirrors `subagent_launch_marker_counts_only_parent_task_calls` for
+/// Claude Code's renamed `Agent` tool.
+#[test]
+fn subagent_launch_marker_counts_parent_agent_calls_too() {
+    let parent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Agent","input":{"prompt":"go look"}},{"type":"tool_use","name":"Edit","input":{"file_path":"a.rs"}}]}}"#;
+    let subagent_fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Agent","input":{"prompt":"nested"}}]}}"#;
+
+    let parent = normalize_source(&jsonl_input("claude", parent_fixture)).unwrap();
+    let subagent = normalize_source(&jsonl_input("claude", subagent_fixture)).unwrap();
+    let merged = merge_subagent_events(parent, vec![subagent]);
+    let m = analyze_session(&merged);
+
+    let total_launches: u32 = m.buckets.iter().map(|b| b.subagent_launches).sum();
+    assert_eq!(total_launches, 1, "only the parent's own Agent call counts");
 }
 
 #[test]

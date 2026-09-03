@@ -38,7 +38,7 @@
         "speed": null,
         "thinkingMode": null,
         "tools": [],
-        "tsMs": 1785574814000,
+        "tsMs": 1785574816000,
         "usage": {
           "cacheCreationTokens": 0,
           "cacheReadTokens": 0,
@@ -52,7 +52,7 @@
   },
   "sessions": [
     {
-      "activeSecs": 14,
+      "activeSecs": 16,
       "agent": "claude",
       "billableCacheCreationTokens": 0,
       "billableCacheReadTokens": 0,
@@ -4032,7 +4032,7 @@
         "outputUsd": 0.000048,
         "totalUsd": 0.00006720000000000001
       },
-      "durationSecs": 14,
+      "durationSecs": 16,
       "efficiency": {
         "carryUsd": 0.0,
         "growthTokens": 24,

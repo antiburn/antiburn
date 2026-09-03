@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest"
 import type { ProviderUsagePayload, ProviderUsageWindowPayload } from "../ipc"
 import {
   EMPTY_WINDOW,
+  formatSpendFigure,
+  formatTokenFigure,
   providerInitial,
   providerWindow,
   rankByWindow,
@@ -223,5 +225,31 @@ describe("counts", () => {
     expect(sessionCountLabel(0)).toBe("0 sessions")
     expect(sessionCountLabel(1)).toBe("1 session")
     expect(sessionCountLabel(2)).toBe("2 sessions")
+  })
+})
+
+describe("popover card figures", () => {
+  it("prices the spend figure by its size", () => {
+    expect(formatSpendFigure(0)).toBe("$0.00")
+    expect(formatSpendFigure(0.004)).toBe("<$0.01")
+    expect(formatSpendFigure(41.78)).toBe("$41.78")
+    expect(formatSpendFigure(99.996)).toBe("$100")
+    expect(formatSpendFigure(3523.96)).toBe("$3,524")
+    expect(formatSpendFigure(99_999.4)).toBe("$99,999")
+    expect(formatSpendFigure(100_000)).toBe("$100k")
+    expect(formatSpendFigure(123_456)).toBe("$123k")
+    expect(formatSpendFigure(999_600)).toBe("$1.00M")
+    expect(formatSpendFigure(1_234_567)).toBe("$1.23M")
+  })
+
+  it("scales the token figure to three significant figures", () => {
+    expect(formatTokenFigure(0)).toBe("0")
+    expect(formatTokenFigure(999)).toBe("999")
+    expect(formatTokenFigure(1000)).toBe("1.00k")
+    expect(formatTokenFigure(1250)).toBe("1.25k")
+    expect(formatTokenFigure(57_000_000)).toBe("57.0M")
+    expect(formatTokenFigure(4_843_800_000)).toBe("4.84B")
+    expect(formatTokenFigure(999_600_000)).toBe("1.00B")
+    expect(formatTokenFigure(1_500_000_000_000)).toBe("1.50T")
   })
 })

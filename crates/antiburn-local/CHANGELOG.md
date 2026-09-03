@@ -17,6 +17,8 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-03
+
 ### Added
 
 - Snapshot resume: `AdapterResume`, `AdapterSnapshot`, `EvidenceSnapshot`,
@@ -31,6 +33,9 @@ version and refuses the release if there is none.
 - `WatchRoot`, `AgentExplorer::watch_roots`, and `Explorers::watch_roots_for`
   expose the directories each agent's discovery reads, for a filesystem
   watcher.
+- `AgentExplorer::indexed_title_watch_files` and
+  `Explorers::indexed_title_watch_files_for` expose vendor title stores to
+  filesystem watchers.
 
 ### Changed
 

@@ -2,13 +2,9 @@
 //! discovery walk. See `docs/plans/continuous-session-ingest.md`, "Phase 5b",
 //! rules T1 to T7, for the contract this module implements.
 //!
-//! [`classify_burst`] sorts a burst's paths into a [`ScopedWork`]: known
-//! sessions to refresh directly (T1), agents to rediscover because a new or
-//! database-backed session appeared under their root (T3, T5), or paths
-//! nothing claims (T6). [`Floors`] then admits the part of that work that has
-//! not run too recently, per session and per agent (T2, T4, T5), and defers
-//! the rest without dropping it (T7). [`refresh_sessions`] and
-//! [`rediscover_agents`] run the two admitted lanes.
+//! [`classify_burst`] routes session, title-store, agent, and database changes.
+//! [`Floors`] limits each lane and keeps deferred work.
+//! The refresh functions run admitted work without overlap.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -29,8 +25,7 @@ use crate::store::{SessionActivityKey, SessionRecord, Store};
 
 use super::{PassScope, ScanController, ScanTrigger};
 
-/// T2: a re-described session is not re-described again before this many
-/// seconds pass.
+/// T2: a refreshed session is not refreshed again before this interval ends.
 pub const TARGETED_MIN_INTERVAL: Duration = Duration::from_secs(10);
 
 /// T4: an agent's rediscovery runs at most this often.
@@ -40,6 +35,9 @@ pub const AGENT_REDISCOVER_MIN_INTERVAL: Duration = Duration::from_secs(20);
 /// than [`AGENT_REDISCOVER_MIN_INTERVAL`] because every write under such an
 /// agent's root looks like a new session to the classifier.
 pub const DB_AGENT_REDISCOVER_MIN_INTERVAL: Duration = Duration::from_secs(30);
+
+/// An indexed-title refresh runs at most this often for each agent.
+pub const TITLE_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(10);
 
 /// T7: how long the scheduler waits before retrying admitted work that found
 /// a command's pass already holding the running flag.
@@ -54,11 +52,11 @@ const DATABASE_SIDECAR_SUFFIXES: [&str; 2] = ["-wal", "-journal"];
 /// How many of a burst's paths the classification log line shows.
 const LOG_PATH_SAMPLE: usize = 8;
 
-/// What one path in a burst means for the scheduler, in the classification
-/// order T1, T5, T3, T6 apply.
+/// What one path in a burst means for the scheduler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ClassifiedPath {
     Session(SessionActivityKey),
+    IndexedTitles(AgentKind),
     DatabaseAgent(AgentKind),
     Agent(AgentKind),
     Ignored,
@@ -70,18 +68,23 @@ enum ClassifiedPath {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ScopedWork {
     pub sessions: BTreeSet<SessionActivityKey>,
+    pub title_agents: BTreeSet<AgentKind>,
     pub agents: BTreeSet<AgentKind>,
     pub db_agents: BTreeSet<AgentKind>,
 }
 
 impl ScopedWork {
     pub fn is_empty(&self) -> bool {
-        self.sessions.is_empty() && self.agents.is_empty() && self.db_agents.is_empty()
+        self.sessions.is_empty()
+            && self.title_agents.is_empty()
+            && self.agents.is_empty()
+            && self.db_agents.is_empty()
     }
 
     /// Fold another burst's work in, dropping nothing (T7).
     pub fn merge(&mut self, other: ScopedWork) {
         self.sessions.extend(other.sessions);
+        self.title_agents.extend(other.title_agents);
         self.agents.extend(other.agents);
         self.db_agents.extend(other.db_agents);
     }
@@ -104,9 +107,12 @@ pub fn classify_burst(
     let mut work = ScopedWork::default();
     let mut ignored = 0usize;
     for path in paths {
-        match classify_path(path, &roots, lookup) {
+        match classify_path(path, home, &roots, lookup) {
             ClassifiedPath::Session(key) => {
                 work.sessions.insert(key);
+            }
+            ClassifiedPath::IndexedTitles(agent) => {
+                work.title_agents.insert(agent);
             }
             ClassifiedPath::DatabaseAgent(agent) => {
                 work.db_agents.insert(agent);
@@ -121,6 +127,8 @@ pub fn classify_burst(
     // database-triggered rediscovery: both lead to the same
     // `discover_recent` call, and the shorter T3 floor already covers it.
     work.db_agents.retain(|agent| !work.agents.contains(agent));
+    work.title_agents
+        .retain(|agent| !work.agents.contains(agent) && !work.db_agents.contains(agent));
     let sample = paths
         .iter()
         .take(LOG_PATH_SAMPLE)
@@ -130,6 +138,7 @@ pub fn classify_burst(
     ::tracing::debug!(
         event = "scan_burst_classified",
         sessions = work.sessions.len(),
+        title_agents = work.title_agents.len(),
         agents = work.agents.len(),
         db_agents = work.db_agents.len(),
         ignored,
@@ -141,6 +150,7 @@ pub fn classify_burst(
 
 fn classify_path(
     path: &Path,
+    home: &Path,
     roots: &[(AgentKind, WatchRoot)],
     lookup: &dyn Fn(&str) -> Option<SessionActivityKey>,
 ) -> ClassifiedPath {
@@ -162,6 +172,9 @@ fn classify_path(
         }
         current = dir.parent();
     }
+    if let Some(agent) = indexed_title_store_owner(path, home) {
+        return ClassifiedPath::IndexedTitles(agent);
+    }
     if is_database_path(path)
         && let Some(agent) = owning_agent(path, roots)
     {
@@ -171,6 +184,24 @@ fn classify_path(
         Some(agent) => ClassifiedPath::Agent(agent),
         None => ClassifiedPath::Ignored,
     }
+}
+
+fn indexed_title_store_owner(path: &Path, home: &Path) -> Option<AgentKind> {
+    AgentKind::ALL.iter().copied().find(|agent| {
+        Explorers::DISK
+            .indexed_title_watch_files_for(agent, home)
+            .iter()
+            .any(|file| path == file || is_sidecar_of(path, file))
+    })
+}
+
+fn is_sidecar_of(path: &Path, file: &Path) -> bool {
+    is_database_path(file)
+        && DATABASE_SIDECAR_SUFFIXES.iter().any(|suffix| {
+            let mut sidecar = file.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            path.as_os_str() == sidecar
+        })
 }
 
 /// T5: whether `path`'s file name is one of the database extensions, or a
@@ -236,6 +267,7 @@ fn all_agent_roots(home: &Path) -> Vec<(AgentKind, WatchRoot)> {
 #[derive(Debug, Default)]
 pub struct Floors {
     sessions: HashMap<SessionActivityKey, Instant>,
+    titles: HashMap<AgentKind, Instant>,
     agents: HashMap<AgentKind, Instant>,
 }
 
@@ -261,6 +293,15 @@ impl Floors {
                 earliest_due: &mut earliest_due,
             };
             outcome.admit(key, last_run, TARGETED_MIN_INTERVAL, now);
+        }
+        for agent in work.title_agents {
+            let last_run = self.titles.get(&agent).copied();
+            let mut outcome = Admission {
+                run_now: &mut run_now.title_agents,
+                deferred: &mut deferred.title_agents,
+                earliest_due: &mut earliest_due,
+            };
+            outcome.admit(agent, last_run, TITLE_REFRESH_MIN_INTERVAL, now);
         }
         for agent in work.agents {
             let last_run = self.agents.get(&agent).copied();
@@ -291,6 +332,9 @@ impl Floors {
     pub fn stamp(&mut self, work: &ScopedWork, now: Instant) {
         for key in &work.sessions {
             self.sessions.insert(key.clone(), now);
+        }
+        for agent in &work.title_agents {
+            self.titles.insert(*agent, now);
         }
         for agent in work.agents.iter().chain(work.db_agents.iter()) {
             self.agents.insert(*agent, now);
@@ -364,6 +408,95 @@ pub(super) async fn refresh_sessions(
         duration_ms = started_at.elapsed().as_millis() as u64,
     );
     Ok(Some(summary))
+}
+
+/// Refresh durable titles without discovery or transcript reads.
+pub(super) async fn refresh_indexed_titles(
+    app: &AppHandle,
+    agents: &BTreeSet<AgentKind>,
+) -> anyhow::Result<Option<ScopedSummary>> {
+    if agents.is_empty() {
+        return Ok(Some(ScopedSummary {
+            sessions: 0,
+            re_described: 0,
+        }));
+    }
+    let controller = app.state::<ScanController>();
+    if !super::on_demand_start(&controller) {
+        return Ok(None);
+    }
+    let started_at = std::time::Instant::now();
+    let outcome = refresh_indexed_titles_locked(app, agents).await;
+    controller.running.store(false, Ordering::SeqCst);
+    controller.cancel.store(false, Ordering::SeqCst);
+    let summary = outcome?;
+    ::tracing::debug!(
+        event = "scan_titles_finished",
+        agents = agents.len(),
+        sessions = summary.sessions,
+        changed = summary.re_described,
+        duration_ms = started_at.elapsed().as_millis() as u64,
+    );
+    Ok(Some(summary))
+}
+
+async fn refresh_indexed_titles_locked(
+    app: &AppHandle,
+    agents: &BTreeSet<AgentKind>,
+) -> anyhow::Result<ScopedSummary> {
+    let store = app.state::<Store>();
+    let previous_map: HashMap<SessionActivityKey, SessionRecord> = store
+        .session_records()?
+        .into_iter()
+        .filter(|(_, record)| {
+            record.key.environment_key == "native"
+                && agents.iter().any(|agent| record.key.agent == agent.slug())
+        })
+        .collect();
+    let mut records: Vec<SessionRecord> = previous_map.values().cloned().collect();
+    let mut changed = Vec::new();
+
+    for agent in agents {
+        let session_ids: Vec<String> = records
+            .iter()
+            .filter(|record| record.key.agent == agent.slug())
+            .map(|record| record.key.session_id.clone())
+            .collect();
+        let mut titles = Explorers::DISK
+            .indexed_session_titles_for(agent, &session_ids)
+            .await;
+        for record in records
+            .iter_mut()
+            .filter(|record| record.key.agent == agent.slug())
+        {
+            let Some(resolved) = titles.remove(&record.key.session_id) else {
+                continue;
+            };
+            if super::apply_indexed_title(record, agent, resolved) {
+                changed.push(record.key.clone());
+            }
+        }
+    }
+
+    let changed_records = super::records_to_persist(&records, &changed, &[]);
+    if !changed_records.is_empty() {
+        checked(
+            app,
+            "The session index",
+            store.upsert_sessions(&changed_records, &agents::evidence_cohort()),
+        )?;
+    }
+    let now = super::unix_now();
+    let announce_app = app.clone();
+    let announce = move |entry: ActivityEntry| {
+        let _ = announce_app.emit(crate::commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
+    };
+    super::announce_changed_rows(&store, &changed, &previous_map, now, &announce);
+
+    Ok(ScopedSummary {
+        sessions: records.len(),
+        re_described: changed.len(),
+    })
 }
 
 async fn refresh_sessions_locked(
@@ -516,19 +649,47 @@ mod tests {
         let lookup = |_: &str| None;
 
         assert_eq!(
-            classify_path(&db_path, &roots, &lookup),
+            classify_path(&db_path, &home, &roots, &lookup),
             ClassifiedPath::DatabaseAgent(AgentKind::Cursor)
         );
         let wal = home.join(".cursor/state.vscdb-wal");
         assert_eq!(
-            classify_path(&wal, &roots, &lookup),
+            classify_path(&wal, &home, &roots, &lookup),
             ClassifiedPath::DatabaseAgent(AgentKind::Cursor)
         );
         let journal = home.join(".cursor/state.vscdb-journal");
         assert_eq!(
-            classify_path(&journal, &roots, &lookup),
+            classify_path(&journal, &home, &roots, &lookup),
             ClassifiedPath::DatabaseAgent(AgentKind::Cursor)
         );
+    }
+
+    #[test]
+    fn codex_title_store_changes_refresh_titles_only() {
+        let home = PathBuf::from("/home/avery");
+        let lookup = |_: &str| None;
+        let paths = [
+            home.join(".codex/state_5.sqlite"),
+            home.join(".codex/state_5.sqlite-wal"),
+            home.join(".codex/session_index.jsonl"),
+        ];
+
+        let work = classify_burst(&paths, &home, &lookup);
+
+        assert_eq!(work.title_agents, BTreeSet::from([AgentKind::Codex]));
+        assert!(work.sessions.is_empty());
+        assert!(work.agents.is_empty());
+        assert!(work.db_agents.is_empty());
+    }
+
+    #[test]
+    fn unrelated_codex_metadata_does_not_request_work() {
+        let home = PathBuf::from("/home/avery");
+        let lookup = |_: &str| None;
+
+        let work = classify_burst(&[home.join(".codex/config.toml")], &home, &lookup);
+
+        assert!(work.is_empty());
     }
 
     #[test]
@@ -539,7 +700,7 @@ mod tests {
         let lookup = |_: &str| None;
 
         assert_eq!(
-            classify_path(&path, &roots, &lookup),
+            classify_path(&path, &home, &roots, &lookup),
             ClassifiedPath::Agent(AgentKind::Codex)
         );
     }
@@ -551,7 +712,7 @@ mod tests {
         let lookup = |_: &str| None;
 
         assert_eq!(
-            classify_path(&path, &roots, &lookup),
+            classify_path(&path, Path::new("/home/avery"), &roots, &lookup),
             ClassifiedPath::Ignored
         );
     }
@@ -653,6 +814,25 @@ mod tests {
         tokio::time::advance(Duration::from_secs(1)).await;
         let (run_now, _deferred, _due) = floors.admit(work, Instant::now());
         assert_eq!(run_now.agents, BTreeSet::from([AgentKind::Codex]));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn indexed_titles_use_the_ten_second_floor() {
+        let mut floors = Floors::default();
+        let mut work = ScopedWork::default();
+        work.title_agents.insert(AgentKind::Codex);
+
+        let t0 = Instant::now();
+        floors.admit(work.clone(), t0);
+
+        tokio::time::advance(TITLE_REFRESH_MIN_INTERVAL - Duration::from_secs(1)).await;
+        let (run_now, deferred, _) = floors.admit(work.clone(), Instant::now());
+        assert!(run_now.title_agents.is_empty());
+        assert_eq!(deferred.title_agents, BTreeSet::from([AgentKind::Codex]));
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let (run_now, _, _) = floors.admit(work, Instant::now());
+        assert_eq!(run_now.title_agents, BTreeSet::from([AgentKind::Codex]));
     }
 
     #[tokio::test(start_paused = true)]

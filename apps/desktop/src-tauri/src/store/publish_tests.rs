@@ -587,6 +587,7 @@ fn fail_evidence_leaves_published_fence_intact() {
                 &next_claim,
                 EvidenceFailure::Retry {
                     next_attempt_at_epoch: 300,
+                    counts_as_attempt: true,
                 },
                 "transient",
             )

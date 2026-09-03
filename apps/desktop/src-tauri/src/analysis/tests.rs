@@ -1150,7 +1150,10 @@ fn a_deleted_source_is_missing_not_unreadable() {
         .expect("restore read permission");
 
     assert_eq!(missing.outcome, PassOutcome::SourceMissing);
-    assert_eq!(unreadable_pass.outcome, PassOutcome::Unreadable);
+    assert_eq!(
+        unreadable_pass.outcome,
+        PassOutcome::Unreadable(UnreadableReason::ClaimFailed)
+    );
 }
 
 #[test]
@@ -1276,7 +1279,10 @@ fn cancellation_during_a_child_read_publishes_and_persists_nothing() {
         None,
         None,
     ) {
-        StreamOutcome::ParentUnreadable => SessionAnalysis::unavailable(),
+        StreamOutcome::ParentUnreadable(reason) => {
+            assert_eq!(reason, UnreadableReason::Cancelled);
+            SessionAnalysis::unavailable()
+        }
         StreamOutcome::Published { .. } => panic!("cancelled child read must not publish"),
         StreamOutcome::SourceChanged => panic!("cancelled child read is not a source change"),
         StreamOutcome::ParentMissing | StreamOutcome::ParentUnsupported => {
@@ -1303,7 +1309,7 @@ fn a_cancelled_pass_publishes_nothing() {
 
     assert!(matches!(
         stream_vendor(&[file_input(&path, "parent")], &flag),
-        StreamOutcome::ParentUnreadable
+        StreamOutcome::ParentUnreadable(UnreadableReason::Cancelled)
     ));
 }
 

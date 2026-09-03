@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core"
+import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
 import { hasShell } from "./ipc"
 import type { LocalSessionIdentity } from "./types/session"
@@ -91,6 +92,28 @@ export interface InsightsReportPayload {
   quotaPressure: InsightsQuotaPressurePayload
   unrecognizedRecords: InsightsUnrecognizedRecordsPayload
   catalogRevision: number
+}
+
+export interface ChecksCategoryPayload {
+  /** Stable category identifier, e.g. `sessionsOverDepth`. */
+  id: string
+  /** Applicable sessions with a confirmed finding. */
+  finding: number
+  /** Applicable sessions with complete evidence and no finding. */
+  clean: number
+  /** Sessions without enough evidence for a finding or clean result. */
+  unavailable: number
+  /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 5000. */
+  estimatedTokenBurnBasisPoints: number | null
+}
+
+/** The bounded subset of the local report needed by All checks. */
+export interface ChecksReportPayload {
+  /** False while this report snapshot still has queued or running evidence work. */
+  evidenceSettled: boolean
+  /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 5000. */
+  estimatedTokenBurnBasisPoints: number | null
+  categories: ChecksCategoryPayload[]
 }
 
 /** Report calculation state plus the evidence backlog counts. */
@@ -192,6 +215,23 @@ export interface HygieneSummary {
 export async function getInsightsReport(): Promise<InsightsReportPayload | null> {
   if (!hasShell()) return null
   return invoke<InsightsReportPayload>("get_insights_report")
+}
+
+/** The real local detector results and bounded session navigation targets. */
+export async function getChecksReport(consumerId: string): Promise<ChecksReportPayload | null> {
+  if (!hasShell()) return null
+  return invoke<ChecksReportPayload>("get_checks_report", { consumerId })
+}
+
+/** Stop a Checks reduction that no visible popover still needs. */
+export async function cancelChecksReport(consumerId: string): Promise<void> {
+  if (!hasShell()) return
+  await invoke("cancel_checks_report", { consumerId })
+}
+
+/** Run after the evidence worker publishes every item in its current queue. */
+export async function onChecksReportChanged(handler: () => void): Promise<UnlistenFn> {
+  return listen("checks:report-changed", handler)
 }
 
 /** Report calculation state and the pending/processing evidence backlog. */
