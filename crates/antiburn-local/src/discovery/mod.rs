@@ -34,26 +34,20 @@ pub mod source_version;
 use crate::model::AgentKind;
 use crate::platform::environment::{DiscoveryEnvironment, WslEnvironmentInfo};
 use async_trait::async_trait;
-use futures_util::{StreamExt as _, stream};
 use scanner::TitleSource;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 pub use fork::{DuplicateForkDetector, FORK_OBSERVATION_KEY, ForkObservation};
 pub use source_version::{
     FingerprintInputs, SourceDescriptor, SourceStat, SourceVersion, Streamability,
 };
 
-/// How many session logs may have their metadata read concurrently. Bounds the
-/// open-file and blocking-pool pressure of a whole-machine scan.
-const LOG_METADATA_CONCURRENCY: usize = 16;
-
 /// Upper bound on how much of a session file the metadata path reads.
 ///
 /// Metadata, visibility, and lineage all live near the top of a transcript, so
 /// a multi-gigabyte log never needs to be materialized in full to be described.
 const SOURCE_PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
-const WHOLE_DOCUMENT_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Maximum transcript suffix read to recover semantic activity. Activity
 /// records are append-oriented in the JSONL formats we support; a suffix is
@@ -171,8 +165,9 @@ impl std::fmt::Debug for SessionMirror {
 /// A resolved session title, carrying provenance so consumers can distinguish
 /// a user rename from an AI summarisation or a first-message fallback.
 ///
-/// Returned by [`AgentExplorer::session_title`] (the point-query path) and
-/// surfaced through the [`SessionTitleAndSurface`] batch path.
+/// Returned by [`AgentExplorer::indexed_session_title`] and
+/// [`AgentExplorer::indexed_session_titles`] (surfaced through
+/// [`Explorers::indexed_session_titles_for`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedTitle {
     pub text: String,
@@ -191,14 +186,14 @@ impl ResolvedTitle {
     }
 }
 
-/// Whether an agent's `session_title` is cheap enough to invoke on a
-/// latency-sensitive caller (one query per requested id) or whether the caller
-/// should prefer the batched `session_titles_and_surfaces` scan path.
+/// Whether an agent has a durable per-session title index worth querying on
+/// a latency-sensitive caller via [`AgentExplorer::indexed_session_title`] /
+/// [`AgentExplorer::indexed_session_titles`].
 ///
 /// `Direct` agents (Claude, Codex, OpenCode) have a per-session index
 /// (per-id JSONL file, SQLite row keyed by id) so point queries are O(1).
-/// `Scan` agents have no such index and would need to walk the full agent
-/// tree per id — much cheaper to scan once and lookup against the result map.
+/// `Scan` agents have no such index; callers fall back to the title recorded
+/// from transcript metadata at ingest time instead of querying the agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleLookupKind {
     Direct,
@@ -274,35 +269,6 @@ pub trait AgentExplorer: Send + Sync {
     /// Pair with [`Self::surface_paths`] for home-anchored classification.
     fn owns_path(&self, path_lower: &str) -> bool;
 
-    /// Fast CWD-only discovery for repo detection.
-    /// Default falls back to discover_recent + parse_session_metadata (parallel).
-    async fn discover_cwds(&self, now: i64, since_secs: i64) -> Vec<String> {
-        let logs = self.discover_recent(now, since_secs).await;
-        bounded_log_tasks(logs, |log| async move {
-            let source = log.source;
-            session_source_metadata(&source, None)
-                .await
-                .and_then(|m| m.cwd)
-        })
-        .await
-    }
-
-    /// Scan recent sessions for this agent once, returning
-    /// `(session_id, title, surface)` for every session whose `session_id`
-    /// could be extracted. Used by the batched title-fetch path to amortize
-    /// one scan across all requested IDs and to record the surface of every
-    /// encountered session as a side effect.
-    ///
-    /// Default impl loads each `SessionLog`'s content once, parses
-    /// metadata, and computes the surface via
-    /// [`SessionLog::surface_label_with_content`] so bi-modal Claude /
-    /// Codex disambiguation still works. Agents whose titles don't live
-    /// in transcript content (OpenCode — SQLite) override this with a
-    /// cheaper query.
-    async fn session_titles_and_surfaces(&self) -> Vec<SessionTitleAndSurface> {
-        default_session_titles_and_surfaces(self).await
-    }
-
     /// Lookup-kind hint for title-fetch routing. See [`TitleLookupKind`].
     /// Defaults to `Scan` so a new agent inherits the safe batched-scan
     /// behavior without an explicit override.
@@ -332,16 +298,6 @@ pub trait AgentExplorer: Send + Sync {
             }
         }
         titles
-    }
-
-    /// Resolve a single session's title by id, returning a [`ResolvedTitle`]
-    /// with provenance. Direct-kind agents (Claude / Codex / OpenCode)
-    /// override this with a point query against a per-session index. The
-    /// default falls back to the batch path and looks up the requested id
-    /// against the result — correct but O(N) per call, so prefer overriding
-    /// for any agent a latency-sensitive caller will hit.
-    async fn session_title(&self, agent_session_id: &str) -> Option<ResolvedTitle> {
-        default_session_title(self, agent_session_id).await
     }
 
     /// Classify a `SessionLog` produced by this explorer to a stable surface
@@ -489,19 +445,6 @@ pub trait AgentExplorer: Send + Sync {
     async fn subagent_meta(&self, _path: &Path) -> Option<SubagentMeta> {
         None
     }
-}
-
-async fn bounded_log_tasks<T, F, Fut>(logs: Vec<SessionLog>, task: F) -> Vec<T>
-where
-    F: FnMut(SessionLog) -> Fut,
-    Fut: std::future::Future<Output = Option<T>>,
-{
-    stream::iter(logs)
-        .map(task)
-        .buffered(LOG_METADATA_CONCURRENCY)
-        .filter_map(std::future::ready)
-        .collect()
-        .await
 }
 
 /// Lowercase + forward-slash a path / label string for prefix or substring
@@ -681,97 +624,6 @@ pub fn vs_code_global_storage_task_roots(home: &Path, ext_ids: &[&str]) -> Vec<P
     roots
 }
 
-/// One row of the batch result produced by
-/// [`AgentExplorer::session_titles_and_surfaces`]. Each row corresponds to
-/// one discoverable session for the agent. Callers index by `session_id`
-/// to resolve titles for a UI batch and to record the surface for
-/// every encountered row (not just the requested ones).
-#[derive(Debug, Clone)]
-pub struct SessionTitleAndSurface {
-    pub session_id: String,
-    pub title: Option<String>,
-    /// Provenance of `title` when present. Lets a consumer filter AI-title
-    /// refinements out of rename detection.
-    pub title_source: Option<TitleSource>,
-    pub surface: &'static str,
-}
-
-/// Window for the title+surface batch scan. Matches the activity list's
-/// 30-day window so any row a caller could possibly show is in range.
-const SESSION_TITLE_SCAN_WINDOW_SECS: i64 = 60 * 60 * 24 * 30;
-
-/// Shared default body for `AgentExplorer::session_titles_and_surfaces`.
-/// Reads each `SessionLog`'s bounded preview once, parses metadata, and classifies
-/// surface via `SessionLog::surface_label_with_content` (so Claude
-/// `entrypoint` / Codex `session_meta.source` content peeks still apply).
-async fn default_session_titles_and_surfaces<E: AgentExplorer + ?Sized>(
-    explorer: &E,
-) -> Vec<SessionTitleAndSurface> {
-    let now = std::time::SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    let logs = explorer
-        .discover_recent(now, SESSION_TITLE_SCAN_WINDOW_SECS)
-        .await;
-    let home = home_dir().unwrap_or_default();
-
-    bounded_log_tasks(logs, |log| {
-        let home = home.clone();
-        async move {
-            let mut content = session_source_preview(&log.source).await?;
-            let mut metadata = match &log.source {
-                SessionSource::File(path) => {
-                    scanner::parse_session_metadata_with_content(path, &content).await
-                }
-                SessionSource::Inline { .. } => scanner::parse_session_metadata_str(&content),
-                SessionSource::ProviderDb { .. } => session_log_metadata(&log)
-                    .await
-                    .unwrap_or_else(|| scanner::parse_session_metadata_str(&content)),
-            };
-            if metadata.session_id.is_none()
-                && let SessionSource::File(path) = &log.source
-                && !path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
-                && let Some(full_content) =
-                    bounded_file_content(path, WHOLE_DOCUMENT_METADATA_BYTES).await
-            {
-                metadata = scanner::parse_session_metadata_with_content(path, &full_content).await;
-                content = full_content;
-            }
-            let session_id = metadata.session_id?;
-            let surface = log.surface_label_with_content(&content, &home);
-            Some(SessionTitleAndSurface {
-                session_id,
-                title: metadata.title,
-                title_source: metadata.title_source,
-                surface,
-            })
-        }
-    })
-    .await
-}
-
-/// Shared default body for `AgentExplorer::session_title`. Falls back to the
-/// batch path and looks up `agent_session_id` against the result map. This
-/// is O(N) per call (scans the full agent tree) — agents on a latency-sensitive
-/// path should override with a point query.
-async fn default_session_title<E: AgentExplorer + ?Sized>(
-    explorer: &E,
-    agent_session_id: &str,
-) -> Option<ResolvedTitle> {
-    let rows = explorer.session_titles_and_surfaces().await;
-    let row = rows
-        .into_iter()
-        .find(|r| r.session_id == agent_session_id)?;
-    let text = row.title?;
-    let source = row.title_source.unwrap_or(TitleSource::Explicit);
-    Some(ResolvedTitle::new(text, source))
-}
-
 /// Resolves an [`AgentKind`] to the explorer that handles it.
 ///
 /// All current explorers are `&'static` values, so the returned references are
@@ -829,15 +681,6 @@ impl Explorers {
     /// The explorer handling `agent`.
     pub fn get(&self, agent: &AgentKind) -> &'static dyn AgentExplorer {
         (self.lookup)(agent)
-    }
-
-    /// Resolve one `(agent, session_id)` pair's title.
-    pub async fn session_title_for(
-        &self,
-        agent: &AgentKind,
-        session_id: &str,
-    ) -> Option<ResolvedTitle> {
-        self.get(agent).session_title(session_id).await
     }
 
     /// Resolve a batch from one agent's durable index or database only.
@@ -916,15 +759,6 @@ impl Explorers {
         // variants share a filesystem location (Codex) or paths that don't
         // sit under any registered root.
         (self.infer_agent_type(path), "unknown")
-    }
-
-    /// Scan an agent's tree once and recover every visible row's title +
-    /// surface in a single pass.
-    pub async fn session_titles_and_surfaces_for(
-        &self,
-        agent: &AgentKind,
-    ) -> Vec<SessionTitleAndSurface> {
-        self.get(agent).session_titles_and_surfaces().await
     }
 
     /// Freshness fingerprint for a database-backed session.
@@ -1113,24 +947,6 @@ pub async fn session_source_preview(source: &SessionSource) -> Option<String> {
     preview_from_owned(bytes)
 }
 
-async fn bounded_file_content(path: &Path, max_bytes: u64) -> Option<String> {
-    use tokio::io::AsyncReadExt;
-
-    let file = open_file_for_head_read(path).await?;
-    if file.metadata().await.ok()?.len() > max_bytes {
-        return None;
-    }
-    let mut bytes = Vec::new();
-    file.take(max_bytes + 1)
-        .read_to_end(&mut bytes)
-        .await
-        .ok()?;
-    if bytes.len() as u64 > max_bytes {
-        return None;
-    }
-    preview_from_owned(bytes)
-}
-
 fn preview_from_owned(bytes: Vec<u8>) -> Option<String> {
     match String::from_utf8(bytes) {
         Ok(content) => Some(content),
@@ -1218,19 +1034,6 @@ pub async fn session_log_read(log: &SessionLog) -> Option<SourceRead> {
         );
     }
     Some(read)
-}
-
-pub async fn session_log_metadata(log: &SessionLog) -> Option<scanner::SessionMetadata> {
-    session_log_read(log).await.map(|read| read.metadata)
-}
-
-async fn session_source_metadata(
-    source: &SessionSource,
-    agent_type: Option<AgentKind>,
-) -> Option<scanner::SessionMetadata> {
-    session_source_read(source, agent_type)
-        .await
-        .map(|read| read.metadata)
 }
 
 async fn session_source_read(
@@ -1690,11 +1493,6 @@ fn dedupe_environment_sessions(logs: &mut Vec<SessionLog>) {
     logs.retain(|log| seen.insert(log.dedupe_key()));
 }
 
-/// Per-agent timeout for the fast CWD path.
-const AGENT_CWD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
-/// Per-agent timeout for the per-session count path.
-const AGENT_SESSION_COUNT_TIMEOUT: Duration = Duration::from_secs(30);
-
 impl Explorers {
     /// Discover file-backed agent stores exposed through WSL's mounted namespace.
     /// SQLite-backed stores are deliberately left to their provider-specific reader;
@@ -1758,37 +1556,6 @@ impl Explorers {
         logs
     }
 
-    /// Per-session WSL CWDs. OpenCode uses its single metadata query; other
-    /// file-backed agents retain their normal metadata parsing.
-    async fn discover_wsl_cwds_for_repo_discovery(&self, now: i64, since_secs: i64) -> Vec<String> {
-        let mut set = tokio::task::JoinSet::new();
-        for info in crate::platform::environment::discover_wsl_environments().await {
-            let explorers = *self;
-            set.spawn(async move {
-                let (mut cwds, logs) = tokio::join!(
-                    agents::opencode::discover_cwds_in_wsl(&info, now, since_secs),
-                    explorers.discover_wsl_non_opencode_sessions_in(&info, now, since_secs),
-                );
-                for log in logs {
-                    if let Some(cwd) = session_log_metadata(&log)
-                        .await
-                        .and_then(|metadata| metadata.cwd)
-                    {
-                        cwds.push(cwd);
-                    }
-                }
-                cwds
-            });
-        }
-        let mut cwds = Vec::new();
-        while let Some(result) = set.join_next().await {
-            if let Ok(found) = result {
-                cwds.extend(found);
-            }
-        }
-        cwds
-    }
-
     /// Collect every agent's recent session logs, native and WSL, deduped.
     /// Calls `on_agent_done` each time an agent explorer completes, enabling
     /// per-agent progress reporting.
@@ -1830,131 +1597,6 @@ impl Explorers {
         logs.extend(self.discover_wsl_file_sessions(now, since_secs).await);
         dedupe_environment_sessions(&mut logs);
         logs
-    }
-
-    /// Fast CWD-only discovery for repo detection. Calls `discover_cwds()` on each
-    /// agent in parallel. The callback receives `(agent_name, cwds_found, completed, total)`.
-    pub async fn discover_cwds_with_progress(
-        &self,
-        now: i64,
-        since_secs: i64,
-        mut on_agent_done: impl FnMut(&str, usize, usize, usize),
-    ) -> Vec<String> {
-        use tokio::task::JoinSet;
-        use tokio::time::timeout;
-
-        async fn with_cwd_timeout<F>(agent: &'static str, future: F) -> (&'static str, Vec<String>)
-        where
-            F: std::future::Future<Output = Vec<String>>,
-        {
-            match timeout(AGENT_CWD_DISCOVERY_TIMEOUT, future).await {
-                Ok(cwds) => (agent, cwds),
-                Err(_) => {
-                    ::tracing::warn!(
-                        event = "repo_discovery_agent_timeout",
-                        agent,
-                        timeout_secs = AGENT_CWD_DISCOVERY_TIMEOUT.as_secs(),
-                        "agent CWD discovery timed out"
-                    );
-                    (agent, Vec::new())
-                }
-            }
-        }
-
-        let mut set = JoinSet::new();
-        for t in AgentKind::ALL {
-            let explorer = self.get(t);
-            let label = t.display_label();
-            set.spawn(async move {
-                with_cwd_timeout(label, explorer.discover_cwds(now, since_secs)).await
-            });
-        }
-
-        let total = set.len();
-        let mut completed = 0;
-        let mut all_cwds = Vec::new();
-
-        while let Some(result) = set.join_next().await {
-            completed += 1;
-            if let Ok((name, cwds)) = result {
-                ::tracing::debug!(
-                    event = "repo_discovery_agent_done",
-                    agent = name,
-                    cwds = cwds.len(),
-                    completed,
-                    total,
-                );
-                on_agent_done(name, cwds.len(), completed, total);
-                all_cwds.extend(cwds);
-            }
-        }
-
-        all_cwds.extend(
-            self.discover_wsl_cwds_for_repo_discovery(now, since_secs)
-                .await,
-        );
-        all_cwds.sort();
-        all_cwds.dedup();
-
-        all_cwds
-    }
-
-    /// Per-cwd count of recent AI sessions — one increment per session log.
-    ///
-    /// Unlike [`Self::discover_cwds_with_progress`] (which dedups, and whose
-    /// per-agent `discover_cwds` overrides collapse to one cwd per project dir),
-    /// this counts every recent session via each agent's required
-    /// `discover_recent`, so callers can report how many AI sessions ran in each
-    /// working directory. Map keys are the unique cwds (usable as the cwd set
-    /// for repo resolution); values are session counts summed across all agents.
-    ///
-    /// This is the per-session path the `discover_cwds` overrides optimize away,
-    /// so it is heavier than [`Self::discover_cwds_with_progress`].
-    pub async fn discover_cwd_counts_with_progress(
-        &self,
-        now: i64,
-        since_secs: i64,
-        mut on_agent_done: impl FnMut(&str, usize, usize, usize),
-    ) -> std::collections::HashMap<String, u32> {
-        use tokio::task::JoinSet;
-
-        let mut set = JoinSet::new();
-        for t in AgentKind::ALL {
-            let explorer = self.get(t);
-            let label = t.display_label();
-            set.spawn(async move {
-                cwds_per_recent_session(
-                    label,
-                    explorer.discover_recent(now, since_secs),
-                    AGENT_SESSION_COUNT_TIMEOUT,
-                )
-                .await
-            });
-        }
-
-        let total = set.len();
-        let mut completed = 0;
-        let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-        while let Some(result) = set.join_next().await {
-            completed += 1;
-            if let Ok((name, cwds)) = result {
-                ::tracing::info!(
-                    event = "repo_discovery_count_agent_done",
-                    agent = name,
-                    sessions = cwds.len(),
-                    completed,
-                    total,
-                );
-                on_agent_done(name, cwds.len(), completed, total);
-                add_cwd_occurrences(&mut counts, cwds);
-            }
-        }
-        add_cwd_occurrences(
-            &mut counts,
-            self.discover_wsl_cwds_for_repo_discovery(now, since_secs)
-                .await,
-        );
-        counts
     }
 
     /// Locate a single session's transcript source by `(agent, session_id)`,
@@ -2206,44 +1848,6 @@ fn subagent_parent_transcript(source: &SessionSource) -> Option<PathBuf> {
             session_id,
         } => agents::antigravity::sibling_brain_transcript(db_path, session_id),
         _ => None,
-    }
-}
-
-async fn cwds_per_recent_session<F>(
-    agent: &'static str,
-    recent: F,
-    timeout_after: Duration,
-) -> (&'static str, Vec<String>)
-where
-    F: std::future::Future<Output = Vec<SessionLog>>,
-{
-    let logs = match tokio::time::timeout(timeout_after, recent).await {
-        Ok(logs) => logs,
-        Err(_) => {
-            ::tracing::warn!(
-                event = "repo_discovery_count_agent_timeout",
-                agent,
-                timeout_secs = timeout_after.as_secs(),
-                "agent session-count discovery timed out"
-            );
-            return (agent, Vec::new());
-        }
-    };
-    let cwds = bounded_log_tasks(logs, |log| async move {
-        session_log_metadata(&log)
-            .await
-            .and_then(|metadata| metadata.cwd)
-    })
-    .await;
-    (agent, cwds)
-}
-
-fn add_cwd_occurrences(
-    counts: &mut std::collections::HashMap<String, u32>,
-    cwds: impl IntoIterator<Item = String>,
-) {
-    for cwd in cwds {
-        *counts.entry(cwd).or_insert(0) += 1;
     }
 }
 

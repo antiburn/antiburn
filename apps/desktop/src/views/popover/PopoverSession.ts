@@ -19,6 +19,7 @@ import {
   hidePopover,
   listRecentSessions,
   listRepositories,
+  onPopoverHidden,
   onPopoverShown,
   onLiveUsageChanged,
   onScanEvent,
@@ -184,6 +185,26 @@ const NOW_TICK_MS = 30_000
 const LIST_RECONCILE_MS = 60_000
 
 /**
+ * Floor shared by `scan:finished` and `sessions:entry-changed` usage
+ * refreshes that report no list change. A re-described pass or a patched row
+ * is not, by itself, a reason to recompute 30-day usage totals and resolve
+ * both live provider accounts (F1, R6): an active session's row updates
+ * every few seconds, and a usage refresh on every one of those would cost as
+ * much as the list rebuild it was meant to avoid. `listChanged` still forces
+ * an immediate refresh, since that means a session was discovered or
+ * removed.
+ */
+const USAGE_REFRESH_MIN_MS = 30_000
+
+/**
+ * How often usage is polled while the popover is visible, independent of any
+ * scan (R6). The backend's `POPOVER_LIVE_USAGE_MAX_AGE` (50 s) is tuned to
+ * sit just under this, so an open popover's own polling is what keeps a
+ * live reading current.
+ */
+const USAGE_VISIBLE_POLL_MS = 60_000
+
+/**
  * Order list rows the way the backend does: newest activity first, and a
  * revived session's own id breaking a tie. `listenSessionEntryChanged`
  * re-sorts with this after patching one row in place, so a session whose
@@ -257,7 +278,29 @@ export class PopoverSession {
    */
   private lastListReconcileAt = 0
 
+  /**
+   * When a usage refresh last ran from `listenScanEvent` or
+   * `listenSessionEntryChanged`. Read against `USAGE_REFRESH_MIN_MS` (F1, R6)
+   * so a quiet stream of events with no list change refreshes usage on a
+   * shared floor, not on every event.
+   */
+  private lastUsageRefreshAt = 0
+
+  /**
+   * Whether the popover is currently on screen. R6: gates the
+   * `sessions:entry-changed` usage refresh and whether the visible-only poll
+   * is running.
+   *
+   * Defaults `true` rather than `false`: the session can start after the
+   * shell's first `popover:shown` already fired, before this class's own
+   * listener was registered to hear it, and a wrongly-`false` default would
+   * then never start the poll until the popover cycled hidden and shown again.
+   */
+  private visible = true
+
   private nowTickTimer: ReturnType<typeof setInterval> | null = null
+  /** The visible-only usage poll (R6); see `startUsagePolling`/`stopUsagePolling`. */
+  private usagePollTimer: ReturnType<typeof setInterval> | null = null
 
   private stopSettingsListening: (() => void) | null = null
   private stopSessionsInvalidatedListening: (() => void) | null = null
@@ -266,6 +309,7 @@ export class PopoverSession {
   private stopStorageHealthListening: (() => void) | null = null
   private stopScanListening: (() => void) | null = null
   private stopPopoverShownListening: (() => void) | null = null
+  private stopPopoverHiddenListening: (() => void) | null = null
   private stopLiveUsageListening: (() => void) | null = null
 
   private snapshot: PopoverSnapshot = {
@@ -397,6 +441,7 @@ export class PopoverSession {
     void this.listenStorageHealth(generation)
     void this.listenScanEvent(generation)
     void this.listenPopoverShown(generation)
+    void this.listenPopoverHidden(generation)
     void this.listenLiveUsage(generation)
 
     // ⌘, opens Settings — the platform's standard preferences shortcut, which
@@ -410,6 +455,11 @@ export class PopoverSession {
     // unmounts, but the listener count can still hit zero and come back)
     // still needs its relative-time ticker running again.
     this.syncDetailTimers()
+
+    // R6: the session starts visible (see `visible`'s doc comment), so its
+    // usage poll starts immediately rather than waiting for a `popover:shown`
+    // that may already have fired.
+    this.startUsagePolling()
   }
 
   private stop(): void {
@@ -429,9 +479,12 @@ export class PopoverSession {
     this.stopScanListening = null
     this.stopPopoverShownListening?.()
     this.stopPopoverShownListening = null
+    this.stopPopoverHiddenListening?.()
+    this.stopPopoverHiddenListening = null
     this.stopLiveUsageListening?.()
     this.stopLiveUsageListening = null
     this.stopNowTicking()
+    this.stopUsagePolling()
     this.stopSessionLimitAllocationExpiryTimer()
     this.checksRefreshQueued = false
     const checksConsumerId = this.checksConsumerId
@@ -523,12 +576,23 @@ export class PopoverSession {
   // without a full re-query, and — since this is also the scan pass's own
   // per-session signal, not only the worker's — this also refreshes an open
   // detail pane's analysis when the changed session is the one on screen.
+  //
+  // R6: while the popover is visible, this is also a usage-refresh signal,
+  // on the same `USAGE_REFRESH_MIN_MS` floor `listenScanEvent` uses — an
+  // active session's row updates faster than a full pass re-describes it, so
+  // waiting for `scan:finished` alone would leave usage stale in between.
+  // Hidden, this does nothing for usage: the visible-only poll is what keeps
+  // a hidden popover's next open cheap instead.
   private listenSessionEntryChanged = async (generation: number): Promise<void> => {
     const unlisten = await onSessionEntryChanged((entry) => {
       if (generation !== this.generation) return
       this.patchOrRefetchEntry(entry)
       this.refreshOpenAnalysisIfMatching(entry)
       void this.refreshSessionLimitAllocations()
+      if (this.visible && Date.now() - this.lastUsageRefreshAt >= USAGE_REFRESH_MIN_MS) {
+        this.lastUsageRefreshAt = Date.now()
+        void this.refreshUsage()
+      }
     })
     if (generation !== this.generation) {
       unlisten()
@@ -665,7 +729,14 @@ export class PopoverSession {
   // progress, so the intermediate phases have nothing to say. A full refetch
   // of entries and repositories only runs when the pass says the list needs
   // one, or the reconcile interval has elapsed — `sessions:entry-changed`
-  // already keeps individual rows current in between.
+  // already keeps individual rows current in between. Usage follows its own
+  // floor (R5): `listChanged` forces an immediate refresh, and otherwise a
+  // pass only counts when it re-described at least one session
+  // (`reDescribed > 0`) — an idle pass, the common case now that the watcher
+  // does the real freshness work, refreshes nothing. `sessions:entry-changed`
+  // shares this same floor while the popover is visible (R6), which is what
+  // replaces the usage refresh a row patch never used to trigger — see
+  // `listenSessionEntryChanged`.
   private listenScanEvent = async (generation: number): Promise<void> => {
     const unlisten = await onScanEvent((status, phase) => {
       if (generation !== this.generation) return
@@ -676,7 +747,13 @@ export class PopoverSession {
         void this.refreshEntries(this.windowDays()).catch(() => {})
         void this.refreshRepositoryList()
       }
-      void this.refreshUsage()
+      if (
+        status.listChanged ||
+        (status.reDescribed > 0 && now - this.lastUsageRefreshAt >= USAGE_REFRESH_MIN_MS)
+      ) {
+        this.lastUsageRefreshAt = now
+        void this.refreshUsage()
+      }
       void this.refreshChecks()
     })
     if (generation !== this.generation) {
@@ -686,15 +763,11 @@ export class PopoverSession {
     this.stopScanListening = unlisten
   }
 
-  // The shell's own signal that the popover just reached the screen —
-  // separate from the scan events above on purpose. `note_shown` also kicks
-  // a disk scan, but that kick is silently skipped while discovery is
-  // paused or onboarding is unfinished, and even a scan that does run can
-  // take a while to finish. Neither has any bearing on a provider's own
-  // stated limits, so usage gets its own refresh here rather than waiting on
-  // — or being silenced by — the scan pipeline. The open session's analysis
-  // is in the same position: its transcript can grow while the popover is
-  // hidden, and nothing else asks for it again until the reader navigates.
+  // The shell's own signal that the popover just reached the screen — no
+  // longer paired with a scan kick (R1: opening the popover does not ask for
+  // one). The open session's analysis can grow while the popover is hidden,
+  // and nothing else asks for it again until the reader navigates, so it
+  // still gets its own refresh here.
   //
   // Entries are also refetched here, even though the scan scheduler now
   // ticks unconditionally and `listenScanEvent` above is the primary path:
@@ -703,6 +776,8 @@ export class PopoverSession {
   private listenPopoverShown = async (generation: number): Promise<void> => {
     const unlisten = await onPopoverShown(() => {
       if (generation !== this.generation) return
+      this.visible = true
+      this.startUsagePolling()
       if (this.initialContentReady) this.reportContentReady(true)
       void this.restoreFloatingHud(generation)
       void this.refreshEntries(this.windowDays()).catch(() => {})
@@ -715,6 +790,21 @@ export class PopoverSession {
     }
     this.stopPopoverShownListening = unlisten
     void this.restoreFloatingHud(generation)
+  }
+
+  // R6: the close-side counterpart. Usage freshness while visible does not
+  // ride on a scan, so it needs its own signal for when to stop polling too.
+  private listenPopoverHidden = async (generation: number): Promise<void> => {
+    const unlisten = await onPopoverHidden(() => {
+      if (generation !== this.generation) return
+      this.visible = false
+      this.stopUsagePolling()
+    })
+    if (generation !== this.generation) {
+      unlisten()
+      return
+    }
+    this.stopPopoverHiddenListening = unlisten
   }
 
   private reportContentReady(retryAfterPendingFailure = false): void {
@@ -925,6 +1015,26 @@ export class PopoverSession {
     if (this.nowTickTimer === null) return
     clearInterval(this.nowTickTimer)
     this.nowTickTimer = null
+  }
+
+  /**
+   * R6: usage freshness while the popover is visible, independent of a scan.
+   * Each tick stamps `lastUsageRefreshAt` the same way the scan- and
+   * entry-changed-triggered refreshes do, so they all share one floor rather
+   * than a poll immediately re-triggering one of the others.
+   */
+  private startUsagePolling(): void {
+    if (this.usagePollTimer !== null) return
+    this.usagePollTimer = setInterval(() => {
+      this.lastUsageRefreshAt = Date.now()
+      void this.refreshUsage()
+    }, USAGE_VISIBLE_POLL_MS)
+  }
+
+  private stopUsagePolling(): void {
+    if (this.usagePollTimer === null) return
+    clearInterval(this.usagePollTimer)
+    this.usagePollTimer = null
   }
 
   private loadAnalysisFor = (subject: SessionSubject): Promise<void> => {

@@ -327,6 +327,12 @@ export interface ScanStatus {
   agents: AgentScanState[]
   /** True when this pass indexed a session the list has never shown, or evicted a rejected one. */
   listChanged: boolean
+  /**
+   * R5: how many sessions the last pass re-described — new, or a moved
+   * cursor — never a row it reused verbatim. Tells an idle pass from a
+   * productive one without inferring it from `listChanged` alone.
+   */
+  reDescribed: number
 }
 
 /**
@@ -1076,27 +1082,6 @@ export async function removeScanRoot(path: string): Promise<string[]> {
 }
 
 /**
- * Write one session's derived analysis to `destPath`.
- *
- * The transcript is not copied — the document references it. The caller is
- * still expected to warn first: an export describes real work.
- */
-export async function exportSession(
-  agent: string,
-  sessionId: string,
-  destPath: string,
-  wslDistro?: string | null,
-): Promise<string | null> {
-  if (!hasShell()) return null
-  return invoke<string>("export_session", {
-    agent,
-    sessionId,
-    wslDistro: wslDistro ?? null,
-    destPath,
-  })
-}
-
-/**
  * Delete antiburn's own records for one session.
  *
  * Only antiburn's records. The agent's transcript is never touched.
@@ -1282,11 +1267,11 @@ export async function onSessionEntryChanged(
  * Event the shell emits the instant the popover reaches the screen. Mirrors
  * `popover::EVENT_SHOWN` in `src-tauri/src/popover.rs`.
  *
- * Deliberately not folded into `onScanEvent`: the scan it also kicks is
- * gated on discovery being unpaused and can take as long as a full disk
- * walk, neither of which has anything to do with a provider's own stated
- * limits. This is what a view subscribes to when what it wants is "the
- * popover just opened," full stop.
+ * Deliberately not folded into `onScanEvent`: opening the popover no longer
+ * asks for a scan at all (R1), and a provider's own stated limits have
+ * nothing to do with a scan pass anyway. This is what a view subscribes to
+ * when what it wants is "the popover just opened," full stop — including
+ * starting the visible-only usage poll (R6).
  */
 export const POPOVER_SHOWN_EVENT = "popover:shown"
 
@@ -1294,6 +1279,20 @@ export const POPOVER_SHOWN_EVENT = "popover:shown"
 export async function onPopoverShown(handler: () => void): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen(POPOVER_SHOWN_EVENT, () => handler())
+}
+
+/**
+ * Event the shell emits the instant the popover leaves the screen. Mirrors
+ * `popover::EVENT_HIDDEN` in `src-tauri/src/popover.rs`.
+ *
+ * R6: this is what stops the visible-only usage poll `onPopoverShown` starts.
+ */
+export const POPOVER_HIDDEN_EVENT = "popover:hidden"
+
+/** Subscribe to the popover leaving the screen. The result unsubscribes. */
+export async function onPopoverHidden(handler: () => void): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen(POPOVER_HIDDEN_EVENT, () => handler())
 }
 
 /** Event the shell emits after it refreshes the cached live-usage snapshot. */

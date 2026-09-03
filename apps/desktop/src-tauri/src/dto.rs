@@ -154,8 +154,7 @@ pub struct SessionAnalysis {
     pub is_active: bool,
     /// Cost of the parent transcript plus every sub-agent it launched.
     ///
-    /// This is the session's total cost. The activity list and the export
-    /// document show this figure.
+    /// This is the session's total cost. The activity list shows this figure.
     ///
     /// The value is `None` when a model in the combined breakdown has no
     /// price. A partial total hides real cost.
@@ -274,6 +273,11 @@ pub struct ScanStatus {
     /// evicted a rejected one. A reader's list refetches on this rather than
     /// on every pass, since an unchanged pass patches rows in place instead.
     pub list_changed: bool,
+    /// R5: how many sessions the last pass re-described — new, or a moved
+    /// cursor — never a row it reused verbatim. Lets a reader tell an idle
+    /// pass from a productive one without inferring it from `list_changed`
+    /// alone.
+    pub re_described: usize,
 }
 
 /* -------------------------------------------------------------------------

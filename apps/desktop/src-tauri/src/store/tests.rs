@@ -4,6 +4,7 @@ use antiburn_local::analysis::{
     ContentKind, ContentPart, MemoryTurnRowStore, TurnRowStore, TurnScope, count_turn_content_rows,
     count_turn_rows,
 };
+use antiburn_local::model::AgentKind;
 
 use super::model::{
     PublishedEvidence, SESSION_DATA_RETENTION_DAYS_30, SESSION_DATA_RETENTION_DAYS_90,
@@ -1504,6 +1505,18 @@ fn a_fork_parent_rides_with_the_session_and_resolves_children_back() {
         .expect("child");
     assert_eq!(stored.fork_parent_session_id.as_deref(), Some("parent"));
 
+    let parent = store
+        .fork_parent(&SessionKey::new("native", "claude-code", "child"))
+        .unwrap();
+    assert_eq!(parent.as_deref(), Some("parent"));
+    assert_eq!(
+        store
+            .fork_parent(&SessionKey::new("native", "claude-code", "parent"))
+            .unwrap(),
+        None,
+        "the parent recorded no fork parent of its own"
+    );
+
     let children = store
         .fork_children(&SessionKey::new("native", "claude-code", "parent"))
         .unwrap();
@@ -2533,7 +2546,10 @@ async fn analysis_from_rows_serves_a_published_pass_without_reading_a_transcript
                 agent: "claude".into(),
                 session_id: record.key.session_id.clone(),
                 source: antiburn_local::analysis::RawSource::Jsonl(
-                    r#"{"type":"assistant","timestamp":100,"message":{"id":"m","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":2,"output_tokens":3},"content":[]}}
+                    r#"{"type":"user","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"start"}}
+{"type":"assistant","timestamp":"2026-01-01T00:00:01Z","message":{"id":"m1","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":100,"cache_read_input_tokens":30000,"output_tokens":3},"content":[]}}
+{"type":"user","timestamp":"2026-01-01T02:00:00Z","message":{"role":"user","content":"resume"}}
+{"type":"assistant","timestamp":"2026-01-01T02:00:01Z","message":{"id":"m2","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":100,"cache_read_input_tokens":5000,"cache_creation_input_tokens":25000,"output_tokens":3},"content":[]}}
 "#
                     .into(),
                 ),
@@ -2567,11 +2583,13 @@ async fn analysis_from_rows_serves_a_published_pass_without_reading_a_transcript
         &store,
         &record.key,
         &record.key.session_id,
-        "claude-code",
+        AgentKind::Claude,
     )
     .expect("a ready, published pass replays from rows");
 
-    assert!(replayed.metrics.is_some());
+    let metrics = replayed.metrics.as_ref().expect("replayed metrics");
+    assert_eq!(metrics.cache_rehydration_count, 1);
+    assert_eq!(metrics.cache_routing_miss_count, 0);
     assert_eq!(replayed.fingerprint, "sv1:rows-replay-parent");
     assert_eq!(replayed.cost, replayed.top_level_cost);
     assert!(replayed.source_path.is_none());
@@ -2648,7 +2666,7 @@ async fn analysis_from_rows_still_serves_a_published_pass_after_a_requeue() {
         &store,
         &record.key,
         &record.key.session_id,
-        "claude-code",
+        AgentKind::Claude,
     )
     .expect("a requeued session still replays its last published rows");
 
@@ -2678,7 +2696,7 @@ fn analysis_from_rows_returns_none_before_anything_was_ever_published() {
             &store,
             &claim.key,
             &claim.key.session_id,
-            "claude-code"
+            AgentKind::Claude,
         )
         .is_none()
     );
@@ -2712,7 +2730,7 @@ fn analysis_from_rows_serves_a_pass_published_unsupported() {
     );
 
     let replayed =
-        crate::analysis::analysis_from_rows(&store, &key, &key.session_id, "claude-code")
+        crate::analysis::analysis_from_rows(&store, &key, &key.session_id, AgentKind::Claude)
             .expect("an unsupported, published pass still replays from rows");
 
     assert!(replayed.metrics.is_some());

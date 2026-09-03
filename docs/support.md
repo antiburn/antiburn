@@ -101,10 +101,6 @@ session or local index is deleted first. The agents' own files are never touched
 delete a coding agent's own transcript — that is the agent's file, and removing a
 conversation belongs in the agent's own interface.
 
-**Exports** currently carry derived analysis, the paths a session ran in, its title,
-and skill descriptions. They do not include transcript bodies. The export flow warns
-before it writes and always asks where to put the file.
-
 **Folder permissions (macOS).** macOS guards Documents, Desktop, and Downloads behind
 your explicit consent. antiburn never reads one of them until you have allowed it: a
 repository recorded in a guarded folder is skipped, and antiburn tells you it was

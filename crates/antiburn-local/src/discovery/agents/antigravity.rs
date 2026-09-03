@@ -203,44 +203,6 @@ impl AgentExplorer for AntigravityExplorer {
             || self.mirror.owns(path_lower)
     }
 
-    /// Reuses `discover_recent` so brain transcripts use the same file-backed
-    /// metadata path as the activity list.
-    async fn discover_cwds(&self, now: i64, since_secs: i64) -> Vec<String> {
-        let logs = self.discover_recent(now, since_secs).await;
-        let Some(home) = home_dir() else {
-            return Vec::new();
-        };
-        let gemini_root =
-            env_path_when_real_home(&home, "GEMINI_HOME").unwrap_or_else(|| home.join(".gemini"));
-        let history = read_cli_history(&gemini_root).await;
-        let mut cwds = Vec::new();
-        for log in logs {
-            let path = match log.source {
-                SessionSource::File(path) => path,
-                SessionSource::ProviderDb {
-                    db_path,
-                    session_id,
-                    ..
-                } => match sibling_brain_transcript(&db_path, &session_id) {
-                    Some(path) => path,
-                    None => continue,
-                },
-                SessionSource::Inline { .. } => continue,
-            };
-            let Some(preview) =
-                crate::discovery::session_source_preview(&SessionSource::File(path.clone())).await
-            else {
-                continue;
-            };
-            let mut metadata = crate::discovery::scanner::parse_session_metadata_str(&preview);
-            augment_brain_metadata_with_history(&path, &preview, &mut metadata, history.as_deref());
-            if let Some(cwd) = metadata.cwd {
-                cwds.push(cwd);
-            }
-        }
-        cwds
-    }
-
     // Antigravity is bi-modal:
     //   - CLI:    `~/.gemini/antigravity-cli/brain/**`.
     //   - IDE:    workspaceStorage, the mirror, legacy `antigravity/brain/`,
@@ -869,13 +831,6 @@ async fn read_cli_history(gemini_root: &Path) -> Option<Vec<CliHistoryEntry>> {
     const HISTORY_MAX_ENTRIES: usize = 4_096;
     const HISTORY_FIELD_MAX_BYTES: usize = 4 * 1024;
     let path = gemini_root.join("antigravity-cli").join("history.jsonl");
-    #[cfg(any(test, feature = "test-instrumentation"))]
-    if HISTORY_READ_PATH
-        .lock()
-        .is_ok_and(|watched| watched.as_deref() == Some(path.as_path()))
-    {
-        HISTORY_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
     tokio::task::spawn_blocking(move || {
         let file = File::open(path).ok()?;
         let mut reader = BoundedJsonlReader::with_max_record_bytes(
@@ -915,24 +870,6 @@ async fn read_cli_history(gemini_root: &Path) -> Option<Vec<CliHistoryEntry>> {
     .await
     .ok()
     .flatten()
-}
-
-#[cfg(any(test, feature = "test-instrumentation"))]
-static HISTORY_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-#[cfg(any(test, feature = "test-instrumentation"))]
-static HISTORY_READ_PATH: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
-
-#[cfg(test)]
-fn watch_history_reads(path: PathBuf) {
-    *HISTORY_READ_PATH.lock().expect("history read path locks") = Some(path);
-    HISTORY_READS.store(0, std::sync::atomic::Ordering::Relaxed);
-}
-
-#[cfg(test)]
-fn take_history_reads() -> usize {
-    *HISTORY_READ_PATH.lock().expect("history read path locks") = None;
-    HISTORY_READS.swap(0, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Find the history entry whose `timestamp_secs` matches `created_at_secs`

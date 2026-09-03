@@ -178,24 +178,24 @@ describe("UsageLimitsBar — the disclosure", () => {
     expect(screen.getByRole("region", { name: "Usage limits" })).toBeInTheDocument()
   })
 
-  it("drops the ring row and moves itself into the meters while open", () => {
-    // The point of the open state is the space the row gives back. The
-    // meters restate every ring, so keeping both spends the popover's height
-    // on one reading twice.
+  it("drops the ring row and moves the disclosure beside the first provider", () => {
     bar({ expanded: true })
     expect(
       screen.queryByRole("button", { name: "Claude at 42 percent" }),
     ).not.toBeInTheDocument()
     const region = screen.getByRole("region", { name: "Usage limits" })
-    expect(region).toContainElement(
-      screen.getByRole("button", { name: "Collapse usage limits" }),
+    const group = within(region).getByRole("group", { name: "Claude" })
+    const providerRow = within(group).getByRole("heading").parentElement
+    expect(providerRow).toContainElement(
+      within(group).getByRole("button", { name: "Collapse usage limits" }),
     )
+    expect(screen.queryByText("Limits")).not.toBeInTheDocument()
   })
 
-  it("carries the refresh spinner with it into the open meters", () => {
+  it("carries the refresh spinner into the first provider row", () => {
     bar({ expanded: true, refreshing: true })
-    const region = screen.getByRole("region", { name: "Usage limits" })
-    expect(region).toContainElement(screen.getByRole("status"))
+    const group = screen.getByRole("group", { name: "Claude" })
+    expect(group).toContainElement(screen.getByRole("status"))
   })
 
   it("keeps the settings gear's treatment in both states", () => {
@@ -447,5 +447,62 @@ describe("UsageLimitsBar — degraded state", () => {
     expect(screen.getByTestId("usage-limits-unavailable")).toHaveAccessibleName(
       "Codex, usage unavailable (unreachable)",
     )
+  })
+})
+
+describe("UsageLimitsBar — grace period", () => {
+  const GRACE_NOTE = "Claude rate limited the last check; reading from 4 min ago."
+
+  it("keeps a graced reading on the ring, muted, with the grace note attached", () => {
+    bar({
+      live: liveSummary({
+        providers: [liveProvider({ observedAt: "2027-01-15T11:56:00Z" })],
+        errors: [sourceError()],
+      }),
+    })
+    const seat = screen.getByRole("button", { name: `Claude at 42 percent. ${GRACE_NOTE}` })
+    expect(seat).toHaveAttribute("title", `Claude — 42% — ${GRACE_NOTE}`)
+    const figureWrapper = within(seat).getByText("42%").closest('span[aria-hidden="true"]')
+    expect(figureWrapper).toHaveClass("text-label-tertiary")
+  })
+
+  it("drops a reading past its grace period and shows the unavailable seat instead", () => {
+    bar({
+      live: liveSummary({
+        providers: [liveProvider({ observedAt: "2027-01-15T11:49:00Z" })],
+        errors: [sourceError()],
+      }),
+    })
+    expect(
+      screen.queryByRole("button", { name: /Claude at 42 percent/ }),
+    ).not.toBeInTheDocument()
+    const seat = screen.getByTestId("usage-limits-unavailable")
+    expect(seat).toHaveAccessibleName("Claude, usage unavailable (rate limited)")
+  })
+
+  it("adds a muted grace line under the provider name in the expanded meters", () => {
+    bar({
+      live: liveSummary({
+        providers: [liveProvider({ observedAt: "2027-01-15T11:56:00Z" })],
+        errors: [sourceError()],
+      }),
+      expanded: true,
+    })
+    const group = screen.getByRole("group", { name: "Claude" })
+    const note = within(group).getByText(GRACE_NOTE)
+    expect(note).toHaveClass("text-label-tertiary")
+    expect(note).not.toHaveClass("text-system-orange")
+  })
+
+  it("reads exactly the grace boundary as still shown", () => {
+    // Exactly 10 minutes old — LIVE_USAGE_GRACE_MS itself.
+    bar({
+      live: liveSummary({
+        providers: [liveProvider({ observedAt: "2027-01-15T11:50:00Z" })],
+        errors: [sourceError()],
+      }),
+    })
+    expect(screen.getByRole("button", { name: /Claude at 42 percent/ })).toBeInTheDocument()
+    expect(screen.queryByTestId("usage-limits-unavailable")).not.toBeInTheDocument()
   })
 })

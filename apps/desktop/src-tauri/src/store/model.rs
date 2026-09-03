@@ -97,7 +97,11 @@ pub struct SourceVersionState {
 
 /// Identity of one persisted activity cursor. The source label alone is not
 /// enough: native and WSL environments can expose the same provider path.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// `Ord` gives a stable order for a `BTreeSet<SessionActivityKey>`, which the
+/// scoped scan passes use to keep a burst's admitted sessions deterministic
+/// (phase 5b).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionActivityKey {
     pub environment_key: String,
     pub agent: String,

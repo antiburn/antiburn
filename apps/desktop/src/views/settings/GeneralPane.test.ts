@@ -14,6 +14,7 @@ function status(overrides: Partial<ScanStatus> = {}): ScanStatus {
     error: null,
     agents: [],
     listChanged: false,
+    reDescribed: 0,
     ...overrides,
   }
 }

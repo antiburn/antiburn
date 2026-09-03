@@ -9,11 +9,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::discovery::scanner::{self, AgentKind, TitleSource};
+#[cfg(test)]
+use crate::discovery::scanner;
+use crate::discovery::scanner::AgentKind;
 use crate::discovery::{
-    AgentExplorer, DirectSessionSource, ResolvedTitle, SessionLog, SessionSource, SurfacePaths,
-    TitleLookupKind, WatchRoot, app_config_dir_in, collect_dirs_with_exts,
-    extract_json_string_field, home_dir, recent_files_with_exts,
+    AgentExplorer, DirectSessionSource, SessionLog, SessionSource, SurfacePaths, TitleLookupKind,
+    WatchRoot, app_config_dir_in, collect_dirs_with_exts, extract_json_string_field, home_dir,
+    recent_files_with_exts,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -46,14 +48,6 @@ impl AgentExplorer for ClaudeExplorer {
         discover_recent_in(&home, now, since_secs).await
     }
 
-    async fn discover_cwds(&self, now: i64, since_secs: i64) -> Vec<String> {
-        let home = match home_dir() {
-            Some(h) => h,
-            None => return Vec::new(),
-        };
-        discover_cwds_in(&home, now, since_secs).await
-    }
-
     /// Claude is the fallback agent: `infer_agent_type` returns
     /// `AgentKind::Claude` when no other explorer matches. We don't claim
     /// `.claude` paths here so the dispatcher's default-Claude semantics
@@ -73,22 +67,12 @@ impl AgentExplorer for ClaudeExplorer {
         TitleLookupKind::Direct
     }
 
-    /// Direct file lookup by transcript filename stem. Avoids the default
-    /// implementation's O(N) walk across all recent logs — Claude transcripts
-    /// are named `{session_id}.jsonl`, so we can read the one file we care
-    /// about. Keeps frontend title fetches fast even for trays full of rows.
-    async fn session_title(&self, agent_session_id: &str) -> Option<ResolvedTitle> {
-        let home = home_dir()?;
-        let project_dirs = all_log_dirs_in(&home).await;
-        session_title_with_dirs(&project_dirs, agent_session_id).await
-    }
-
-    /// Point query, same shape as `session_title`: a transcript lives at
-    /// `<project_dir>/{session_id}.jsonl`, so an existence check against the
-    /// project dirs replaces the default full-tree discover. A miss returns
-    /// `Unsupported` (not `Missing`): a desktop-manifest session whose CLI
-    /// transcript is gone doesn't exist at that path, so the caller must still
-    /// fall back to the full discover to resolve it to its Inline source.
+    /// Point query: a transcript lives at `<project_dir>/{session_id}.jsonl`,
+    /// so an existence check against the project dirs replaces the default
+    /// full-tree discover. A miss returns `Unsupported` (not `Missing`): a
+    /// desktop-manifest session whose CLI transcript is gone doesn't exist
+    /// at that path, so the caller must still fall back to the full
+    /// discover to resolve it to its Inline source.
     async fn direct_session_source(&self, session_id: &str) -> DirectSessionSource {
         if let Some(home) = home_dir()
             && let Some(path) = locate_transcript_in(&home, session_id).await
@@ -238,22 +222,6 @@ pub(crate) fn sample_log_path(home: &Path) -> PathBuf {
         .join("session.jsonl")
 }
 
-/// Resolve a Claude session title given a pre-fetched list of project
-/// directories. Reads the transcript named `{session_id}.jsonl` directly
-/// (point query) and wraps the parsed title + provenance into a
-/// [`ResolvedTitle`]. Returns `None` when no transcript matches or the
-/// transcript has no extractable title.
-pub async fn session_title_with_dirs(
-    project_dirs: &[PathBuf],
-    agent_session_id: &str,
-) -> Option<ResolvedTitle> {
-    let path = resolve_cli_transcript_path(project_dirs, agent_session_id).await?;
-    let metadata = scanner::parse_session_metadata(&path).await;
-    let text = metadata.title?;
-    let source = metadata.title_source.unwrap_or(TitleSource::Explicit);
-    Some(ResolvedTitle::new(text, source))
-}
-
 /// Point-locate a session transcript under a given home directory:
 /// `<project_dir>/{session_id}.jsonl` across all project dirs. Backs the
 /// `direct_session_source` override; separated for testability.
@@ -279,69 +247,6 @@ async fn all_log_dirs_in(home: &Path) -> Vec<PathBuf> {
     })
     .await
     .unwrap_or_default()
-}
-
-/// Fast CWD-only discovery: decode project directory names without reading files.
-/// Falls back to reading the first .jsonl file when path decoding fails
-/// (e.g., TCC-protected paths where filesystem validation can't confirm segments).
-async fn discover_cwds_in(home: &Path, now: i64, since_secs: i64) -> Vec<String> {
-    let cutoff = now - since_secs;
-    let project_dirs = all_log_dirs_in(home).await;
-    let mut cwds = Vec::new();
-
-    for dir in &project_dirs {
-        let recent_jsonl = first_recent_jsonl(dir, cutoff).await;
-        if recent_jsonl.is_none() {
-            continue;
-        }
-
-        let encoded = match dir.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n,
-            None => continue,
-        };
-
-        // Try fast decode from directory name first.
-        if let Some(decoded) = scanner::decode_hyphenated_absolute_path(encoded, home).await {
-            cwds.push(decoded.to_string_lossy().to_string());
-            continue;
-        }
-
-        // Fallback: read the session file to extract CWD (handles TCC paths
-        // where the decode can't validate segments against the filesystem).
-        if let Some(jsonl_path) = recent_jsonl
-            && let Some(cwd) = scanner::parse_session_metadata(&jsonl_path).await.cwd
-        {
-            cwds.push(cwd);
-        }
-    }
-    cwds
-}
-
-/// Return the first `.jsonl` file in `dir` modified after `cutoff`, if any.
-/// One `spawn_blocking` for the whole directory scan.
-async fn first_recent_jsonl(dir: &Path, cutoff: i64) -> Option<PathBuf> {
-    let dir = dir.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let entries = std::fs::read_dir(&dir).ok()?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                continue;
-            }
-            if let Ok(meta) = entry.metadata()
-                && meta.is_file()
-                && let Ok(mtime) = meta.modified()
-                && let Ok(dur) = mtime.duration_since(std::time::UNIX_EPOCH)
-                && (dur.as_secs() as i64) >= cutoff
-            {
-                return Some(path);
-            }
-        }
-        None
-    })
-    .await
-    .ok()
-    .flatten()
 }
 
 /// Blocking-context helpers for the subagent-recency sweep: the callers batch
@@ -1340,30 +1245,5 @@ mod tests {
         for bad in ["../etc/passwd", "..\\..\\windows", "abc/../def", ""] {
             assert!(resolve_cli_transcript_path(&dirs, bad).await.is_none());
         }
-    }
-
-    #[tokio::test]
-    async fn test_session_title_with_dirs_returns_resolved_title_and_source() {
-        use crate::discovery::scanner::TitleSource;
-
-        let home = TempDir::new().unwrap();
-        let project = home
-            .path()
-            .join(".claude")
-            .join("projects")
-            .join("-Users-foo-bar");
-        tokio::fs::create_dir_all(&project).await.unwrap();
-        let session_id = "11111111-2222-3333-4444-555555555555";
-        let body = format!(
-            r#"{{"type":"custom-title","sessionId":"{session_id}","customTitle":"Renamed manually"}}"#,
-        );
-        tokio::fs::write(project.join(format!("{session_id}.jsonl")), body)
-            .await
-            .unwrap();
-
-        let dirs = vec![project.clone()];
-        let resolved = session_title_with_dirs(&dirs, session_id).await.unwrap();
-        assert_eq!(resolved.text, "Renamed manually");
-        assert_eq!(resolved.source, TitleSource::UserRename);
     }
 }

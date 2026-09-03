@@ -647,10 +647,30 @@ describe("PopoverView", () => {
     render(<PopoverView />)
 
     const summary = await screen.findByRole("region", { name: "Usage and spend" })
+    expect(summary).not.toHaveAttribute("title")
     const foldTarget = summary.parentElement
     expect(foldTarget).toContainElement(screen.getByTestId("usage-limits-bar"))
     expect(foldTarget).toContainElement(screen.getByText("All checks").closest("[tabindex]"))
     expect(foldTarget?.parentElement?.children).toHaveLength(1)
+  })
+
+  it("shows the API pricing caveat when a live account reports a subscription", async () => {
+    mockCommands({
+      get_live_usage: {
+        ...LIVE_USAGE,
+        providers: LIVE_USAGE.providers.map((provider) => ({
+          ...provider,
+          plan: { name: "plus", tier: null },
+        })),
+      },
+    })
+    render(<PopoverView />)
+
+    expect(
+      await screen.findByTitle(
+        "You're on subscription, so these are just estimated dollar values.",
+      ),
+    ).toHaveAccessibleName("Usage and spend")
   })
 
   it("notes an opened session as an agent and an environment, and nothing else", async () => {
@@ -676,47 +696,6 @@ describe("PopoverView", () => {
       "environment",
       "kind",
     ])
-  })
-
-  it("warns before an export and only writes once a destination is chosen", async () => {
-    confirmDialog.mockResolvedValue(true)
-    saveDialog.mockResolvedValue("/home/avery/Desktop/antiburn-session.json")
-    render(<PopoverView />)
-
-    fireEvent.click(await screen.findByText("Wire the tray popover"))
-    fireEvent.click(await screen.findByRole("button", { name: "Export this session" }))
-
-    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
-    // The warning names what the file can describe, before a destination is
-    // ever requested — including the two short excerpts it carries, which an
-    // earlier version of this copy denied.
-    const [message] = confirmDialog.mock.calls[0] as [string]
-    expect(message).toMatch(/short excerpts/i)
-    expect(message).toMatch(/no message bodies, tool arguments, or file contents/i)
-    expect(confirmDialog.mock.invocationCallOrder[0]).toBeLessThan(
-      saveDialog.mock.invocationCallOrder[0] as number,
-    )
-
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("export_session", {
-        agent: "claude-code",
-        sessionId: "session-abc-123",
-        wslDistro: null,
-        destPath: "/home/avery/Desktop/antiburn-session.json",
-      }),
-    )
-  })
-
-  it("declining the export warning never opens a save dialog", async () => {
-    confirmDialog.mockResolvedValue(false)
-    render(<PopoverView />)
-
-    fireEvent.click(await screen.findByText("Wire the tray popover"))
-    fireEvent.click(await screen.findByRole("button", { name: "Export this session" }))
-
-    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
-    expect(saveDialog).not.toHaveBeenCalled()
-    expect(invoke).not.toHaveBeenCalledWith("export_session", expect.anything())
   })
 
   it("confirms a removal, deletes only local records, and returns to the list", async () => {
@@ -770,9 +749,9 @@ describe("PopoverView", () => {
     const trigger = (await screen.findByText("All checks")).closest("[tabindex]")!
     fireEvent.mouseEnter(trigger)
 
-    expect(trigger.parentElement).toHaveAttribute("data-state", "active")
     expect(screen.queryByRole("heading", { name: "Checks" })).not.toBeInTheDocument()
     await waitFor(() => {
+      expect(trigger.parentElement).toHaveAttribute("data-state", "active")
       const requests = invoke.mock.calls.filter(([command]) => command === "show_popover_peek")
       expect(requests).toHaveLength(1)
       expect(requests[0]?.[1]).toMatchObject({
@@ -961,25 +940,53 @@ describe("PopoverView", () => {
     expect(ids.some((id) => id !== firstId)).toBe(true)
   })
 
-  it("requests a provider preview directly on pointer entry", async () => {
+  it("requests a provider preview after the pointer rests on its trigger", async () => {
     render(<PopoverView />)
 
     const trigger = await screen.findByRole("button", { name: "Codex at 40 percent" })
-    fireEvent.mouseEnter(trigger)
-    expect(trigger).toHaveAttribute("data-state", "hovered")
-    expect(invoke).toHaveBeenCalledWith("show_popover_peek", {
-      target: {
-        kind: "provider",
-        provider: "openai",
-        utcOffsetMinutes: -new Date().getTimezoneOffset(),
-      },
-      anchor: expect.any(Object),
-      initialPresentation: {
-        kind: "provider",
-        summary: { ...PROVIDER_USAGE, providers: [] },
-        live: LIVE_USAGE,
-      },
-    })
+    vi.useFakeTimers()
+    try {
+      fireEvent.mouseEnter(trigger)
+
+      await act(() => vi.advanceTimersByTimeAsync(149))
+      expect(invoke).not.toHaveBeenCalledWith("show_popover_peek", expect.anything())
+
+      await act(() => vi.advanceTimersByTimeAsync(1))
+      expect(invoke).toHaveBeenCalledWith("show_popover_peek", {
+        target: {
+          kind: "provider",
+          provider: "openai",
+          utcOffsetMinutes: -new Date().getTimezoneOffset(),
+        },
+        anchor: expect.any(Object),
+        initialPresentation: {
+          kind: "provider",
+          summary: { ...PROVIDER_USAGE, providers: [] },
+          live: LIVE_USAGE,
+        },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("cancels a pending provider preview when its click opens Usage", async () => {
+    render(<PopoverView />)
+
+    const trigger = await screen.findByRole("button", { name: "Codex at 40 percent" })
+    vi.useFakeTimers()
+    try {
+      fireEvent.mouseEnter(trigger)
+      fireEvent.click(trigger)
+
+      expect(screen.getByRole("heading", { name: "Usage" })).toBeInTheDocument()
+      expect(invoke).toHaveBeenCalledWith("hide_popover_peek")
+
+      await act(() => vi.advanceTimersByTimeAsync(150))
+      expect(invoke).not.toHaveBeenCalledWith("show_popover_peek", expect.anything())
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("conceals an active provider preview before expanding the limits bar", async () => {

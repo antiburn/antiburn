@@ -1,4 +1,4 @@
-import { confirm, save } from "@tauri-apps/plugin-dialog"
+import { confirm } from "@tauri-apps/plugin-dialog"
 import { useCallback } from "react"
 
 import { SessionDetailPresentation } from "../../components/session/SessionDetailPresentation"
@@ -6,7 +6,6 @@ import type { TokensCostSplit } from "../../components/session/tokensCard"
 import { renderAgentIcon } from "../../lib/agentIcon"
 import {
   deleteSessionData,
-  exportSession,
   revealSource,
   withPopoverHold,
   type SessionAnalysisPayload,
@@ -29,9 +28,8 @@ import type {
  * One session's analysis, loaded and wired to the actions a reader can take.
  *
  * The presentation component owns every pixel; this owns the data it renders,
- * the navigation between sessions, and the three destructive-ish actions —
- * export, delete, and reveal — each of which is spelled out below because each
- * one is easy to get subtly wrong.
+ * the navigation between sessions, and the destructive delete action, spelled
+ * out below because it is easy to get subtly wrong.
  */
 
 /** Which session the pane is showing. */
@@ -69,15 +67,6 @@ export interface SessionPaneProps {
   onOpenSession: (subject: SessionSubject) => void
   /** The session's local records were deleted, so it can no longer be shown. */
   onDeleted: () => void
-}
-
-/**
- * A file name for an export that identifies the session without leaking its
- * title into the filesystem. The title can be anything; a slug plus a short id
- * is enough to tell two exports apart.
- */
-function exportFileName(subject: SessionSubject): string {
-  return `antiburn-${subject.agent}-${subject.sessionId.slice(0, 8)}.json`
 }
 
 /** All-zero token counts. Use this value when a subject has no billable-token summary. */
@@ -213,34 +202,6 @@ export function SessionPane({
   onDeleted,
 }: SessionPaneProps) {
   /**
-   * Export: confirm, then choose a destination, then write.
-   *
-   * The confirmation comes *first*, before the save dialog, so the reader
-   * decides whether to export at all before being asked where — the reverse
-   * order presents the warning after they have already committed to a folder
-   * and a file name.
-   */
-  const handleExport = useCallback(async () => {
-    // Both dialogs run under one popover hold: they steal focus by design,
-    // and the surface behind them must survive to receive the result.
-    const destination = await withPopoverHold(async () => {
-      const proceed = await confirm(
-        "The export contains this session’s analysis, the paths it ran in, and short excerpts — its title and any skill descriptions. No message bodies, tool arguments, or file contents. It still describes real work, so save it somewhere you would keep a private note.",
-        { title: "Export session analysis?", kind: "warning", okLabel: "Choose destination…" },
-      )
-      if (!proceed) return null
-
-      return save({
-        defaultPath: exportFileName(subject),
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      })
-    })
-    if (!destination) return
-
-    await exportSession(subject.agent, subject.sessionId, destination, subject.wslDistro)
-  }, [subject])
-
-  /**
    * Delete: antiburn's own records only.
    *
    * The copy says so explicitly, because "delete session" in an app that reads
@@ -367,7 +328,6 @@ export function SessionPane({
       onOpenSubagent={openSubagent}
       onOpenOrchestrator={openOrchestrator}
       onOpenRelatedSession={openRelated}
-      onExportSession={() => void handleExport()}
       onDeleteSession={() => void handleDelete()}
       {...(sourcePath ? { onRevealSource: handleReveal } : {})}
       renderAgentIcon={renderAgentIcon}

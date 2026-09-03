@@ -817,19 +817,7 @@ impl Store {
     /// re-describing a source that has not changed.
     pub fn session_records(&self) -> Result<HashMap<SessionActivityKey, SessionRecord>> {
         let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT environment_key, agent, session_id, source_kind, source_label, wsl_distro,
-                    title, title_source, cwd, surface, updated_at_epoch,
-                    activity_cursor, activity_source, subagent_count,
-                    (SELECT related_id FROM session_relation r
-                       WHERE r.environment_key = s.environment_key
-                         AND r.agent = s.agent
-                         AND r.session_id = s.session_id
-                         AND r.kind = 'forkParent'
-                       LIMIT 1),
-                    s.source_fingerprint
-               FROM session s",
-        )?;
+        let mut statement = connection.prepare(SESSION_SELECT_SQL)?;
         let rows = statement.query_map([], session_from_row)?;
         let mut records = HashMap::new();
         for row in rows {
@@ -847,26 +835,72 @@ impl Store {
     /// One session's cached metadata, when it has been seen.
     pub fn session(&self, key: &SessionKey) -> Result<Option<SessionRecord>> {
         let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT environment_key, agent, session_id, source_kind, source_label, wsl_distro,
-                    title, title_source, cwd, surface, updated_at_epoch,
-                    activity_cursor, activity_source, subagent_count,
-                    (SELECT related_id FROM session_relation r
-                       WHERE r.environment_key = s.environment_key
-                         AND r.agent = s.agent
-                         AND r.session_id = s.session_id
-                         AND r.kind = 'forkParent'
-                       LIMIT 1),
-                    s.source_fingerprint
-               FROM session s
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-        )?;
+        let mut statement = connection.prepare(&format!(
+            "{SESSION_SELECT_SQL}
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3"
+        ))?;
         Ok(statement
             .query_row(
                 params![key.environment_key, key.agent, key.session_id],
                 session_from_row,
             )
             .optional()?)
+    }
+
+    /// One native file session's cached record, addressed by its
+    /// `source_label` (the transcript path) rather than its session id.
+    ///
+    /// T1: the watcher names a changed path, not a session id, so the scoped
+    /// scan classifies a burst's paths against `source_label` before it can
+    /// build a targeted refresh.
+    pub fn session_record_by_source_label(
+        &self,
+        source_label: &str,
+    ) -> Result<Option<(SessionActivityKey, SessionRecord)>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(&format!(
+            "{SESSION_SELECT_SQL}\n              WHERE source_label = ?1"
+        ))?;
+        let record = statement
+            .query_row(params![source_label], session_from_row)
+            .optional()?;
+        Ok(record.map(|record| {
+            let key = SessionActivityKey::new(
+                record.key.environment_key.clone(),
+                record.key.agent.clone(),
+                record.source_label.clone(),
+            );
+            (key, record)
+        }))
+    }
+
+    /// Keys of every session whose evidence last failed because its source
+    /// was missing.
+    ///
+    /// R3: a full pass reuses an unchanged row without rewriting it, which
+    /// would otherwise leave a session stuck once its source returns —
+    /// nothing else would notice and re-queue its evidence. The scan pass
+    /// persists these rows through `upsert_sessions` even when the row
+    /// itself is unchanged, so its own `source_returned` check runs and
+    /// clears the failure.
+    pub fn sessions_with_missing_source(&self) -> Result<Vec<SessionKey>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT environment_key, agent, session_id
+               FROM session_evidence
+              WHERE status = 'failed' AND last_error = ?1",
+        )?;
+        let rows = statement.query_map(
+            params![crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING],
+            |row| {
+                Ok(SessionKey::new(
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// One session's persisted source version and optional start time.
@@ -2085,6 +2119,24 @@ impl Store {
         Ok(relations)
     }
 
+    /// The session id this session recorded as its own fork parent, when
+    /// describe found one. Describe writes this once, from the transcript's
+    /// own bounded preview — see `upsert_session_in`'s `forkParent` insert —
+    /// so a reader never re-derives it from disk.
+    pub fn fork_parent(&self, key: &SessionKey) -> Result<Option<String>> {
+        let connection = self.lock();
+        Ok(connection
+            .query_row(
+                "SELECT related_id FROM session_relation
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                    AND kind = 'forkParent'
+                  LIMIT 1",
+                params![key.environment_key, key.agent, key.session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
     /// The sessions that recorded `session_id` as their fork parent, within the
     /// same environment and agent.
     pub fn fork_children(&self, key: &SessionKey) -> Result<Vec<String>> {
@@ -2795,6 +2847,24 @@ fn evidence_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceRow> {
         published_fence: row.get(17)?,
     })
 }
+
+/// Column list and join shared by every reader of the `session` table:
+/// [`Store::session_records`], [`Store::session`], and
+/// [`Store::session_record_by_source_label`]. One copy means a schema change
+/// updates every reader together, and [`session_from_row`] stays the single
+/// row mapper for all three.
+const SESSION_SELECT_SQL: &str =
+    "SELECT environment_key, agent, session_id, source_kind, source_label, wsl_distro,
+                    title, title_source, cwd, surface, updated_at_epoch,
+                    activity_cursor, activity_source, subagent_count,
+                    (SELECT related_id FROM session_relation r
+                       WHERE r.environment_key = s.environment_key
+                         AND r.agent = s.agent
+                         AND r.session_id = s.session_id
+                         AND r.kind = 'forkParent'
+                       LIMIT 1),
+                    s.source_fingerprint
+               FROM session s";
 
 fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
     Ok(SessionRecord {

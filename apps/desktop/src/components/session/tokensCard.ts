@@ -33,11 +33,11 @@ export interface TokensCardModel {
    * the headline. Mixing subjects would produce rows that do not add up.
    */
   split: TokensCostSplit | null
-  /** Right-hand hint: token counts, then compactions and rehydrations when any. */
+  /** Right-hand hint: token counts, then compactions and cache events when any. */
   hint: string
 }
 
-/** "3 compactions", "1 compaction", "2 routing misses". */
+/** "3 compactions", "1 compaction", "2 provider cache misses". */
 function countLabel(count: number, noun: string): string {
   if (count === 1) return `${count} ${noun}`
   return `${count} ${noun}${noun.endsWith("s") ? "es" : "s"}`
@@ -105,7 +105,9 @@ export function tokensCardModel(input: {
   const parts = [`${formatCompact(tokensInTotal)} in`, `${formatCompact(tokensOutTotal)} out`]
   if (compactionCount > 0) parts.push(countLabel(compactionCount, "compaction"))
   if (cacheRehydrationCount > 0) parts.push(countLabel(cacheRehydrationCount, "rehydration"))
-  if (cacheRoutingMissCount > 0) parts.push(countLabel(cacheRoutingMissCount, "routing miss"))
+  if (cacheRoutingMissCount > 0) {
+    parts.push(countLabel(cacheRoutingMissCount, "provider cache miss"))
+  }
 
   return { costTotal, split, hint: parts.join(" · ") }
 }

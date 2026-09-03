@@ -1,5 +1,6 @@
 use super::*;
 use crate::discovery::scanner::{self, TitleSource};
+use std::time::UNIX_EPOCH;
 use tempfile::TempDir;
 
 fn pi_sessions_dir(home: &Path) -> PathBuf {
@@ -58,62 +59,6 @@ async fn test_discover_recent_finds_jsonl_files() {
     let results = recent_files_with_exts(&dirs, now, 86_400, &["jsonl"]).await;
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].path, session_file);
-}
-
-#[tokio::test]
-async fn test_discover_cwds_reads_cwd_from_session_record() {
-    let home = TempDir::new().unwrap();
-    let sessions = pi_sessions_dir(home.path());
-    let project_dir = sessions.join("--Users-test-projects-bar--");
-    tokio::fs::create_dir_all(&project_dir).await.unwrap();
-
-    let session_file =
-        project_dir.join("2026-05-26T01-02-03-000Z_019e61cd-aaaa-bbbb-cccc-dddddddddddd.jsonl");
-    tokio::fs::write(
-        &session_file,
-        r#"{"type":"session","cwd":"/Users/test/projects/bar","version":3}
-{"type":"message","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}"#,
-    )
-    .await
-    .unwrap();
-
-    let now = std::time::SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-
-    let cwds = discover_cwds_in(home.path(), now, 86_400).await;
-    assert_eq!(cwds, vec!["/Users/test/projects/bar".to_string()]);
-}
-
-#[tokio::test]
-async fn test_discover_cwds_skips_oversized_first_records() {
-    let home = TempDir::new().unwrap();
-    let project_dir = pi_sessions_dir(home.path()).join("--Users-test--");
-    tokio::fs::create_dir_all(&project_dir).await.unwrap();
-    let session_file =
-        project_dir.join("2026-05-26T01-02-03-000Z_019e61cd-aaaa-bbbb-cccc-dddddddddddd.jsonl");
-    let oversized = format!(r#"{{"type":"session","cwd":"{}"}}"#, "x".repeat(64 * 1024));
-    tokio::fs::write(&session_file, oversized).await.unwrap();
-
-    assert_eq!(cwd_from_first_line(&session_file).await, None);
-}
-
-#[tokio::test]
-async fn test_discover_cwds_accepts_a_bounded_unterminated_first_record() {
-    let home = TempDir::new().unwrap();
-    let session_file = home.path().join("session.jsonl");
-    tokio::fs::write(
-        &session_file,
-        r#"{"type":"session","cwd":"/synthetic/project"}"#,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(
-        cwd_from_first_line(&session_file).await.as_deref(),
-        Some("/synthetic/project")
-    );
 }
 
 #[tokio::test]
@@ -189,34 +134,6 @@ async fn test_session_title_returns_first_user_message() {
 }
 
 #[tokio::test]
-async fn test_cwd_from_first_line_extracts_cwd() {
-    let dir = TempDir::new().unwrap();
-    let file = dir.path().join("session.jsonl");
-    tokio::fs::write(
-        &file,
-        r#"{"type":"session","id":"abc","cwd":"/some/path","version":3}
-{"type":"message","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#,
-    )
-    .await
-    .unwrap();
-
-    let cwd = cwd_from_first_line(&file).await;
-    assert_eq!(cwd, Some("/some/path".to_string()));
-}
-
-#[tokio::test]
-async fn test_cwd_from_first_line_returns_none_for_no_cwd() {
-    let dir = TempDir::new().unwrap();
-    let file = dir.path().join("session.jsonl");
-    tokio::fs::write(&file, r#"{"type":"message","role":"user"}"#)
-        .await
-        .unwrap();
-
-    let cwd = cwd_from_first_line(&file).await;
-    assert!(cwd.is_none());
-}
-
-#[tokio::test]
 async fn test_recover_session_id_from_path_extracts_uuid_suffix() {
     let path = Path::new(
         "/Users/foo/.pi/agent/sessions/--Users-foo-bar--/2026-05-26T01-02-03-000Z_019e61cd-aaaa-bbbb-cccc-dddddddddddd.jsonl",
@@ -274,9 +191,9 @@ async fn test_surface_paths_only_populates_cli() {
 }
 
 /// End-to-end title extraction: a Pi-shaped JSONL is parsed by the
-/// shared scanner and the title comes back tagged as `FirstMessage`.
-/// This is the path `default_session_titles_and_surfaces` (in `agents::
-/// mod`) exercises for every Pi session under the `Scan` lookup branch.
+/// shared scanner and the title comes back tagged as `FirstMessage`. Pi is
+/// a `Scan`-kind agent with no durable title index, so this transcript
+/// metadata path is how every Pi session's title is resolved at ingest.
 #[tokio::test]
 async fn test_parse_session_metadata_tags_pi_title_as_first_message() {
     let home = TempDir::new().unwrap();

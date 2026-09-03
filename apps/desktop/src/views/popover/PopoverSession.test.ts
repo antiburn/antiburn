@@ -2,19 +2,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../../lib/ipc"
 import type * as InsightsIpc from "../../lib/insightsIpc"
-import type { ActivityEntryPayload, ScanStatus, SessionAnalysisPayload } from "../../lib/ipc"
+import {
+  EMPTY_PROVIDER_USAGE,
+  type ActivityEntryPayload,
+  type ScanStatus,
+  type SessionAnalysisPayload,
+} from "../../lib/ipc"
 import { PopoverSession, sessionKey } from "./PopoverSession"
 import type { SessionSubject } from "./SessionPane"
 
 const getSessionAnalysis = vi.hoisted(() => vi.fn())
 const getSubagentAnalysis = vi.hoisted(() => vi.fn())
 const getSessionLimitAllocations = vi.hoisted(() => vi.fn())
+const getProviderUsage = vi.hoisted(() => vi.fn())
 const setPopoverHeight = vi.hoisted(() => vi.fn())
 const listRecentSessions = vi.hoisted(() => vi.fn())
 const onSessionEntryChanged = vi.hoisted(() => vi.fn())
 const onScanEvent = vi.hoisted(() => vi.fn())
 const onChecksReportChanged = vi.hoisted(() => vi.fn())
 const getChecksReport = vi.hoisted(() => vi.fn())
+const onPopoverShown = vi.hoisted(() => vi.fn())
+const onPopoverHidden = vi.hoisted(() => vi.fn())
 
 // The analysis, list, and event-subscription commands are overridden. All
 // other wrappers keep their real no-shell fallback because `hasShell()` is
@@ -26,10 +34,13 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     getSessionAnalysis,
     getSubagentAnalysis,
     getSessionLimitAllocations,
+    getProviderUsage,
     setPopoverHeight,
     listRecentSessions,
     onSessionEntryChanged,
     onScanEvent,
+    onPopoverShown,
+    onPopoverHidden,
   }
 })
 
@@ -43,10 +54,14 @@ type ScanEventHandler = (status: ScanStatus, phase: "started" | "progress" | "fi
 
 let entryChangedHandler: EntryChangedHandler | null = null
 let scanEventHandler: ScanEventHandler | null = null
+let popoverShownHandler: (() => void) | null = null
+let popoverHiddenHandler: (() => void) | null = null
 
 beforeEach(() => {
   entryChangedHandler = null
   scanEventHandler = null
+  popoverShownHandler = null
+  popoverHiddenHandler = null
   getSessionAnalysis.mockReset()
   getSessionAnalysis.mockResolvedValue(null)
   getSubagentAnalysis.mockReset()
@@ -73,11 +88,27 @@ beforeEach(() => {
   onChecksReportChanged.mockResolvedValue(() => {})
   getChecksReport.mockReset()
   getChecksReport.mockResolvedValue(null)
+  onPopoverShown.mockReset()
+  onPopoverShown.mockImplementation(async (handler: () => void) => {
+    popoverShownHandler = handler
+    return () => {
+      popoverShownHandler = null
+    }
+  })
+  onPopoverHidden.mockReset()
+  onPopoverHidden.mockImplementation(async (handler: () => void) => {
+    popoverHiddenHandler = handler
+    return () => {
+      popoverHiddenHandler = null
+    }
+  })
   getSessionLimitAllocations.mockReset()
   getSessionLimitAllocations.mockResolvedValue({
     generatedAt: "2027-01-15T08:00:00Z",
     allocations: [],
   })
+  getProviderUsage.mockReset()
+  getProviderUsage.mockResolvedValue(EMPTY_PROVIDER_USAGE)
 })
 
 describe("PopoverSession surface presentation", () => {
@@ -369,6 +400,7 @@ describe("PopoverSession event-driven refresh", () => {
     error: null,
     agents: [],
     listChanged: false,
+    reDescribed: 0,
     ...overrides,
   })
 
@@ -479,6 +511,128 @@ describe("PopoverSession event-driven refresh", () => {
 
     expect(listRecentSessions).toHaveBeenCalledTimes(2)
     unsubscribe()
+  })
+
+  // R5: `scan:finished` only refreshes usage when the pass re-described at
+  // least one session, floored by `USAGE_REFRESH_MIN_MS`, or reported a list
+  // change — an idle pass (`reDescribed: 0`) refreshes nothing, no matter
+  // how stale the last refresh is, since the watcher (not this event) is now
+  // what keeps an active session's own rows current.
+  it("refreshes usage only on a re-described pass, floored, bypassed by a list change", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime("2027-01-15T08:00:00Z")
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(scanEventHandler).not.toBeNull()
+    const baseline = getProviderUsage.mock.calls.length
+
+    // An idle pass refreshes nothing, even though nothing has refreshed yet.
+    scanEventHandler?.(scanStatus({ listChanged: false, reDescribed: 0 }), "finished")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline)
+
+    // A re-described pass refreshes, and stamps the floor.
+    scanEventHandler?.(scanStatus({ listChanged: false, reDescribed: 1 }), "finished")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 1)
+
+    // Another re-described pass 1 s later lands inside the floor and
+    // refreshes nothing further.
+    await vi.advanceTimersByTimeAsync(1_000)
+    scanEventHandler?.(scanStatus({ listChanged: false, reDescribed: 1 }), "finished")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 1)
+
+    // A reported list change bypasses the floor, even with nothing
+    // re-described.
+    scanEventHandler?.(scanStatus({ listChanged: true, reDescribed: 0 }), "finished")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 2)
+
+    // Once the floor elapses, an idle pass still refreshes nothing...
+    await vi.advanceTimersByTimeAsync(30_000)
+    scanEventHandler?.(scanStatus({ listChanged: false, reDescribed: 0 }), "finished")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 2)
+
+    // ...but a re-described pass does.
+    scanEventHandler?.(scanStatus({ listChanged: false, reDescribed: 1 }), "finished")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 3)
+
+    unsubscribe()
+    vi.useRealTimers()
+  })
+
+  // R6: usage freshness while the popover is visible is its own poll,
+  // independent of any scan. The session starts visible (see `visible`'s
+  // doc comment), so polling starts immediately; `popover:hidden` stops it
+  // and `popover:shown` resumes it.
+  it("polls usage on its own interval while visible, stopping and resuming with the popover", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime("2027-01-15T08:00:00Z")
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(popoverHiddenHandler).not.toBeNull()
+    const baseline = getProviderUsage.mock.calls.length
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 1)
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 2)
+
+    popoverHiddenHandler?.()
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 2)
+
+    popoverShownHandler?.()
+    await vi.advanceTimersByTimeAsync(0)
+    // `popover:shown` also runs its own immediate usage refresh, independent
+    // of the poll it resumes.
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 3)
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 4)
+
+    unsubscribe()
+    vi.useRealTimers()
+  })
+
+  // R6: `sessions:entry-changed` shares the scan's usage floor while the
+  // popover is visible, so an active session's totals stay current between
+  // scans; hidden, it does nothing, since nobody is looking.
+  it("refreshes usage from sessions:entry-changed at most once per floor, only while visible", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime("2027-01-15T08:00:00Z")
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(entryChangedHandler).not.toBeNull()
+    const baseline = getProviderUsage.mock.calls.length
+
+    entryChangedHandler?.(entryPayload())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 1)
+
+    // A second event 1 s later lands inside the floor and refreshes nothing
+    // further.
+    await vi.advanceTimersByTimeAsync(1_000)
+    entryChangedHandler?.(entryPayload())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 1)
+
+    // Hidden, even past the floor, an entry change refreshes nothing.
+    popoverHiddenHandler?.()
+    await vi.advanceTimersByTimeAsync(30_000)
+    entryChangedHandler?.(entryPayload())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 1)
+
+    unsubscribe()
+    vi.useRealTimers()
   })
 
   it("re-sorts a revived session to the top of the list", async () => {

@@ -23,8 +23,8 @@ use std::time::UNIX_EPOCH;
 use crate::discovery::scanner::{AgentKind, TitleSource};
 use crate::discovery::{
     AgentExplorer, DesktopPlatform, DirectSessionSource, FORK_OBSERVATION_KEY, ForkObservation,
-    ResolvedTitle, SessionLog, SessionSource, SessionTitleAndSurface, SurfacePaths,
-    TitleLookupKind, WatchRoot, current_desktop_platform, env_path_when_real_home, home_dir,
+    ResolvedTitle, SessionLog, SessionSource, SurfacePaths, TitleLookupKind, WatchRoot,
+    current_desktop_platform, env_path_when_real_home, home_dir,
 };
 use async_trait::async_trait;
 use rusqlite::{Connection, OpenFlags, params, params_from_iter};
@@ -179,42 +179,6 @@ impl AgentExplorer for OpenCodeExplorer {
         db_session_fingerprint(db_path.to_path_buf(), session_id.to_string()).await
     }
 
-    async fn discover_cwds(&self, now: i64, since_secs: i64) -> Vec<String> {
-        let roots = data_roots();
-        discover_cwds_in(&roots, now, since_secs).await
-    }
-
-    /// OpenCode override of the batched title+surface scan. Pulls every
-    /// session's title from `opencode.db` in a single SQL query rather
-    /// than reading transcript files (which don't carry titles). Surface
-    /// is always `"cli"` — OpenCode is a single binary serving both CLI
-    /// and TUI from the same store.
-    async fn session_titles_and_surfaces(&self) -> Vec<SessionTitleAndSurface> {
-        let mut out = Vec::new();
-        for root in data_roots() {
-            let db_path = root.join("opencode.db");
-            if !db_path.exists() {
-                continue;
-            }
-            let rows =
-                tokio::task::spawn_blocking(move || query_all_session_titles_from_db(&db_path))
-                    .await
-                    .unwrap_or_default();
-            for (session_id, title) in rows {
-                // OpenCode's SQLite schema has no rename concept — every
-                // non-empty `session.title` is tagged `Explicit`.
-                let title_source = title.as_ref().map(|_| TitleSource::Explicit);
-                out.push(SessionTitleAndSurface {
-                    session_id,
-                    title,
-                    title_source,
-                    surface: "cli",
-                });
-            }
-        }
-        out
-    }
-
     fn title_lookup_kind(&self) -> TitleLookupKind {
         TitleLookupKind::Direct
     }
@@ -269,10 +233,6 @@ impl AgentExplorer for OpenCodeExplorer {
             }
         }
         resolved
-    }
-
-    async fn session_title(&self, agent_session_id: &str) -> Option<ResolvedTitle> {
-        self.indexed_session_title(agent_session_id).await
     }
 
     /// Owns the per-platform OpenCode data dir (XDG `share/opencode/`, macOS
@@ -399,37 +359,6 @@ fn query_all_session_titles_from_db(path: &Path) -> Vec<(String, Option<String>)
             (id, trimmed)
         })
         .collect()
-}
-
-fn query_recent_session_directories_from_db(path: &Path, cutoff: i64) -> Vec<String> {
-    let Ok(conn) = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for query in [
-        "SELECT directory FROM session WHERE COALESCE(time_updated, time_created) >= ?1",
-        "SELECT directory FROM session WHERE time_updated >= ?1 OR time_created >= ?1",
-    ] {
-        let Ok(mut stmt) = conn.prepare(query) else {
-            continue;
-        };
-        let Ok(rows) = stmt.query_map(params![cutoff * 1000], |row| row.get::<_, String>(0)) else {
-            continue;
-        };
-        for directory in rows.flatten() {
-            let trimmed = directory.trim();
-            if !trimmed.is_empty() {
-                out.push(trimmed.to_string());
-            }
-        }
-        if !out.is_empty() {
-            break;
-        }
-    }
-    out
 }
 
 pub fn data_roots() -> Vec<PathBuf> {
@@ -572,67 +501,6 @@ pub async fn discover_recent_in_wsl(
     }
 }
 
-/// Discovers one CWD per recent root session without exporting transcripts.
-///
-/// Repository discovery needs only location/count metadata. Keeping it on the
-/// single CLI metadata query avoids the much more expensive export and chunked
-/// reconstruction path used by upload, detail, and analysis. Legacy fragmented
-/// storage remains the fallback when the distro CLI cannot provide metadata.
-pub async fn discover_cwds_in_wsl(
-    info: &WslEnvironmentInfo,
-    now: i64,
-    since_secs: i64,
-) -> Vec<String> {
-    let executable = opencode_executable(info).await;
-    let cutoff = now.saturating_sub(since_secs.max(0));
-    let query = cli_session_metadata_query(cutoff);
-    let cli_cwds = async {
-        let metadata = run_opencode_cli(
-            &info.context.environment,
-            &executable,
-            &["db", query.as_str(), "--format", "json"],
-            CLI_METADATA_MAX_BYTES,
-        )
-        .await?;
-        let rows = parse_cli_session_rows(&metadata)?;
-        Ok::<_, CliBridgeError>(
-            cli_root_directories(rows)
-                .into_iter()
-                .filter_map(|cwd| {
-                    crate::platform::environment::wsl_to_windows_path(&info.distribution, &cwd)
-                        .ok()
-                        .map(|path| path.to_string_lossy().to_string())
-                })
-                .collect::<Vec<_>>(),
-        )
-    }
-    .await;
-    match cli_cwds {
-        Ok(cwds) => cwds,
-        Err(error) => {
-            tracing::warn!(
-                event = "opencode_wsl_cli_cwd_unavailable",
-                distro = info.distribution,
-                error = %error,
-                "OpenCode WSL metadata-only CWD discovery failed; trying fragmented storage"
-            );
-            let roots = [info.context.home.join(".local/share/opencode")];
-            let mut logs = discover_recent_in_impl(&roots, now, since_secs, false).await;
-            let mut cwds = Vec::new();
-            for log in &mut logs {
-                log.environment = info.context.environment.clone();
-                if let Some(cwd) = crate::discovery::session_log_metadata(log)
-                    .await
-                    .and_then(|metadata| metadata.cwd)
-                {
-                    cwds.push(cwd);
-                }
-            }
-            cwds
-        }
-    }
-}
-
 /// Resolves requested WSL OpenCode titles with one metadata query and no
 /// transcript exports. Missing IDs are omitted from the result.
 pub async fn session_titles_in_wsl(
@@ -708,15 +576,6 @@ fn cli_title_query(requested_ids: &HashSet<String>) -> Option<String> {
             ids.join(",")
         )
     })
-}
-
-/// Root directories represent the same clustered session units emitted by full
-/// OpenCode discovery; descendants must not inflate Local Repos session counts.
-fn cli_root_directories(rows: Vec<CliSessionRow>) -> Vec<String> {
-    rows.into_iter()
-        .filter(|row| row.parent_id.is_none())
-        .filter_map(|row| row.directory)
-        .collect()
 }
 
 /// Loads all recently changed clusters with one metadata query, then exports
@@ -1653,46 +1512,6 @@ async fn discover_recent_in_impl(
     .unwrap_or_default();
     output.extend(file_logs);
     output
-}
-
-async fn discover_cwds_in(roots: &[PathBuf], now: i64, since_secs: i64) -> Vec<String> {
-    let cutoff = now - since_secs;
-    let mut cwds = HashSet::new();
-
-    for root in roots {
-        let db_path = root.join("opencode.db");
-        if tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
-            let db_path_for_query = db_path.clone();
-            let directories = tokio::task::spawn_blocking(move || {
-                query_recent_session_directories_from_db(&db_path_for_query, cutoff)
-            })
-            .await
-            .unwrap_or_default();
-            for directory in directories {
-                cwds.insert(directory);
-            }
-        }
-
-        let session_dir = root.join("storage").join("session");
-        for candidate in collect_recent_json_files(&session_dir, cutoff).await {
-            let Some(value) = read_json(&candidate.path).await else {
-                continue;
-            };
-            let cwd = value
-                .get("directory")
-                .or_else(|| value.get("cwd"))
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-            if let Some(cwd) = cwd {
-                cwds.insert(cwd.to_string());
-            }
-        }
-    }
-
-    let mut out: Vec<String> = cwds.into_iter().collect();
-    out.sort();
-    out
 }
 
 fn parse_session_record(
@@ -3703,26 +3522,6 @@ fn chunked_db_reconstruction_caps_individual_and_aggregate_data() {
         cli_record(CLI_EXPORT_MAX_BYTES),
         cli_record(1),
     ]));
-}
-
-#[cfg(test)]
-#[test]
-fn metadata_only_cwds_count_roots_not_descendants() {
-    let row = |id: &str, parent_id: Option<&str>, directory: Option<&str>| CliSessionRow {
-        id: id.into(),
-        parent_id: parent_id.map(str::to_string),
-        directory: directory.map(str::to_string),
-        title: None,
-        time_created: None,
-        time_updated: None,
-    };
-    let directories = cli_root_directories(vec![
-        row("ses_root", None, Some("/home/dev/repo")),
-        row("ses_child", Some("ses_root"), Some("/home/dev/repo")),
-        row("ses_no_cwd", None, None),
-    ]);
-
-    assert_eq!(directories, vec!["/home/dev/repo"]);
 }
 
 #[cfg(test)]

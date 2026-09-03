@@ -20,7 +20,6 @@ use antiburn_local::analysis::{
 use antiburn_local::insights::{
     BadgeId, BadgeStatus, NotAssessedReason, ReportCatalogs, session_badges,
 };
-use antiburn_local::model::AgentKind;
 use antiburn_local::paths::scan_roots as engine_scan_roots;
 use antiburn_local::paths::{home_dir, protected};
 use antiburn_local::repositories as repositories_engine;
@@ -39,18 +38,16 @@ use crate::dto::{
     SessionHygienePayload, SessionHygieneRequest, SessionIdentity, SessionLimitAllocationSummary,
     SessionRelation, SessionRelations, SubagentMember,
 };
-use crate::export::{ExportedSession, SessionExport};
 use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
 use crate::popover;
 use crate::provider_usage;
 use crate::repositories;
-use crate::scan::{self, ScanController};
+use crate::scan::{self, ScanController, ScanTrigger};
 use crate::settings;
 use crate::store::model::environment_key;
 use crate::store::{
-    AppSettings, RelationKind, RelationRecord, RepositoryRecord, SessionKey, SessionRecord, Store,
-    iso_from_epoch,
+    AppSettings, RelationKind, RepositoryRecord, SessionKey, SessionRecord, Store, iso_from_epoch,
 };
 
 /// Anything that goes wrong becomes a string the webview can show.
@@ -451,7 +448,8 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
         || saved.activity_window_days > previous.activity_window_days
         || (previous.discovery_paused && !saved.discovery_paused);
     if wants_scan && !saved.discovery_paused {
-        app.state::<ScanController>().request();
+        app.state::<ScanController>()
+            .request(ScanTrigger::SettingsTransition);
     }
 
     // Put the first-run window away and say where the app went. Done here
@@ -655,62 +653,22 @@ fn requeue_and_wake_worker(app: &tauri::AppHandle, store: &Store, key: &SessionK
     crate::insights_worker::wake(app);
 }
 
-/// Nudges the worker when the analysis this pass just served from rows was
-/// published against a transcript that has since changed. Returns whether it
-/// found one — the caller folds that into the payload's `analysisStale` flag.
-///
-/// This uses the exact ingestion fingerprint, the same one the worker stores
-/// with the analysis, so a stale verdict here is never a false positive.
-async fn nudge_if_evidence_stale(
-    app: &tauri::AppHandle,
-    store: &Store,
-    kind: AgentKind,
-    key: &SessionKey,
-    session_id: &str,
-    wsl_distro: Option<&str>,
-) -> bool {
-    let Some(source) = analysis::locate(kind, session_id, wsl_distro).await else {
-        return false;
-    };
-    let live_fingerprint =
-        analysis::fingerprint_with_subagents(kind, session_id, wsl_distro, &source).await;
-    let stored_fingerprint = store
-        .analysis(key)
-        .ok()
-        .flatten()
-        .map(|record| record.source_fingerprint);
-    let stale = evidence_is_stale(stored_fingerprint.as_deref(), &live_fingerprint);
-    if stale {
-        requeue_and_wake_worker(app, store, key);
-    }
-    stale
-}
-
-/// Whether the stored analysis's own fingerprint no longer matches the
-/// transcript's live one — split out from [`nudge_if_evidence_stale`] so the
-/// comparison itself is testable without a located source or an app handle.
-fn evidence_is_stale(stored_fingerprint: Option<&str>, live_fingerprint: &str) -> bool {
-    stored_fingerprint != Some(live_fingerprint)
-}
-
 /// Whether a served, replayed analysis is stale: a fresher pass is queued
-/// (`pending`) or running (`processing`) behind the served fence, or that
-/// fence's transcript has already moved past it (`fingerprint_mismatch`).
+/// (`pending`) or running (`processing`) behind the served fence.
 ///
 /// `failed` is deliberately excluded: a failed pass has given up, so nothing
 /// fresher is queued or running behind the served fence until something
-/// requeues it, at which point it reads `pending` again. Split out from
-/// [`get_session_analysis`] and [`get_subagent_analysis`] so the rule itself
-/// is testable without a store or an app handle.
-fn analysis_is_stale(
-    evidence_status: Option<crate::store::EvidenceStatus>,
-    fingerprint_mismatch: bool,
-) -> bool {
-    let status_stale = matches!(
+/// requeues it, at which point it reads `pending` again. The scan layer is
+/// what marks evidence `pending` on a real transcript change — see
+/// `upsert_sessions` — so this status check is the single source of
+/// staleness; it needs no separate fingerprint poll of the transcript.
+/// Split out from [`get_session_analysis`] and [`get_subagent_analysis`] so
+/// the rule itself is testable without a store or an app handle.
+fn analysis_is_stale(evidence_status: Option<crate::store::EvidenceStatus>) -> bool {
+    matches!(
         evidence_status,
         Some(crate::store::EvidenceStatus::Pending | crate::store::EvidenceStatus::Processing)
-    );
-    status_stale || fingerprint_mismatch
+    )
 }
 
 fn path_is_under(path: &str, root: &str) -> bool {
@@ -814,16 +772,16 @@ pub async fn get_session_limit_allocations(
 
 /// How fresh a reading the refresh command asks each source's cooldown for.
 ///
-/// This command is called from the popover, which polls it roughly once a
-/// minute for as long as the popover stays visible — see
-/// `scan::TICK` and `popover::note_shown`. Fifty seconds sits just under that
-/// polling interval, so an open popover's own ordinary polling is what keeps
-/// the reading current: every visible tick is close enough to the cooldown's
-/// edge to trigger a real fetch, without this command itself running a timer
-/// or a background task. The aggressive freshness is bounded by someone
-/// actually looking — once the popover closes, nothing here keeps polling on
-/// its behalf, and the background monitor's own, much longer, `max_age`
-/// takes back over (see `usage_alerts::BACKGROUND_MAX_AGE`).
+/// This command is called from the popover, which polls it on its own 60 s
+/// visible interval for as long as the popover stays visible (R6,
+/// `USAGE_VISIBLE_POLL_MS` in `PopoverSession.ts`). Fifty seconds sits just
+/// under that polling interval, so an open popover's own ordinary polling is
+/// what keeps the reading current: every visible tick is close enough to the
+/// cooldown's edge to trigger a real fetch, without this command itself
+/// running a timer or a background task. The aggressive freshness is bounded
+/// by someone actually looking — once the popover closes, nothing here keeps
+/// polling on its behalf, and the background monitor's own, much longer,
+/// `max_age` takes back over (see `usage_alerts::BACKGROUND_MAX_AGE`).
 const POPOVER_LIVE_USAGE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(50);
 
 /// Return the last provider limit snapshot without reading a provider.
@@ -960,27 +918,17 @@ pub async fn get_session_analysis(
     // — so this command never caches one itself or emits
     // `SESSION_ENTRY_CHANGED_EVENT` for it.
     let (analysis, analysis_pending, analysis_stale) =
-        match analysis::analysis_from_rows(&store, &key, &session_id, &agent) {
+        match analysis::analysis_from_rows(&store, &key, &session_id, kind) {
             Some(replayed) => {
-                let fingerprint_mismatch = nudge_if_evidence_stale(
-                    &app,
-                    &store,
-                    kind,
-                    &key,
-                    &session_id,
-                    wsl_distro.as_deref(),
-                )
-                .await;
                 let evidence_status = store.evidence(&key).ok().flatten().map(|row| row.status);
-                let stale = analysis_is_stale(evidence_status, fingerprint_mismatch);
-                (replayed, false, stale)
+                (replayed, false, analysis_is_stale(evidence_status))
             }
             None => {
                 requeue_and_wake_worker(&app, &store, &key);
                 (analysis::SessionAnalysis::unavailable(), true, false)
             }
         };
-    let relations = resolve_lineage(&app, kind, &key, wsl_distro.as_deref()).await;
+    let relations = resolve_lineage(&app, &key, wsl_distro.as_deref());
 
     let stored = store.session(&key).ok().flatten();
 
@@ -1012,10 +960,19 @@ pub async fn get_session_analysis(
         orchestration,
         relations: (!relations.is_empty()).then_some(relations),
         started_at_epoch: analysis.started_at_epoch,
-        source_path: analysis.source_path.clone(),
+        source_path: stored_source_path(stored.as_ref()),
         analysis_pending,
         analysis_stale,
     })
+}
+
+/// The transcript path to reveal, from the store's own record of the source
+/// — `None` for anything but a file, mirroring the old `analysis::source_path`
+/// helper, which returned a path only for a file-backed `SessionSource`.
+fn stored_source_path(stored: Option<&SessionRecord>) -> Option<String> {
+    stored
+        .filter(|record| record.source_kind == "file")
+        .map(|record| record.source_label.clone())
 }
 
 /// One sub-agent's own analysis, opened from the roster.
@@ -1042,7 +999,7 @@ pub async fn get_subagent_analysis(
         &parent_key,
         &parent_session_id,
         &subagent_id,
-        &agent,
+        kind,
     ) {
         Some(replayed) => {
             let evidence_status = store
@@ -1050,7 +1007,7 @@ pub async fn get_subagent_analysis(
                 .ok()
                 .flatten()
                 .map(|row| row.status);
-            (replayed, false, analysis_is_stale(evidence_status, false))
+            (replayed, false, analysis_is_stale(evidence_status))
         }
         None => {
             requeue_and_wake_worker(&app, &store, &parent_key);
@@ -1115,30 +1072,19 @@ fn cached_orchestration(store: &Store, key: &SessionKey) -> Option<Orchestration
     })
 }
 
-/// Resolve and persist one session's fork lineage.
-async fn resolve_lineage(
+/// One session's fork lineage, read from the store's own record of it.
+///
+/// Describe already resolves and writes the fork parent it finds — see
+/// `describe_one_with_activity` and the `session_relation` row
+/// `upsert_session_in` writes for it — so this reads that back instead of
+/// re-discovering it: no `locate`, no transcript read, on a drilldown open.
+fn resolve_lineage(
     app: &tauri::AppHandle,
-    kind: AgentKind,
     key: &SessionKey,
     wsl_distro: Option<&str>,
 ) -> SessionRelations {
     let store = app.state::<Store>();
-    let parent_id = match analysis::locate(kind, &key.session_id, wsl_distro).await {
-        Some(source) => analysis::fork_parent(&source).await,
-        None => None,
-    };
-
-    if let Some(parent_id) = &parent_id {
-        let _ = store.replace_relations(
-            key,
-            RelationKind::ForkParent,
-            &[RelationRecord {
-                kind: RelationKind::ForkParent,
-                related_id: parent_id.clone(),
-                label: None,
-            }],
-        );
-    }
+    let parent_id = store.fork_parent(key).ok().flatten();
 
     let mut relations = SessionRelations {
         title: store
@@ -1150,26 +1096,25 @@ async fn resolve_lineage(
     };
 
     if let Some(parent_id) = parent_id {
-        let available = analysis::locate(kind, &parent_id, wsl_distro)
-            .await
-            .is_some();
-        let title = store
+        let record = store
             .session(&SessionKey::new(
                 &key.environment_key,
                 &key.agent,
                 &parent_id,
             ))
             .ok()
-            .flatten()
-            .and_then(|record| record.title);
+            .flatten();
         relations.parent = Some(SessionRelation {
             identity: SessionIdentity {
                 agent: key.agent.clone(),
                 session_id: parent_id,
                 wsl_distro: wsl_distro.map(str::to_string),
             },
-            title,
-            available,
+            title: record.as_ref().and_then(|record| record.title.clone()),
+            // A parent we still have a row for is on this machine, mirroring
+            // the children loop below: retention removes the row when its
+            // session data expires.
+            available: record.is_some(),
         });
     }
 
@@ -1205,7 +1150,13 @@ pub async fn scan_now(
     app: tauri::AppHandle,
     activity_window_days: Option<u32>,
 ) -> CommandResult<ScanStatus> {
-    Ok(scan::run_pass(&app, activity_window_days).await)
+    Ok(scan::run_pass(
+        &app,
+        activity_window_days,
+        ScanTrigger::ManualRescan,
+        scan::PassScope::Full,
+    )
+    .await)
 }
 
 /// Ask the scan in flight to stop at its next phase boundary.
@@ -1284,7 +1235,8 @@ pub async fn get_insights_report(app: tauri::AppHandle) -> CommandResult<Insight
     // waiting out a tick. This is a further call site of the shipped
     // on-demand trigger — the same kick the popover and the other
     // commands fire — not a new trigger class and not queue reordering.
-    app.state::<ScanController>().request();
+    app.state::<ScanController>()
+        .request(ScanTrigger::InsightsPane);
     let data_dir = app.state::<Store>().state_dir().to_path_buf();
     let request = insights_report_request(epoch_now());
     let reduced = app
@@ -1603,7 +1555,8 @@ pub async fn set_repository_enabled(
     // a pass so the rows come back without the reader doing anything.
     let _ = app.emit(SESSIONS_INVALIDATED_EVENT, ());
     if enabled {
-        app.state::<ScanController>().request();
+        app.state::<ScanController>()
+            .request(ScanTrigger::RepositoryToggle);
     }
     list_repositories(app)
 }
@@ -1654,7 +1607,8 @@ pub async fn add_scan_root(app: tauri::AppHandle, path: String) -> CommandResult
         store.scan_roots().map_err(fail)?
     };
     mirror_scan_roots(&app, &roots).await.map_err(fail)?;
-    app.state::<ScanController>().request();
+    app.state::<ScanController>()
+        .request(ScanTrigger::ScanRootAdded);
     Ok(roots)
 }
 
@@ -1706,75 +1660,6 @@ pub async fn export_diagnostics(app: tauri::AppHandle, dest_path: String) -> Com
     Ok(dest_path)
 }
 
-/// Write one session's derived analysis to `dest_path` as JSON.
-///
-/// The transcript is **not** copied: the document carries a reference to where
-/// it lives instead. It can still describe real work — titles, paths,
-/// repository names — which is why the caller confirms before choosing a
-/// destination.
-#[tauri::command]
-pub async fn export_session(
-    app: tauri::AppHandle,
-    agent: String,
-    session_id: String,
-    wsl_distro: Option<String>,
-    dest_path: String,
-) -> CommandResult<String> {
-    let Some(kind) = kind_from_slug(&agent) else {
-        return Err(format!("unknown agent {agent}"));
-    };
-    let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
-    let store = app.state::<Store>();
-    let claimed = store
-        .session_source_state(&key)
-        .ok()
-        .flatten()
-        .map(|state| analysis::ClaimedSource {
-            fingerprint: state.source_fingerprint,
-            generation: state.source_generation,
-        })
-        .unwrap_or(analysis::ClaimedSource {
-            fingerprint: None,
-            generation: 0,
-        });
-    let analysis = analysis::analyze(
-        kind,
-        &session_id,
-        wsl_distro.as_deref(),
-        claimed,
-        analysis::CancelFlag::never(),
-    )
-    .await;
-
-    let stored = store.session(&key).ok().flatten();
-
-    let document = SessionExport::new(
-        app.package_info().version.to_string(),
-        crate::runtime_pricing::catalog_version(&app),
-        ExportedSession {
-            agent,
-            session_id,
-            wsl_distro,
-            title: stored.as_ref().and_then(|record| record.title.clone()),
-            cwd: stored.as_ref().and_then(|record| record.cwd.clone()),
-            surface: stored
-                .as_ref()
-                .map(|record| record.surface.clone())
-                .unwrap_or_else(|| "unknown".to_string()),
-            last_activity: stored
-                .as_ref()
-                .and_then(|record| record.updated_at_epoch)
-                .map(|epoch| iso_from_epoch(Some(epoch))),
-            source_path: analysis.source_path.clone(),
-        },
-        &analysis,
-    );
-
-    let json = document.to_json().map_err(fail)?;
-    tokio::fs::write(&dest_path, json).await.map_err(fail)?;
-    Ok(dest_path)
-}
-
 /// Delete antiburn's own records for one session.
 ///
 /// **Only antiburn's records.** The agent's transcript is the agent's file and
@@ -1811,7 +1696,8 @@ pub fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
         .map_err(fail)?;
     // The index is empty and the popover is showing it. Refill it rather than
     // leaving a reader looking at an empty list until the next tick.
-    app.state::<ScanController>().request();
+    app.state::<ScanController>()
+        .request(ScanTrigger::IndexCleared);
     Ok(removed)
 }
 
@@ -1909,7 +1795,8 @@ pub async fn request_folder_access(
     recorded.map_err(fail)?;
 
     if matches!(outcome, consent::ProbeOutcome::Granted { .. }) {
-        app.state::<ScanController>().request();
+        app.state::<ScanController>()
+            .request(ScanTrigger::FolderAccessGranted);
     }
 
     Ok(FolderAccessOutcome {
@@ -1990,7 +1877,8 @@ pub async fn recheck_folder_permissions(app: tauri::AppHandle) -> CommandResult<
     };
 
     if !discovered.is_empty() {
-        app.state::<ScanController>().request();
+        app.state::<ScanController>()
+            .request(ScanTrigger::FolderAccessGranted);
     }
     let mut discovered: Vec<String> = discovered.into_iter().collect();
     discovered.sort();
@@ -2159,30 +2047,13 @@ mod tests {
     }
 
     #[test]
-    fn matching_fingerprints_are_not_stale() {
-        assert!(!evidence_is_stale(Some("sv1:a"), "sv1:a"));
-    }
-
-    #[test]
-    fn a_changed_fingerprint_is_stale() {
-        assert!(evidence_is_stale(Some("sv1:a"), "sv1:b"));
-    }
-
-    #[test]
-    fn no_stored_fingerprint_is_stale() {
-        assert!(evidence_is_stale(None, "sv1:a"));
-    }
-
-    #[test]
-    fn a_ready_or_unsupported_fence_with_no_fingerprint_mismatch_is_not_stale() {
-        assert!(!analysis_is_stale(
-            Some(crate::store::EvidenceStatus::Ready),
-            false
-        ));
-        assert!(!analysis_is_stale(
-            Some(crate::store::EvidenceStatus::Unsupported),
-            false
-        ));
+    fn a_ready_or_unsupported_fence_is_not_stale() {
+        assert!(!analysis_is_stale(Some(
+            crate::store::EvidenceStatus::Ready
+        )));
+        assert!(!analysis_is_stale(Some(
+            crate::store::EvidenceStatus::Unsupported
+        )));
     }
 
     #[test]
@@ -2190,22 +2061,12 @@ mod tests {
         // The served rows are the last winning publish's, but the evidence
         // row itself is not terminal: a fresher pass is queued or running
         // behind them.
-        assert!(analysis_is_stale(
-            Some(crate::store::EvidenceStatus::Pending),
-            false
-        ));
-        assert!(analysis_is_stale(
-            Some(crate::store::EvidenceStatus::Processing),
-            false
-        ));
-    }
-
-    #[test]
-    fn a_fingerprint_mismatch_is_stale_even_on_a_terminal_status() {
-        assert!(analysis_is_stale(
-            Some(crate::store::EvidenceStatus::Ready),
-            true
-        ));
+        assert!(analysis_is_stale(Some(
+            crate::store::EvidenceStatus::Pending
+        )));
+        assert!(analysis_is_stale(Some(
+            crate::store::EvidenceStatus::Processing
+        )));
     }
 
     #[test]
@@ -2213,10 +2074,48 @@ mod tests {
         // Nothing fresher is queued or running: the worker gave up. The
         // served rows stay marked fresh until something requeues this row,
         // at which point it reads `pending` again.
-        assert!(!analysis_is_stale(
-            Some(crate::store::EvidenceStatus::Failed),
-            false
-        ));
+        assert!(!analysis_is_stale(Some(
+            crate::store::EvidenceStatus::Failed
+        )));
+    }
+
+    fn session_record(source_kind: &str, source_label: &str) -> SessionRecord {
+        SessionRecord {
+            key: SessionKey::for_session("claude-code", "session-1", None),
+            source_kind: source_kind.into(),
+            source_label: source_label.into(),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: None,
+            surface: "cli".into(),
+            updated_at_epoch: None,
+            activity_cursor: String::new(),
+            activity_source: "unknown".into(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: None,
+        }
+    }
+
+    #[test]
+    fn a_file_backed_session_reveals_its_transcript_path() {
+        let record = session_record("file", "/home/avery/.claude/projects/demo/session.jsonl");
+        assert_eq!(
+            stored_source_path(Some(&record)).as_deref(),
+            Some("/home/avery/.claude/projects/demo/session.jsonl")
+        );
+    }
+
+    #[test]
+    fn a_non_file_session_has_no_reveal_path() {
+        let record = session_record("providerDb", "opencode:root-session");
+        assert_eq!(stored_source_path(Some(&record)), None);
+    }
+
+    #[test]
+    fn no_stored_record_has_no_reveal_path() {
+        assert_eq!(stored_source_path(None), None);
     }
 
     #[test]

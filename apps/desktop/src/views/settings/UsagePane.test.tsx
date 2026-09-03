@@ -246,6 +246,78 @@ describe("UsagePane", () => {
   })
 })
 
+describe("UsagePane — the grace period", () => {
+  const GENERATED_AT = "2027-01-15T12:00:00Z"
+
+  function withGracedReading(observedAt: string) {
+    return summary({
+      generatedAt: GENERATED_AT,
+      providers: [
+        {
+          provider: "anthropic",
+          accountKey: null,
+          displayName: "Anthropic",
+          support: "live",
+          freshness: "fresh",
+          sourceLabel: "Asked Claude directly",
+          observedAt,
+          windows: [],
+          extraUsage: null,
+          resetCredits: null,
+          plan: null,
+        },
+      ],
+      errors: [
+        {
+          source: "claude-usage-fetch",
+          provider: "anthropic",
+          displayName: "Claude",
+          category: "rateLimited",
+        },
+      ],
+    })
+  }
+
+  beforeEach(() => {
+    getLiveUsage.mockReset()
+    refreshLiveUsage.mockReset()
+    refreshLiveUsage.mockResolvedValue(summary())
+  })
+
+  it("replaces the failure note with a grace note while the reading is within its window", async () => {
+    // 4 minutes before `GENERATED_AT`.
+    getLiveUsage.mockResolvedValue(withGracedReading("2027-01-15T11:56:00Z"))
+    pane()
+    await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
+    expect(
+      screen.getByText(
+        "Asked Claude directly. 0 limits reported. Claude rate limited the last check; reading from 4 min ago.",
+      ),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Wait, then retry/)).not.toBeInTheDocument()
+  })
+
+  it("drops the reading and falls back to the plain failure note once past the grace", async () => {
+    // 11 minutes before `GENERATED_AT`.
+    getLiveUsage.mockResolvedValue(withGracedReading("2027-01-15T11:49:00Z"))
+    pane()
+    await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
+    expect(
+      screen.getByText(/rate limited usage checks\. Wait, then retry\./),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Asked Claude directly/)).not.toBeInTheDocument()
+  })
+
+  it("reads exactly the grace boundary as still shown", async () => {
+    // Exactly 10 minutes before `GENERATED_AT` — LIVE_USAGE_GRACE_MS itself.
+    getLiveUsage.mockResolvedValue(withGracedReading("2027-01-15T11:50:00Z"))
+    pane()
+    await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
+    expect(screen.getByText(/Asked Claude directly/)).toBeInTheDocument()
+    expect(screen.queryByText(/Wait, then retry/)).not.toBeInTheDocument()
+  })
+})
+
 describe("UsagePane — floating HUD", () => {
   beforeEach(() => {
     getLiveUsage.mockReset()

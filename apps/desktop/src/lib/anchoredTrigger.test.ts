@@ -18,6 +18,7 @@ function harness(
     target,
     retargetCommitRequired: false,
   })),
+  hoverDelayMs = 0,
 ) {
   let lifecycle: ((event: AnchoredWindowLifecycleEvent<Target>) => void) | null = null
   const bridge: AnchoredTriggerBridge<Target> = {
@@ -33,6 +34,7 @@ function harness(
     "detail",
     (left, right) => left.id === right.id,
     bridge,
+    { hoverDelayMs },
   )
   const unsubscribe = controller.subscribe(() => undefined)
   return {
@@ -58,6 +60,147 @@ function state(generation: number, target: Target | null) {
 }
 
 describe("AnchoredTriggerController", () => {
+  it("delays the first hover until intent is clear", async () => {
+    vi.useFakeTimers()
+    const request = vi.fn(async (target: Target) => ({
+      generation: 1,
+      target,
+      retargetCommitRequired: false,
+    }))
+    const { controller, unsubscribe } = harness(request, 150)
+
+    try {
+      const hover = controller.hover({ id: "alpha" }, ANCHOR)
+
+      await vi.advanceTimersByTimeAsync(149)
+      expect(request).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(1)
+      await hover
+      expect(request).toHaveBeenCalledOnce()
+    } finally {
+      unsubscribe()
+      vi.useRealTimers()
+    }
+  })
+
+  it("cancels a delayed hover when the pointer leaves", async () => {
+    vi.useFakeTimers()
+    const request = vi.fn(async (target: Target) => ({
+      generation: 1,
+      target,
+      retargetCommitRequired: false,
+    }))
+    const { controller, unsubscribe } = harness(request, 150)
+
+    try {
+      const hover = controller.hover({ id: "alpha" }, ANCHOR)
+      await vi.advanceTimersByTimeAsync(100)
+      await controller.leave()
+      await vi.advanceTimersByTimeAsync(50)
+      await hover
+
+      expect(request).not.toHaveBeenCalled()
+    } finally {
+      unsubscribe()
+      vi.useRealTimers()
+    }
+  })
+
+  it("restarts the delay with the latest hover target and presentation", async () => {
+    vi.useFakeTimers()
+    const request = vi.fn(
+      async (target: Target, _anchor: AnchorRegion, _presentation: string | undefined) => ({
+        generation: 1,
+        target,
+        retargetCommitRequired: false,
+      }),
+    )
+    const bridge: AnchoredTriggerBridge<Target, string> = {
+      request,
+      conceal: vi.fn(async () => undefined),
+      listen: vi.fn(async () => () => undefined),
+      state: vi.fn(async () => state(0, null)),
+    }
+    const controller = new AnchoredTriggerController(
+      "detail",
+      (left: Target, right: Target) => left.id === right.id,
+      bridge,
+      { hoverDelayMs: 150 },
+    )
+    const unsubscribe = controller.subscribe(() => undefined)
+
+    try {
+      const first = controller.hover({ id: "first" }, ANCHOR, "first presentation")
+      await vi.advanceTimersByTimeAsync(100)
+      const secondAnchor = { top: 48, height: 24 }
+      const second = controller.hover({ id: "second" }, secondAnchor, "second presentation")
+      await first
+
+      await vi.advanceTimersByTimeAsync(149)
+      expect(request).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      await second
+
+      expect(request).toHaveBeenCalledOnce()
+      expect(request).toHaveBeenCalledWith(
+        { id: "second" },
+        secondAnchor,
+        "second presentation",
+      )
+    } finally {
+      unsubscribe()
+      vi.useRealTimers()
+    }
+  })
+
+  it("retargets immediately while an anchored window is active", async () => {
+    vi.useFakeTimers()
+    const request = vi.fn(async (target: Target) => ({
+      generation: target.id === "first" ? 1 : 2,
+      target,
+      retargetCommitRequired: false,
+    }))
+    const { controller, unsubscribe } = harness(request, 150)
+
+    try {
+      const first = controller.hover({ id: "first" }, ANCHOR)
+      await vi.advanceTimersByTimeAsync(150)
+      await first
+
+      const second = controller.hover({ id: "second" }, ANCHOR)
+      expect(request).toHaveBeenCalledTimes(2)
+      await second
+      expect(controller.getSnapshot()).toMatchObject({
+        activation: "hovered",
+        target: { id: "second" },
+      })
+    } finally {
+      unsubscribe()
+      vi.useRealTimers()
+    }
+  })
+
+  it("clears delayed hover on unsubscribe", async () => {
+    vi.useFakeTimers()
+    const request = vi.fn(async (target: Target) => ({
+      generation: 1,
+      target,
+      retargetCommitRequired: false,
+    }))
+    const { controller, unsubscribe } = harness(request, 150)
+
+    try {
+      const abandoned = controller.hover({ id: "abandoned" }, ANCHOR)
+      unsubscribe()
+      await vi.advanceTimersByTimeAsync(150)
+      await abandoned
+      expect(request).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("keeps each queued presentation paired with its target", async () => {
     const pending = new Map<
       string,

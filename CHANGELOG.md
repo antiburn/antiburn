@@ -20,10 +20,42 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-03
+
+### Added
+
+- Usage now summarizes total tokens and estimated cost for today, the last
+  seven days, and the last 30 days.
+- Activity rows can show each session's estimated share of the current weekly
+  or 5-hour provider limit, with the matching usage detail available from
+  the row.
+
 ### Changed
 
+- The popover now presents usage totals as a compact header with separate cost
+  and token figures, while the provider-limit header stays in place when its
+  meters expand.
+- Session activity, open details, and the HUD now update as transcript files
+  change. Analysis of growing Claude, Codex, and Pi transcripts resumes from
+  prior work instead of rereading the full file.
 - Context charts now distinguish provider cache misses from cache rehydration
   after meaningful user inactivity, using provider-specific timing.
+
+### Fixed
+
+- Linux AppImages now use the host Wayland client library, preventing WebKit
+  renderer startup failures on newer graphics stacks.
+- Claude session details now apply the Claude inactivity threshold when they
+  rebuild metrics from stored rows, and name provider cache misses consistently.
+- Session hygiene scores now count only assessed checks in their denominator;
+  checks without enough evidence remain identified separately.
+- When a live usage check fails, its last successful reading remains visible
+  for up to ten minutes and shows its age instead of disappearing immediately.
+
+### Removed
+
+- "Export session analysis" is gone. The session drilldown no longer offers a
+  way to write a session's derived analysis to a JSON file.
 
 ## [0.3.2] - 2026-09-02
 

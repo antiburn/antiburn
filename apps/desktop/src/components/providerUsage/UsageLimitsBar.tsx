@@ -1,4 +1,4 @@
-import { BarChartHorizontalBig, LoaderCircle } from "lucide-react"
+import { LoaderCircle, Text } from "lucide-react"
 import { useId, type ReactNode } from "react"
 
 import type { AnchoredTriggerActivation } from "../../lib/anchoredTrigger"
@@ -10,10 +10,16 @@ import type {
   LiveUsageWindowPayload,
 } from "../../lib/ipc"
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
-import type { UnavailableLiveProvider } from "../../lib/presentation/liveUsage"
+import type {
+  LiveProviderStatus,
+  UnavailableLiveProvider,
+} from "../../lib/presentation/liveUsage"
 import {
+  liveDisplayableProviders,
   liveErrorNote,
+  liveGraceNote,
   livePlanLabel,
+  liveProviderStatus,
   liveResetLabel,
   liveUnavailableProviders,
   liveUnavailableReason,
@@ -60,13 +66,11 @@ export interface UsageLimitsBarProps {
 
 /**
  * The popover's usage-limits bar: one ring and percentage per provider for
- * the worst live window, and a chart-icon disclosure that replaces the row
+ * the worst live window, and a list-icon disclosure that replaces the rings
  * with per-provider segmented meters.
  *
- * The two states do not stack. A closed bar is the ring row. An open one is
- * the meters alone, with the disclosure moved onto the first provider's name:
- * the meters restate every ring above them, and the popover needs the row's
- * height for the activity list more than it needs the same reading twice.
+ * The two states do not stack. A closed bar is the ring row. An open bar is
+ * the meter list. The disclosure moves beside the first provider name.
  *
  * Nothing here is the local spend estimate. This bar reports only what a
  * provider itself says about the reader's standing against its own allowance.
@@ -86,7 +90,7 @@ export function UsageLimitsBar({
   onHoverProvider,
   activeProvider,
 }: UsageLimitsBarProps) {
-  const limited = orderedLiveAccounts(live.providers).filter(
+  const limited = orderedLiveAccounts(liveDisplayableProviders(live)).filter(
     ({ reading }) => liveWindows(reading).length > 0,
   )
   const unavailable = liveUnavailableProviders(live)
@@ -124,6 +128,7 @@ export function UsageLimitsBar({
                 key={key}
                 provider={reading}
                 displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
+                status={liveProviderStatus(live, reading)}
                 onOpen={onViewAll}
                 onHover={onHoverProvider}
                 activation={
@@ -146,38 +151,30 @@ export function UsageLimitsBar({
           id={regionId}
           role="region"
           aria-label="Usage limits"
-          // Roomier than the collapsed bar: a beat of air above, wider
-          // gutters, and clear space between providers and between their
-          // meters. The gutter splits between this region and each group, so
-          // a group's hover highlight has room without moving the text.
-          //
-          // The top padding also holds the disclosure still. The button moves
-          // from this bar's own row onto the first provider's name line, and
-          // the two must sit at the same height, or the control jumps under
-          // the pointer that just clicked it.
+          // The top space keeps the disclosure near its closed position.
+          // The group padding gives each hover highlight clear space.
           className="space-y-1 px-2 pt-3 pb-2"
         >
-          <div className="flex h-7 items-center justify-between px-1">
-            <span className="type-caption font-medium tracking-wide uppercase text-label">
-              Usage limits
-            </span>
-            {disclosure(false)}
-          </div>
-          {limited.map(({ reading, key }) => (
+          {limited.map(({ reading, key }, index) => (
             <ProviderGroup
               key={key}
               provider={reading}
               displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
+              status={liveProviderStatus(live, reading)}
               now={at}
-              action={undefined}
+              action={index === 0 ? disclosure(true) : undefined}
               activation={
                 activeProvider?.provider === reading.provider ? activeProvider.activation : null
               }
               {...(onHoverProvider ? { onHover: onHoverProvider } : {})}
             />
           ))}
-          {unavailable.map((entry) => (
-            <UnavailableGroup key={entry.provider} entry={entry} action={undefined} />
+          {unavailable.map((entry, index) => (
+            <UnavailableGroup
+              key={entry.provider}
+              entry={entry}
+              action={limited.length === 0 && index === 0 ? disclosure(true) : undefined}
+            />
           ))}
         </div>
       )}
@@ -230,8 +227,8 @@ function LimitsDisclosure({
           <span className="sr-only">Refreshing usage limits</span>
         </span>
       )}
-      {/* A chart icon rather than a rotating chevron: the control shows what
-          it reveals — the per-window meters. */}
+      {/* Three text lines rather than a rotating chevron: the control shows
+          what it reveals — the list of meter rows. */}
       <button
         type="button"
         onClick={onToggle}
@@ -239,12 +236,14 @@ function LimitsDisclosure({
         aria-pressed={expanded}
         aria-controls={expanded ? regionId : undefined}
         aria-label={expanded ? "Collapse usage limits" : "Expand usage limits"}
+        // The pseudo-element extends the hit area past the glyph box. It
+        // stops at the gap before the last ring, so the two do not overlap.
         className={cn(
-          "flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-label-secondary transition-colors duration-[var(--duration-fast)] hover:bg-surface-hover",
+          "relative flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-label-secondary transition-colors duration-[var(--duration-fast)] before:absolute before:-inset-x-2 before:-inset-y-2.5 before:content-[''] hover:bg-surface-hover",
           compact && "-my-1.5",
         )}
       >
-        <BarChartHorizontalBig size={14} strokeWidth={1.75} aria-hidden="true" />
+        <Text size={14} strokeWidth={1.75} aria-hidden="true" />
       </button>
     </span>
   )
@@ -259,6 +258,7 @@ function LimitsDisclosure({
 function ProviderGroup({
   provider,
   displayName,
+  status,
   now,
   action,
   onHover,
@@ -266,6 +266,7 @@ function ProviderGroup({
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
+  status: LiveProviderStatus
   now: number
   /** The disclosure, on the topmost group only. */
   action?: ReactNode
@@ -273,6 +274,10 @@ function ProviderGroup({
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
   const plan = livePlanLabel(provider)
+  const graceNote =
+    status.kind === "grace"
+      ? liveGraceNote(status.category, provider.provider, status.ageMs)
+      : null
   return (
     <div
       role="group"
@@ -295,6 +300,8 @@ function ProviderGroup({
         </h3>
         {action}
       </div>
+      {/* Not orange: a grace-period reading is still fine, not a failure. */}
+      {graceNote && <p className="pb-1.5 type-footnote text-label-tertiary">{graceNote}</p>}
       <div className="space-y-2.5">
         {liveWindows(provider).map((window) => (
           <WindowMeterRow key={window.id} window={window} now={now} resetOnHover />
@@ -312,18 +319,31 @@ function ProviderGroup({
 function ProviderRadial({
   provider,
   displayName,
+  status,
   onOpen,
   onHover,
   activation,
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
+  status: LiveProviderStatus
   onOpen?: (() => void) | undefined
   onHover?: ((provider: string | null, anchor: AnchorRegion | null) => void) | undefined
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
   const percent = maxLiveUsedPercent(provider)
   const figure = percent != null ? `${Math.round(percent)}%` : "no stated figure"
+  const graceNote =
+    status.kind === "grace"
+      ? liveGraceNote(status.category, provider.provider, status.ageMs)
+      : null
+  const title = graceNote
+    ? `${displayName} — ${figure} — ${graceNote}`
+    : `${displayName} — ${figure}`
+  const baseLabel = `${displayName}${
+    percent != null ? ` at ${Math.round(percent)} percent` : ", no stated figure"
+  }`
+  const ariaLabel = graceNote ? `${baseLabel}. ${graceNote}` : baseLabel
   return (
     <button
       type="button"
@@ -333,11 +353,9 @@ function ProviderRadial({
       }
       onMouseLeave={() => onHover?.(null, null)}
       data-state={activation ?? "idle"}
-      title={`${displayName} — ${figure}`}
+      title={title}
       className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08] data-[state=hovered]:bg-brand-tint/[0.08]"
-      aria-label={`${displayName}${
-        percent != null ? ` at ${Math.round(percent)} percent` : ", no stated figure"
-      }`}
+      aria-label={ariaLabel}
     >
       <UsageRing
         percent={percent}
@@ -346,7 +364,13 @@ function ProviderRadial({
         size={RING_SIZE}
         className="block text-label-secondary"
       />
-      <span aria-hidden="true" className="type-footnote leading-none text-label">
+      <span
+        aria-hidden="true"
+        className={cn(
+          "type-footnote leading-none",
+          graceNote ? "text-label-tertiary" : "text-label",
+        )}
+      >
         <SegmentFigure>{percent != null ? `${Math.round(percent)}%` : "—"}</SegmentFigure>
       </span>
     </button>

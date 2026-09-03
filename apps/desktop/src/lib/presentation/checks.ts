@@ -12,7 +12,7 @@ export const CHECK_LABELS: Record<string, string> = {
   cacheChurn: "Excess cache rehydration",
 }
 
-export interface ChecksEstimate {
+interface ChecksEstimate {
   tokenBurnBasisPoints: number | null
 }
 
