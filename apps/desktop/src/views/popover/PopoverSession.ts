@@ -125,11 +125,11 @@ export interface PopoverSnapshot {
    */
   analysisRefreshing: boolean
   /**
-   * A timestamp bumped every `NOW_TICK_MS` while a detail pane is open.
+   * A timestamp bumped every `NOW_TICK_MS` while the popover is visible or a
+   * detail pane is open.
    *
-   * The value itself has no reader: its purpose is to change the snapshot
-   * reference so the header's relative-time text ("last just now") re-renders
-   * on its own clock, not the arrival of new data.
+   * The activity list uses it for day boundaries and future-time checks. The
+   * detail header uses it to update relative-time text without new data.
    */
   now: number
 }
@@ -363,7 +363,7 @@ export class PopoverSession {
     if (top) {
       this.openAnalysis(top)
     } else {
-      this.syncDetailTimers()
+      this.syncNowTicking()
     }
   }
 
@@ -451,10 +451,9 @@ export class PopoverSession {
     // already had its chance to claim the key first.
     window.addEventListener("keydown", this.onWindowKeyDown)
 
-    // A stack carried over from a previous start (the window never really
-    // unmounts, but the listener count can still hit zero and come back)
-    // still needs its relative-time ticker running again.
-    this.syncDetailTimers()
+    // A visible list or a detail stack carried over from a previous start
+    // still needs its clock running again.
+    this.syncNowTicking()
 
     // R6: the session starts visible (see `visible`'s doc comment), so its
     // usage poll starts immediately rather than waiting for a `popover:shown`
@@ -777,6 +776,8 @@ export class PopoverSession {
     const unlisten = await onPopoverShown(() => {
       if (generation !== this.generation) return
       this.visible = true
+      this.update({ now: Date.now() })
+      this.syncNowTicking()
       this.startUsagePolling()
       if (this.initialContentReady) this.reportContentReady(true)
       void this.restoreFloatingHud(generation)
@@ -798,6 +799,7 @@ export class PopoverSession {
     const unlisten = await onPopoverHidden(() => {
       if (generation !== this.generation) return
       this.visible = false
+      this.syncNowTicking()
       this.stopUsagePolling()
     })
     if (generation !== this.generation) {
@@ -991,15 +993,15 @@ export class PopoverSession {
     })
   }
 
-  /** Load a subject's analysis and make sure the relative-time ticker is running — a detail pane is now open. */
+  /** Load a subject's analysis and keep the clock running for the detail pane. */
   private openAnalysis(subject: SessionSubject): void {
     void this.loadAnalysisFor(subject)
-    this.syncDetailTimers()
+    this.syncNowTicking()
   }
 
-  /** Start or stop the relative-time ticker to match whether a detail pane is open. */
-  private syncDetailTimers(): void {
-    if (this.snapshot.stack.length > 0) {
+  /** Run the clock while visible or while a hidden detail pane stays mounted. */
+  private syncNowTicking(): void {
+    if (this.visible || this.snapshot.stack.length > 0) {
       this.startNowTicking()
     } else {
       this.stopNowTicking()
