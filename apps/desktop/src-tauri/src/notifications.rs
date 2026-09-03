@@ -161,11 +161,12 @@ impl NotificationCopy {
 impl NotificationState {
     /// Claim the right to report a scan failure, once per run.
     ///
-    /// Returns true exactly once. A scan runs every minute while the popover is
-    /// open, and whatever broke the first pass — an unreadable directory, a
-    /// full disk — is overwhelmingly likely to break the next sixty as well;
-    /// one notification per run says the same thing without becoming the
-    /// reason someone quits the app.
+    /// Returns true exactly once. The scheduler's tick and the watcher both
+    /// keep passing over this machine for as long as it runs, and whatever
+    /// broke the first pass — an unreadable directory, a full disk — is
+    /// overwhelmingly likely to break every later one too; one notification
+    /// per run says the same thing without becoming the reason someone quits
+    /// the app.
     pub fn claim_scan_failure(&self) -> bool {
         !self.scan_failure_reported.swap(true, Ordering::SeqCst)
     }
@@ -825,7 +826,7 @@ mod tests {
         for _ in 0..60 {
             assert!(
                 !state.claim_scan_failure(),
-                "a scan runs every minute; the failure is announced once"
+                "a scan can run again at any time; the failure is announced once"
             );
         }
     }

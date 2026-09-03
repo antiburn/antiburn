@@ -1450,7 +1450,7 @@ fn a_fresh_controller_reports_a_clean_initial_status() {
 #[tokio::test(start_paused = true)]
 async fn a_second_request_before_the_scheduler_wakes_is_coalesced() {
     let controller = ScanController::default();
-    controller.request(ScanTrigger::PopoverShown);
+    controller.request(ScanTrigger::InsightsPane);
     controller.request(ScanTrigger::ManualRescan);
 
     {
@@ -1459,7 +1459,7 @@ async fn a_second_request_before_the_scheduler_wakes_is_coalesced() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(
-            matches!(pending.as_ref(), Some(ScanTrigger::PopoverShown)),
+            matches!(pending.as_ref(), Some(ScanTrigger::InsightsPane)),
             "the first trigger is kept, the second is dropped"
         );
     }

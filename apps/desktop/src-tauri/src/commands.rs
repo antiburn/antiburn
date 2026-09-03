@@ -772,13 +772,13 @@ pub async fn get_session_limit_allocations(
 
 /// How fresh a reading the refresh command asks each source's cooldown for.
 ///
-/// This command is called from the popover, which polls it roughly once a
-/// minute for as long as the popover stays visible — see
-/// `scan::TICK` and `popover::note_shown`. Fifty seconds sits just under that
-/// polling interval, so an open popover's own ordinary polling is what keeps
-/// the reading current: every visible tick is close enough to the cooldown's
-/// edge to trigger a real fetch, without this command itself running a timer
-/// or a background task. The aggressive freshness is bounded by someone
+/// This command is called from the popover, which polls it on its own 60 s
+/// visible interval for as long as the popover stays visible (R6,
+/// `USAGE_VISIBLE_POLL_MS` in `PopoverSession.ts`). Fifty seconds sits just
+/// under that polling interval, so an open popover's own ordinary polling is
+/// what keeps the reading current: every visible tick is close enough to the
+/// cooldown's edge to trigger a real fetch, without this command itself
+/// running a timer or a background task. The aggressive freshness is bounded by someone
 /// actually looking — once the popover closes, nothing here keeps polling on
 /// its behalf, and the background monitor's own, much longer, `max_age`
 /// takes back over (see `usage_alerts::BACKGROUND_MAX_AGE`).

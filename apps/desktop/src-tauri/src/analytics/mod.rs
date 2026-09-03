@@ -243,15 +243,17 @@ mod enabled {
     ///
     /// `Some(count)` is a completed pass; `None` is a failed one.
     ///
-    /// The scheduler runs a pass every [`crate::scan::TICK`] for as long as the
-    /// popover is open, so reporting each one would put an event a minute, all
-    /// day, into a channel whose other events are counted in ones — swamping the
-    /// queue's own bound and every other event with it. It would also be the wrong
-    /// measurement twice over: what is worth knowing is roughly how large an
-    /// install's history is and whether scanning works at all, and a repetition
-    /// answers neither better than the first report did. A machine stuck failing
-    /// every pass would additionally report that failure some six hundred times a
-    /// day, which is not more information about one broken install.
+    /// The scheduler runs a full pass every [`crate::scan::TICK`], plus a
+    /// scoped pass on every watcher burst — as often as every few seconds
+    /// while a session is active — so reporting each one would put far more
+    /// events into a channel whose other events are counted in ones,
+    /// swamping the queue's own bound and every other event with it. It
+    /// would also be the wrong measurement twice over: what is worth knowing
+    /// is roughly how large an install's history is and whether scanning
+    /// works at all, and a repetition answers neither better than the first
+    /// report did. A machine stuck failing every pass would additionally
+    /// report that same failure over and over, which is not more information
+    /// about one broken install.
     ///
     /// So the bucket, or the failure category, is compared against the last one
     /// reported and an unchanged outcome is dropped. What survives is the first
@@ -721,7 +723,7 @@ mod enabled {
             reset_session();
         }
 
-        /// A pass a minute is the scheduler's business; a pass a minute in the
+        /// A frequent pass is the scheduler's business; a frequent event in the
         /// payload is not. Only a changed outcome survives, and recovering from a
         /// failure counts as a change.
         #[test]

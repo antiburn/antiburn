@@ -1721,11 +1721,11 @@ fn reveal(window: &WebviewWindow) {
 /// Everything that has to happen when the popover reaches the screen, whichever
 /// way it got there.
 ///
-/// The scheduler's [`TICK`](crate::scan::TICK) already runs while the popover
-/// is hidden, so this is reconciliation, not the only path to a fresh list: it
-/// closes the gap between the last tick and the moment a reader is actually
-/// looking. Reported from here rather than inferred from window events,
-/// because a hidden window that was never shown produces no event at all.
+/// R1: this does not ask for a scan. [`crate::scan::TICK`] and the watcher
+/// keep the store fresh on their own, so a reader is never waiting out a
+/// missed pass; this function only announces the moment and lights the tray.
+/// Reported from here rather than inferred from window events, because a
+/// hidden window that was never shown produces no event at all.
 ///
 /// The menu-bar highlight is lit here for the same reason [`note_hidden`]
 /// clears it: both open paths already run through this one — the toggle, and a
@@ -1733,25 +1733,12 @@ fn reveal(window: &WebviewWindow) {
 /// highlight with visibility is structural rather than something each caller
 /// has to remember.
 fn note_shown(app: &AppHandle) {
-    if let Some(controller) = app.try_state::<crate::scan::ScanController>() {
-        // Opening the popover is the one moment a reader is guaranteed to be
-        // looking, so refresh immediately instead of waiting out a tick.
-        controller.request(crate::scan::ScanTrigger::PopoverShown);
-    }
-    // A separate signal from the scan kick just above, on purpose, rather
-    // than something the webview infers from `scan:finished`. Two things
-    // about the scan kick make it the wrong vehicle for a usage refresh:
-    // `request()` itself always wakes the scheduler loop, but the pass that
-    // wake-up would run is silently skipped whenever discovery is paused or
-    // onboarding has not finished (`scheduled_scanning_allowed` in
-    // `crate::scan`), which would leave usage silently stuck too even
-    // though nothing about reading a provider's own limits depends on
-    // whether local disk discovery is allowed to run; and even when a scan
-    // does run, it is a full disk walk, so gating the usage refresh on its
-    // completion would make "reopen the popover" mean "wait out a scan" for
-    // a figure that has nothing to do with what is on disk. Emitting this
-    // unconditionally, the instant the popover is on screen, keeps the two
-    // refreshes independent the way the data they show already is.
+    // R6: usage freshness while the popover is visible is this event's own
+    // signal, not something that rides on a scan. A provider's own stated
+    // limits have nothing to do with whether local disk discovery runs, or
+    // with how long a disk walk takes, so the webview starts its visible-only
+    // usage poll straight off this event instead of waiting on the scan
+    // pipeline.
     let _ = app.emit(EVENT_SHOWN, ());
     crate::tray::set_highlight(app, true);
 }

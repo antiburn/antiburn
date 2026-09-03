@@ -23,11 +23,12 @@
 //! - **At launch**, once, if onboarding is finished. A first-run install has no
 //!   sources selected yet, so scanning before the flow completes would only
 //!   spend disk on a window nobody can see.
-//! - **Every [`TICK`], unconditionally.** The popover does not gate the timer:
-//!   a pass over sources that have not changed reads no transcript, so ticking
-//!   while the popover is hidden costs stat calls, not disk reads.
-//! - **The moment the popover is opened**, as reconciliation, so a reader never
-//!   waits out a tick behind a missed event.
+//! - **Every [`TICK`], unconditionally.** R1/R2: the watcher is the primary
+//!   freshness path now, so the tick is 5 minutes of reconciliation for what
+//!   it cannot see — a WSL session (never watched) or a rare dropped OS
+//!   event — not the path a reader waits on. A pass over sources that have
+//!   not changed reads no transcript, so ticking while the popover is hidden
+//!   costs stat calls, not disk reads.
 //! - **On demand**, from the rescan control and after any change to the source
 //!   selection.
 //! - **Shortly after a watched file changes — narrowly, not as a full pass.**
@@ -52,8 +53,8 @@
 //! # Pausing
 //!
 //! `AppSettings::discovery_paused` stops every *scheduled* pass — the launch
-//! pass, the tick, and the passes requested when the popover opens or the
-//! sources change. It deliberately does not stop [`run_pass`] itself, so the
+//! pass, the tick, and the passes requested after a source selection change.
+//! It deliberately does not stop [`run_pass`] itself, so the
 //! rescan control still works while discovery is paused and the popover keeps
 //! browsing everything already indexed. "Paused" is a statement about
 //! background work, not a lock on the app.
@@ -109,8 +110,14 @@ pub mod idle;
 pub mod scoped;
 pub mod watch;
 
-/// How often the scheduler wakes up.
-pub const TICK: Duration = Duration::from_secs(60);
+/// How often the scheduler wakes up for its unconditional full pass.
+///
+/// R2: 5 minutes. The watcher is the primary freshness path (T1-T7 in the
+/// `scoped` module), so this tick only has to reconcile what it cannot see —
+/// a WSL session, or a rare dropped OS event — not answer for an active
+/// session's own row updates. [`watch::FALLBACK_TICK`] stays 15 seconds for a
+/// degraded watcher, where polling really is the only freshness path.
+pub const TICK: Duration = Duration::from_secs(300);
 
 /// How many session logs have their metadata read at once. Bounds open files
 /// and blocking-pool pressure during a whole-machine pass.
@@ -143,8 +150,6 @@ pub enum ScanTrigger {
     /// A burst reached [`watch::MAX_BURST_PATHS`] and may have dropped
     /// paths, so only a full pass can be sure to cover it.
     WatcherOverflow,
-    /// The popover reached the screen.
-    PopoverShown,
     /// A settings save that finished onboarding, widened the activity
     /// window, or resumed discovery.
     SettingsTransition,
@@ -170,7 +175,6 @@ impl ScanTrigger {
             ScanTrigger::Tick => "tick",
             ScanTrigger::WatcherAgents { .. } => "watcher_agents",
             ScanTrigger::WatcherOverflow => "watcher_overflow",
-            ScanTrigger::PopoverShown => "popover_shown",
             ScanTrigger::SettingsTransition => "settings_transition",
             ScanTrigger::InsightsPane => "insights_pane",
             ScanTrigger::RepositoryToggle => "repository_toggle",
@@ -650,9 +654,10 @@ pub(crate) async fn try_run_pass(
     }
     let _ = app.emit(EVENT_FINISHED, finished.clone());
     // The outcome, not a shaped event: whether this pass is worth reporting at
-    // all is an analytics question, and this scheduler runs a pass a minute
-    // while the popover is open. `None` is a failure, which travels as a bare
-    // category — an error string can hold a path.
+    // all is an analytics question, and this scheduler runs a full pass every
+    // five minutes plus a scoped pass on every watcher burst. `None` is a
+    // failure, which travels as a bare category — an error string can hold a
+    // path.
     crate::analytics::record_scan(
         app,
         outcome.as_ref().ok().map(|summary| summary.sessions as u64),
