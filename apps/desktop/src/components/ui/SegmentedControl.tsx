@@ -12,9 +12,10 @@ export type SegmentedControlVariant = "segmented" | "text-tabs" | "raised-tabs"
 /** A single-select pill group exposed as a radiogroup (or a tablist). Works
  *  for any number of options.
  *
- *  `variant="text-tabs"` drops the pill chrome for a run of plain labels with
- *  an underline on the selected one — the same control and the same keyboard
- *  contract, for places where a filled segment would be too loud.
+ *  `variant="text-tabs"` drops the pill chrome for a run of plain labels. The
+ *  selected label takes the accent blue and an underline in the same blue —
+ *  the same control and the same keyboard contract, for places where a filled
+ *  segment would be too loud.
  *
  *  `variant="raised-tabs"` is the segmented view picker: a recessed neutral
  *  pill track with the selected segment raised on the hot brand fill, white
@@ -137,7 +138,7 @@ export function SegmentedControl<T extends string>({
                 ? cn(
                     "type-footnote relative flex h-full items-center whitespace-nowrap px-0 transition-colors duration-[var(--duration-quick)] ease-out-quart disabled:opacity-50",
                     selected
-                      ? "font-medium text-label"
+                      ? "font-medium text-accent"
                       : "text-label-tertiary hover:text-label-secondary",
                   )
                 : raisedTabs
@@ -167,7 +168,7 @@ export function SegmentedControl<T extends string>({
               <span
                 aria-hidden="true"
                 className={cn(
-                  "segmented-control-text-indicator pointer-events-none absolute inset-x-0 bottom-0 h-px rounded-full bg-label-secondary transition-opacity duration-[var(--duration-quick)] ease-out-quart",
+                  "segmented-control-text-indicator pointer-events-none absolute inset-x-0 bottom-0 h-px rounded-full bg-accent transition-opacity duration-[var(--duration-quick)] ease-out-quart",
                   selected ? "opacity-100" : "opacity-0",
                 )}
               />
