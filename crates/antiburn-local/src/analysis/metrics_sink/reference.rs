@@ -8,6 +8,7 @@ use crate::analysis::engine::{
 use crate::analysis::interface::{NormalizedRecord, RecordSink, SessionSummary};
 use crate::analysis::model::{
     CompactionTrigger, EventSource, ModelRun, NormalizedEvent, Role, ToolCall, Usage,
+    is_subagent_launch_tool,
 };
 use crate::analysis::pricing::{lookup_pricing, strip_window_tag};
 use crate::pricing::ModelTokens;
@@ -796,7 +797,7 @@ pub(crate) fn finalize_metrics(
             let launches = turn
                 .tools
                 .iter()
-                .filter(|tool| tool.name.eq_ignore_ascii_case("task"))
+                .filter(|tool| is_subagent_launch_tool(&tool.name))
                 .count() as u32;
             bucket.subagent_launches = bucket.subagent_launches.saturating_add(launches);
             if turn.role == Role::User {

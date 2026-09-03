@@ -71,9 +71,9 @@ pub struct Bucket {
     /// priority when multiple turns land in this bucket.
     #[serde(default)]
     pub secs_since_prior_turn: Option<u64>,
-    /// Count of `Task` tool calls in this bucket: how many sub-agents the
-    /// parent session launched at this point. Parent turns only — a
-    /// sub-agent does not itself launch sub-agents in this count.
+    /// Count of `Task` or `Agent` tool calls in this bucket: how many
+    /// sub-agents the parent session launched at this point. Parent turns
+    /// only — a sub-agent does not itself launch sub-agents in this count.
     pub subagent_launches: u32,
     /// Count of user prompts in this bucket. A gap that ends at a prompt is
     /// the user away, not a tool that runs.

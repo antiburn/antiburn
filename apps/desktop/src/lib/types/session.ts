@@ -43,7 +43,7 @@ export interface SessionBucket {
   isCacheRoutingMiss: boolean
   /** Wall-clock seconds since the prior parent turn, when this bucket contains a timed turn. */
   secsSincePriorTurn: number | null
-  /** Count of `Task` tool calls in this bucket: how many sub-agents launched at this point. */
+  /** Count of `Task` or `Agent` tool calls in this bucket: how many sub-agents launched at this point. */
   subagentLaunches: number
   /** Count of user prompts in this bucket. */
   userPrompts: number
