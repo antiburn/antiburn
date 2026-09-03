@@ -254,8 +254,9 @@ fn deliver(
     };
     let tone = tone_override.unwrap_or(default_tone);
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let nudge_id = format!("antiburn-{sequence}");
     let mut nudge = Nudge::new(
-        format!("antiburn-{sequence}"),
+        nudge_id.clone(),
         nudge_kind,
         tone,
         copy.title,
@@ -272,6 +273,7 @@ fn deliver(
     }
     nudge = nudge.action("dismiss", "Dismiss", dismiss_primary);
     crate::nudges::deliver(app, nudge);
+    tracing::info!(event = "nudge_dispatched", id = %nudge_id, ?kind, ?delivery);
 }
 
 /// Tell the reader where the explicit install action is.
@@ -363,11 +365,15 @@ pub fn usage_milestone_message(
             elapsed - used
         )
     };
-    NotificationCopy::new(
-        title,
-        format!("{used}% used in {elapsed}% of the usage window."),
-        description,
-    )
+    let subtitle = if used == crossing.threshold {
+        format!("{used}% used in {elapsed}% of the usage window.")
+    } else {
+        format!(
+            "Crossed {}%; now {used}% used in {elapsed}% of the usage window.",
+            crossing.threshold
+        )
+    };
+    NotificationCopy::new(title, subtitle, description)
 }
 
 fn usage_milestone_tone(content: &crate::provider_usage::live::MilestoneContent) -> NudgeTone {
@@ -571,6 +577,7 @@ pub fn note_sample(app: &AppHandle, kind: Kind) {
                     threshold: 40,
                     used_percent: 42.0,
                     elapsed_percent: 20.0,
+                    observed_at_epoch: 0,
                     resets_at_epoch: 0,
                 },
             };
@@ -763,6 +770,7 @@ mod tests {
                 threshold: 40,
                 used_percent: 40.0,
                 elapsed_percent: 20.0,
+                observed_at_epoch: 0,
                 resets_at_epoch: 0,
             },
         };
@@ -786,6 +794,7 @@ mod tests {
                 threshold: 100,
                 used_percent: 120.0,
                 elapsed_percent: 100.0,
+                observed_at_epoch: 0,
                 resets_at_epoch: 0,
             },
         };
@@ -800,6 +809,28 @@ mod tests {
             copy.title.starts_with("Burn warning"),
             "title was {}",
             copy.title
+        );
+    }
+
+    #[test]
+    fn a_delayed_milestone_names_the_threshold_and_current_usage() {
+        use crate::provider_usage::live::milestones::{MilestoneContent, MilestoneCrossing};
+
+        let content = MilestoneContent {
+            provider: "anthropic".to_string(),
+            crossing: MilestoneCrossing {
+                window_label: "5-hour limit".to_string(),
+                threshold: 30,
+                used_percent: 39.0,
+                elapsed_percent: 16.0,
+                observed_at_epoch: 0,
+                resets_at_epoch: 0,
+            },
+        };
+
+        assert_eq!(
+            usage_milestone_message(&content).subtitle,
+            "Crossed 30%; now 39% used in 16% of the usage window."
         );
     }
 

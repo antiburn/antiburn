@@ -4,10 +4,15 @@
 //!
 //! # What this parses
 //!
-//! The body `GET https://api.anthropic.com/api/oauth/usage` returns —
-//! [`sources::anthropic_fetch`](super::sources::anthropic_fetch) is this
-//! module's only caller. It takes a bare `&str` regardless, so a fixture in a
-//! test does not need to pretend to be an HTTP response.
+//! The body `GET https://api.anthropic.com/api/oauth/usage` returns.
+//! [`sources::anthropic_fetch`](super::sources::anthropic_fetch) calls
+//! [`parse_usage`] on that response body directly, so a fixture in a test
+//! does not need to pretend to be an HTTP response.
+//! [`sources::claude_config_cache`](super::sources::claude_config_cache)
+//! calls [`parse_usage_value`] instead: the Claude CLI caches the identical
+//! `utilization` object inside a much larger JSON document, already parsed,
+//! so [`parse_usage_value`] takes the [`Value`] straight from that document
+//! rather than re-serialising it back to a string first.
 //!
 //! # What the payload looks like
 //!
@@ -50,6 +55,13 @@ pub struct AnthropicUsage {
 pub fn parse_usage(input: &str) -> Result<AnthropicUsage, ProviderUsageError> {
     let value: Value = serde_json::from_str(input)
         .map_err(|_| ProviderUsageError::Schema(SchemaReason::InvalidJson))?;
+    parse_usage_value(&value)
+}
+
+/// Parse an already-decoded usage payload. Same rules as [`parse_usage`],
+/// which is `serde_json::from_str` followed by this function — see the
+/// module doc for the other caller this split serves.
+pub fn parse_usage_value(value: &Value) -> Result<AnthropicUsage, ProviderUsageError> {
     if !value.is_object() {
         return Err(ProviderUsageError::Schema(SchemaReason::MissingEnvelope));
     }

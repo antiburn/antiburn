@@ -144,13 +144,13 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 16,
+      "analyzerRevision": 17,
       "evidenceSchemaRevision": 12,
       "harnessVersion": {
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 19,
+      "parserRevision": 22,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },

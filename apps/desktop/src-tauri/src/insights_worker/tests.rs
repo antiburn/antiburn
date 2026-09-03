@@ -1133,10 +1133,15 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
         Arc::new(AtomicBool::new(false)),
     )
     .await
-    .unwrap();
+    .unwrap()
+    .report;
     assert_eq!(report.assessed_sessions, 1);
     assert_eq!(
         report.detectors[DetectorId::ModelOverthinking.index()].assessed,
+        0
+    );
+    assert_eq!(
+        report.detectors[DetectorId::ModelOverthinking.index()].unavailable,
         1
     );
     assert_eq!(

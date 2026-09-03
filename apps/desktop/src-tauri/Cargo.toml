@@ -14,7 +14,7 @@ exclude = ["crates/anchored-window", "crates/hud", "crates/nudge", "crates/sound
 
 [package]
 name = "antiburn"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 rust-version = "1.97"
 description = "antiburn desktop application: a tray/menu-bar shell over the local antiburn engine."

@@ -42,10 +42,17 @@ import {
   type StorageHealthPayload,
 } from "../../lib/ipc"
 import {
+  cancelChecksReport,
+  getChecksReport,
+  onChecksReportChanged,
+  type ChecksReportPayload,
+} from "../../lib/insightsIpc"
+import {
   popoverHeightFor,
   prefersReducedMotion,
   type PopoverSurface,
 } from "../../lib/popoverHeight"
+import { hidePopoverPeek } from "../../lib/popoverPeekIpc"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
 import {
@@ -89,6 +96,10 @@ export interface PopoverSnapshot {
   usageRefreshing: boolean
   /** Whether the full Usage view is showing over the activity list. */
   showUsage: boolean
+  /** The real local report rendered by the Activity summary and anchored preview. */
+  checksReport: ChecksReportPayload | null
+  /** True when the latest Checks report request fails. */
+  checksUnavailable: boolean
   /** The surface whose native resize has completed and React can render. */
   presentedSurface: PopoverSurface
   /** The session retained while a request to present another surface is in flight. */
@@ -224,6 +235,10 @@ export class PopoverSession {
   private started = false
   private generation = 0
   private analysisToken = 0
+  private checksToken = 0
+  private checksConsumerId: string | null = null
+  private checksRefresh: Promise<void> | null = null
+  private checksRefreshQueued = false
   private resizeToken = 0
   /**
    * How many `refreshUsage` calls are currently in flight.
@@ -290,6 +305,7 @@ export class PopoverSession {
   private stopSettingsListening: (() => void) | null = null
   private stopSessionsInvalidatedListening: (() => void) | null = null
   private stopSessionEntryChangedListening: (() => void) | null = null
+  private stopChecksReportChangedListening: (() => void) | null = null
   private stopStorageHealthListening: (() => void) | null = null
   private stopScanListening: (() => void) | null = null
   private stopPopoverShownListening: (() => void) | null = null
@@ -307,6 +323,8 @@ export class PopoverSession {
     sessionLimitAllocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
     usageRefreshing: false,
     showUsage: false,
+    checksReport: null,
+    checksUnavailable: false,
     presentedSurface: "activity",
     presentedSession: null,
     storage: HEALTHY_STORAGE,
@@ -412,12 +430,14 @@ export class PopoverSession {
   private start(): void {
     this.started = true
     const generation = ++this.generation
+    this.checksConsumerId = crypto.randomUUID()
     this.initialContentReady = false
 
     void this.loadInitial(generation)
     void this.listenSettings(generation)
     void this.listenSessionsInvalidated(generation)
     void this.listenSessionEntryChanged(generation)
+    void this.startChecks(generation)
     void this.listenStorageHealth(generation)
     void this.listenScanEvent(generation)
     void this.listenPopoverShown(generation)
@@ -451,6 +471,8 @@ export class PopoverSession {
     this.stopSessionsInvalidatedListening = null
     this.stopSessionEntryChangedListening?.()
     this.stopSessionEntryChangedListening = null
+    this.stopChecksReportChangedListening?.()
+    this.stopChecksReportChangedListening = null
     this.stopStorageHealthListening?.()
     this.stopStorageHealthListening = null
     this.stopScanListening?.()
@@ -464,6 +486,10 @@ export class PopoverSession {
     this.stopNowTicking()
     this.stopUsagePolling()
     this.stopSessionLimitAllocationExpiryTimer()
+    this.checksRefreshQueued = false
+    const checksConsumerId = this.checksConsumerId
+    this.checksConsumerId = null
+    if (checksConsumerId) void cancelChecksReport(checksConsumerId)
     window.removeEventListener("keydown", this.onWindowKeyDown)
   }
 
@@ -535,6 +561,7 @@ export class PopoverSession {
       void this.refreshEntries(this.windowDays()).catch(() => {})
       void this.refreshUsage()
       void this.refreshRepositoryList()
+      void this.refreshChecks()
     })
     if (generation !== this.generation) {
       unlisten()
@@ -572,6 +599,24 @@ export class PopoverSession {
       return
     }
     this.stopSessionEntryChangedListening = unlisten
+  }
+
+  private listenChecksReportChanged = async (generation: number): Promise<void> => {
+    const unlisten = await onChecksReportChanged(() => {
+      if (generation !== this.generation) return
+      void this.refreshChecks()
+    })
+    if (generation !== this.generation) {
+      unlisten()
+      return
+    }
+    this.stopChecksReportChangedListening = unlisten
+  }
+
+  private startChecks = async (generation: number): Promise<void> => {
+    await this.listenChecksReportChanged(generation)
+    if (generation !== this.generation) return
+    await this.refreshChecks()
   }
 
   /**
@@ -709,6 +754,7 @@ export class PopoverSession {
         this.lastUsageRefreshAt = now
         void this.refreshUsage()
       }
+      void this.refreshChecks()
     })
     if (generation !== this.generation) {
       unlisten()
@@ -1030,6 +1076,44 @@ export class PopoverSession {
         this.pendingAnalysisRefresh = false
         void this.refreshAnalysis()
       }
+    }
+  }
+
+  private refreshChecks = (): Promise<void> => {
+    if (this.checksRefresh) {
+      this.checksRefreshQueued = true
+      return this.checksRefresh
+    }
+    this.checksRefresh = this.loadChecks().finally(() => {
+      this.checksRefresh = null
+      if (this.checksRefreshQueued) {
+        this.checksRefreshQueued = false
+        void this.refreshChecks()
+      }
+    })
+    return this.checksRefresh
+  }
+
+  private loadChecks = async (): Promise<void> => {
+    const generation = this.generation
+    const token = ++this.checksToken
+    const consumerId = this.checksConsumerId
+    if (!consumerId) return
+    try {
+      const checksReport = await getChecksReport(consumerId)
+      if (generation !== this.generation || token !== this.checksToken) return
+      if (!checksReport) {
+        this.update({ checksUnavailable: true })
+        return
+      }
+      const replacesVisibleReport = this.snapshot.checksReport != null
+      this.update({ checksReport, checksUnavailable: false })
+      if (replacesVisibleReport) void hidePopoverPeek().catch(() => undefined)
+    } catch {
+      if (generation === this.generation && token === this.checksToken) {
+        this.update({ checksUnavailable: true })
+      }
+      return
     }
   }
 

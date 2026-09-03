@@ -230,6 +230,54 @@ describe("SessionList — rows", () => {
     expect(screen.queryByRole("radio", { name: "% 5h" })).toBeNull()
   })
 
+  it("offers five-hour mode when the usage panel shows an empty five-hour window", () => {
+    list({
+      onBadgeMetricChange: vi.fn(),
+      liveUsage: {
+        generatedAt: NOW.toISOString(),
+        errors: [],
+        meters: [],
+        providers: [
+          {
+            provider: "anthropic",
+            accountKey: null,
+            displayName: "Claude",
+            support: "live",
+            freshness: "fresh",
+            sourceLabel: "test",
+            observedAt: NOW.toISOString(),
+            windows: [
+              {
+                id: "five-hour",
+                role: "primaryShort",
+                kind: "rolling",
+                scopeModel: null,
+                usedPercent: 0,
+                startsAt: null,
+                resetsAt: null,
+                hasNonzeroUsageInCurrentPeriod: false,
+                forecast: {
+                  unavailableReason: "sparseHistory",
+                  confidence: null,
+                  consumptionRate: null,
+                  paceRatio: null,
+                  paceTrend: null,
+                  runwayAt: null,
+                  usedToday: null,
+                },
+              },
+            ],
+            extraUsage: null,
+            resetCredits: null,
+            plan: null,
+          },
+        ],
+      },
+    })
+
+    expect(screen.getByRole("radio", { name: "% 5h" })).toBeInTheDocument()
+  })
+
   it("shows a five-hour allocation when the provider exposes that window", () => {
     const props: SessionListProps = {
       entries: [entry()],
@@ -379,7 +427,7 @@ describe("SessionList — rows", () => {
     const verdict = screen.getByLabelText("Computing session hygiene checks")
     expect(verdict.textContent).toBe("Computing checks…")
     expect(verdict.style.color).toBe("var(--color-label-tertiary)")
-    expect(screen.queryByLabelText("All checks pass")).toBeNull()
+    expect(screen.queryByLabelText("All checks passed")).toBeNull()
   })
 
   it("renders finding and clean statuses returned by the batched IPC path", async () => {
@@ -423,7 +471,7 @@ describe("SessionList — rows", () => {
     list({ entries: [entry({ sessionId: "synthetic-hygiene-result" })] })
 
     await waitFor(() => {
-      expect(screen.getByLabelText("5 of 6 burn checks pass").textContent).toBe(
+      expect(screen.getByLabelText("5 of 6 burn checks passed").textContent).toBe(
         "5/6 burn checks",
       )
     })
@@ -453,7 +501,7 @@ describe("SessionList — rows", () => {
     list({ entries: [entry({ sessionId: "synthetic-hygiene-stale" })] })
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Refreshing — 5 of 6 burn checks pass").textContent).toBe(
+      expect(screen.getByLabelText("Refreshing — 5 of 6 burn checks passed").textContent).toBe(
         "5/6 burn checks",
       )
     })
@@ -728,7 +776,7 @@ describe("SessionList — shared tooltips", () => {
         }),
       ],
     })
-    const status = await screen.findByLabelText("5 of 6 burn checks pass")
+    const status = await screen.findByLabelText("5 of 6 burn checks passed")
     const cost = screen.getByLabelText("Estimated cost $2.40")
     const fork = screen.getByLabelText("Forked from another session")
     const repository = screen.getByText("avery/widgets +1")

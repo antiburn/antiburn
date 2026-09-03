@@ -181,13 +181,13 @@ impl LiveUsageSource for AntigravityDirectFetch {
     fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome {
         let now = OffsetDateTime::now_utc();
         self.cooldown.poll(now, max_age, || {
-            fetch_with_refresh_fallback(
+            Ok(fetch_with_refresh_fallback(
                 self.transport.as_ref(),
                 self.local.as_ref(),
                 self.credentials(now).as_ref(),
                 &self.refreshed,
                 now,
-            )
+            )?)
         })
     }
 }

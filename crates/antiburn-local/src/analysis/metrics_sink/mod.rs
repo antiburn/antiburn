@@ -32,7 +32,9 @@ use crate::analysis::initial_context::{
     InitialContextBreakdown, InitialContextSourceCount, InitialContextTokenSource, SourceOrigin,
 };
 use crate::analysis::interface::{NormalizedRecord, RecordSink, SessionSummary};
-use crate::analysis::model::{EventSource, ModelRun, NormalizedEvent, Role, Usage};
+use crate::analysis::model::{
+    EventSource, ModelRun, NormalizedEvent, Role, Usage, is_subagent_launch_tool,
+};
 use crate::pricing::ModelTokens;
 
 const CONTEXT_WINDOW_TIERS: [u64; 2] = [200_000, 1_000_000];
@@ -526,7 +528,7 @@ impl SessionMetricsAccumulator {
         slot.subagent_launches = event
             .tools
             .iter()
-            .filter(|tool| tool.name.eq_ignore_ascii_case("task"))
+            .filter(|tool| is_subagent_launch_tool(&tool.name))
             .count()
             .try_into()
             .unwrap_or(u32::MAX);
@@ -779,7 +781,7 @@ impl SessionMetricsAccumulator {
             let candidate = self.late_candidates[index].clone();
             let tool_name = self.last_tool_interner.intern(&tool.name);
             if candidate.source == EventSource::Parent {
-                if tool.name.eq_ignore_ascii_case("task") {
+                if is_subagent_launch_tool(&tool.name) {
                     self.late_candidates[index].late_subagent_launches = self.late_candidates
                         [index]
                         .late_subagent_launches

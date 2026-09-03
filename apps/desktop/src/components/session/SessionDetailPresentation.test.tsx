@@ -154,7 +154,7 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.getByRole("tab", { name: "Cost" })).toBeTruthy()
   })
 
-  it("renders every hygiene check with a distinct verdict", () => {
+  it("renders only assessed hygiene checks", () => {
     view({
       hygiene: {
         badges: [
@@ -199,21 +199,20 @@ describe("SessionDetailPresentation — chrome", () => {
     // the list. Each row carries an info button that holds its explainer, so
     // nothing changes elsewhere on the tab when the pointer moves.
     const hygiene = screen.getByLabelText("Session hygiene checks")
-    expect(hygiene.children).toHaveLength(6)
-    expect(screen.queryByText("4/5 passing, 1 not assessed")).toBeNull()
-    fireEvent.focus(screen.getByRole("button", { name: "Session overdepth details" }))
+    expect(hygiene.children).toHaveLength(5)
+    expect(screen.queryByRole("button", { name: "4/5 passed" })).toBeNull()
+    fireEvent.focus(screen.getByRole("button", { name: "Overpowered subagents details" }))
     expect(screen.queryByText(/Past about 200k tokens/)).toBeNull()
-    expect(screen.getByRole("button", { name: "About Session overdepth" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "About Overpowered subagents" })).toBeTruthy()
     expect(
       screen.getByRole("button", { name: "Overpowered subagents details" }),
     ).toHaveTextContent("failing")
 
-    expect(screen.getByRole("button", { name: "Session overdepth details" })).toHaveTextContent(
-      "not assessed",
-    )
+    // A check nobody could assess leaves the list rather than claiming a verdict.
+    expect(screen.queryByRole("button", { name: "Session overdepth details" })).toBeNull()
     expect(
       screen.getByRole("button", { name: "Model overthinking details" }),
-    ).toHaveTextContent("passing")
+    ).toHaveTextContent("passed")
   })
 
   it("keeps the Cost tab free of evidence-state chrome", () => {
@@ -224,10 +223,25 @@ describe("SessionDetailPresentation — chrome", () => {
       },
     })
 
+    // The status bar carries the evidence state, so the tab does not repeat it.
     fireEvent.click(screen.getByRole("tab", { name: "Cost" }))
     expect(screen.queryByText("Burn Checks")).toBeNull()
     expect(screen.queryByText("Refreshing")).toBeNull()
-    expect(screen.getByLabelText("Session hygiene checks")).toBeTruthy()
+    expect(screen.queryByText("0/0")).toBeNull()
+  })
+
+  it("omits the Checks section when no check was assessed", () => {
+    view({
+      hygiene: {
+        ...INITIAL_SESSION_HYGIENE,
+        evidenceState: "ready",
+      },
+    })
+
+    fireEvent.click(screen.getByRole("tab", { name: "Cost" }))
+    expect(screen.queryByText("Checks")).toBeNull()
+    expect(screen.queryByLabelText("Session hygiene checks")).toBeNull()
+    expect(screen.queryByText(/not assessed/i)).toBeNull()
   })
 
   it("adds the provider-cache-miss count from the session metrics to the Context stats", () => {
@@ -314,7 +328,7 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(hero).toHaveTextContent("11m ago")
 
     fireEvent.click(screen.getByRole("tab", { name: "Cost" }))
-    expect(screen.queryByText("6/6 passing")).toBeNull()
+    expect(screen.queryByRole("button", { name: "6/6 passed" })).toBeNull()
     expect(screen.getByRole("button", { name: "Session overdepth details" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Model overthinking details" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Overpowered subagents details" })).toBeTruthy()

@@ -119,7 +119,19 @@ pub use vendors::{adapter_for, has_dedicated_adapter};
 // `collab_resume_begin`, and `collab_resume_end` are now recognized as
 // eventless (`vendors::codex::is_recognized_eventless`), so a stored Codex
 // collab session must re-ingest to clear its degraded `Partial` coverage.
-pub const PARSER_REVISION: i64 = 19;
+// +1 for Claude housekeeping recognition: `history-suppression` and
+// `artifact-autoreact-ledger` are now recognized as eventless
+// (`analysis::records::is_recognized_eventless`), so a stored Claude session
+// must re-ingest to clear the two names from `unrecognized_types`.
+// +1 for Claude Code's `Task` → `Agent` tool rename: `is_subagent_launch_tool`
+// (`analysis::model`) now also matches `Agent`, so every Claude session
+// must reparse to count `Agent` launches in `subagent_launches`.
+// +1 for the skill description cap fix: a truncated skill description no
+// longer sets `context_sources_cap_exceeded`
+// (`evidence_sink::SessionEvidenceAccumulator::observe_context_source`), so
+// a stored session must re-ingest to clear the degraded `context_sources`
+// group.
+pub const PARSER_REVISION: i64 = 22;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
@@ -151,7 +163,12 @@ pub const PARSER_REVISION: i64 = 19;
 // from line order alone, for a source with no per-record id
 // (`evidence_sink::SessionEvidenceAccumulator::evidence`), so a Codex
 // session already assessed as `CapabilityMissing` may now assess clean.
-pub const ANALYZER_REVISION: i64 = 16;
+// +1 for the zero-usage synthetic turn fix: a no-model assistant row with
+// no billable tokens, such as a Claude Code `<synthetic>` record, no
+// longer counts toward `unattributed_turns` or `delegated_model_missing`
+// (`evidence_query::CORE_SQL`), so a session with such a record may now
+// assess `models` and `subagents` clean.
+pub const ANALYZER_REVISION: i64 = 17;
 // +1 for seam R2: the worker path now derives `inclusive_model_breakdown`
 // and `model_runs` from published turn rows instead of the accumulator
 // (`query_model_breakdown`, `query_model_runs`), so every session in the

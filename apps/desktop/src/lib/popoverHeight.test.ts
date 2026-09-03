@@ -28,6 +28,7 @@ describe("popover heights", () => {
     expect(popoverHeightFor("usage")).toBe(MAX_POPOVER_HEIGHT)
     expect(popoverHeightFor("activity")).toBe(DEFAULT_POPOVER_HEIGHT)
     expect(popoverHeightFor("session")).toBe(DEFAULT_POPOVER_HEIGHT)
+    expect(Object.keys(POPOVER_HEIGHTS)).toEqual(["activity", "session", "usage"])
   })
 
   it("has no surface left that wants less than the contract", () => {

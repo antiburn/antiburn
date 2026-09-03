@@ -80,6 +80,8 @@ pub struct LiveUsageSnapshot {
     pub account: Option<String>,
     /// False when the fetch is stale; stale numbers neither prime nor fire.
     pub fresh: bool,
+    /// When the provider stated this reading, as Unix seconds.
+    pub observed_at_epoch: i64,
     pub windows: Vec<LiveUsageWindow>,
 }
 
@@ -101,6 +103,7 @@ pub struct MilestoneCrossing {
     pub threshold: u8,
     pub used_percent: f64,
     pub elapsed_percent: f64,
+    pub observed_at_epoch: i64,
     pub resets_at_epoch: i64,
 }
 
@@ -204,6 +207,7 @@ pub fn milestone_content(
                         threshold,
                         used_percent: window.used_percent,
                         elapsed_percent: window.elapsed_percent,
+                        observed_at_epoch: snapshot.observed_at_epoch,
                         resets_at_epoch: window.resets_at_epoch,
                     },
                 ));
@@ -267,6 +271,7 @@ mod tests {
             provider: "anthropic".into(),
             account: None,
             fresh: true,
+            observed_at_epoch: 0,
             windows: vec![window(
                 "five_hour",
                 UsageWindowClass::Short,
@@ -337,6 +342,21 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn a_crossing_keeps_the_provider_observation_time() {
+        let mut ledger = MilestoneLedger::default();
+        let prefs = Milestones::selected([20]);
+        let mut first = snapshot(10.0, 10.0, 100);
+        first.observed_at_epoch = 1_000;
+        assert!(milestone_content(&mut ledger, &[first], &prefs, &prefs).is_none());
+
+        let mut crossed = snapshot(25.0, 15.0, 100);
+        crossed.observed_at_epoch = 1_234;
+        let content = milestone_content(&mut ledger, &[crossed], &prefs, &prefs).unwrap();
+
+        assert_eq!(content.crossing.observed_at_epoch, 1_234);
     }
 
     #[test]

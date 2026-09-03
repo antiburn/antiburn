@@ -33,8 +33,10 @@ import {
   type PopoverPeekTarget,
 } from "../lib/popoverPeekIpc"
 import type { PopoverSurface } from "../lib/popoverHeight"
+import { checksPresentation } from "../lib/presentation/checks"
 import { PopoverSession, sessionKey } from "./popover/PopoverSession"
-import { foldUsageChart } from "./popover/usageChartFold"
+import { ChecksSummary } from "./popover/ChecksView"
+import { foldActivityHeader } from "./popover/usageChartFold"
 import { UsageView } from "./popover/UsageView"
 import type { SessionSubject } from "./popover/SessionPane"
 
@@ -46,6 +48,9 @@ const SessionPane = lazy(() =>
 )
 
 function samePopoverPeekTarget(left: PopoverPeekTarget, right: PopoverPeekTarget): boolean {
+  if (left.kind !== right.kind) return false
+  if (left.kind === "checks" && right.kind === "checks") return true
+  if (left.kind === "checks" || right.kind === "checks") return false
   return left.provider === right.provider && left.utcOffsetMinutes === right.utcOffsetMinutes
 }
 
@@ -71,7 +76,7 @@ function selectedProviderPresentation(
   presentation: PopoverPeekData | undefined,
   provider: string,
 ): PopoverPeekData | undefined {
-  if (!presentation) return undefined
+  if (!presentation || presentation.kind !== "provider") return undefined
   return {
     ...presentation,
     summary: {
@@ -90,10 +95,10 @@ function selectedProviderPresentation(
 /**
  * The tray popover.
  *
- * Three surfaces share one 380px window: the activity list, one session's
- * analysis, and local provider usage. There is no router — a popover is a
- * single place, and a stack of "where I came from" is all the navigation it
- * needs.
+ * Three surfaces share one 380px window: activity, one session's analysis,
+ * and local provider usage. Checks stays in the anchored companion, not a
+ * fourth popover surface. There is no router — a popover is a single place,
+ * and a stack of "where I came from" is all the navigation it needs.
  *
  * There used to be a fourth. The first-run flow now has its own window
  * (`views/OnboardingView.tsx`, `src-tauri/src/onboarding.rs`), and with
@@ -227,6 +232,9 @@ export function PopoverView() {
   const peekPresentation: PopoverPeekData | undefined = state.usage
     ? { kind: "provider", summary: state.usage, live: state.liveUsage }
     : undefined
+  const checks = state.checksReport
+    ? checksPresentation(state.checksReport, state.checksUnavailable)
+    : null
 
   const current = state.presentedSession
   const windowDays = state.settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays
@@ -252,20 +260,25 @@ export function PopoverView() {
   const listScrollTop = useRef(0)
   const [listMeasurements, setListMeasurements] = useState<VirtualItem[]>([])
   const initialListScrollOffset = useCallback(() => listScrollTop.current, [])
-  // The usage chart's fold wrapper, driven from the list's scroll events.
-  const usageChartWrap = useRef<HTMLDivElement | null>(null)
-  const restoreListScroll = useCallback((node: HTMLDivElement | null) => {
-    if (!node) return
-    const record = () => {
-      listScrollTop.current = node.scrollTop
-      foldUsageChart(usageChartWrap.current, node)
-    }
-    // The restored offset must fold the chart too, or the surface comes
-    // back with the chart at full height over a scrolled list.
-    record()
-    node.addEventListener("scroll", record, { passive: true })
-    return () => node.removeEventListener("scroll", record)
-  }, [])
+  // The Activity header's fold wrapper, driven from the list's scroll events.
+  const activityHeaderWrap = useRef<HTMLDivElement | null>(null)
+  const restoreListScroll = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (!node) return
+      const record = () => {
+        const moved = node.scrollTop !== listScrollTop.current
+        listScrollTop.current = node.scrollTop
+        foldActivityHeader(activityHeaderWrap.current, node)
+        if (moved) void peekTriggers.leave()
+      }
+      // The restored offset must fold the header too, or the surface comes
+      // back with the header at full height over a scrolled list.
+      record()
+      node.addEventListener("scroll", record, { passive: true })
+      return () => node.removeEventListener("scroll", record)
+    },
+    [peekTriggers],
+  )
 
   /* ---------------------------------------------------------------------
    * Session analysis: derived from the session's tagged load result
@@ -387,9 +400,9 @@ export function PopoverView() {
           </div>
         )}
 
-        {/* The wrapper clips the chart while `foldUsageChart` closes it in
+        {/* The wrapper clips the Activity header while `foldActivityHeader` closes it in
             step with the list scroll. */}
-        <div ref={usageChartWrap} className="shrink-0 overflow-hidden">
+        <div ref={activityHeaderWrap} className="shrink-0 overflow-hidden">
           <div>
             {state.usage && (
               <UsageSpendSummary
@@ -400,50 +413,69 @@ export function PopoverView() {
                 )}
               />
             )}
-            <UsageLimitsBar
-              live={state.liveUsage}
-              expanded={limitsExpanded}
-              onToggleExpanded={() => {
-                void peekTriggers.leave()
-                session.setOverviewLimitsExpanded(!limitsExpanded)
-              }}
-              refreshing={state.usageRefreshing}
-              onViewAll={() => {
-                void peekTriggers.leave()
-                // A provider pill is the one place the reader asks for the full
-                // Usage view from the activity surface. Counts and a three-value
-                // evidence label, never a per-provider list.
-                noteInteraction({
-                  kind: "usageViewed",
-                  providers: state.usage?.providers.length ?? 0,
-                  evidence: usageEvidence(state.usage, state.liveUsage),
-                })
-                session.setShowUsage(true)
-              }}
-              onHoverProvider={(provider, anchor) => {
-                if (provider && anchor) {
-                  void peekTriggers.hover(
-                    {
-                      kind: "provider",
-                      provider,
-                      utcOffsetMinutes: -new Date().getTimezoneOffset(),
-                    },
-                    anchor,
-                    selectedProviderPresentation(peekPresentation, provider),
-                  )
-                } else {
+            <div className="divide-y divide-separator border-b border-separator">
+              <UsageLimitsBar
+                live={state.liveUsage}
+                expanded={limitsExpanded}
+                onToggleExpanded={() => {
                   void peekTriggers.leave()
+                  session.setOverviewLimitsExpanded(!limitsExpanded)
+                }}
+                refreshing={state.usageRefreshing}
+                onViewAll={() => {
+                  void peekTriggers.leave()
+                  // A provider pill is the one place the reader asks for the full
+                  // Usage view from the activity surface. Counts and a three-value
+                  // evidence label, never a per-provider list.
+                  noteInteraction({
+                    kind: "usageViewed",
+                    providers: state.usage?.providers.length ?? 0,
+                    evidence: usageEvidence(state.usage, state.liveUsage),
+                  })
+                  session.setShowUsage(true)
+                }}
+                onHoverProvider={(provider, anchor) => {
+                  if (provider && anchor) {
+                    void peekTriggers.hover(
+                      {
+                        kind: "provider",
+                        provider,
+                        utcOffsetMinutes: -new Date().getTimezoneOffset(),
+                      },
+                      anchor,
+                      selectedProviderPresentation(peekPresentation, provider),
+                    )
+                  } else {
+                    void peekTriggers.leave()
+                  }
+                }}
+                activeProvider={
+                  peekTrigger.target?.kind === "provider" && peekTrigger.activation !== "idle"
+                    ? {
+                        provider: peekTrigger.target.provider,
+                        activation: peekTrigger.activation,
+                      }
+                    : null
                 }
-              }}
-              activeProvider={
-                peekTrigger.target?.kind === "provider" && peekTrigger.activation !== "idle"
-                  ? {
-                      provider: peekTrigger.target.provider,
-                      activation: peekTrigger.activation,
-                    }
-                  : null
-              }
-            />
+              />
+              <div className="px-2 py-1">
+                <ChecksSummary
+                  active={
+                    peekTrigger.target?.kind === "checks" && peekTrigger.activation !== "idle"
+                  }
+                  presentation={checks}
+                  reportUnavailable={state.checksUnavailable}
+                  onPreview={(anchor) => {
+                    if (!checks) return
+                    void peekTriggers.hover({ kind: "checks" }, anchor, {
+                      kind: "checks",
+                      presentation: checks,
+                    })
+                  }}
+                  onLeave={() => void peekTriggers.leave()}
+                />
+              </div>
+            </div>
           </div>
         </div>
 

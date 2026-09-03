@@ -1,9 +1,8 @@
-import { ChevronRight, CircleCheck, CircleDashed, CircleX, type LucideIcon } from "lucide-react"
+import { ChevronRight, CircleCheck, CircleX, type LucideIcon } from "lucide-react"
 import { useId, useState } from "react"
 
 import { cn } from "../../../lib/cn"
 import {
-  notAssessedReasonLabel,
   sessionHygieneDocumentation,
   sessionHygieneExplainers,
   type SessionHygieneCheck,
@@ -13,9 +12,9 @@ import { RowInfo } from "./RowInfo"
 export interface HygieneBreakdownProps {
   checks: SessionHygieneCheck[]
   /**
-   * Roll the passing and not-assessed checks up behind their count, so only
-   * findings show. Set it false where the surface has room for every check,
-   * such as a tab of its own.
+   * Roll the passing checks up behind their count, so only findings show. Set
+   * it false where the surface has room for every check, such as a tab of its
+   * own.
    */
   collapsePassing?: boolean
 }
@@ -26,10 +25,16 @@ interface HygieneStatusPresentation {
   textClass: string
 }
 
+type AssessedHygieneCheck = SessionHygieneCheck & { status: "finding" | "clean" }
+
+function isAssessed(check: SessionHygieneCheck): check is AssessedHygieneCheck {
+  return check.status !== "notAssessed"
+}
+
 /* One icon size for every status, so the trailing icon column lines up. */
 const STATUS_ICON_SIZE = 14
 
-const STATUS_PRESENTATION: Record<SessionHygieneCheck["status"], HygieneStatusPresentation> = {
+const STATUS_PRESENTATION: Record<AssessedHygieneCheck["status"], HygieneStatusPresentation> = {
   finding: {
     Icon: CircleX,
     label: "failing",
@@ -37,17 +42,12 @@ const STATUS_PRESENTATION: Record<SessionHygieneCheck["status"], HygieneStatusPr
   },
   clean: {
     Icon: CircleCheck,
-    label: "passing",
+    label: "passed",
     textClass: "text-system-green",
-  },
-  notAssessed: {
-    Icon: CircleDashed,
-    label: "not assessed",
-    textClass: "text-label-tertiary",
   },
 }
 
-function HygieneGuidance({ check }: { check: SessionHygieneCheck }) {
+function HygieneGuidance({ check }: { check: AssessedHygieneCheck }) {
   const documentation = sessionHygieneDocumentation(check)
 
   return (
@@ -64,11 +64,6 @@ function HygieneGuidance({ check }: { check: SessionHygieneCheck }) {
       <p className="type-callout font-semibold! text-label-secondary">
         {documentation.summary}
       </p>
-      {check.status === "notAssessed" && check.notAssessedReason && (
-        <p className="italic">
-          Not assessed: {notAssessedReasonLabel(check.notAssessedReason)}.
-        </p>
-      )}
       {documentation.guidance.length > 0 && (
         <ul className="mt-2 list-disc space-y-0.5 pl-5 type-callout">
           {documentation.guidance.map((sentence) => (
@@ -88,7 +83,7 @@ function HygieneRow({
   open,
   onToggle,
 }: {
-  check: SessionHygieneCheck
+  check: AssessedHygieneCheck
   /** One sentence on what the check tests, for the row's info button. */
   explainer?: string | undefined
   open: boolean
@@ -139,14 +134,16 @@ function HygieneRow({
 export function HygieneBreakdown({ checks, collapsePassing = true }: HygieneBreakdownProps) {
   const [rollupOpen, setRollupOpen] = useState(false)
   const [openCheck, setOpenCheck] = useState<SessionHygieneCheck["id"] | null>(null)
-  const passing = checks.filter((check) => check.status === "clean")
-  const notAssessed = checks.filter((check) => check.status === "notAssessed")
-  const findings = checks.filter((check) => check.status === "finding")
-  const rolledChecks = checks.filter((check) => check.status !== "finding")
+  const assessedChecks = checks.filter(isAssessed)
+  const passing = assessedChecks.filter((check) => check.status === "clean")
+  const findings = assessedChecks.filter((check) => check.status === "finding")
+  const rolledChecks = passing
   const assessedCount = passing.length + findings.length
-  const rollupLabel = `${passing.length}/${assessedCount} passing${
-    notAssessed.length > 0 ? `, ${notAssessed.length} not assessed` : ""
-  }`
+  const allAssessedPass = passing.length === assessedCount
+  const rollupLabel =
+    allAssessedPass && assessedCount < checks.length
+      ? "All assessed checks passed"
+      : `${passing.length}/${assessedCount} passed`
 
   const explainers = sessionHygieneExplainers()
   const explainerFor = (checkId: SessionHygieneCheck["id"]) =>
@@ -167,6 +164,8 @@ export function HygieneBreakdown({ checks, collapsePassing = true }: HygieneBrea
   // read. The rolled-up layout puts them last, below the count they sit
   // behind.
   const shownChecks = collapsePassing ? findings : [...findings, ...rolledChecks]
+
+  if (assessedCount === 0) return null
 
   return (
     <div className="grid gap-y-1" aria-label="Session hygiene checks">

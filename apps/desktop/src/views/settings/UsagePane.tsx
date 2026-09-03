@@ -30,14 +30,12 @@ import type { AppSettingsController } from "./useAppSettings"
  * Usage: where the plan limits come from, and the one switch that turns it
  * off.
  *
- * The switch below is on by default: antiburn asks each provider directly for
- * your current usage, about every ten minutes, using the credentials your own
- * coding tools already hold, entirely over your own connection. That is
- * ordinary traffic — your own usage, from a provider you already use, with a
- * credential you already hold — so it runs without asking first, the same way
- * every other local reading in this app does. The switch exists for a reader
- * who wants none of it: turn it off and this pane has nothing to show, no
- * request is made, and no credential is read.
+ * The switch below is on by default. antiburn asks each provider directly for
+ * current usage every five minutes in the background, and more often while
+ * visible. It uses the credentials your own coding tools already hold. The
+ * requests use your own connection. This traffic reads your usage from a
+ * provider you already use. The switch lets you stop all requests and
+ * credential reads.
  *
  * The copy names both things the switch controls — it is what makes readings
  * possible at all, *and* it is what lets milestone notifications fire —
@@ -103,7 +101,7 @@ export function UsagePane({ settings, update }: UsagePaneProps) {
         <Card>
           <ToggleRow
             label="Keep my plan limits current"
-            description="Asks each provider directly for your current usage, about every ten minutes, using the credentials your own coding tools already have — that's your own connection, made as you; no antiburn server is involved. When a provider can't be reached directly, antiburn falls back to asking your coding tool's own local process the same question. Turning this off also stops usage milestone notifications, since they need readings that keep moving."
+            description="Asks each provider directly for your current usage every five minutes in the background, and more often while visible, using the credentials your own coding tools already have — that's your own connection, made as you; no antiburn server is involved. When a provider can't be reached directly, antiburn falls back to asking your coding tool's own local process the same question. Turning this off also stops usage milestone notifications, since they need readings that keep moving."
             checked={on}
             onChange={(next) =>
               void Promise.resolve(update({ liveUsageEnabled: next })).then(() => {

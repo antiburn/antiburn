@@ -147,10 +147,22 @@ pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
         let announce = move |entry: ActivityEntry| {
             let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
         };
+        let report_app = app.clone();
+        let announce_idle = move || {
+            let _ = report_app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
+        };
         let clock = || unix_now();
         let store = app.state::<Store>();
         let handle = app.state::<WorkerHandle>();
-        worker_loop(&store, &handle, &clock, &run_pass, &announce).await;
+        worker_loop(
+            &store,
+            &handle,
+            &clock,
+            &run_pass,
+            &announce,
+            &announce_idle,
+        )
+        .await;
     })
 }
 
@@ -363,11 +375,20 @@ pub(crate) async fn worker_loop(
     clock: &(dyn Fn() -> i64 + Send + Sync),
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(ActivityEntry) + Send + Sync),
+    announce_idle: &(dyn Fn() + Send + Sync),
 ) {
+    let mut processed = false;
     loop {
         match process_next(store, handle, clock, run_pass, announce).await {
-            Ok(true) => continue,
+            Ok(true) => {
+                processed = true;
+                continue;
+            }
             Ok(false) => {
+                if processed {
+                    processed = false;
+                    announce_idle();
+                }
                 tokio::select! {
                     () = handle.wake.notified() => {}
                     () = tokio::time::sleep(Duration::from_secs(IDLE_POLL_SECS)) => {}

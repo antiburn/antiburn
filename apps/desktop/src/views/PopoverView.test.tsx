@@ -204,6 +204,27 @@ const LIVE_USAGE = {
 
 const HEALTHY_STORAGE = { failing: false, message: null }
 
+const CHECKS_REPORT = {
+  evidenceSettled: true,
+  estimatedTokenBurnBasisPoints: 1_625,
+  categories: [
+    {
+      id: "cacheChurn",
+      finding: 7,
+      clean: 7,
+      unavailable: 0,
+      estimatedTokenBurnBasisPoints: 1_250,
+    },
+    {
+      id: "sessionsOverDepth",
+      finding: 0,
+      clean: 14,
+      unavailable: 0,
+      estimatedTokenBurnBasisPoints: 0,
+    },
+  ],
+}
+
 function repositoryPayload(overrides: Record<string, unknown> = {}) {
   return {
     key: "/home/avery/code/widgets",
@@ -242,6 +263,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve(LIVE_USAGE)
       case "get_session_limit_allocations":
         return Promise.resolve({ generatedAt: "2027-01-15T08:00:00Z", allocations: [] })
+      case "get_checks_report":
+        return Promise.resolve(CHECKS_REPORT)
       case "get_scan_status":
       case "scan_now":
       case "cancel_scan":
@@ -620,13 +643,14 @@ describe("PopoverView", () => {
     ).toBe(true)
   })
 
-  it("folds the complete usage header as one measured target", async () => {
+  it("folds Usage and Checks as one measured Activity header", async () => {
     render(<PopoverView />)
 
     const summary = await screen.findByRole("region", { name: "Usage and spend" })
     expect(summary).not.toHaveAttribute("title")
     const foldTarget = summary.parentElement
     expect(foldTarget).toContainElement(screen.getByTestId("usage-limits-bar"))
+    expect(foldTarget).toContainElement(screen.getByText("All checks").closest("[tabindex]"))
     expect(foldTarget?.parentElement?.children).toHaveLength(1)
   })
 
@@ -716,6 +740,204 @@ describe("PopoverView", () => {
       utcOffsetMinutes: -new Date().getTimezoneOffset(),
     })
     expect(screen.getByRole("button", { name: "Codex at 40 percent" })).toBeInTheDocument()
+  })
+
+  it("shows Checks in one passive anchored preview", async () => {
+    render(<PopoverView />)
+
+    await screen.findByText("1 check failed")
+    const trigger = (await screen.findByText("All checks")).closest("[tabindex]")!
+    fireEvent.mouseEnter(trigger)
+
+    expect(screen.queryByRole("heading", { name: "Checks" })).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(trigger.parentElement).toHaveAttribute("data-state", "active")
+      const requests = invoke.mock.calls.filter(([command]) => command === "show_popover_peek")
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.[1]).toMatchObject({
+        target: { kind: "checks" },
+        initialPresentation: {
+          kind: "checks",
+          presentation: {
+            failures: [expect.objectContaining({ id: "cacheChurn" })],
+            wins: [expect.objectContaining({ id: "sessionsOverDepth" })],
+            refreshUnavailable: false,
+          },
+        },
+      })
+    })
+  })
+
+  it("conceals the Checks preview when the Activity list scrolls", async () => {
+    render(<PopoverView />)
+    await screen.findByText("1 check failed")
+    fireEvent.mouseEnter((await screen.findByText("All checks")).closest("[tabindex]")!)
+
+    const viewport = screen
+      .getByRole("region", { name: "Sessions" })
+      .querySelector<HTMLElement>(".ui-scroll-viewport")!
+    viewport.scrollTop = 20
+    fireEvent.scroll(viewport)
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("hide_popover_peek"))
+  })
+
+  it("loads a trailing Checks report when evidence settles during reduction", async () => {
+    let resolveFirst: ((report: typeof CHECKS_REPORT) => void) | null = null
+    const first = new Promise<typeof CHECKS_REPORT>((resolve) => {
+      resolveFirst = resolve
+    })
+    const original = invoke.getMockImplementation()!
+    let checksCalls = 0
+    invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "get_checks_report") {
+        checksCalls += 1
+        return checksCalls === 1 ? first : Promise.resolve(CHECKS_REPORT)
+      }
+      return original(command, args)
+    })
+    render(<PopoverView />)
+    await waitFor(() => expect(checksCalls).toBe(1))
+
+    emit("checks:report-changed", null)
+    expect(checksCalls).toBe(1)
+    resolveFirst!(CHECKS_REPORT)
+
+    await waitFor(() => expect(checksCalls).toBe(2))
+    expect(await screen.findByText("1 check failed")).toBeInTheDocument()
+  })
+
+  it("refreshes Checks after the evidence worker queue settles", async () => {
+    render(<PopoverView />)
+    await screen.findByText("1 check failed")
+    const callsBefore = invoke.mock.calls.filter(
+      ([command]) => command === "get_checks_report",
+    ).length
+    const hidesBefore = invoke.mock.calls.filter(
+      ([command]) => command === "hide_popover_peek",
+    ).length
+
+    emit("checks:report-changed", null)
+
+    await waitFor(() => {
+      const calls = invoke.mock.calls.filter(
+        ([command]) => command === "get_checks_report",
+      ).length
+      expect(calls).toBe(callsBefore + 1)
+    })
+    expect(
+      invoke.mock.calls.filter(([command]) => command === "hide_popover_peek"),
+    ).toHaveLength(hidesBefore + 1)
+  })
+
+  it("publishes the current report while evidence is still processing", async () => {
+    const original = invoke.getMockImplementation()!
+    let settled = false
+    invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "get_checks_report") {
+        return Promise.resolve({ ...CHECKS_REPORT, evidenceSettled: settled })
+      }
+      return original(command, args)
+    })
+    render(<PopoverView />)
+    await waitFor(() => expect(listeners.has("checks:report-changed")).toBe(true))
+    await waitFor(() =>
+      expect(invoke.mock.calls.some(([command]) => command === "get_checks_report")).toBe(true),
+    )
+    expect(await screen.findByText("1 check failed")).toBeInTheDocument()
+
+    emit("scan:finished", SCAN_STATUS)
+    await waitFor(() => expect(screen.getByText("1 check failed")).toBeInTheDocument())
+
+    settled = true
+    emit("checks:report-changed", null)
+    expect(await screen.findByText("1 check failed")).toBeInTheDocument()
+  })
+
+  it("keeps the verdict stable while new evidence is still processing", async () => {
+    const original = invoke.getMockImplementation()!
+    let settled = true
+    invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "get_checks_report") {
+        return Promise.resolve({ ...CHECKS_REPORT, evidenceSettled: settled })
+      }
+      return original(command, args)
+    })
+    render(<PopoverView />)
+    await screen.findByText("1 check failed")
+
+    settled = false
+    emit("scan:finished", SCAN_STATUS)
+
+    expect(await screen.findByText("1 check failed")).toBeInTheDocument()
+    expect(screen.queryByText("Checking local sessions…")).not.toBeInTheDocument()
+  })
+
+  it("marks a retained verdict when a later Checks request fails", async () => {
+    const original = invoke.getMockImplementation()!
+    let fail = false
+    invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "get_checks_report") {
+        return fail
+          ? Promise.reject(new Error("report failed"))
+          : Promise.resolve({ ...CHECKS_REPORT, evidenceSettled: false })
+      }
+      return original(command, args)
+    })
+    render(<PopoverView />)
+    expect(await screen.findByText("1 check failed")).toBeInTheDocument()
+
+    fail = true
+    emit("checks:report-changed", null)
+
+    expect(await screen.findByText(/1 check failed · refresh unavailable/)).toBeInTheDocument()
+    expect(screen.queryByText(/refreshing/i)).not.toBeInTheDocument()
+  })
+
+  it("refreshes after a settled scan that queues no evidence work", async () => {
+    render(<PopoverView />)
+    await screen.findByText("1 check failed")
+    const callsBefore = invoke.mock.calls.filter(
+      ([command]) => command === "get_checks_report",
+    ).length
+
+    emit("scan:finished", SCAN_STATUS)
+
+    await waitFor(() => {
+      const calls = invoke.mock.calls.filter(
+        ([command]) => command === "get_checks_report",
+      ).length
+      expect(calls).toBe(callsBefore + 1)
+    })
+  })
+
+  it("cancels Checks work when the popover session stops", async () => {
+    const view = render(<PopoverView />)
+    await screen.findByText("1 check failed")
+
+    view.unmount()
+
+    expect(invoke).toHaveBeenCalledWith("cancel_checks_report", {
+      consumerId: expect.any(String),
+    })
+  })
+
+  it("uses a new Checks consumer ID when the popover session restarts", async () => {
+    const firstView = render(<PopoverView />)
+    await screen.findByText("1 check failed")
+    const firstId = invoke.mock.calls.find(([command]) => command === "get_checks_report")?.[1]
+      ?.consumerId
+    firstView.unmount()
+
+    const secondView = render(<PopoverView />)
+    await screen.findByText("1 check failed")
+    const ids = invoke.mock.calls
+      .filter(([command]) => command === "get_checks_report")
+      .map(([, args]) => args.consumerId)
+    secondView.unmount()
+
+    expect(ids).toContain(firstId)
+    expect(ids.some((id) => id !== firstId)).toBe(true)
   })
 
   it("requests a provider preview after the pointer rests on its trigger", async () => {

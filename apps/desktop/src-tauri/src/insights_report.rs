@@ -25,7 +25,7 @@ const CURRENT_EVIDENCE_PREDICATE: &str = "
     AND NOT (e.evidence_schema_revision IS NOT ?6)";
 
 const DENOMINATOR_SQL: &str = "
-SELECT bucket, COUNT(*), SUM(awaiting_provider_support)
+SELECT bucket, COUNT(*), SUM(awaiting_provider_support), SUM(evidence_pending)
   FROM (
     SELECT CASE
              WHEN s.started_at_epoch IS NULL THEN 'unknown_start'
@@ -37,7 +37,9 @@ SELECT bucket, COUNT(*), SUM(awaiting_provider_support)
              ELSE 'ready'
            END AS bucket,
            CASE WHEN s.started_at_epoch IS NOT NULL AND e.status IS NULL
-                THEN 1 ELSE 0 END AS awaiting_provider_support
+                 THEN 1 ELSE 0 END AS awaiting_provider_support,
+           CASE WHEN e.status IS NULL OR e.status = 'pending' OR e.status = 'processing'
+                THEN 1 ELSE 0 END AS evidence_pending
       FROM session s
       LEFT JOIN session_evidence e
         ON e.environment_key = s.environment_key
@@ -62,13 +64,19 @@ SELECT e.evidence_json
    AND s.started_at_epoch >= ?2
    AND s.started_at_epoch < ?3
    AND {current}
- ORDER BY s.started_at_epoch, s.session_id";
+  ORDER BY s.started_at_epoch DESC, s.session_id DESC";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportRequest {
     pub environment_key: String,
     pub window: ReportWindow,
     pub computed_at_epoch: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReducedReport {
+    pub report: EfficiencyReport,
+    pub evidence_settled: bool,
 }
 
 /// Marks a reduction that stopped because its caller cancelled it.
@@ -107,22 +115,35 @@ pub async fn reduce_report(
     data_dir: PathBuf,
     request: ReportRequest,
     cancel: Arc<AtomicBool>,
-) -> Result<EfficiencyReport> {
-    tokio::task::spawn_blocking(move || reduce_on_snapshot(&data_dir, request, &mut || {}, &cancel))
-        .await
-        .context("report reduction task failed")?
+) -> Result<ReducedReport> {
+    tokio::task::spawn_blocking(move || {
+        reduce_with_state_on_snapshot(&data_dir, request, &mut || {}, &cancel)
+    })
+    .await
+    .context("report reduction task failed")?
 }
 
+#[cfg(test)]
 fn reduce_on_snapshot(
     data_dir: &Path,
     request: ReportRequest,
     after_denominator: &mut dyn FnMut(),
     cancel: &AtomicBool,
 ) -> Result<EfficiencyReport> {
+    Ok(reduce_with_state_on_snapshot(data_dir, request, after_denominator, cancel)?.report)
+}
+
+fn reduce_with_state_on_snapshot(
+    data_dir: &Path,
+    request: ReportRequest,
+    after_denominator: &mut dyn FnMut(),
+    cancel: &AtomicBool,
+) -> Result<ReducedReport> {
     ensure_not_cancelled(cancel)?;
     let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
     let transaction = connection.unchecked_transaction()?;
     let mut coverage = CoverageCounts::default();
+    let mut pending_evidence = 0_u64;
     let denominator_sql = DENOMINATOR_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
     {
         let mut statement = transaction.prepare(&denominator_sql)?;
@@ -140,6 +161,7 @@ fn reduce_on_snapshot(
             let awaiting_provider_support = u64::try_from(row.get::<_, i64>(2)?)?;
             coverage.observe(bucket, count);
             coverage.awaiting_provider_support += awaiting_provider_support;
+            pending_evidence += u64::try_from(row.get::<_, i64>(3)?)?;
         }
     }
     ensure!(
@@ -186,7 +208,10 @@ fn reduce_on_snapshot(
     );
     drop(transaction);
     drop(connection);
-    Ok(report)
+    Ok(ReducedReport {
+        report,
+        evidence_settled: pending_evidence == 0,
+    })
 }
 
 fn coverage_bucket(value: &str) -> Result<CoverageBucket> {
@@ -308,6 +333,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cohort_query_uses_the_insights_window_index() {
+        let data_dir = TempDir::new().unwrap();
+        let _store = Store::open(data_dir.path()).unwrap();
+        let connection = open_read_only(data_dir.path(), REPORT_BUSY_TIMEOUT).unwrap();
+        let sql = format!(
+            "EXPLAIN QUERY PLAN {}",
+            COHORT_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE)
+        );
+        let mut statement = connection.prepare(&sql).unwrap();
+        let details = statement
+            .query_map(
+                params![
+                    "native",
+                    100,
+                    200,
+                    PARSER_REVISION,
+                    ANALYZER_REVISION,
+                    EVIDENCE_SCHEMA_REVISION,
+                ],
+                |row| row.get::<_, String>(3),
+            )
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains("session_insights_window")),
+            "query plan did not use the Insights window index: {details:?}"
+        );
+        assert!(
+            details
+                .iter()
+                .all(|detail| !detail.contains("USE TEMP B-TREE FOR ORDER BY")),
+            "query plan used a temporary sort: {details:?}"
+        );
+    }
+
     fn change_source(store: &Store, session_id: &str, evidence_agents: &[&str]) {
         let changed = session(session_id, 150, &format!("sv2:{session_id}"));
         store
@@ -374,8 +439,29 @@ mod tests {
             .await
             .unwrap();
 
-            assert_eq!(report.context.coverage.discovered, 1);
-            assert_eq!(report.assessed_sessions, 1);
+            assert_eq!(report.report.context.coverage.discovered, 1);
+            assert_eq!(report.report.assessed_sessions, 1);
+            assert!(report.evidence_settled);
+        }
+
+        #[tokio::test]
+        async fn unknown_start_pending_evidence_keeps_the_snapshot_unsettled() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            store
+                .upsert_sessions(&[session("pending", 120, "sv1:pending")], &["claude-code"])
+                .unwrap();
+
+            let report = reduce_report(
+                data_dir.path().to_path_buf(),
+                request(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(report.report.context.coverage.unknown_start, 1);
+            assert!(!report.evidence_settled);
         }
     }
 
@@ -546,14 +632,19 @@ mod tests {
                     .sum::<u64>(),
                 6
             );
+            // Missing effort and speed signals are unavailable outcomes,
+            // not assessed results.
             assert_eq!(
                 report
                     .detectors
                     .iter()
                     .map(|counts| counts.assessed)
                     .sum::<u64>(),
-                6
+                4
             );
+            assert!(report.detectors.iter().all(|counts| {
+                counts.finding + counts.clean + counts.unavailable + counts.not_applicable == 1
+            }));
         }
 
         #[test]

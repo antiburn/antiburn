@@ -151,7 +151,7 @@ pub fn rebuild_after_destroy(app: &AppHandle) {
 
 fn cancel_insights(insights: Option<&crate::insights_ipc::InsightsController>) {
     if let Some(insights) = insights {
-        insights.cancel();
+        insights.release_settings();
     }
 }
 

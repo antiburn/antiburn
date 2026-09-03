@@ -84,6 +84,8 @@ describe("UsagePane", () => {
     // at all *and* it lets milestone notifications fire.
     pane()
     const row = screen.getByText("Keep my plan limits current").closest("div")!
+    expect(row).toHaveTextContent(/every five minutes in the background/i)
+    expect(row).toHaveTextContent(/more often while visible/i)
     expect(row).toHaveTextContent(/that.s your own connection, made as you/i)
     expect(row).toHaveTextContent(/no antiburn server is involved/i)
     expect(row).toHaveTextContent(/milestone notifications/i)

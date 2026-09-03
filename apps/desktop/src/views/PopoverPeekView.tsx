@@ -17,6 +17,7 @@ import {
   type AnchoredPresentation,
 } from "./popover/AnchoredContentPresenter"
 import { UsageView } from "./popover/UsageView"
+import { ChecksPeek } from "./popover/ChecksView"
 
 function reportConcealed(generation: number) {
   return (node: HTMLSpanElement | null) => {
@@ -90,6 +91,9 @@ class PeekLoading extends Component<{ target: PopoverPeekTarget }, { showDetails
   }
 
   render() {
+    if (this.props.target.kind === "checks") {
+      return <ProviderPeekSkeleton />
+    }
     const { provider } = this.props.target
     const displayName = providerLoadingLabel(provider)
     return (
@@ -188,6 +192,9 @@ function candidateContent(
 
 function PeekPayloadContent({ payload }: { payload: PeekPayload }) {
   if (payload.kind === "unavailable") return <PeekUnavailable />
+  if (payload.data.kind === "checks") {
+    return <ChecksPeek presentation={payload.data.presentation} />
+  }
   return (
     <>
       <div data-popover-peek-usage className="pt-2">

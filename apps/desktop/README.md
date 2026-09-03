@@ -163,13 +163,13 @@ Settings teardown, and the memory rules behind those policies.
   is never modified or deleted. Migrations are embedded and versioned by the
   `user_version` pragma.
 - **Scanning.** A single background task refreshes what the app knows: once at
-  launch (after onboarding), whenever the popover is opened, every 60s whether
-  or not it is visible, shortly after a watched transcript directory changes,
-  and on demand. A pass over unchanged sources costs stat calls, not disk
-  reads, which is what makes the unconditional tick affordable. Passes never
-  overlap and are bounded. CPU, memory, and disk I/O are product constraints:
-  background work must be no more frequent or intensive than the visible
-  feature requires. See the policy at the top of `src-tauri/src/scan/mod.rs`.
+  launch (after onboarding), shortly after a watched transcript changes, every
+  five minutes as a reconciliation fallback, and on demand. Watcher refreshes
+  target the affected sessions or agents. A full pass over unchanged sources
+  costs stat calls, not transcript reads. Passes never overlap and are bounded.
+  CPU, memory, and disk I/O are product constraints: background work must be no
+  more frequent or intensive than the visible feature requires. See the policy
+  at the top of `src-tauri/src/scan/mod.rs`.
 - **Notifications.** Six kinds, all posted by the shell and never by the webview
   (which is granted no notification permission): an automatic update, a failed
   scan, low disk space, a crossed usage milestone, the first-run menu-bar
@@ -183,7 +183,10 @@ Settings teardown, and the memory rules behind those policies.
   `src-tauri/src/nudges.rs`. Nothing about a notification leaves the machine.
   Usage milestones default to every 10% and compare quota consumed with the
   share of the current limit window that has elapsed. Settings offers every 5%
-  step when a reader wants different milestones.
+  step when a reader wants different milestones. Every successful live reading
+  checks for a crossing, and the hidden background monitor checks at most every
+  five minutes. A notification names the crossed milestone separately from the
+  provider's current percentage when usage moves past it between readings.
 - **Attention.** The popover shows a banner above the activity list when a
   repository cannot be read (which opens Settings at Sources) or when the local
   database rejects a write (which retries with a scan). Both are derived from

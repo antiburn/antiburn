@@ -517,6 +517,7 @@ export function SessionDetailPresentation({
   const [tab, setTab] = useState<SessionDetailTab>("overview")
   const modelPairs = modelRunShortPairs(modelRuns)
   const hygieneChecks = sessionHygieneChecks(hygiene)
+  const hasAssessedHygieneChecks = hygieneChecks.some((check) => check.status !== "notAssessed")
 
   // Left and right arrows traverse adjacent sessions. A missing handler is a
   // no-op.
@@ -826,11 +827,17 @@ export function SessionDetailPresentation({
                   rows most of the time. */}
               {tab === "cost" && (
                 <div className="flex flex-col">
-                  <section>
-                    <TabSectionHeading>Checks</TabSectionHeading>
-                    <HygieneBreakdown checks={hygieneChecks} collapsePassing={false} />
-                  </section>
-                  <section className="mt-3 border-t border-separator pt-3">
+                  {hasAssessedHygieneChecks && (
+                    <section>
+                      <TabSectionHeading>Checks</TabSectionHeading>
+                      <HygieneBreakdown checks={hygieneChecks} collapsePassing={false} />
+                    </section>
+                  )}
+                  <section
+                    className={cn(
+                      hasAssessedHygieneChecks && "mt-3 border-t border-separator pt-3",
+                    )}
+                  >
                     <TabSectionHeading>Cost</TabSectionHeading>
                     {cost && tokensCard ? (
                       <CostBreakdown
