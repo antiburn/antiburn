@@ -213,6 +213,8 @@ pub(super) fn is_recognized_eventless(value: &Value) -> bool {
                 | "frame-link"
                 | "cost-state"
                 | "agent-name"
+                | "history-suppression"
+                | "artifact-autoreact-ledger"
         )
     )
 }
@@ -1151,6 +1153,8 @@ mod tests {
             "frame-link",
             "cost-state",
             "agent-name",
+            "history-suppression",
+            "artifact-autoreact-ledger",
         ] {
             let inert = json!({"type": kind, "timestamp": 1});
             assert!(is_recognized_eventless(&inert));
