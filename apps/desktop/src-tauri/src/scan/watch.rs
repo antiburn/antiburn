@@ -556,13 +556,21 @@ mod tests {
         let wal = codex.join("state_5.sqlite-wal");
         std::fs::write(&wal, b"synthetic WAL change").unwrap();
 
-        let burst = tokio::time::timeout(Duration::from_secs(10), rx.recv())
-            .await
-            .expect("title changes should reach the watcher")
-            .expect("watcher should stay connected");
         let canonical_index = std::fs::canonicalize(index).unwrap();
         let canonical_wal = std::fs::canonicalize(wal).unwrap();
-        assert!(burst.paths.contains(&canonical_index));
-        assert!(burst.paths.contains(&canonical_wal));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let mut saw_index = false;
+            let mut saw_wal = false;
+            while !saw_index || !saw_wal {
+                let burst = rx.recv().await.expect("watcher should stay connected");
+                for path in burst.paths {
+                    let path = std::fs::canonicalize(&path).unwrap_or(path);
+                    saw_index |= path == canonical_index;
+                    saw_wal |= path == canonical_wal;
+                }
+            }
+        })
+        .await
+        .expect("title changes should reach the watcher");
     }
 }
