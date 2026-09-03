@@ -108,9 +108,13 @@ impl NudgeKeyHandoff {
 
 /// Emitted the moment the popover reaches the screen, following the same
 /// `module:event` naming [`crate::scan`]'s events use. The webview listens
-/// for this to refresh live usage — see [`note_shown`] for why that refresh
-/// does not simply ride the scan events this same function also kicks.
+/// for this to start its visible-only usage polling (R6) — see [`note_shown`]
+/// for why usage freshness does not ride on a scan pass.
 pub const EVENT_SHOWN: &str = "popover:shown";
+
+/// Emitted the moment the popover leaves the screen. The webview listens for
+/// this to stop its visible-only usage polling (R6) — see [`note_hidden`].
+pub const EVENT_HIDDEN: &str = "popover:hidden";
 
 /// Popover width in logical pixels. Fixed: the views size themselves to it.
 const WIDTH: f64 = 380.0;
@@ -1750,11 +1754,14 @@ fn note_shown(app: &AppHandle) {
 /// Escape, dismissal on focus loss or an outside click, and the shell's
 /// suppressed window close — which is why the menu-bar highlight is cleared
 /// here rather than at each of them. The scan scheduler does not gate on
-/// visibility, so this hook has nothing left to tell it.
+/// visibility, so this hook has nothing to tell it; it tells the popover's own
+/// visible-only usage poll instead (R6).
 ///
 /// Unconditional: clearing a highlight that is already off costs nothing, and
 /// a state that somehow drifted out of step is corrected rather than kept.
 pub fn note_hidden(app: &AppHandle) {
+    // R6: the popover stops its visible-only usage polling on this.
+    let _ = app.emit(EVENT_HIDDEN, ());
     crate::tray::set_highlight(app, false);
 }
 
