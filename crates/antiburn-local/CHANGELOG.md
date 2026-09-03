@@ -50,6 +50,19 @@ version and refuses the release if there is none.
   documented layout, rather than mtime-gated, so a rediscovery no longer
   reads a project's other subdirectories.
 
+### Fixed
+
+- A Claude skill keeps a known `SourceOrigin` after the session invokes it.
+  The `invoked_skills` path is a scheme string, such as
+  `userSettings:<name>`, so only the `bundled:` form resolved before and
+  the rest reported `Unknown`.
+- Origin evidence that cannot be classified no longer suppresses the
+  filesystem probe for that skill name.
+- The user-directory probe runs when the session's working directory no
+  longer exists, so a user skill still resolves for a deleted worktree. The
+  project probe and the bare-name `Bundled` inference still need that
+  directory.
+
 ### Removed
 
 - The whole-file session time-range readers: `scanner::session_time_range`

@@ -31,6 +31,10 @@ CI changes, and documentation that no user acts on stay out — see
   renderer startup failures on newer graphics stacks.
 - Claude session details now apply the Claude inactivity threshold when they
   rebuild metrics from stored rows, and name provider cache misses consistently.
+- The Source column in the session-analysis skills table names where a
+  skill came from after the session invoked it, instead of showing an em
+  dash. Skills you installed for yourself keep their source after the
+  session's working directory is deleted, such as a removed git worktree.
 
 ### Removed
 
