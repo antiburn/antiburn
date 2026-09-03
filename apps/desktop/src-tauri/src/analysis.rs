@@ -30,7 +30,7 @@ use antiburn_local::analysis::{
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
-    ForkObservation, SessionSource, SourceStat, session_source_content, session_source_preview,
+    ForkObservation, SessionSource, SourceStat, session_source_content,
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::pricing::ModelTokens;
@@ -403,35 +403,6 @@ pub fn fingerprint_of(source: &SessionSource) -> String {
         .map(|since| since.as_secs())
         .unwrap_or(0);
     format!("{mtime}:{}", metadata.len())
-}
-
-/// Fingerprint the parent transcript and all current sub-agent transcripts.
-pub async fn fingerprint_with_subagents(
-    agent: AgentKind,
-    session_id: &str,
-    wsl_distro: Option<&str>,
-    source: &SessionSource,
-) -> String {
-    let mut subagent_paths = Explorers::DISK
-        .list_subagents_in_environment(&agent, session_id, wsl_distro)
-        .await;
-    subagent_paths.sort();
-    let parent_fingerprint = match source {
-        SessionSource::ProviderDb {
-            agent,
-            db_path,
-            session_id,
-        } => Explorers::DISK
-            .provider_db_fingerprint(agent, db_path, session_id)
-            .await
-            .map(|(latest, rows)| format!("sv1:db:{latest}:{rows}"))
-            .unwrap_or_else(|| MISSING_FINGERPRINT.to_string()),
-        _ => fingerprint_of(source),
-    };
-    match source {
-        SessionSource::ProviderDb { .. } if subagent_paths.is_empty() => parent_fingerprint,
-        _ => combined_fingerprint_from_parent(parent_fingerprint, &subagent_paths),
-    }
 }
 
 /// Build one stable fingerprint from a parent and its sorted child paths.
@@ -1698,8 +1669,9 @@ pub fn analysis_from_rows(
         row_projections: None,
         agent_slug: agent_slug.to_string(),
         parent_session_id: session_id.to_string(),
-        // Rows carry no file path, so the drilldown's reveal action stays
-        // unavailable for a replayed view.
+        // Rows carry no file path. `get_session_analysis` (commands.rs)
+        // derives the reveal path straight from the stored session record
+        // instead of reading this field for a replayed view.
         source_path: None,
         fingerprint: record.source_fingerprint,
         analyzed_generation: record.analyzed_generation,
@@ -1933,31 +1905,6 @@ const FORK_OBSERVATION_LINES: usize = 5;
 /// How deep the search descends into a header record. The observation sits at
 /// the top level or one nesting down (`metadata`, `raw`); four is slack.
 const FORK_OBSERVATION_DEPTH: usize = 4;
-
-/// The session this one was branched from, when the vendor's store records it.
-///
-/// Lineage is *evidence the transcript carries*, so it is resolved when a
-/// session is opened rather than on every scan: reading every transcript to
-/// look for a header would cost far more than the relationship is worth.
-pub async fn fork_parent(source: &SessionSource) -> Option<String> {
-    let content = match source {
-        SessionSource::Inline { content, .. } => content.clone(),
-        SessionSource::File(path) => tokio::fs::read_to_string(path).await.ok()?,
-        SessionSource::ProviderDb {
-            agent: AgentKind::OpenCode,
-            db_path,
-            session_id,
-        } => {
-            return antiburn_local::discovery::agents::opencode::db_fork_parent(
-                db_path.clone(),
-                session_id.clone(),
-            )
-            .await;
-        }
-        SessionSource::ProviderDb { .. } => session_source_preview(source).await?,
-    };
-    fork_parent_from_content(&content)
-}
 
 /// Read a declared fork parent from a bounded transcript preview.
 pub fn fork_parent_from_content(content: &str) -> Option<String> {

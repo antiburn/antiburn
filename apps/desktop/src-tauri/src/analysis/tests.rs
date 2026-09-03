@@ -19,34 +19,6 @@ fn observed<T: Clone>(value: &EvidenceValue<T>) -> T {
     }
 }
 
-#[tokio::test]
-async fn opencode_lineage_does_not_render_an_ordinary_database_session() {
-    let directory = tempfile::TempDir::new().expect("tempdir");
-    let db_path = directory.path().join("opencode.db");
-    let connection = rusqlite::Connection::open(&db_path).expect("database");
-    connection
-        .execute_batch(
-            "CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, title TEXT);
-             INSERT INTO session VALUES ('ses_root', '/repo', 'Ordinary session');",
-        )
-        .expect("schema");
-    drop(connection);
-    antiburn_local::discovery::track_provider_db_renders(&db_path);
-
-    let parent = fork_parent(&SessionSource::ProviderDb {
-        agent: AgentKind::OpenCode,
-        db_path: db_path.clone(),
-        session_id: "ses_root".to_string(),
-    })
-    .await;
-
-    assert_eq!(parent, None);
-    assert_eq!(
-        antiburn_local::discovery::take_tracked_provider_db_renders(&db_path),
-        0
-    );
-}
-
 fn member_with_start(subagent_id: &str, started_at_epoch: Option<i64>) -> SubagentMember {
     SubagentMember {
         agent: "claude-code".to_string(),
@@ -251,8 +223,6 @@ async fn a_claimed_antigravity_database_stays_native_and_publishes() {
         .await
         .expect("database fingerprint");
     let fingerprint = format!("sv1:db:{latest}:{rows}");
-    let polled = fingerprint_with_subagents(AgentKind::Antigravity, "root", None, &source).await;
-    assert_eq!(polled, fingerprint);
     let input = SessionInput {
         agent: "antigravity".to_owned(),
         session_id: "root".to_owned(),

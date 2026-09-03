@@ -79,7 +79,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use antiburn_local::discovery::scanner::{self, TitleSource};
 use antiburn_local::discovery::{
     Explorers, ResolvedTitle, SessionLog, SessionSource, SourceDescriptor, TitleLookupKind,
-    session_log_read, session_source_tail,
+    session_log_read, session_source_preview, session_source_tail,
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::{home_dir, ignored_paths};
@@ -784,7 +784,7 @@ async fn describe_one_with_activity(
         _ => Vec::new(),
     };
     let subagent_count = children.len() as u32;
-    let fork_parent_session_id = preview.and_then(analysis::fork_parent_from_content);
+    let fork_parent_session_id = fork_parent_session_id_for(&log, preview).await;
 
     let (updated_at_epoch, activity_source, activity_cursor) =
         semantic_activity_for_log(&log, previous.as_ref(), &children, preview).await;
@@ -816,6 +816,41 @@ async fn describe_one_with_activity(
         fork_parent_session_id,
         source_fingerprint,
     }))
+}
+
+/// The fork parent this session's own source declares, if any.
+///
+/// Every vendor's evidence is bounded: the transcript preview already read
+/// above for a file or an inline source, a direct database check for
+/// OpenCode (`db_fork_parent` never renders the full transcript), and a
+/// bounded preview read for every other provider database. This runs only
+/// when describe runs, which the size cursor already gates, so it costs
+/// nothing for a session that has not changed.
+async fn fork_parent_session_id_for(log: &SessionLog, preview: Option<&str>) -> Option<String> {
+    match &log.source {
+        SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path,
+            session_id,
+        } => {
+            antiburn_local::discovery::agents::opencode::db_fork_parent(
+                db_path.clone(),
+                session_id.clone(),
+            )
+            .await
+        }
+        SessionSource::ProviderDb { .. } => {
+            let content = session_source_preview(&log.source).await?;
+            analysis::fork_parent_from_content(&content)
+        }
+        SessionSource::Inline { content, .. } => analysis::fork_parent_from_content(content),
+        SessionSource::File(_)
+            if matches!(log.agent_type, AgentKind::Claude | AgentKind::Codex) =>
+        {
+            preview.and_then(analysis::fork_parent_from_content)
+        }
+        _ => None,
+    }
 }
 
 /// Native stores with a point-query index are authoritative for session names.
