@@ -86,10 +86,12 @@ pub fn spawn_watcher(app: &AppHandle) -> WatcherStatus {
         return WatcherStatus::default();
     };
     let app = app.clone();
-    // The burst is threaded through in full starting here (W2); the next
-    // change wires its paths and event count into a named request trigger.
-    spawn_watcher_over(home, move |_burst: WatchBurst| {
-        app.state::<crate::scan::ScanController>().request();
+    spawn_watcher_over(home, move |burst: WatchBurst| {
+        app.state::<crate::scan::ScanController>()
+            .request(crate::scan::ScanTrigger::Watcher {
+                events: burst.events,
+                paths: burst.paths,
+            });
     })
 }
 
