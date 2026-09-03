@@ -59,6 +59,9 @@ impl FakeConsent {
     }
 
     /// Every `(target, outcome)` probe recorded so far.
+    // Consumed only by the macOS stale-grant scan test; other targets
+    // never inspect probes.
+    #[cfg(target_os = "macos")]
     pub fn probes(&self) -> Vec<(String, String)> {
         self.probes.lock().unwrap().clone()
     }
