@@ -624,9 +624,29 @@ describe("PopoverView", () => {
     render(<PopoverView />)
 
     const summary = await screen.findByRole("region", { name: "Usage and spend" })
+    expect(summary).not.toHaveAttribute("title")
     const foldTarget = summary.parentElement
     expect(foldTarget).toContainElement(screen.getByTestId("usage-limits-bar"))
     expect(foldTarget?.parentElement?.children).toHaveLength(1)
+  })
+
+  it("shows the API pricing caveat when a live account reports a subscription", async () => {
+    mockCommands({
+      get_live_usage: {
+        ...LIVE_USAGE,
+        providers: LIVE_USAGE.providers.map((provider) => ({
+          ...provider,
+          plan: { name: "plus", tier: null },
+        })),
+      },
+    })
+    render(<PopoverView />)
+
+    expect(
+      await screen.findByTitle(
+        "Estimated locally at API rates. Your provider bill may differ.",
+      ),
+    ).toHaveAccessibleName("Usage and spend")
   })
 
   it("notes an opened session as an agent and an environment, and nothing else", async () => {

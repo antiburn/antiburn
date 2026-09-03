@@ -30,6 +30,28 @@ describe("UsageSpendSummary", () => {
     expect(screen.getByText("Last 7 days")).toBeInTheDocument()
     expect(screen.getByText("Last 30 days")).toBeInTheDocument()
     expect(screen.queryByRole("heading")).not.toBeInTheDocument()
+    expect(screen.getByRole("region", { name: "Usage and spend" })).not.toHaveAttribute("title")
+  })
+
+  it("shows the API pricing caveat for subscription usage", () => {
+    render(
+      <UsageSpendSummary
+        totals={totals({
+          tokensIn: 1_000,
+          tokensOut: 200,
+          cacheRead: 50,
+          estimatedUsd: 1.25,
+          costComplete: true,
+          sessionCount: 2,
+        })}
+        showApiPricingCaveat
+      />,
+    )
+
+    expect(screen.getByRole("region", { name: "Usage and spend" })).toHaveAttribute(
+      "title",
+      "Estimated locally at API rates. Your provider bill may differ.",
+    )
   })
 
   it("shows the token count as the figure when nothing could be priced", () => {

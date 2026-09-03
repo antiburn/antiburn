@@ -37,10 +37,10 @@ function figure(window: UsageWindow): string {
  * The line under the figure: the token count behind a cost, or the unit alone
  * when the tokens are the figure. The Today column also carries the hedge.
  */
-function caption(window: UsageWindow, hedge: boolean): string {
+function caption(window: UsageWindow, first: boolean): string {
   if (window.estimatedUsd == null) return "tokens"
   const tokens = formatTokenFigure(windowTokens(window))
-  return hedge ? `${tokens} tokens · est.` : tokens
+  return first ? `${tokens} tokens` : tokens
 }
 
 /**
@@ -57,18 +57,24 @@ function caption(window: UsageWindow, hedge: boolean): string {
 export function UsageSpendSummary({
   totals,
   compact = false,
+  showApiPricingCaveat = false,
 }: {
   totals: ProviderUsageWindowsPayload
   compact?: boolean
+  showApiPricingCaveat?: boolean
 }) {
   return (
     <section
       aria-label="Usage and spend"
-      title="Estimated locally at API rates. Your provider bill may differ."
+      title={
+        showApiPricingCaveat
+          ? "You're on subscription, so these are just estimated dollar values."
+          : undefined
+      }
       className={cn("bg-surface-header", compact ? "px-4 pt-3 pb-2.5" : "px-3 pt-3 pb-2.5")}
     >
       <dl className="grid grid-cols-[1.35fr_1fr_1fr] gap-x-3">
-        <SpendColumn label="Today" window={totals.today} primary />
+        <SpendColumn label="Today" window={totals.today} first />
         <SpendColumn label="Last 7 days" window={totals.week} />
         <SpendColumn label="Last 30 days" window={totals.last30Days} />
       </dl>
@@ -79,11 +85,11 @@ export function UsageSpendSummary({
 function SpendColumn({
   label,
   window,
-  primary = false,
+  first = false,
 }: {
   label: string
   window: UsageWindow
-  primary?: boolean
+  first?: boolean
 }) {
   return (
     <div className="min-w-0">
@@ -93,14 +99,14 @@ function SpendColumn({
           the way the status bar sets its own figure line. */}
       <dd
         className={cn(
-          primary ? "type-title-3" : "type-body-large",
+          first ? "type-title-3" : "type-body-large",
           "font-mono tracking-tight! leading-[17px] whitespace-nowrap text-label",
         )}
       >
         <SegmentFigure>{figure(window)}</SegmentFigure>
       </dd>
       <dd className="type-caption whitespace-nowrap text-label-tertiary">
-        <SegmentFigure>{caption(window, primary)}</SegmentFigure>
+        <SegmentFigure>{caption(window, first)}</SegmentFigure>
       </dd>
     </div>
   )

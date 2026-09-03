@@ -69,11 +69,8 @@ export interface UsageLimitsBarProps {
  * the worst live window, and a list-icon disclosure that replaces the rings
  * with per-provider segmented meters.
  *
- * The two states do not stack. A closed bar is the ring row and the
- * disclosure. An open one keeps the same header row, with a "Limits" heading
- * where the rings were, and shows the meters under it: the meters restate
- * every ring, and the popover needs the ring row's height for the activity
- * list more than it needs the same reading twice.
+ * The two states do not stack. A closed bar is the ring row. An open bar is
+ * the meter list. The disclosure moves beside the first provider name.
  *
  * Nothing here is the local spend estimate. This bar reports only what a
  * provider itself says about the reader's standing against its own allowance.
@@ -123,28 +120,8 @@ export function UsageLimitsBar({
 
   return (
     <div data-testid="usage-limits-bar" className="relative shrink-0 border-b border-separator">
-      {/* One header row for both states, so the disclosure does not move
-          when the meters open. The rings need no name: each one names its
-          provider on hover. The open state puts a "Limits" heading in their
-          place, over a spacer with a ring's silhouette, which keeps the
-          heading and the disclosure still. The open row drops its bottom
-          padding, so the meters sit close under the heading. */}
-      <div
-        className={cn(
-          "flex min-w-0 items-center gap-2 px-3 pt-2.5",
-          expanded ? "pb-0" : "pb-2.5",
-        )}
-      >
-        {expanded && (
-          <span className="shrink-0 type-caption font-medium tracking-wide uppercase text-label">
-            Limits
-          </span>
-        )}
-        {expanded ? (
-          <div aria-hidden="true" className="flex-1 p-1">
-            <div style={{ height: RING_SIZE }} />
-          </div>
-        ) : (
+      {!expanded && (
+        <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             {limited.map(({ reading, key }) => (
               <ProviderRadial
@@ -165,37 +142,39 @@ export function UsageLimitsBar({
               <UnavailableRadial key={entry.provider} entry={entry} />
             ))}
           </div>
-        )}
-        {disclosure(false)}
-      </div>
+          {disclosure(false)}
+        </div>
+      )}
 
       {expanded && (
         <div
           id={regionId}
           role="region"
           aria-label="Usage limits"
-          // Wider gutters than the header row, and clear space between
-          // providers and between their meters. The gutter splits between
-          // this region and each group, so a group's hover highlight has room
-          // without moving the text.
-          className="space-y-1 px-2 pb-2"
+          // The top space keeps the disclosure near its closed position.
+          // The group padding gives each hover highlight clear space.
+          className="space-y-1 px-2 pt-3 pb-2"
         >
-          {limited.map(({ reading, key }) => (
+          {limited.map(({ reading, key }, index) => (
             <ProviderGroup
               key={key}
               provider={reading}
               displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
               status={liveProviderStatus(live, reading)}
               now={at}
-              action={undefined}
+              action={index === 0 ? disclosure(true) : undefined}
               activation={
                 activeProvider?.provider === reading.provider ? activeProvider.activation : null
               }
               {...(onHoverProvider ? { onHover: onHoverProvider } : {})}
             />
           ))}
-          {unavailable.map((entry) => (
-            <UnavailableGroup key={entry.provider} entry={entry} action={undefined} />
+          {unavailable.map((entry, index) => (
+            <UnavailableGroup
+              key={entry.provider}
+              entry={entry}
+              action={limited.length === 0 && index === 0 ? disclosure(true) : undefined}
+            />
           ))}
         </div>
       )}
