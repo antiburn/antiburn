@@ -480,7 +480,7 @@ function graceVerb(category: string): string {
     case "schema":
       return "sent an unreadable reply"
     default:
-      return "did not answer the last check"
+      return "didn't answer the last check"
   }
 }
 
@@ -496,7 +496,7 @@ export function liveGraceNote(
   ageMs: number,
 ): string {
   const name = liveProviderDisplayName(provider) ?? "Your provider"
-  return `${name} ${graceVerb(category)}. Showing the reading from ${formatGraceAge(ageMs)} ago.`
+  return `${name} ${graceVerb(category)}; reading from ${formatGraceAge(ageMs)} ago.`
 }
 
 /**
