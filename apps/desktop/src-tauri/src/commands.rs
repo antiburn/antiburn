@@ -960,7 +960,7 @@ pub async fn get_session_analysis(
     // — so this command never caches one itself or emits
     // `SESSION_ENTRY_CHANGED_EVENT` for it.
     let (analysis, analysis_pending, analysis_stale) =
-        match analysis::analysis_from_rows(&store, &key, &session_id, &agent) {
+        match analysis::analysis_from_rows(&store, &key, &session_id, kind) {
             Some(replayed) => {
                 let fingerprint_mismatch = nudge_if_evidence_stale(
                     &app,
@@ -1042,7 +1042,7 @@ pub async fn get_subagent_analysis(
         &parent_key,
         &parent_session_id,
         &subagent_id,
-        &agent,
+        kind,
     ) {
         Some(replayed) => {
             let evidence_status = store
