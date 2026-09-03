@@ -106,3 +106,52 @@ That case must not clear a good reading the way a real sign-out does.
 from `Unreadable` (a timeout or another failure). Only `Absent` falls back
 to the credentials file. `Unreadable` is a real failure, so `Cooldown` keeps
 the last good snapshot.
+
+## The tool's own saved reading
+
+The reader's CLI already holds a copy of the provider's figures on this
+machine. Reading that copy needs no request, so it is not subject to the
+provider's rate limit, and it gives the app a real figure when the endpoint
+says 429.
+
+`Cooldown::poll` accepts a `FetchFailure`. A source attaches the reading it
+found on disk as `last_known`. The rule in `seed_takes_over`:
+
+- No cached reading: the on-disk reading is kept at once.
+- A cached reading younger than `SEED_TAKEOVER_AGE` (ten minutes, the same
+  as `LIVE_USAGE_GRACE_MS`): the cached reading stays. The view still shows
+  it under the grace note, and swapping readings mid-outage would make rows
+  come and go.
+- A cached reading older than that: a newer on-disk reading replaces it.
+
+The error is reported in every case. The grace note still says the figure
+did not just get fresher.
+
+### Claude
+
+Claude Code caches the last body it fetched from the usage endpoint in
+`.claude.json` under `cachedUsageUtilization`, with `fetchedAtMs` and the
+account uuid. `sources::claude_config_cache` reads those two keys and
+`oauthAccount.accountUuid`, nothing else. The reading is ignored unless the
+two uuids match.
+
+`ClaudeDirectFetch` uses it in two tiers. A cached reading no older than
+the caller's `max_age` is returned with no request. Otherwise the endpoint
+is asked. On failure, a cached reading under an hour old rides along as
+`last_known`.
+
+### Codex
+
+Each Codex turn appends a `token_count` event to the session rollout with
+the account's `rate_limits`. `sources::codex_rollout` reads the newest such
+event from the newest rollout file: the last 64 KB of one file, bounded to
+one hour. It is offered only as `last_known`, when the endpoint and the
+app-server fallback both fail. The rollout carries only the account-wide
+window, not the model-scoped limits the endpoint returns, so it never
+pre-empts a working endpoint.
+
+### Deferred
+
+Cursor keeps no usage reading on disk. A Cursor meter would be endpoint
+only. Antigravity needs someone with it installed to check what it saves.
+
