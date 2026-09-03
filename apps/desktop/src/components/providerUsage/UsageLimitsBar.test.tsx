@@ -449,3 +449,60 @@ describe("UsageLimitsBar — degraded state", () => {
     )
   })
 })
+
+describe("UsageLimitsBar — grace period", () => {
+  const GRACE_NOTE = "Claude rate limited the last check. Showing the reading from 4 min ago."
+
+  it("keeps a graced reading on the ring, muted, with the grace note attached", () => {
+    bar({
+      live: liveSummary({
+        providers: [liveProvider({ observedAt: "2027-01-15T11:56:00Z" })],
+        errors: [sourceError()],
+      }),
+    })
+    const seat = screen.getByRole("button", { name: `Claude at 42 percent. ${GRACE_NOTE}` })
+    expect(seat).toHaveAttribute("title", `Claude — 42% — ${GRACE_NOTE}`)
+    const figureWrapper = within(seat).getByText("42%").closest('span[aria-hidden="true"]')
+    expect(figureWrapper).toHaveClass("text-label-tertiary")
+  })
+
+  it("drops a reading past its grace period and shows the unavailable seat instead", () => {
+    bar({
+      live: liveSummary({
+        providers: [liveProvider({ observedAt: "2027-01-15T11:49:00Z" })],
+        errors: [sourceError()],
+      }),
+    })
+    expect(
+      screen.queryByRole("button", { name: /Claude at 42 percent/ }),
+    ).not.toBeInTheDocument()
+    const seat = screen.getByTestId("usage-limits-unavailable")
+    expect(seat).toHaveAccessibleName("Claude, usage unavailable (rate limited)")
+  })
+
+  it("adds a muted grace line under the provider name in the expanded meters", () => {
+    bar({
+      live: liveSummary({
+        providers: [liveProvider({ observedAt: "2027-01-15T11:56:00Z" })],
+        errors: [sourceError()],
+      }),
+      expanded: true,
+    })
+    const group = screen.getByRole("group", { name: "Claude" })
+    const note = within(group).getByText(GRACE_NOTE)
+    expect(note).toHaveClass("text-label-tertiary")
+    expect(note).not.toHaveClass("text-system-orange")
+  })
+
+  it("reads exactly the grace boundary as still shown", () => {
+    // Exactly 10 minutes old — LIVE_USAGE_GRACE_MS itself.
+    bar({
+      live: liveSummary({
+        providers: [liveProvider({ observedAt: "2027-01-15T11:50:00Z" })],
+        errors: [sourceError()],
+      }),
+    })
+    expect(screen.getByRole("button", { name: /Claude at 42 percent/ })).toBeInTheDocument()
+    expect(screen.queryByTestId("usage-limits-unavailable")).not.toBeInTheDocument()
+  })
+})

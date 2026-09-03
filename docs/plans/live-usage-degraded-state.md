@@ -76,3 +76,33 @@ change, which targets only what is on `main`.
 - `UsageLimitsSection.test.tsx`: the section keeps a subsection for a
   provider whose source failed with nothing cached, and still renders nothing
   when there are no providers and no errors.
+
+## Grace period
+
+A provider whose source failed keeps showing its last good reading for a
+grace period. The grace period is `LIVE_USAGE_GRACE_MS`, ten minutes. The app
+measures the reading's age as `generatedAt - observedAt`. It never reads the
+wall clock.
+
+Every surface shows a muted grace note next to the reading. The note names
+the failure and says how old the reading is.
+
+Past the grace period, the app treats the provider as the cold-start
+unavailable case above. The reading no longer shows.
+
+Three helpers in `lib/presentation/liveUsage.ts` carry this rule:
+
+- `liveProviderStatus(summary, provider)`: reports `live`, `grace`, or
+  `failed` for one provider.
+- `liveDisplayableProviders(summary)`: the providers to show. It drops every
+  `failed` provider.
+- `liveGraceNote(category, provider, ageMs)`: the note text.
+
+### Rust: a Keychain read must not look like a sign-out
+
+On macOS, `security find-generic-password` can time out or fail to spawn.
+That case must not clear a good reading the way a real sign-out does.
+`ClaudeDirectFetch` now tells the Keychain's `Absent` (item not found) apart
+from `Unreadable` (a timeout or another failure). Only `Absent` falls back
+to the credentials file. `Unreadable` is a real failure, so `Cooldown` keeps
+the last good snapshot.

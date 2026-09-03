@@ -10,10 +10,16 @@ import type {
   LiveUsageWindowPayload,
 } from "../../lib/ipc"
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
-import type { UnavailableLiveProvider } from "../../lib/presentation/liveUsage"
+import type {
+  LiveProviderStatus,
+  UnavailableLiveProvider,
+} from "../../lib/presentation/liveUsage"
 import {
+  liveDisplayableProviders,
   liveErrorNote,
+  liveGraceNote,
   livePlanLabel,
+  liveProviderStatus,
   liveResetLabel,
   liveUnavailableProviders,
   liveUnavailableReason,
@@ -86,7 +92,7 @@ export function UsageLimitsBar({
   onHoverProvider,
   activeProvider,
 }: UsageLimitsBarProps) {
-  const limited = orderedLiveAccounts(live.providers).filter(
+  const limited = orderedLiveAccounts(liveDisplayableProviders(live)).filter(
     ({ reading }) => liveWindows(reading).length > 0,
   )
   const unavailable = liveUnavailableProviders(live)
@@ -124,6 +130,7 @@ export function UsageLimitsBar({
                 key={key}
                 provider={reading}
                 displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
+                status={liveProviderStatus(live, reading)}
                 onOpen={onViewAll}
                 onHover={onHoverProvider}
                 activation={
@@ -168,6 +175,7 @@ export function UsageLimitsBar({
               key={key}
               provider={reading}
               displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
+              status={liveProviderStatus(live, reading)}
               now={at}
               action={undefined}
               activation={
@@ -259,6 +267,7 @@ function LimitsDisclosure({
 function ProviderGroup({
   provider,
   displayName,
+  status,
   now,
   action,
   onHover,
@@ -266,6 +275,7 @@ function ProviderGroup({
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
+  status: LiveProviderStatus
   now: number
   /** The disclosure, on the topmost group only. */
   action?: ReactNode
@@ -273,6 +283,10 @@ function ProviderGroup({
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
   const plan = livePlanLabel(provider)
+  const graceNote =
+    status.kind === "grace"
+      ? liveGraceNote(status.category, provider.provider, status.ageMs)
+      : null
   return (
     <div
       role="group"
@@ -295,6 +309,8 @@ function ProviderGroup({
         </h3>
         {action}
       </div>
+      {/* Not orange: a grace-period reading is still fine, not a failure. */}
+      {graceNote && <p className="pb-1.5 type-footnote text-label-tertiary">{graceNote}</p>}
       <div className="space-y-2.5">
         {liveWindows(provider).map((window) => (
           <WindowMeterRow key={window.id} window={window} now={now} resetOnHover />
@@ -312,18 +328,31 @@ function ProviderGroup({
 function ProviderRadial({
   provider,
   displayName,
+  status,
   onOpen,
   onHover,
   activation,
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
+  status: LiveProviderStatus
   onOpen?: (() => void) | undefined
   onHover?: ((provider: string | null, anchor: AnchorRegion | null) => void) | undefined
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
   const percent = maxLiveUsedPercent(provider)
   const figure = percent != null ? `${Math.round(percent)}%` : "no stated figure"
+  const graceNote =
+    status.kind === "grace"
+      ? liveGraceNote(status.category, provider.provider, status.ageMs)
+      : null
+  const title = graceNote
+    ? `${displayName} — ${figure} — ${graceNote}`
+    : `${displayName} — ${figure}`
+  const baseLabel = `${displayName}${
+    percent != null ? ` at ${Math.round(percent)} percent` : ", no stated figure"
+  }`
+  const ariaLabel = graceNote ? `${baseLabel}. ${graceNote}` : baseLabel
   return (
     <button
       type="button"
@@ -333,11 +362,9 @@ function ProviderRadial({
       }
       onMouseLeave={() => onHover?.(null, null)}
       data-state={activation ?? "idle"}
-      title={`${displayName} — ${figure}`}
+      title={title}
       className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-brand-tint/[0.08] data-[state=hovered]:bg-brand-tint/[0.08] data-[state=selected]:bg-surface-selected"
-      aria-label={`${displayName}${
-        percent != null ? ` at ${Math.round(percent)} percent` : ", no stated figure"
-      }`}
+      aria-label={ariaLabel}
     >
       <UsageRing
         percent={percent}
@@ -346,7 +373,13 @@ function ProviderRadial({
         size={RING_SIZE}
         className="block text-label-secondary"
       />
-      <span aria-hidden="true" className="type-footnote leading-none text-label">
+      <span
+        aria-hidden="true"
+        className={cn(
+          "type-footnote leading-none",
+          graceNote ? "text-label-tertiary" : "text-label",
+        )}
+      >
         <SegmentFigure>{percent != null ? `${Math.round(percent)}%` : "—"}</SegmentFigure>
       </span>
     </button>
