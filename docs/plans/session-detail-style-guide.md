@@ -185,3 +185,16 @@ Cost tab, bottom line:
 | Verify round 16 revision: prettier, type-check, lint, tests, drift check | done (1015/1015 tests, drift in sync) |
 | Round 17: hero newer/older session chevrons removed; arrow-key traversal kept | done |
 | Verify round 17: type-check, lint, tests, drift check | done (1054/1054 tests, drift in sync) |
+| Round 18 (3 Sep review): $/MTok back to a banded track with a needle | done |
+| Round 18: composition runs saturated — green work, yellow waste, mid-grey carry | done |
+| Round 18: repo moves above the session name in the hero | done |
+| Round 18: tab nav moves above the tab panel | done |
+| Round 18: "Usage" tab renamed "Cost"; Checks lead it, both get subheadings | done |
+| Round 18: static cache-pricing footer dropped; each row gets a hover info button | done |
+| Round 18: Tools burn line moves above the table | done |
+| Round 18: sub-agent rows carry a chevron, so they read as navigable | done |
+| Round 18: chart axis tops out at the next step, taking no headroom | done |
+| Round 18: rehydration mark on the warning amber, one step wider | done |
+| Round 18: one tooltip panel covers the whole bucket | done |
+| Round 18: Out tokens take the strong blue; In steps back to a light cyan | done |
+| Verify round 18: prettier, type-check, lint, tests, drift check | done (1063/1063 tests, drift in sync) |

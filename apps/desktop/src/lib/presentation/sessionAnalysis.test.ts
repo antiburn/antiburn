@@ -296,10 +296,17 @@ describe("modeChangeMarkers", () => {
 })
 
 describe("axisScale", () => {
-  it("scales the ceiling to the peak with headroom, not to the cap", () => {
+  it("scales the ceiling to the peak, not to the cap", () => {
     expect(axisScale(130_000, 1_000_000, 5)).toEqual({
       ceiling: 150_000,
       ticks: [50_000, 100_000],
+    })
+  })
+
+  it("tops out at the next step above the peak, taking no headroom", () => {
+    expect(axisScale(380_000, 1_000_000, 5)).toEqual({
+      ceiling: 400_000,
+      ticks: [100_000, 200_000, 300_000],
     })
   })
 

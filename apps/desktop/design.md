@@ -161,24 +161,24 @@ colors:
   context-rewrite: # the rewrite bar over the plot; white in both themes
     light: "hsl(0 0% 100%)"
     dark: "hsl(0 0% 100%)"
-  token-in: # cool cyan leads the secondary series palette, complement of the flame
-    light: "hsl(199 89% 38%)"
-    dark: "hsl(199 95% 62%)"
-  token-out: # deeper blue as the companion hue
-    light: "hsl(240 6% 82%)"
-    dark: "hsl(240 10% 92%)"
+  token-in: # the quieter cyan of the secondary series palette
+    light: "hsl(199 55% 62%)"
+    dark: "hsl(199 45% 50%)"
+  token-out: # deep blue; the strongest series, because output costs the most
+    light: "hsl(214 90% 42%)"
+    dark: "hsl(210 100% 70%)"
   token-subagent: # quiet label-family neutral
     light: "hsl(240 5.5% 25% / 0.45)"
     dark: "hsl(240 33% 94% / 0.4)"
-  share-work: # efficiency composition, real work; the very light neutral
-    light: "hsl(240 6% 82%)"
-    dark: "hsl(240 10% 92%)"
+  share-work: # efficiency composition, real work; the system green
+    light: "hsl(135 59% 34%)"
+    dark: "hsl(135 70% 52.3%)"
   share-waste: # efficiency composition, rewrite waste; the warning yellow
     light: "hsl(45 100% 50%)"
     dark: "hsl(48 100% 57.4%)"
-  share-carry: # efficiency composition, carry; the quiet neutral
-    light: "hsl(240 5% 65%)"
-    dark: "hsl(240 6% 52%)"
+  share-carry: # efficiency composition, carry; the mid neutral
+    light: "hsl(240 5% 52%)"
+    dark: "hsl(240 6% 62%)"
   context-warning:
     light: "hsl(32 95% 43.72%)"
     dark: "hsl(36.4 100% 52%)"

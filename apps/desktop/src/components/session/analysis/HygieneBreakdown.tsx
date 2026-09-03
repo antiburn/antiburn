@@ -8,6 +8,7 @@ import {
   sessionHygieneExplainers,
   type SessionHygieneCheck,
 } from "../../../lib/presentation/sessionHygiene"
+import { RowInfo } from "./RowInfo"
 
 export interface HygieneBreakdownProps {
   checks: SessionHygieneCheck[]
@@ -17,12 +18,6 @@ export interface HygieneBreakdownProps {
    * such as a tab of its own.
    */
   collapsePassing?: boolean
-  /**
-   * Report the explainer for the check under the pointer or focus, or null
-   * on leave. The host renders it in a helper area it shares with its other
-   * content.
-   */
-  onHoverExplainer?: (entry: { title: string; body: string } | null) => void
 }
 
 interface HygieneStatusPresentation {
@@ -89,42 +84,43 @@ function HygieneGuidance({ check }: { check: SessionHygieneCheck }) {
 
 function HygieneRow({
   check,
+  explainer,
   open,
   onToggle,
-  onHover,
 }: {
   check: SessionHygieneCheck
+  /** One sentence on what the check tests, for the row's info button. */
+  explainer?: string | undefined
   open: boolean
   onToggle: () => void
-  /** Report the row the pointer or focus is on, or null on leave. */
-  onHover?: ((checkId: SessionHygieneCheck["id"] | null) => void) | undefined
 }) {
   const bodyId = useId()
   const status = STATUS_PRESENTATION[check.status]
 
   return (
     <>
-      <button
-        type="button"
-        aria-label={`${check.name} details`}
-        aria-expanded={open}
-        aria-controls={bodyId}
-        onClick={onToggle}
-        onMouseEnter={() => onHover?.(check.id)}
-        onMouseLeave={() => onHover?.(null)}
-        onFocus={() => onHover?.(check.id)}
-        onBlur={() => onHover?.(null)}
-        className="-mx-1 grid grid-cols-[minmax(0,1fr)_max-content_max-content] items-center gap-x-2 rounded-control px-1 py-1.5 text-left type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
-      >
-        <span className="truncate text-label-tertiary">{check.name}</span>
-        <span className={status.textClass}>{status.label}</span>
-        <status.Icon
-          size={STATUS_ICON_SIZE}
-          strokeWidth={2}
-          aria-hidden="true"
-          className={cn("shrink-0", status.textClass)}
-        />
-      </button>
+      {/* The info button cannot sit inside the row button, so the row is a
+          grid that holds the two of them side by side. */}
+      <div className="group -mx-1 grid grid-cols-[minmax(0,1fr)_max-content_max-content_max-content] items-center gap-x-2 rounded-control px-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
+        <button
+          type="button"
+          aria-label={`${check.name} details`}
+          aria-expanded={open}
+          aria-controls={bodyId}
+          onClick={onToggle}
+          className="col-span-3 grid grid-cols-subgrid items-center gap-x-2 py-1.5 text-left active:transform-none active:opacity-100"
+        >
+          <span className="truncate text-label-tertiary">{check.name}</span>
+          <span className={status.textClass}>{status.label}</span>
+          <status.Icon
+            size={STATUS_ICON_SIZE}
+            strokeWidth={2}
+            aria-hidden="true"
+            className={cn("shrink-0", status.textClass)}
+          />
+        </button>
+        {explainer && <RowInfo label={check.name} body={explainer} />}
+      </div>
 
       {open && (
         <div
@@ -140,11 +136,7 @@ function HygieneRow({
   )
 }
 
-export function HygieneBreakdown({
-  checks,
-  collapsePassing = true,
-  onHoverExplainer,
-}: HygieneBreakdownProps) {
+export function HygieneBreakdown({ checks, collapsePassing = true }: HygieneBreakdownProps) {
   const [rollupOpen, setRollupOpen] = useState(false)
   const [openCheck, setOpenCheck] = useState<SessionHygieneCheck["id"] | null>(null)
   const passing = checks.filter((check) => check.status === "clean")
@@ -156,14 +148,9 @@ export function HygieneBreakdown({
     notAssessed.length > 0 ? `, ${notAssessed.length} not assessed` : ""
   }`
 
-  const reportHover = (checkId: SessionHygieneCheck["id"] | null) => {
-    if (!onHoverExplainer) return
-    const entry =
-      checkId == null
-        ? undefined
-        : sessionHygieneExplainers().find((explainer) => explainer.id === checkId)
-    onHoverExplainer(entry ? { title: entry.name, body: entry.explainer } : null)
-  }
+  const explainers = sessionHygieneExplainers()
+  const explainerFor = (checkId: SessionHygieneCheck["id"]) =>
+    explainers.find((entry) => entry.id === checkId)?.explainer
 
   const toggleCheck = (checkId: SessionHygieneCheck["id"]) => {
     setOpenCheck((current) => (current === checkId ? null : checkId))
@@ -210,6 +197,7 @@ export function HygieneBreakdown({
           <HygieneRow
             key={check.id}
             check={check}
+            explainer={explainerFor(check.id)}
             open={openCheck === check.id}
             onToggle={() => toggleCheck(check.id)}
           />
@@ -219,9 +207,9 @@ export function HygieneBreakdown({
         <HygieneRow
           key={check.id}
           check={check}
+          explainer={explainerFor(check.id)}
           open={openCheck === check.id}
           onToggle={() => toggleCheck(check.id)}
-          onHover={onHoverExplainer ? reportHover : undefined}
         />
       ))}
     </div>

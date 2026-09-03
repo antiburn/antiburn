@@ -145,7 +145,7 @@ const AXIS_LABEL = {
   content: PillLabel,
 }
 /** A cache event keeps the established prominent marker. */
-const CACHE_EVENT_BAR_WIDTH = 6
+const CACHE_EVENT_BAR_WIDTH = 7
 /** An ordinary rewrite uses a quiet line, because the user usually cannot prevent it. */
 const REWRITE_MARKER_WIDTH = 2
 /** Small rewrites stay in the tooltip and do not add chart noise. */
@@ -154,6 +154,15 @@ const MATERIAL_REWRITE_TOKENS = 20_000
 const REWRITE_BAR_OPACITY = 0.9
 /** Bar opacity for a routing miss: the same cost, but not avoidable, so the mark draws lighter. */
 const ROUTING_MISS_BAR_OPACITY = 0.4
+/**
+ * A rehydration draws in the warning amber, not the white the other rewrite
+ * marks use. White reads as barely there over the context fill, and the red
+ * this mark once used read as an alarm. The amber sits between the two, and
+ * a rehydration is the one rewrite the reader can act on.
+ */
+const CACHE_EVENT_STROKE = "var(--color-context-warning)"
+/** The other rewrite marks stay quiet, on the neutral rewrite color. */
+const REWRITE_STROKE = "var(--color-context-rewrite)"
 /** Vertical step between stacked mode-label rows, in pixels. */
 const MODE_LABEL_ROW_HEIGHT = 13
 /** Nearer than this fraction of the x-domain, two mode labels would collide. */
@@ -335,6 +344,7 @@ function rewriteBar(
   hasContextAxis: boolean,
   opacity: number,
   strokeWidth: number,
+  stroke: string,
 ): ReactElement {
   const cacheEvent = point.cacheRehydration
   const start = cacheEvent?.stillCachedTokens ?? 0
@@ -350,7 +360,7 @@ function rewriteBar(
         { x: point.index, y: start },
         { x: point.index, y: end },
       ]}
-      stroke="var(--color-context-rewrite)"
+      stroke={stroke}
       strokeWidth={strokeWidth}
       strokeOpacity={opacity}
     />
@@ -360,7 +370,7 @@ function rewriteBar(
       className="animate-chart-mark"
       yAxisId="tokens"
       x={point.index}
-      stroke="var(--color-context-rewrite)"
+      stroke={stroke}
       strokeWidth={strokeWidth}
       strokeOpacity={opacity}
     />
@@ -446,31 +456,28 @@ export function ContextTokensTooltip({
         {point.betweenCalls != null && (
           <span className="mt-1">{betweenCallsLabel(point.betweenCalls)}</span>
         )}
-        {point.betweenCalls == null && cacheEvent == null && (
-          <span className="mt-1 type-caption text-label-tertiary">Tokens</span>
-        )}
-        {point.betweenCalls == null &&
-          cacheEvent == null &&
-          TOKEN_ROWS.map((row) => (
-            <span key={row.key} className="flex items-center gap-1.5">
-              <span
-                className="h-2 w-2 shrink-0 rounded-full"
-                style={{ backgroundColor: row.colorVar }}
-              />
-              {row.label} · {formatCompact(point[row.key])}
-            </span>
-          ))}
-        {point.betweenCalls == null &&
-          cacheEvent == null &&
-          CACHE_ROWS.filter((row) => !row.hideWhenZero || point[row.key] > 0).map((row) => (
-            <span key={row.key} className="flex items-center gap-1.5">
-              <span
-                className="h-2 w-2 shrink-0 rounded-full border"
-                style={{ borderColor: row.colorVar }}
-              />
-              {row.label} · {formatCompact(point[row.key])}
-            </span>
-          ))}
+        {/* The token rows always show. Hiding them on a bucket that also had
+            an idle gap or a cache event made the reader hover other buckets
+            to learn what this one spent. */}
+        <span className="mt-1 type-caption text-label-tertiary">Tokens</span>
+        {TOKEN_ROWS.map((row) => (
+          <span key={row.key} className="flex items-center gap-1.5">
+            <span
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ backgroundColor: row.colorVar }}
+            />
+            {row.label} · {formatCompact(point[row.key])}
+          </span>
+        ))}
+        {CACHE_ROWS.filter((row) => !row.hideWhenZero || point[row.key] > 0).map((row) => (
+          <span key={row.key} className="flex items-center gap-1.5">
+            <span
+              className="h-2 w-2 shrink-0 rounded-full border"
+              style={{ borderColor: row.colorVar }}
+            />
+            {row.label} · {formatCompact(point[row.key])}
+          </span>
+        ))}
         {point.isCacheRehydration && cacheEvent != null && (
           <>
             <span style={{ color: "var(--color-context-warning)" }}>
@@ -639,7 +646,8 @@ export function ContextTokensChart({
           const strokeWidth = point.isCacheRehydration
             ? CACHE_EVENT_BAR_WIDTH
             : REWRITE_MARKER_WIDTH
-          return rewriteBar(point, "rewrite", !!contextAxis, opacity, strokeWidth)
+          const stroke = point.isCacheRehydration ? CACHE_EVENT_STROKE : REWRITE_STROKE
+          return rewriteBar(point, "rewrite", !!contextAxis, opacity, strokeWidth, stroke)
         })}
         <Tooltip
           cursor={{ stroke: "var(--color-separator)" }}

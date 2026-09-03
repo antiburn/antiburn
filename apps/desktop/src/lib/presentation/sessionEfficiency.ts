@@ -107,12 +107,6 @@ function thermometerFor(value: number, edges: BandEdges): EfficiencyThermometer 
   }
 }
 
-/** One zone of a meter track: the band that holds from `from` (0–1) upward. */
-export interface EfficiencyShareZone {
-  from: number
-  band: EfficiencyBand
-}
-
 /** Build the thermometer for one metric and agent profile. */
 export function efficiencyThermometer(
   value: number,

@@ -35,18 +35,20 @@ describe("EfficiencyBreakdown", () => {
     expect(screen.getAllByText("ok")).toHaveLength(4)
   })
 
-  it("keeps the VU meter for the cost reading, which is not part of the composition", () => {
+  it("draws the cost reading as a full-width banded track with a needle", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
 
-    // The cost track splits into thirds — one zone per band — on the shared
-    // meter palette: orange, then yellow, then red. The reading sits in the
-    // middle third, so the fill has crossed into the yellow.
+    // The track shows the good, middle, and bad bands at fixed thirds, so it
+    // never changes length. The needle marks where this session sits.
     const cost = screen.getByTestId("thermometer-costPerMTok")
     expect(cost.dataset.position).toBe("0.383")
-    expect(cost.querySelector('[data-testid="segmented-meter-notch"]')).toBeTruthy()
-    expect(cost.querySelectorAll(".bg-brand-tint").length).toBeGreaterThan(0)
-    expect(cost.querySelectorAll(".bg-system-yellow-tint").length).toBeGreaterThan(0)
-    expect(cost.querySelectorAll('[class~="bg-system-red-unlit/12"]').length).toBeGreaterThan(0)
+    expect(cost.querySelector('[data-testid="cost-band-good"]')).toBeTruthy()
+    expect(cost.querySelector('[data-testid="cost-band-ok"]')).toBeTruthy()
+    expect(cost.querySelector('[data-testid="cost-band-bad"]')).toBeTruthy()
+
+    const needle = cost.querySelector<HTMLElement>('[data-testid="cost-needle"]')
+    expect(needle).toBeTruthy()
+    expect(Number.parseFloat(needle!.style.left)).toBeCloseTo(38.3, 1)
   })
 
   it("draws the three shares as one composition track whose runs fill the width", () => {
@@ -62,7 +64,7 @@ describe("EfficiencyBreakdown", () => {
     expect(widths.reduce((sum, width) => sum + width, 0)).toBeCloseTo(1, 5)
 
     // Each slice keeps its own color so it stays recognisable between
-    // sessions. The band word, not the run, carries the judgment.
+    // sessions: green for real work, yellow for waste, neutral for carry.
     expect(runs[0]!.className).toContain("bg-share-work")
     expect(runs[1]!.className).toContain("bg-share-waste")
     expect(runs[2]!.className).toContain("bg-share-carry")

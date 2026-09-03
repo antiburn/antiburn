@@ -40,18 +40,20 @@
      alike. */
   --color-context-rewrite: var(--color-context-rewrite-val);
 
-  /* The token series below the context line: a cool cyan for parent input,
-     a deeper blue for parent output, and a neutral for combined sub-agent
-     tokens. Cool by design, so the layer reads as secondary to the hot line
-     above it. */
+  /* The token series below the context line: a deep blue for parent output,
+     a lighter cyan for parent input, and a neutral for combined sub-agent
+     tokens. Output leads, because output tokens cost the most and show best
+     that work is getting done. Cool by design, so the layer reads as
+     secondary to the hot line above it. */
   --color-token-in: var(--color-token-in-val);
   --color-token-out: var(--color-token-out-val);
   --color-token-subagent: var(--color-token-subagent-val);
 
   /* The three parts of the efficiency composition: real work, rewrite waste,
-     and carry. Real work takes a very light grey and carry a mid grey, so
-     the two neutrals stay apart where they meet. Rewrite waste keeps the
-     warning yellow, because waste is the one slice a reader must act on. */
+     and carry. Real work takes the system green and rewrite waste the warning
+     yellow, so the composition reads good to bad in the same language as the
+     cost track beside it. Carry takes a mid grey, because carry is neither
+     good nor bad. */
   --color-share-work: var(--color-share-work-val);
   --color-share-waste: var(--color-share-waste-val);
   --color-share-carry: var(--color-share-carry-val);
@@ -75,14 +77,14 @@
   --color-context-stroke-val: hsl(17.6 100% 58.6%); /* brand-tint, the hot mark */
   --color-context-fill-top-val: hsl(17.6 100% 58.6% / 0.5); /* brand orange */
   --color-context-fill-base-val: hsl(17.6 100% 58.6% / 0.12);
-  --color-token-in-val: hsl(199 89% 38%); /* cyan */
-  --color-token-out-val: hsl(240 6% 82%); /* blue */
+  --color-token-in-val: hsl(199 55% 62%); /* light cyan */
+  --color-token-out-val: hsl(214 90% 42%); /* deep blue */
   --color-token-subagent-val: hsl(240 5.5% 25% / 0.45); /* label-family neutral */
   --color-chart-label-pill-val: hsl(0 0% 100% / 0.5);
   --color-context-rewrite-val: hsl(0 0% 100%);
-  --color-share-work-val: hsl(240 6% 82%);
+  --color-share-work-val: hsl(135 59% 34%);
   --color-share-waste-val: hsl(45 100% 50%);
-  --color-share-carry-val: hsl(240 5% 65%);
+  --color-share-carry-val: hsl(240 5% 52%);
   --color-context-warning-val: hsl(32 95% 43.72%); /* amber-600 */
   --color-context-critical-val: hsl(0 72% 50.5%); /* red-600 */
 }
@@ -96,14 +98,14 @@
     --color-context-stroke-val: hsl(17.6 100% 58.6%); /* brand-tint, the hot mark */
     --color-context-fill-top-val: hsl(240 33% 94% / 0.18); /* label-family neutral */
     --color-context-fill-base-val: hsl(240 33% 94% / 0.03);
-    --color-token-in-val: hsl(199 95% 62%); /* cyan */
-    --color-token-out-val: hsl(240 10% 92%); /* blue */
+    --color-token-in-val: hsl(199 45% 50%); /* light cyan */
+    --color-token-out-val: hsl(210 100% 70%); /* deep blue */
     --color-token-subagent-val: hsl(240 33% 94% / 0.4); /* label-family neutral */
     --color-chart-label-pill-val: hsl(0 0% 0% / 0.5);
     --color-context-rewrite-val: hsl(0 0% 100%);
-    --color-share-work-val: hsl(240 10% 92%);
+    --color-share-work-val: hsl(135 70% 52.3%);
     --color-share-waste-val: hsl(48 100% 57.4%);
-    --color-share-carry-val: hsl(240 6% 52%);
+    --color-share-carry-val: hsl(240 6% 62%);
     --color-context-warning-val: hsl(36.4 100% 52%); /* vivid amber */
     --color-context-critical-val: hsl(0 90% 70.7%); /* red-400 */
   }
@@ -113,14 +115,14 @@
   --color-context-stroke-val: hsl(17.6 100% 58.6%);
   --color-context-fill-top-val: hsl(240 33% 94% / 0.18);
   --color-context-fill-base-val: hsl(240 33% 94% / 0.03);
-  --color-token-in-val: hsl(199 95% 62%);
-  --color-token-out-val: hsl(240 10% 92%);
+  --color-token-in-val: hsl(199 45% 50%);
+  --color-token-out-val: hsl(210 100% 70%);
   --color-token-subagent-val: hsl(240 33% 94% / 0.4);
   --color-chart-label-pill-val: hsl(0 0% 0% / 0.5);
   --color-context-rewrite-val: hsl(0 0% 100%);
-  --color-share-work-val: hsl(240 10% 92%);
+  --color-share-work-val: hsl(135 70% 52.3%);
   --color-share-waste-val: hsl(48 100% 57.4%);
-  --color-share-carry-val: hsl(240 6% 52%);
+  --color-share-carry-val: hsl(240 6% 62%);
   --color-context-warning-val: hsl(36.4 100% 52%);
   --color-context-critical-val: hsl(0 90% 70.7%);
 }

@@ -245,39 +245,18 @@ function RelationControl({
 }
 
 /** The three views of one session's analysis. */
-type SessionDetailTab = "overview" | "usage" | "tools"
+type SessionDetailTab = "overview" | "cost" | "tools"
 
 const DETAIL_TABS: ReadonlyArray<{ value: SessionDetailTab; label: string }> = [
   { value: "overview", label: "Overview" },
-  { value: "usage", label: "Usage" },
+  { value: "cost", label: "Cost" },
   { value: "tools", label: "Tools" },
 ]
 
-/** One entry for the Usage tab's shared helper area. */
-interface UsageHelpEntry {
-  title: string
-  body: string
-}
-
-/**
- * The Usage tab's one helper area, under the cost rows and the checks. It
- * explains whichever row the pointer is on; idle, it carries the cache
- * pricing note.
- */
-function UsageHelperFooter({ entry }: { entry: UsageHelpEntry | null }) {
+/** The name of one block inside a tab that holds more than one block. */
+function TabSectionHeading({ children }: { children: string }) {
   return (
-    <div className="mt-2 min-h-14 border-t border-separator pt-3 text-pretty type-callout text-label-tertiary">
-      {entry ? (
-        <p>
-          <span className="font-medium! text-label-secondary">{entry.title}.</span> {entry.body}
-        </p>
-      ) : (
-        <p>
-          Cache reads bill at about 10% of the fresh-input price; cache writes about 25% more.
-          On subscription these figures are estimates at API prices.
-        </p>
-      )}
-    </div>
+    <h3 className="mb-2 type-caption font-medium! text-label-tertiary uppercase">{children}</h3>
   )
 }
 
@@ -536,7 +515,6 @@ export function SessionDetailPresentation({
 }: SessionDetailPresentationProps) {
   const subagent = session.subagent
   const [tab, setTab] = useState<SessionDetailTab>("overview")
-  const [usageHelp, setUsageHelp] = useState<UsageHelpEntry | null>(null)
   const modelPairs = modelRunShortPairs(modelRuns)
   const hygieneChecks = sessionHygieneChecks(hygiene)
 
@@ -733,13 +711,9 @@ export function SessionDetailPresentation({
               className="flex flex-col gap-y-2 border-b border-separator px-4 pt-3 pb-4"
               aria-label="Session summary"
             >
-              <TruncatedText
-                className="min-w-0 type-title-3 text-label break-words"
-                text={relations?.title?.trim() || session.title?.trim() || "Session"}
-                lines={2}
-              />
-
-              <div className="flex min-w-0 flex-col gap-y-2">
+              {/* The repo comes first because it is the container: you are
+                  inside a repo, and the session is the work you do in it. */}
+              {(session.repo || session.wslDistro) && (
                 <div className="flex min-w-0 items-center gap-1.5 font-mono type-caption text-label-secondary">
                   {session.repo && (
                     <Tooltip label={session.repo}>
@@ -748,8 +722,16 @@ export function SessionDetailPresentation({
                   )}
                   <WslOriginBadge distro={session.wslDistro} />
                 </div>
+              )}
 
-                <div className="mt-2 grid grid-cols-3 gap-x-3">
+              <TruncatedText
+                className="min-w-0 type-title-3 text-label break-words"
+                text={relations?.title?.trim() || session.title?.trim() || "Session"}
+                lines={2}
+              />
+
+              <div className="flex min-w-0 flex-col gap-y-2">
+                <div className="grid grid-cols-3 gap-x-3">
                   <StatCell
                     label={costBadge ? costBadge.figureLabel : "Cost"}
                     value={cost ? formatCost(cost.totalCostUsd) : "—"}
@@ -801,6 +783,18 @@ export function SessionDetailPresentation({
               />
             )}
 
+            <div className="border-b border-separator px-3 py-2">
+              <SegmentedControl
+                options={DETAIL_TABS}
+                value={tab}
+                onChange={setTab}
+                ariaLabel="Session detail sections"
+                semantics="tabs"
+                variant="raised-tabs"
+                idPrefix="session-detail-tabs"
+              />
+            </div>
+
             <div
               id="session-detail-tabs-panel"
               role="tabpanel"
@@ -828,59 +822,49 @@ export function SessionDetailPresentation({
                 </div>
               )}
 
-              {tab === "usage" && (
+              {/* The checks lead: a failing check is more use than the cost
+                  rows most of the time. */}
+              {tab === "cost" && (
                 <div className="flex flex-col">
-                  {cost && tokensCard ? (
-                    <CostBreakdown
-                      cost={cost}
-                      split={tokensCard.split}
-                      onOpenSubagent={onOpenSubagent}
-                      onHoverComponent={setUsageHelp}
-                    />
-                  ) : (
-                    <p className="type-callout text-label-tertiary">
-                      No cost has been recorded for this session.
-                    </p>
-                  )}
-                  <div className="mt-3 border-t border-separator pt-3">
-                    <HygieneBreakdown
-                      checks={hygieneChecks}
-                      collapsePassing={false}
-                      onHoverExplainer={setUsageHelp}
-                    />
-                  </div>
-                  <UsageHelperFooter entry={usageHelp} />
+                  <section>
+                    <TabSectionHeading>Checks</TabSectionHeading>
+                    <HygieneBreakdown checks={hygieneChecks} collapsePassing={false} />
+                  </section>
+                  <section className="mt-3 border-t border-separator pt-3">
+                    <TabSectionHeading>Cost</TabSectionHeading>
+                    {cost && tokensCard ? (
+                      <CostBreakdown
+                        cost={cost}
+                        split={tokensCard.split}
+                        onOpenSubagent={onOpenSubagent}
+                      />
+                    ) : (
+                      <p className="type-callout text-label-tertiary">
+                        No cost has been recorded for this session.
+                      </p>
+                    )}
+                  </section>
                 </div>
               )}
 
               {tab === "tools" &&
                 (firstSession?.initialContext ? (
                   <div className="flex flex-col gap-y-2">
-                    <SkillsMcpChart breakdown={firstSession.initialContext} />
+                    {/* The wasted tokens are the finding of this tab, so they
+                        come before the table they summarize. */}
                     {toolsUsage != null && toolsUsage.wastedTokens > 0 && (
                       <p className="type-callout text-label-tertiary">
                         The unused items here burned {formatCompact(toolsUsage.wastedTokens)}{" "}
                         tokens.
                       </p>
                     )}
+                    <SkillsMcpChart breakdown={firstSession.initialContext} />
                   </div>
                 ) : (
                   <p className="type-callout text-label-tertiary">
                     No startup context has been recorded for this session.
                   </p>
                 ))}
-            </div>
-
-            <div className="border-t border-separator px-3 py-2">
-              <SegmentedControl
-                options={DETAIL_TABS}
-                value={tab}
-                onChange={setTab}
-                ariaLabel="Session detail sections"
-                semantics="tabs"
-                variant="raised-tabs"
-                idPrefix="session-detail-tabs"
-              />
             </div>
           </>
         )}

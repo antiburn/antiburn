@@ -8,15 +8,8 @@ import {
   type EfficiencyMetric,
   type EfficiencyMetrics,
   type EfficiencyProfile,
-  type EfficiencyShareZone,
 } from "../../../lib/presentation/sessionEfficiency"
 import { Tooltip } from "../../presentation/Tooltip"
-import {
-  METER_INK,
-  SegmentedMeter,
-  type MeterInk,
-  type MeterZone,
-} from "../../ui/SegmentedMeter"
 
 export interface EfficiencyBreakdownProps {
   metrics: EfficiencyMetrics
@@ -30,20 +23,13 @@ const BAND_TEXT_CLASS: Record<EfficiencyBand, string> = {
   bad: "text-system-red-text",
 }
 
-/* The efficiency meters draw as VU meters, on the shared meter palette:
-   the track holds a fixed zone for each band, and the fill lights whichever
-   zones the reading crosses. The zones always run left to
-   right along the metric's own scale, so orange marks the good end of every
-   meter and red the bad end, whichever end the fill comes from. */
-const BAND_INK: Record<EfficiencyBand, MeterInk> = {
-  good: METER_INK.normal,
-  ok: METER_INK.warning,
-  bad: METER_INK.critical,
-}
-
-/** Ink each band zone for the segmented meter. */
-function meterZones(zones: EfficiencyShareZone[]): MeterZone[] {
-  return zones.map((zone) => ({ from: zone.from, ...BAND_INK[zone.band] }))
+/* The fill for one band of the cost track. The track shows all three bands at
+   full width, so these are the fixed backdrop the needle moves across. They
+   run at full strength: a half-strength band cannot be told from the track. */
+const BAND_SEGMENT_CLASS: Record<EfficiencyBand, string> = {
+  good: "bg-system-green",
+  ok: "bg-surface-tertiary",
+  bad: "bg-system-orange-tint",
 }
 
 type MetricKey = "costPerMTok" | ShareMetricKey
@@ -84,9 +70,9 @@ interface ShareRow {
   key: ShareMetricKey
   label: string
   /* The slice keeps one color for the life of the feature, so a reader
-     recognizes it between sessions. The colors come from the composition
-     ramp, which no meaning color uses: the band word carries the judgment,
-     and a slice must not look like a verdict. */
+     recognizes it between sessions. Real work runs green and rewrite waste
+     yellow, which reads in the same language as the cost track above. Carry
+     stays neutral, because carry is neither good nor bad. */
   inkClassName: string
 }
 
@@ -141,24 +127,42 @@ function shareSegments(metrics: EfficiencyMetrics): ShareSegment[] {
 }
 
 /**
- * The $/MTok scale in the usage meter's silhouette. The thermometer splits
- * the track into thirds, one per band, so the zones sit at fixed positions
- * and the fill lights up to the reading. The notch marks the same position
- * on the track.
+ * The $/MTok scale as a banded track with a needle. The track shows the good,
+ * middle, and bad bands at their fixed thirds, and the needle marks where this
+ * session sits. The track never changes length.
+ *
+ * A fill that grows to the reading was the wrong form for this metric: a low
+ * $/MTok is a good result, so a good session drew almost nothing. The question
+ * here is "where does this sit between good and bad", which a fixed scale with
+ * a moving mark answers directly.
  */
 function CostScaleBar({ value, profile }: { value: number; profile: EfficiencyProfile }) {
   const scale = efficiencyThermometer(value, "costPerMTok", profile)
-  const zones = meterZones(scale.segments.map((band, index) => ({ from: index / 3, band })))
   return (
     <div
+      className="relative flex h-3.5 items-center"
       data-testid="thermometer-costPerMTok"
       data-position={scale.position.toFixed(3)}
       aria-hidden
     >
-      <SegmentedMeter
-        percent={scale.position * 100}
-        expectedFraction={scale.position}
-        zones={zones}
+      {scale.segments.map((band, index) => (
+        <span
+          key={index}
+          data-testid={`cost-band-${band}`}
+          className={cn(
+            "h-full flex-1",
+            index === 0 && "rounded-s-full",
+            index === scale.segments.length - 1 && "rounded-e-full",
+            BAND_SEGMENT_CLASS[band],
+          )}
+        />
+      ))}
+      {/* The ring separates the needle from whichever band it lands on, so the
+          mark stays legible over the green and the orange alike. */}
+      <span
+        data-testid="cost-needle"
+        className="absolute -inset-y-1 w-[3px] -translate-x-1/2 rounded-full bg-label ring-2 ring-surface"
+        style={{ left: `${scale.position * 100}%` }}
       />
     </div>
   )
@@ -175,7 +179,7 @@ function CompositionTrack({ segments }: { segments: ShareSegment[] }) {
     <div
       data-testid="efficiency-composition"
       aria-hidden
-      className="flex h-3 gap-px overflow-hidden rounded-full bg-surface-secondary"
+      className="flex h-3.5 gap-px overflow-hidden rounded-full bg-surface-secondary"
     >
       {segments.map((segment) => (
         <span

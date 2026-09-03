@@ -147,7 +147,7 @@ describe("ContextTokensChart", () => {
       <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
     )
 
-    const bar = container.querySelector('line[stroke="var(--color-context-rewrite)"]')
+    const bar = container.querySelector('line[stroke="var(--color-context-warning)"]')
     // The mark carries the entrance class, so it fades in after the areas
     // have finished growing.
     expect(container.querySelector(".animate-chart-mark")).toBeTruthy()
@@ -172,7 +172,7 @@ describe("ContextTokensChart", () => {
     )
 
     const rehydrationLines = container.querySelectorAll(
-      'line[stroke="var(--color-context-rewrite)"]',
+      'line[stroke="var(--color-context-warning)"]',
     )
     expect(rehydrationLines.length).toBe(0)
   })
@@ -193,7 +193,7 @@ describe("ContextTokensChart", () => {
 
     const compactionLine = container.querySelector('line[stroke="var(--color-label-tertiary)"]')
     const rehydrationLine = container.querySelector(
-      'line[stroke="var(--color-context-rewrite)"]',
+      'line[stroke="var(--color-context-warning)"]',
     )
     expect(compactionLine).toBeNull()
     expect(rehydrationLine?.getAttribute("stroke-dasharray")).toBeFalsy()
@@ -319,7 +319,7 @@ describe("ContextTokensChart", () => {
     )
 
     expect(
-      container.querySelectorAll('line[stroke="var(--color-context-rewrite)"]'),
+      container.querySelectorAll('line[stroke="var(--color-context-warning)"]'),
     ).toHaveLength(2)
     expect(screen.getAllByText("rehydration")).toHaveLength(1)
   })
@@ -385,8 +385,10 @@ describe("ContextTokensTooltip", () => {
     )
 
     expect(screen.getByText("During Bash call · 2m")).toBeInTheDocument()
-    expect(screen.queryByText("Tokens")).not.toBeInTheDocument()
-    expect(screen.queryByText(/^Parent in/)).not.toBeInTheDocument()
+    // The panel covers the whole bucket, so the token rows stay even when the
+    // bucket is an idle gap with nothing spent.
+    expect(screen.getByText("Tokens")).toBeInTheDocument()
+    expect(screen.getByText(/^Parent in/)).toBeInTheDocument()
   })
 
   it("names the drawn width of a long gap ended by a user prompt", () => {
@@ -517,11 +519,13 @@ describe("ContextTokensTooltip", () => {
     expect(screen.getByText("Old context rewritten · 35.4k")).toBeInTheDocument()
     expect(screen.getByText("Context growth · 2.1k")).toBeInTheDocument()
     expect(screen.getByText("User inactive · 2h 35m")).toBeInTheDocument()
-    expect(screen.queryByText(/^Cache read/)).not.toBeInTheDocument()
-    expect(screen.queryByText(/^Cache write/)).not.toBeInTheDocument()
+    // One panel covers everything about the bucket: the rehydration detail
+    // and the token rows sit in the same tooltip.
+    expect(screen.getByText(/^Cache read/)).toBeInTheDocument()
+    expect(screen.getByText("Tokens")).toBeInTheDocument()
+    expect(screen.getByText(/^Parent in/)).toBeInTheDocument()
+    // The rewrite line still gives way to the fuller rehydration breakdown.
     expect(screen.queryByText(/^Context rewrite/)).not.toBeInTheDocument()
-    expect(screen.queryByText("Tokens")).not.toBeInTheDocument()
-    expect(screen.queryByText(/^Parent in/)).not.toBeInTheDocument()
   })
 
   it("names a provider cache miss by its rewritten old context", () => {
