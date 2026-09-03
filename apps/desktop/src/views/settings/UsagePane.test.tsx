@@ -291,7 +291,7 @@ describe("UsagePane — the grace period", () => {
     await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
     expect(
       screen.getByText(
-        "Asked Claude directly. 0 limits reported. Claude rate limited the last check. Showing the reading from 4 min ago.",
+        "Asked Claude directly. 0 limits reported. Claude rate limited the last check; reading from 4 min ago.",
       ),
     ).toBeInTheDocument()
     expect(screen.queryByText(/Wait, then retry/)).not.toBeInTheDocument()
