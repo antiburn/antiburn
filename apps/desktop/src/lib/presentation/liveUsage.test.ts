@@ -793,16 +793,16 @@ describe("the grace period", () => {
 
   it("phrases the grace note per category, and the age in words", () => {
     expect(liveGraceNote("rateLimited", "anthropic", 4 * 60_000)).toBe(
-      "Claude rate limited the last check. Showing the reading from 4 min ago.",
+      "Claude rate limited the last check; reading from 4 min ago.",
     )
     expect(liveGraceNote("authentication", "google", 30_000)).toBe(
-      "Google rejected the sign-in on the last check. Showing the reading from under 1 min ago.",
+      "Google rejected the sign-in on the last check; reading from under 1 min ago.",
     )
     expect(liveGraceNote("schema", "openai", 9 * 60_000)).toBe(
-      "Codex sent an unreadable reply. Showing the reading from 9 min ago.",
+      "Codex sent an unreadable reply; reading from 9 min ago.",
     )
     expect(liveGraceNote("unavailable", undefined, 60_000)).toBe(
-      "Your provider did not answer the last check. Showing the reading from 1 min ago.",
+      "Your provider didn't answer the last check; reading from 1 min ago.",
     )
   })
 })

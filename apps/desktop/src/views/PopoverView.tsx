@@ -392,7 +392,13 @@ export function PopoverView() {
         <div ref={usageChartWrap} className="shrink-0 overflow-hidden">
           <div>
             {state.usage && (
-              <UsageSpendSummary totals={state.usage.totals ?? EMPTY_USAGE_WINDOWS} compact />
+              <UsageSpendSummary
+                totals={state.usage.totals ?? EMPTY_USAGE_WINDOWS}
+                compact
+                showApiPricingCaveat={state.liveUsage.providers.some(
+                  ({ plan }) => plan !== null,
+                )}
+              />
             )}
             <UsageLimitsBar
               live={state.liveUsage}

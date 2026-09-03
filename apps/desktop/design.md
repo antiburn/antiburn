@@ -36,6 +36,9 @@ colors:
   surface-card:
     light: "hsl(0 0% 0% / 0.04)"
     dark: "hsl(0 0% 100% / 0.08)"
+  surface-header: # the quiet band at the head of the menu-bar popover; fainter than a card
+    light: "hsl(0 0% 0% / 0.025)"
+    dark: "hsl(0 0% 100% / 0.03)"
   surface-hover: # stays clear of surface-selected, so a hover never reads as a selection
     light: "hsl(0 0% 0% / 0.04)"
     dark: "hsl(0 0% 100% / 0.04)" # @media dark: hsl(0 0% 100% / 0.07)
