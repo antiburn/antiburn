@@ -45,7 +45,10 @@ version and refuses the release if there is none.
 - Discovery prunes before it stats: Codex walks only the date directories
   inside the recency window, Claude's sub-agent sweep skips a session whose
   parent is not recent and whose `subagents` directory is old, and
-  Antigravity checks a database's mtime before opening it.
+  Antigravity checks a database's mtime before opening it. Cursor's
+  `agent-transcripts` and `chats` walks are now bounded by depth to the
+  documented layout, rather than mtime-gated, so a rediscovery no longer
+  reads a project's other subdirectories.
 
 ## [0.4.0] - 2026-09-02
 

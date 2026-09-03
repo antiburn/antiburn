@@ -173,6 +173,17 @@ const NOW_TICK_MS = 30_000
 const LIST_RECONCILE_MS = 60_000
 
 /**
+ * Floor between `scan:finished`-triggered usage refreshes that report no
+ * list change. A pass finishing is not, by itself, a reason to recompute
+ * 30-day usage totals and resolve both live provider accounts (F1): an
+ * active session's row updates every few seconds, and a usage refresh on
+ * every one of those would cost as much as the list rebuild it was meant to
+ * avoid. `listChanged` still forces an immediate refresh, since that means a
+ * session was discovered or removed.
+ */
+const USAGE_REFRESH_MIN_MS = 30_000
+
+/**
  * Order list rows the way the backend does: newest activity first, and a
  * revived session's own id breaking a tie. `listenSessionEntryChanged`
  * re-sorts with this after patching one row in place, so a session whose
@@ -241,6 +252,13 @@ export class PopoverSession {
    * reconciled eventually.
    */
   private lastListReconcileAt = 0
+
+  /**
+   * When `listenScanEvent` last triggered a usage refresh. Read against
+   * `USAGE_REFRESH_MIN_MS` (F1) so a quiet stream of `scan:finished` events
+   * with no list change refreshes usage on a floor, not on every event.
+   */
+  private lastUsageRefreshAt = 0
 
   private nowTickTimer: ReturnType<typeof setInterval> | null = null
 
@@ -620,7 +638,9 @@ export class PopoverSession {
   // progress, so the intermediate phases have nothing to say. A full refetch
   // of entries and repositories only runs when the pass says the list needs
   // one, or the reconcile interval has elapsed — `sessions:entry-changed`
-  // already keeps individual rows current in between.
+  // already keeps individual rows current in between. Usage follows the
+  // same shape on its own floor (F1): `listChanged` forces an immediate
+  // refresh, and every other pass waits for `USAGE_REFRESH_MIN_MS`.
   private listenScanEvent = async (generation: number): Promise<void> => {
     const unlisten = await onScanEvent((status, phase) => {
       if (generation !== this.generation) return
@@ -631,7 +651,10 @@ export class PopoverSession {
         void this.refreshEntries(this.windowDays()).catch(() => {})
         void this.refreshRepositoryList()
       }
-      void this.refreshUsage()
+      if (status.listChanged || now - this.lastUsageRefreshAt >= USAGE_REFRESH_MIN_MS) {
+        this.lastUsageRefreshAt = now
+        void this.refreshUsage()
+      }
     })
     if (generation !== this.generation) {
       unlisten()
