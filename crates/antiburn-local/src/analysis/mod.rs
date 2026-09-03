@@ -126,7 +126,12 @@ pub use vendors::{adapter_for, has_dedicated_adapter};
 // +1 for Claude Code's `Task` → `Agent` tool rename: `is_subagent_launch_tool`
 // (`analysis::model`) now also matches `Agent`, so every Claude session
 // must reparse to count `Agent` launches in `subagent_launches`.
-pub const PARSER_REVISION: i64 = 21;
+// +1 for the skill description cap fix: a truncated skill description no
+// longer sets `context_sources_cap_exceeded`
+// (`evidence_sink::SessionEvidenceAccumulator::observe_context_source`), so
+// a stored session must re-ingest to clear the degraded `context_sources`
+// group.
+pub const PARSER_REVISION: i64 = 22;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
