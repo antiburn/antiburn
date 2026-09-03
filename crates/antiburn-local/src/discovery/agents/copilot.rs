@@ -15,21 +15,32 @@
 //!      `XDG_CONFIG_HOME` if set, falling back to `~/.config/copilot/...`)
 //!    - Windows: `%LOCALAPPDATA%\GitHub Copilot CLI\session-state\...`
 //!
-//! Each session is its own subdirectory under `session-state/` containing one
-//! or more `*.json` / `*.jsonl` files. The walker is layout-tolerant: it
-//! recursively collects any directory containing matching files.
+//!    Each session is its own subdirectory under `session-state/`. The CLI
+//!    writes `events.jsonl` there as the transcript. The rest of the
+//!    directory holds unrelated files: `workspace.yaml`, `plan.md`, a
+//!    `checkpoints/` directory of markdown, a `files/` directory of user
+//!    attachments (any type, including `.json`), and, when autopilot is
+//!    used, `autopilot-objective.json`. Only `events.jsonl` is a session; the
+//!    walker looks for that exact file name and ignores every sibling.
 
 use std::path::{Path, PathBuf};
 
 use crate::discovery::scanner::AgentKind;
 use crate::discovery::{
     AgentExplorer, DesktopPlatform, SessionLog, SessionSource, SurfacePaths, WatchRoot,
-    app_config_dir_in, collect_dirs_with_exts, current_desktop_platform, env_path_when_real_home,
-    find_chat_session_dirs, home_dir, recent_files_with_exts,
+    app_config_dir_in, collect_dirs_with_file_named, current_desktop_platform,
+    env_path_when_real_home, find_chat_session_dirs, home_dir, recent_files_named,
+    recent_files_with_exts,
 };
 use async_trait::async_trait;
 
-const CLI_FILE_EXTS: &[&str] = &["json", "jsonl"];
+/// The only file name the CLI's `session-state/<session-id>/` directory
+/// holds that antiburn treats as a session transcript.
+const CLI_TRANSCRIPT_FILE_NAME: &str = "events.jsonl";
+
+/// [`CLI_TRANSCRIPT_FILE_NAME`] as a path suffix, for matching a lowercased
+/// full path in [`CopilotExplorer::owns_path`].
+const CLI_TRANSCRIPT_PATH_SUFFIX: &str = "/events.jsonl";
 
 /// Substrings of the VS Code-family on-disk layout used by Copilot Chat.
 /// Both must appear in the (lowercased, forward-slashed) path to claim it
@@ -59,9 +70,23 @@ pub struct CopilotExplorer;
 #[async_trait]
 impl AgentExplorer for CopilotExplorer {
     async fn discover_recent(&self, now: i64, since_secs: i64) -> Vec<SessionLog> {
-        let dirs = all_log_dirs().await;
-        recent_files_with_exts(&dirs, now, since_secs, CLI_FILE_EXTS)
-            .await
+        let home = match home_dir() {
+            Some(h) => h,
+            None => return Vec::new(),
+        };
+
+        // The two source kinds match on different terms: VS Code chat
+        // sessions are any `*.json` file, but a CLI session directory holds
+        // several `.json` / `.jsonl` files and only `events.jsonl` is the
+        // transcript. Each dir set uses the matcher that fits its layout.
+        let vs_code_dirs = vs_code_chat_session_dirs_in(&home).await;
+        let cli_dirs = cli_session_dirs_in(&home).await;
+
+        let mut files = recent_files_with_exts(&vs_code_dirs, now, since_secs, &["json"]).await;
+        files
+            .extend(recent_files_named(&cli_dirs, now, since_secs, CLI_TRANSCRIPT_FILE_NAME).await);
+
+        files
             .into_iter()
             .map(|file| SessionLog {
                 agent_type: AgentKind::Copilot,
@@ -72,24 +97,29 @@ impl AgentExplorer for CopilotExplorer {
             .collect()
     }
 
-    /// Owns CLI `session-state/` trees (`~/.copilot/`, XDG_CONFIG, or
-    /// `GitHub Copilot CLI/`) plus any VS Code `User/{workspace,global}Storage`
-    /// chat session. The VS Code arm is fork-tolerant — works for forks not
-    /// enumerated in `surface_paths`.
+    /// Owns `events.jsonl` under a CLI `session-state/` tree (`~/.copilot/`,
+    /// XDG_CONFIG, or `GitHub Copilot CLI/`) plus any VS Code
+    /// `User/{workspace,global}Storage` chat session. The VS Code arm is
+    /// fork-tolerant — works for forks not enumerated in `surface_paths`.
+    ///
+    /// A CLI session directory also holds `workspace.yaml`, `plan.md`,
+    /// `checkpoints/`, `files/`, and `autopilot-objective.json`; none of
+    /// those is a session, so only the `events.jsonl` path is claimed.
     ///
     /// Substring → `surface_paths` bucket:
-    /// - `/.copilot/session-state/`              → `cli` (CLI + Copilot Desktop App
-    ///                                                    inherit the same store)
-    /// - `/copilot/session-state/`               → `cli` (`$XDG_CONFIG_HOME/copilot/...`)
-    /// - `/github copilot cli/session-state/`    → `cli` (Windows `%LOCALAPPDATA%`)
-    /// - VS Code `User/` + `workspaceStorage/`   → `ide_desktop` (chatSessions)
-    /// - VS Code `User/` + `globalStorage/`      → `ide_desktop`
+    /// - `/.copilot/session-state/.../events.jsonl`           → `cli` (CLI + Copilot
+    ///                                                                 Desktop App inherit
+    ///                                                                 the same store)
+    /// - `/copilot/session-state/.../events.jsonl`            → `cli` (`$XDG_CONFIG_HOME/copilot/...`)
+    /// - `/github copilot cli/session-state/.../events.jsonl` → `cli` (Windows `%LOCALAPPDATA%`)
+    /// - VS Code `User/` + `workspaceStorage/`                → `ide_desktop` (chatSessions)
+    /// - VS Code `User/` + `globalStorage/`                   → `ide_desktop`
     fn owns_path(&self, path_lower: &str) -> bool {
-        if path_lower.contains("/.copilot/session-state/")
+        let is_cli_root = path_lower.contains("/.copilot/session-state/")
             || path_lower.contains("/copilot/session-state/")
-            || path_lower.contains("/github copilot cli/session-state/")
-        {
-            return true;
+            || path_lower.contains("/github copilot cli/session-state/");
+        if is_cli_root {
+            return path_lower.ends_with(CLI_TRANSCRIPT_PATH_SUFFIX);
         }
         path_lower.contains(VS_CODE_USER_FRAGMENT)
             && (path_lower.contains(VS_CODE_WORKSPACE_STORAGE_FRAGMENT)
@@ -159,7 +189,7 @@ pub(crate) fn sample_cli_home_log_path(home: &Path) -> PathBuf {
     home.join(".copilot")
         .join("session-state")
         .join("abc")
-        .join("transcript.jsonl")
+        .join(CLI_TRANSCRIPT_FILE_NAME)
 }
 
 #[cfg(test)]
@@ -168,7 +198,7 @@ pub(crate) fn sample_cli_xdg_log_path(home: &Path) -> PathBuf {
         .join("copilot")
         .join("session-state")
         .join("abc")
-        .join("state.json")
+        .join(CLI_TRANSCRIPT_FILE_NAME)
 }
 
 #[cfg(test)]
@@ -177,7 +207,7 @@ pub(crate) fn sample_cli_windows_log_path(local_appdata: &Path) -> PathBuf {
         .join("GitHub Copilot CLI")
         .join("session-state")
         .join("abc")
-        .join("state.json")
+        .join(CLI_TRANSCRIPT_FILE_NAME)
 }
 
 async fn log_dirs_in(home: &Path) -> Vec<PathBuf> {
@@ -226,7 +256,7 @@ async fn cli_session_dirs_for_platform(
     let roots = cli_root_candidates_for_platform(home, platform, local_appdata, xdg_config_home);
     let mut results = Vec::new();
     for root in roots {
-        collect_dirs_with_exts(&root, &mut results, CLI_FILE_EXTS).await;
+        collect_dirs_with_file_named(&root, &mut results, CLI_TRANSCRIPT_FILE_NAME).await;
     }
     results
 }
@@ -289,7 +319,7 @@ mod tests {
             .join("session-state")
             .join("synth-session");
         tokio::fs::create_dir_all(&cli_session_dir).await.unwrap();
-        tokio::fs::write(cli_session_dir.join("state.json"), "{}")
+        tokio::fs::write(cli_session_dir.join(CLI_TRANSCRIPT_FILE_NAME), "{}")
             .await
             .unwrap();
 
@@ -312,7 +342,7 @@ mod tests {
             .join("synth-session");
         tokio::fs::create_dir_all(&cli_session_dir).await.unwrap();
         tokio::fs::write(
-            cli_session_dir.join("transcript.jsonl"),
+            cli_session_dir.join(CLI_TRANSCRIPT_FILE_NAME),
             "{\"session_id\":\"x\"}\n",
         )
         .await
@@ -329,7 +359,7 @@ mod tests {
         let xdg = TempDir::new().unwrap();
         let xdg_session_dir = xdg.path().join("copilot").join("session-state").join("s1");
         tokio::fs::create_dir_all(&xdg_session_dir).await.unwrap();
-        tokio::fs::write(xdg_session_dir.join("state.json"), "{}")
+        tokio::fs::write(xdg_session_dir.join(CLI_TRANSCRIPT_FILE_NAME), "{}")
             .await
             .unwrap();
 
@@ -353,7 +383,7 @@ mod tests {
             .join("session-state")
             .join("s1");
         tokio::fs::create_dir_all(&cli_session_dir).await.unwrap();
-        tokio::fs::write(cli_session_dir.join("state.json"), "{}")
+        tokio::fs::write(cli_session_dir.join(CLI_TRANSCRIPT_FILE_NAME), "{}")
             .await
             .unwrap();
 
@@ -391,25 +421,84 @@ mod tests {
             .join("session-state")
             .join("synth-session");
         tokio::fs::create_dir_all(&cli_session_dir).await.unwrap();
-        let transcript = cli_session_dir.join("transcript.jsonl");
+        let transcript = cli_session_dir.join(CLI_TRANSCRIPT_FILE_NAME);
         tokio::fs::write(&transcript, "{\"session_id\":\"x\"}\n")
             .await
             .unwrap();
 
         // discover_recent uses log_dirs() which reads the real HOME, so we
         // exercise the platform helper directly to verify the dir-walking and
-        // extension-matching path without depending on env state.
+        // name-matching path without depending on env state.
         let dirs =
             cli_session_dirs_for_platform(home.path(), DesktopPlatform::Linux, None, None).await;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        let files = recent_files_with_exts(&dirs, now, 3600, CLI_FILE_EXTS).await;
+        let files = recent_files_named(&dirs, now, 3600, CLI_TRANSCRIPT_FILE_NAME).await;
         assert!(
             files.iter().any(|f| f.path == transcript),
-            "expected transcript.jsonl to be discovered, got {:?}",
+            "expected events.jsonl to be discovered, got {:?}",
             files.iter().map(|f| &f.path).collect::<Vec<_>>()
         );
+    }
+
+    /// A real CLI session directory holds `events.jsonl` next to
+    /// `workspace.yaml`, `plan.md`, a `checkpoints/` directory, a `files/`
+    /// directory of attachments (any type, including `.json`), and,
+    /// optionally, `autopilot-objective.json`. Only `events.jsonl` is a
+    /// session; the sibling files and the `files/` attachment must not turn
+    /// into their own discovered sessions.
+    #[tokio::test]
+    async fn test_copilot_cli_session_dir_yields_only_events_jsonl() {
+        let home = TempDir::new().unwrap();
+        let session_dir = home
+            .path()
+            .join(".copilot")
+            .join("session-state")
+            .join("synth-session");
+        let checkpoints_dir = session_dir.join("checkpoints");
+        let files_dir = session_dir.join("files");
+        tokio::fs::create_dir_all(&checkpoints_dir).await.unwrap();
+        tokio::fs::create_dir_all(&files_dir).await.unwrap();
+
+        let events = session_dir.join(CLI_TRANSCRIPT_FILE_NAME);
+        tokio::fs::write(&events, "{\"session_id\":\"x\"}\n")
+            .await
+            .unwrap();
+        tokio::fs::write(session_dir.join("workspace.yaml"), "root: /tmp/demo\n")
+            .await
+            .unwrap();
+        tokio::fs::write(session_dir.join("plan.md"), "# Plan\n")
+            .await
+            .unwrap();
+        let autopilot_objective = session_dir.join("autopilot-objective.json");
+        tokio::fs::write(&autopilot_objective, "{}").await.unwrap();
+        tokio::fs::write(checkpoints_dir.join("one.md"), "# Checkpoint\n")
+            .await
+            .unwrap();
+        let attachment = files_dir.join("attachment.json");
+        tokio::fs::write(&attachment, "{}").await.unwrap();
+
+        let dirs =
+            cli_session_dirs_for_platform(home.path(), DesktopPlatform::Linux, None, None).await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let files = recent_files_named(&dirs, now, 3600, CLI_TRANSCRIPT_FILE_NAME).await;
+        assert_eq!(
+            files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+            vec![events.clone()],
+            "expected exactly one discovered file, the events.jsonl transcript"
+        );
+
+        let explorer = CopilotExplorer;
+        let events_lower = events.to_string_lossy().to_lowercase();
+        let autopilot_lower = autopilot_objective.to_string_lossy().to_lowercase();
+        let attachment_lower = attachment.to_string_lossy().to_lowercase();
+        assert!(explorer.owns_path(&events_lower));
+        assert!(!explorer.owns_path(&autopilot_lower));
+        assert!(!explorer.owns_path(&attachment_lower));
     }
 }

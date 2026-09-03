@@ -1265,9 +1265,46 @@ pub async fn recent_files_with_exts(
     since_secs: i64,
     exts: &[&str],
 ) -> Vec<DiscoveredFile> {
+    let exts: Vec<String> = exts.iter().map(|e| e.to_string()).collect();
+    recent_files_matching(dirs, now, since_secs, move |file_name| {
+        Path::new(file_name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| exts.iter().any(|allowed| allowed.eq_ignore_ascii_case(ext)))
+    })
+    .await
+}
+
+/// Find files in the given directories whose modification time is within
+/// `since_secs` of `now` and whose file name equals `name` (case-insensitive).
+///
+/// Use this, instead of [`recent_files_with_exts`], when a source directory
+/// mixes the transcript with sibling files that share its extension (for
+/// example `events.jsonl` next to `autopilot-objective.json`).
+pub async fn recent_files_named(
+    dirs: &[PathBuf],
+    now: i64,
+    since_secs: i64,
+    name: &str,
+) -> Vec<DiscoveredFile> {
+    let name = name.to_string();
+    recent_files_matching(dirs, now, since_secs, move |file_name| {
+        file_name.eq_ignore_ascii_case(&name)
+    })
+    .await
+}
+
+/// Shared walk behind [`recent_files_with_exts`] and [`recent_files_named`].
+/// `matches` tests a candidate file's name; the walk itself only differs in
+/// that predicate.
+async fn recent_files_matching(
+    dirs: &[PathBuf],
+    now: i64,
+    since_secs: i64,
+    matches: impl Fn(&str) -> bool + Send + 'static,
+) -> Vec<DiscoveredFile> {
     let cutoff = now - since_secs;
     let dirs = dirs.to_vec();
-    let exts: Vec<String> = exts.iter().map(|e| e.to_string()).collect();
 
     tokio::task::spawn_blocking(move || {
         let mut results = Vec::new();
@@ -1278,11 +1315,10 @@ pub async fn recent_files_with_exts(
             for entry in entries.flatten() {
                 let path = entry.path();
 
-                // Only consider files with matching extensions
-                let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+                let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
-                if !exts.iter().any(|allowed| allowed.eq_ignore_ascii_case(ext)) {
+                if !matches(file_name) {
                     continue;
                 }
 
@@ -1317,8 +1353,40 @@ pub async fn recent_files_with_exts(
 /// an extension listed in `exts` (case-insensitive). The whole walk runs as
 /// one `spawn_blocking` task (see [`recent_files_with_exts`]).
 pub async fn collect_dirs_with_exts(root: &Path, results: &mut Vec<PathBuf>, exts: &[&str]) {
-    let root = root.to_path_buf();
     let exts: Vec<String> = exts.iter().map(|e| e.to_string()).collect();
+    collect_dirs_matching(root, results, move |file_name| {
+        Path::new(file_name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| exts.iter().any(|allowed| allowed.eq_ignore_ascii_case(ext)))
+    })
+    .await
+}
+
+/// Recursively collect directories that contain a file named `name`
+/// (case-insensitive). The whole walk runs as one `spawn_blocking` task (see
+/// [`recent_files_with_exts`]).
+///
+/// Use this, instead of [`collect_dirs_with_exts`], to avoid claiming a
+/// directory that only holds a same-extension sibling of the real transcript
+/// file.
+pub async fn collect_dirs_with_file_named(root: &Path, results: &mut Vec<PathBuf>, name: &str) {
+    let name = name.to_string();
+    collect_dirs_matching(root, results, move |file_name| {
+        file_name.eq_ignore_ascii_case(&name)
+    })
+    .await
+}
+
+/// Shared walk behind [`collect_dirs_with_exts`] and
+/// [`collect_dirs_with_file_named`]. `matches` tests a candidate file's name;
+/// the walk itself only differs in that predicate.
+async fn collect_dirs_matching(
+    root: &Path,
+    results: &mut Vec<PathBuf>,
+    matches: impl Fn(&str) -> bool + Send + 'static,
+) {
+    let root = root.to_path_buf();
 
     let found = tokio::task::spawn_blocking(move || {
         let mut found = Vec::new();
@@ -1338,8 +1406,8 @@ pub async fn collect_dirs_with_exts(root: &Path, results: &mut Vec<PathBuf>, ext
                     stack.push(path);
                 } else if file_type.is_file()
                     && !has_match
-                    && let Some(ext) = path.extension().and_then(|e| e.to_str())
-                    && exts.iter().any(|allowed| allowed.eq_ignore_ascii_case(ext))
+                    && let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+                    && matches(file_name)
                 {
                     has_match = true;
                 }
