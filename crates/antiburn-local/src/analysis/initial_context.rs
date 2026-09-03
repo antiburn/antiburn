@@ -64,13 +64,14 @@ pub enum SourceOrigin {
     /// Installed inside the current project (the session's working directory).
     Project,
     /// No evidence tells us where the source came from. For a Claude skill,
-    /// this only happens when the filesystem probe could not run (the
-    /// transcript's `cwd` does not exist on this machine) or when the name
-    /// carries a `:` and matches neither the project nor the user directory.
-    /// A bare name that the probe checked and found in neither directory
-    /// resolves to `Bundled` instead: the harness only lists skills it
-    /// found, and a plugin skill always carries a `<plugin>:` prefix, so a
-    /// bare, unmatched name can only ship with the agent.
+    /// this happens when the name matches neither the project nor the user
+    /// directory and one of two things is true: the name carries a `:`, or
+    /// the project probe could not run because the transcript's `cwd` does
+    /// not exist on this machine. A bare name that both probes checked and
+    /// found in neither directory resolves to `Bundled` instead: the harness
+    /// only lists skills it found, and a plugin skill always carries a
+    /// `<plugin>:` prefix, so a bare, unmatched name can only ship with the
+    /// agent.
     #[default]
     Unknown,
 }
@@ -583,10 +584,8 @@ impl ClaudeContextAccumulator {
                             ) else {
                                 continue;
                             };
-                            let origin = match path.strip_prefix("bundled:") {
-                                Some(_) => SourceOrigin::Bundled,
-                                None => classify_claude_filesystem_path(path, self.cwd.as_deref()),
-                            };
+                            let origin =
+                                classify_claude_invoked_skill_path(path, self.cwd.as_deref());
                             self.record_skill_origin(
                                 name,
                                 claude_origin_rank::INVOKED_SKILLS,
@@ -656,7 +655,14 @@ impl ClaudeContextAccumulator {
     /// Record `origin` for `name` only if it out-ranks (or is the first) the
     /// evidence already on file — a lower `rank` wins. See
     /// [`claude_origin_rank`] for the priority order.
+    ///
+    /// A [`SourceOrigin::Unknown`] origin is not evidence: the caller could
+    /// not classify its input. It is dropped here so that weaker evidence and
+    /// the filesystem probe still run for this name.
     fn record_skill_origin(&mut self, name: &str, rank: u8, origin: SourceOrigin) {
+        if origin == SourceOrigin::Unknown {
+            return;
+        }
         match self.skill_origin_evidence.get(name) {
             Some((existing_rank, _)) if *existing_rank <= rank => {}
             _ => {
@@ -756,14 +762,35 @@ fn classify_claude_filesystem_path(path: &str, cwd: Option<&str>) -> SourceOrigi
     SourceOrigin::Unknown
 }
 
+/// Classify the `path` of one `invoked_skills` entry into a [`SourceOrigin`].
+///
+/// The value is a scheme string, not a filesystem path: Claude writes
+/// `bundled:<name>` for a skill that ships with the agent and
+/// `userSettings:<name>` for a skill in the user's own directory. An
+/// unrecognized scheme returns [`SourceOrigin::Unknown`], which
+/// [`ClaudeContextAccumulator::record_skill_origin`] drops, so the filesystem
+/// probe still runs for that name.
+fn classify_claude_invoked_skill_path(path: &str, cwd: Option<&str>) -> SourceOrigin {
+    if path.starts_with('/') {
+        return classify_claude_filesystem_path(path, cwd);
+    }
+    match path.split_once(':') {
+        Some(("bundled", _)) => SourceOrigin::Bundled,
+        Some(("userSettings", _)) => SourceOrigin::User,
+        Some(("projectSettings" | "localSettings", _)) => SourceOrigin::Project,
+        Some(("plugin", _)) => SourceOrigin::Plugin,
+        _ => SourceOrigin::Unknown,
+    }
+}
+
 /// Resolve one skill's origin: transcript evidence wins outright; otherwise,
-/// when the session's `cwd` exists on this machine (so the transcript is
-/// local rather than from another machine or a fixture), probe the
-/// filesystem for a `SKILL.md` under the project or the user's home. When the
-/// probe ran but found neither, a bare name (no `:`) resolves to `Bundled` —
-/// see [`SourceOrigin::Unknown`] for the reasoning. Stays `Unknown` when the
-/// probe could not run at all, or when the name carries a `:` and still has
-/// no hit.
+/// probe the filesystem for a `SKILL.md` under the project or the user's home.
+///
+/// The project probe needs the session's `cwd` to exist on this machine. The
+/// user probe does not: a user skill lives under the home directory, so the
+/// answer stays correct after the session's directory is deleted. When both
+/// probes miss and the `cwd` exists, a bare name (no `:`) resolves to
+/// `Bundled` — see [`SourceOrigin::Unknown`] for the reasoning.
 fn resolve_claude_skill_origin(
     name: &str,
     evidence: &HashMap<String, (u8, SourceOrigin)>,
@@ -774,13 +801,13 @@ fn resolve_claude_skill_origin(
     if let Some(&(_, origin)) = evidence.get(name) {
         return origin;
     }
-    let Some(cwd) = cwd.filter(|cwd| !cwd.is_empty()) else {
-        return SourceOrigin::Unknown;
-    };
-    if !probe(cwd) {
-        return SourceOrigin::Unknown;
-    }
-    if probe(&format!("{cwd}/.claude/skills/{name}/SKILL.md")) {
+    // An absent `cwd` means the transcript came from another machine, or the
+    // session ran in a directory that is now deleted, such as a removed git
+    // worktree. Only the project probe depends on it.
+    let cwd = cwd
+        .filter(|cwd| !cwd.is_empty() && probe(cwd))
+        .unwrap_or_default();
+    if !cwd.is_empty() && probe(&format!("{cwd}/.claude/skills/{name}/SKILL.md")) {
         return SourceOrigin::Project;
     }
     if let Some(home) = home.filter(|home| !home.is_empty())
@@ -788,11 +815,11 @@ fn resolve_claude_skill_origin(
     {
         return SourceOrigin::User;
     }
-    // The probe ran but found the skill in neither directory. The harness
+    // Both probes ran and found the skill in neither directory. The harness
     // only lists skills it actually found, and a plugin skill always carries
     // a `<plugin>:` prefix, so a bare name (no `:`) with no project or user
     // hit can only have shipped with the agent itself.
-    if !name.contains(':') {
+    if !cwd.is_empty() && !name.contains(':') {
         return SourceOrigin::Bundled;
     }
     SourceOrigin::Unknown
@@ -1284,6 +1311,96 @@ mod tests {
     }
 
     #[test]
+    fn claude_classifies_an_invoked_skill_from_its_scheme_path() {
+        // An `invoked_skills` path is a scheme string, not a filesystem path.
+        // A user skill must not lose its origin because the session used it.
+        let payload = concat!(
+            r#"{"type":"attachment","attachment":{"type":"skill_listing","content":"- user-invoked-skill: Runs for the user.\n- bundled-invoked-skill: Comes with the agent."}}"#,
+            "\n",
+            r#"{"type":"attachment","attachment":{"type":"invoked_skills","skills":[{"name":"user-invoked-skill","path":"userSettings:user-invoked-skill","content":"..."},{"name":"bundled-invoked-skill","path":"bundled:bundled-invoked-skill","content":"..."}]}}"#,
+        );
+
+        let breakdown =
+            parse_initial_context("claude", payload).expect("expected supported Claude breakdown");
+
+        assert_eq!(
+            skill_origin(&breakdown, "user-invoked-skill"),
+            Some(SourceOrigin::User)
+        );
+        assert_eq!(
+            skill_origin(&breakdown, "bundled-invoked-skill"),
+            Some(SourceOrigin::Bundled)
+        );
+    }
+
+    #[test]
+    fn claude_unreadable_invoked_skill_path_leaves_the_probe_to_answer() {
+        // An unknown scheme is not evidence. It must not suppress the
+        // filesystem probe, which knows this name as a project skill.
+        let cwd = "/home/avery/projects/demo-app";
+        let project_skill_path = format!("{cwd}/.claude/skills/probe-me/SKILL.md");
+        let payload = format!(
+            concat!(
+                r#"{{"type":"attachment","cwd":"{cwd}","attachment":{{"type":"skill_listing","content":"- probe-me: Loaded from the project."}}}}"#,
+                "\n",
+                r#"{{"type":"attachment","attachment":{{"type":"invoked_skills","skills":[{{"name":"probe-me","path":"someFutureScheme:probe-me","content":"..."}}]}}}}"#,
+            ),
+            cwd = cwd
+        );
+
+        let probe = move |path: &str| -> bool { path == cwd || path == project_skill_path };
+
+        let mut accumulator = ClaudeContextAccumulator::default();
+        for value in parse_json_lines(&payload) {
+            accumulator.observe(&value);
+        }
+        let (breakdown, _) = accumulator.finish_with_probe(&probe, &test_catalog());
+        let breakdown = breakdown.expect("expected supported Claude breakdown");
+
+        assert_eq!(
+            skill_origin(&breakdown, "probe-me"),
+            Some(SourceOrigin::Project)
+        );
+    }
+
+    #[test]
+    fn claude_probes_the_user_directory_when_the_cwd_is_gone() {
+        // The session ran in a git worktree that is now deleted. A user skill
+        // lives under the home directory, so its origin is still knowable.
+        let cwd = "/home/avery/projects/demo-app/.claude/worktrees/gone";
+        let home = crate::paths::home_dir()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/home/avery".to_string());
+        let user_skill_path = format!("{home}/.claude/skills/user-skill/SKILL.md");
+
+        let payload = format!(
+            r#"{{"type":"attachment","cwd":"{cwd}","attachment":{{"type":"skill_listing","content":"- user-skill: Loaded for the user.\n- bare-skill: No evidence, no `:` in the name."}}}}"#
+        );
+
+        // The stub probe reports the cwd as absent, and knows only the user
+        // skill.
+        let probe = move |path: &str| -> bool { path == user_skill_path };
+
+        let mut accumulator = ClaudeContextAccumulator::default();
+        for value in parse_json_lines(&payload) {
+            accumulator.observe(&value);
+        }
+        let (breakdown, _) = accumulator.finish_with_probe(&probe, &test_catalog());
+        let breakdown = breakdown.expect("expected supported Claude breakdown");
+
+        assert_eq!(
+            skill_origin(&breakdown, "user-skill"),
+            Some(SourceOrigin::User)
+        );
+        // The project directory is gone, so the resolver cannot rule it out
+        // and must not infer Bundled for the name it did not find.
+        assert_eq!(
+            skill_origin(&breakdown, "bare-skill"),
+            Some(SourceOrigin::Unknown)
+        );
+    }
+
+    #[test]
     fn claude_dynamic_skill_evidence_outranks_the_listing_name_shape() {
         // A directory-scoped project skill can *also* use a `<dir>:<skill>`
         // listing name (Plugin's shape), so a `dynamic_skill` attachment must
@@ -1371,17 +1488,17 @@ mod tests {
     }
 
     #[test]
-    fn claude_leaves_bare_skill_unknown_when_the_probe_cannot_run() {
+    fn claude_leaves_bare_skill_unknown_when_the_project_probe_cannot_run() {
         // The transcript's `cwd` does not exist on this machine (a fixture, or
-        // a session recorded elsewhere), so the probe never runs. A bare name
-        // with no other evidence must stay Unknown, not be misread as Bundled.
+        // a session recorded elsewhere), so the project probe cannot run. A
+        // bare name with no other evidence and no user-directory hit must stay
+        // Unknown, not be misread as Bundled.
         let cwd = "/home/avery/projects/demo-app";
         let payload = format!(
             r#"{{"type":"attachment","cwd":"{cwd}","attachment":{{"type":"skill_listing","content":"- bare-skill: No evidence at all."}}}}"#
         );
 
-        // The stub probe reports the cwd itself as absent, so the resolver
-        // must stop before checking the project or user directory.
+        // The stub probe reports every path as absent, including the cwd.
         let probe = |_path: &str| -> bool { false };
 
         let mut accumulator = ClaudeContextAccumulator::default();
