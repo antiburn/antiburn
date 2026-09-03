@@ -14,11 +14,11 @@ export interface MeterZone {
 }
 
 /**
- * The three steps of the meter palette, shared by every meter: brand orange
- * while a reading is fine, yellow for warning, red for trouble. A meter
- * places these steps along its own track; it does not pick its own colors.
+ * The three steps of the meter palette: brand orange while a reading is fine,
+ * yellow for warning, red for trouble. A meter places these steps along its
+ * own track; it does not pick its own colors.
  */
-export const METER_INK = {
+const METER_INK = {
   normal: { fillClassName: "bg-brand-tint", trackClassName: "bg-brand-unlit/12" },
   warning: {
     fillClassName: "bg-system-yellow-tint",
@@ -26,9 +26,6 @@ export const METER_INK = {
   },
   critical: { fillClassName: "bg-system-red-tint", trackClassName: "bg-system-red-unlit/12" },
 } as const
-
-/** One step of the meter palette. */
-export type MeterInk = (typeof METER_INK)[keyof typeof METER_INK]
 
 /**
  * The additive usage scale: orange from zero, yellow from 80%, red from 90%.
