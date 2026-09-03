@@ -494,9 +494,14 @@ mod tests {
         );
 
         let explorer = CopilotExplorer;
-        let events_lower = events.to_string_lossy().to_lowercase();
-        let autopilot_lower = autopilot_objective.to_string_lossy().to_lowercase();
-        let attachment_lower = attachment.to_string_lossy().to_lowercase();
+        // `owns_path` takes a lowercased, forward-slashed path (see its doc
+        // comment) — `normalize_for_matching` is what every real caller
+        // uses, so a Windows-style backslash path matches too.
+        let events_lower = crate::discovery::normalize_for_matching(&events.to_string_lossy());
+        let autopilot_lower =
+            crate::discovery::normalize_for_matching(&autopilot_objective.to_string_lossy());
+        let attachment_lower =
+            crate::discovery::normalize_for_matching(&attachment.to_string_lossy());
         assert!(explorer.owns_path(&events_lower));
         assert!(!explorer.owns_path(&autopilot_lower));
         assert!(!explorer.owns_path(&attachment_lower));
