@@ -140,7 +140,7 @@ mod tests {
         );
         assert!(
             health.replace(failing.clone()).is_none(),
-            "a scan runs every minute; the same failure is not news sixty times"
+            "a scan can run again soon; the same failure is not news every time"
         );
 
         // A *different* failure is news again, because it names something else.

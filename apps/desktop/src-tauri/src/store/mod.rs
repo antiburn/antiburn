@@ -874,6 +874,35 @@ impl Store {
         }))
     }
 
+    /// Keys of every session whose evidence last failed because its source
+    /// was missing.
+    ///
+    /// R3: a full pass reuses an unchanged row without rewriting it, which
+    /// would otherwise leave a session stuck once its source returns —
+    /// nothing else would notice and re-queue its evidence. The scan pass
+    /// persists these rows through `upsert_sessions` even when the row
+    /// itself is unchanged, so its own `source_returned` check runs and
+    /// clears the failure.
+    pub fn sessions_with_missing_source(&self) -> Result<Vec<SessionKey>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT environment_key, agent, session_id
+               FROM session_evidence
+              WHERE status = 'failed' AND last_error = ?1",
+        )?;
+        let rows = statement.query_map(
+            params![crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING],
+            |row| {
+                Ok(SessionKey::new(
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// One session's persisted source version and optional start time.
     pub fn session_source_state(&self, key: &SessionKey) -> Result<Option<SourceVersionState>> {
         let connection = self.lock();

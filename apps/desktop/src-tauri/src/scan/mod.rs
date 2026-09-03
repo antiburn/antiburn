@@ -23,11 +23,12 @@
 //! - **At launch**, once, if onboarding is finished. A first-run install has no
 //!   sources selected yet, so scanning before the flow completes would only
 //!   spend disk on a window nobody can see.
-//! - **Every [`TICK`], unconditionally.** The popover does not gate the timer:
-//!   a pass over sources that have not changed reads no transcript, so ticking
-//!   while the popover is hidden costs stat calls, not disk reads.
-//! - **The moment the popover is opened**, as reconciliation, so a reader never
-//!   waits out a tick behind a missed event.
+//! - **Every [`TICK`], unconditionally.** R1/R2: the watcher is the primary
+//!   freshness path now, so the tick is 5 minutes of reconciliation for what
+//!   it cannot see — a WSL session (never watched) or a rare dropped OS
+//!   event — not the path a reader waits on. A pass over sources that have
+//!   not changed reads no transcript, so ticking while the popover is hidden
+//!   costs stat calls, not disk reads.
 //! - **On demand**, from the rescan control and after any change to the source
 //!   selection.
 //! - **Shortly after a watched file changes — narrowly, not as a full pass.**
@@ -52,8 +53,8 @@
 //! # Pausing
 //!
 //! `AppSettings::discovery_paused` stops every *scheduled* pass — the launch
-//! pass, the tick, and the passes requested when the popover opens or the
-//! sources change. It deliberately does not stop [`run_pass`] itself, so the
+//! pass, the tick, and the passes requested after a source selection change.
+//! It deliberately does not stop [`run_pass`] itself, so the
 //! rescan control still works while discovery is paused and the popover keeps
 //! browsing everything already indexed. "Paused" is a statement about
 //! background work, not a lock on the app.
@@ -109,8 +110,14 @@ pub mod idle;
 pub mod scoped;
 pub mod watch;
 
-/// How often the scheduler wakes up.
-pub const TICK: Duration = Duration::from_secs(60);
+/// How often the scheduler wakes up for its unconditional full pass.
+///
+/// R2: 5 minutes. The watcher is the primary freshness path (T1-T7 in the
+/// `scoped` module), so this tick only has to reconcile what it cannot see —
+/// a WSL session, or a rare dropped OS event — not answer for an active
+/// session's own row updates. [`watch::FALLBACK_TICK`] stays 15 seconds for a
+/// degraded watcher, where polling really is the only freshness path.
+pub const TICK: Duration = Duration::from_secs(300);
 
 /// How many session logs have their metadata read at once. Bounds open files
 /// and blocking-pool pressure during a whole-machine pass.
@@ -143,8 +150,6 @@ pub enum ScanTrigger {
     /// A burst reached [`watch::MAX_BURST_PATHS`] and may have dropped
     /// paths, so only a full pass can be sure to cover it.
     WatcherOverflow,
-    /// The popover reached the screen.
-    PopoverShown,
     /// A settings save that finished onboarding, widened the activity
     /// window, or resumed discovery.
     SettingsTransition,
@@ -170,7 +175,6 @@ impl ScanTrigger {
             ScanTrigger::Tick => "tick",
             ScanTrigger::WatcherAgents { .. } => "watcher_agents",
             ScanTrigger::WatcherOverflow => "watcher_overflow",
-            ScanTrigger::PopoverShown => "popover_shown",
             ScanTrigger::SettingsTransition => "settings_transition",
             ScanTrigger::InsightsPane => "insights_pane",
             ScanTrigger::RepositoryToggle => "repository_toggle",
@@ -178,6 +182,33 @@ impl ScanTrigger {
             ScanTrigger::FolderAccessGranted => "folder_access_granted",
             ScanTrigger::IndexCleared => "index_cleared",
             ScanTrigger::ManualRescan => "manual_rescan",
+        }
+    }
+
+    /// R4: whether a full pass should pay to refresh the repository list for
+    /// this trigger, on top of the `list_changed` check every trigger gets.
+    ///
+    /// The tick and the watcher triggers cannot plausibly have introduced a
+    /// repository the list has not already seen — a new `cwd` only arrives
+    /// through a session's own upsert, and `list_changed` already covers
+    /// that case for them. Every other trigger names an action that can
+    /// change the repository set directly (a toggle, a new scan root, a
+    /// settings transition), so it refreshes unconditionally. Matched
+    /// exhaustively, with no `_` arm, so a new variant forces this decision
+    /// rather than defaulting into it silently.
+    pub fn refreshes_repositories(&self) -> bool {
+        match self {
+            ScanTrigger::Tick
+            | ScanTrigger::WatcherAgents { .. }
+            | ScanTrigger::WatcherOverflow => false,
+            ScanTrigger::Launch
+            | ScanTrigger::SettingsTransition
+            | ScanTrigger::InsightsPane
+            | ScanTrigger::RepositoryToggle
+            | ScanTrigger::ScanRootAdded
+            | ScanTrigger::FolderAccessGranted
+            | ScanTrigger::IndexCleared
+            | ScanTrigger::ManualRescan => true,
         }
     }
 }
@@ -581,6 +612,7 @@ pub(crate) async fn try_run_pass(
             status.total_agents = AgentKind::ALL.len();
             status.sessions = 0;
             status.list_changed = false;
+            status.re_described = 0;
             status.error = None;
             status.cancelled = false;
         });
@@ -593,7 +625,7 @@ pub(crate) async fn try_run_pass(
     let announce = move |entry: ActivityEntry| {
         let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
     };
-    let outcome = pass(app, activity_window_days, &scope, &announce).await;
+    let outcome = pass(app, activity_window_days, &trigger, &scope, &announce).await;
 
     let controller = app.state::<ScanController>();
     let cancelled = controller.cancelled();
@@ -605,6 +637,8 @@ pub(crate) async fn try_run_pass(
             Ok(summary) => {
                 status.sessions = summary.sessions;
                 status.list_changed = summary.list_changed;
+                // R5: lets a reader tell an idle pass from a productive one.
+                status.re_described = summary.re_described;
                 // A cancelled pass did not finish every agent, and saying it
                 // did would make the progress line lie on its last frame.
                 if !cancelled {
@@ -612,7 +646,10 @@ pub(crate) async fn try_run_pass(
                 }
                 status.error = None;
             }
-            Err(error) => status.error = Some(error.to_string()),
+            Err(error) => {
+                status.error = Some(error.to_string());
+                status.re_described = 0;
+            }
         }
     });
     controller.running.store(false, Ordering::SeqCst);
@@ -650,9 +687,10 @@ pub(crate) async fn try_run_pass(
     }
     let _ = app.emit(EVENT_FINISHED, finished.clone());
     // The outcome, not a shaped event: whether this pass is worth reporting at
-    // all is an analytics question, and this scheduler runs a pass a minute
-    // while the popover is open. `None` is a failure, which travels as a bare
-    // category — an error string can hold a path.
+    // all is an analytics question, and this scheduler runs a full pass every
+    // five minutes plus a scoped pass on every watcher burst. `None` is a
+    // failure, which travels as a bare category — an error string can hold a
+    // path.
     crate::analytics::record_scan(
         app,
         outcome.as_ref().ok().map(|summary| summary.sessions as u64),
@@ -699,10 +737,13 @@ struct PassSummary {
 ///
 /// `scope` narrows discovery, the upsert's evidence cohort, and per-agent
 /// scan bookkeeping to a burst-named subset of agents (T3/T5); everything
-/// else runs exactly as a full pass. See [`PassScope`].
+/// else runs exactly as a full pass. See [`PassScope`]. `trigger` decides
+/// only whether this pass refreshes the repository list (R4); it plays no
+/// other part here.
 async fn pass(
     app: &AppHandle,
     _activity_window_days: Option<u32>,
+    trigger: &ScanTrigger,
     scope: &PassScope,
     announce: &(dyn Fn(ActivityEntry) + Send + Sync),
 ) -> anyhow::Result<PassSummary> {
@@ -762,13 +803,24 @@ async fn pass(
         PassScope::Full => agents::evidence_cohort(),
         PassScope::Agents(agents) => agents.iter().map(|agent| agent.slug()).collect(),
     };
+    // R3: an idle pass writes nothing. A row this pass reused verbatim is
+    // byte-identical to what is already stored, and `last_seen_at` is only
+    // retention's fallback for a row with no activity epoch, so rewriting an
+    // unchanged row buys nothing. `returned` is the one exception: its row
+    // may also be unchanged, but its evidence last failed on a missing
+    // source, and only a write re-runs `upsert_sessions`'s own
+    // `source_returned` check to re-queue it.
+    let returned = store.sessions_with_missing_source()?;
     // Every write below is routed through the storage-health check, so a
     // database that has stopped accepting writes becomes a banner in the
     // popover rather than a list that silently stops changing.
     checked(
         app,
         "The session index",
-        store.upsert_sessions(&records, &evidence_agents),
+        store.upsert_sessions(
+            &records_to_persist(&records, &changed, &returned),
+            &evidence_agents,
+        ),
     )?;
     crate::insights_worker::wake(app);
     // A write may have added a session the idle task was not yet watching,
@@ -809,10 +861,13 @@ async fn pass(
         });
     }
 
-    // A full pass always refreshes the repository list. An agent-scoped pass
-    // only pays for it when a session's arrival or eviction could plausibly
-    // have introduced a new cwd.
-    if matches!(scope, PassScope::Full) || list_changed {
+    // R4: repositories refresh only when it can matter. `list_changed`
+    // covers every trigger, since a session's arrival or eviction can
+    // introduce a new cwd regardless of what asked for the pass;
+    // `refreshes_repositories` additionally covers triggers that name an
+    // action which can change the repository set on its own — a toggle, a
+    // new scan root — even on a pass that redescribed nothing.
+    if trigger.refreshes_repositories() || list_changed {
         repositories::refresh(app).await?;
     }
 
@@ -821,6 +876,28 @@ async fn pass(
         list_changed,
         re_described: changed.len(),
     })
+}
+
+/// R3: which of this pass's records are actually worth writing.
+///
+/// A record earns a write by being in `changed` (this pass re-described it —
+/// new, or its cursor moved) or in `returned` (its evidence last failed on a
+/// missing source, so even an unchanged row needs a write to re-queue it).
+/// Every other record is a row reused verbatim, and rewriting it would only
+/// cost a write for no observable change. Order follows `records`, and a key
+/// named by both `changed` and `returned` still yields one copy.
+fn records_to_persist(
+    records: &[SessionRecord],
+    changed: &[SessionKey],
+    returned: &[SessionKey],
+) -> Vec<SessionRecord> {
+    let worth_writing: std::collections::HashSet<&SessionKey> =
+        changed.iter().chain(returned).collect();
+    records
+        .iter()
+        .filter(|record| worth_writing.contains(&record.key))
+        .cloned()
+        .collect()
 }
 
 /// [`PassScope::Agents`]'s discovery: only the named agents, concurrently,

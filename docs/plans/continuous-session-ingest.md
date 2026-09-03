@@ -288,7 +288,7 @@ Goal: layer 1 is continuous and cheap, and every consumer reads one signal.
   `get_session_analysis_fingerprint` command, `poll_fingerprint_with_subagents`,
   and their tests are deleted along with the poll.
 
-### Phase 5: scoped passes (5a and 5c merged 2026-09-03; 5b in review)
+### Phase 5: scoped passes (5a and 5c merged 2026-09-03; 5b in review; 5d planned)
 
 Goal: a watcher event costs work proportional to what changed, not a
 whole-machine pass. Found on 2026-09-03 after phase 4 had run for a day:
@@ -403,6 +403,40 @@ scheduler task, so passes never overlap and the store sees one writer.
   immediate parent's mtime, so an old project directory would hide every
   session added to it since.
 
+#### Phase 5d: the tick and the popover stop being the freshness path
+
+Found on 2026-09-03 from a live log of the 5b build: watcher bursts were
+cheap (a targeted refresh took about 90 ms), but the 60 s tick and every
+popover open still ran a full pass. Three popover opens in 13 s ran three
+full passes of 1.8 to 2.1 s each, contending with the popover's own render
+and usage recompute. Both were insurance from before the watcher existed.
+What the tick uniquely covers now is WSL sessions (never watched) and a rare
+FSEvents drop under load; a degraded watcher already falls back to the 15 s
+tick, and the watcher re-registers new agent roots itself.
+
+- R1. Opening the popover does not request a scan. `note_shown` still emits
+  `popover:shown`; the `PopoverShown` trigger is removed as dead code.
+- R2. `TICK` is 5 minutes. `FALLBACK_TICK` stays 15 s for a degraded watcher.
+- R3. A full pass writes only the rows the describe step changed (new, or
+  cursor moved), plus any reused row whose evidence is `failed` with
+  `source-missing`, so a returned source still re-queues. An idle tick is
+  stat calls only. Per-agent scan bookkeeping still counts every record.
+- R4. A full pass refreshes repositories only when `list_changed`, or when
+  the trigger is one that can change the repository set: launch, settings
+  transition, insights pane, repository toggle, scan root added, folder
+  access granted, index cleared, manual rescan. The tick and the watcher
+  triggers do not.
+- R5. `ScanStatus` carries `re_described`. The popover's `scan:finished`
+  handler refreshes usage only when `list_changed`, or when the pass
+  re-described at least one session and `USAGE_REFRESH_MIN_MS` has elapsed.
+  A pass that changed nothing triggers no usage refresh.
+- R6. Usage freshness while the popover is visible no longer rides on the
+  scan. The shell emits `popover:hidden` from `note_hidden`. The popover
+  refreshes usage on a 60 s interval while visible (started on shown,
+  stopped on hidden, matching `POPOVER_LIVE_USAGE_MAX_AGE`), and on a
+  `sessions:entry-changed` event under the same 30 s floor, so an active
+  session's totals stay current without a scan pass.
+
 ## Sequencing notes
 
 - Phase 1 stands alone and is reverted by two small edits if it misbehaves.
@@ -411,6 +445,8 @@ scheduler task, so passes never overlap and the store sees one writer.
 - Default cadences are set in phase 4 and reviewed after a week of use.
 - Phase 5a stands alone. 5b stacks on 5a (it consumes the burst paths 5a
   passes through). 5c's two items are independent of each other and of 5b.
+- 5d stacks on 5b: it changes the same scheduler and the popover's scan
+  handler.
 - 5b keeps the tick as a fixed deadline that only a full pass resets, so
   scoped wakes every few seconds cannot starve reconciliation. A burst at
   the watcher's path bound forces a full pass, since paths were dropped.
@@ -427,7 +463,8 @@ scheduler task, so passes never overlap and the store sees one writer.
 - Provider-database agents (OpenCode, Antigravity) persist no row cursor. A
   change still costs a full re-stream of the session's rows.
 - The phase 4 cadences were reviewed after a day, not a week; the result is
-  phase 5. The 60 s tick, 15 s fallback, 1.5 s / 5 s burst coalescing, and
-  60 s list reconcile stay; the per-session and per-agent floors are new.
+  phase 5. The 15 s fallback, 1.5 s / 5 s burst coalescing, and 60 s list
+  reconcile stay; the per-session and per-agent floors are new, and 5d moved
+  the tick to 5 minutes once the watcher carried freshness.
 - While discovery is paused the scan does not run, so the HUD's live signal
   now follows the pause. Decide whether that is the wanted behaviour.

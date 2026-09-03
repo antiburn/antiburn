@@ -144,3 +144,42 @@ fn an_agent_scoped_upsert_leaves_another_agents_rows_intact() {
         .expect("codex row is untouched by a Claude-scoped pass");
     assert_eq!(stored_codex.key.session_id, "codex-session");
 }
+
+/// R3: only a `source-missing` failure marks a session for a forced rewrite.
+/// A different failure reason, or a session with no failure at all, must not
+/// come back from this query.
+#[test]
+fn sessions_with_missing_source_returns_only_that_failure_reason() {
+    let store = store();
+    store
+        .upsert_sessions(
+            &[
+                session("returned", 1_000),
+                session("other-failure", 2_000),
+                session("healthy", 3_000),
+            ],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    {
+        let connection = store.lock();
+        connection
+            .execute(
+                "UPDATE session_evidence SET status = 'failed', last_error = ?1
+                  WHERE session_id = 'returned'",
+                params![crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE session_evidence SET status = 'failed', last_error = 'source-unreadable'
+                  WHERE session_id = 'other-failure'",
+                [],
+            )
+            .unwrap();
+    }
+
+    let missing = store.sessions_with_missing_source().unwrap();
+    let ids: Vec<_> = missing.iter().map(|key| key.session_id.as_str()).collect();
+    assert_eq!(ids, vec!["returned"]);
+}
