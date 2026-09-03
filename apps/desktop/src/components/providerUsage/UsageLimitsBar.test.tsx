@@ -451,7 +451,7 @@ describe("UsageLimitsBar — degraded state", () => {
 })
 
 describe("UsageLimitsBar — grace period", () => {
-  const GRACE_NOTE = "Claude rate limited the last check. Showing the reading from 4 min ago."
+  const GRACE_NOTE = "Claude rate limited the last check; reading from 4 min ago."
 
   it("keeps a graced reading on the ring, muted, with the grace note attached", () => {
     bar({
