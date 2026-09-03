@@ -1,13 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../../lib/ipc"
-import type { ActivityEntryPayload, ScanStatus, SessionAnalysisPayload } from "../../lib/ipc"
+import {
+  EMPTY_PROVIDER_USAGE,
+  type ActivityEntryPayload,
+  type ScanStatus,
+  type SessionAnalysisPayload,
+} from "../../lib/ipc"
 import { PopoverSession, sessionKey } from "./PopoverSession"
 import type { SessionSubject } from "./SessionPane"
 
 const getSessionAnalysis = vi.hoisted(() => vi.fn())
 const getSubagentAnalysis = vi.hoisted(() => vi.fn())
 const getSessionLimitAllocations = vi.hoisted(() => vi.fn())
+const getProviderUsage = vi.hoisted(() => vi.fn())
 const setPopoverHeight = vi.hoisted(() => vi.fn())
 const listRecentSessions = vi.hoisted(() => vi.fn())
 const onSessionEntryChanged = vi.hoisted(() => vi.fn())
@@ -23,6 +29,7 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     getSessionAnalysis,
     getSubagentAnalysis,
     getSessionLimitAllocations,
+    getProviderUsage,
     setPopoverHeight,
     listRecentSessions,
     onSessionEntryChanged,
@@ -66,6 +73,8 @@ beforeEach(() => {
     generatedAt: "2027-01-15T08:00:00Z",
     allocations: [],
   })
+  getProviderUsage.mockReset()
+  getProviderUsage.mockResolvedValue(EMPTY_PROVIDER_USAGE)
 })
 
 describe("PopoverSession surface presentation", () => {
@@ -457,6 +466,47 @@ describe("PopoverSession event-driven refresh", () => {
 
     expect(listRecentSessions).toHaveBeenCalledTimes(2)
     unsubscribe()
+  })
+
+  // F1: `scan:finished` refreshes usage on its own floor
+  // (`USAGE_REFRESH_MIN_MS`), separate from the list reconcile interval
+  // above — a scan pass finishing is not by itself a reason to recompute
+  // 30-day usage totals on every one of an active session's rapid passes.
+  it("refreshes usage on a floor, bypassed by a reported list change", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime("2027-01-15T08:00:00Z")
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(scanEventHandler).not.toBeNull()
+    const baseline = getProviderUsage.mock.calls.length
+
+    // First scan:finished always refreshes: nothing has refreshed usage
+    // from this handler yet.
+    scanEventHandler?.(scanStatus({ listChanged: false }), "finished")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 1)
+
+    // A second event 1 s later, still no list change, lands inside the
+    // floor and refreshes nothing further.
+    await vi.advanceTimersByTimeAsync(1_000)
+    scanEventHandler?.(scanStatus({ listChanged: false }), "finished")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 1)
+
+    // A reported list change bypasses the floor.
+    scanEventHandler?.(scanStatus({ listChanged: true }), "finished")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 2)
+
+    // Once the floor elapses, an unchanged list refreshes again too.
+    await vi.advanceTimersByTimeAsync(30_000)
+    scanEventHandler?.(scanStatus({ listChanged: false }), "finished")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 3)
+
+    unsubscribe()
+    vi.useRealTimers()
   })
 
   it("re-sorts a revived session to the top of the list", async () => {
