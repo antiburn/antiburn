@@ -25,6 +25,9 @@
   --color-surface-secondary: var(--color-bg-secondary);
   --color-surface-tertiary: var(--color-bg-tertiary);
   --color-surface-card: var(--color-bg-card);
+  /* The quiet band at the head of the menu-bar popover. Fainter than a
+     card, so the spend summary reads as the header and not as a row. */
+  --color-surface-header: var(--color-bg-header);
   --color-input-fill: var(--color-bg-input);
   /* Row hover tint. Tracks surface-secondary in light mode, but stays more
      muted in dark mode where a 12% white overlay reads too bright. */
@@ -124,6 +127,8 @@
   --color-bg-row-hover: hsl(0 0% 0% / 0.04);
 
   --color-bg-card: hsl(0 0% 0% / 0.04);
+
+  --color-bg-header: hsl(0 0% 0% / 0.025);
   /* Raised fill for text inputs/textareas. Light mode = whiter than surface;
      dark mode = lighter gray than surface. The explicit [data-theme] values
      are solid, so material behind the window cannot bleed through; the
@@ -244,6 +249,7 @@
     --color-bg-tertiary: hsl(0 0% 100% / 0.18);
     --color-bg-row-hover: hsl(0 0% 100% / 0.07);
     --color-bg-card: hsl(0 0% 100% / 0.08);
+    --color-bg-header: hsl(0 0% 100% / 0.03);
     --color-bg-input: hsl(0 0% 100% / 0.08);
     --color-bg-window: hsl(0 0% 15.6% / 0.8);
     --color-bg-sidebar: hsl(0 0% 100% / 0.04);
@@ -303,6 +309,7 @@
      bg-selected at 0.09, so the two states looked the same. */
   --color-bg-row-hover: hsl(0 0% 0% / 0.04);
   --color-bg-card: hsl(0 0% 0% / 0.04);
+  --color-bg-header: hsl(0 0% 0% / 0.025);
   --color-bg-input: hsl(0 0% 100%);
   --color-bg-window: hsl(0 0% 96.4%);
   --color-bg-sidebar: hsl(0 0% 0% / 0.03);
@@ -362,6 +369,7 @@
   --color-bg-tertiary: hsl(0 0% 100% / 0.18);
   --color-bg-row-hover: hsl(0 0% 100% / 0.04);
   --color-bg-card: hsl(0 0% 100% / 0.08);
+  --color-bg-header: hsl(0 0% 100% / 0.03);
   --color-bg-input: hsl(240 1.6% 23%);
   --color-bg-window: hsl(0 0% 12.5%);
   --color-bg-sidebar: hsl(0 0% 100% / 0.04);
