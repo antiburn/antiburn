@@ -73,7 +73,6 @@
 //! the process.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -126,15 +125,6 @@ pub enum ScanTrigger {
     Launch,
     /// The scheduler's unconditional [`TICK`].
     Tick,
-    /// A filesystem change the watcher's debouncer coalesced into one burst.
-    Watcher {
-        /// Relevant events folded into the burst, including any past the
-        /// stored path sample's bound.
-        events: usize,
-        /// The burst's deduplicated paths, in first-seen order, bounded at a
-        /// fixed constant — see [`watch::WatchBurst`].
-        paths: Vec<PathBuf>,
-    },
     /// T3/T5: a burst named one or more agents to rediscover, with no full
     /// discovery walk over the rest.
     WatcherAgents {
@@ -166,7 +156,6 @@ impl ScanTrigger {
         match self {
             ScanTrigger::Launch => "launch",
             ScanTrigger::Tick => "tick",
-            ScanTrigger::Watcher { .. } => "watcher",
             ScanTrigger::WatcherAgents { .. } => "watcher_agents",
             ScanTrigger::PopoverShown => "popover_shown",
             ScanTrigger::SettingsTransition => "settings_transition",
@@ -205,6 +194,11 @@ pub struct ScanController {
     /// rather than queued, because the waiting request already covers
     /// "scan again soon".
     pending_trigger: Mutex<Option<ScanTrigger>>,
+    /// Watcher bursts waiting for the scheduler loop to classify them. A
+    /// `Vec` rather than a channel: the scheduler drains every burst at once
+    /// per wake, and classification needs the whole batch together to fold
+    /// correctly into one [`scoped::ScopedWork`] (T7).
+    burst_inbox: Mutex<Vec<watch::WatchBurst>>,
 }
 
 impl ScanController {
@@ -238,6 +232,28 @@ impl ScanController {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take()
+    }
+
+    /// Hand the scheduler loop a debounced burst, and wake it. Called from
+    /// the watcher's own task, not the scheduler's, so this only queues the
+    /// burst — classification and admission happen on the scheduler's loop.
+    fn push_burst(&self, burst: watch::WatchBurst) {
+        self.burst_inbox
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(burst);
+        self.kick.notify_one();
+    }
+
+    /// Take every burst queued since the last drain, for the scheduler to
+    /// classify together.
+    fn take_bursts(&self) -> Vec<watch::WatchBurst> {
+        std::mem::take(
+            &mut self
+                .burst_inbox
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 
     /// Ask the pass in flight to stop at its next phase boundary.
@@ -280,6 +296,16 @@ pub(crate) fn on_demand_start(controller: &ScanController) -> bool {
     true
 }
 
+/// Which `tokio::select!` arm woke the scheduler loop. The loop needs to
+/// tell its own unconditional [`TICK`] apart from a burst-triggered or
+/// retry-triggered wake, since only the tick (or an explicit request) runs a
+/// full pass; a plain burst or retry wake only advances scoped work.
+enum Wake {
+    Kick,
+    Tick,
+    Deferred,
+}
+
 /// Start the scheduler. The returned handle is aborted when the app exits.
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
@@ -292,26 +318,162 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         if scheduled_scanning_allowed(&app) {
             run_pass(&app, None, ScanTrigger::Launch, PassScope::Full).await;
         }
+
+        // T1-T7: the backlog a watcher burst can answer without a full
+        // discovery walk. `pending_work` is floor-gated (T2/T4/T5, T7);
+        // `retry_work` already cleared its floor but found a command's pass
+        // running, and is retried directly at `scoped::SCOPED_RETRY` — see
+        // the `scoped` module doc.
+        let mut floors = scoped::Floors::default();
+        let mut pending_work = scoped::ScopedWork::default();
+        let mut retry_work = scoped::ScopedWork::default();
+        let mut deferred_due: Option<tokio::time::Instant> = None;
+
         loop {
             let controller = app.state::<ScanController>();
-            tokio::select! {
-                () = controller.kick.notified() => {}
-                () = tokio::time::sleep(tick) => {}
-            }
+            let woke = tokio::select! {
+                () = controller.kick.notified() => Wake::Kick,
+                () = tokio::time::sleep(tick) => Wake::Tick,
+                () = sleep_until_due(deferred_due) => Wake::Deferred,
+            };
             // Checked after the wake-up rather than before the wait, so
             // resuming discovery takes effect at the next request or tick
             // instead of needing the app restarted.
             if !scheduled_scanning_allowed(&app) {
+                let dropped = controller.take_bursts();
+                if !dropped.is_empty() {
+                    ::tracing::debug!(
+                        event = "scan_bursts_dropped_while_paused",
+                        bursts = dropped.len(),
+                    );
+                }
+                // `Floors` keeps real last-run timestamps, so admission
+                // recomputes correct due times once scanning resumes. A
+                // stale `deferred_due` left set here would otherwise wake
+                // this loop again immediately, on every iteration, for as
+                // long as discovery stays paused.
+                deferred_due = None;
                 continue;
             }
-            // A trigger is pending unless this woke from the sleep arm with
-            // nothing requested, which is the unconditional tick itself.
-            let trigger = controller
-                .take_pending_trigger()
-                .unwrap_or(ScanTrigger::Tick);
-            run_pass(&app, None, trigger, PassScope::Full).await;
+
+            // Fold in any bursts queued since the last wake before deciding
+            // what runs: a full pass below covers them for free, and a
+            // scoped wake needs them for admission.
+            let bursts = controller.take_bursts();
+            if !bursts.is_empty() {
+                let home = home_dir().unwrap_or_default();
+                let store = app.state::<Store>();
+                for burst in bursts {
+                    let work = scoped::classify_burst(&burst.paths, &home, &|label: &str| {
+                        store
+                            .session_record_by_source_label(label)
+                            .ok()
+                            .flatten()
+                            .map(|(key, _)| key)
+                    });
+                    pending_work.merge(work);
+                }
+            }
+
+            // A trigger is pending unless this woke from the tick's own
+            // sleep arm with nothing requested. Either way a full pass
+            // supersedes every floor-gated or retrying scoped item: it
+            // re-describes everything they would have, so their floors are
+            // stamped as satisfied rather than left to run again soon.
+            let full_trigger = controller.take_pending_trigger();
+            if full_trigger.is_some() || matches!(woke, Wake::Tick) {
+                let trigger = full_trigger.unwrap_or(ScanTrigger::Tick);
+                run_pass(&app, None, trigger, PassScope::Full).await;
+                let now = tokio::time::Instant::now();
+                floors.stamp(&pending_work, now);
+                floors.stamp(&retry_work, now);
+                pending_work = scoped::ScopedWork::default();
+                retry_work = scoped::ScopedWork::default();
+                deferred_due = None;
+                continue;
+            }
+
+            // T7: retry work a prior admission already stamped as run, but
+            // that found a command's pass in the way, before admitting more
+            // — it does not need to clear its floor again, only wait for
+            // the pass that was busy.
+            if !retry_work.is_empty() {
+                retry_work = run_admitted_work(&app, std::mem::take(&mut retry_work)).await;
+            }
+
+            let now = tokio::time::Instant::now();
+            let (run_now, deferred, earliest_due) =
+                floors.admit(std::mem::take(&mut pending_work), now);
+            pending_work = deferred;
+            if !run_now.is_empty() {
+                let busy = run_admitted_work(&app, run_now).await;
+                retry_work.merge(busy);
+            }
+
+            deferred_due = match (earliest_due, retry_work.is_empty()) {
+                (Some(due), true) => Some(due),
+                (Some(due), false) => Some(due.min(now + scoped::SCOPED_RETRY)),
+                (None, true) => None,
+                (None, false) => Some(now + scoped::SCOPED_RETRY),
+            };
         }
     })
+}
+
+/// Sleep until `due`, or forever when nothing is due. A `tokio::select!` arm
+/// with nothing pending must never fire, so this never resolves on `None`
+/// rather than resolving immediately.
+async fn sleep_until_due(due: Option<tokio::time::Instant>) {
+    match due {
+        Some(instant) => tokio::time::sleep_until(instant).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Run one wake's admitted [`scoped::ScopedWork`]: [`scoped::refresh_sessions`]
+/// for the sessions (T1), [`scoped::rediscover_agents`] for the plain and
+/// database-backed agents together (T3/T5) — both floors lead to the same
+/// rediscovery call, so one combined set avoids running it twice. Returns the
+/// part that found a command's pass already running, for the caller to retry
+/// (T7) without re-admitting it through [`scoped::Floors`].
+async fn run_admitted_work(app: &AppHandle, work: scoped::ScopedWork) -> scoped::ScopedWork {
+    let mut busy = scoped::ScopedWork::default();
+
+    if !work.sessions.is_empty() {
+        match scoped::refresh_sessions(app, &work.sessions).await {
+            Ok(Some(summary)) => {
+                ::tracing::debug!(
+                    event = "scan_targeted_admitted",
+                    sessions = work.sessions.len(),
+                    re_described = summary.re_described,
+                );
+            }
+            Ok(None) => busy.sessions = work.sessions,
+            Err(error) => {
+                ::tracing::debug!(event = "scan_targeted_failed", error = %error);
+            }
+        }
+    }
+
+    let rediscover: BTreeSet<AgentKind> = work
+        .agents
+        .iter()
+        .chain(work.db_agents.iter())
+        .copied()
+        .collect();
+    if !rediscover.is_empty() {
+        let labels: Vec<&'static str> = rediscover.iter().map(|agent| agent.slug()).collect();
+        let trigger = ScanTrigger::WatcherAgents { agents: labels };
+        if scoped::rediscover_agents(app, &rediscover, trigger)
+            .await
+            .is_none()
+        {
+            busy.agents = work.agents;
+            busy.db_agents = work.db_agents;
+        }
+    }
+
+    busy
 }
 
 /// The scheduler's fixed poll interval for this run, chosen once from the
@@ -467,21 +629,6 @@ pub(crate) async fn try_run_pass(
 /// picked up (see [`ScanController::request`]).
 fn log_scan_pass_requested(trigger: &ScanTrigger) {
     match trigger {
-        ScanTrigger::Watcher { events, paths } => {
-            let sample = paths
-                .iter()
-                .take(8)
-                .map(|path| path.to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(",");
-            ::tracing::debug!(
-                event = "scan_pass_requested",
-                trigger = trigger.label(),
-                events,
-                paths = %sample,
-                path_count = paths.len(),
-            );
-        }
         ScanTrigger::WatcherAgents { agents } => {
             ::tracing::debug!(
                 event = "scan_pass_requested",

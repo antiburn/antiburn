@@ -87,11 +87,10 @@ pub fn spawn_watcher(app: &AppHandle) -> WatcherStatus {
     };
     let app = app.clone();
     spawn_watcher_over(home, move |burst: WatchBurst| {
-        app.state::<crate::scan::ScanController>()
-            .request(crate::scan::ScanTrigger::Watcher {
-                events: burst.events,
-                paths: burst.paths,
-            });
+        // Phase 5b: a burst is classified and admitted on the scheduler's own
+        // loop (see `scoped` and `super::spawn_scheduler`), not requested as
+        // a full pass here.
+        app.state::<crate::scan::ScanController>().push_burst(burst);
     })
 }
 

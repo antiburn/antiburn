@@ -7,22 +7,27 @@
 //! database-backed session appeared under their root (T3, T5), or paths
 //! nothing claims (T6). [`Floors`] then admits the part of that work that has
 //! not run too recently, per session and per agent (T2, T4, T5), and defers
-//! the rest without dropping it (T7). [`rediscover_agents`] runs the
-//! agent-scoped lane.
+//! the rest without dropping it (T7). [`refresh_sessions`] and
+//! [`rediscover_agents`] run the two admitted lanes.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use antiburn_local::discovery::{Explorers, WatchRoot};
+use antiburn_local::discovery::{Explorers, SessionLog, SessionSource, WatchRoot};
 use antiburn_local::model::AgentKind;
-use tauri::AppHandle;
+use antiburn_local::paths::{home_dir, ignored_paths};
+use antiburn_local::platform::environment::DiscoveryEnvironment;
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::time::Instant;
 
-use crate::dto::ScanStatus;
-use crate::store::SessionActivityKey;
+use crate::agents;
+use crate::dto::{ActivityEntry, ScanStatus};
+use crate::storage_health::checked;
+use crate::store::{SessionActivityKey, SessionRecord, Store};
 
-use super::{PassScope, ScanTrigger};
+use super::{PassScope, ScanController, ScanTrigger};
 
 /// T2: a re-described session is not re-described again before this many
 /// seconds pass.
@@ -35,6 +40,10 @@ pub const AGENT_REDISCOVER_MIN_INTERVAL: Duration = Duration::from_secs(20);
 /// than [`AGENT_REDISCOVER_MIN_INTERVAL`] because every write under such an
 /// agent's root looks like a new session to the classifier.
 pub const DB_AGENT_REDISCOVER_MIN_INTERVAL: Duration = Duration::from_secs(30);
+
+/// T7: how long the scheduler waits before retrying admitted work that found
+/// a command's pass already holding the running flag.
+pub const SCOPED_RETRY: Duration = Duration::from_millis(500);
 
 /// File name suffixes the classifier treats as a database-backed agent's
 /// store (T5): the vendor extensions themselves, plus their SQLite WAL and
@@ -301,6 +310,118 @@ impl<K: Ord> Admission<'_, K> {
             }
         }
     }
+}
+
+/// What one targeted or agent-scoped pass persisted, for the caller's log
+/// line.
+pub struct ScopedSummary {
+    pub sessions: usize,
+    pub re_described: usize,
+}
+
+/// T1: refresh exactly the sessions named in `keys`, without discovery,
+/// without touching repositories or per-agent scan bookkeeping, and without
+/// the `scan:started` / `scan:finished` events a full or agent-scoped pass
+/// emits.
+///
+/// Returns `Ok(None)` rather than attempting the refresh when a command's
+/// [`super::run_pass`] already holds the running flag — the caller keeps the
+/// keys pending and retries (T7) instead of losing them.
+pub(super) async fn refresh_sessions(
+    app: &AppHandle,
+    keys: &BTreeSet<SessionActivityKey>,
+) -> anyhow::Result<Option<ScopedSummary>> {
+    if keys.is_empty() {
+        return Ok(Some(ScopedSummary {
+            sessions: 0,
+            re_described: 0,
+        }));
+    }
+    let controller = app.state::<ScanController>();
+    if !super::on_demand_start(&controller) {
+        return Ok(None);
+    }
+    let started_at = std::time::Instant::now();
+    let outcome = refresh_sessions_locked(app, keys).await;
+    controller.running.store(false, Ordering::SeqCst);
+    controller.cancel.store(false, Ordering::SeqCst);
+    let summary = outcome?;
+    ::tracing::debug!(
+        event = "scan_targeted_finished",
+        sessions = summary.sessions,
+        re_described = summary.re_described,
+        duration_ms = started_at.elapsed().as_millis() as u64,
+    );
+    Ok(Some(summary))
+}
+
+async fn refresh_sessions_locked(
+    app: &AppHandle,
+    keys: &BTreeSet<SessionActivityKey>,
+) -> anyhow::Result<ScopedSummary> {
+    let store = app.state::<Store>();
+    let now = super::unix_now();
+    let home = home_dir().unwrap_or_default();
+    let ignored = ignored_paths::load_ignored(store.state_dir(), super::IGNORE_SCOPE);
+
+    let mut previous_map: HashMap<SessionActivityKey, SessionRecord> = HashMap::new();
+    let mut logs = Vec::new();
+    for key in keys {
+        let Some((activity_key, record)) =
+            store.session_record_by_source_label(&key.source_label)?
+        else {
+            continue;
+        };
+        // Only a native file source can be reused this way; a provider-database
+        // or inline session has no path to re-describe from.
+        if record.source_kind != "file" {
+            continue;
+        }
+        let Some(agent) = AgentKind::from_slug(&record.key.agent) else {
+            continue;
+        };
+        let path = PathBuf::from(&record.source_label);
+        if !path.exists() {
+            // The tick's full pass evicts a session whose source vanished;
+            // a targeted refresh only skips it.
+            ::tracing::debug!(event = "scan_targeted_source_missing", source_label = %record.source_label);
+            continue;
+        }
+        logs.push(SessionLog {
+            agent_type: agent,
+            source: SessionSource::File(path),
+            updated_at: record.updated_at_epoch,
+            environment: DiscoveryEnvironment::Native,
+        });
+        previous_map.insert(activity_key, record);
+    }
+
+    let announce_app = app.clone();
+    let announce = move |entry: ActivityEntry| {
+        let _ = announce_app.emit(crate::commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
+    };
+
+    let described = super::describe_with_states(logs, &home, &ignored, &previous_map).await;
+    checked(
+        app,
+        "The session index",
+        store.upsert_sessions(&described.records, &agents::evidence_cohort()),
+    )?;
+    crate::insights_worker::wake(app);
+    super::idle::wake(app);
+    super::announce_changed_rows(&store, &described.changed, &previous_map, now, &announce);
+    for key in &described.rejected {
+        checked(
+            app,
+            "The session index",
+            store.delete_session(key).map(|_| ()),
+        )?;
+    }
+
+    Ok(ScopedSummary {
+        sessions: described.records.len(),
+        re_described: described.changed.len(),
+    })
 }
 
 /// T3, T5: rediscover exactly `agents`, reusing [`super::run_pass`] scoped to
