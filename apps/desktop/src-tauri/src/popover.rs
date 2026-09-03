@@ -1156,9 +1156,8 @@ pub fn toggle(app: &AppHandle, anchor: Rect) {
 /// Dismisses the popover from the webview — the Escape key, and anything else
 /// the views treat as "put this away".
 ///
-/// Deliberately a shell command rather than `getCurrentWindow().hide()`: the
-/// scan scheduler is gated on the popover being on screen, and a window hidden
-/// behind the shell's back would leave that gate stuck open.
+/// Use a shell command instead of `getCurrentWindow().hide()`. The shell must
+/// emit `popover:hidden` to stop the visible usage poll.
 ///
 /// No-op while pinned. The webview still asks — the decision is the shell's,
 /// so every dismissal answers to the same gate.
