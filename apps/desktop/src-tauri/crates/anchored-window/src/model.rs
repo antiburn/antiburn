@@ -74,6 +74,15 @@ pub enum WindowMaterial {
     },
 }
 
+/// Pointer tolerance after the pointer enters a companion window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PointerExitPolicy {
+    /// The logical distance outside the native frame that still counts as inside.
+    pub edge_tolerance: f64,
+    /// The continuous time outside the tolerance before concealment starts.
+    pub outside_delay: Duration,
+}
+
 /// A target element's logical bounds relative to the anchor window.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -130,6 +139,8 @@ pub struct AnchoredWindowConfig {
     pub placement: PlacementPolicy,
     /// The maximum wait for renderer-confirmed concealment.
     pub conceal_fallback: Duration,
+    /// Optional pointer tolerance after the pointer enters the companion.
+    pub pointer_exit: Option<PointerExitPolicy>,
 }
 
 /// One target request delivered to the companion renderer.

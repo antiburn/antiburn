@@ -27,6 +27,7 @@ pub(super) fn config() -> AnchoredWindowConfig {
             screen_margin: 8.0,
         },
         conceal_fallback: Duration::from_millis(80),
+        pointer_exit: None,
     }
 }
 

@@ -1,10 +1,14 @@
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
+
 use serde::Serialize;
 use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 #[cfg(not(target_os = "macos"))]
 use tauri::{PhysicalPosition, PhysicalSize};
 
+use crate::geometry::CursorProximity;
 #[cfg(not(target_os = "macos"))]
-use crate::geometry::{Rect, place_left_preferred};
+use crate::geometry::{Point, Rect, classify_cursor, place_left_preferred};
 use crate::model::{HeightPolicy, PlacementPolicy, normalized_height_policy};
 use crate::platform;
 
@@ -17,6 +21,11 @@ where
 {
     pub(super) fn ensure_window(&self, app: &tauri::AppHandle) -> tauri::Result<WebviewWindow> {
         if let Some(window) = app.get_webview_window(&self.inner.config.label) {
+            #[cfg(target_os = "linux")]
+            crate::linux::install_pointer_tracking(
+                &window,
+                Arc::clone(&self.inner.pointer_tracker),
+            )?;
             return Ok(window);
         }
         let (renderer_generation, initial_height) = {
@@ -47,7 +56,10 @@ where
         .focused(false)
         .transparent(platform::is_transparent(self.inner.config.material))
         .focusable(self.inner.config.interaction == crate::model::InteractionPolicy::Interactive);
-        platform::configure(builder, self.inner.config.material).build()
+        let window = platform::configure(builder, self.inner.config.material).build()?;
+        #[cfg(target_os = "linux")]
+        crate::linux::install_pointer_tracking(&window, Arc::clone(&self.inner.pointer_tracker))?;
+        Ok(window)
     }
 
     pub(super) fn apply_size_and_position(
@@ -157,45 +169,56 @@ where
     }
 
     pub(super) fn cursor_is_over_companion(&self, app: &tauri::AppHandle) -> Option<bool> {
+        self.cursor_location(app, 0.0)
+            .map(|proximity| proximity == CursorProximity::Inside)
+    }
+
+    pub(super) fn cursor_location(
+        &self,
+        app: &tauri::AppHandle,
+        edge_tolerance: f64,
+    ) -> Option<CursorProximity> {
         let Some(window) = app.get_webview_window(&self.inner.config.label) else {
-            return Some(false);
+            return Some(CursorProximity::Outside);
         };
         match window.is_visible() {
             Ok(true) => {}
-            Ok(false) => return Some(false),
-            Err(error) => {
-                tracing::warn!(%error, "failed to read anchored-window visibility");
-                return None;
-            }
+            Ok(false) => return Some(CursorProximity::Outside),
+            Err(_) => return None,
         }
 
         #[cfg(target_os = "macos")]
         {
-            Some(crate::macos::cursor_inside(&self.inner.native_frame))
+            crate::macos::cursor_location(&self.inner.native_frame, edge_tolerance)
         }
 
         #[cfg(not(target_os = "macos"))]
         {
-            let cursor = app.cursor_position().map_err(|error| {
-                tracing::warn!(%error, "failed to read the anchored-window cursor position");
-            });
-            let position = window.outer_position().map_err(|error| {
-                tracing::warn!(%error, "failed to read the anchored-window position");
-            });
-            let size = window.outer_size().map_err(|error| {
-                tracing::warn!(%error, "failed to read the anchored-window size");
-            });
-            let (Ok(cursor), Ok(position), Ok(size)) = (cursor, position, size) else {
-                return None;
-            };
-            let left = f64::from(position.x);
-            let top = f64::from(position.y);
-            Some(
-                cursor.x >= left
-                    && cursor.x < left + f64::from(size.width)
-                    && cursor.y >= top
-                    && cursor.y < top + f64::from(size.height),
-            )
+            #[cfg(target_os = "linux")]
+            match self.inner.pointer_tracker.source() {
+                crate::linux::CursorSource::Pending => return None,
+                crate::linux::CursorSource::Local(proximity) => return Some(proximity),
+                crate::linux::CursorSource::Global => {}
+            }
+
+            let cursor = app.cursor_position().ok()?;
+            let position = window.outer_position().ok()?;
+            let size = window.outer_size().ok()?;
+            let scale = window.scale_factor().ok()?;
+            Some(classify_cursor(
+                Rect {
+                    x: f64::from(position.x),
+                    y: f64::from(position.y),
+                    width: f64::from(size.width),
+                    height: f64::from(size.height),
+                },
+                Point {
+                    x: cursor.x,
+                    y: cursor.y,
+                },
+                edge_tolerance,
+                scale,
+            ))
         }
     }
 
@@ -225,6 +248,8 @@ where
             self.lock_lifecycle().force_hidden();
             return Ok(());
         }
+        #[cfg(target_os = "linux")]
+        self.inner.pointer_tracker.reset_for_show();
         if let Err(error) = platform::show(window, self.inner.config.interaction) {
             self.lock_lifecycle().force_hidden();
             return Err(error);

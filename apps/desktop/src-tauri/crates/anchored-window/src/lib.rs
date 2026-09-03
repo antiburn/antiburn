@@ -19,7 +19,7 @@ pub use manager::AnchoredWindowManager;
 pub use model::{
     AnchorRegion, AnchoredWindowConfig, AnchoredWindowLifecycleEvent, AnchoredWindowRenderRequest,
     AnchoredWindowRequest, AnchoredWindowState, HeightPolicy, InteractionPolicy, PlacementPolicy,
-    RevealPolicy, WindowMaterial,
+    PointerExitPolicy, RevealPolicy, WindowMaterial,
 };
 
 /// The event that carries each target generation to the resident renderer.
