@@ -1447,6 +1447,30 @@ fn a_fresh_controller_reports_a_clean_initial_status() {
     assert!(!status.cancelled);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_second_request_before_the_scheduler_wakes_is_coalesced() {
+    let controller = ScanController::default();
+    controller.request(ScanTrigger::PopoverShown);
+    controller.request(ScanTrigger::ManualRescan);
+
+    {
+        let pending = controller
+            .pending_trigger
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            matches!(pending.as_ref(), Some(ScanTrigger::PopoverShown)),
+            "the first trigger is kept, the second is dropped"
+        );
+    }
+
+    // The two requests notify only once: this consumes that single permit...
+    controller.kick.notified().await;
+    // ...and a second wait finds nothing further queued.
+    let second = tokio::time::timeout(Duration::from_millis(0), controller.kick.notified()).await;
+    assert!(second.is_err(), "only one notify should have been queued");
+}
+
 #[test]
 fn a_cancel_request_only_applies_while_a_pass_is_running() {
     let controller = ScanController::default();

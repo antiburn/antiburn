@@ -72,9 +72,10 @@
 //! scheduler is a single handle the app aborts on exit, so nothing outlives
 //! the process.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use antiburn_local::discovery::scanner::{self, TitleSource};
 use antiburn_local::discovery::{
@@ -114,6 +115,62 @@ pub const EVENT_STARTED: &str = "scan:started";
 pub const EVENT_PROGRESS: &str = "scan:progress";
 pub const EVENT_FINISHED: &str = "scan:finished";
 
+/// W3: why a pass was requested. Every request site names its own purpose, so
+/// a log line answers "why is the machine scanning right now" without having
+/// to correlate timestamps against reader actions after the fact.
+#[derive(Debug, Clone)]
+pub enum ScanTrigger {
+    /// The one pass run at startup, after onboarding has finished.
+    Launch,
+    /// The scheduler's unconditional [`TICK`].
+    Tick,
+    /// A filesystem change the watcher's debouncer coalesced into one burst.
+    Watcher {
+        /// Relevant events folded into the burst, including any past the
+        /// stored path sample's bound.
+        events: usize,
+        /// The burst's deduplicated paths, in first-seen order, bounded at a
+        /// fixed constant — see [`watch::WatchBurst`].
+        paths: Vec<PathBuf>,
+    },
+    /// The popover reached the screen.
+    PopoverShown,
+    /// A settings save that finished onboarding, widened the activity
+    /// window, or resumed discovery.
+    SettingsTransition,
+    /// The Insights pane was opened.
+    InsightsPane,
+    /// A repository was included or ignored.
+    RepositoryToggle,
+    /// A scan root was added.
+    ScanRootAdded,
+    /// A protected folder's access was granted or discovered.
+    FolderAccessGranted,
+    /// The local index was cleared.
+    IndexCleared,
+    /// The reader asked for a rescan explicitly.
+    ManualRescan,
+}
+
+impl ScanTrigger {
+    /// A stable snake_case name for logs.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ScanTrigger::Launch => "launch",
+            ScanTrigger::Tick => "tick",
+            ScanTrigger::Watcher { .. } => "watcher",
+            ScanTrigger::PopoverShown => "popover_shown",
+            ScanTrigger::SettingsTransition => "settings_transition",
+            ScanTrigger::InsightsPane => "insights_pane",
+            ScanTrigger::RepositoryToggle => "repository_toggle",
+            ScanTrigger::ScanRootAdded => "scan_root_added",
+            ScanTrigger::FolderAccessGranted => "folder_access_granted",
+            ScanTrigger::IndexCleared => "index_cleared",
+            ScanTrigger::ManualRescan => "manual_rescan",
+        }
+    }
+}
+
 /// The scheduler's shared state, registered as Tauri managed state.
 #[derive(Default)]
 pub struct ScanController {
@@ -121,12 +178,45 @@ pub struct ScanController {
     cancel: Arc<AtomicBool>,
     status: Mutex<ScanStatus>,
     kick: Notify,
+    /// The trigger for the next pass the scheduler will run, set by
+    /// [`ScanController::request`] and taken by the scheduler loop when it
+    /// wakes. W3: a second request while one is already pending is coalesced
+    /// rather than queued, because the waiting request already covers
+    /// "scan again soon".
+    pending_trigger: Mutex<Option<ScanTrigger>>,
 }
 
 impl ScanController {
-    /// Ask for a pass as soon as the scheduler can start one.
-    pub fn request(&self) {
+    /// Ask for a pass as soon as the scheduler can start one, naming why.
+    ///
+    /// If a trigger is already pending, the earlier one is kept: the pending
+    /// trigger already means a pass is coming, so the second ask changes
+    /// nothing about when that happens, only which label would explain it.
+    pub fn request(&self, trigger: ScanTrigger) {
+        let mut pending = self
+            .pending_trigger
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match pending.as_ref() {
+            Some(existing) => {
+                ::tracing::debug!(
+                    event = "scan_request_coalesced",
+                    kept = existing.label(),
+                    dropped = trigger.label(),
+                );
+            }
+            None => *pending = Some(trigger),
+        }
+        drop(pending);
         self.kick.notify_one();
+    }
+
+    /// Take the pending trigger, if any, for the scheduler to run next.
+    fn take_pending_trigger(&self) -> Option<ScanTrigger> {
+        self.pending_trigger
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 
     /// Ask the pass in flight to stop at its next phase boundary.
@@ -179,7 +269,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         let tick = tick_for(&watch::spawn_watcher(&app));
         // A fresh install has nothing to scan until the reader picks sources.
         if scheduled_scanning_allowed(&app) {
-            run_pass(&app, None).await;
+            run_pass(&app, None, ScanTrigger::Launch).await;
         }
         loop {
             let controller = app.state::<ScanController>();
@@ -193,7 +283,12 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
             if !scheduled_scanning_allowed(&app) {
                 continue;
             }
-            run_pass(&app, None).await;
+            // A trigger is pending unless this woke from the sleep arm with
+            // nothing requested, which is the unconditional tick itself.
+            let trigger = controller
+                .take_pending_trigger()
+                .unwrap_or(ScanTrigger::Tick);
+            run_pass(&app, None, trigger).await;
         }
     })
 }
@@ -225,10 +320,20 @@ fn scheduled_scanning_allowed(app: &AppHandle) -> bool {
 }
 
 /// Run one pass, unless one is already in flight.
-pub async fn run_pass(app: &AppHandle, activity_window_days: Option<u32>) -> ScanStatus {
+pub async fn run_pass(
+    app: &AppHandle,
+    activity_window_days: Option<u32>,
+    trigger: ScanTrigger,
+) -> ScanStatus {
+    log_scan_pass_requested(&trigger);
     {
         let controller = app.state::<ScanController>();
         if !on_demand_start(&controller) {
+            // W4: a request dropped here is otherwise silent, and a hidden
+            // feedback loop then shows up only as a wall of full passes on
+            // the tick. Logging the trigger turns that into a visible stream
+            // of drops instead.
+            ::tracing::debug!(event = "scan_request_dropped", trigger = trigger.label());
             return controller.status();
         }
         let started = controller.update(|status| {
@@ -242,6 +347,8 @@ pub async fn run_pass(app: &AppHandle, activity_window_days: Option<u32>) -> Sca
         });
         let _ = app.emit(EVENT_STARTED, started);
     }
+    ::tracing::debug!(event = "scan_pass_started", trigger = trigger.label());
+    let pass_started_at = Instant::now();
 
     let announce_app = app.clone();
     let announce = move |entry: ActivityEntry| {
@@ -276,6 +383,32 @@ pub async fn run_pass(app: &AppHandle, activity_window_days: Option<u32>) -> Sca
     if outcome.is_ok() {
         storage_health::note_ok(app);
     }
+    let duration_ms = pass_started_at.elapsed().as_millis() as u64;
+    match &outcome {
+        Ok(summary) => {
+            ::tracing::debug!(
+                event = "scan_pass_finished",
+                trigger = trigger.label(),
+                duration_ms,
+                sessions = summary.sessions,
+                re_described = summary.re_described,
+                list_changed = summary.list_changed,
+                cancelled,
+            );
+        }
+        Err(error) => {
+            ::tracing::debug!(
+                event = "scan_pass_finished",
+                trigger = trigger.label(),
+                duration_ms,
+                sessions = 0,
+                re_described = 0,
+                list_changed = false,
+                cancelled,
+                error = %error,
+            );
+        }
+    }
     let _ = app.emit(EVENT_FINISHED, finished.clone());
     // The outcome, not a shaped event: whether this pass is worth reporting at
     // all is an analytics question, and this scheduler runs a pass a minute
@@ -289,6 +422,34 @@ pub async fn run_pass(app: &AppHandle, activity_window_days: Option<u32>) -> Sca
     finished
 }
 
+/// Log `scan_pass_requested`. Every call to [`run_pass`] gets one, whether it
+/// goes on to run or is dropped by [`on_demand_start`] — the drop is a
+/// separate `scan_request_dropped` line (W4), and a coalesced ask never
+/// reaches here at all: it never became a pending trigger a scheduler wake
+/// picked up (see [`ScanController::request`]).
+fn log_scan_pass_requested(trigger: &ScanTrigger) {
+    match trigger {
+        ScanTrigger::Watcher { events, paths } => {
+            let sample = paths
+                .iter()
+                .take(8)
+                .map(|path| path.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(",");
+            ::tracing::debug!(
+                event = "scan_pass_requested",
+                trigger = trigger.label(),
+                events,
+                paths = %sample,
+                path_count = paths.len(),
+            );
+        }
+        other => {
+            ::tracing::debug!(event = "scan_pass_requested", trigger = other.label());
+        }
+    }
+}
+
 /// What one pass persisted, for [`run_pass`] to fold into the reported status.
 struct PassSummary {
     sessions: usize,
@@ -296,6 +457,9 @@ struct PassSummary {
     /// patch: this pass indexed a session the list has never shown, or
     /// evicted a rejected one.
     list_changed: bool,
+    /// [`Described::changed`]'s length: rows this pass re-described, new or
+    /// with a moved cursor, never a row reused verbatim.
+    re_described: usize,
 }
 
 /// The body of one pass. Split out so [`run_pass`] owns only the in-flight
@@ -381,6 +545,7 @@ async fn pass(
         return Ok(PassSummary {
             sessions: records.len(),
             list_changed,
+            re_described: changed.len(),
         });
     }
 
@@ -389,6 +554,7 @@ async fn pass(
     Ok(PassSummary {
         sessions: records.len(),
         list_changed,
+        re_described: changed.len(),
     })
 }
 

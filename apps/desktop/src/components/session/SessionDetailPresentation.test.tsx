@@ -229,7 +229,7 @@ describe("SessionDetailPresentation — chrome", () => {
       cost: cost(),
       summary: summary({ sessions: [metrics({ cacheRoutingMissCount: 2 })] }),
     })
-    expect(screen.getByText(/2 routing misses/)).toBeTruthy()
+    expect(screen.getByText(/2 provider cache misses/)).toBeTruthy()
   })
 
   it("omits the Cost card when nothing priced the session", () => {

@@ -25,6 +25,11 @@ CI changes, and documentation that no user acts on stay out — see
 - Context charts now distinguish provider cache misses from cache rehydration
   after meaningful user inactivity, using provider-specific timing.
 
+### Fixed
+
+- Claude session details now apply the Claude inactivity threshold when they
+  rebuild metrics from stored rows, and name provider cache misses consistently.
+
 ### Removed
 
 - "Export session analysis" is gone. The session drilldown no longer offers a

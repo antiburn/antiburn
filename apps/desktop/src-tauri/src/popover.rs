@@ -1736,7 +1736,7 @@ fn note_shown(app: &AppHandle) {
     if let Some(controller) = app.try_state::<crate::scan::ScanController>() {
         // Opening the popover is the one moment a reader is guaranteed to be
         // looking, so refresh immediately instead of waiting out a tick.
-        controller.request();
+        controller.request(crate::scan::ScanTrigger::PopoverShown);
     }
     // A separate signal from the scan kick just above, on purpose, rather
     // than something the webview infers from `scan:finished`. Two things

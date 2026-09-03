@@ -60,16 +60,16 @@ describe("tokensCardModel", () => {
     )
   })
 
-  it("adds the routing-miss count to the hint, pluralized", () => {
+  it("adds the provider-cache-miss count to the hint, pluralized", () => {
     expect(tokensCardModel({ ...base, cacheRoutingMissCount: 1 }).hint).toBe(
-      "1.2M in · 34.0k out · 1 routing miss",
+      "1.2M in · 34.0k out · 1 provider cache miss",
     )
     expect(tokensCardModel({ ...base, cacheRoutingMissCount: 2 }).hint).toBe(
-      "1.2M in · 34.0k out · 2 routing misses",
+      "1.2M in · 34.0k out · 2 provider cache misses",
     )
     expect(
       tokensCardModel({ ...base, cacheRehydrationCount: 1, cacheRoutingMissCount: 2 }).hint,
-    ).toBe("1.2M in · 34.0k out · 1 rehydration · 2 routing misses")
+    ).toBe("1.2M in · 34.0k out · 1 rehydration · 2 provider cache misses")
   })
 
   it("keeps a null cost total when nothing was priced", () => {
