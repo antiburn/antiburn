@@ -191,11 +191,11 @@ async fn run_root_recheck_loop(
     }
 }
 
-/// W2: the paths a debounce burst that stores has become this large stops
-/// growing. A pass request still names the trigger and its event count past
-/// this point; only the path sample is capped, so a runaway burst cannot grow
-/// the debouncer's memory with the size of the change.
-const MAX_BURST_PATHS: usize = 64;
+/// W2: the most paths one burst stores. Past this bound the burst keeps
+/// counting events but stops storing paths, so a runaway burst cannot grow
+/// the debouncer's memory with the size of the change. A consumer that sees
+/// a full sample must treat the burst as possibly incomplete.
+pub const MAX_BURST_PATHS: usize = 64;
 
 /// One coalesced run of relevant filesystem events, handed to
 /// `on_relevant_change` after the burst's quiet period ends.
