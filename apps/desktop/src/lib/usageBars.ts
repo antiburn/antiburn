@@ -1,5 +1,9 @@
 import type { LiveUsageSummaryPayload } from "./ipc"
-import { liveWindowLabel, liveWindows } from "./presentation/liveUsage"
+import {
+  liveDisplayableProviders,
+  liveWindowLabel,
+  liveWindows,
+} from "./presentation/liveUsage"
 
 export type UsageBarItem = {
   key: string
@@ -45,7 +49,7 @@ export function noMeterSelected(response: LiveUsageSummaryPayload | null): boole
 
 /** Convert a live usage snapshot into the HUD bar order. */
 export function deriveUsageBars(response: LiveUsageSummaryPayload | null): UsageBarItem[] {
-  const withBars = (response?.providers ?? [])
+  const withBars = (response ? liveDisplayableProviders(response) : [])
     .map((provider) => ({
       provider,
       windows: liveWindows(provider).filter((window) => window.usedPercent != null),
