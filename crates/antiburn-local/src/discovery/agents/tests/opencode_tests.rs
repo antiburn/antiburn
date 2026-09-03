@@ -628,76 +628,6 @@ async fn test_opencode_discovers_recent_sqlite_sessions() {
 }
 
 #[tokio::test]
-async fn test_opencode_discover_cwds_reads_recent_sqlite_directories() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let root = tmp.path();
-    let db_path = root.join("opencode.db");
-    let conn = Connection::open(&db_path).unwrap();
-
-    conn.execute_batch(
-        "
-            CREATE TABLE session (
-                id TEXT PRIMARY KEY,
-                directory TEXT NOT NULL,
-                title TEXT,
-                time_created INTEGER,
-                time_updated INTEGER
-            );
-            ",
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO session (id, directory, title, time_created, time_updated)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            "ses_recent",
-            "/Users/avery/dev/ai-barometer",
-            "Recent",
-            10_000_000i64,
-            10_000_000i64
-        ],
-    )
-    .unwrap();
-
-    let cwds = discover_cwds_in(&[root.to_path_buf()], 10_000, 100).await;
-
-    assert_eq!(cwds, vec!["/Users/avery/dev/ai-barometer".to_string()]);
-}
-
-#[tokio::test]
-async fn test_opencode_discover_cwds_uses_session_json_without_message_parts() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let root = tmp.path();
-    let session_file = root
-        .join("storage")
-        .join("session")
-        .join("global")
-        .join("ses_recent.json");
-    write_json(
-        &session_file,
-        r#"{"id":"ses_recent","directory":"/Users/avery/dev/demo-cli"}"#,
-    )
-    .await;
-    set_file_mtime(&session_file, 9_950);
-
-    let old_part = root
-        .join("storage")
-        .join("part")
-        .join("global")
-        .join("part_recent.json");
-    write_json(
-        &old_part,
-        r#"{"id":"part_recent","sessionID":"ses_recent","type":"text"}"#,
-    )
-    .await;
-    set_file_mtime(&old_part, 9_950);
-
-    let cwds = discover_cwds_in(&[root.to_path_buf()], 10_000, 100).await;
-
-    assert_eq!(cwds, vec!["/Users/avery/dev/demo-cli".to_string()]);
-}
-
-#[tokio::test]
 async fn test_opencode_discovers_sqlite_sessions_without_session_data_column() {
     let tmp = tempfile::TempDir::new().unwrap();
     let root = tmp.path();
@@ -1341,9 +1271,9 @@ fn data_roots_for_platform_covers_windows_and_linux_paths() {
     );
 }
 
-// Diverged for Desktop: session_title reads the `session.title` column
-// out of `opencode.db`. OpenCode stores session metadata exclusively in
-// SQLite — there are no per-session JSON files for titles.
+// Diverged for Desktop: indexed_session_title reads the `session.title`
+// column out of `opencode.db`. OpenCode stores session metadata exclusively
+// in SQLite — there are no per-session JSON files for titles.
 fn seed_session_title_db(db_path: &Path, rows: &[(&str, &str)]) {
     let conn = Connection::open(db_path).unwrap();
     conn.execute_batch(
@@ -1390,23 +1320,19 @@ where
     result
 }
 
-/// Look up a single id's `(title, surface)` in the batched result. The
-/// batched method returns *all* rows; per-id lookup is what every test
-/// here cared about historically.
-async fn fetch_row(root: &Path, id: &str) -> Option<SessionTitleAndSurface> {
+/// Look up a single id's title through the indexed point-query path
+/// (`AgentExplorer::indexed_session_title`), the production route now that
+/// the batched title+surface scan is gone.
+async fn fetch_title(root: &Path, id: &str) -> Option<ResolvedTitle> {
     run_with_data_dir(root, || async {
-        OpenCodeExplorer
-            .session_titles_and_surfaces()
-            .await
-            .into_iter()
-            .find(|row| row.session_id == id)
+        OpenCodeExplorer.indexed_session_title(id).await
     })
     .await
 }
 
 #[tokio::test]
 #[serial]
-async fn test_session_titles_returns_title_from_sqlite() {
+async fn test_indexed_session_title_returns_title_from_sqlite() {
     let tmp = tempfile::TempDir::new().unwrap();
     let root = tmp.path();
     seed_session_title_db(
@@ -1414,14 +1340,16 @@ async fn test_session_titles_returns_title_from_sqlite() {
         &[("ses_titled", "Implement title interface")],
     );
 
-    let row = fetch_row(root, "ses_titled").await.expect("row present");
-    assert_eq!(row.title.as_deref(), Some("Implement title interface"));
-    assert_eq!(row.surface, "cli");
+    let resolved = fetch_title(root, "ses_titled")
+        .await
+        .expect("title present");
+    assert_eq!(resolved.text, "Implement title interface");
+    assert_eq!(resolved.source, TitleSource::Explicit);
 }
 
 #[tokio::test]
 #[serial]
-async fn test_session_titles_trims_whitespace() {
+async fn test_indexed_session_title_trims_whitespace() {
     let tmp = tempfile::TempDir::new().unwrap();
     let root = tmp.path();
     seed_session_title_db(
@@ -1429,43 +1357,39 @@ async fn test_session_titles_trims_whitespace() {
         &[("ses_padded", "  Padded title  ")],
     );
 
-    let row = fetch_row(root, "ses_padded").await.expect("row present");
-    assert_eq!(row.title.as_deref(), Some("Padded title"));
+    let resolved = fetch_title(root, "ses_padded")
+        .await
+        .expect("title present");
+    assert_eq!(resolved.text, "Padded title");
 }
 
 #[tokio::test]
 #[serial]
-async fn test_session_titles_returns_none_for_whitespace_only_title() {
+async fn test_indexed_session_title_returns_none_for_whitespace_only_title() {
     let tmp = tempfile::TempDir::new().unwrap();
     let root = tmp.path();
     seed_session_title_db(&root.join("opencode.db"), &[("ses_blank", "   ")]);
 
-    let row = fetch_row(root, "ses_blank").await.expect("row present");
     // Whitespace-only titles trim to None so the frontend's "no title"
-    // rendering applies; the row itself still appears in the batch.
-    assert!(row.title.is_none());
+    // rendering applies.
+    assert!(fetch_title(root, "ses_blank").await.is_none());
 }
 
 #[tokio::test]
 #[serial]
-async fn test_session_titles_skips_unknown_ids() {
+async fn test_indexed_session_title_skips_unknown_ids() {
     let tmp = tempfile::TempDir::new().unwrap();
     let root = tmp.path();
     seed_session_title_db(&root.join("opencode.db"), &[("ses_other", "Other")]);
 
-    assert!(fetch_row(root, "ses_unknown").await.is_none());
+    assert!(fetch_title(root, "ses_unknown").await.is_none());
 }
 
 #[tokio::test]
 #[serial]
-async fn test_session_titles_returns_empty_when_db_absent() {
+async fn test_indexed_session_title_returns_none_when_db_absent() {
     let tmp = tempfile::TempDir::new().unwrap();
     let root = tmp.path();
 
-    let rows = run_with_data_dir(root, || async {
-        OpenCodeExplorer.session_titles_and_surfaces().await
-    })
-    .await;
-
-    assert!(rows.is_empty());
+    assert!(fetch_title(root, "ses_missing").await.is_none());
 }

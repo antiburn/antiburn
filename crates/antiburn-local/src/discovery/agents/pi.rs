@@ -12,7 +12,6 @@
 //! No `path_codec` entry is needed for Pi.
 
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use crate::discovery::scanner::AgentKind;
 use crate::discovery::{
@@ -37,14 +36,6 @@ impl AgentExplorer for PiExplorer {
                 environment: Default::default(),
             })
             .collect()
-    }
-
-    async fn discover_cwds(&self, now: i64, since_secs: i64) -> Vec<String> {
-        let home = match home_dir() {
-            Some(h) => h,
-            None => return Vec::new(),
-        };
-        discover_cwds_in(&home, now, since_secs).await
     }
 
     /// Owns the Pi agent sessions tree at `~/.pi/agent/sessions/**`. Single
@@ -155,107 +146,12 @@ async fn log_dirs_in(home: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// Fast CWD discovery: read the first line of the newest session file in each
-/// subdirectory to extract the `cwd` field from the `{type: "session"}` record.
-async fn discover_cwds_in(home: &Path, now: i64, since_secs: i64) -> Vec<String> {
-    let cutoff = now - since_secs;
-    let dirs = log_dirs_in(home).await;
-    let mut cwds = Vec::new();
-
-    for dir in &dirs {
-        if let Some(path) = newest_recent_jsonl(dir, cutoff).await
-            && let Some(cwd) = cwd_from_first_line(&path).await
-        {
-            cwds.push(cwd);
-        }
-    }
-    cwds
-}
-
-/// Return the newest `.jsonl` file in `dir` modified after `cutoff`, if any.
-async fn newest_recent_jsonl(dir: &Path, cutoff: i64) -> Option<PathBuf> {
-    let mut entries = match tokio::fs::read_dir(dir).await {
-        Ok(e) => e,
-        Err(_) => return None,
-    };
-
-    let mut best: Option<(PathBuf, i64)> = None;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let path = entry.path();
-        let is_jsonl = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("jsonl"))
-            .unwrap_or(false);
-        if !is_jsonl {
-            continue;
-        }
-        let mtime = match tokio::fs::metadata(&path).await {
-            Ok(m) => match m.modified() {
-                Ok(t) => match t.duration_since(UNIX_EPOCH) {
-                    Ok(d) => d.as_secs() as i64,
-                    Err(_) => continue,
-                },
-                Err(_) => continue,
-            },
-            Err(_) => continue,
-        };
-        if mtime >= cutoff && best.as_ref().is_none_or(|(_, prev)| mtime > *prev) {
-            best = Some((path, mtime));
-        }
-    }
-    best.map(|(p, _)| p)
-}
-
-/// Read the first line of a JSONL file and extract the `cwd` field.
-///
-/// I/O and JSON-parse failures are traced and converted to `None` rather than
-/// propagated — a truncated or malformed first line just means we don't
-/// contribute this directory's CWD to repo discovery, which the upstream
-/// `discover_cwds_in` is designed to tolerate.
-async fn cwd_from_first_line(path: &Path) -> Option<String> {
-    use tokio::io::AsyncReadExt;
-    const MAX_HEADER_BYTES: usize = 64 * 1024;
-
-    let file = match tokio::fs::File::open(path).await {
-        Ok(f) => f,
-        Err(err) => {
-            ::tracing::trace!(path = %path.display(), error = %err, "pi: cwd_from_first_line open failed");
-            return None;
-        }
-    };
-    let mut bytes = Vec::with_capacity(MAX_HEADER_BYTES.min(4096));
-    if let Err(err) = file
-        .take((MAX_HEADER_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .await
-    {
-        ::tracing::trace!(path = %path.display(), error = %err, "pi: cwd_from_first_line read failed");
-        return None;
-    }
-    let line_end = bytes
-        .iter()
-        .position(|byte| *byte == b'\n')
-        .unwrap_or(bytes.len());
-    if line_end > MAX_HEADER_BYTES || (line_end == bytes.len() && bytes.len() > MAX_HEADER_BYTES) {
-        ::tracing::trace!(path = %path.display(), "pi: cwd_from_first_line record exceeds size cap");
-        return None;
-    }
-    let value: serde_json::Value = match serde_json::from_slice(&bytes[..line_end]) {
-        Ok(v) => v,
-        Err(err) => {
-            ::tracing::trace!(path = %path.display(), error = %err, "pi: cwd_from_first_line json parse failed");
-            return None;
-        }
-    };
-    value.get("cwd").and_then(|v| v.as_str()).map(String::from)
-}
-
 /// Find a session file by UUID suffix across all log directories.
 ///
 /// Test-only helper retained for the session-id / title-extraction tests that
-/// model the on-disk layout end-to-end. Production lookups go through the
-/// shared `default_session_titles_and_surfaces` scan in `agents::mod`.
+/// model the on-disk layout end-to-end. Pi has no durable title index, so
+/// production titles come from transcript metadata recorded at ingest time,
+/// not from a lookup through this helper.
 #[cfg(test)]
 async fn find_session_file_by_id(dirs: &[PathBuf], session_id: &str) -> Option<PathBuf> {
     let suffix = format!("_{session_id}.jsonl");

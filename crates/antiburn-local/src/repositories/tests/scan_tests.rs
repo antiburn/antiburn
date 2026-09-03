@@ -1,13 +1,11 @@
 //! Bounded traversal, user-declared roots, and the consent seam around them.
 
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serial_test::serial;
 
 use super::support::{EnvGuard, FakeConsent, init_repo, located};
 use crate::paths::scan_roots;
-use crate::repositories::access::verify_cwd_admitted_on_grant;
 #[cfg(unix)]
 use crate::repositories::access::verify_dir_access;
 use crate::repositories::platform::{self, PlatformDiscovery as _};
@@ -230,61 +228,6 @@ async fn verify_dir_access_evicts_stale_grant_on_denied_read() {
     assert!(
         !consent.grants().contains("Documents"),
         "the covering grant must be dropped when a read under it is denied"
-    );
-}
-
-/// Only working directories admitted on a recorded grant get re-checked.
-/// Everything else is an ordinary "not a repository" and must not be probed —
-/// that would be a filesystem read with no reason behind it.
-#[tokio::test]
-#[serial]
-async fn verify_cwd_admitted_on_grant_skips_cwds_not_admitted() {
-    let home = tempfile::TempDir::new().unwrap();
-    let _home_guard = EnvGuard::set("HOME", home.path());
-
-    let dir = home.path().join("Documents").join("widgets");
-    tokio::fs::create_dir_all(&dir).await.unwrap();
-    let consent = FakeConsent::with_grants(home.path(), ["Documents"]);
-
-    let checked =
-        verify_cwd_admitted_on_grant(&consent, &dir.to_string_lossy(), &HashSet::new()).await;
-
-    assert!(
-        !checked,
-        "a path outside the admitted set must not be probed"
-    );
-    assert!(
-        consent.grants().contains("Documents"),
-        "skipping the check must leave the grant untouched"
-    );
-    assert!(consent.probes().is_empty(), "nothing was probed");
-}
-
-/// The admitted case: a denied read drops the covering grant, which is what
-/// makes the directory defer again on the next run.
-#[cfg(unix)]
-#[tokio::test]
-#[serial]
-async fn verify_cwd_admitted_on_grant_evicts_when_denied() {
-    let home = tempfile::TempDir::new().unwrap();
-    let _home_guard = EnvGuard::set("HOME", home.path());
-
-    let dir = home.path().join("Documents").join("widgets");
-    tokio::fs::create_dir_all(&dir).await.unwrap();
-    let consent = FakeConsent::with_grants(home.path(), ["Documents"]);
-
-    let cwd = dir.to_string_lossy().to_string();
-    let admitted: HashSet<String> = std::iter::once(cwd.clone()).collect();
-
-    let accessible = with_unreadable_dir(&dir, || {
-        verify_cwd_admitted_on_grant(&consent, &cwd, &admitted)
-    })
-    .await;
-
-    assert!(!accessible, "a denied read must report inaccessible");
-    assert!(
-        !consent.grants().contains("Documents"),
-        "the covering grant must be dropped so the directory defers again"
     );
 }
 

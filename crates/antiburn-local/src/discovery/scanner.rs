@@ -219,44 +219,6 @@ pub fn parse_session_metadata_str(content: &str) -> SessionMetadata {
     metadata
 }
 
-#[cfg(test)]
-/// Extract the session time range (start, end) from a session log file.
-///
-/// Scans each line as JSON and looks for known timestamp keys:
-/// - Top-level: `timestamp`, `time`, `created_at`, `createdAt`
-/// - Nested under `payload`: `timestamp`, `created_at`, `createdAt`
-///
-/// Parses RFC3339/ISO8601 timestamps and returns the min/max epoch seconds.
-/// Returns `None` if no parseable timestamps are found.
-pub async fn session_time_range(file: &Path) -> Option<(i64, i64)> {
-    let content = tokio::fs::read_to_string(file).await.ok()?;
-    let reader = BufReader::new(Cursor::new(content.as_bytes()));
-    let range = session_time_range_reader(reader);
-
-    if range.is_none()
-        && let Some(value) = read_json_value(file).await
-    {
-        return session_time_range_from_value(&value);
-    }
-
-    range
-}
-
-#[cfg(test)]
-/// Extract the session time range (start, end) from a session log string.
-pub fn session_time_range_str(content: &str) -> Option<(i64, i64)> {
-    let reader = BufReader::new(Cursor::new(content));
-    let range = session_time_range_reader(reader);
-
-    if range.is_none()
-        && let Ok(value) = serde_json::from_str::<serde_json::Value>(content)
-    {
-        return session_time_range_from_value(&value);
-    }
-
-    range
-}
-
 /// Parse a timestamp value into epoch seconds.
 fn parse_timestamp(value: &serde_json::Value) -> Option<i64> {
     let s = value.as_str()?;
@@ -274,12 +236,6 @@ fn parse_numeric_timestamp(value: &serde_json::Value) -> Option<i64> {
     } else {
         Some(num)
     }
-}
-
-#[cfg(test)]
-async fn read_json_value(file: &Path) -> Option<serde_json::Value> {
-    let content = tokio::fs::read_to_string(file).await.ok()?;
-    serde_json::from_str(&content).ok()
 }
 
 async fn apply_metadata_from_path(
@@ -899,70 +855,6 @@ fn apply_metadata_from_value(metadata: &mut SessionMetadata, value: &serde_json:
 
     if !saw_direct_cwd && let Some(path) = extract_cwd_from_value(value) {
         metadata.cwd = Some(path);
-    }
-}
-
-#[cfg(test)]
-fn session_time_range_reader<R: BufRead>(reader: R) -> Option<(i64, i64)> {
-    let mut min_ts: Option<i64> = None;
-    let mut max_ts: Option<i64> = None;
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-
-        let value: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-
-        let candidates = [
-            value.get("timestamp"),
-            value.get("time"),
-            value.get("created_at"),
-            value.get("createdAt"),
-            value.get("creationDate"),
-            value.get("lastMessageDate"),
-            value.pointer("/payload/timestamp"),
-            value.pointer("/payload/created_at"),
-            value.pointer("/payload/createdAt"),
-        ];
-
-        for candidate in candidates.iter().flatten() {
-            if let Some(ts) =
-                parse_timestamp(candidate).or_else(|| parse_numeric_timestamp(candidate))
-            {
-                min_ts = Some(min_ts.map_or(ts, |min| min.min(ts)));
-                max_ts = Some(max_ts.map_or(ts, |max| max.max(ts)));
-            }
-        }
-    }
-
-    match (min_ts, max_ts) {
-        (Some(min), Some(max)) => Some((min, max)),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-fn session_time_range_from_value(value: &serde_json::Value) -> Option<(i64, i64)> {
-    let mut all = Vec::new();
-    collect_timestamp_candidates(value, &mut all);
-    let mut min_ts: Option<i64> = None;
-    let mut max_ts: Option<i64> = None;
-    for candidate in all {
-        if let Some(ts) =
-            parse_timestamp(&candidate).or_else(|| parse_numeric_timestamp(&candidate))
-        {
-            min_ts = Some(min_ts.map_or(ts, |min| min.min(ts)));
-            max_ts = Some(max_ts.map_or(ts, |max| max.max(ts)));
-        }
-    }
-    match (min_ts, max_ts) {
-        (Some(min), Some(max)) => Some((min, max)),
-        _ => None,
     }
 }
 
@@ -2708,56 +2600,6 @@ also not json {{{{
 
         assert_eq!(metadata.session_id, Some("top-level-id".to_string()));
         assert_eq!(metadata.cwd, Some("/payload/path".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_session_time_range_parses_rfc3339() {
-        let dir = TempDir::new().unwrap();
-        let t1 = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
-        let t2 = OffsetDateTime::from_unix_timestamp(1_700_000_120).unwrap();
-        let s1 = t1.format(&Rfc3339).unwrap();
-        let s2 = t2.format(&Rfc3339).unwrap();
-
-        let content = format!(
-            r#"{{"timestamp":"{s1}"}}
-{{"payload":{{"createdAt":"{s2}"}}}}"#,
-        );
-        let file = write_temp_file(dir.path(), "session.jsonl", &content).await;
-
-        let range = session_time_range(&file).await.unwrap();
-        assert_eq!(range.0, t1.unix_timestamp());
-        assert_eq!(range.1, t2.unix_timestamp());
-    }
-
-    #[tokio::test]
-    async fn test_session_time_range_numeric_ms() {
-        let dir = TempDir::new().unwrap();
-        let content = r#"{
-  "creationDate": 1749509938455,
-  "lastMessageDate": 1749509971642
-}"#;
-        let file = write_temp_file(dir.path(), "session.json", content).await;
-
-        let range = session_time_range(&file).await.unwrap();
-        assert_eq!(range.0, 1_749_509_938);
-        assert_eq!(range.1, 1_749_509_971);
-    }
-
-    #[test]
-    fn test_session_time_range_str_parses() {
-        let content = r#"{"timestamp":"2026-02-10T01:52:21Z"}"#;
-        let range = session_time_range_str(content).unwrap();
-        assert_eq!(range.0, range.1);
-    }
-
-    #[tokio::test]
-    async fn test_session_time_range_none_when_missing() {
-        let dir = TempDir::new().unwrap();
-        let content = r#"{"type":"message","content":"no timestamps"}"#;
-        let file = write_temp_file(dir.path(), "session.jsonl", content).await;
-
-        let range = session_time_range(&file).await;
-        assert!(range.is_none());
     }
 
     #[test]

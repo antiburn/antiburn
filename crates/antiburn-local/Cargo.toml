@@ -30,7 +30,6 @@ anyhow = "1"
 # Async trait methods on the per-agent discovery adapter contract.
 async-trait = "0.1"
 # Bounded-concurrency stream combinators for the discovery fan-out.
-futures-util = "0.3"
 # Held at the 0.32 line deliberately — do not bump without checking consumers.
 # `libsqlite3-sys` sets `links = "sqlite3"`, so a dependency graph may contain
 # exactly one version of it. That is a resolution-graph rule, not a build rule:

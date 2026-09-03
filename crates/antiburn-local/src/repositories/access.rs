@@ -6,7 +6,6 @@
 //! Everything here therefore tests with `read_dir()`, records the outcome
 //! through [`ConsentGrants`], and drops a grant that a denial has proven stale.
 
-use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::path::Path;
 
@@ -57,27 +56,4 @@ pub async fn verify_dir_access(consent: &dyn ConsentGrants, path: &Path) -> bool
             false
         }
     }
-}
-
-/// Re-check a working directory that discovery admitted on a recorded grant but
-/// that then failed to resolve as a repository.
-///
-/// git failing under a directory believed to be granted is the shape a revoked
-/// or reset grant takes: git's own reads are blocked, so resolution fails before
-/// anything else notices. [`verify_dir_access`] records the probe and drops the
-/// covering grant only on an actual `PermissionDenied` — a `NotFound` from a
-/// deleted directory, or a readable non-repository, change nothing. git has
-/// already run under this path, so the decision is recorded by now and the read
-/// is silent; this raises no dialog on a background run.
-///
-/// Returns whether the directory was checked and found accessible.
-pub(super) async fn verify_cwd_admitted_on_grant(
-    consent: &dyn ConsentGrants,
-    cwd: &str,
-    admitted_cwds: &HashSet<String>,
-) -> bool {
-    if !admitted_cwds.contains(cwd) {
-        return false;
-    }
-    verify_dir_access(consent, Path::new(cwd)).await
 }
