@@ -739,25 +739,53 @@ describe("PopoverView", () => {
     expect(screen.getByRole("button", { name: "Codex at 40 percent" })).toBeInTheDocument()
   })
 
-  it("requests a provider preview directly on pointer entry", async () => {
+  it("requests a provider preview after the pointer rests on its trigger", async () => {
     render(<PopoverView />)
 
     const trigger = await screen.findByRole("button", { name: "Codex at 40 percent" })
-    fireEvent.mouseEnter(trigger)
-    expect(trigger).toHaveAttribute("data-state", "hovered")
-    expect(invoke).toHaveBeenCalledWith("show_popover_peek", {
-      target: {
-        kind: "provider",
-        provider: "openai",
-        utcOffsetMinutes: -new Date().getTimezoneOffset(),
-      },
-      anchor: expect.any(Object),
-      initialPresentation: {
-        kind: "provider",
-        summary: { ...PROVIDER_USAGE, providers: [] },
-        live: LIVE_USAGE,
-      },
-    })
+    vi.useFakeTimers()
+    try {
+      fireEvent.mouseEnter(trigger)
+
+      await act(() => vi.advanceTimersByTimeAsync(149))
+      expect(invoke).not.toHaveBeenCalledWith("show_popover_peek", expect.anything())
+
+      await act(() => vi.advanceTimersByTimeAsync(1))
+      expect(invoke).toHaveBeenCalledWith("show_popover_peek", {
+        target: {
+          kind: "provider",
+          provider: "openai",
+          utcOffsetMinutes: -new Date().getTimezoneOffset(),
+        },
+        anchor: expect.any(Object),
+        initialPresentation: {
+          kind: "provider",
+          summary: { ...PROVIDER_USAGE, providers: [] },
+          live: LIVE_USAGE,
+        },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("cancels a pending provider preview when its click opens Usage", async () => {
+    render(<PopoverView />)
+
+    const trigger = await screen.findByRole("button", { name: "Codex at 40 percent" })
+    vi.useFakeTimers()
+    try {
+      fireEvent.mouseEnter(trigger)
+      fireEvent.click(trigger)
+
+      expect(screen.getByRole("heading", { name: "Usage" })).toBeInTheDocument()
+      expect(invoke).toHaveBeenCalledWith("hide_popover_peek")
+
+      await act(() => vi.advanceTimersByTimeAsync(150))
+      expect(invoke).not.toHaveBeenCalledWith("show_popover_peek", expect.anything())
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("conceals an active provider preview before expanding the limits bar", async () => {
