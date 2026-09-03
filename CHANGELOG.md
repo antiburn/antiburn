@@ -30,6 +30,11 @@ CI changes, and documentation that no user acts on stay out — see
 - Claude session details now apply the Claude inactivity threshold when they
   rebuild metrics from stored rows, and name provider cache misses consistently.
 
+### Removed
+
+- "Export session analysis" is gone. The session drilldown no longer offers a
+  way to write a session's derived analysis to a JSON file.
+
 ## [0.3.2] - 2026-09-02
 
 ### Added

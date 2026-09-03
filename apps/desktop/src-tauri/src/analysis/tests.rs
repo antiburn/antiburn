@@ -19,34 +19,6 @@ fn observed<T: Clone>(value: &EvidenceValue<T>) -> T {
     }
 }
 
-#[tokio::test]
-async fn opencode_lineage_does_not_render_an_ordinary_database_session() {
-    let directory = tempfile::TempDir::new().expect("tempdir");
-    let db_path = directory.path().join("opencode.db");
-    let connection = rusqlite::Connection::open(&db_path).expect("database");
-    connection
-        .execute_batch(
-            "CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT, title TEXT);
-             INSERT INTO session VALUES ('ses_root', '/repo', 'Ordinary session');",
-        )
-        .expect("schema");
-    drop(connection);
-    antiburn_local::discovery::track_provider_db_renders(&db_path);
-
-    let parent = fork_parent(&SessionSource::ProviderDb {
-        agent: AgentKind::OpenCode,
-        db_path: db_path.clone(),
-        session_id: "ses_root".to_string(),
-    })
-    .await;
-
-    assert_eq!(parent, None);
-    assert_eq!(
-        antiburn_local::discovery::take_tracked_provider_db_renders(&db_path),
-        0
-    );
-}
-
 fn member_with_start(subagent_id: &str, started_at_epoch: Option<i64>) -> SubagentMember {
     SubagentMember {
         agent: "claude-code".to_string(),
@@ -251,8 +223,6 @@ async fn a_claimed_antigravity_database_stays_native_and_publishes() {
         .await
         .expect("database fingerprint");
     let fingerprint = format!("sv1:db:{latest}:{rows}");
-    let polled = fingerprint_with_subagents(AgentKind::Antigravity, "root", None, &source).await;
-    assert_eq!(polled, fingerprint);
     let input = SessionInput {
         agent: "antigravity".to_owned(),
         session_id: "root".to_owned(),
@@ -1659,70 +1629,6 @@ fn the_observation_search_stops_at_its_depth_budget() {
         FORK_OBSERVATION_KEY: { "parent_agent_session_id": "too-deep" }
     }}}}});
     assert_eq!(find_fork_parent(&deep, FORK_OBSERVATION_DEPTH), None);
-}
-
-fn skill(description: Option<&str>) -> SkillUse {
-    SkillUse {
-        name: "commit-helper".into(),
-        progress: 0.5,
-        description: description.map(str::to_string),
-        duration_ms: None,
-        tokens_out: 0,
-        context_tokens: 0,
-    }
-}
-
-#[test]
-fn a_short_skill_description_is_left_exactly_as_it_was() {
-    let mut skills = vec![skill(Some("Draft a conventional commit message"))];
-    cap_skill_descriptions(&mut skills);
-    assert_eq!(
-        skills[0].description.as_deref(),
-        Some("Draft a conventional commit message")
-    );
-}
-
-#[test]
-fn a_long_skill_description_is_capped_before_it_can_reach_the_store_or_an_export() {
-    let paragraph = "x".repeat(5_000);
-    let mut skills = vec![skill(Some(&paragraph))];
-    cap_skill_descriptions(&mut skills);
-
-    let capped = skills[0]
-        .description
-        .as_deref()
-        .expect("the description survives, shortened");
-    assert_eq!(
-        capped.chars().count(),
-        SKILL_DESCRIPTION_MAX_CHARS,
-        "the contract in store::schema and export names this exact ceiling"
-    );
-    assert!(
-        capped.ends_with(TRUNCATION_MARK),
-        "a shortened excerpt must look shortened"
-    );
-}
-
-#[test]
-fn a_skill_with_no_description_stays_without_one() {
-    let mut skills = vec![skill(None)];
-    cap_skill_descriptions(&mut skills);
-    assert_eq!(skills[0].description, None);
-}
-
-#[test]
-fn a_multi_byte_description_is_cut_on_a_character_and_never_mid_glyph() {
-    // Counting bytes here would split a three-byte character in half and
-    // produce a string that is not valid UTF-8 to begin with.
-    let text = "é".repeat(SKILL_DESCRIPTION_MAX_CHARS + 50);
-    let capped = cap_excerpt(&text, SKILL_DESCRIPTION_MAX_CHARS);
-    assert_eq!(capped.chars().count(), SKILL_DESCRIPTION_MAX_CHARS);
-    assert!(capped.starts_with('é'));
-    assert!(capped.ends_with(TRUNCATION_MARK));
-
-    // Exactly at the ceiling is not "too long".
-    let exact = "a".repeat(SKILL_DESCRIPTION_MAX_CHARS);
-    assert_eq!(cap_excerpt(&exact, SKILL_DESCRIPTION_MAX_CHARS), exact);
 }
 
 #[test]

@@ -64,6 +64,90 @@ fn write_opencode_provider_db(home: &std::path::Path, session_id: &str) -> std::
     path
 }
 
+/// A synthetic OpenCode database with a parent session and a fork of it,
+/// shaped so `db_fork_parent` (the engine's own database heuristic) finds
+/// the relationship: the child's title carries the parent's title plus a
+/// `(fork #N)` suffix, and the child's first two visible messages repeat the
+/// parent's exactly before continuing with one message of its own.
+fn write_opencode_fork_provider_db(
+    home: &std::path::Path,
+    parent_id: &str,
+    child_id: &str,
+) -> std::path::PathBuf {
+    let path = home.join("opencode.db");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE session (
+                 id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT,
+                 directory TEXT NOT NULL, title TEXT NOT NULL, version TEXT NOT NULL,
+                 time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL
+             );
+             CREATE TABLE message (
+                 id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+                 time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL
+             );
+             CREATE TABLE part (
+                 id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                 time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO session VALUES (?1, 'synthetic-project', NULL, '/repo',
+                                          'Investigate the failing build', '1', 100, 120, '{}')",
+            [parent_id],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO session VALUES (?1, 'synthetic-project', NULL, '/repo',
+                                          'Investigate the failing build (fork #1)', '1', 200, 220, '{}')",
+            [child_id],
+        )
+        .unwrap();
+    let insert_visible = |session_id: &str, suffix: &str, created: i64, role: &str, text: &str| {
+        let message_id = format!("msg-{session_id}-{suffix}");
+        let part_id = format!("part-{session_id}-{suffix}");
+        connection
+            .execute(
+                "INSERT INTO message VALUES (?1, ?2, ?3, ?3, ?4)",
+                rusqlite::params![
+                    message_id,
+                    session_id,
+                    created,
+                    format!(r#"{{"role":"{role}"}}"#)
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO part VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+                rusqlite::params![
+                    part_id,
+                    message_id,
+                    session_id,
+                    created,
+                    format!(r#"{{"type":"text","text":"{text}"}}"#)
+                ],
+            )
+            .unwrap();
+    };
+    insert_visible(parent_id, "1", 100, "user", "Investigate the failing build");
+    insert_visible(
+        parent_id,
+        "2",
+        110,
+        "assistant",
+        "Looking into the logs now",
+    );
+    insert_visible(child_id, "1", 200, "user", "Investigate the failing build");
+    insert_visible(child_id, "2", 210, "assistant", "Looking into the logs now");
+    insert_visible(child_id, "3", 220, "user", "Also check the flaky test");
+    path
+}
+
 /// A synthetic Codex rollout: `<home>/.codex/sessions/YYYY/MM/DD/...jsonl`.
 fn write_codex_session(home: &std::path::Path, session_id: &str) -> std::path::PathBuf {
     let day = home
@@ -546,6 +630,37 @@ async fn describing_an_opencode_provider_db_does_not_render_the_transcript() {
     let outcome = describe_one(log, home.path(), None).await;
 
     assert!(matches!(outcome, DescribeOutcome::Session(_)));
+    assert_eq!(
+        antiburn_local::discovery::take_tracked_provider_db_renders(&db_path),
+        0
+    );
+}
+
+#[tokio::test]
+async fn describing_an_opencode_fork_finds_its_parent_without_rendering_either_transcript() {
+    let home = tempfile::TempDir::new().unwrap();
+    let parent_id = "ses-parent";
+    let child_id = "ses-child";
+    let db_path = write_opencode_fork_provider_db(home.path(), parent_id, child_id);
+    let log = SessionLog {
+        agent_type: AgentKind::OpenCode,
+        source: SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path: db_path.clone(),
+            session_id: child_id.to_string(),
+        },
+        updated_at: Some(220),
+        environment: DiscoveryEnvironment::Native,
+    };
+    antiburn_local::discovery::track_provider_db_renders(&db_path);
+
+    let DescribeOutcome::Session(record) = describe_one(log, home.path(), None).await else {
+        panic!("session should be described");
+    };
+
+    assert_eq!(record.fork_parent_session_id.as_deref(), Some(parent_id));
+    // `db_fork_parent` finds the relationship from the database's own rows —
+    // describe never has to render either session's transcript for it.
     assert_eq!(
         antiburn_local::discovery::take_tracked_provider_db_renders(&db_path),
         0

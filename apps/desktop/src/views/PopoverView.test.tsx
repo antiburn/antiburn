@@ -654,47 +654,6 @@ describe("PopoverView", () => {
     ])
   })
 
-  it("warns before an export and only writes once a destination is chosen", async () => {
-    confirmDialog.mockResolvedValue(true)
-    saveDialog.mockResolvedValue("/home/avery/Desktop/antiburn-session.json")
-    render(<PopoverView />)
-
-    fireEvent.click(await screen.findByText("Wire the tray popover"))
-    fireEvent.click(await screen.findByRole("button", { name: "Export this session" }))
-
-    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
-    // The warning names what the file can describe, before a destination is
-    // ever requested — including the two short excerpts it carries, which an
-    // earlier version of this copy denied.
-    const [message] = confirmDialog.mock.calls[0] as [string]
-    expect(message).toMatch(/short excerpts/i)
-    expect(message).toMatch(/no message bodies, tool arguments, or file contents/i)
-    expect(confirmDialog.mock.invocationCallOrder[0]).toBeLessThan(
-      saveDialog.mock.invocationCallOrder[0] as number,
-    )
-
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("export_session", {
-        agent: "claude-code",
-        sessionId: "session-abc-123",
-        wslDistro: null,
-        destPath: "/home/avery/Desktop/antiburn-session.json",
-      }),
-    )
-  })
-
-  it("declining the export warning never opens a save dialog", async () => {
-    confirmDialog.mockResolvedValue(false)
-    render(<PopoverView />)
-
-    fireEvent.click(await screen.findByText("Wire the tray popover"))
-    fireEvent.click(await screen.findByRole("button", { name: "Export this session" }))
-
-    await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
-    expect(saveDialog).not.toHaveBeenCalled()
-    expect(invoke).not.toHaveBeenCalledWith("export_session", expect.anything())
-  })
-
   it("confirms a removal, deletes only local records, and returns to the list", async () => {
     confirmDialog.mockResolvedValue(true)
     render(<PopoverView />)

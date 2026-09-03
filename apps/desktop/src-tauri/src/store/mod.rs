@@ -2085,6 +2085,24 @@ impl Store {
         Ok(relations)
     }
 
+    /// The session id this session recorded as its own fork parent, when
+    /// describe found one. Describe writes this once, from the transcript's
+    /// own bounded preview — see `upsert_session_in`'s `forkParent` insert —
+    /// so a reader never re-derives it from disk.
+    pub fn fork_parent(&self, key: &SessionKey) -> Result<Option<String>> {
+        let connection = self.lock();
+        Ok(connection
+            .query_row(
+                "SELECT related_id FROM session_relation
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                    AND kind = 'forkParent'
+                  LIMIT 1",
+                params![key.environment_key, key.agent, key.session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
     /// The sessions that recorded `session_id` as their fork parent, within the
     /// same environment and agent.
     pub fn fork_children(&self, key: &SessionKey) -> Result<Vec<String>> {

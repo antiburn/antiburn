@@ -1076,27 +1076,6 @@ export async function removeScanRoot(path: string): Promise<string[]> {
 }
 
 /**
- * Write one session's derived analysis to `destPath`.
- *
- * The transcript is not copied — the document references it. The caller is
- * still expected to warn first: an export describes real work.
- */
-export async function exportSession(
-  agent: string,
-  sessionId: string,
-  destPath: string,
-  wslDistro?: string | null,
-): Promise<string | null> {
-  if (!hasShell()) return null
-  return invoke<string>("export_session", {
-    agent,
-    sessionId,
-    wslDistro: wslDistro ?? null,
-    destPath,
-  })
-}
-
-/**
  * Delete antiburn's own records for one session.
  *
  * Only antiburn's records. The agent's transcript is never touched.

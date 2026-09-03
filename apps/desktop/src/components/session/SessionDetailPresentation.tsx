@@ -7,7 +7,6 @@ import {
   GitFork,
   LoaderCircle,
   Moon,
-  Share,
   Trash2,
 } from "lucide-react"
 import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react"
@@ -133,8 +132,6 @@ export interface SessionDetailPresentationProps {
   /** Open a fork parent or child. */
   onOpenRelatedSession: (target: LocalSessionRelation, title: string) => void
 
-  /** Export this session's analysis. */
-  onExportSession: () => void
   /** Delete this session's local record. */
   onDeleteSession: () => void
   /** Reveal the session's transcript on disk. Omitted hides the control. */
@@ -429,7 +426,6 @@ export function SessionDetailPresentation({
   onOpenSubagent,
   onOpenOrchestrator,
   onOpenRelatedSession,
-  onExportSession,
   onDeleteSession,
   onRevealSource,
   renderAgentIcon,
@@ -565,16 +561,6 @@ export function SessionDetailPresentation({
               </button>
             </Tooltip>
           )}
-          <Tooltip label="Export this session">
-            <button
-              type="button"
-              onClick={onExportSession}
-              aria-label="Export this session"
-              className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
-            >
-              <Share size={14} aria-hidden="true" />
-            </button>
-          </Tooltip>
           <Tooltip label="Delete this session">
             <button
               type="button"

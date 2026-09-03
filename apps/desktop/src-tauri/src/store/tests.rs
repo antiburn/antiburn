@@ -1505,6 +1505,18 @@ fn a_fork_parent_rides_with_the_session_and_resolves_children_back() {
         .expect("child");
     assert_eq!(stored.fork_parent_session_id.as_deref(), Some("parent"));
 
+    let parent = store
+        .fork_parent(&SessionKey::new("native", "claude-code", "child"))
+        .unwrap();
+    assert_eq!(parent.as_deref(), Some("parent"));
+    assert_eq!(
+        store
+            .fork_parent(&SessionKey::new("native", "claude-code", "parent"))
+            .unwrap(),
+        None,
+        "the parent recorded no fork parent of its own"
+    );
+
     let children = store
         .fork_children(&SessionKey::new("native", "claude-code", "parent"))
         .unwrap();
