@@ -1710,8 +1710,9 @@ pub fn analysis_from_rows(
     store: &Store,
     key: &SessionKey,
     session_id: &str,
-    agent_slug: &str,
+    agent: AgentKind,
 ) -> Option<SessionAnalysis> {
+    let metrics_agent = vendor_label(agent);
     let rows = store.published_turn_rows(key).ok().flatten()?;
     let record = store.analysis(key).ok().flatten()?;
     let source_summaries_json = record.source_summaries_json.as_deref()?;
@@ -1728,7 +1729,7 @@ pub fn analysis_from_rows(
             .cloned()
             .unwrap_or_default()
     };
-    let mut by_source = metrics_by_source(agent_slug, session_id, &rows, summary_for);
+    let mut by_source = metrics_by_source(metrics_agent, session_id, &rows, summary_for);
     let mut parent_metrics = by_source.remove(session_id)?;
     // `metrics_by_source` replays each source's own tool-call history from
     // its rows' last-tool-only summary (`replay.rs`'s module doc comment),
@@ -1741,7 +1742,7 @@ pub fn analysis_from_rows(
     if let Some(initial_context) = initial_context {
         parent_metrics.initial_context = Some(initial_context);
     }
-    let merged = metrics_from_rows(agent_slug, session_id, &rows, summary_for).ok()?;
+    let merged = metrics_from_rows(metrics_agent, session_id, &rows, summary_for).ok()?;
 
     let by_id: HashMap<String, (SessionMetrics, Option<i64>)> = by_source
         .into_iter()
@@ -1778,7 +1779,7 @@ pub fn analysis_from_rows(
         // no separate row-store query to reconcile against here, unlike
         // the worker pass's own `RowProjections`.
         row_projections: None,
-        agent_slug: agent_slug.to_string(),
+        agent_slug: agent.slug().to_string(),
         parent_session_id: session_id.to_string(),
         // Rows carry no file path, so the drilldown's reveal action stays
         // unavailable for a replayed view.
@@ -1979,8 +1980,9 @@ pub fn subagent_analysis_from_rows(
     parent_key: &SessionKey,
     parent_session_id: &str,
     subagent_id: &str,
-    agent_slug: &str,
+    agent: AgentKind,
 ) -> Option<SessionAnalysis> {
+    let metrics_agent = vendor_label(agent);
     let rows = store.published_turn_rows(parent_key).ok().flatten()?;
     let record = store.analysis(parent_key).ok().flatten()?;
     let source_summaries_json = record.source_summaries_json.as_deref()?;
@@ -1993,13 +1995,13 @@ pub fn subagent_analysis_from_rows(
             .cloned()
             .unwrap_or_default()
     };
-    let mut by_source = metrics_by_source(agent_slug, parent_session_id, &rows, summary_for);
+    let mut by_source = metrics_by_source(metrics_agent, parent_session_id, &rows, summary_for);
     let metrics = by_source.remove(subagent_id)?;
     let started_at_epoch = source_started_at_epoch(&source_summaries, &rows, subagent_id);
 
     Some(standalone_session_analysis(
         metrics,
-        agent_slug.to_string(),
+        agent.slug().to_string(),
         None,
         record.source_fingerprint,
         started_at_epoch,

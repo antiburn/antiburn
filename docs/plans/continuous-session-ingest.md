@@ -288,25 +288,136 @@ Goal: layer 1 is continuous and cheap, and every consumer reads one signal.
   `get_session_analysis_fingerprint` command, `poll_fingerprint_with_subagents`,
   and their tests are deleted along with the poll.
 
+### Phase 5: scoped passes (in progress)
+
+Goal: a watcher event costs work proportional to what changed, not a
+whole-machine pass. Found on 2026-09-03 after phase 4 had run for a day:
+the log showed a full pass every 1.5 s for over an hour, and antiburn sat at
+55 to 80 percent of a core.
+
+Two causes, one bug and one design gap:
+
+- Bug: every pass opens Cursor's `state.vscdb` databases read-only. They are
+  in WAL mode, and a WAL reader takes read marks in the `state.vscdb-shm`
+  sidecar, which bumps its mtime. That sidecar sits under a recursive Cursor
+  watch root, `is_relevant` only drops `Access` events, so the pass kicked
+  itself: modify, 1.5 s quiet, pass, modify. The gap histogram made it
+  unambiguous: about 2240 of roughly 2550 consecutive gaps were exactly the
+  quiet window, and one gap in the hour exceeded 6 s.
+- Design gap: a watcher kick ran the same pass as the 60 s tick. That pass
+  walks all 11 agents, loads every stored record, stats every source, upserts
+  every row, refreshes the repository list, and its `scan:finished` makes the
+  popover refetch the list, recompute 30-day usage totals, and resolve both
+  live provider accounts. An active Claude Code session writing sub-agent
+  transcripts every couple of seconds keeps that going at the 1.5 s to 5 s
+  cadence with no bug involved.
+
+The wanted behaviour, from the original planning discussion:
+
+- An active session's row updates often: every 5 to 20 s, not every 1.5 s.
+- An inactive session costs nothing until it becomes active again.
+- A new session is detected when it is created.
+
+None of that needs full discovery. The event path names the session or the
+agent, and the pieces to act on it narrowly already exist: per-row patching
+through `sessions:entry-changed`, fingerprint reuse in
+`reuse_unchanged_record`, per-agent `discover_recent`, `list_changed`, and
+`Explorers::infer_agent_and_surface` to map a path to its agent.
+
+#### Phase 5a: stop the self-trigger, name every trigger
+
+- W1. `is_relevant` in `scan/watch.rs` drops an event whose every path ends
+  in `-shm`. That sidecar is the WAL index, which readers modify; `-wal` is
+  written only by a real writer and stays relevant, because a WAL database's
+  committed rows live there until a checkpoint. Provider database opens are
+  left as they are: `immutable=1` would hide un-checkpointed rows and
+  `locking_mode=EXCLUSIVE` would hold a shared lock against the vendor.
+- W2. The debounce loop collects the relevant paths of each burst and hands
+  them to the kick, deduplicated, instead of a bare `()`. Phase 5b consumes
+  them; 5a logs them.
+- W3. Every pass request carries a `ScanTrigger`: launch, tick, watcher
+  (with the burst's path count and a bounded sample of paths), popover shown,
+  settings transition, insights pane, repository toggle, scan root added,
+  folder access granted, index cleared, manual rescan. The scheduler logs
+  `scan_pass_requested` with the trigger at debug, and `run_pass` logs
+  `scan_pass_started` and `scan_pass_finished` with the trigger, duration in
+  milliseconds, sessions persisted, rows re-described, and `list_changed`.
+  This is the instrumentation that was missing when the loop was diagnosed
+  from `repo_discovery_agent_done` lines alone.
+- W4. A request that arrives while a pass is running is still dropped, but
+  the drop is logged with its trigger, so a hidden feedback loop shows up as
+  a stream of drops rather than silence.
+
+#### Phase 5b: targeted refresh and per-agent rediscovery
+
+The watcher's burst is classified path by path, and each class runs the
+narrowest pass that answers it. All passes stay serialized through the
+scheduler task, so passes never overlap and the store sees one writer.
+
+- T1. Known session. A path that equals a stored native file session's
+  `source_label`, or whose ancestor directory `D` has `D.jsonl` as a stored
+  `source_label` (the sub-agent layout), names that session. The targeted
+  pass builds the `SessionLog` from the stored record, runs
+  `describe_with_states` over just those logs with just their previous
+  records, upserts the resulting rows, announces the re-described ones
+  through `sessions:entry-changed`, and wakes the insights worker and the
+  idle task. It does not run discovery, does not refresh repositories, does
+  not rewrite per-agent scan bookkeeping, and does not emit `scan:started`
+  or `scan:finished`.
+- T2. Per-session floor. A session re-described at `t` is not re-described
+  again before `t + TARGETED_MIN_INTERVAL` (10 s). Events inside the floor
+  are coalesced into one deferred refresh at the floor's end, never dropped,
+  so a session that keeps writing is refreshed every 10 s and a session that
+  writes once is refreshed once.
+- T3. New session. A path under an agent's watch root that matches no stored
+  session means that agent has a session the store has never seen. The
+  agent-scoped pass runs `discover_recent` for that one agent, describes the
+  result against the stored records, upserts, and goes through the normal
+  `run_pass` status machinery, so `scan:finished` with `list_changed` makes
+  the popover refetch the list. Discovery for the other ten agents does not
+  run.
+- T4. Per-agent floor. Agent-scoped rediscovery for one agent runs at most
+  once per `AGENT_REDISCOVER_MIN_INTERVAL` (20 s), coalesced the same way as
+  T2.
+- T5. Database-backed agents. For Cursor, OpenCode, Antigravity, Windsurf,
+  and Kiro the changed path is a database, not a session, so every event
+  under their roots is a T3 rediscovery of that agent, with a longer floor,
+  `DB_AGENT_REDISCOVER_MIN_INTERVAL` (30 s).
+- T6. Unclassified paths (no agent root claims them) are ignored; the 60 s
+  tick reconciles. The tick, the popover-shown kick, the manual rescan, and
+  every command kick keep running the full pass exactly as before.
+- T7. A burst that arrives while a pass is in flight is held, merged with any
+  later bursts, and processed when the scheduler is free, rather than dropped.
+
+#### Phase 5c: refresh scaling and the Cursor walks
+
+- F1. The popover's `scan:finished` handler refreshes usage at most once per
+  `USAGE_REFRESH_MIN_MS` (30 s) unless the pass reported `list_changed`.
+  Row patches from `sessions:entry-changed` never trigger a usage refresh.
+- F2. Cursor's `collect_agent_transcript_dirs` and
+  `collect_cursor_chat_metadata` get the mtime-gated pruning the other agents
+  got in 4a, so a T5 rediscovery of Cursor does not pay for a full walk.
+
 ## Sequencing notes
 
 - Phase 1 stands alone and is reverted by two small edits if it misbehaves.
 - Phase 2 depends only on phase 1.
 - Phase 3 is the enabling work for phase 4.
 - Default cadences are set in phase 4 and reviewed after a week of use.
+- Phase 5a stands alone. 5b stacks on 5a (it consumes the burst paths 5a
+  passes through). 5c's two items are independent of each other and of 5b.
 
 ## Follow-ups
 
 - Cursor's `collect_agent_transcript_dirs` and `collect_cursor_chat_metadata`
-  are still unwindowed recursive walks. A Cursor watch delivers change
-  notifications, but the kicked pass pays for the full walk underneath. They
-  need the same date- or mtime-gated pruning the other agents got in 4a.
+  are still unwindowed recursive walks. Scheduled as phase 5c (F2).
 - `AppendOnlyGuarantee` is still hard-coded to `Absent`. The resumed path no
   longer needs it; either evidence it per agent or remove it and let a full
   read always re-check its whole prefix.
 - Provider-database agents (OpenCode, Antigravity) persist no row cursor. A
   change still costs a full re-stream of the session's rows.
-- Review the phase 4 cadences (60 s tick, 15 s fallback, 1.5 s / 5 s
-  debounce, 60 s list reconcile) after a week of use.
+- The phase 4 cadences were reviewed after a day, not a week; the result is
+  phase 5. The 60 s tick, 15 s fallback, 1.5 s / 5 s burst coalescing, and
+  60 s list reconcile stay; the per-session and per-agent floors are new.
 - While discovery is paused the scan does not run, so the HUD's live signal
   now follows the pause. Decide whether that is the wanted behaviour.

@@ -29,6 +29,8 @@ CI changes, and documentation that no user acts on stay out — see
 
 - Linux AppImages now use the host Wayland client library, preventing WebKit
   renderer startup failures on newer graphics stacks.
+- Claude session details now apply the Claude inactivity threshold when they
+  rebuild metrics from stored rows, and name provider cache misses consistently.
 
 ## [0.3.2] - 2026-09-02
 
