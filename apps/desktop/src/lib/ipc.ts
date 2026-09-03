@@ -327,6 +327,12 @@ export interface ScanStatus {
   agents: AgentScanState[]
   /** True when this pass indexed a session the list has never shown, or evicted a rejected one. */
   listChanged: boolean
+  /**
+   * R5: how many sessions the last pass re-described — new, or a moved
+   * cursor — never a row it reused verbatim. Tells an idle pass from a
+   * productive one without inferring it from `listChanged` alone.
+   */
+  reDescribed: number
 }
 
 /**

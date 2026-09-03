@@ -612,6 +612,7 @@ pub(crate) async fn try_run_pass(
             status.total_agents = AgentKind::ALL.len();
             status.sessions = 0;
             status.list_changed = false;
+            status.re_described = 0;
             status.error = None;
             status.cancelled = false;
         });
@@ -636,6 +637,8 @@ pub(crate) async fn try_run_pass(
             Ok(summary) => {
                 status.sessions = summary.sessions;
                 status.list_changed = summary.list_changed;
+                // R5: lets a reader tell an idle pass from a productive one.
+                status.re_described = summary.re_described;
                 // A cancelled pass did not finish every agent, and saying it
                 // did would make the progress line lie on its last frame.
                 if !cancelled {
@@ -643,7 +646,10 @@ pub(crate) async fn try_run_pass(
                 }
                 status.error = None;
             }
-            Err(error) => status.error = Some(error.to_string()),
+            Err(error) => {
+                status.error = Some(error.to_string());
+                status.re_described = 0;
+            }
         }
     });
     controller.running.store(false, Ordering::SeqCst);

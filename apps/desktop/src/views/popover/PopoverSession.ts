@@ -638,9 +638,14 @@ export class PopoverSession {
   // progress, so the intermediate phases have nothing to say. A full refetch
   // of entries and repositories only runs when the pass says the list needs
   // one, or the reconcile interval has elapsed — `sessions:entry-changed`
-  // already keeps individual rows current in between. Usage follows the
-  // same shape on its own floor (F1): `listChanged` forces an immediate
-  // refresh, and every other pass waits for `USAGE_REFRESH_MIN_MS`.
+  // already keeps individual rows current in between. Usage follows its own
+  // floor (R5): `listChanged` forces an immediate refresh, and otherwise a
+  // pass only counts when it re-described at least one session
+  // (`reDescribed > 0`) — an idle pass, the common case now that the watcher
+  // does the real freshness work, refreshes nothing. `sessions:entry-changed`
+  // shares this same floor while the popover is visible (R6), which is what
+  // replaces the usage refresh a row patch never used to trigger — see
+  // `listenSessionEntryChanged`.
   private listenScanEvent = async (generation: number): Promise<void> => {
     const unlisten = await onScanEvent((status, phase) => {
       if (generation !== this.generation) return
@@ -651,7 +656,10 @@ export class PopoverSession {
         void this.refreshEntries(this.windowDays()).catch(() => {})
         void this.refreshRepositoryList()
       }
-      if (status.listChanged || now - this.lastUsageRefreshAt >= USAGE_REFRESH_MIN_MS) {
+      if (
+        status.listChanged ||
+        (status.reDescribed > 0 && now - this.lastUsageRefreshAt >= USAGE_REFRESH_MIN_MS)
+      ) {
         this.lastUsageRefreshAt = now
         void this.refreshUsage()
       }

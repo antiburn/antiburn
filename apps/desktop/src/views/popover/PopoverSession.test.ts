@@ -356,6 +356,7 @@ describe("PopoverSession event-driven refresh", () => {
     error: null,
     agents: [],
     listChanged: false,
+    reDescribed: 0,
     ...overrides,
   })
 
@@ -468,11 +469,12 @@ describe("PopoverSession event-driven refresh", () => {
     unsubscribe()
   })
 
-  // F1: `scan:finished` refreshes usage on its own floor
-  // (`USAGE_REFRESH_MIN_MS`), separate from the list reconcile interval
-  // above — a scan pass finishing is not by itself a reason to recompute
-  // 30-day usage totals on every one of an active session's rapid passes.
-  it("refreshes usage on a floor, bypassed by a reported list change", async () => {
+  // R5: `scan:finished` only refreshes usage when the pass re-described at
+  // least one session, floored by `USAGE_REFRESH_MIN_MS`, or reported a list
+  // change — an idle pass (`reDescribed: 0`) refreshes nothing, no matter
+  // how stale the last refresh is, since the watcher (not this event) is now
+  // what keeps an active session's own rows current.
+  it("refreshes usage only on a re-described pass, floored, bypassed by a list change", async () => {
     vi.useFakeTimers()
     vi.setSystemTime("2027-01-15T08:00:00Z")
     const session = new PopoverSession()
@@ -481,27 +483,37 @@ describe("PopoverSession event-driven refresh", () => {
     expect(scanEventHandler).not.toBeNull()
     const baseline = getProviderUsage.mock.calls.length
 
-    // First scan:finished always refreshes: nothing has refreshed usage
-    // from this handler yet.
-    scanEventHandler?.(scanStatus({ listChanged: false }), "finished")
+    // An idle pass refreshes nothing, even though nothing has refreshed yet.
+    scanEventHandler?.(scanStatus({ listChanged: false, reDescribed: 0 }), "finished")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline)
+
+    // A re-described pass refreshes, and stamps the floor.
+    scanEventHandler?.(scanStatus({ listChanged: false, reDescribed: 1 }), "finished")
     await vi.advanceTimersByTimeAsync(0)
     expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 1)
 
-    // A second event 1 s later, still no list change, lands inside the
-    // floor and refreshes nothing further.
+    // Another re-described pass 1 s later lands inside the floor and
+    // refreshes nothing further.
     await vi.advanceTimersByTimeAsync(1_000)
-    scanEventHandler?.(scanStatus({ listChanged: false }), "finished")
+    scanEventHandler?.(scanStatus({ listChanged: false, reDescribed: 1 }), "finished")
     await vi.advanceTimersByTimeAsync(0)
     expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 1)
 
-    // A reported list change bypasses the floor.
-    scanEventHandler?.(scanStatus({ listChanged: true }), "finished")
+    // A reported list change bypasses the floor, even with nothing
+    // re-described.
+    scanEventHandler?.(scanStatus({ listChanged: true, reDescribed: 0 }), "finished")
     await vi.advanceTimersByTimeAsync(0)
     expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 2)
 
-    // Once the floor elapses, an unchanged list refreshes again too.
+    // Once the floor elapses, an idle pass still refreshes nothing...
     await vi.advanceTimersByTimeAsync(30_000)
-    scanEventHandler?.(scanStatus({ listChanged: false }), "finished")
+    scanEventHandler?.(scanStatus({ listChanged: false, reDescribed: 0 }), "finished")
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 2)
+
+    // ...but a re-described pass does.
+    scanEventHandler?.(scanStatus({ listChanged: false, reDescribed: 1 }), "finished")
     await vi.advanceTimersByTimeAsync(0)
     expect(getProviderUsage).toHaveBeenCalledTimes(baseline + 3)
 

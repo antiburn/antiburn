@@ -273,6 +273,11 @@ pub struct ScanStatus {
     /// evicted a rejected one. A reader's list refetches on this rather than
     /// on every pass, since an unchanged pass patches rows in place instead.
     pub list_changed: bool,
+    /// R5: how many sessions the last pass re-described — new, or a moved
+    /// cursor — never a row it reused verbatim. Lets a reader tell an idle
+    /// pass from a productive one without inferring it from `list_changed`
+    /// alone.
+    pub re_described: usize,
 }
 
 /* -------------------------------------------------------------------------
