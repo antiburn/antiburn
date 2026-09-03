@@ -5,6 +5,7 @@ use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, WebviewWindow};
 
+#[cfg(target_os = "macos")]
 use crate::geometry::Rect;
 use crate::lifecycle::{Lifecycle, RequestTransition};
 use crate::model::{
@@ -19,6 +20,8 @@ struct Inner<T, P> {
     frame_update: Mutex<()>,
     #[cfg(target_os = "macos")]
     native_frame: Arc<Mutex<Option<Rect>>>,
+    #[cfg(target_os = "linux")]
+    pointer_tracker: Arc<crate::linux::PointerTracker>,
 }
 
 /// Creates, reuses, places, reveals, and conceals one anchored companion.
@@ -42,6 +45,8 @@ where
                 frame_update: Mutex::new(()),
                 #[cfg(target_os = "macos")]
                 native_frame: Arc::new(Mutex::new(None)),
+                #[cfg(target_os = "linux")]
+                pointer_tracker: Arc::new(crate::linux::PointerTracker::new()),
             }),
         }
     }
@@ -310,6 +315,8 @@ where
                 self.lock_lifecycle().force_hidden();
                 return Ok(false);
             }
+            #[cfg(target_os = "linux")]
+            self.inner.pointer_tracker.reset_for_show();
             platform::show(&window, self.inner.config.interaction)?;
         }
         let should_reveal = presentation_pending && self.lock_lifecycle().presented(generation);
@@ -378,6 +385,8 @@ where
     pub fn handle_companion_destroyed(&self) {
         let _frame_update = self.lock_frame_update();
         self.lock_lifecycle().renderer_destroyed();
+        #[cfg(target_os = "linux")]
+        self.inner.pointer_tracker.reset_for_install();
     }
 
     fn lock_lifecycle(&self) -> std::sync::MutexGuard<'_, Lifecycle<T, P>> {

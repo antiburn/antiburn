@@ -1,15 +1,65 @@
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
 use crate::REQUEST_EVENT;
+use crate::geometry::CursorProximity;
 use crate::lifecycle::Lifecycle;
 use crate::model::AnchoredWindowRenderRequest;
 use crate::platform;
 
 use super::{AnchoredWindowManager, Inner};
+
+const CURSOR_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+pub(super) struct CursorExitTracker {
+    bridge_delay: Duration,
+    outside_delay: Duration,
+    started_at: Option<Instant>,
+    outside_since: Option<Instant>,
+    engaged: bool,
+}
+
+impl CursorExitTracker {
+    pub(super) fn new(bridge_delay: Duration, outside_delay: Duration) -> Self {
+        Self {
+            bridge_delay,
+            outside_delay,
+            started_at: None,
+            outside_since: None,
+            engaged: false,
+        }
+    }
+
+    pub(super) fn update(&mut self, now: Instant, proximity: Option<CursorProximity>) -> bool {
+        let started_at = *self.started_at.get_or_insert(now);
+        if !self.engaged {
+            if proximity == Some(CursorProximity::Inside) {
+                self.engaged = true;
+                return false;
+            }
+            if proximity.is_none() {
+                return false;
+            }
+            return now.checked_duration_since(started_at).unwrap_or_default() >= self.bridge_delay;
+        }
+
+        match proximity {
+            Some(CursorProximity::Inside | CursorProximity::WithinTolerance) | None => {
+                self.outside_since = None;
+                false
+            }
+            Some(CursorProximity::Outside) => {
+                let outside_since = *self.outside_since.get_or_insert(now);
+                now.checked_duration_since(outside_since)
+                    .unwrap_or_default()
+                    >= self.outside_delay
+            }
+        }
+    }
+}
 
 impl<T, P> AnchoredWindowManager<T, P>
 where
@@ -52,8 +102,27 @@ where
         generation: u64,
         task_token: u64,
     ) {
-        tokio::time::sleep(delay).await;
-        if !Self::wait_for_cursor_exit(&manager, |owner| owner.cursor_is_over_companion(&app)).await
+        let Some(pointer_exit) = manager
+            .upgrade()
+            .and_then(|inner| inner.config.pointer_exit)
+        else {
+            tokio::time::sleep(delay).await;
+            if !Self::wait_for_cursor_exit(&manager, |owner| owner.cursor_is_over_companion(&app))
+                .await
+            {
+                return;
+            }
+            let Some(inner) = manager.upgrade() else {
+                return;
+            };
+            Self { inner }.finish_scheduled_conceal(&app, generation, task_token);
+            return;
+        };
+
+        if !Self::wait_for_cursor_policy(&manager, delay, pointer_exit.outside_delay, |owner| {
+            owner.cursor_location(&app, pointer_exit.edge_tolerance)
+        })
+        .await
         {
             return;
         }
@@ -61,6 +130,27 @@ where
             return;
         };
         Self { inner }.finish_scheduled_conceal(&app, generation, task_token);
+    }
+
+    pub(super) async fn wait_for_cursor_policy(
+        manager: &Weak<Inner<T, P>>,
+        bridge_delay: Duration,
+        outside_delay: Duration,
+        mut cursor_location: impl FnMut(&Self) -> Option<CursorProximity>,
+    ) -> bool {
+        let mut tracker = CursorExitTracker::new(bridge_delay, outside_delay);
+        loop {
+            let location = {
+                let Some(inner) = manager.upgrade() else {
+                    return false;
+                };
+                cursor_location(&Self { inner })
+            };
+            if tracker.update(Instant::now(), location) {
+                return true;
+            }
+            tokio::time::sleep(CURSOR_POLL_INTERVAL).await;
+        }
     }
 
     fn finish_scheduled_conceal(&self, app: &tauri::AppHandle, generation: u64, task_token: u64) {
