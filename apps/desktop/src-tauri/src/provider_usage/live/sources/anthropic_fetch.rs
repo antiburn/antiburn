@@ -35,6 +35,15 @@
 //! It is the ordinary state of a machine where the CLI has never signed in.
 //! The source simply has nothing to report.
 //!
+//! A Keychain read that cannot say whether the item exists is different from
+//! one that finds it absent. `security find-generic-password` exits 44 for
+//! "item not found"; a timeout, a spawn failure, or any other exit code
+//! means this carrier could not diagnose the item at all. That case is
+//! reported as [`ProviderUsageError::Unavailable`] instead of falling back
+//! to the credentials file, so a transient Keychain failure cannot read as
+//! "signed out" and erase a cached reading — see [`Cooldown`]'s doc for what
+//! a real failure does to the last good snapshot.
+//!
 //! # Retrying and going quiet
 //!
 //! Every other failure — a rejected credential, a rate limit, an
@@ -154,22 +163,41 @@ mod macos_keychain {
 
     const SERVICE_NAME: &str = "Claude Code-credentials";
 
-    /// The raw JSON `security` printed to stdout, or `None` for every way
-    /// this can fail to produce one — the item does not exist, `security`
-    /// is not on this machine, a nonzero exit, an empty answer, a timeout.
-    /// All of it reads as "nothing to report from this carrier", exactly
-    /// like a missing file: this carrier says nothing about whether the
-    /// account itself has usage to report.
-    pub fn read() -> Option<String> {
-        let mut child = antiburn_local::platform::process::headless_std_command("security")
+    /// The exit code `security find-generic-password` returns when the named
+    /// item does not exist in the keychain — `errSecItemNotFound`.
+    const ITEM_NOT_FOUND_EXIT_CODE: i32 = 44;
+
+    /// What one Keychain read found.
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum KeychainRead {
+        /// The item does not exist. The ordinary state of a machine where the
+        /// CLI has never signed in through the Keychain.
+        Absent,
+        /// The read failed for a reason other than "item not found": a
+        /// timeout, a spawn failure, or an exit this carrier does not
+        /// recognize. This carrier cannot say whether a credential exists.
+        Unreadable,
+        /// The raw JSON `security` printed to stdout.
+        Found(String),
+    }
+
+    /// Reads one Keychain item. See [`KeychainRead`] for what each outcome
+    /// means.
+    pub fn read() -> KeychainRead {
+        let mut child = match antiburn_local::platform::process::headless_std_command("security")
             .args(["find-generic-password", "-s", SERVICE_NAME, "-w"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .ok()?;
+        {
+            Ok(child) => child,
+            Err(_) => return KeychainRead::Unreadable,
+        };
 
-        let mut stdout = child.stdout.take()?;
+        let Some(mut stdout) = child.stdout.take() else {
+            return KeychainRead::Unreadable;
+        };
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let mut buffer = Vec::with_capacity(4096);
@@ -197,14 +225,55 @@ mod macos_keychain {
                 // the pipe closes and simply have nowhere left to send.
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                return KeychainRead::Unreadable;
             }
         };
-        let status = child.wait().ok()?;
-        if !status.success() || bytes.is_empty() || bytes.len() > MAX_BYTES {
-            return None;
+        let Ok(status) = child.wait() else {
+            return KeychainRead::Unreadable;
+        };
+        if !status.success() {
+            return classify_failed_exit(status.code());
         }
-        String::from_utf8(bytes).ok()
+        if bytes.is_empty() || bytes.len() > MAX_BYTES {
+            return KeychainRead::Unreadable;
+        }
+        match String::from_utf8(bytes) {
+            Ok(text) => KeychainRead::Found(text),
+            Err(_) => KeychainRead::Unreadable,
+        }
+    }
+
+    /// Whether a nonzero exit from `security find-generic-password` means
+    /// "item not found" or something this carrier could not diagnose.
+    ///
+    /// A pure function so the one distinction this fix depends on — exit
+    /// code 44 versus everything else — has a test that does not need to
+    /// spawn `security` itself.
+    fn classify_failed_exit(exit_code: Option<i32>) -> KeychainRead {
+        if exit_code == Some(ITEM_NOT_FOUND_EXIT_CODE) {
+            KeychainRead::Absent
+        } else {
+            KeychainRead::Unreadable
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn item_not_found_reads_as_absent() {
+            assert_eq!(
+                classify_failed_exit(Some(ITEM_NOT_FOUND_EXIT_CODE)),
+                KeychainRead::Absent
+            );
+        }
+
+        #[test]
+        fn any_other_exit_reads_as_unreadable() {
+            assert_eq!(classify_failed_exit(Some(1)), KeychainRead::Unreadable);
+            assert_eq!(classify_failed_exit(None), KeychainRead::Unreadable);
+        }
     }
 }
 
@@ -246,16 +315,32 @@ impl ClaudeDirectFetch {
 
     /// The credential from whichever carrier answers first: the Keychain,
     /// where this source is built to try it, then the credentials file.
-    fn read_credentials(&self) -> Option<ClaudeCredentials> {
+    ///
+    /// `Err` means the Keychain carrier could not say whether a credential
+    /// exists — a timeout, a spawn failure, or an exit this carrier does not
+    /// recognize — and the credentials-file fallback is skipped: falling
+    /// back would read a transient failure as "signed out". It is always
+    /// `ProviderUsageError::Unavailable`, reported as a real failure so
+    /// `Cooldown` keeps the last good snapshot instead of clearing it.
+    fn read_credentials(&self) -> Result<Option<ClaudeCredentials>, ProviderUsageError> {
         #[cfg(target_os = "macos")]
-        if self.try_keychain
-            && let Some(credentials) = macos_keychain::read()
-                .as_deref()
-                .and_then(parse_credentials_json)
-        {
-            return Some(credentials);
+        if self.try_keychain {
+            match macos_keychain::read() {
+                macos_keychain::KeychainRead::Found(text) => {
+                    if let Some(credentials) = parse_credentials_json(&text) {
+                        return Ok(Some(credentials));
+                    }
+                }
+                macos_keychain::KeychainRead::Unreadable => {
+                    return Err(ProviderUsageError::Unavailable);
+                }
+                macos_keychain::KeychainRead::Absent => {}
+            }
         }
-        read_credentials_file(self.credentials_path.as_deref()?)
+        Ok(self
+            .credentials_path
+            .as_deref()
+            .and_then(read_credentials_file))
     }
 }
 
@@ -286,12 +371,11 @@ impl LiveUsageSource for ClaudeDirectFetch {
         // macOS it spawns a `security` subprocess, and a poll that the
         // cooldown is going to skip anyway should not pay for one — nor
         // re-raise a Keychain access prompt the reader has already seen.
-        self.cooldown.poll(now, max_age, || {
-            let Some(credentials) = self.read_credentials() else {
-                return Ok(None);
-            };
-            fetch_live(&credentials, now).map(Some)
-        })
+        self.cooldown
+            .poll(now, max_age, || match self.read_credentials()? {
+                Some(credentials) => fetch_live(&credentials, now).map(Some),
+                None => Ok(None),
+            })
     }
 }
 
