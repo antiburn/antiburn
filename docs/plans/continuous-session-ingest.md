@@ -395,8 +395,13 @@ scheduler task, so passes never overlap and the store sees one writer.
   `USAGE_REFRESH_MIN_MS` (30 s) unless the pass reported `list_changed`.
   Row patches from `sessions:entry-changed` never trigger a usage refresh.
 - F2. Cursor's `collect_agent_transcript_dirs` and
-  `collect_cursor_chat_metadata` get the mtime-gated pruning the other agents
-  got in 4a, so a T5 rediscovery of Cursor does not pay for a full walk.
+  `collect_cursor_chat_metadata` bound their walk by depth to the documented
+  layout (`projects/<project>/agent-transcripts`,
+  `chats/<workspace>/<chat>/meta.json`) instead of the mtime-gated pruning
+  the other agents got in 4a, so a T5 rediscovery of Cursor does not pay for
+  a full walk. Mtime gating is wrong here: a new session file bumps only its
+  immediate parent's mtime, so an old project directory would hide every
+  session added to it since.
 
 ## Sequencing notes
 
@@ -410,7 +415,9 @@ scheduler task, so passes never overlap and the store sees one writer.
 ## Follow-ups
 
 - Cursor's `collect_agent_transcript_dirs` and `collect_cursor_chat_metadata`
-  are still unwindowed recursive walks. Scheduled as phase 5c (F2).
+  are still unwindowed recursive walks. Scheduled as phase 5c (F2); done by
+  bounding the walk's depth to the documented layout, not by mtime, since a
+  new session file bumps only its immediate parent's mtime.
 - `AppendOnlyGuarantee` is still hard-coded to `Absent`. The resumed path no
   longer needs it; either evidence it per agent or remove it and let a full
   read always re-check its whole prefix.

@@ -214,50 +214,31 @@ async fn log_dirs_in(home: &Path) -> Vec<PathBuf> {
         .join("workspaceStorage");
     dirs.extend(find_chat_session_dirs(&ws_root).await);
 
-    // A generous window: this helper's callers build fixtures with fresh
-    // mtimes, so the F2 gate below must never prune them.
-    let now = current_epoch_secs();
     let projects_dir = home.join(".cursor").join("projects");
-    dirs.extend(collect_agent_transcript_dirs(&projects_dir, now, now).await);
+    dirs.extend(collect_agent_transcript_dirs(&projects_dir).await);
 
     dirs
 }
 
-#[cfg(test)]
-fn current_epoch_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
-}
-
-/// A directory's mtime as Unix epoch seconds, or `None` when `stat` fails.
-/// F2: the caller falls back to descending on `None`, so unreadable
-/// metadata never hides a subtree.
-async fn dir_mtime_epoch(path: &Path) -> Option<i64> {
-    let metadata = tokio::fs::metadata(path).await.ok()?;
-    metadata
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_secs() as i64)
-}
-
-/// Collect `agent-transcripts` directories under `root`.
+/// How many directory levels [`collect_agent_transcript_dirs`] enters below
+/// `root`. Cursor's CLI layout puts `agent-transcripts` two levels below the
+/// projects root: `projects/<project>/agent-transcripts`. The walk never
+/// enters a directory past this depth, so it never reads a project's other
+/// subdirectories, such as `canvases`.
 ///
-/// F2: a directory's mtime moves whenever an entry inside it is added or
-/// removed, so a directory that gained a session file within the window
-/// (`now - since_secs`) is always inside the window. Skipping a stale
-/// directory before descending turns a rediscovery into a handful of stats
-/// instead of a full recursive walk. The `root` itself is always walked,
-/// so a stale top-level projects directory never hides a fresh child.
-async fn collect_agent_transcript_dirs(root: &Path, now: i64, since_secs: i64) -> Vec<PathBuf> {
-    let cutoff = now - since_secs;
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
+/// A directory's mtime cannot gate this walk instead (F2): a new session
+/// file bumps only its immediate parent, `agent-transcripts/`, never the
+/// project directory above it. An mtime gate on the project directory would
+/// hide every session added to an old project from then on.
+const MAX_TRANSCRIPT_WALK_DEPTH: usize = 2;
 
-    while let Some(dir) = stack.pop() {
+/// Collect `agent-transcripts` directories under `root`, entering a
+/// directory no deeper than [`MAX_TRANSCRIPT_WALK_DEPTH`].
+async fn collect_agent_transcript_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+
+    while let Some((dir, depth)) = stack.pop() {
         let mut entries = match tokio::fs::read_dir(&dir).await {
             Ok(entries) => entries,
             Err(_) => continue,
@@ -282,18 +263,15 @@ async fn collect_agent_transcript_dirs(root: &Path, now: i64, since_secs: i64) -
                 continue;
             }
 
-            if let Some(mtime) = dir_mtime_epoch(&path).await
-                && mtime < cutoff
-            {
-                continue;
-            }
-
             if name == "agent-transcripts" {
                 out.push(path);
                 continue;
             }
 
-            stack.push(path);
+            let entry_depth = depth + 1;
+            if entry_depth < MAX_TRANSCRIPT_WALK_DEPTH {
+                stack.push((path, entry_depth));
+            }
         }
     }
 
@@ -307,9 +285,9 @@ async fn discover_agent_transcripts(
 ) -> Vec<CursorDiscoveredSession> {
     let cutoff = now - since_secs;
     let projects_dir = home.join(".cursor").join("projects");
-    let transcript_dirs = collect_agent_transcript_dirs(&projects_dir, now, since_secs).await;
+    let transcript_dirs = collect_agent_transcript_dirs(&projects_dir).await;
     let workspace_map = collect_workspace_paths(home).await;
-    let chat_metadata = collect_cursor_chat_metadata(home, now, since_secs).await;
+    let chat_metadata = collect_cursor_chat_metadata(home).await;
     let mut workspace_decode_cache: HashMap<String, Option<String>> = HashMap::new();
     let mut out = Vec::new();
 
@@ -417,19 +395,19 @@ async fn discover_agent_transcripts(
     out
 }
 
-/// Collect `meta.json` sidecars under `~/.cursor/chats`.
-///
-/// F2: the same mtime gate as [`collect_agent_transcript_dirs`], applied per
-/// chat directory before any file inside it is opened.
-async fn collect_cursor_chat_metadata(
-    home: &Path,
-    now: i64,
-    since_secs: i64,
-) -> HashMap<String, CursorChatMetadata> {
-    let cutoff = now - since_secs;
+/// How many directory levels [`collect_cursor_chat_metadata`] enters below
+/// `~/.cursor/chats`. The layout is `chats/<workspace>/<chat>/meta.json`: a
+/// workspace directory is depth 1, a chat directory is depth 2, and
+/// `meta.json` is read from inside the chat directory. The walk never enters
+/// a directory past this depth.
+const MAX_CHAT_WALK_DEPTH: usize = 2;
+
+/// Collect `meta.json` sidecars under `~/.cursor/chats`, entering a
+/// directory no deeper than [`MAX_CHAT_WALK_DEPTH`].
+async fn collect_cursor_chat_metadata(home: &Path) -> HashMap<String, CursorChatMetadata> {
     let mut out = HashMap::new();
-    let mut stack = vec![home.join(".cursor").join("chats")];
-    while let Some(dir) = stack.pop() {
+    let mut stack = vec![(home.join(".cursor").join("chats"), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
         let mut entries = match tokio::fs::read_dir(&dir).await {
             Ok(entries) => entries,
             Err(_) => continue,
@@ -440,12 +418,10 @@ async fn collect_cursor_chat_metadata(
                 continue;
             };
             if file_type.is_dir() {
-                if let Some(mtime) = dir_mtime_epoch(&path).await
-                    && mtime < cutoff
-                {
-                    continue;
+                let entry_depth = depth + 1;
+                if entry_depth <= MAX_CHAT_WALK_DEPTH {
+                    stack.push((path, entry_depth));
                 }
-                stack.push(path);
                 continue;
             }
             if path.file_name().and_then(|name| name.to_str()) != Some("meta.json") {
@@ -2573,33 +2549,44 @@ mod tests {
         assert!(dirs.is_empty());
     }
 
-    // F2: a project directory whose mtime is older than the recency window
-    // is skipped, so a Cursor rediscovery does not pay for a full walk. A
-    // fresh sibling directory is still walked.
+    // F2: the walk never enters a directory past the documented depth, so a
+    // project's other subdirectories (`canvases`, and anything else it
+    // accumulates) are never read.
     #[tokio::test]
-    async fn test_collect_agent_transcript_dirs_skips_stale_project_dir() {
+    async fn test_collect_agent_transcript_dirs_ignores_agent_transcripts_one_level_too_deep() {
         let home = TempDir::new().unwrap();
         let projects_dir = home.path().join(".cursor").join("projects");
 
-        let stale_transcripts = projects_dir.join("stale-project").join("agent-transcripts");
-        tokio::fs::create_dir_all(&stale_transcripts).await.unwrap();
+        let too_deep = projects_dir
+            .join("some-project")
+            .join("canvases")
+            .join("agent-transcripts");
+        tokio::fs::create_dir_all(&too_deep).await.unwrap();
 
-        let fresh_transcripts = projects_dir.join("fresh-project").join("agent-transcripts");
-        tokio::fs::create_dir_all(&fresh_transcripts).await.unwrap();
+        let dirs = collect_agent_transcript_dirs(&projects_dir).await;
 
-        let now: i64 = 1_700_000_000;
-        let since_secs: i64 = 86_400;
-        // Backdate only the stale project dir. The fresh sibling keeps its
-        // real (recent) mtime.
-        crate::discovery::set_file_mtime(
-            &projects_dir.join("stale-project"),
-            now - (since_secs + 10),
-        );
+        assert!(!dirs.contains(&too_deep));
+    }
 
-        let dirs = collect_agent_transcript_dirs(&projects_dir, now, since_secs).await;
+    // Regression guard: an mtime gate on the project directory is wrong here
+    // (see `MAX_TRANSCRIPT_WALK_DEPTH`'s doc comment) because a new session
+    // file never touches it — only `agent-transcripts/` itself. A project
+    // last used outside any recency window must still surface a session
+    // added to it since.
+    #[tokio::test]
+    async fn test_collect_agent_transcript_dirs_finds_transcripts_under_an_old_project_dir() {
+        let home = TempDir::new().unwrap();
+        let projects_dir = home.path().join(".cursor").join("projects");
 
-        assert!(!dirs.contains(&stale_transcripts));
-        assert!(dirs.contains(&fresh_transcripts));
+        let project_dir = projects_dir.join("old-project");
+        let transcripts = project_dir.join("agent-transcripts");
+        tokio::fs::create_dir_all(&transcripts).await.unwrap();
+        // 30 days old — well outside any recency window this agent uses.
+        crate::discovery::set_file_mtime(&project_dir, 1_700_000_000 - 30 * 86_400);
+
+        let dirs = collect_agent_transcript_dirs(&projects_dir).await;
+
+        assert!(dirs.contains(&transcripts));
     }
 
     #[tokio::test]
