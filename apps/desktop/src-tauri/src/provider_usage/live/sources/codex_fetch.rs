@@ -46,6 +46,21 @@
 //! two paths can disagree about which error is more informative — see
 //! [`preferred_error`] — but only one of them ever contributes a snapshot.
 //!
+//! # Seeding from the session log
+//!
+//! When the retried direct attempt and the app-server fallback both fail,
+//! this source makes one more offer: the newest rate-limit reading in the
+//! reader's own Codex CLI session log, read by
+//! [`super::codex_rollout::latest_reading`]. It travels as
+//! [`FetchFailure::last_known`](super::cooldown::FetchFailure::last_known),
+//! not as a success — [`super::cooldown::Cooldown::poll`] only lets it
+//! replace an on-screen reading once that reading is stale enough to need
+//! one. This reading is a seed, never a full source, because a CLI rollout
+//! event states only the account-wide window. It carries none of the
+//! model-scoped `additional_rate_limits` the live endpoint reports, and
+//! swapping a snapshot between those two shapes on every poll would make
+//! rows come and go on screen for no reason a reader could see.
+//!
 //! # Testability
 //!
 //! [`CodexTransport`] is the seam: [`fetch_direct`] is a free function over
@@ -67,7 +82,7 @@ use crate::provider_usage::live::model::{
 use crate::provider_usage::live::{LiveUsageSource, SourceOutcome};
 
 use super::codex_app_server;
-use super::cooldown::Cooldown;
+use super::cooldown::{Cooldown, FetchFailure};
 use super::http;
 
 /// `auth.json` is a small, purpose-built token store — cap the read
@@ -92,11 +107,24 @@ const ACCOUNT_CLAIM: &str = "https://api.openai.com/auth/chatgpt_account_id";
 /// response itself does not state one.
 const PLAN_CLAIM: &str = "https://api.openai.com/auth/chatgpt_plan_type";
 
+/// The Codex CLI's own root directory: `$CODEX_HOME` when it is set and
+/// non-empty, otherwise `~/.codex`. Both `auth.json` and the session rollout
+/// files live under it.
+fn codex_home_dir() -> Option<PathBuf> {
+    antiburn_local::paths::non_empty_env_path("CODEX_HOME")
+        .or_else(|| antiburn_local::paths::home_dir().map(|home| home.join(".codex")))
+}
+
 /// The credential file, at the one documented place it lives.
 pub fn default_auth_path() -> Option<PathBuf> {
-    let dir = antiburn_local::paths::non_empty_env_path("CODEX_HOME")
-        .or_else(|| antiburn_local::paths::home_dir().map(|home| home.join(".codex")))?;
-    Some(dir.join("auth.json"))
+    Some(codex_home_dir()?.join("auth.json"))
+}
+
+/// The session log root the CLI appends `token_count` events under, at the
+/// one documented place it lives. See `codex_rollout` for what this source
+/// reads out of it.
+fn default_sessions_root() -> Option<PathBuf> {
+    Some(codex_home_dir()?.join("sessions"))
 }
 
 /// What this source needs out of the CLI's own `auth.json`.
@@ -233,6 +261,10 @@ impl CodexTransport for LiveCodexTransport {
 /// then falling back to the app-server RPC if neither attempt lands.
 pub struct CodexDirectFetch {
     auth_path: Option<PathBuf>,
+    /// The Codex CLI's session log root, for the seed read described in
+    /// "Seeding from the session log" above. `None` skips that seed
+    /// entirely — the state every test constructor below starts from.
+    sessions_root: Option<PathBuf>,
     transport: Box<dyn CodexTransport>,
     cached_refresh: Mutex<Option<RefreshedToken>>,
     cooldown: Cooldown,
@@ -242,6 +274,7 @@ impl CodexDirectFetch {
     pub fn new() -> CodexDirectFetch {
         CodexDirectFetch {
             auth_path: default_auth_path(),
+            sessions_root: default_sessions_root(),
             transport: Box::new(LiveCodexTransport),
             cached_refresh: Mutex::new(None),
             cooldown: Cooldown::new(),
@@ -253,6 +286,7 @@ impl CodexDirectFetch {
     pub fn at(path: PathBuf) -> CodexDirectFetch {
         CodexDirectFetch {
             auth_path: Some(path),
+            sessions_root: None,
             transport: Box::new(LiveCodexTransport),
             cached_refresh: Mutex::new(None),
             cooldown: Cooldown::new(),
@@ -263,10 +297,35 @@ impl CodexDirectFetch {
     fn with_transport(path: PathBuf, transport: Box<dyn CodexTransport>) -> CodexDirectFetch {
         CodexDirectFetch {
             auth_path: Some(path),
+            sessions_root: None,
             transport,
             cached_refresh: Mutex::new(None),
             cooldown: Cooldown::new(),
         }
+    }
+
+    /// The same source, reading its seed from `sessions_root` instead of
+    /// skipping the rollout tier — for tests that exercise it.
+    #[cfg(test)]
+    fn with_sessions_root(mut self, sessions_root: PathBuf) -> CodexDirectFetch {
+        self.sessions_root = Some(sessions_root);
+        self
+    }
+
+    /// The newest rollout reading, when this source has a session log root
+    /// to look under and a recent enough event is there. See
+    /// `codex_rollout::latest_reading`.
+    fn rollout_reading(&self, now: OffsetDateTime) -> Option<super::codex_rollout::RolloutReading> {
+        let sessions_root = self.sessions_root.as_ref()?;
+        let reading = super::codex_rollout::latest_reading(sessions_root, now)?;
+        // `debug`, not `warn`: the seed is the ordinary answer to a failure.
+        ::tracing::debug!(
+            event = "live_cache_reading_used",
+            provider = crate::provider_usage::providers::OPENAI,
+            age_secs = (now - reading.observed_at).whole_seconds(),
+            reason = "seed"
+        );
+        Some(reading)
     }
 }
 
@@ -304,9 +363,12 @@ impl LiveUsageSource for CodexDirectFetch {
                 Ok(snapshot) => Ok(Some(snapshot)),
                 Err(direct_error) => match codex_app_server::fetch(now) {
                     Ok(snapshot) => Ok(snapshot),
-                    Err(fallback_error) => {
-                        Err(preferred_error(direct_error, fallback_error).into())
-                    }
+                    Err(fallback_error) => Err(FetchFailure {
+                        error: preferred_error(direct_error, fallback_error),
+                        last_known: self
+                            .rollout_reading(now)
+                            .map(|reading| Box::new(rollout_snapshot(reading, &auth))),
+                    }),
                 },
             }
         })
@@ -328,6 +390,33 @@ fn preferred_error(direct: ProviderUsageError, fallback: ProviderUsageError) -> 
         direct
     } else {
         fallback
+    }
+}
+
+/// Turn a rollout reading into the snapshot [`FetchFailure::last_known`]
+/// carries — see "Seeding from the session log" in the module doc.
+fn rollout_snapshot(
+    reading: super::codex_rollout::RolloutReading,
+    auth: &CodexAuth,
+) -> ProviderUsageSnapshot {
+    ProviderUsageSnapshot {
+        provider: crate::provider_usage::providers::OPENAI,
+        account: auth.account_id.clone(),
+        // The rollout event's own plan label wins; the JWT claim is only a
+        // fallback for an event that omits it.
+        plan: reading.plan.or_else(|| auth.plan_claim.clone()),
+        // Codex does not report a finer-grained tier below the plan itself.
+        plan_tier: None,
+        observed_at: reading.observed_at,
+        source: UsageSource {
+            id: super::CODEX_SOURCE_ID,
+            label: "Read from the Codex CLI's own session log".into(),
+            confidence: Confidence::High,
+            freshness: Freshness::Fresh,
+        },
+        windows: reading.windows,
+        supplemental: None,
+        reset_credits: None,
     }
 }
 
@@ -407,6 +496,7 @@ fn build_snapshot(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use time::format_description::well_known::Rfc3339;
 
     const NOW: i64 = 1_800_000_000;
 
@@ -521,6 +611,81 @@ mod tests {
         let cache = Mutex::new(None);
         let result = fetch_direct(&AlwaysFails, &cache, &auth("refresh-a"), now());
         assert_eq!(result, Err(ProviderUsageError::Unavailable));
+    }
+
+    /// Writes a rollout file under `sessions_root` carrying one qualifying
+    /// `token_count` event, dated `now`, at 20% of a seven-day window.
+    ///
+    /// `codex_app_server::fetch` also fails in this suite — there is no
+    /// `codex` binary on the test machine's `PATH` — so a fetch through
+    /// [`CodexDirectFetch`] with an always-failing transport reaches the
+    /// rollout seed the same way a real failed pair of attempts would.
+    fn write_sample_rollout(sessions_root: &Path, now: OffsetDateTime) {
+        let day_dir = sessions_root
+            .join(format!("{:04}", now.year()))
+            .join(format!("{:02}", u8::from(now.month())))
+            .join(format!("{:02}", now.day()));
+        fs::create_dir_all(&day_dir).expect("mkdir");
+        let line = serde_json::json!({
+            "timestamp": now.format(&Rfc3339).expect("format"),
+            "ordinal": 1,
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {},
+                "rate_limits": {
+                    "limit_id": "codex",
+                    "primary": {"used_percent": 20.0, "window_minutes": 10_080, "resets_at": null},
+                    "secondary": null,
+                    "plan_type": "pro",
+                },
+            },
+        })
+        .to_string();
+        fs::write(day_dir.join("rollout-a.jsonl"), line).expect("write rollout");
+    }
+
+    #[test]
+    fn a_failure_with_a_sessions_root_carries_the_rollout_reading_as_last_known() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        fs::write(
+            &auth_path,
+            r#"{"tokens": {"access_token": "a", "refresh_token": "r", "account_id": "acct-1"}}"#,
+        )
+        .expect("write");
+        let sessions_root = dir.path().join("sessions");
+        write_sample_rollout(&sessions_root, now());
+
+        let source = CodexDirectFetch::with_transport(auth_path, Box::new(AlwaysFails))
+            .with_sessions_root(sessions_root);
+        let outcome = source.fetch(TEST_MAX_AGE);
+
+        assert!(outcome.error.is_some());
+        assert_eq!(outcome.snapshots.len(), 1);
+        assert_eq!(outcome.snapshots[0].windows[0].id, "seven-day");
+        assert_eq!(outcome.snapshots[0].windows[0].used_percent, Some(20.0));
+        assert_eq!(
+            outcome.snapshots[0].source.label,
+            "Read from the Codex CLI's own session log"
+        );
+    }
+
+    #[test]
+    fn a_failure_with_no_sessions_root_carries_no_last_known() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        fs::write(
+            &auth_path,
+            r#"{"tokens": {"access_token": "a", "refresh_token": "r", "account_id": "acct-1"}}"#,
+        )
+        .expect("write");
+
+        let source = CodexDirectFetch::with_transport(auth_path, Box::new(AlwaysFails));
+        let outcome = source.fetch(TEST_MAX_AGE);
+
+        assert!(outcome.error.is_some());
+        assert!(outcome.snapshots.is_empty());
     }
 
     #[test]

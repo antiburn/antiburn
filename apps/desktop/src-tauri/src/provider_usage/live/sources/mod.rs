@@ -12,7 +12,9 @@
 //! [`codex_fetch`] asks the analogous endpoint for Codex directly, retrying
 //! once with a token it refreshes itself before
 //! falling back to [`codex_app_server`] — the Codex CLI's own process, asked
-//! over its own protocol — when neither attempt lands. [`antigravity_fetch`]
+//! over its own protocol — when neither attempt lands. When both fail,
+//! [`codex_fetch`] seeds the failure from the newest reading in the reader's
+//! own Codex CLI session log, via [`codex_rollout`]. [`antigravity_fetch`]
 //! reads Antigravity's provider-owned access token and asks Google Code Assist
 //! for the managed project and its four shared quota pools. If that path cannot
 //! answer, [`antigravity_local`] probes bounded PID-owned loopback endpoints for

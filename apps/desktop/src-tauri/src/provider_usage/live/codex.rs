@@ -2,10 +2,11 @@
 //!
 //! This is what `GET https://chatgpt.com/backend-api/wham/usage` returns —
 //! [`sources::codex_fetch`](super::sources::codex_fetch) is this module's
-//! only caller. Unlike the Anthropic parser this application also carries,
-//! there is exactly one carrier here: no cached copy of this payload exists
-//! on disk anywhere, so there is nothing to reuse this parser for besides the
-//! live response.
+//! only caller. The Codex CLI's own rollout files do carry a cached rate
+//! limit reading, but in a different, smaller shape — the account-wide
+//! window only, with none of `additional_rate_limits` — read by
+//! `sources::codex_rollout` instead of this parser. So this parser still has
+//! exactly one caller: the live response.
 //!
 //! # What the payload looks like
 //!
