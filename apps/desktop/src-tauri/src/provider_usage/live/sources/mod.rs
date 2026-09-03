@@ -41,6 +41,7 @@ mod antigravity_local;
 mod claude_config_cache;
 mod codex_app_server;
 pub mod codex_fetch;
+mod codex_rollout;
 mod cooldown;
 pub(crate) mod http;
 
