@@ -7,8 +7,8 @@
 //! opt-in is on: the background monitor, every five minutes, and
 //! [`crate::commands::refresh_live_usage`], every time the popover — while it is
 //! visible — polls for a reading. Those two callers do not want the same
-//! thing. The monitor is not shown to anyone and can happily read a
-//! ten-minute-old figure; the popover is on screen right now, being polled
+//! thing. The monitor is not shown to anyone and can accept a five-minute-old
+//! figure; the popover is on screen right now, being polled
 //! *because* someone is looking at it, and a fixed ten-minute cooldown would
 //! mean up to ten minutes of that polling doing nothing.
 //!

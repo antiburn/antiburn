@@ -175,6 +175,7 @@ impl SourceOutcome {
 /// within a provider, windows keep the order the parser found them, which is
 /// the provider's own order — shortest window first in practice, and not
 /// something to second-guess.
+#[cfg(test)]
 pub fn summarize(
     sources: &[Box<dyn LiveUsageSource>],
     store: Option<&crate::store::Store>,

@@ -183,7 +183,10 @@ Settings teardown, and the memory rules behind those policies.
   `src-tauri/src/nudges.rs`. Nothing about a notification leaves the machine.
   Usage milestones default to every 10% and compare quota consumed with the
   share of the current limit window that has elapsed. Settings offers every 5%
-  step when a reader wants different milestones.
+  step when a reader wants different milestones. Every successful live reading
+  checks for a crossing, and the hidden background monitor checks at most every
+  five minutes. A notification names the crossed milestone separately from the
+  provider's current percentage when usage moves past it between readings.
 - **Attention.** The popover shows a banner above the activity list when a
   repository cannot be read (which opens Settings at Sources) or when the local
   database rejects a write (which retries with a scan). Both are derived from

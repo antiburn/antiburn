@@ -41,15 +41,11 @@ const STARTUP_DELAY: Duration = Duration::from_secs(120);
 
 /// How fresh a reading the background pass asks each source's cooldown for.
 ///
-/// This pass is not shown to anyone — it runs on [`TICK`], whether or not the
-/// popover is even open — so there is no reason to pay for a fetch more
-/// often than the pass itself runs, and every reason not to: it is exactly
-/// the traffic the sources' cooldown (`provider_usage::live::sources::cooldown`)
-/// exists to keep to a small, predictable trickle. Ten minutes matches what
-/// every source's cooldown fixed unconditionally before `max_age` existed,
-/// so this pass's background traffic is unchanged by the popover's own,
-/// much shorter, `max_age` — see `crate::commands::POPOVER_LIVE_USAGE_MAX_AGE`.
-const BACKGROUND_MAX_AGE: Duration = Duration::from_secs(600);
+/// Match the monitor tick so each pass can fetch when no newer foreground
+/// reading exists. The shared source cooldown still caps background traffic
+/// at one provider request per tick. See
+/// `crate::commands::POPOVER_LIVE_USAGE_MAX_AGE` for the visible refresh budget.
+const BACKGROUND_MAX_AGE: Duration = TICK;
 
 /// Spawn the monitor loop; the handle joins the shell's scheduler registry.
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
@@ -227,34 +223,70 @@ fn run_pass(app: &AppHandle, _blocking: blocking::Thread) {
 }
 
 fn background_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
-    // `live_usage_active` protects every credential read and provider request.
     if !settings.live_usage_active() {
         return;
     }
+    let _ = refresh_publish_and_evaluate(app, BACKGROUND_MAX_AGE, None);
+}
+
+/// Collect, publish, and evaluate one live-usage reading.
+///
+/// Every app-level refresh uses this path. This keeps milestone evaluation at
+/// the collection boundary, including when the visible popover finds a crossing
+/// between background ticks.
+pub(crate) fn refresh_publish_and_evaluate(
+    app: &AppHandle,
+    max_age: Duration,
+    utc_offset_minutes: Option<i32>,
+) -> LiveUsageSummary {
     let Some(live) = app.try_state::<LiveUsage>() else {
-        return;
+        let now = crate::scan::unix_now();
+        return LiveUsageSummary {
+            generated_at: crate::store::iso_from_epoch(Some(now)),
+            ..LiveUsageSummary::default()
+        };
     };
     let _summarizing = live.summarizing();
+    // Read after the lock because another collection can hold it through a request.
     let now = crate::scan::unix_now();
-    let hidden = &settings.live_usage_hidden_providers;
-    let collected = provider_usage::live::sources::collect(
-        &live.sources,
-        settings.live_usage_active(),
-        hidden,
-        BACKGROUND_MAX_AGE,
-    );
+    let store = app.try_state::<Store>();
+    if let Some(offset) = utc_offset_minutes {
+        live.set_utc_offset_minutes(offset, store.as_deref());
+    }
+    let settings = store.as_deref().and_then(|store| store.settings().ok());
+    let online = settings
+        .as_ref()
+        .is_some_and(|settings| settings.live_usage_active());
+    let hidden = settings
+        .as_ref()
+        .map(|settings| &settings.live_usage_hidden_providers)
+        .cloned()
+        .unwrap_or_default();
+    let collected = provider_usage::live::sources::collect(&live.sources, online, &hidden, max_age);
     let snapshots: Vec<provider_usage::live::milestones::LiveUsageSnapshot> =
         collected.snapshots.iter().map(milestone_snapshot).collect();
-    let store = app.try_state::<Store>();
     let summary = provider_usage::live::summarize_collected(
         collected,
-        provider_usage::live::roster(&live.sources, hidden),
+        provider_usage::live::roster(&live.sources, &hidden),
         store.as_deref(),
         now,
         live.utc_offset_minutes(),
     );
     live.replace_snapshot(summary.clone(), store.as_deref());
     let _ = app.emit(EVENT_CHANGED, &summary);
+    if let Some(settings) = settings.as_ref() {
+        evaluate_milestones(app, &live, settings, &snapshots, now);
+    }
+    summary
+}
+
+fn evaluate_milestones(
+    app: &AppHandle,
+    live: &LiveUsage,
+    settings: &crate::store::AppSettings,
+    snapshots: &[provider_usage::live::milestones::LiveUsageSnapshot],
+    evaluated_at_epoch: i64,
+) {
     // Gate before evaluation because selection records a crossing as delivered.
     // A disabled notification must remain available if the reader enables it.
     if !crate::notifications::allowed(settings, crate::notifications::Kind::UsageMilestone) {
@@ -266,10 +298,25 @@ fn background_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(content) = provider_usage::live::milestone_content(
         &mut ledger,
-        &snapshots,
+        snapshots,
         &settings.milestones_5h,
         &settings.milestones_weekly,
     ) {
+        let crossing = &content.crossing;
+        let cache_age_seconds = evaluated_at_epoch
+            .saturating_sub(crossing.observed_at_epoch)
+            .max(0);
+        ::tracing::info!(
+            event = "usage_milestone_selected",
+            provider = %content.provider,
+            window = %crossing.window_label,
+            threshold_percent = crossing.threshold,
+            used_percent = crossing.used_percent,
+            elapsed_percent = crossing.elapsed_percent,
+            observed_at_epoch = crossing.observed_at_epoch,
+            evaluated_at_epoch,
+            cache_age_seconds,
+        );
         let _ = crate::notifications::note_usage_milestone(app, &content);
     }
 }
@@ -315,6 +362,7 @@ fn milestone_snapshot(
         provider: snapshot.provider.to_string(),
         account: snapshot.account.clone(),
         fresh: snapshot.source.freshness == Freshness::Fresh,
+        observed_at_epoch: snapshot.observed_at.unix_timestamp(),
         windows: snapshot
             .windows
             .iter()

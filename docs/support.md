@@ -158,8 +158,9 @@ signed bundle and restarts antiburn. The app never depends on either connection.
 
 **One setting makes antiburn go online as you.** Settings → Usage has a switch,
 on by default once first-run setup is complete, that lets antiburn ask each
-provider directly for your current plan usage — about every ten minutes — using
-the credential your coding tool already keeps on this machine (for example, the
+provider directly for your current plan usage every five minutes in the
+background, and more often while a usage surface is visible. It uses the
+credential your coding tool already keeps on this machine (for example, the
 Claude CLI's own OAuth credential, or the Codex CLI's own). It runs by default
 because this is your own traffic: your usage, from a provider you already use,
 with a credential you already hold, over your own connection — no antiburn
@@ -178,9 +179,13 @@ sample. Milestones need readings that keep moving, so they fire only while
 Settings → Usage is set to refresh; with that off they stay silent. By default,
 they fire at every 10% of a limit and compare quota used with time elapsed in
 that limit's window. Settings → Notifications offers every 5% step, plus
-select-all and clear-all controls. antiburn constructs each notification on this
-machine, and nothing about it leaves the machine. The test and first-run
-location ignore the master switch because both follow a direct action.
+select-all and clear-all controls. Every successful live reading checks for a
+crossing, and the hidden background monitor checks at most every five minutes.
+When usage jumps between readings, the notification names both the crossed
+milestone and the provider's current percentage. antiburn constructs each
+notification on this machine, and nothing about it leaves the machine. The test
+and first-run location ignore the master switch because both follow a direct
+action.
 
 **Notifications respect Focus and Do Not Disturb.** Immediately before an
 automated notification appears, antiburn asks your operating system whether
