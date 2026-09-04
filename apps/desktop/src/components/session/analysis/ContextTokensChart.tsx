@@ -159,6 +159,10 @@ const AXIS_LABEL = {
 const AXIS_TICK = { fontSize: 11, fill: "var(--color-label-tertiary)" }
 /** The width the value axis takes on the left of the plot. */
 const VALUE_AXIS_WIDTH = 40
+/* The plot fills the height its tab gives it, and never draws shorter than
+   this. A taller panel gives the spikes more room to read. */
+const CHART_MIN_HEIGHT = 180
+
 /** The height the time axis takes under the plot. */
 const TIME_AXIS_HEIGHT = 16
 /** A cache event keeps the established prominent marker. */
@@ -656,7 +660,8 @@ export function ContextTokensChart({
   return (
     <ResponsiveContainer
       width="100%"
-      height={180}
+      height="100%"
+      minHeight={CHART_MIN_HEIGHT}
       style={{ "--chart-mark-delay": `${markDelayMs}ms` } as CSSProperties}
     >
       <AreaChart data={data} margin={{ top: 6, right: 12, bottom: 0, left: 0 }}>

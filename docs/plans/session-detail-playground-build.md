@@ -110,4 +110,4 @@ Done in the pass (2026-09-04):
 - No section was removed and no tab changed what it holds, so nothing needed
   a question.
 - Notate round two (2026-09-04): the chart is lit in full colour at rest and the key isolates one layer; the $/MTok bar is a hatched ruler with $0/$33/$80/$160 ticks; check words read "Passed"/"Failed" with a neutral passing word; Checks→Cost gap widened; Tools headline gets breathing room and states its period ("loaded but never called in this session").
-- The efficiency block (share rows and the $/MTok ruler) moved from Context to Cost, under an Efficiency heading, so Context is only the chart and Cost tells the whole money story (2026-09-04).
+- The $/MTok scale moved to the Cost tab under an Efficiency heading, redrawn as a bullet graph per the proto pick (grey bands, brand measure, target at the good edge, word and dollar range under each band). The work/rewrite/carry composition stays under the context chart, which now fills the tab's height (2026-09-04).

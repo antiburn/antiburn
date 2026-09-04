@@ -816,22 +816,28 @@ export function SessionDetailPresentation({
               aria-labelledby={`session-detail-tabs-${tab}`}
               className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
             >
-              {tab === "overview" && (
-                <div className="divide-y divide-separator">
-                  {tokensCard && (
-                    <div className="flex flex-col gap-y-3 py-4 first:pt-0 last:pb-0">
-                      <ContextTokensChart
-                        buckets={summary.buckets}
-                        contextWindow={summary.contextAvailable ? summary.contextWindow : null}
-                        activeSecs={summary.avgActiveSecs}
-                        highlight={highlight}
-                      />
-                      <ChartKey
-                        stats={chartKeyStats}
-                        pinned={pinned}
-                        onHighlight={setHovered}
-                        onPin={togglePin}
-                      />
+              {/* The chart takes every pixel the key leaves, so the tab
+                  never ends in empty space. */}
+              {tab === "overview" && tokensCard && (
+                <div className="flex h-full flex-col gap-y-3">
+                  <div className="min-h-0 flex-1">
+                    <ContextTokensChart
+                      buckets={summary.buckets}
+                      contextWindow={summary.contextAvailable ? summary.contextWindow : null}
+                      activeSecs={summary.avgActiveSecs}
+                      highlight={highlight}
+                    />
+                  </div>
+                  <ChartKey
+                    stats={chartKeyStats}
+                    pinned={pinned}
+                    onHighlight={setHovered}
+                    onPin={togglePin}
+                  />
+                  {/* The composition says what the context above cost. */}
+                  {efficiencyCard && (
+                    <div className="border-t border-separator pt-3">
+                      <EfficiencyBreakdown metrics={efficiencyCard} section="composition" />
                     </div>
                   )}
                 </div>
@@ -865,12 +871,12 @@ export function SessionDetailPresentation({
                       </p>
                     )}
                   </section>
-                  {/* The efficiency readings close the money story. They
-                      sit under the cost rows they explain. */}
+                  {/* The $/MTok scale closes the money story. It sits under
+                      the cost rows it explains. */}
                   {efficiencyCard && (
                     <section className="mt-4 border-t border-separator pt-4">
                       <TabSectionHeading>Efficiency</TabSectionHeading>
-                      <EfficiencyBreakdown metrics={efficiencyCard} />
+                      <EfficiencyBreakdown metrics={efficiencyCard} section="cost" />
                     </section>
                   )}
                 </div>

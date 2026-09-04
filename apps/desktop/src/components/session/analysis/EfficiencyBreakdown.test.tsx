@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { efficiencyMetrics } from "../../../lib/presentation/sessionEfficiency"
@@ -32,23 +32,37 @@ describe("EfficiencyBreakdown", () => {
     expect(screen.getByText("34%")).toBeTruthy()
     expect(screen.getByText("12%")).toBeTruthy()
     expect(screen.getByText("54%")).toBeTruthy()
+    // The scale names its middle band once; each share row names its own.
     expect(screen.getAllByText("ok")).toHaveLength(4)
   })
 
-  it("draws the cost reading as a full-width banded track with a needle", () => {
+  it("draws the cost reading as a bullet graph that labels its own scale", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
 
-    // The track shows the good, middle, and bad bands at fixed thirds, so it
-    // never changes length. The needle marks where this session sits.
+    // The bands sit at fixed thirds, so the scale never changes length. The
+    // measure runs to this session's reading and the target marks the edge
+    // of the good band.
     const cost = screen.getByTestId("thermometer-costPerMTok")
     expect(cost.dataset.position).toBe("0.383")
     expect(cost.querySelector('[data-testid="cost-band-good"]')).toBeTruthy()
     expect(cost.querySelector('[data-testid="cost-band-ok"]')).toBeTruthy()
     expect(cost.querySelector('[data-testid="cost-band-bad"]')).toBeTruthy()
 
-    const needle = cost.querySelector<HTMLElement>('[data-testid="cost-needle"]')
-    expect(needle).toBeTruthy()
-    expect(Number.parseFloat(needle!.style.left)).toBeCloseTo(38.3, 1)
+    const measure = cost.querySelector<HTMLElement>('[data-testid="cost-measure"]')
+    expect(Number.parseFloat(measure!.style.width)).toBeCloseTo(38.3, 1)
+    const target = cost.querySelector<HTMLElement>('[data-testid="cost-target"]')
+    expect(Number.parseFloat(target!.style.left)).toBeCloseTo(33.3, 1)
+
+    // Each band names itself and its dollar range, and the current band is
+    // the one in the label ink. The reading carries no tag of its own.
+    const good = within(cost).getByTestId("cost-band-word-good")
+    const ok = within(cost).getByTestId("cost-band-word-ok")
+    expect(good).toHaveTextContent("under $33")
+    expect(ok).toHaveTextContent("$33 – $80")
+    expect(within(cost).getByTestId("cost-band-word-bad")).toHaveTextContent("over $80")
+    expect(ok.dataset.current).toBe("true")
+    expect(good.dataset.current).toBeUndefined()
+    expect(screen.getByTestId("cost-row").querySelector(".rounded")).toBeNull()
   })
 
   it("draws the three shares as one composition track whose runs fill the width", () => {
@@ -64,16 +78,17 @@ describe("EfficiencyBreakdown", () => {
     expect(widths.reduce((sum, width) => sum + width, 0)).toBeCloseTo(1, 5)
 
     // Each slice keeps its own color so it stays recognisable between
-    // sessions: green for real work, yellow for waste, neutral for carry.
-    expect(runs[0]!.className).toContain("bg-share-work")
-    expect(runs[1]!.className).toContain("bg-share-waste")
+    // sessions: label ink for real work, brand orange for waste, neutral
+    // for carry. No slice takes a verdict colour.
+    expect(runs[0]!.className).toContain("bg-label")
+    expect(runs[1]!.className).toContain("bg-brand-tint")
     expect(runs[2]!.className).toContain("bg-share-carry")
 
     // No share draws a meter of its own any more.
     expect(screen.queryByTestId("share-segment-realWorkShare")).toBeNull()
   })
 
-  it("colours a good reading teal and names a bad one by direction", () => {
+  it("names a bad reading by direction, in the same quiet ink as any other", () => {
     render(
       <EfficiencyBreakdown
         metrics={efficiencyMetrics(
@@ -82,13 +97,16 @@ describe("EfficiencyBreakdown", () => {
         )}
       />,
     )
-    const high = screen.getAllByText("high")
-    expect(high).toHaveLength(2)
-    expect(high[0]?.getAttribute("class")).toContain("text-share-waste-text")
-    expect(screen.getByText("low")).toBeTruthy()
+    const rewrite = within(screen.getByTestId("share-row-rewriteShare")).getByText("high")
+    expect(rewrite.getAttribute("class")).toContain("text-label-tertiary")
+    expect(rewrite.getAttribute("class")).not.toContain("share-waste")
+    // The cost scale names its bad band by the same direction word.
+    expect(screen.getByTestId("cost-band-word-bad")).toHaveTextContent("high")
+    expect(screen.getByTestId("cost-band-word-bad").dataset.current).toBe("true")
+    expect(within(screen.getByTestId("share-row-realWorkShare")).getByText("low")).toBeTruthy()
   })
 
-  it("marks a good reading in teal", () => {
+  it("keeps a good reading in the same quiet ink", () => {
     render(
       <EfficiencyBreakdown
         metrics={efficiencyMetrics(
@@ -97,9 +115,9 @@ describe("EfficiencyBreakdown", () => {
         )}
       />,
     )
-    for (const good of screen.getAllByText("good")) {
-      expect(good.getAttribute("class")).toContain("text-share-work-text")
-    }
+    const good = within(screen.getByTestId("share-row-realWorkShare")).getByText("good")
+    expect(good.getAttribute("class")).toContain("text-label-tertiary")
+    expect(good.getAttribute("class")).not.toContain("share-work")
   })
 
   it("renders nothing when there is no spend", () => {

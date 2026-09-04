@@ -13,25 +13,25 @@ import { Tooltip } from "../../presentation/Tooltip"
 
 export interface EfficiencyBreakdownProps {
   metrics: EfficiencyMetrics
+  /**
+   * Which part to draw. The cost scale lives on the Cost tab and the
+   * composition under the context chart. Omit it to draw both.
+   */
+  section?: "cost" | "composition"
 }
 
-/* The band word, as a small caption tag. Teal is the good verdict and red
-   the bad one; the middle band stays neutral, because it is not a verdict. */
-const BAND_TAG_CLASS: Record<EfficiencyBand, string> = {
-  good: "bg-share-work/15 text-share-work-text",
-  ok: "bg-surface-secondary text-label-secondary",
-  bad: "bg-share-waste/15 text-share-waste-text",
-}
-
-/* The fill for one band of the cost ruler. The ruler shows all three bands
-   at full width, so these are the fixed backdrop the needle moves across.
-   The bad band is hatched, so it reads as "out of bounds" and not as a
-   second solid. */
+/* The fill for one band of the cost scale. The three bands are a fixed
+   qualitative backdrop, so they step through three greys and carry no
+   verdict colour. The measure and the words say where the reading sits. */
 const BAND_SEGMENT_CLASS: Record<EfficiencyBand, string> = {
-  good: "bg-share-work",
+  good: "bg-surface-secondary",
   ok: "bg-surface-tertiary",
-  bad: "efficiency-ruler-hatch text-share-waste",
+  bad: "bg-separator",
 }
+
+/* The band word under a row. One quiet ink for every band: the word is the
+   verdict, so it needs no colour to carry it. */
+const BAND_WORD_CLASS = "type-caption text-label-tertiary whitespace-nowrap"
 
 type MetricKey = "costPerMTok" | ShareMetricKey
 type ShareMetricKey = "realWorkShare" | "rewriteShare" | "carryShare"
@@ -71,9 +71,9 @@ interface ShareRow {
   key: ShareMetricKey
   label: string
   /* The slice keeps one color for the life of the feature, so a reader
-     recognizes it between sessions. Real work runs teal and rewrite waste
-     red, which reads in the same language as the cost track above. Carry
-     stays neutral, because carry is neither good nor bad. */
+     recognizes it between sessions. Real work is the label ink, rewrite
+     waste is the brand orange, because waste is the burn antiburn is named
+     for, and carry stays the mid neutral. */
   inkClassName: string
 }
 
@@ -81,12 +81,12 @@ const SHARE_ROWS: ShareRow[] = [
   {
     key: "realWorkShare",
     label: "Real Work %",
-    inkClassName: "bg-share-work",
+    inkClassName: "bg-label",
   },
   {
     key: "rewriteShare",
     label: "Rewrite Waste %",
-    inkClassName: "bg-share-waste",
+    inkClassName: "bg-brand-tint",
   },
   {
     key: "carryShare",
@@ -140,60 +140,78 @@ function shareSegments(metrics: EfficiencyMetrics): ShareSegment[] {
 }
 
 /**
- * The $/MTok scale as a ruler. The strip shows the good, middle, and bad
- * bands at their fixed thirds, the tick values under it name the band edges
- * in dollars, and the needle marks where this session sits. The ruler never
- * changes length.
+ * The $/MTok scale as a bullet graph. Three grey bands mark good, middle,
+ * and bad at fixed thirds, a thin brand measure runs from zero to this
+ * session's reading, and a dark line marks the edge of the good band. Under
+ * each band sit its word and its dollar range, so the scale labels itself
+ * and the reading needs no tag.
  *
  * A fill that grows to the reading was the wrong form for this metric: a low
  * $/MTok is a good result, so a good session drew almost nothing. The question
  * here is "where does this sit between good and bad", which a fixed scale with
- * a moving mark answers directly.
+ * a measure answers directly.
  */
-function CostScaleBar({ value, profile }: { value: number; profile: EfficiencyProfile }) {
-  const scale = efficiencyThermometer(value, "costPerMTok", profile)
-  const last = scale.ticks.length - 1
+function CostScaleBar({
+  metric,
+  profile,
+}: {
+  metric: EfficiencyMetric
+  profile: EfficiencyProfile
+}) {
+  const scale = efficiencyThermometer(metric.value, "costPerMTok", profile)
+  const [, low, high] = scale.ticks
+  const ranges = [`under ${low}`, `${low} – ${high}`, `over ${high}`]
+  const last = scale.segments.length - 1
+  // The good band ends at the first edge when lower is better, and starts at
+  // the second edge when higher is better.
+  const targetPosition = scale.segments[0] === "good" ? 1 / 3 : 2 / 3
   return (
     <div
       data-testid="thermometer-costPerMTok"
       data-position={scale.position.toFixed(3)}
       aria-hidden
     >
-      <div className="relative flex h-1.5 items-center">
+      <div className="relative flex h-3">
         {scale.segments.map((band, index) => (
           <span
-            key={index}
+            key={band}
             data-testid={`cost-band-${band}`}
             className={cn(
               "h-full flex-1",
               index === 0 && "rounded-s-sm",
-              index === scale.segments.length - 1 && "rounded-e-sm",
+              index === last && "rounded-e-sm",
               BAND_SEGMENT_CLASS[band],
             )}
           />
         ))}
-        {/* The ring separates the needle from whichever band it lands on, so
-            the mark stays legible over the teal and the hatch alike. */}
         <span
-          data-testid="cost-needle"
-          className="absolute -inset-y-1 w-[3px] -translate-x-1/2 rounded-full bg-label ring-2 ring-surface"
-          style={{ left: `${scale.position * 100}%` }}
+          data-testid="cost-measure"
+          className="absolute inset-y-1 left-0 rounded-e-sm bg-brand-tint"
+          style={{ width: `${scale.position * 100}%` }}
+        />
+        <span
+          data-testid="cost-target"
+          className="absolute -inset-y-0.5 w-0.5 -translate-x-1/2 bg-label"
+          style={{ left: `${targetPosition * 100}%` }}
         />
       </div>
-      <div className="relative mt-0.5 h-4">
-        {scale.ticks.map((label, index) => (
+      <div className="mt-1 flex">
+        {scale.segments.map((band, index) => (
           <span
-            key={label}
+            key={band}
+            data-testid={`cost-band-word-${band}`}
+            data-current={band === metric.band || undefined}
             className={cn(
-              "absolute top-0 flex flex-col type-caption text-label-tertiary tabular-nums",
+              "flex flex-1 flex-col type-caption text-label-tertiary tabular-nums",
               index === 0 && "items-start",
-              index === last && "-translate-x-full items-end",
-              index > 0 && index < last && "-translate-x-1/2 items-center",
+              index === last && "items-end",
+              index > 0 && index < last && "items-center",
             )}
-            style={{ left: `${(index / last) * 100}%` }}
           >
-            <span className="h-1 w-px bg-separator" />
-            {label}
+            <span className={cn("font-medium", band === metric.band && "text-label")}>
+              {efficiencyBandWord(band, "costPerMTok")}
+            </span>
+            <span>{ranges[index]}</span>
           </span>
         ))}
       </div>
@@ -266,12 +284,10 @@ function MetricGuidance({
 const ROW_CLASS =
   "-mx-1.5 rounded-control px-1.5 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
 
-const BAND_TAG_BASE = "rounded px-1.5 py-px type-caption font-medium whitespace-nowrap"
-
 /**
- * The $/MTok reading: label and figure on one baseline, with its VU meter
+ * The $/MTok reading: label and figure on one baseline, with its scale
  * underneath. This metric is not part of the composition, so it keeps the
- * meter the other readings gave up.
+ * scale the other readings gave up.
  */
 function CostRowLine({
   metric,
@@ -285,14 +301,11 @@ function CostRowLine({
       <div className={cn(ROW_CLASS, "block")} tabIndex={0} data-testid="cost-row">
         <span className="flex items-baseline justify-between gap-2 pb-1">
           <span className="truncate text-label-secondary">$/MTok</span>
-          <span className="flex shrink-0 items-baseline gap-2">
-            <span className="text-label tabular-nums">{formatCostPerMTok(metric.value)}</span>
-            <span className={cn(BAND_TAG_BASE, BAND_TAG_CLASS[metric.band])}>
-              {efficiencyBandWord(metric.band, "costPerMTok")}
-            </span>
+          <span className="shrink-0 text-label tabular-nums">
+            {formatCostPerMTok(metric.value)}
           </span>
         </span>
-        <CostScaleBar value={metric.value} profile={profile} />
+        <CostScaleBar metric={metric} profile={profile} />
       </div>
     </Tooltip>
   )
@@ -323,10 +336,8 @@ function ShareRowLine({
         />
         <span className="min-w-0 flex-1 truncate text-label-secondary">{segment.label}</span>
         <span className="shrink-0 text-label tabular-nums">{segment.displayPercent}</span>
-        <span className="flex w-12 shrink-0 justify-end">
-          <span className={cn(BAND_TAG_BASE, BAND_TAG_CLASS[segment.metric.band])}>
-            {efficiencyBandWord(segment.metric.band, segment.key)}
-          </span>
+        <span className={cn("w-12 shrink-0 text-end", BAND_WORD_CLASS)}>
+          {efficiencyBandWord(segment.metric.band, segment.key)}
         </span>
       </div>
     </Tooltip>
@@ -348,8 +359,10 @@ function ShareRowPlaceholder({ row }: { row: ShareRow }) {
   )
 }
 
-export function EfficiencyBreakdown({ metrics }: EfficiencyBreakdownProps) {
+export function EfficiencyBreakdown({ metrics, section }: EfficiencyBreakdownProps) {
   const segments = shareSegments(metrics)
+  const showCost = section !== "composition"
+  const showComposition = section !== "cost"
 
   if (!metrics.costPerMTok) {
     return null
@@ -357,9 +370,11 @@ export function EfficiencyBreakdown({ metrics }: EfficiencyBreakdownProps) {
 
   return (
     <div className="flex flex-col" data-testid="efficiency-block">
-      <CostRowLine metric={metrics.costPerMTok} profile={metrics.profile} />
-      <div className="my-3 border-b border-dashed border-separator" />
-      {segments.length > 0 ? (
+      {showCost && <CostRowLine metric={metrics.costPerMTok} profile={metrics.profile} />}
+      {showCost && showComposition && (
+        <div className="my-3 border-b border-dashed border-separator" />
+      )}
+      {!showComposition ? null : segments.length > 0 ? (
         <>
           <CompositionTrack segments={segments} />
           <div className="mt-2 flex flex-col">
