@@ -94,34 +94,32 @@ function HygieneRow({
 
   return (
     <>
-      {/* The info button cannot sit inside the row button, so it hangs in
-          the right gutter beside the row. The verdict then reaches the same
-          right edge as the cost figures below. */}
-      <div className="group relative -mx-1 grid grid-cols-[minmax(0,1fr)_max-content_max-content] items-center gap-x-2 rounded-control px-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
+      {/* The info button cannot sit inside the row button, so the row button
+          is an invisible layer under the text, and the info button sits
+          beside the name the way the cost rows place it. The verdict then
+          reaches the same right edge as the cost figures below. */}
+      <div className="group relative -mx-1 grid grid-cols-[minmax(0,1fr)_max-content_max-content] items-center gap-x-2 rounded-control px-1 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
         <button
           type="button"
           aria-label={`${check.name} details`}
           aria-expanded={open}
           aria-controls={bodyId}
           onClick={onToggle}
-          className="col-span-3 grid grid-cols-subgrid items-center gap-x-2 py-1 text-left active:transform-none active:opacity-100"
-        >
-          <span className="truncate text-label-tertiary">{check.name}</span>
-          <span className={status.wordClass}>{status.label}</span>
-          <status.Icon
-            size={STATUS_ICON_SIZE}
-            strokeWidth={2}
-            aria-hidden="true"
-            className={cn("shrink-0", status.textClass)}
-          />
-        </button>
-        {explainer && (
-          <RowInfo
-            label={check.name}
-            body={explainer}
-            className="absolute top-1/2 -right-3 -translate-y-1/2"
-          />
-        )}
+          className="absolute inset-0 rounded-control active:transform-none active:opacity-100"
+        />
+        <span className="pointer-events-none flex min-w-0 items-center gap-1 text-label-tertiary">
+          <span className="truncate">{check.name}</span>
+          {explainer && (
+            <RowInfo label={check.name} body={explainer} className="pointer-events-auto" />
+          )}
+        </span>
+        <span className={cn("pointer-events-none", status.wordClass)}>{status.label}</span>
+        <status.Icon
+          size={STATUS_ICON_SIZE}
+          strokeWidth={2}
+          aria-hidden="true"
+          className={cn("pointer-events-none shrink-0", status.textClass)}
+        />
       </div>
 
       {open && (

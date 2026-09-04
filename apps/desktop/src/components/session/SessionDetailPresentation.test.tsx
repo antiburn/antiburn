@@ -204,14 +204,15 @@ describe("SessionDetailPresentation — chrome", () => {
     fireEvent.focus(screen.getByRole("button", { name: "Overpowered subagents details" }))
     expect(screen.queryByText(/Past about 200k tokens/)).toBeNull()
     expect(screen.getByRole("button", { name: "About Overpowered subagents" })).toBeTruthy()
+    // The row button is an invisible layer, so the verdict is read from the row.
     expect(
-      screen.getByRole("button", { name: "Overpowered subagents details" }),
+      screen.getByRole("button", { name: "Overpowered subagents details" }).parentElement,
     ).toHaveTextContent("Failed")
 
     // A check nobody could assess leaves the list rather than claiming a verdict.
     expect(screen.queryByRole("button", { name: "Session overdepth details" })).toBeNull()
     expect(
-      screen.getByRole("button", { name: "Model overthinking details" }),
+      screen.getByRole("button", { name: "Model overthinking details" }).parentElement,
     ).toHaveTextContent("Passed")
   })
 
