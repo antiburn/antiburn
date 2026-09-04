@@ -234,6 +234,7 @@ pub fn run() {
             popover_peek::prewarm(app.handle());
 
             tray::create(app.handle())?;
+            tray::install_usage_meter(app.handle());
             // After the tray, and on the main thread: the monitor reaches the
             // menu-bar item to unlight it. The popover itself is lazy, and its
             // dismissal path already treats a missing window as idle.
@@ -296,6 +297,14 @@ pub fn run() {
                 usage_alerts::LiveUsage::from_store(&store)
             };
             app.manage(live_usage);
+            let settings = app.state::<store::Store>().settings().ok();
+            let snapshot = app.state::<usage_alerts::LiveUsage>().snapshot();
+            tray::sync_usage(
+                app.handle(),
+                &snapshot,
+                settings.is_some_and(|settings| settings.live_usage_active()),
+                true,
+            );
             if let Some(schedulers) = app.try_state::<Schedulers>() {
                 schedulers.push(runtime_pricing::spawn_scheduler(app.handle()));
                 schedulers.push(scan::spawn_scheduler(app.handle()));

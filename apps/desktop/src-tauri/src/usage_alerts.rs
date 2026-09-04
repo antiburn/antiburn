@@ -273,6 +273,14 @@ pub(crate) fn refresh_publish_and_evaluate(
         live.utc_offset_minutes(),
     );
     live.replace_snapshot(summary.clone(), store.as_deref());
+    crate::tray::sync_usage(
+        app,
+        &summary,
+        settings
+            .as_ref()
+            .is_some_and(|settings| settings.live_usage_active()),
+        false,
+    );
     let _ = app.emit(EVENT_CHANGED, &summary);
     if let Some(settings) = settings.as_ref() {
         evaluate_milestones(app, &live, settings, &snapshots, now);
