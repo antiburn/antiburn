@@ -218,18 +218,17 @@ describe("plan labels", () => {
     expect(livePlanLabel(provider({ plan: null }))).toBeNull()
   })
 
-  it("composes the plan before the account email", () => {
-    expect(
-      livePlanAccountLabel(
-        provider({
-          plan: { name: "max", tier: "default_claude_max_5x" },
-          accountEmail: "reader@example.test",
-        }),
-      ),
-    ).toBe("Max 5x · reader@example.test")
-    expect(livePlanAccountLabel(provider({ accountEmail: "reader@example.test" }))).toBe(
+  it("shows the email only when multiple accounts are visible", () => {
+    const withEmail = provider({
+      plan: { name: "max", tier: "default_claude_max_5x" },
+      accountEmail: "reader@example.test",
+    })
+    expect(livePlanAccountLabel(withEmail)).toBe("Max 5x")
+    expect(livePlanAccountLabel(withEmail, 2)).toBe("Max 5x · reader@example.test")
+    expect(livePlanAccountLabel(provider({ accountEmail: "reader@example.test" }), 2)).toBe(
       "reader@example.test",
     )
+    expect(livePlanAccountLabel(provider({ accountEmail: "reader@example.test" }))).toBeNull()
   })
 
   it("normalizes the Google AI plans that Antigravity reports", () => {

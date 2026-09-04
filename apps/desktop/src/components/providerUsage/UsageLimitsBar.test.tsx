@@ -284,7 +284,12 @@ describe("UsageLimitsBar — the disclosure", () => {
   it("shows the plan as a muted suffix on the provider heading", () => {
     bar({
       live: liveSummary({
-        providers: [liveProvider({ plan: { name: "max", tier: "default_claude_max_5x" } })],
+        providers: [
+          liveProvider({
+            plan: { name: "max", tier: "default_claude_max_5x" },
+            accountEmail: "reader@example.test",
+          }),
+        ],
       }),
       expanded: true,
     })
@@ -293,8 +298,26 @@ describe("UsageLimitsBar — the disclosure", () => {
     const group = screen.getByRole("group", { name: "Claude, Max 5x plan" })
     const heading = within(group).getByRole("heading")
     expect(heading).toHaveTextContent("Claude · Max 5x")
+    expect(heading).not.toHaveTextContent("reader@example.test")
     const suffix = within(heading).getByText("· Max 5x")
     expect(suffix.className).toContain("text-label-secondary")
+  })
+
+  it("shows account emails only when multiple accounts share a provider", () => {
+    const first = liveProvider({
+      accountKey: "account-a",
+      plan: { name: "max", tier: "default_claude_max_5x" },
+      accountEmail: "first@example.test",
+    })
+    const second = liveProvider({
+      accountKey: "account-b",
+      plan: { name: "max", tier: "default_claude_max_5x" },
+      accountEmail: "second@example.test",
+    })
+    bar({ live: liveSummary({ providers: [first, second] }), expanded: true })
+
+    expect(screen.getByRole("group", { name: /first@example\.test/ })).toBeInTheDocument()
+    expect(screen.getByRole("group", { name: /second@example\.test/ })).toBeInTheDocument()
   })
 
   it("omits the separator and suffix entirely when the source reports no plan", () => {

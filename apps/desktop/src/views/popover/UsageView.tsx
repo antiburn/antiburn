@@ -563,6 +563,7 @@ function ProviderCard({
                 <LiveUsageDetail
                   live={reading}
                   now={now}
+                  accountCount={accounts.length}
                   showPlan={
                     showAccountPlans || (accounts.length > 1 && reading.accountEmail != null)
                   }

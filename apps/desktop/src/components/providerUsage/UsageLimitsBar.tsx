@@ -160,6 +160,7 @@ export function UsageLimitsBar({
               key={key}
               provider={reading}
               displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
+              accountCount={providerCounts.get(reading.provider) ?? 1}
               status={liveProviderStatus(live, reading)}
               now={at}
               action={index === 0 ? disclosure(true) : undefined}
@@ -259,6 +260,7 @@ function LimitsDisclosure({
 function ProviderGroup({
   provider,
   displayName,
+  accountCount,
   status,
   now,
   action,
@@ -267,6 +269,7 @@ function ProviderGroup({
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
+  accountCount: number
   status: LiveProviderStatus
   now: number
   /** The disclosure, on the topmost group only. */
@@ -274,7 +277,7 @@ function ProviderGroup({
   onHover?: (provider: string | null, anchor: AnchorRegion | null) => void
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
-  const plan = livePlanAccountLabel(provider)
+  const plan = livePlanAccountLabel(provider, accountCount)
   const graceNote =
     status.kind === "grace"
       ? liveGraceNote(status.category, provider.provider, status.ageMs)
