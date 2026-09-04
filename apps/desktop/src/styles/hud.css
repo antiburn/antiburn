@@ -107,6 +107,17 @@ body[data-transparent-window] #root {
   );
 }
 
+/*
+ * The HUD close control. It straddles the panel edge, and on hover the panel
+ * behind it is almost its own colour. The shadow is what separates the two.
+ * The value is the design system's `raised` shadow.
+ */
+.hud-close {
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.15),
+    0 0 0 0.5px rgb(0 0 0 / 0.04);
+}
+
 .led-blink {
   animation: led-blink 3s steps(1, end) infinite;
 }

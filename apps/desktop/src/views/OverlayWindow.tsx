@@ -40,7 +40,7 @@ export function OverlayWindow() {
           type="button"
           aria-label="Close overlay"
           onClick={() => session.close()}
-          className={`absolute top-2 right-3 translate-x-1/2 -translate-y-1/2 rounded-full border border-separator p-0.5 text-label-tertiary hover:text-label-secondary transition-opacity duration-[var(--duration-fast)] ease-out ${
+          className={`hud-close absolute top-2 right-3 translate-x-1/2 -translate-y-1/2 rounded-full border border-separator p-0.5 text-label-tertiary hover:text-label-secondary transition-opacity duration-[var(--duration-fast)] ease-out ${
             showClose ? "opacity-100" : "pointer-events-none opacity-0"
           }`}
           style={{ backgroundColor: "var(--color-bg-hud)" }}
