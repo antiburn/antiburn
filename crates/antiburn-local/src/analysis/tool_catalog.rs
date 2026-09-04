@@ -27,6 +27,89 @@ pub struct CatalogTool {
     pub tokens: u32,
 }
 
+impl CatalogTool {
+    /// Every name a harness could call this tool by: its canonical
+    /// catalogue name, each alias, and each alias's last dot-separated
+    /// segment (a namespaced alias such as Codex's `functions.exec` is
+    /// never the name a session calls the tool by; the transcript uses
+    /// its bare last segment). Mirrors `initial_context::builtin_tool_rows`'s
+    /// prior `match_names` construction exactly.
+    pub fn match_names(&self) -> Vec<String> {
+        let mut names = vec![self.name.clone()];
+        for alias in &self.aliases {
+            names.push(alias.clone());
+            names.push(last_dot_segment(alias).to_string());
+        }
+        names
+    }
+
+    /// The name to display and key this tool by: its first alias when it
+    /// has one, else its canonical name, reduced to the last dot
+    /// segment. Mirrors `initial_context::builtin_tool_rows`'s prior
+    /// `source_name` construction exactly.
+    pub fn display_name(&self) -> String {
+        let raw_name = self
+            .aliases
+            .first()
+            .map_or(self.name.as_str(), String::as_str);
+        last_dot_segment(raw_name).to_string()
+    }
+
+    /// True when `deferred` names this tool by its canonical name or any
+    /// alias (case-insensitive). A match name's last-segment reduction is
+    /// never checked here — a harness reports a deferral under the tool's
+    /// own spelling. Mirrors `initial_context::builtin_tool_rows`'s prior
+    /// deferred check exactly. Generic over the caller's set type
+    /// (`HashSet` on the metrics side, `BTreeSet` on the evidence side).
+    pub fn is_deferred<'a>(&self, deferred: impl IntoIterator<Item = &'a String>) -> bool {
+        deferred.into_iter().any(|name| {
+            name.eq_ignore_ascii_case(&self.name)
+                || self
+                    .aliases
+                    .iter()
+                    .any(|alias| name.eq_ignore_ascii_case(alias))
+        })
+    }
+}
+
+/// The last `.`-separated segment of a namespaced tool alias, or the whole
+/// string when it carries no `.` at all (every Claude alias, e.g. `Bash`).
+fn last_dot_segment(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
+}
+
+/// Tool names that enter the request only when the harness actually uses
+/// them, so they carry no idle context cost and can never be an honest
+/// unused-built-in-tool finding. Curated policy copied verbatim from
+/// Cadence's harness knowledge base (`crates/harness-kb/src/lib.rs`,
+/// `situational_tools`) for the agents Cadence has reviewed. Do not add an
+/// entry Cadence does not have.
+pub fn situational_tools(agent: &str) -> &'static [&'static str] {
+    match agent.to_ascii_lowercase().as_str() {
+        "claude" => &[
+            "skill",
+            "tool_search",
+            "ask_user_question",
+            "enter_plan_mode",
+            "exit_plan_mode",
+            "artifact",
+            "monitor",
+        ],
+        _ => &[],
+    }
+}
+
+/// Reduces a tool name to its lowercased alphanumeric characters, matching
+/// Cadence's `comparable_tool_name` (`crates/harness-kb/src/lib.rs`). Two
+/// names compare equal under this reduction when they differ only by case,
+/// spacing, or punctuation.
+pub fn comparable_tool_name(name: &str) -> String {
+    name.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|character| character.to_ascii_lowercase())
+        .collect()
+}
+
 /// The parsed catalogue file. Immutable after construction.
 pub struct ToolCatalog {
     agents: HashMap<String, AgentCatalog>,

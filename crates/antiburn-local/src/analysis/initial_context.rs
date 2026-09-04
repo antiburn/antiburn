@@ -866,28 +866,10 @@ fn builtin_tool_rows(
     tools
         .into_iter()
         .map(|tool| {
-            let is_deferred = deferred.iter().any(|name| {
-                name.eq_ignore_ascii_case(&tool.name)
-                    || tool
-                        .aliases
-                        .iter()
-                        .any(|alias| name.eq_ignore_ascii_case(alias))
-            });
-            // A namespaced alias (Codex's `functions.exec`,
-            // `collaboration.spawn_agent`) is not the name a session ever
-            // calls the tool by — the transcript uses its bare last segment
-            // (`exec`, `spawn_agent`). Display and match against that
-            // segment, not the full namespaced spelling.
-            let mut match_names = vec![tool.name.clone()];
-            for alias in &tool.aliases {
-                match_names.push(alias.clone());
-                match_names.push(last_dot_segment(alias).to_string());
-            }
-            let raw_name = tool.aliases.into_iter().next().unwrap_or(tool.name);
-            let source_name = last_dot_segment(&raw_name).to_string();
+            let is_deferred = tool.is_deferred(deferred);
             InitialContextTokenSourceCount {
                 source: InitialContextTokenSource::BuiltinTool,
-                source_name: Some(source_name),
+                source_name: Some(tool.display_name()),
                 token_count: if is_deferred {
                     DEFERRED_TOOL_TOKEN_ESTIMATE as i64
                 } else {
@@ -895,16 +877,10 @@ fn builtin_tool_rows(
                 },
                 origin: SourceOrigin::Bundled,
                 deferred: is_deferred,
-                match_names,
+                match_names: tool.match_names(),
             }
         })
         .collect()
-}
-
-/// The last `.`-separated segment of a namespaced tool alias, or the whole
-/// string when it carries no `.` at all (every Claude alias, e.g. `Bash`).
-fn last_dot_segment(name: &str) -> &str {
-    name.rsplit('.').next().unwrap_or(name)
 }
 
 /// Sum rows that share a `(source, source_name)` key, preserving first-seen

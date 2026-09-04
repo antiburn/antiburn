@@ -248,7 +248,11 @@ pub fn requirements(detector: DetectorId) -> DetectorRequirements {
         },
         DetectorId::UnusedBuiltInTools => DetectorRequirements {
             finding: &[Fact::ToolDefinitions, Fact::ToolInvocations],
-            clean: &[Fact::ToolDefinitions, Fact::ToolInvocations],
+            clean: &[
+                Fact::ToolDefinitions,
+                Fact::ToolInvocations,
+                Fact::Eligibility,
+            ],
         },
         DetectorId::UnusedSkills => DetectorRequirements {
             finding: &[Fact::SkillMcpAttribution, Fact::ToolInvocations],
@@ -1330,7 +1334,7 @@ mod tests {
         FAST_SPEED_KEY, LoadedSource, ModelTokens, PARSER_REVISION, QuotaConfidence,
         QuotaHitSeverity, QuotaIncident, QuotaLimitKind, RepeatedContext,
         RepeatedContextAccounting, SessionEvidenceAccumulator, SessionQuotaEvidence,
-        SignalCoverage, SourceCapabilities, SourceKind, TurnCounts, TurnFacts,
+        SignalCoverage, SourceCapabilities, SourceKind, ToolDefinition, TurnCounts, TurnFacts,
     };
     use crate::insights::detectors::{ModelFamily, ModelReplacementEntry, NotAssessedReason};
     use crate::insights::quota::QuotaPressureSection;
@@ -2422,6 +2426,7 @@ mod tests {
                 DetectorId::ModelOverthinking,
                 DetectorId::OverpoweredSubagents,
                 DetectorId::UnusedMcpServers,
+                DetectorId::UnusedBuiltInTools,
                 DetectorId::UnusedSkills,
                 DetectorId::OldModelUsage,
                 DetectorId::OveruseOfFastMode,
@@ -2538,10 +2543,13 @@ mod tests {
                 DetectorStatus::Clean
             );
         }
-        // The capability gap stays not assessed with a structured reason.
+        // The session carries no observed harness version, so the
+        // built-in tool catalogue never resolves: the signal gap stays
+        // not assessed with a structured reason, distinct from a
+        // capability gap.
         assert_eq!(
             report.detector_statuses[DetectorId::UnusedBuiltInTools.index()],
-            DetectorStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
+            DetectorStatus::NotAssessed(NotAssessedReason::SignalMissing)
         );
     }
 
@@ -2628,6 +2636,15 @@ mod tests {
             quota_incidents: true,
             harness_version: true,
         };
+        // An empty map, not a fabricated invoked definition: Unused
+        // Built-In Tools reads clean from zero catalogued definitions
+        // the same way Unused MCP Servers and Unused Skills read clean
+        // from an empty `mcp_servers`/`skills` map, with no need to
+        // invent a definition just to mark it invoked.
+        let EvidenceValue::Complete(sources) = &mut row.context_sources else {
+            unreachable!()
+        };
+        sources.tool_definitions = EvidenceValue::Complete(BTreeMap::new());
         row
     }
 
@@ -2733,22 +2750,11 @@ mod tests {
         // detector from reading Clean.
         for detector in DetectorId::ALL {
             let baseline = status_for(complete_row("complete"), detector);
-            if matches!(detector, DetectorId::UnusedBuiltInTools) {
-                // Unused Built-In Tools carries a permanent contract
-                // gap independent of fact degradation: it has no
-                // definition-name payload yet.
-                assert_eq!(
-                    baseline,
-                    DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
-                    "baseline for {detector:?}"
-                );
-            } else {
-                assert_eq!(
-                    baseline,
-                    DetectorStatus::Clean,
-                    "baseline for {detector:?} must read clean so the degraded assertion distinguishes"
-                );
-            }
+            assert_eq!(
+                baseline,
+                DetectorStatus::Clean,
+                "baseline for {detector:?} must read clean so the degraded assertion distinguishes"
+            );
 
             for fact in requirements(detector).clean {
                 let mut row = complete_row("degraded");
@@ -2785,10 +2791,9 @@ mod tests {
 
     /// Builds evidence carrying a concrete finding for `detector`, using
     /// `complete_row` as the base so every fact starts `Complete`.
-    /// `UnusedBuiltInTools` and `OverpoweredSubagents` are absent: the
-    /// former can never produce a finding (permanent contract gap), and
-    /// the latter's clean facts equal its finding facts, so it has no
-    /// clean-only fact left to degrade in test (c) below.
+    /// `OverpoweredSubagents` is absent: its clean facts equal its
+    /// finding facts, so it has no clean-only fact left to degrade in
+    /// test (c) below.
     fn trigger_finding(detector: DetectorId, catalogs: &ReportCatalogs) -> SessionEvidence {
         let mut row = complete_row("finding");
         match detector {
@@ -2909,7 +2914,20 @@ mod tests {
                     pairs_skipped: 0,
                 });
             }
-            DetectorId::OverpoweredSubagents | DetectorId::UnusedBuiltInTools => {
+            DetectorId::UnusedBuiltInTools => {
+                let EvidenceValue::Complete(sources) = &mut row.context_sources else {
+                    unreachable!()
+                };
+                sources.tool_definitions = EvidenceValue::Complete(BTreeMap::from([(
+                    "bash".to_owned(),
+                    ToolDefinition {
+                        tokens: 100,
+                        invoked: false,
+                        deferred: false,
+                    },
+                )]));
+            }
+            DetectorId::OverpoweredSubagents => {
                 unreachable!("no clean-only fact exists for {detector:?}")
             }
         }
@@ -2939,15 +2957,15 @@ mod tests {
                     | DetectorId::UnusedMcpServers
                     | DetectorId::UnusedSkills
             ) {
-                // OverpoweredSubagents and UnusedBuiltInTools have no
-                // clean-only fact (see `trigger_finding`'s doc comment).
-                // UnusedMcpServers and UnusedSkills have exactly one,
-                // Eligibility, but their own `evaluate` bodies (unchanged
-                // in this seam) require a complete eligibility group to
-                // report any finding at all — Partial eligibility reads
-                // NoFinding there, not Finding, by that rule's own
-                // documented partial-evidence policy. Degrading their
-                // only clean-only fact cannot demonstrate (c).
+                // OverpoweredSubagents has no clean-only fact (see
+                // `trigger_finding`'s doc comment). UnusedBuiltInTools,
+                // UnusedMcpServers, and UnusedSkills each have exactly
+                // one, Eligibility, but their own `evaluate` bodies
+                // require a complete eligibility group to report any
+                // finding at all — Partial eligibility reads NoFinding
+                // there, not Finding, by each rule's own documented
+                // partial-evidence policy. Degrading their only
+                // clean-only fact cannot demonstrate (c).
                 continue;
             }
             let required = requirements(detector);
@@ -3138,7 +3156,13 @@ mod tests {
     fn capability_gap_examples_keep_the_first_three_sessions() {
         let mut accumulator = EfficiencyReportAccumulator::new();
         for index in 0..5 {
-            accumulator.observe_session(evidence_with_work(&format!("session-{index}")));
+            let mut row = evidence_with_work(&format!("session-{index}"));
+            // Unused Built-In Tools needs the capability flag itself
+            // (`Fact::ToolDefinitions`), not just a complete
+            // `context_sources` group, so forcing it off is what makes
+            // every session here a capability gap for this detector.
+            row.capabilities.tool_definitions = false;
+            accumulator.observe_session(row);
         }
         let report = accumulator.finish(context(CoverageCounts::default()));
         let detector = DetectorId::UnusedBuiltInTools;

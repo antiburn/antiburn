@@ -69,7 +69,11 @@ fn claude_capabilities_are_false_for_every_unevidenced_signal() {
         r#"{"type":"assistant","uuid":"33333333-3333-4333-8333-000000000001","parentUuid":null,"timestamp":1,"message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1},"content":[{"type":"tool_use","name":"Task","input":{"description":"not retained","prompt":"not retained"}}]}}"#,
     ));
     let capabilities = evidence.capabilities;
-    assert!(!capabilities.tool_definitions);
+    // `tool_definitions` is set — Claude supports the fact — but this
+    // fixture carries no top-level `version` field, so the catalogue
+    // lookup still cannot resolve and the nested marker stays
+    // `Unsupported` below.
+    assert!(capabilities.tool_definitions);
     assert!(!capabilities.service_tier);
     assert!(!capabilities.quota_incidents);
     assert!(!capabilities.harness_version);
@@ -106,6 +110,88 @@ fn claude_capabilities_are_false_for_every_unevidenced_signal() {
     assert!(matches!(cache.previous_turn, EvidenceValue::Complete(())));
     assert!(matches!(
         cache.provider_eviction,
+        EvidenceValue::Unsupported
+    ));
+}
+
+/// The fixture tool catalogue (`tests/fixtures/tool_catalog.json`,
+/// embedded when `ANTIBURN_TOOL_CATALOG` is unset) carries `claude`
+/// version `2.1.233` with `claude-opus-4-6` among its models, and lists
+/// `Bash`, `Read`, and `NotebookEdit` (aliases `bash`/`read`/`notebook_edit`).
+#[test]
+fn tool_definitions_resolve_and_mark_invoked_tools_when_version_and_model_are_known() {
+    let evidence = claude_evidence(concat!(
+        r#"{"type":"assistant","version":"2.1.233","uuid":"33333333-3333-4333-8333-000000000001","parentUuid":null,"timestamp":1,"message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1},"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}"#,
+        "\n",
+        r#"{"type":"assistant","version":"2.1.233","uuid":"33333333-3333-4333-8333-000000000002","parentUuid":"33333333-3333-4333-8333-000000000001","timestamp":2,"message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1},"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/a"}}]}}"#,
+    ));
+    let EvidenceValue::Complete(sources) = &evidence.context_sources else {
+        panic!("context sources must be complete");
+    };
+    let EvidenceValue::Complete(definitions) = &sources.tool_definitions else {
+        panic!("tool definitions must resolve with a known version and model");
+    };
+    assert!(
+        definitions
+            .get("Bash")
+            .is_some_and(|definition| definition.invoked && definition.tokens > 0)
+    );
+    assert!(
+        definitions
+            .get("Read")
+            .is_some_and(|definition| definition.invoked && definition.tokens > 0)
+    );
+    assert!(
+        definitions
+            .get("NotebookEdit")
+            .is_some_and(|definition| !definition.invoked)
+    );
+}
+
+#[test]
+fn a_deferred_tool_delta_marks_its_definition_deferred() {
+    let evidence = claude_evidence(concat!(
+        r#"{"type":"assistant","version":"2.1.233","timestamp":1,"message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1},"content":[]}}"#,
+        "\n",
+        r#"{"type":"attachment","attachment":{"type":"deferred_tools_delta","addedNames":["Bash"]}}"#,
+    ));
+    let EvidenceValue::Complete(sources) = &evidence.context_sources else {
+        panic!("context sources must be complete");
+    };
+    let EvidenceValue::Complete(definitions) = &sources.tool_definitions else {
+        panic!("tool definitions must resolve with a known version and model");
+    };
+    assert!(
+        definitions
+            .get("Bash")
+            .is_some_and(|definition| definition.deferred && !definition.invoked)
+    );
+}
+
+#[test]
+fn a_session_with_no_version_field_leaves_tool_definitions_unsupported() {
+    let evidence = claude_evidence(
+        r#"{"type":"assistant","timestamp":1,"message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1},"content":[]}}"#,
+    );
+    let EvidenceValue::Complete(sources) = &evidence.context_sources else {
+        panic!("context sources must be complete");
+    };
+    assert!(matches!(
+        sources.tool_definitions,
+        EvidenceValue::Unsupported
+    ));
+}
+
+#[test]
+fn a_version_older_than_every_catalogued_version_leaves_tool_definitions_unsupported() {
+    let evidence = claude_evidence(
+        r#"{"type":"assistant","version":"2.1.100","timestamp":1,"message":{"role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":1},"content":[]}}"#,
+    );
+    let EvidenceValue::Complete(sources) = &evidence.context_sources else {
+        panic!("context sources must be complete");
+    };
+    assert!(matches!(
+        sources.tool_definitions,
         EvidenceValue::Unsupported
     ));
 }
