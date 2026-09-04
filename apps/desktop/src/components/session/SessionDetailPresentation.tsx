@@ -846,7 +846,7 @@ export function SessionDetailPresentation({
               {/* The checks lead: a failing check is more use than the cost
                   rows most of the time. */}
               {tab === "cost" && (
-                <div className="flex flex-col">
+                <div className="flex min-h-full flex-col">
                   {hasAssessedHygieneChecks && (
                     <section>
                       <TabSectionHeading>Checks</TabSectionHeading>
@@ -856,6 +856,7 @@ export function SessionDetailPresentation({
                   <section
                     className={cn(
                       hasAssessedHygieneChecks && "mt-4 border-t border-separator pt-4",
+                      efficiencyCard && "pb-4",
                     )}
                   >
                     <TabSectionHeading>Cost</TabSectionHeading>
@@ -871,10 +872,11 @@ export function SessionDetailPresentation({
                       </p>
                     )}
                   </section>
-                  {/* The $/MTok scale closes the money story. It sits under
-                      the cost rows it explains. */}
+                  {/* The $/MTok scale closes the money story. It sits at the
+                      foot of the tab, so a short tab keeps its slack between
+                      the cost rows and the scale, not after the scale. */}
                   {efficiencyCard && (
-                    <section className="mt-4 border-t border-separator pt-4">
+                    <section className="mt-auto border-t border-separator pt-4">
                       <TabSectionHeading>Efficiency</TabSectionHeading>
                       <EfficiencyBreakdown metrics={efficiencyCard} section="cost" />
                     </section>
