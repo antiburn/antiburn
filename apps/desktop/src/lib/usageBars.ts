@@ -19,12 +19,46 @@ export type UsageBarItem = {
 }
 
 /**
+ * Return a hex colour as a CSS `hsl()` string with more saturation. The hue
+ * and the lightness do not change. A colour this cannot read comes back
+ * unchanged.
+ */
+function saturated(hex: string, gain: number): string {
+  const digits = /^#([0-9a-f]{6})$/i.exec(hex)
+  if (!digits) return hex
+  const value = Number.parseInt(digits[1]!, 16)
+  const red = ((value >> 16) & 255) / 255
+  const green = ((value >> 8) & 255) / 255
+  const blue = (value & 255) / 255
+  const high = Math.max(red, green, blue)
+  const low = Math.min(red, green, blue)
+  const chroma = high - low
+  if (chroma === 0) return hex
+  const lightness = (high + low) / 2
+  const saturation = chroma / (1 - Math.abs(2 * lightness - 1))
+  let hue: number
+  if (high === red) hue = (green - blue) / chroma
+  else if (high === green) hue = (blue - red) / chroma + 2
+  else hue = (red - green) / chroma + 4
+  hue = (((hue * 60) % 360) + 360) % 360
+  const raised = Math.min(1, saturation * gain)
+  return `hsl(${hue.toFixed(1)} ${(raised * 100).toFixed(1)}% ${(lightness * 100).toFixed(1)}%)`
+}
+
+/**
  * Anthropic keeps its own colour, taken from the hex the `simple-icons`
  * package records for the Claude mark. The brand-mark rule in `design.md`
  * applies: a vendor colour comes from the source package, never from a hex
  * written here. The other providers use antiburn's own palette.
+ *
+ * The bar raises the saturation of that hex. The published value is made for
+ * a filled mark at 18px. A bar is a row of 6px dots on a desktop the app does
+ * not control, and at that size the same value looks washed out. The hue and
+ * the lightness do not change, so the bar keeps the colour the vendor chose.
  */
-const CLAUDE_BRAND = `#${siClaude.hex}`
+const CLAUDE_SATURATION_GAIN = 1.25
+
+const CLAUDE_BRAND = saturated(`#${siClaude.hex}`, CLAUDE_SATURATION_GAIN)
 
 const PROVIDER_COLORS: Record<string, string> = {
   anthropic: CLAUDE_BRAND,

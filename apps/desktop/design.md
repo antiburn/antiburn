@@ -332,7 +332,10 @@ Notes for what isn't expressible as a token:
   package records. Marks are never drawn inline; they come from the `renderAgentIcon` slot. The
   same rule covers the one other place a vendor colour appears: the HUD draws Anthropic's usage bar
   in the hex `simple-icons` records for the Claude mark, read from the package rather than written
-  into the palette.
+  into the palette. The bar raises the saturation of that hex and keeps its hue and lightness. A
+  published brand value is made for a filled mark at 18px, and a row of 6px dots on an uncontrolled
+  desktop needs more chroma to read as the same colour. The lift is a factor applied to the package
+  value, so the source stays the package.
 - **Themes** — three sources, in cascade order. The system light/dark preference is the default. A
   platform whose webview exposes live system label/separator/accent tokens picks those up through
   `@supports`, so text and chrome track the OS exactly. A platform without them takes an explicit
