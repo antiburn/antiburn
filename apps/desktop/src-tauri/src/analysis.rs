@@ -1269,6 +1269,14 @@ fn sort_members(members: &mut [SubagentMember]) {
 /// other caller (an on-demand session view, a scan-triggered pass with no
 /// claim) passes `None`: without a claim fence, rows would have nothing to
 /// be stamped with and nothing to be cleaned up under.
+///
+/// `fork_parent_session_id` is `Store::fork_parent(&key)` for this session,
+/// when the caller has a store to look it up in — only the durable worker
+/// does (`insights_worker::run_record_pass_with`). It is set on the parent
+/// input and on every sub-agent input alike: a Claude "resume as fork"
+/// session's sub-agent transcripts can themselves be byte-identical copies
+/// of the parent's, with no sidecar of their own (see
+/// `vendors::claude::fork_parent_session_skip_uuids`).
 pub async fn analyze_for_evidence(
     agent: AgentKind,
     session_id: &str,
@@ -1276,6 +1284,7 @@ pub async fn analyze_for_evidence(
     claimed: ClaimedSource,
     signal: PassSignal,
     turn_row_store: Option<Arc<dyn TurnRowStore>>,
+    fork_parent_session_id: Option<String>,
 ) -> EvidencePass {
     let Some(source) = locate(agent, session_id, wsl_distro).await else {
         return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
@@ -1296,7 +1305,7 @@ pub async fn analyze_for_evidence(
         agent: label.to_string(),
         session_id: session_id.to_string(),
         source: raw,
-        fork_parent_session_id: None,
+        fork_parent_session_id: fork_parent_session_id.clone(),
     };
 
     // Sub-agent transcripts, resolved before the analysis so all of them ride
@@ -1335,7 +1344,7 @@ pub async fn analyze_for_evidence(
                 agent: label.to_string(),
                 session_id: subagent_id,
                 source: RawSource::File(path),
-                fork_parent_session_id: None,
+                fork_parent_session_id: fork_parent_session_id.clone(),
             },
         ));
     }

@@ -98,7 +98,8 @@ async fn run_worker_step(
                          _wsl_distro: Option<String>,
                          _claimed: analysis::ClaimedSource,
                          signal: PassSignal,
-                         turn_row_store: Option<Arc<dyn TurnRowStore>>| {
+                         turn_row_store: Option<Arc<dyn TurnRowStore>>,
+                         _fork_parent_session_id: Option<String>| {
         let child_session_id = format!("{session_id}-child");
         let mut inputs = vec![SessionInput {
             agent: "claude".into(),
