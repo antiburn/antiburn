@@ -260,7 +260,7 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.queryByText("Input")).toBeNull()
   })
 
-  it("shows the efficiency readings on the Overview tab without heading chrome", () => {
+  it("shows the efficiency readings on the Cost tab under their own heading", () => {
     view({
       cost: cost(),
       efficiency: {
@@ -274,9 +274,12 @@ describe("SessionDetailPresentation — chrome", () => {
         unpricedTurns: 3,
       },
     })
+    // The Context tab keeps to the chart; the readings live with the cost rows.
+    expect(screen.queryByText("$/MTok")).toBeNull()
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
     expect(screen.getByText("$/MTok")).toBeTruthy()
     expect(screen.getByText("Real Work %")).toBeTruthy()
-    expect(screen.queryByText("Efficiency")).toBeNull()
+    expect(screen.getByText("Efficiency")).toBeTruthy()
     expect(
       screen.queryByText("Cost for real work: context growth and output tokens."),
     ).toBeNull()
@@ -284,6 +287,7 @@ describe("SessionDetailPresentation — chrome", () => {
 
   it("omits the efficiency readings when the session is unpriced", () => {
     view({ cost: null, efficiency: null })
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
     expect(screen.queryByText("$/MTok")).toBeNull()
   })
 

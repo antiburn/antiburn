@@ -834,12 +834,6 @@ export function SessionDetailPresentation({
                       />
                     </div>
                   )}
-
-                  {efficiencyCard && (
-                    <div className="py-4 first:pt-0 last:pb-0">
-                      <EfficiencyBreakdown metrics={efficiencyCard} />
-                    </div>
-                  )}
                 </div>
               )}
 
@@ -871,6 +865,14 @@ export function SessionDetailPresentation({
                       </p>
                     )}
                   </section>
+                  {/* The efficiency readings close the money story. They
+                      sit under the cost rows they explain. */}
+                  {efficiencyCard && (
+                    <section className="mt-4 border-t border-separator pt-4">
+                      <TabSectionHeading>Efficiency</TabSectionHeading>
+                      <EfficiencyBreakdown metrics={efficiencyCard} />
+                    </section>
+                  )}
                 </div>
               )}
 
