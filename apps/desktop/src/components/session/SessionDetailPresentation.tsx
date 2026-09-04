@@ -289,8 +289,8 @@ const TOKEN_STAT_ICONS: Record<string, LucideIcon> = {
  *
  * Each figure is a chip: an outlined pill in the color its chart layer takes
  * when it lights, with the icon and the value in that same ink. The chips
- * share the row: each keeps the width its figure needs, and the rest of the
- * row splits evenly between them. The icon carries the identity the caption
+ * sit in a grid of three equal columns, so every chip is the same width
+ * whatever its figure. The icon carries the identity the caption
  * label used to; the tooltip and a screen-reader prefix keep the word.
  *
  * Pointing at a chip lights its layer in the plot above, and the chip takes
@@ -318,7 +318,7 @@ function ChartKey({
   onPin: (series: ChartSeries) => void
 }) {
   return (
-    <div className="flex gap-1.5">
+    <div className="grid grid-cols-3 gap-1.5">
       {stats.map((stat) => {
         const Icon = TOKEN_STAT_ICONS[stat.label]
         const series = stat.series ?? null
@@ -331,7 +331,7 @@ function ChartKey({
               disabled={series == null}
               data-series={series ?? undefined}
               className={cn(
-                "chart-key-chip min-w-fit grow basis-0 rounded-full border border-current px-1.5 py-0.5 type-body tabular-nums disabled:opacity-100",
+                "chart-key-chip min-w-0 rounded-full border border-current px-1.5 py-0.5 type-body tabular-nums disabled:opacity-100",
                 series != null ? SERIES_INK_CLASS[series] : "text-label-tertiary",
                 isPinned && "chart-key-chip-pinned",
               )}
