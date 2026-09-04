@@ -1742,6 +1742,7 @@ mod tests {
             agent: "codex".to_string(),
             session_id: "namespaced-tools".to_string(),
             source: crate::analysis::RawSource::Jsonl(payload.to_string()),
+            fork_parent_session_id: None,
         };
         let session = crate::analysis::normalize_source(&input).expect("normalize codex session");
         let metrics = crate::analysis::analyze_session(&session);

@@ -20,9 +20,14 @@
 //! is already linkable, so checking one direction only would miss the pair
 //! whose parent finishes after its fork.
 //!
-//! Phase 2 will requeue a session the first time a relation is recorded for
-//! it, so double-counted effort across a linked pair gets corrected. This
-//! phase only records the relation.
+//! A newly recorded relation also requeues the child's evidence: the
+//! relation changes what the Claude adapter counts for it (it now excludes
+//! the parent's records from its own leading prefix), so the child's
+//! already-published analysis is stale the moment the relation exists. Only
+//! a relation this call actually inserts requeues — [`Store::
+//! record_fork_parent`] returning `false` means the relation already
+//! existed, so the child was requeued the first time it was recorded and
+//! must not be requeued again on every later publish of either side.
 
 use std::cmp::Ordering;
 
@@ -104,6 +109,9 @@ fn claim_earlier_parent(
                 session_id = %key.session_id,
                 parent_session_id = %candidate.session_id,
             );
+            // `key` is the child in this relation: it just claimed
+            // `candidate` as its own parent.
+            store.requeue_session_evidence(key)?;
         }
         return Ok(());
     }
@@ -135,6 +143,9 @@ fn claim_later_children(
                 session_id = %candidate.session_id,
                 parent_session_id = %key.session_id,
             );
+            // `candidate_key` is the child in this relation: it just got
+            // named a child of `key`.
+            store.requeue_session_evidence(&candidate_key)?;
         }
     }
     Ok(())

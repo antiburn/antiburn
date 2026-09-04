@@ -98,18 +98,21 @@ async fn run_worker_step(
                          _wsl_distro: Option<String>,
                          _claimed: analysis::ClaimedSource,
                          signal: PassSignal,
-                         turn_row_store: Option<Arc<dyn TurnRowStore>>| {
+                         turn_row_store: Option<Arc<dyn TurnRowStore>>,
+                         _fork_parent_session_id: Option<String>| {
         let child_session_id = format!("{session_id}-child");
         let mut inputs = vec![SessionInput {
             agent: "claude".into(),
             session_id,
             source: RawSource::File(parent_path.clone()),
+            fork_parent_session_id: None,
         }];
         if let Some(child_path) = child_path.clone() {
             inputs.push(SessionInput {
                 agent: "claude".into(),
                 session_id: child_session_id,
                 source: RawSource::File(child_path),
+                fork_parent_session_id: None,
             });
         }
         let captured_outcomes = Arc::clone(&captured_outcomes_for_analyzer);

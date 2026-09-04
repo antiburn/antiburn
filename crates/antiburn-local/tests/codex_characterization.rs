@@ -124,6 +124,7 @@ fn input(name: &str) -> SessionInput {
         agent: "codex".to_owned(),
         session_id: name.to_owned(),
         source: RawSource::Jsonl(fixture(name).to_owned()),
+        fork_parent_session_id: None,
     }
 }
 
@@ -344,6 +345,7 @@ fn claude_capabilities_still_match_published_evidence() {
             )
             .to_owned(),
         ),
+        fork_parent_session_id: None,
     };
     let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
     let accumulator = SessionEvidenceAccumulator::new(EvidenceSource {
@@ -525,6 +527,7 @@ fn missing_event_timestamp_is_unusable_and_not_counted() {
             )
             .to_owned(),
         ),
+        fork_parent_session_id: None,
     };
     let (coverage, reasons, streamed) = collect(&input);
     let (_, metrics) = composite(&input);
@@ -559,6 +562,7 @@ fn incomplete_active_writer_tail_is_partial_and_keeps_the_valid_prefix() {
         agent: "codex".to_owned(),
         session_id: "active".to_owned(),
         source: RawSource::File(path),
+        fork_parent_session_id: None,
     };
     let (coverage, reasons, session) = collect(&input);
     let (evidence, _) = composite(&input);
@@ -602,6 +606,7 @@ fn claimed_codex_source_rejects_a_change_instead_of_publishing() {
         agent: "codex".to_owned(),
         session_id: "changed".to_owned(),
         source: RawSource::File(path),
+        fork_parent_session_id: None,
     };
     let mut collector = SessionCollector::new("codex", "changed");
     let outcome = adapter_for("codex")
@@ -689,6 +694,7 @@ fn collab_agent_records_are_allowlisted_and_add_no_signal() {
         agent: "codex".to_owned(),
         session_id: "collab_agent_records_bare".to_owned(),
         source: RawSource::Jsonl(without_collab),
+        fork_parent_session_id: None,
     };
 
     let (evidence, metrics) = composite(&collab_input);
@@ -916,6 +922,7 @@ fn item_completed_echoes_are_allowlisted_and_add_no_signal() {
         agent: "codex".to_owned(),
         session_id: "item_completed_echo_bare".to_owned(),
         source: RawSource::Jsonl(without_echoes),
+        fork_parent_session_id: None,
     };
 
     let (evidence, metrics) = composite(&echoed_input);

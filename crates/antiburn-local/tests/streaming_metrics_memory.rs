@@ -27,6 +27,7 @@ fn streamed_corpus_keeps_framing_and_metrics_bounded() {
         agent: "claude".to_string(),
         session_id: session.session_id,
         source: RawSource::Jsonl(session.jsonl.clone()),
+        fork_parent_session_id: None,
     };
     let mut accumulator = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
     adapter_for("claude")
@@ -198,6 +199,7 @@ fn the_turn_row_sink_stays_bounded_over_a_streamed_corpus() {
         agent: "claude".to_string(),
         session_id: session.session_id.clone(),
         source: RawSource::Jsonl(session.jsonl.clone()),
+        fork_parent_session_id: None,
     };
     let writer = Arc::new(CountingWriter::default());
     let metrics = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
@@ -349,6 +351,7 @@ fn a_parent_and_thirty_children_keep_every_accumulator_bounded() {
         agent: "claude".to_string(),
         session_id: parent_session.session_id.clone(),
         source: RawSource::Jsonl(parent_session.jsonl.clone()),
+        fork_parent_session_id: None,
     };
     let (parent_metrics, mut parent_evidence) = stream_into(&parent_input, &store, None);
     assert!(parent_metrics.retained_bytes() <= RETAINED_METRICS_BYTES_BOUND);
@@ -363,6 +366,7 @@ fn a_parent_and_thirty_children_keep_every_accumulator_bounded() {
             agent: "claude".to_string(),
             session_id: child_session.session_id.clone(),
             source: RawSource::Jsonl(child_session.jsonl.clone()),
+            fork_parent_session_id: None,
         };
         let (child_metrics, child_evidence) =
             stream_into(&child_input, &store, Some(TurnScope::Delegated));
@@ -506,6 +510,7 @@ fn disk_bytes_per_row_stay_bounded_with_content_enabled() {
         agent: "claude".to_string(),
         session_id: session.session_id.clone(),
         source: RawSource::Jsonl(session.jsonl.clone()),
+        fork_parent_session_id: None,
     };
 
     // `MemoryTurnRowStore` is real SQLite (in memory), so `PRAGMA
@@ -627,6 +632,7 @@ fn a_serialized_snapshot_for_the_largest_corpus_tier_stays_bounded() {
         agent: "claude".to_string(),
         session_id: session.session_id.clone(),
         source: RawSource::File(path.clone()),
+        fork_parent_session_id: None,
     };
 
     let file = std::fs::File::open(&path).expect("open source for claim");
@@ -721,6 +727,7 @@ fn a_serialized_codex_snapshot_for_the_largest_fixture_stays_bounded() {
         agent: "codex".to_string(),
         session_id: "codex-snapshot-bound".to_string(),
         source: RawSource::File(path.clone()),
+        fork_parent_session_id: None,
     };
 
     let file = std::fs::File::open(&path).expect("open source for claim");

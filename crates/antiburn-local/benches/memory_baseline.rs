@@ -144,6 +144,7 @@ fn pi_memory_measurement() {
             agent: "pi".to_owned(),
             session_id: "synthetic-pi-memory".to_owned(),
             source: RawSource::File(path),
+            fork_parent_session_id: None,
         };
         let (peak, evidence) = measure_peak(|| run_pipeline(&input));
         black_box(evidence);
@@ -167,6 +168,7 @@ fn file_input(session_id: &str, path: &Path) -> SessionInput {
         agent: "claude".to_string(),
         session_id: session_id.to_string(),
         source: RawSource::File(path.to_path_buf()),
+        fork_parent_session_id: None,
     }
 }
 
@@ -299,6 +301,7 @@ fn session_tree_measurement() {
         agent: "claude".to_string(),
         session_id: parent.session_id,
         source: RawSource::Jsonl(parent.jsonl),
+        fork_parent_session_id: None,
     };
     let child_inputs = (0..20)
         .map(|index| {
@@ -307,6 +310,7 @@ fn session_tree_measurement() {
                 agent: "claude".to_string(),
                 session_id: child.session_id,
                 source: RawSource::Jsonl(child.jsonl),
+                fork_parent_session_id: None,
             }
         })
         .collect::<Vec<_>>();
@@ -364,6 +368,7 @@ fn main() {
                 agent: "claude".to_string(),
                 session_id: session_id.clone(),
                 source: RawSource::Jsonl(content),
+                fork_parent_session_id: None,
             };
             run_pipeline(&inline)
         });

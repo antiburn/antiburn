@@ -116,6 +116,7 @@ fn run_pipeline(
         agent: agent.to_string(),
         session_id: session_id.to_string(),
         source,
+        fork_parent_session_id: None,
     };
 
     // The normalized model never carries message text.

@@ -166,6 +166,7 @@ fn input(name: &str) -> SessionInput {
         agent: "pi".to_owned(),
         session_id: name.to_owned(),
         source: RawSource::Jsonl(fixture(name).to_owned()),
+        fork_parent_session_id: None,
     }
 }
 
@@ -506,6 +507,7 @@ fn malformed_incomplete_unsupported_and_header_only_sources_are_honest() {
         agent: "pi".to_owned(),
         session_id: "active".to_owned(),
         source: RawSource::File(path),
+        fork_parent_session_id: None,
     };
     let (coverage, reasons, session) = collect(&file_input);
     assert_eq!(coverage, RecordCoverage::Partial);
@@ -542,6 +544,7 @@ fn missing_required_fields_degrade_without_discarding_valid_rows() {
             )
             .to_owned(),
         ),
+        fork_parent_session_id: None,
     };
     let (coverage, reasons, session) = collect(&input);
     assert_eq!(coverage, RecordCoverage::Partial);
@@ -566,6 +569,7 @@ fn oversized_records_are_skipped_and_valid_neighbours_remain() {
         agent: "pi".to_owned(),
         session_id: "oversized".to_owned(),
         source: RawSource::File(path),
+        fork_parent_session_id: None,
     };
     let (coverage, reasons, session) = collect(&file_input);
     assert_eq!(coverage, RecordCoverage::Partial);
@@ -583,6 +587,7 @@ fn claimed_reads_accept_stable_files_and_reject_changes_without_finishing() {
         agent: "pi".to_owned(),
         session_id: "claimed".to_owned(),
         source: RawSource::File(path.clone()),
+        fork_parent_session_id: None,
     };
     let mut collector = SessionCollector::new("pi", "claimed");
     let outcome = PiAdapter
@@ -610,6 +615,7 @@ fn claimed_reads_accept_stable_files_and_reject_changes_without_finishing() {
         agent: "pi".to_owned(),
         session_id: "changed".to_owned(),
         source: RawSource::File(changed_path),
+        fork_parent_session_id: None,
     };
     let mut collector = SessionCollector::new("pi", "changed");
     let outcome = PiAdapter
@@ -641,6 +647,7 @@ fn claimed_reads_reject_short_or_replaced_sources_without_finishing() {
         agent: "pi".to_owned(),
         session_id: "short".to_owned(),
         source: RawSource::File(short_path),
+        fork_parent_session_id: None,
     };
     let mut short_collector = SessionCollector::new("pi", "short");
     let outcome = PiAdapter
@@ -664,6 +671,7 @@ fn claimed_reads_reject_short_or_replaced_sources_without_finishing() {
         agent: "pi".to_owned(),
         session_id: "replaced".to_owned(),
         source: RawSource::File(replaced_path),
+        fork_parent_session_id: None,
     };
     let mut replaced_collector = SessionCollector::new("pi", "replaced");
     let outcome = PiAdapter
@@ -689,6 +697,7 @@ fn claimed_reads_honor_cancellation_without_publishing() {
         agent: "pi".to_owned(),
         session_id: "synthetic-private-session-marker".to_owned(),
         source: RawSource::File(path),
+        fork_parent_session_id: None,
     };
     let mut collector = SessionCollector::new("pi", "cancelled");
     let error = PiAdapter
@@ -776,6 +785,7 @@ fn unresolved_fork_ownership_fails_closed_without_guessing() {
             agent: "pi".to_owned(),
             session_id: name.to_owned(),
             source: RawSource::Jsonl(source.to_owned()),
+            fork_parent_session_id: None,
         };
         let (coverage, reasons, session) = collect(&input);
         assert_eq!(coverage, RecordCoverage::Partial, "coverage for {name}");

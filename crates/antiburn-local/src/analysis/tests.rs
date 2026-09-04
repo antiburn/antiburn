@@ -58,6 +58,7 @@ fn jsonl_input(agent: &str, jsonl: &str) -> SessionInput {
         agent: agent.into(),
         session_id: "s".into(),
         source: RawSource::Jsonl(jsonl.into()),
+        fork_parent_session_id: None,
     }
 }
 
@@ -374,6 +375,7 @@ fn the_characterization_fixtures_report_their_expected_coverage() {
                 agent: "claude".to_string(),
                 session_id: name.clone(),
                 source: RawSource::Jsonl(claude_characterization_fixture(name).to_string()),
+                fork_parent_session_id: None,
             };
             let mut collector = SessionCollector::new("claude", name);
             adapter_for("claude")
@@ -608,6 +610,7 @@ fn opencode_sqlite_vendor_is_extracted() {
         agent: "opencode".into(),
         session_id: "x".into(),
         source: RawSource::Sqlite(path),
+        fork_parent_session_id: None,
     };
     let session = normalize_source(&input).unwrap();
     assert_eq!(session.events.len(), 1);
@@ -2243,11 +2246,13 @@ fn initial_context_grafts_to_each_session_by_distinct_id() {
             agent: "claude".into(),
             session_id: "sess-a".into(),
             source: RawSource::Jsonl(session("skill-a")),
+            fork_parent_session_id: None,
         },
         SessionInput {
             agent: "claude".into(),
             session_id: "sess-b".into(),
             source: RawSource::Jsonl(session("skill-b")),
+            fork_parent_session_id: None,
         },
     ];
     let summary = analyze_sources(inputs);
