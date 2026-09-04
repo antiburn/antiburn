@@ -8,6 +8,8 @@
   --color-burn-muted: var(--color-burn-muted-val);
   --color-bg-hud: var(--color-bg-hud-val);
   --color-bg-hud-hover: var(--color-bg-hud-hover-val);
+  --color-hud-control-ink: var(--color-hud-control-ink-val);
+  --color-hud-control-edge: var(--color-hud-control-edge-val);
   --color-led-off: var(--color-led-off-val);
   --color-led-notch: var(--color-led-notch-val);
   --color-led-notch-highlight: var(--color-led-notch-highlight-val);
@@ -38,6 +40,16 @@
 
   /* The HUD surface on hover. The reader can see the desktop through it. */
   --color-bg-hud-hover-val: hsl(0 0% 96.4% / 0.9);
+
+  /*
+   * The close control. Its glyph and its edge carry no alpha, because the
+   * label and separator inks are partly transparent: on the hover surface,
+   * which is itself partly transparent, the control read as see-through.
+   * The control paints its own opaque surface, so these values follow the
+   * theme rather than holding one value for both.
+   */
+  --color-hud-control-ink-val: hsl(0 0% 32%);
+  --color-hud-control-edge-val: hsl(0 0% 80%);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -46,6 +58,8 @@
     --color-burn-muted-val: hsl(23 88.8% 54%);
     --color-bg-hud-val: hsl(0 0% 12.5%);
     --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
+    --color-hud-control-ink-val: hsl(0 0% 78%);
+    --color-hud-control-edge-val: hsl(0 0% 32%);
     --color-led-off-val: hsl(0 0% 50% / 0.45);
     --color-led-notch-val: hsl(0 0% 20% / 0.95);
     --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
@@ -57,6 +71,8 @@
   --color-burn-muted-val: hsl(18.1 88% 51.4%);
   --color-bg-hud-val: hsl(0 0% 96.4%);
   --color-bg-hud-hover-val: hsl(0 0% 96.4% / 0.9);
+  --color-hud-control-ink-val: hsl(0 0% 32%);
+  --color-hud-control-edge-val: hsl(0 0% 80%);
   --color-led-off-val: hsl(0 0% 50% / 0.45);
   --color-led-notch-val: hsl(0 0% 20% / 0.95);
   --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
@@ -67,6 +83,8 @@
   --color-burn-muted-val: hsl(23 88.8% 54%);
   --color-bg-hud-val: hsl(0 0% 12.5%);
   --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
+  --color-hud-control-ink-val: hsl(0 0% 78%);
+  --color-hud-control-edge-val: hsl(0 0% 32%);
   --color-led-off-val: hsl(0 0% 50% / 0.45);
   --color-led-notch-val: hsl(0 0% 20% / 0.95);
   --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);

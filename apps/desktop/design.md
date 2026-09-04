@@ -136,6 +136,12 @@ colors:
   bg-hud-hover: # the HUD surface on hover; the desktop stays visible through it
     light: "hsl(0 0% 96.4% / 0.9)"
     dark: "hsl(0 0% 12.5% / 0.9)"
+  hud-control-ink: # the close control's glyph; no alpha, so it stays solid on the hover surface
+    light: "hsl(0 0% 32%)"
+    dark: "hsl(0 0% 78%)"
+  hud-control-edge: # the close control's edge; no alpha, for the same reason
+    light: "hsl(0 0% 80%)"
+    dark: "hsl(0 0% 32%)"
   led-off: # unlit LED segment; one mid grey for both themes, because the HUD paints no surface and floats over any background
     light: "hsl(0 0% 50% / 0.45)"
     dark: "hsl(0 0% 50% / 0.45)"
