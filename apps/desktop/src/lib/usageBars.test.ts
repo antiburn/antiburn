@@ -1,3 +1,4 @@
+import { siClaude } from "simple-icons"
 import { describe, expect, it } from "vitest"
 
 import type {
@@ -6,6 +7,27 @@ import type {
   LiveUsageWindowPayload,
 } from "./ipc"
 import { deriveUsageBars, providerBarColor, resetsIn, resetsLabel } from "./usageBars"
+
+/** Read a `#rrggbb` colour as hue, saturation, and lightness, for comparison. */
+function hslOf(hex: string): { hue: number; saturation: number; lightness: number } {
+  const value = Number.parseInt(hex.slice(1), 16)
+  const red = ((value >> 16) & 255) / 255
+  const green = ((value >> 8) & 255) / 255
+  const blue = (value & 255) / 255
+  const high = Math.max(red, green, blue)
+  const low = Math.min(red, green, blue)
+  const chroma = high - low
+  const lightness = (high + low) / 2
+  let hue: number
+  if (high === red) hue = (green - blue) / chroma
+  else if (high === green) hue = (blue - red) / chroma + 2
+  else hue = (red - green) / chroma + 4
+  return {
+    hue: (((hue * 60) % 360) + 360) % 360,
+    saturation: (chroma / (1 - Math.abs(2 * lightness - 1))) * 100,
+    lightness: lightness * 100,
+  }
+}
 
 const NOW = Date.parse("2026-08-18T02:00:00Z")
 
@@ -127,10 +149,43 @@ describe("deriveUsageBars", () => {
         provider({ provider: "openai", displayName: "OpenAI", windows: [usageWindow()] }),
       ]),
     )
-    expect(bars[0]!.color).toBe("var(--color-burn)")
+    // Anthropic keeps Claude's own colour, and it comes from the package the
+    // brand marks come from — a hex written here would be the thing the
+    // design contract forbids. The bar raises the saturation for a row of
+    // small dots, so the test states the relationship to the published hex
+    // rather than a value of its own: same hue, same lightness, more chroma.
+    const published = hslOf(`#${siClaude.hex}`)
+    const drawn = /^hsl\(([\d.]+) ([\d.]+)% ([\d.]+)%\)$/.exec(bars[0]!.color)
+    expect(drawn).not.toBeNull()
+    const [hue, saturation, lightness] = drawn!.slice(1).map(Number) as [number, number, number]
+    expect(hue).toBeCloseTo(published.hue, 1)
+    expect(lightness).toBeCloseTo(published.lightness, 1)
+    expect(saturation).toBeGreaterThan(published.saturation)
     expect(bars[1]!.color).toBe("var(--color-label)")
     expect(providerBarColor("cursor")).toBe("var(--color-system-indigo)")
     expect(providerBarColor("somebody-new")).toBe("var(--color-burn)")
+  })
+
+  it("measures the notch from the snapshot's own time", () => {
+    // The window resets in two hours and its id states a five-hour period, so
+    // three of its five hours have gone.
+    const bars = deriveUsageBars(summary([provider()]))
+    expect(bars[0]!.expectedFraction).toBeCloseTo(0.6, 5)
+  })
+
+  it("draws no notch when nothing states the window's period", () => {
+    // A notch placed from an assumed period is a claim the provider never
+    // made, so there is no notch at all.
+    const bars = deriveUsageBars(
+      summary([provider({ windows: [usageWindow({ id: "monthly", kind: "monthly" })] })]),
+    )
+    expect(bars[0]!.expectedFraction).toBeNull()
+  })
+
+  it("draws no notch when the snapshot states no usable time", () => {
+    const broken = summary([provider()])
+    broken.generatedAt = "not a date"
+    expect(deriveUsageBars(broken)[0]!.expectedFraction).toBeNull()
   })
 })
 

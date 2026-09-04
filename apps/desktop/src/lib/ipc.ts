@@ -945,6 +945,8 @@ export interface HudDetailBar {
   /** ISO timestamp, or null when the reset time is unknown. */
   resetsAt: string | null
   color: string
+  /** Elapsed share of the window's period, 0-1, or null when unknown. */
+  expectedFraction: number | null
 }
 
 /** The payload the HUD pushes to the hover detail window. */

@@ -234,6 +234,7 @@ export class OverlaySession {
         percent: bar.percent,
         resetsAt: bar.resetsAt ? bar.resetsAt.toISOString() : null,
         color: bar.color,
+        expectedFraction: bar.expectedFraction,
       })),
     }
   }

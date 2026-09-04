@@ -205,6 +205,7 @@ export function HudDetailView() {
                   segments={HUD_SEGMENTS}
                   className="mt-1"
                   split={[{ fraction: bar.percent / 100, color: bar.color }]}
+                  expectedFraction={bar.expectedFraction}
                 />
                 <p className="led-caption type-footnote text-label-secondary mt-0.5">
                   {resetsIn(resetDate(bar.resetsAt), state.now)}
