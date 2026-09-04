@@ -94,9 +94,10 @@ function HygieneRow({
 
   return (
     <>
-      {/* The info button cannot sit inside the row button, so the row is a
-          grid that holds the two of them side by side. */}
-      <div className="group -mx-1 grid grid-cols-[minmax(0,1fr)_max-content_max-content_max-content] items-center gap-x-2 rounded-control px-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
+      {/* The info button cannot sit inside the row button, so it hangs in
+          the right gutter beside the row. The verdict then reaches the same
+          right edge as the cost figures below. */}
+      <div className="group relative -mx-1 grid grid-cols-[minmax(0,1fr)_max-content_max-content] items-center gap-x-2 rounded-control px-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
         <button
           type="button"
           aria-label={`${check.name} details`}
@@ -114,7 +115,13 @@ function HygieneRow({
             className={cn("shrink-0", status.textClass)}
           />
         </button>
-        {explainer && <RowInfo label={check.name} body={explainer} />}
+        {explainer && (
+          <RowInfo
+            label={check.name}
+            body={explainer}
+            className="absolute top-1/2 -right-3 -translate-y-1/2"
+          />
+        )}
       </div>
 
       {open && (
