@@ -56,7 +56,7 @@ function saturated(hex: string, gain: number): string {
  * not control, and at that size the same value looks washed out. The hue and
  * the lightness do not change, so the bar keeps the colour the vendor chose.
  */
-const CLAUDE_SATURATION_GAIN = 1.25
+const CLAUDE_SATURATION_GAIN = 1.15
 
 const CLAUDE_BRAND = saturated(`#${siClaude.hex}`, CLAUDE_SATURATION_GAIN)
 
