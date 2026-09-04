@@ -36,8 +36,8 @@ Use checked integer arithmetic and publish percentages as basis points bounded t
 
 - A finding can be proven from partial evidence. A clean session result requires complete detector evidence.
 - Keep the strict report-level `clean` status for a detector whose entire eligible cohort is clean.
-- Show every detector with a confirmed finding under Failed checks. Include its passed and unavailable session counts.
-- Show a detector under Passed checks when it has no findings and at least one confirmed clean session. State any remaining evidence gap.
+- Show every detector with a confirmed finding under Failed checks.
+- Show a detector under Passed checks when it has no findings and at least one confirmed clean session.
 - Do not render detectors without a confirmed finding or clean session.
 - On session cards and Session detail, calculate the denominator as `finding + clean` only.
 - Do not show not-assessed counts or rows. Show the initial computing state, but keep background refreshes silent.
@@ -54,7 +54,6 @@ Use checked integer arithmetic and publish percentages as basis points bounded t
 - Give each detector a familiar Lucide icon in the anchored window.
 - Show each failing detector's estimated token percentage.
 - Show every passed detector at the bottom with green icon tiles. Do not truncate wins.
-- Use red for token burn above 15%. Use yellow for every other token burn estimate.
 - Keep pointer hover and anchor focus previews passive and free of controls.
 - Open one passive companion when the reader hovers or focuses All checks.
 - Do not show an Unavailable checks section.
@@ -65,7 +64,8 @@ Use checked integer arithmetic and publish percentages as basis points bounded t
 - Share the existing deduplicated Insights reduction.
 - Keep the IPC category list bounded to the nine detector IDs.
 - Load the report once per mounted popover session and refresh it after relevant scan completion.
-- Calculate estimates during the existing linear report reduction.
+- Calculate estimates during the existing report reduction with bounded per-session comparison state.
+- Keep exact overlap state linear in the 30-day session cohort and its bounded source projections.
 - Do not retain transcript content or unbounded turn collections in React.
 
 ## Verification

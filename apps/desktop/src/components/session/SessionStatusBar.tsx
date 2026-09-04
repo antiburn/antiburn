@@ -47,7 +47,11 @@ function verdictInk(failedShare: number, assessedCount: number): string {
 }
 
 function formatLimitPercent(percent: number): string {
-  return `${Number(percent.toFixed(1))}%`
+  return `${roundedLimitPercent(percent)}%`
+}
+
+function roundedLimitPercent(percent: number): number {
+  return Number(percent.toFixed(1))
 }
 
 interface StatusMark {
@@ -147,7 +151,7 @@ export function SessionStatusBar({
       }`
   const tooltip = showStateText ? verdictLabel : renderTooltip(failed, passed)
   const showVerdict = showStateText || assessedCount > 0
-  const isHighLimitShare = (limitBadge?.percent ?? 0) >= 5
+  const isHighLimitShare = roundedLimitPercent(limitBadge?.percent ?? 0) >= 5
 
   return (
     <div className="flex w-full items-center justify-between gap-x-1.5 text-label-secondary">

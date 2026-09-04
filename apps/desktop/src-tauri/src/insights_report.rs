@@ -8,8 +8,9 @@ use antiburn_local::analysis::{
     PARSER_REVISION, SessionEvidence, SourceOrigin,
 };
 use antiburn_local::insights::{
-    CoverageBucket, CoverageCounts, EfficiencyReport, EfficiencyReportAccumulator, ReportContext,
-    ReportWindow, SessionTokenBurnEvidence, TokenBurnSourceEvidence, TokenBurnTurnEvidence,
+    CoverageBucket, CoverageCounts, EfficiencyReport, EfficiencyReportAccumulator, ReportCatalogs,
+    ReportContext, ReportWindow, SessionTokenBurnEvidence, TokenBurnSourceEvidence,
+    TokenBurnTurnAccumulator, TokenBurnTurnEvidence,
 };
 use anyhow::{Context, Result, ensure};
 use rusqlite::params;
@@ -76,14 +77,14 @@ SELECT e.evidence_json, s.agent, s.session_id, e.published_fence, a.initial_cont
    ORDER BY s.started_at_epoch DESC, s.session_id DESC";
 
 const TOKEN_BURN_TURNS_SQL: &str = "
-SELECT scope, role, model, effort, speed, ts_ms, input_tokens, output_tokens,
+SELECT scope, model, effort, speed, ts_ms, input_tokens, output_tokens,
        cache_read_tokens, cache_write_tokens
   FROM turn
  WHERE environment_key = ?1
    AND agent = ?2
    AND session_id = ?3
    AND claim_fence = ?4
- ORDER BY source_key, turn_index";
+   AND role = 'assistant'";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportRequest {
@@ -136,7 +137,7 @@ pub async fn reduce_report(
     cancel: Arc<AtomicBool>,
 ) -> Result<ReducedReport> {
     tokio::task::spawn_blocking(move || {
-        reduce_with_state_on_snapshot(&data_dir, request, &mut || {}, &cancel)
+        reduce_with_state_on_snapshot(&data_dir, request, &mut || {}, &cancel, &mut || {})
     })
     .await
     .context("report reduction task failed")?
@@ -149,7 +150,10 @@ fn reduce_on_snapshot(
     after_denominator: &mut dyn FnMut(),
     cancel: &AtomicBool,
 ) -> Result<EfficiencyReport> {
-    Ok(reduce_with_state_on_snapshot(data_dir, request, after_denominator, cancel)?.report)
+    Ok(
+        reduce_with_state_on_snapshot(data_dir, request, after_denominator, cancel, &mut || {})?
+            .report,
+    )
 }
 
 fn reduce_with_state_on_snapshot(
@@ -157,6 +161,7 @@ fn reduce_with_state_on_snapshot(
     request: ReportRequest,
     after_denominator: &mut dyn FnMut(),
     cancel: &AtomicBool,
+    turn_probe: &mut dyn FnMut(),
 ) -> Result<ReducedReport> {
     ensure_not_cancelled(cancel)?;
     let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
@@ -192,6 +197,7 @@ fn reduce_with_state_on_snapshot(
     ensure_not_cancelled(cancel)?;
 
     let mut accumulator = EfficiencyReportAccumulator::new();
+    let depth_cap = u128::from(accumulator.catalogs().depth_cap_tokens);
     let cohort_sql = COHORT_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
     {
         let mut statement = transaction.prepare(&cohort_sql)?;
@@ -219,6 +225,10 @@ fn reduce_with_state_on_snapshot(
                 .map(serde_json::from_str::<InitialContextBreakdown>)
                 .transpose()
                 .context("stored initial context is invalid")?;
+            let token_burn_context = TokenBurnReportContext {
+                catalogs: accumulator.catalogs(),
+                depth_cap,
+            };
             let token_evidence = token_burn_evidence(
                 &transaction,
                 TokenBurnSessionKey {
@@ -230,11 +240,15 @@ fn reduce_with_state_on_snapshot(
                 },
                 initial_context.as_ref(),
                 &evidence,
+                &token_burn_context,
+                cancel,
+                turn_probe,
             )?;
             accumulator.observe_session_with_token_burn(evidence, token_evidence);
         }
     }
 
+    ensure_not_cancelled(cancel)?;
     let report = accumulator.finish(ReportContext {
         environment_key: request.environment_key,
         window: request.window,
@@ -244,6 +258,8 @@ fn reduce_with_state_on_snapshot(
         evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
         coverage,
     });
+    turn_probe();
+    ensure_not_cancelled(cancel)?;
     ensure!(
         report.context.coverage.actively_growing <= report.context.coverage.ready,
         "actively growing coverage exceeds ready coverage"
@@ -264,12 +280,27 @@ struct TokenBurnSessionKey<'a> {
     cwd: Option<&'a str>,
 }
 
+struct SourceTokenCounter {
+    evidence: TokenBurnSourceEvidence,
+    definition_tokens: u128,
+}
+
+struct TokenBurnReportContext<'a> {
+    catalogs: &'a ReportCatalogs,
+    depth_cap: u128,
+}
+
 fn token_burn_evidence(
     connection: &rusqlite::Connection,
     key: TokenBurnSessionKey<'_>,
     initial_context: Option<&InitialContextBreakdown>,
     evidence: &SessionEvidence,
+    report_context: &TokenBurnReportContext<'_>,
+    cancel: &AtomicBool,
+    turn_probe: &mut dyn FnMut(),
 ) -> Result<SessionTokenBurnEvidence> {
+    // The partial index limits row discovery to this session's assistant turns.
+    // This build omits rusqlite hooks, so probes run per row and before finalization.
     let mut statement = connection.prepare_cached(TOKEN_BURN_TURNS_SQL)?;
     let mut rows = statement.query(params![
         key.environment_key,
@@ -277,27 +308,37 @@ fn token_burn_evidence(
         key.session_id,
         key.published_fence
     ])?;
-    let mut main_context_capacities = Vec::new();
-    let mut attributed_turns = Vec::new();
+    let mut source_groups = initial_context.map(|initial_context| {
+        [
+            key.cwd.and_then(|cwd| {
+                source_token_counters(
+                    initial_context,
+                    "mcp_instructions",
+                    &format!("{}:cwd:{cwd}", key.agent),
+                    None,
+                )
+            }),
+            source_token_counters(initial_context, "builtin_tool", key.agent, None)
+                .filter(|sources| !sources.is_empty()),
+            source_token_counters(initial_context, "skill_instructions", key.agent, key.cwd),
+        ]
+    });
+    let mut turn_accumulator = TokenBurnTurnAccumulator::new(report_context.catalogs);
     let mut has_unattributed_assistant_turn = false;
     let mut raw_total_tokens = 0_u128;
     let mut overdepth_avoidable_tokens = 0_u128;
-    let depth_cap =
-        u128::from(antiburn_local::insights::ReportCatalogs::default().depth_cap_tokens);
     while let Some(row) = rows.next()? {
+        turn_probe();
+        ensure_not_cancelled(cancel)?;
         let scope: String = row.get(0)?;
-        let role: String = row.get(1)?;
-        let model: Option<String> = row.get(2)?;
-        let effort: Option<String> = row.get(3)?;
-        let speed: Option<String> = row.get(4)?;
-        let ts_ms: Option<i64> = row.get(5)?;
-        let input_tokens = u64::try_from(row.get::<_, i64>(6)?)?;
-        let output_tokens = u64::try_from(row.get::<_, i64>(7)?)?;
-        let cache_read_tokens = u64::try_from(row.get::<_, i64>(8)?)?;
-        let cache_write_tokens = u64::try_from(row.get::<_, i64>(9)?)?;
-        if role != "assistant" {
-            continue;
-        }
+        let model: Option<String> = row.get(1)?;
+        let effort: Option<String> = row.get(2)?;
+        let speed: Option<String> = row.get(3)?;
+        let ts_ms: Option<i64> = row.get(4)?;
+        let input_tokens = u64::try_from(row.get::<_, i64>(5)?)?;
+        let output_tokens = u64::try_from(row.get::<_, i64>(6)?)?;
+        let cache_read_tokens = u64::try_from(row.get::<_, i64>(7)?)?;
+        let cache_write_tokens = u64::try_from(row.get::<_, i64>(8)?)?;
         let Some(model) = model.filter(|model| !model.trim().is_empty()) else {
             has_unattributed_assistant_turn = true;
             continue;
@@ -327,55 +368,42 @@ fn token_burn_evidence(
         raw_total_tokens = raw_total_tokens
             .checked_add(turn_total)
             .context("session token total overflowed")?;
-        if context > depth_cap {
+        if context > report_context.depth_cap {
             overdepth_avoidable_tokens = overdepth_avoidable_tokens
                 .checked_add(
-                    avoidable_overdepth_tokens(input, cache_read, cache_write, depth_cap)
-                        .context("overdepth token calculation overflowed")?,
+                    avoidable_overdepth_tokens(
+                        input,
+                        cache_read,
+                        cache_write,
+                        report_context.depth_cap,
+                    )
+                    .context("overdepth token calculation overflowed")?,
                 )
                 .context("overdepth token total overflowed")?;
         }
-        if scope == "main" {
-            main_context_capacities.push(context);
+        if scope == "main"
+            && let Some(groups) = &mut source_groups
+        {
+            observe_main_context(groups, context)?;
         }
-        attributed_turns.push(turn);
+        turn_accumulator.observe(turn);
     }
 
     let mut result = SessionTokenBurnEvidence::from_session(evidence);
     if raw_total_tokens > 0 {
         result.total_tokens = Some(raw_total_tokens);
     }
-    result.turns = Some(attributed_turns);
+    turn_probe();
+    ensure_not_cancelled(cancel)?;
+    turn_accumulator.finish_into(&mut result);
     result.overdepth_avoidable_tokens = Some(overdepth_avoidable_tokens);
     if has_unattributed_assistant_turn {
         result.repeated_context_avoidable_tokens = None;
     }
-    if let Some(initial_context) = initial_context {
-        result.mcp_sources = key.cwd.and_then(|cwd| {
-            let scope = format!("{}:cwd:{cwd}", key.agent);
-            source_token_evidence(
-                initial_context,
-                "mcp_instructions",
-                &scope,
-                None,
-                &main_context_capacities,
-            )
-        });
-        result.built_in_tool_sources = source_token_evidence(
-            initial_context,
-            "builtin_tool",
-            key.agent,
-            None,
-            &main_context_capacities,
-        )
-        .filter(|sources| !sources.is_empty());
-        result.skill_sources = source_token_evidence(
-            initial_context,
-            "skill_instructions",
-            key.agent,
-            key.cwd,
-            &main_context_capacities,
-        );
+    if let Some([mcp, built_in, skills]) = source_groups {
+        result.mcp_sources = finish_source_counters(mcp);
+        result.built_in_tool_sources = finish_source_counters(built_in);
+        result.skill_sources = finish_source_counters(skills);
     }
     Ok(result)
 }
@@ -393,13 +421,12 @@ fn avoidable_overdepth_tokens(
         .map(|cache| cache.min(excess))
 }
 
-fn source_token_evidence(
+fn source_token_counters(
     initial_context: &InitialContextBreakdown,
     source_kind: &str,
     agent: &str,
     skill_cwd: Option<&str>,
-    main_context_capacities: &[u128],
-) -> Option<Vec<TokenBurnSourceEvidence>> {
+) -> Option<Vec<SourceTokenCounter>> {
     let matching = initial_context
         .sources
         .iter()
@@ -420,11 +447,6 @@ fn source_token_evidence(
             if name.is_empty() {
                 return None;
             }
-            let source_tokens = u128::from(source.token_count);
-            let turn_count = main_context_capacities
-                .iter()
-                .filter(|capacity| **capacity >= source_tokens)
-                .count() as u128;
             let scope = if source_kind == "skill_instructions"
                 && matches!(source.origin, SourceOrigin::Project | SourceOrigin::Unknown)
             {
@@ -432,14 +454,65 @@ fn source_token_evidence(
             } else {
                 format!("{agent}:{}", source_origin_key(source.origin))
             };
-            Some(TokenBurnSourceEvidence {
-                scope,
-                name,
-                replicated_tokens: source_tokens.checked_mul(turn_count)?,
-                invoked: source.use_count > 0,
+            Some(SourceTokenCounter {
+                evidence: TokenBurnSourceEvidence {
+                    scope,
+                    name,
+                    replicated_tokens: 0,
+                    invoked: source.use_count > 0,
+                },
+                definition_tokens: u128::from(source.token_count),
             })
         })
         .collect()
+}
+
+fn observe_main_context(
+    groups: &mut [Option<Vec<SourceTokenCounter>>; 3],
+    context_tokens: u128,
+) -> Result<()> {
+    for sources in groups.iter_mut().flatten() {
+        for source in sources {
+            if context_tokens >= source.definition_tokens {
+                source.evidence.replicated_tokens = source
+                    .evidence
+                    .replicated_tokens
+                    .checked_add(source.definition_tokens)
+                    .context("source replicated token total overflowed")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn finish_source_counters(
+    counters: Option<Vec<SourceTokenCounter>>,
+) -> Option<Vec<TokenBurnSourceEvidence>> {
+    counters.map(|counters| {
+        counters
+            .into_iter()
+            .map(|counter| counter.evidence)
+            .collect()
+    })
+}
+
+#[cfg(test)]
+fn source_token_evidence(
+    initial_context: &InitialContextBreakdown,
+    source_kind: &str,
+    agent: &str,
+    skill_cwd: Option<&str>,
+    main_context_capacities: &[u128],
+) -> Option<Vec<TokenBurnSourceEvidence>> {
+    let mut groups = [
+        source_token_counters(initial_context, source_kind, agent, skill_cwd),
+        None,
+        None,
+    ];
+    for capacity in main_context_capacities {
+        observe_main_context(&mut groups, *capacity).ok()?;
+    }
+    finish_source_counters(groups[0].take())
 }
 
 fn source_origin_key(origin: SourceOrigin) -> &'static str {
@@ -472,14 +545,15 @@ mod tests {
 
     use antiburn_local::analysis::{
         EVIDENCE_SCHEMA_REVISION, EvidenceSource, METRICS_SCHEMA_REVISION,
-        SessionEvidenceAccumulator, SourceCapabilities, SourceKind, TurnFacts,
+        SessionEvidenceAccumulator, SourceCapabilities, SourceKind, TurnFacts, TurnRow,
+        TurnRowStore, TurnScope,
     };
     use tempfile::TempDir;
 
     use super::*;
     use crate::store::{
-        AnalysisRecord, EvidenceCompletion, EvidenceFailure, ProjectionRevisions,
-        PublishedEvidence, SessionKey, SessionRecord, Store,
+        AnalysisRecord, EvidenceCompletion, EvidenceFailure, FencedTurnRowStore,
+        ProjectionRevisions, PublishedEvidence, SessionKey, SessionRecord, Store,
     };
 
     fn request() -> ReportRequest {
@@ -637,6 +711,16 @@ mod tests {
         started_at_epoch: i64,
         status: PublishedEvidence,
     ) {
+        publish_evidence_with_turns(store, session_id, started_at_epoch, status, 0);
+    }
+
+    fn publish_evidence_with_turns(
+        store: &Store,
+        session_id: &str,
+        started_at_epoch: i64,
+        status: PublishedEvidence,
+        turn_count: usize,
+    ) {
         let fingerprint = format!("sv1:{session_id}");
         let session = session(session_id, started_at_epoch, &fingerprint);
         store
@@ -647,6 +731,40 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(claim.key, session.key);
+        if turn_count > 0 {
+            let writer =
+                FencedTurnRowStore::new(store.clone(), session.key.clone(), claim.claim_fence);
+            let turns = (0..turn_count)
+                .map(|turn_index| TurnRow {
+                    source_key: "synthetic".to_owned(),
+                    thread_id: "synthetic".to_owned(),
+                    turn_index: turn_index as u64,
+                    scope: TurnScope::Main,
+                    child_id: None,
+                    role: "assistant",
+                    ts_ms: Some(1_000 + turn_index as i64),
+                    model: Some("claude-sonnet-5".to_owned()),
+                    effort: Some("high".to_owned()),
+                    speed: None,
+                    input_tokens: 10,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    output_tokens: 5,
+                    is_compaction_boundary: false,
+                    message_id: None,
+                    uuid: None,
+                    parent_uuid: None,
+                    compaction_trigger: None,
+                    compaction_pre_tokens: None,
+                    compaction_post_tokens: None,
+                    has_thinking: false,
+                    last_tool: None,
+                    subagent_launches: 0,
+                    content: Vec::new(),
+                })
+                .collect::<Vec<_>>();
+            writer.write_turn_rows(&turns).unwrap();
+        }
         let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
             agent: "claude-code".to_owned(),
             session_id: session_id.to_owned(),
@@ -722,6 +840,40 @@ mod tests {
                 .iter()
                 .any(|detail| detail.contains("session_insights_window")),
             "query plan did not use the Insights window index: {details:?}"
+        );
+        assert!(
+            details
+                .iter()
+                .all(|detail| !detail.contains("USE TEMP B-TREE FOR ORDER BY")),
+            "query plan used a temporary sort: {details:?}"
+        );
+    }
+
+    #[test]
+    fn token_turn_query_uses_the_session_index_without_a_temporary_sort() {
+        let data_dir = TempDir::new().unwrap();
+        let _store = Store::open(data_dir.path()).unwrap();
+        let connection = open_read_only(data_dir.path(), REPORT_BUSY_TIMEOUT).unwrap();
+        let mut statement = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {TOKEN_BURN_TURNS_SQL}"))
+            .unwrap();
+        let details = statement
+            .query_map(params!["native", "claude-code", "session", 1], |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        assert!(
+            details.iter().any(
+                |detail| detail.contains("USING INDEX turn_assistant_session")
+                    && detail.contains("environment_key=?")
+                    && detail.contains("agent=?")
+                    && detail.contains("session_id=?")
+                    && detail.contains("claim_fence=?")
+            ),
+            "query plan did not constrain the assistant session index: {details:?}"
         );
         assert!(
             details
@@ -874,6 +1026,89 @@ mod tests {
             let error =
                 reduce_on_snapshot(data_dir.path(), request(), &mut || {}, &cancel).unwrap_err();
             assert!(is_cancelled(&error));
+        }
+
+        #[test]
+        fn cancellation_during_turn_iteration_stops_without_publishing_a_report() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_evidence_with_turns(&store, "large", 120, PublishedEvidence::Ready, 100);
+            let key = SessionKey::new("native", "claude-code", "large");
+            let before = store.evidence(&key).unwrap().unwrap();
+            let cancel = AtomicBool::new(false);
+            let mut turns_scanned = 0;
+
+            let error = reduce_with_state_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {},
+                &cancel,
+                &mut || {
+                    turns_scanned += 1;
+                    if turns_scanned == 10 {
+                        cancel.store(true, Ordering::SeqCst);
+                    }
+                },
+            )
+            .unwrap_err();
+
+            assert!(is_cancelled(&error));
+            assert_eq!(turns_scanned, 10);
+            let after = store.evidence(&key).unwrap().unwrap();
+            assert_eq!(after.evidence_json, before.evidence_json);
+            assert_eq!(after.published_fence, before.published_fence);
+        }
+
+        #[test]
+        fn cancellation_before_turn_finalization_stops_without_publishing_a_report() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_evidence_with_turns(&store, "large", 120, PublishedEvidence::Ready, 100);
+            let cancel = AtomicBool::new(false);
+            let mut probes = 0;
+
+            let error = reduce_with_state_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {},
+                &cancel,
+                &mut || {
+                    probes += 1;
+                    if probes == 101 {
+                        cancel.store(true, Ordering::SeqCst);
+                    }
+                },
+            )
+            .unwrap_err();
+
+            assert!(is_cancelled(&error));
+            assert_eq!(probes, 101);
+        }
+
+        #[test]
+        fn cancellation_during_finalization_stops_without_publishing_a_report() {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_evidence_with_turns(&store, "large", 120, PublishedEvidence::Ready, 100);
+            let cancel = AtomicBool::new(false);
+            let mut probes = 0;
+
+            let error = reduce_with_state_on_snapshot(
+                data_dir.path(),
+                request(),
+                &mut || {},
+                &cancel,
+                &mut || {
+                    probes += 1;
+                    if probes == 102 {
+                        cancel.store(true, Ordering::SeqCst);
+                    }
+                },
+            )
+            .unwrap_err();
+
+            assert!(is_cancelled(&error));
+            assert_eq!(probes, 102);
         }
     }
 

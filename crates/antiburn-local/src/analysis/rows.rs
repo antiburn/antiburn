@@ -109,6 +109,15 @@ pub const TURN_SCHEMA_V4_SQL: &str = r#"
 CREATE INDEX turn_usage_timestamp ON turn (ts_ms);
 "#;
 
+/// DDL that indexes report reads for one session's attributed assistant turns.
+///
+/// The partial predicate excludes non-assistant rows from index storage and write work.
+pub const TURN_SCHEMA_V5_SQL: &str = r#"
+CREATE INDEX turn_assistant_session
+    ON turn (environment_key, agent, session_id, claim_fence)
+ WHERE role = 'assistant';
+"#;
+
 /// DDL for the `session_coverage` table: one row per `(environment_key,
 /// agent, session_id, claim_fence)`, holding the serialized
 /// [`SessionCoverageRecord`] a pass wrote alongside its turn rows under the
@@ -177,8 +186,8 @@ CREATE TABLE source_resume (
 /// creates this schema from scratch (a test, an in-memory store) applies
 /// every entry in order; the app applies [`TURN_SCHEMA_SQL`],
 /// [`TURN_SCHEMA_V2_SQL`], [`TURN_SCHEMA_V3_SQL`],
-/// [`SESSION_COVERAGE_SCHEMA_SQL`], [`TURN_SCHEMA_V4_SQL`], and
-/// [`SOURCE_RESUME_SCHEMA_SQL`] as its own separately numbered migrations
+/// [`SESSION_COVERAGE_SCHEMA_SQL`], [`TURN_SCHEMA_V4_SQL`],
+/// [`SOURCE_RESUME_SCHEMA_SQL`], and [`TURN_SCHEMA_V5_SQL`] as its own migrations
 /// instead, since [`TURN_SCHEMA_SQL`] is already applied on user machines.
 pub const TURN_MIGRATIONS: &[&str] = &[
     TURN_SCHEMA_SQL,
@@ -187,6 +196,7 @@ pub const TURN_MIGRATIONS: &[&str] = &[
     SESSION_COVERAGE_SCHEMA_SQL,
     TURN_SCHEMA_V4_SQL,
     SOURCE_RESUME_SCHEMA_SQL,
+    TURN_SCHEMA_V5_SQL,
 ];
 
 /// Number of rows a [`TurnRowSink`] buffers before it writes them, unless the

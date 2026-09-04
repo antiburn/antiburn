@@ -13,6 +13,8 @@ use super::{CoverageBucket, DetectorId};
 pub const MAX_EXAMPLES_PER_DETECTOR: usize = 3;
 pub const MAX_REPORT_UNRECOGNIZED_TYPES: usize = 16;
 pub const MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS: u16 = 10_000;
+/// Maximum normalized turns retained for one session's effort comparison.
+const MAX_TOKEN_BURN_COMPARISON_TURNS: usize = 4_096;
 const UNRECOGNIZED_TYPES_DIAGNOSTIC: &str = "diagnostics.unrecognized_types";
 const BASIS_POINTS_SCALE: u16 = 10_000;
 
@@ -430,6 +432,250 @@ impl TokenBurnTurnEvidence {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ComparisonCandidate {
+    context_tokens: u128,
+    output_tokens: u64,
+    assumed_tokens: u128,
+}
+
+#[derive(Debug, Default)]
+struct ComparisonGroup {
+    lower_effort: Vec<ComparisonCandidate>,
+    above_cap: Vec<ComparisonCandidate>,
+}
+
+/// Streams one session's report-time turn estimates.
+///
+/// The accumulator retains at most 4,096 normalized turns for exact observed
+/// effort comparisons. After that limit, it drops the retained comparisons and
+/// uses the accumulated effort-tier assumptions for the whole session.
+#[derive(Debug)]
+pub struct TokenBurnTurnAccumulator<'a> {
+    catalogs: &'a ReportCatalogs,
+    comparison_groups: BTreeMap<String, BTreeMap<String, ComparisonGroup>>,
+    retained_comparison_turns: usize,
+    comparison_bound_exceeded: bool,
+    overthinking_complete: bool,
+    overthinking_assumed: Option<u128>,
+    overpowered_subagents: Option<u128>,
+    old_model: Option<u128>,
+    fast_mode: Option<u128>,
+}
+
+impl<'a> TokenBurnTurnAccumulator<'a> {
+    pub fn new(catalogs: &'a ReportCatalogs) -> Self {
+        Self {
+            catalogs,
+            comparison_groups: BTreeMap::new(),
+            retained_comparison_turns: 0,
+            comparison_bound_exceeded: false,
+            overthinking_assumed: Some(0),
+            overthinking_complete: true,
+            overpowered_subagents: Some(0),
+            old_model: Some(0),
+            fast_mode: Some(0),
+        }
+    }
+
+    pub fn observe(&mut self, turn: TokenBurnTurnEvidence) {
+        let canonical_model = canonical_model_key(&turn.model);
+        let family = model_family_from_canonical(&canonical_model);
+        let effort = turn
+            .effort
+            .as_deref()
+            .map(|value| value.trim().to_lowercase());
+        let context_tokens = turn.context_tokens();
+
+        if let Some(effort) = effort.as_deref() {
+            if let Some(policy) = self.catalogs.families.get(&family) {
+                let above_cap = policy.effort.above_cap.contains(effort);
+                let lower_effort = policy.effort.recognized.contains(effort) && !above_cap;
+                let assumed_tokens = if above_cap {
+                    match effort {
+                        "xhigh" => percentage_of_tokens(u128::from(turn.output_tokens), 20),
+                        "max" | "ultra" => percentage_of_tokens(u128::from(turn.output_tokens), 35),
+                        _ => percentage_of_tokens(u128::from(turn.output_tokens), 10),
+                    }
+                } else {
+                    Some(0)
+                };
+                if above_cap {
+                    self.overthinking_assumed =
+                        checked_accumulate(self.overthinking_assumed, assumed_tokens);
+                }
+                if (above_cap || lower_effort)
+                    && let Some(context_tokens) = context_tokens
+                {
+                    self.retain_comparison(
+                        turn.scope.clone(),
+                        canonical_model.clone(),
+                        ComparisonCandidate {
+                            context_tokens,
+                            output_tokens: turn.output_tokens,
+                            assumed_tokens: assumed_tokens.unwrap_or(0),
+                        },
+                        above_cap,
+                    );
+                }
+            } else {
+                self.overthinking_complete = false;
+            }
+        }
+
+        if turn.scope == "delegated"
+            && let Some(replacement) = premium_replacement(family, &canonical_model, self.catalogs)
+        {
+            self.overpowered_subagents = checked_accumulate(
+                self.overpowered_subagents,
+                priced_or_assumed_saving(&turn, &canonical_model, replacement),
+            );
+        }
+        if let Some(replacement) = self
+            .catalogs
+            .model_replacements
+            .entries
+            .get(&canonical_model)
+            && turn
+                .ts_ms
+                .is_some_and(|timestamp| timestamp >= replacement.available_since_ts_ms)
+        {
+            self.old_model = checked_accumulate(
+                self.old_model,
+                priced_or_assumed_saving(&turn, &canonical_model, &replacement.replacement),
+            );
+        }
+        if turn.scope == "delegated"
+            && turn
+                .speed
+                .as_deref()
+                .is_some_and(|speed| speed.trim().eq_ignore_ascii_case("fast"))
+        {
+            self.fast_mode =
+                checked_accumulate(self.fast_mode, fast_mode_saving(&turn, &canonical_model));
+        }
+    }
+
+    fn retain_comparison(
+        &mut self,
+        scope: String,
+        canonical_model: String,
+        candidate: ComparisonCandidate,
+        above_cap: bool,
+    ) {
+        if self.comparison_bound_exceeded {
+            return;
+        }
+        if self.retained_comparison_turns == MAX_TOKEN_BURN_COMPARISON_TURNS {
+            self.comparison_bound_exceeded = true;
+            self.comparison_groups.clear();
+            self.retained_comparison_turns = 0;
+            return;
+        }
+        self.retained_comparison_turns += 1;
+        let group = self
+            .comparison_groups
+            .entry(scope)
+            .or_default()
+            .entry(canonical_model)
+            .or_default();
+        if above_cap {
+            group.above_cap.push(candidate);
+        } else {
+            group.lower_effort.push(candidate);
+        }
+    }
+
+    pub fn finish_into(self, evidence: &mut SessionTokenBurnEvidence) {
+        let model_overthinking = if !self.overthinking_complete {
+            None
+        } else if self.comparison_bound_exceeded {
+            self.overthinking_assumed
+        } else {
+            self.comparison_groups
+                .into_values()
+                .flat_map(BTreeMap::into_values)
+                .try_fold(0_u128, |total, group| {
+                    total.checked_add(overthinking_group_tokens(group).tokens?)
+                })
+        };
+        evidence.model_overthinking = model_overthinking;
+        evidence.overpowered_subagents = self.overpowered_subagents;
+        evidence.old_model = self.old_model;
+        evidence.fast_mode = self.fast_mode;
+    }
+
+    #[cfg(test)]
+    fn retained_comparison_turns(&self) -> usize {
+        self.retained_comparison_turns
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OverthinkingGroupEstimate {
+    tokens: Option<u128>,
+    operations: usize,
+}
+
+fn overthinking_group_tokens(mut group: ComparisonGroup) -> OverthinkingGroupEstimate {
+    group
+        .lower_effort
+        .sort_unstable_by_key(|turn| (turn.output_tokens, turn.context_tokens));
+    group.above_cap.sort_unstable_by_key(|turn| {
+        (turn.output_tokens, turn.context_tokens, turn.assumed_tokens)
+    });
+    let mut active = BTreeMap::<u128, ComparisonCandidate>::new();
+    let mut lower_index = 0;
+    let mut total = Some(0_u128);
+    let mut operations = 0;
+    for turn in group.above_cap {
+        while lower_index < group.lower_effort.len()
+            && group.lower_effort[lower_index].output_tokens < turn.output_tokens
+        {
+            let candidate = group.lower_effort[lower_index];
+            active
+                .entry(candidate.context_tokens)
+                .and_modify(|current| {
+                    if candidate.output_tokens > current.output_tokens {
+                        *current = candidate;
+                    }
+                })
+                .or_insert(candidate);
+            lower_index += 1;
+            operations += 1;
+        }
+        let lower_bound = turn.context_tokens - turn.context_tokens / 5;
+        let upper_bound = turn.context_tokens.saturating_add(turn.context_tokens / 4);
+        let left = active.range(lower_bound..=turn.context_tokens).next_back();
+        let right = active.range(turn.context_tokens..=upper_bound).next();
+        operations += 2;
+        let observed = [left, right]
+            .into_iter()
+            .flatten()
+            .map(|(_, candidate)| {
+                (
+                    turn.context_tokens.abs_diff(candidate.context_tokens),
+                    u64::MAX - candidate.output_tokens,
+                    candidate.context_tokens,
+                    u128::from(turn.output_tokens - candidate.output_tokens),
+                )
+            })
+            .min_by_key(|(difference, reverse_output, context, _)| {
+                (*difference, *reverse_output, *context)
+            })
+            .map(|(_, _, _, tokens)| tokens);
+        total = checked_accumulate(total, observed.or(Some(turn.assumed_tokens)));
+    }
+    OverthinkingGroupEstimate {
+        tokens: total,
+        operations,
+    }
+}
+
+fn checked_accumulate(total: Option<u128>, value: Option<u128>) -> Option<u128> {
+    total?.checked_add(value?)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionTokenBurnEvidence {
     /// All attributed input, output, cache-read, and cache-write tokens.
@@ -438,8 +684,10 @@ pub struct SessionTokenBurnEvidence {
     pub overdepth_avoidable_tokens: Option<u128>,
     /// Paid context token events beyond positive context growth.
     pub repeated_context_avoidable_tokens: Option<u128>,
-    /// Valid assistant turns with model attribution from the published fence.
-    pub turns: Option<Vec<TokenBurnTurnEvidence>>,
+    model_overthinking: Option<u128>,
+    overpowered_subagents: Option<u128>,
+    old_model: Option<u128>,
+    fast_mode: Option<u128>,
     pub mcp_sources: Option<Vec<TokenBurnSourceEvidence>>,
     pub built_in_tool_sources: Option<Vec<TokenBurnSourceEvidence>>,
     pub skill_sources: Option<Vec<TokenBurnSourceEvidence>>,
@@ -524,77 +772,45 @@ fn cost_saving_tokens(
     Some((equivalent.round() as u128).clamp(1, total_tokens))
 }
 
-fn report_pricing(model: &str) -> Option<ModelPricing> {
-    lookup_pricing(model).or_else(|| lookup_pricing(&canonical_model_key(model)))
+fn report_pricing(model: &str, canonical_model: &str) -> Option<ModelPricing> {
+    lookup_pricing(model).or_else(|| lookup_pricing(canonical_model))
 }
 
-fn priced_or_assumed_saving(turn: &TokenBurnTurnEvidence, replacement: &str) -> Option<u128> {
-    let priced = report_pricing(&turn.model)
-        .zip(report_pricing(replacement))
+fn priced_or_assumed_saving(
+    turn: &TokenBurnTurnEvidence,
+    canonical_model: &str,
+    replacement: &str,
+) -> Option<u128> {
+    let replacement_canonical = canonical_model_key(replacement);
+    let priced = report_pricing(&turn.model, canonical_model)
+        .zip(report_pricing(replacement, &replacement_canonical))
         .and_then(|(actual, replacement)| cost_saving_tokens(turn, &actual, &replacement));
     priced.or_else(|| percentage_of_tokens(turn.total_tokens()?, 10))
 }
 
-fn similar_context(left: &TokenBurnTurnEvidence, right: &TokenBurnTurnEvidence) -> bool {
-    let Some(left) = left.context_tokens() else {
-        return false;
-    };
-    let Some(right) = right.context_tokens() else {
-        return false;
-    };
-    let largest = left.max(right);
-    largest == 0
-        || left
-            .abs_diff(right)
-            .checked_mul(5)
-            .is_some_and(|difference| difference <= largest)
+fn model_family_from_canonical(canonical: &str) -> detectors::ModelFamily {
+    if canonical.starts_with("claude-") {
+        detectors::ModelFamily::Claude
+    } else if canonical.starts_with("gpt-")
+        || canonical.starts_with("o1")
+        || canonical.starts_with("o3")
+        || canonical.starts_with("o4")
+    {
+        detectors::ModelFamily::OpenAi
+    } else if canonical.starts_with("gemini-") {
+        detectors::ModelFamily::Google
+    } else {
+        detectors::ModelFamily::Unknown
+    }
 }
 
-fn overthinking_tokens(turns: &[TokenBurnTurnEvidence], catalogs: &ReportCatalogs) -> Option<u128> {
-    turns.iter().try_fold(0_u128, |total, turn| {
-        let Some(effort) = turn.effort.as_deref() else {
-            return Some(total);
-        };
-        let effort = effort.trim().to_lowercase();
-        let family = detectors::model_family(&turn.model);
-        let policy = catalogs.families.get(&family)?;
-        if !policy.effort.above_cap.contains(&effort) {
-            return Some(total);
-        }
-        let observed = turns
-            .iter()
-            .filter(|candidate| {
-                candidate.scope == turn.scope
-                    && canonical_model_key(&candidate.model) == canonical_model_key(&turn.model)
-                    && similar_context(candidate, turn)
-                    && candidate.effort.as_deref().is_some_and(|candidate_effort| {
-                        let candidate_effort = candidate_effort.trim().to_lowercase();
-                        policy.effort.recognized.contains(&candidate_effort)
-                            && !policy.effort.above_cap.contains(&candidate_effort)
-                    })
-                    && candidate.output_tokens < turn.output_tokens
-            })
-            .filter_map(|candidate| {
-                Some((
-                    turn.context_tokens()?.abs_diff(candidate.context_tokens()?),
-                    u128::from(turn.output_tokens - candidate.output_tokens),
-                ))
-            })
-            .min_by_key(|(context_difference, _)| *context_difference)
-            .map(|(_, output_difference)| output_difference);
-        let assumed = match effort.as_str() {
-            "xhigh" => percentage_of_tokens(u128::from(turn.output_tokens), 20),
-            "max" | "ultra" => percentage_of_tokens(u128::from(turn.output_tokens), 35),
-            _ => percentage_of_tokens(u128::from(turn.output_tokens), 10),
-        };
-        total.checked_add(observed.or(assumed)?)
-    })
-}
-
-fn premium_replacement(model: &str, catalogs: &ReportCatalogs) -> Option<&'static str> {
-    let family = detectors::model_family(model);
+fn premium_replacement(
+    family: detectors::ModelFamily,
+    canonical_model: &str,
+    catalogs: &ReportCatalogs,
+) -> Option<&'static str> {
     let policy = &catalogs.families.get(&family)?.premium;
-    if !policy.reviewed || !policy.is_premium(&canonical_model_key(model)) {
+    if !policy.reviewed || !policy.is_premium(canonical_model) {
         return None;
     }
     match family {
@@ -605,56 +821,15 @@ fn premium_replacement(model: &str, catalogs: &ReportCatalogs) -> Option<&'stati
     }
 }
 
-fn overpowered_subagent_tokens(
-    turns: &[TokenBurnTurnEvidence],
-    catalogs: &ReportCatalogs,
-) -> Option<u128> {
-    turns
-        .iter()
-        .filter(|turn| turn.scope == "delegated")
-        .try_fold(0_u128, |total, turn| {
-            let Some(replacement) = premium_replacement(&turn.model, catalogs) else {
-                return Some(total);
-            };
-            total.checked_add(priced_or_assumed_saving(turn, replacement)?)
-        })
-}
-
-fn old_model_tokens(turns: &[TokenBurnTurnEvidence], catalogs: &ReportCatalogs) -> Option<u128> {
-    turns.iter().try_fold(0_u128, |total, turn| {
-        let Some(replacement) = catalogs.model_replacements.lookup(&turn.model) else {
-            return Some(total);
-        };
-        if !turn
-            .ts_ms
-            .is_some_and(|timestamp| timestamp >= replacement.available_since_ts_ms)
-        {
-            return Some(total);
-        }
-        total.checked_add(priced_or_assumed_saving(turn, &replacement.replacement)?)
-    })
-}
-
-fn fast_mode_tokens(turns: &[TokenBurnTurnEvidence]) -> Option<u128> {
-    turns
-        .iter()
-        .filter(|turn| {
-            turn.scope == "delegated"
-                && turn
-                    .speed
-                    .as_deref()
-                    .is_some_and(|speed| speed.trim().eq_ignore_ascii_case("fast"))
-        })
-        .try_fold(0_u128, |total, turn| {
-            let canonical = canonical_model_key(&turn.model);
-            let standard_model = canonical.strip_suffix("-fast").unwrap_or(&canonical);
-            let fast_model = format!("{standard_model}-fast");
-            let priced = report_pricing(&fast_model)
-                .zip(report_pricing(standard_model))
-                .and_then(|(fast, standard)| cost_saving_tokens(turn, &fast, &standard));
-            let saving = priced.or_else(|| percentage_of_tokens(turn.total_tokens()?, 10))?;
-            total.checked_add(saving)
-        })
+fn fast_mode_saving(turn: &TokenBurnTurnEvidence, canonical_model: &str) -> Option<u128> {
+    let standard_model = canonical_model
+        .strip_suffix("-fast")
+        .unwrap_or(canonical_model);
+    let fast_model = format!("{standard_model}-fast");
+    let priced = report_pricing(&fast_model, &fast_model)
+        .zip(report_pricing(standard_model, standard_model))
+        .and_then(|(fast, standard)| cost_saving_tokens(turn, &fast, &standard));
+    priced.or_else(|| percentage_of_tokens(turn.total_tokens()?, 10))
 }
 
 #[derive(Default)]
@@ -677,6 +852,7 @@ struct SessionTokenContribution {
 struct TokenBurnAccumulator {
     complete: bool,
     total_tokens: u128,
+    // Exact overlap needs one compact contribution per session and source/session pair.
     sessions: Vec<SessionTokenContribution>,
     sources: [BTreeMap<(String, String), SourceAggregate>; 3],
 }
@@ -694,7 +870,6 @@ impl TokenBurnAccumulator {
         token_evidence: SessionTokenBurnEvidence,
         findings: [bool; 9],
         source_eligible: [bool; 3],
-        catalogs: &ReportCatalogs,
     ) {
         if let Some(session_tokens) = token_evidence.total_tokens {
             if let Some(total_tokens) = self.total_tokens.checked_add(session_tokens) {
@@ -704,7 +879,6 @@ impl TokenBurnAccumulator {
             }
         }
         let session_index = self.sessions.len();
-        let turns = token_evidence.turns.as_deref();
         self.sessions.push(SessionTokenContribution {
             overdepth: if findings[DetectorId::SessionsOverDepth.index()] {
                 token_evidence.overdepth_avoidable_tokens
@@ -717,22 +891,22 @@ impl TokenBurnAccumulator {
                 Some(0)
             },
             model_overthinking: if findings[DetectorId::ModelOverthinking.index()] {
-                turns.and_then(|turns| overthinking_tokens(turns, catalogs))
+                token_evidence.model_overthinking
             } else {
                 Some(0)
             },
             overpowered_subagents: if findings[DetectorId::OverpoweredSubagents.index()] {
-                turns.and_then(|turns| overpowered_subagent_tokens(turns, catalogs))
+                token_evidence.overpowered_subagents
             } else {
                 Some(0)
             },
             old_model: if findings[DetectorId::OldModelUsage.index()] {
-                turns.and_then(|turns| old_model_tokens(turns, catalogs))
+                token_evidence.old_model
             } else {
                 Some(0)
             },
             fast_mode: if findings[DetectorId::OveruseOfFastMode.index()] {
-                turns.and_then(fast_mode_tokens)
+                token_evidence.fast_mode
             } else {
                 Some(0)
             },
@@ -774,6 +948,7 @@ impl TokenBurnAccumulator {
         let mut numerators = [None; 9];
         let mut combined_by_session = vec![0_u128; self.sessions.len()];
         let mut source_combined_by_session = vec![0_u128; self.sessions.len()];
+        let mut source_detector_by_session = vec![0_u128; self.sessions.len()];
         let can_measure = self.complete && self.total_tokens > 0;
 
         for (detector, value_for) in [
@@ -817,20 +992,22 @@ impl TokenBurnAccumulator {
             if !can_measure {
                 continue;
             }
-            let values = self.sessions.iter().map(value_for).collect::<Vec<_>>();
-            if values.iter().any(Option::is_none) {
+            if self
+                .sessions
+                .iter()
+                .any(|session| value_for(session).is_none())
+            {
                 continue;
             }
-            let Some(total) = values
-                .iter()
-                .flatten()
-                .try_fold(0_u128, |total, value| total.checked_add(*value))
-            else {
+            let Some(total) = self.sessions.iter().try_fold(0_u128, |total, session| {
+                total.checked_add(value_for(session).unwrap_or(0))
+            }) else {
                 return (None, [None; 9]);
             };
             numerators[detector.index()] = Some(total);
-            for (index, value) in values.into_iter().enumerate() {
-                combined_by_session[index] = combined_by_session[index].max(value.unwrap_or(0));
+            for (index, session) in self.sessions.iter().enumerate() {
+                combined_by_session[index] =
+                    combined_by_session[index].max(value_for(session).unwrap_or(0));
             }
         }
 
@@ -849,7 +1026,7 @@ impl TokenBurnAccumulator {
             if !matches!(statuses[detector.index()], DetectorStatus::Findings(_)) || !can_measure {
                 continue;
             }
-            let mut by_session = vec![0_u128; self.sessions.len()];
+            source_detector_by_session.fill(0);
             let mut qualifying_source = false;
             for aggregate in self.sources[source_index].values() {
                 if aggregate.invoked {
@@ -857,24 +1034,25 @@ impl TokenBurnAccumulator {
                 }
                 qualifying_source = true;
                 for (session, tokens) in &aggregate.by_session {
-                    let Some(total) = by_session[*session].checked_add(*tokens) else {
+                    let Some(total) = source_detector_by_session[*session].checked_add(*tokens)
+                    else {
                         return (None, [None; 9]);
                     };
-                    by_session[*session] = total;
+                    source_detector_by_session[*session] = total;
                 }
             }
             if !qualifying_source {
                 continue;
             }
-            let Some(total) = by_session
+            let Some(total) = source_detector_by_session
                 .iter()
                 .try_fold(0_u128, |total, value| total.checked_add(*value))
             else {
                 return (None, [None; 9]);
             };
             numerators[detector.index()] = Some(total);
-            for (index, value) in by_session.into_iter().enumerate() {
-                let Some(total) = source_combined_by_session[index].checked_add(value) else {
+            for (index, value) in source_detector_by_session.iter().enumerate() {
+                let Some(total) = source_combined_by_session[index].checked_add(*value) else {
                     return (None, [None; 9]);
                 };
                 source_combined_by_session[index] = total;
@@ -961,6 +1139,11 @@ impl EfficiencyReportAccumulator {
             actively_growing: 0,
             token_burn: TokenBurnAccumulator::new(),
         }
+    }
+
+    /// Returns the immutable catalogs used by every reduction in this report.
+    pub fn catalogs(&self) -> &ReportCatalogs {
+        &self.catalogs
     }
 
     /// Observes one session from the ready-and-current cohort.
@@ -1072,7 +1255,7 @@ impl EfficiencyReportAccumulator {
             self.folds[detector.index()].observe(observation, &evidence);
         }
         self.token_burn
-            .observe(token_evidence, findings, source_eligible, &self.catalogs);
+            .observe(token_evidence, findings, source_eligible);
     }
 
     fn observe_unrecognized_records(&mut self, evidence: &SessionEvidence) {
@@ -1414,7 +1597,6 @@ mod tests {
             },
             findings,
             [false; 3],
-            &ReportCatalogs::default(),
         );
         let mut statuses = core::array::from_fn(|_| {
             DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
@@ -1448,7 +1630,6 @@ mod tests {
             },
             findings,
             [false; 3],
-            &ReportCatalogs::default(),
         );
         let statuses = finding_statuses(&[DetectorId::SessionsOverDepth]);
 
@@ -1494,44 +1675,54 @@ mod tests {
         }
     }
 
+    fn turn_evidence(
+        turns: impl IntoIterator<Item = TokenBurnTurnEvidence>,
+        catalogs: &ReportCatalogs,
+    ) -> SessionTokenBurnEvidence {
+        let mut accumulator = TokenBurnTurnAccumulator::new(catalogs);
+        for turn in turns {
+            accumulator.observe(turn);
+        }
+        let mut evidence = SessionTokenBurnEvidence::default();
+        accumulator.finish_into(&mut evidence);
+        evidence
+    }
+
     #[test]
     fn every_finding_has_a_positive_numeric_estimate() {
         let all_findings = DetectorId::ALL;
         let mut token_burn = TokenBurnAccumulator::new();
-        token_burn.observe(
-            SessionTokenBurnEvidence {
-                total_tokens: Some(10_000),
-                overdepth_avoidable_tokens: Some(800),
-                repeated_context_avoidable_tokens: Some(700),
-                turns: Some(vec![
-                    token_turn("main", "claude-sonnet-5", Some("max"), None, 1_000),
-                    token_turn("delegated", "claude-opus-4-6", None, None, 1_000),
-                    token_turn("main", "claude-opus-4-6", None, None, 1_000),
-                    token_turn("delegated", "gpt-5.6-sol", None, Some("fast"), 1_000),
-                ]),
-                mcp_sources: Some(vec![TokenBurnSourceEvidence {
-                    scope: "agent:user".to_owned(),
-                    name: "server".to_owned(),
-                    replicated_tokens: 100,
-                    invoked: false,
-                }]),
-                built_in_tool_sources: Some(vec![TokenBurnSourceEvidence {
-                    scope: "agent:bundled".to_owned(),
-                    name: "tool".to_owned(),
-                    replicated_tokens: 100,
-                    invoked: false,
-                }]),
-                skill_sources: Some(vec![TokenBurnSourceEvidence {
-                    scope: "agent:user".to_owned(),
-                    name: "skill".to_owned(),
-                    replicated_tokens: 100,
-                    invoked: false,
-                }]),
-            },
-            [true; 9],
-            [true; 3],
+        let mut token_evidence = turn_evidence(
+            [
+                token_turn("main", "claude-sonnet-5", Some("max"), None, 1_000),
+                token_turn("delegated", "claude-opus-4-6", None, None, 1_000),
+                token_turn("main", "claude-opus-4-6", None, None, 1_000),
+                token_turn("delegated", "gpt-5.6-sol", None, Some("fast"), 1_000),
+            ],
             &ReportCatalogs::default(),
         );
+        token_evidence.total_tokens = Some(10_000);
+        token_evidence.overdepth_avoidable_tokens = Some(800);
+        token_evidence.repeated_context_avoidable_tokens = Some(700);
+        token_evidence.mcp_sources = Some(vec![TokenBurnSourceEvidence {
+            scope: "agent:user".to_owned(),
+            name: "server".to_owned(),
+            replicated_tokens: 100,
+            invoked: false,
+        }]);
+        token_evidence.built_in_tool_sources = Some(vec![TokenBurnSourceEvidence {
+            scope: "agent:bundled".to_owned(),
+            name: "tool".to_owned(),
+            replicated_tokens: 100,
+            invoked: false,
+        }]);
+        token_evidence.skill_sources = Some(vec![TokenBurnSourceEvidence {
+            scope: "agent:user".to_owned(),
+            name: "skill".to_owned(),
+            replicated_tokens: 100,
+            invoked: false,
+        }]);
+        token_burn.observe(token_evidence, [true; 9], [true; 3]);
         let (combined, estimates) = token_burn.finish(&finding_statuses(&all_findings));
 
         assert_eq!(combined, Some(1_200));
@@ -1556,15 +1747,40 @@ mod tests {
 
     #[test]
     fn comparable_lower_effort_output_overrides_the_tier_assumption() {
-        let turns = vec![
-            token_turn("main", "claude-sonnet-5", Some("high"), None, 100),
-            token_turn("main", "claude-sonnet-5", Some("max"), None, 300),
-        ];
-
-        assert_eq!(
-            overthinking_tokens(&turns, &ReportCatalogs::default()),
-            Some(200)
+        let estimates = turn_evidence(
+            [
+                token_turn("main", "claude-sonnet-5", Some("high"), None, 100),
+                token_turn("main", "claude-sonnet-5", Some("max"), None, 300),
+            ],
+            &ReportCatalogs::default(),
         );
+
+        assert_eq!(estimates.model_overthinking, Some(200));
+    }
+
+    #[test]
+    fn equal_distance_comparisons_are_conservative_and_ignore_input_order() {
+        let catalogs = ReportCatalogs::default();
+        let mut turns = [
+            token_turn("main", "claude-sonnet-5", Some("max"), None, 300),
+            token_turn("main", "claude-sonnet-5", Some("high"), None, 100),
+            token_turn("main", "claude-sonnet-5", Some("medium"), None, 200),
+            token_turn("main", "claude-sonnet-5", Some("high"), None, 250),
+        ];
+        turns[0].input_tokens = 100;
+        turns[1].input_tokens = 90;
+        turns[2].input_tokens = 110;
+        turns[3].input_tokens = 110;
+        let expected = turn_evidence(turns.clone(), &catalogs).model_overthinking;
+
+        turns.reverse();
+        let reversed = turn_evidence(turns.clone(), &catalogs).model_overthinking;
+        turns.rotate_left(1);
+        let rotated = turn_evidence(turns, &catalogs).model_overthinking;
+
+        assert_eq!(expected, Some(50));
+        assert_eq!(reversed, expected);
+        assert_eq!(rotated, expected);
     }
 
     #[test]
@@ -1575,11 +1791,155 @@ mod tests {
         let old = token_turn("main", "gpt-5.4-mini", None, None, 1_000);
 
         assert_eq!(
-            overpowered_subagent_tokens(&[premium], &catalogs),
+            turn_evidence([premium], &catalogs).overpowered_subagents,
             Some(100)
         );
-        assert_eq!(fast_mode_tokens(&[fast]), Some(100));
-        assert_eq!(old_model_tokens(&[old], &catalogs), Some(100));
+        assert_eq!(turn_evidence([fast], &catalogs).fast_mode, Some(100));
+        assert_eq!(turn_evidence([old], &catalogs).old_model, Some(100));
+    }
+
+    #[test]
+    fn effort_comparison_retention_is_bounded_and_uses_assumptions_after_the_bound() {
+        let catalogs = ReportCatalogs::default();
+        let mut accumulator = TokenBurnTurnAccumulator::new(&catalogs);
+        for index in 0..=MAX_TOKEN_BURN_COMPARISON_TURNS {
+            let effort = if index % 2 == 0 { "high" } else { "max" };
+            accumulator.observe(token_turn(
+                "main",
+                "claude-sonnet-5",
+                Some(effort),
+                None,
+                100,
+            ));
+        }
+
+        assert!(accumulator.comparison_bound_exceeded);
+        assert_eq!(accumulator.retained_comparison_turns(), 0);
+        assert!(accumulator.comparison_groups.is_empty());
+        let above_cap_turns = MAX_TOKEN_BURN_COMPARISON_TURNS / 2;
+        let mut evidence = SessionTokenBurnEvidence::default();
+        accumulator.finish_into(&mut evidence);
+        let assumed_tokens = 35 * above_cap_turns as u128;
+        assert_eq!(evidence.model_overthinking, Some(assumed_tokens));
+
+        evidence.total_tokens = Some(409_700);
+        let mut findings = [false; 9];
+        findings[DetectorId::ModelOverthinking.index()] = true;
+        let mut token_burn = TokenBurnAccumulator::new();
+        token_burn.observe(evidence, findings, [false; 3]);
+        let (_, estimates) = token_burn.finish(&finding_statuses(&[DetectorId::ModelOverthinking]));
+        assert_eq!(
+            estimates[DetectorId::ModelOverthinking.index()],
+            Some(1_750)
+        );
+    }
+
+    #[test]
+    fn effort_comparison_uses_linear_index_operations_after_sorting() {
+        let mut group = ComparisonGroup::default();
+        for value in 0..1_000 {
+            group.lower_effort.push(ComparisonCandidate {
+                context_tokens: value as u128,
+                output_tokens: value as u64,
+                assumed_tokens: 0,
+            });
+            group.above_cap.push(ComparisonCandidate {
+                context_tokens: value as u128,
+                output_tokens: value as u64 + 1,
+                assumed_tokens: 1,
+            });
+        }
+
+        let estimate = overthinking_group_tokens(group);
+
+        assert_eq!(estimate.operations, 3_000);
+        assert_eq!(estimate.tokens, Some(1_000));
+    }
+
+    #[test]
+    fn indexed_effort_comparison_matches_the_quadratic_estimator_within_the_bound() {
+        let catalogs = ReportCatalogs::default();
+        let mut turns = Vec::new();
+        for index in 0..200_u64 {
+            let effort = match index % 4 {
+                0 => "high",
+                1 => "max",
+                2 => "medium",
+                _ => "xhigh",
+            };
+            let mut turn = token_turn(
+                if index % 3 == 0 { "delegated" } else { "main" },
+                if index % 5 == 0 {
+                    "anthropic/claude-sonnet-5"
+                } else {
+                    "claude-sonnet-5"
+                },
+                Some(effort),
+                None,
+                50 + index % 37,
+            );
+            turn.input_tokens = 800 + index * 11 % 500;
+            turns.push(turn);
+        }
+        let expected = turns.iter().fold(0_u128, |total, turn| {
+            let effort = turn.effort.as_deref().unwrap().trim().to_lowercase();
+            if !catalogs.families[&detectors::ModelFamily::Claude]
+                .effort
+                .above_cap
+                .contains(&effort)
+            {
+                return total;
+            }
+            let turn_context = turn.context_tokens().unwrap();
+            let observed = turns
+                .iter()
+                .filter(|candidate| {
+                    let candidate_effort =
+                        candidate.effort.as_deref().unwrap().trim().to_lowercase();
+                    let candidate_context = candidate.context_tokens().unwrap();
+                    let largest = turn_context.max(candidate_context);
+                    candidate.scope == turn.scope
+                        && canonical_model_key(&candidate.model) == canonical_model_key(&turn.model)
+                        && (largest == 0
+                            || turn_context
+                                .abs_diff(candidate_context)
+                                .checked_mul(5)
+                                .is_some_and(|difference| difference <= largest))
+                        && catalogs.families[&detectors::ModelFamily::Claude]
+                            .effort
+                            .recognized
+                            .contains(&candidate_effort)
+                        && !catalogs.families[&detectors::ModelFamily::Claude]
+                            .effort
+                            .above_cap
+                            .contains(&candidate_effort)
+                        && candidate.output_tokens < turn.output_tokens
+                })
+                .map(|candidate| {
+                    (
+                        turn_context.abs_diff(candidate.context_tokens().unwrap()),
+                        u64::MAX - candidate.output_tokens,
+                        candidate.context_tokens().unwrap(),
+                        u128::from(turn.output_tokens - candidate.output_tokens),
+                    )
+                })
+                .min_by_key(|(difference, reverse_output, context, _)| {
+                    (*difference, *reverse_output, *context)
+                })
+                .map(|(_, _, _, tokens)| tokens);
+            let assumed = match effort.as_str() {
+                "xhigh" => percentage_of_tokens(u128::from(turn.output_tokens), 20),
+                "max" | "ultra" => percentage_of_tokens(u128::from(turn.output_tokens), 35),
+                _ => percentage_of_tokens(u128::from(turn.output_tokens), 10),
+            }
+            .unwrap();
+            total + observed.unwrap_or(assumed)
+        });
+
+        assert_eq!(
+            turn_evidence(turns, &catalogs).model_overthinking,
+            Some(expected)
+        );
     }
 
     #[test]
@@ -1758,7 +2118,6 @@ mod tests {
                 },
                 findings,
                 [true, false, false],
-                &ReportCatalogs::default(),
             );
         }
         let mut statuses = core::array::from_fn(|_| {
@@ -1774,6 +2133,39 @@ mod tests {
 
         assert_eq!(combined, Some(1));
         assert_eq!(estimates[DetectorId::UnusedMcpServers.index()], Some(1));
+    }
+
+    #[test]
+    fn cohort_token_burn_state_keeps_one_session_entry_and_one_entry_per_source_pair() {
+        let mut findings = [false; 9];
+        findings[DetectorId::UnusedMcpServers.index()] = true;
+        let mut token_burn = TokenBurnAccumulator::new();
+        for _ in 0..100 {
+            token_burn.observe(
+                SessionTokenBurnEvidence {
+                    total_tokens: Some(1_000),
+                    mcp_sources: Some(vec![TokenBurnSourceEvidence {
+                        scope: "claude:user".to_owned(),
+                        name: "server".to_owned(),
+                        replicated_tokens: 100,
+                        invoked: false,
+                    }]),
+                    ..SessionTokenBurnEvidence::default()
+                },
+                findings,
+                [true, false, false],
+            );
+        }
+
+        assert_eq!(token_burn.sessions.len(), 100);
+        assert_eq!(token_burn.sources[0].len(), 1);
+        assert_eq!(
+            token_burn.sources[0]
+                .values()
+                .map(|source| source.by_session.len())
+                .sum::<usize>(),
+            100
+        );
     }
 
     #[test]
@@ -1794,7 +2186,6 @@ mod tests {
             },
             finding,
             [true, false, false],
-            &ReportCatalogs::default(),
         );
         token_burn.observe(
             SessionTokenBurnEvidence {
@@ -1803,7 +2194,6 @@ mod tests {
             },
             [false; 9],
             [true, false, false],
-            &ReportCatalogs::default(),
         );
         let statuses = finding_statuses(&[DetectorId::UnusedMcpServers]);
 
@@ -1970,7 +2360,6 @@ mod tests {
                 },
                 findings,
                 [true, false, true],
-                &ReportCatalogs::default(),
             );
         }
         let mut statuses = core::array::from_fn(|_| {

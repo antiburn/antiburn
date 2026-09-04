@@ -95,12 +95,12 @@ pub use resume::{AdapterResume, AdapterSnapshot, EvidenceSnapshot, StreamSnapsho
 pub use rows::{
     MemoryTurnRowStore, ResumeRevisions, SESSION_COVERAGE_SCHEMA_SQL, SOURCE_RESUME_SCHEMA_SQL,
     StoredResume, TURN_MIGRATIONS, TURN_ROW_BATCH_SIZE, TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL,
-    TURN_SCHEMA_V3_SQL, TURN_SCHEMA_V4_SQL, TurnRow, TurnRowError, TurnRowSink, TurnRowStore,
-    TurnScope, TurnSessionKey, count_turn_content_rows, count_turn_rows, delete_source_resume,
-    delete_source_rows_at_fence, delete_stale_source_resume, delete_turn_rows,
-    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_coverage_record,
-    insert_source_resume, insert_turn_rows, query_coverage_record, query_source_resume,
-    restamp_source_rows, turn_row_from_event,
+    TURN_SCHEMA_V3_SQL, TURN_SCHEMA_V4_SQL, TURN_SCHEMA_V5_SQL, TurnRow, TurnRowError, TurnRowSink,
+    TurnRowStore, TurnScope, TurnSessionKey, count_turn_content_rows, count_turn_rows,
+    delete_source_resume, delete_source_rows_at_fence, delete_stale_source_resume,
+    delete_turn_rows, delete_turn_rows_except_fence, delete_turn_rows_for_fence,
+    insert_coverage_record, insert_source_resume, insert_turn_rows, query_coverage_record,
+    query_source_resume, restamp_source_rows, turn_row_from_event,
 };
 pub use source_validity::{
     AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, RESUME_TAIL_BYTES, ResumePoint,

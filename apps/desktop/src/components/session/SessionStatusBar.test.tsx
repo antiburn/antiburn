@@ -295,7 +295,7 @@ describe("SessionStatusBar", () => {
     expect(figure.querySelector("svg")).not.toBeNull()
   })
 
-  it("keeps a smaller limit share as plain text", () => {
+  it("uses the hot pill when a limit share rounds to five percent", () => {
     render(
       <SessionStatusBar
         checks={ALL_PASSED}
@@ -303,7 +303,25 @@ describe("SessionStatusBar", () => {
       />,
     )
 
+    const figure = screen.getByLabelText(
+      "Estimated weekly share This session uses 5% or more of your limit.",
+    )
+    expect(figure).toHaveTextContent("5%")
+    expect(figure.className).toContain("rounded-full")
+    expect(figure.className).toContain("bg-brand-tint")
+    expect(figure.querySelector("svg")).not.toBeNull()
+  })
+
+  it("keeps a displayed value below five percent as plain text", () => {
+    render(
+      <SessionStatusBar
+        checks={ALL_PASSED}
+        limitBadge={{ label: "Estimated weekly share", percent: 4.94 }}
+      />,
+    )
+
     const figure = screen.getByLabelText("Estimated weekly share")
+    expect(figure).toHaveTextContent("4.9%")
     expect(figure.className).not.toContain("rounded-full")
     expect(figure.className).not.toContain("bg-brand-tint")
     expect(figure.querySelector("svg")).toBeNull()
