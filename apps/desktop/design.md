@@ -139,9 +139,9 @@ colors:
   led-off: # unlit LED segment; one mid grey for both themes, because the HUD paints no surface and floats over any background
     light: "hsl(0 0% 50% / 0.45)"
     dark: "hsl(0 0% 50% / 0.45)"
-  led-notch: # the linear-use notch; one grey for both themes, for the same reason as led-off
-    light: "hsl(0 0% 45% / 0.9)"
-    dark: "hsl(0 0% 45% / 0.9)"
+  led-notch: # the linear-use notch; one dark grey for both themes, for the same reason as led-off
+    light: "hsl(0 0% 20% / 0.95)"
+    dark: "hsl(0 0% 20% / 0.95)"
   # Session-analysis sub-palette only (src/styles/session-analysis-colors.css)
   context-fill-top:
     light: "hsl(217.2 91% 59.8% / 0.6)"

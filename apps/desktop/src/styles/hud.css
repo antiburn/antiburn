@@ -26,11 +26,12 @@
   --color-led-off-val: hsl(0 0% 50% / 0.45);
 
   /*
-   * The linear-use notch. A darker grey than the unlit segment, for the same
-   * reason: the notch must hold on a light document and on a dark one. The
-   * label ink cannot do this, because it turns near-white in the dark theme.
+   * The linear-use notch. Much darker than the unlit segment, because the
+   * notch is 1.5px wide and a mid grey was too weak to find at that size. It
+   * holds one value in each theme, as the unlit segment does: the label ink
+   * turns near-white in the dark theme and disappears on a light document.
    */
-  --color-led-notch-val: hsl(0 0% 45% / 0.9);
+  --color-led-notch-val: hsl(0 0% 20% / 0.95);
 
   /* The HUD surface on hover. The reader can see the desktop through it. */
   --color-bg-hud-hover-val: hsl(0 0% 96.4% / 0.9);
@@ -43,7 +44,7 @@
     --color-bg-hud-val: hsl(0 0% 12.5%);
     --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
     --color-led-off-val: hsl(0 0% 50% / 0.45);
-    --color-led-notch-val: hsl(0 0% 45% / 0.9);
+    --color-led-notch-val: hsl(0 0% 20% / 0.95);
   }
 }
 
@@ -53,7 +54,7 @@
   --color-bg-hud-val: hsl(0 0% 96.4%);
   --color-bg-hud-hover-val: hsl(0 0% 96.4% / 0.9);
   --color-led-off-val: hsl(0 0% 50% / 0.45);
-  --color-led-notch-val: hsl(0 0% 45% / 0.9);
+  --color-led-notch-val: hsl(0 0% 20% / 0.95);
 }
 
 :root[data-theme="dark"] {
@@ -62,7 +63,7 @@
   --color-bg-hud-val: hsl(0 0% 12.5%);
   --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
   --color-led-off-val: hsl(0 0% 50% / 0.45);
-  --color-led-notch-val: hsl(0 0% 45% / 0.9);
+  --color-led-notch-val: hsl(0 0% 20% / 0.95);
 }
 
 /*
