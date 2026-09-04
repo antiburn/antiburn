@@ -199,6 +199,25 @@ describe("SessionStatusBar", () => {
     expect(screen.queryByLabelText(/assessed/i)).toBeNull()
   })
 
+  it("keeps the cost at the right edge when no checks were assessed", () => {
+    render(
+      <SessionStatusBar checks={[]} cost={{ totalUsd: 2.4, figureLabel: "Estimated cost" }} />,
+    )
+
+    expect(screen.getByLabelText("Estimated cost $2.40")).toHaveClass("ml-auto")
+  })
+
+  it("keeps a limit share at the right edge when no checks were assessed", () => {
+    render(
+      <SessionStatusBar
+        checks={[]}
+        limitBadge={{ label: "Estimated weekly share", percent: 2.4 }}
+      />,
+    )
+
+    expect(screen.getByLabelText("Estimated weekly share")).toHaveClass("ml-auto")
+  })
+
   it("omits unavailable checks from the tooltip", async () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
     fireEvent.focus(screen.getByLabelText("4 of 5 burn checks passed"))

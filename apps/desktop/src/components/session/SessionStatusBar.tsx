@@ -2,6 +2,7 @@ import { Check, Flame, X, type LucideIcon } from "lucide-react"
 import { Fragment } from "react"
 
 import type { SessionHygieneEvidenceState } from "../../lib/insightsIpc"
+import { cn } from "../../lib/cn"
 import {
   sessionHygieneStateIsTransient,
   sessionHygieneStateLabel,
@@ -170,8 +171,8 @@ export function SessionStatusBar({
           <span
             className={
               isHighLimitShare
-                ? "flex shrink-0 items-center gap-0.5 rounded-full bg-brand-tint px-1.5 py-px font-mono type-footnote font-medium! leading-[13px] tracking-tight! text-white tabular-nums"
-                : "font-mono type-footnote tabular-nums text-label-secondary"
+                ? "ml-auto flex shrink-0 items-center gap-0.5 rounded-full bg-brand-tint px-1.5 py-px font-mono type-footnote font-medium! leading-[13px] tracking-tight! text-white tabular-nums"
+                : "ml-auto font-mono type-footnote tabular-nums text-label-secondary"
             }
             data-session-limit-provider={limitBadge.provider}
             data-session-limit-window={limitBadge.windowId}
@@ -192,7 +193,13 @@ export function SessionStatusBar({
           </span>
         </Tooltip>
       ) : (
-        cost && <SessionCostBadge {...cost} appearance={cost.isHighCost ? "pill" : "bare"} />
+        cost && (
+          <SessionCostBadge
+            {...cost}
+            appearance={cost.isHighCost ? "pill" : "bare"}
+            className={cn(cost.className, "ml-auto")}
+          />
+        )
       )}
     </div>
   )
