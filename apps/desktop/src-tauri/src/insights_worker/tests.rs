@@ -65,6 +65,7 @@ fn published_pass(record: &SessionRecord) -> EvidencePass {
 "#
                 .into(),
             ),
+            fork_parent_session_id: None,
         }],
         &|| false,
         Some(store),
@@ -93,6 +94,7 @@ fn generic_published_pass(record: &SessionRecord) -> EvidencePass {
 "#
                 .into(),
             ),
+            fork_parent_session_id: None,
         }],
         &|| false,
         Some(store),
@@ -1039,6 +1041,7 @@ async fn a_published_pass_leaves_the_expected_turn_rows_under_its_claim_fence() 
                         "\n",
                     )
                     .into()),
+                    fork_parent_session_id: None,
                 }],
                 &|| signal.observe(),
                 turn_row_store,
@@ -1124,6 +1127,7 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
             agent: crate::agents::vendor_label(agent).to_owned(),
             session_id,
             source: antiburn_local::analysis::RawSource::File(pi_source.clone()),
+            fork_parent_session_id: None,
         };
         Box::pin(async move {
             let mut pass = analysis::evidence_pass_with_turn_rows(

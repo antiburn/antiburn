@@ -163,6 +163,7 @@ fn ingest_and_publish(store: &Store, kind: AgentKind, session_id: &str, source: 
         agent: crate::agents::vendor_label(kind).to_owned(),
         session_id: session_id.to_owned(),
         source,
+        fork_parent_session_id: None,
     };
     let mut pass = crate::analysis::evidence_pass_with_turn_rows(
         std::slice::from_ref(&input),

@@ -29,6 +29,7 @@ fn file_input(path: &Path) -> SessionInput {
         agent: "claude".to_string(),
         session_id: "claimed-session".to_string(),
         source: RawSource::File(path.to_path_buf()),
+        fork_parent_session_id: None,
     }
 }
 

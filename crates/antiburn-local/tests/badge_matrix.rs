@@ -145,6 +145,7 @@ fn evidence_for(
         agent: agent.to_owned(),
         session_id: name.to_owned(),
         source: RawSource::Jsonl(text.to_owned()),
+        fork_parent_session_id: None,
     };
     let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
@@ -393,6 +394,7 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
         agent: "opencode".to_owned(),
         session_id: "root".to_owned(),
         source: RawSource::Sqlite(path),
+        fork_parent_session_id: None,
     };
     let metrics = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {

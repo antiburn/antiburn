@@ -68,7 +68,23 @@ pub fn parse_jsonl(content: &str) -> Vec<NormalizedEvent> {
     events
 }
 
+/// Every evidence observation a full (non-inherited) Claude record carries:
+/// [`context_observations`]'s context-source evidence, then
+/// [`work_observations`]'s turn-attribution evidence. A skipped fork-replay
+/// record calls [`context_observations`] alone — see `claude::visit_reader`.
 pub(crate) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
+    let mut observations = context_observations(value);
+    observations.extend(work_observations(value));
+    observations
+}
+
+/// The observations a record contributes to the fork's own context window,
+/// even when the record itself is inherited (replayed) rather than the
+/// fork's own work: named context sources (MCP servers, deferred tools) and
+/// the harness version. A fork's first own request still carries an
+/// inherited record's context contribution, so this half stays true for a
+/// skipped record.
+pub(crate) fn context_observations(value: &Value) -> Vec<EvidenceObservation> {
     let mut observations = Vec::new();
     if let Some(attachment) = value.get("attachment") {
         let attachment_type = attachment.get("type").and_then(Value::as_str);
@@ -125,7 +141,18 @@ pub(crate) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
             version: version.to_owned(),
         });
     }
+    observations
+}
 
+/// The observations that count a record as attributable turn work:
+/// [`EvidenceObservation::DelegatedTurn`], this record's
+/// [`thread_link_observation`], and any [`EvidenceObservation::SubagentSpawn`]
+/// its content declares. An inherited (replayed) record is context, not
+/// work, so `claude::visit_reader` skips this half for it — except the
+/// thread link, which it emits directly so a later record's parent link
+/// still resolves.
+pub(crate) fn work_observations(value: &Value) -> Vec<EvidenceObservation> {
+    let mut observations = Vec::new();
     let is_sidechain = value
         .get("isSidechain")
         .and_then(Value::as_bool)
@@ -151,17 +178,8 @@ pub(crate) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
         model: delegated_model,
     });
 
-    // Per-record thread identity (Claude's top-level `uuid` / `parentUuid`).
-    // Emitted for every record that carries either field, so the evidence
-    // sink can verify parent links even through eventless records. Read
-    // `parentUuid` only, with no fallback to `logicalParentUuid`: a
-    // compaction boundary's logical parent can sit in another file or later
-    // in this file, so it is not a link this source can verify, and the
-    // sink checks only `parentUuid`.
-    let uuid = thread_identity_field(value, "uuid");
-    let parent_uuid = thread_identity_field(value, "parentUuid");
-    if uuid.is_some() || parent_uuid.is_some() {
-        observations.push(EvidenceObservation::ThreadLink { uuid, parent_uuid });
+    if let Some(link) = thread_link_observation(value) {
+        observations.push(link);
     }
 
     let parent_model = value
@@ -198,6 +216,23 @@ pub(crate) fn evidence_observations(value: &Value) -> Vec<EvidenceObservation> {
         }
     }
     observations
+}
+
+/// This record's [`EvidenceObservation::ThreadLink`] (Claude's top-level
+/// `uuid` / `parentUuid`), when either field is present. `None` for a
+/// record with neither.
+///
+/// Emitted for every record that carries either field, so the evidence
+/// sink can verify parent links even through eventless records. Read
+/// `parentUuid` only, with no fallback to `logicalParentUuid`: a
+/// compaction boundary's logical parent can sit in another file or later
+/// in this file, so it is not a link this source can verify, and the
+/// sink checks only `parentUuid`.
+pub(crate) fn thread_link_observation(value: &Value) -> Option<EvidenceObservation> {
+    let uuid = thread_identity_field(value, "uuid");
+    let parent_uuid = thread_identity_field(value, "parentUuid");
+    (uuid.is_some() || parent_uuid.is_some())
+        .then_some(EvidenceObservation::ThreadLink { uuid, parent_uuid })
 }
 
 /// A top-level thread-identity field (Claude's `uuid` / `parentUuid`, Pi's
@@ -1540,6 +1575,64 @@ mod tests {
                 observation,
                 EvidenceObservation::SubagentSpawn { .. }
             ))
+        );
+    }
+
+    /// A record's context contribution ([`context_observations`]) never
+    /// carries the turn-attribution half's variants — the split
+    /// `claude::visit_reader` relies on to skip a fork's inherited
+    /// records without also skipping their context.
+    #[test]
+    fn context_observations_excludes_thread_link_and_delegated_turn() {
+        let record = json!({
+            "type": "user",
+            "uuid": "u1",
+            "parentUuid": "u0",
+            "version": "1.0.0",
+            "isSidechain": true,
+            "message": {"role": "assistant", "model": "claude-opus-4-6"},
+        });
+        let observations = context_observations(&record);
+        assert!(observations.iter().any(|observation| matches!(
+            observation,
+            EvidenceObservation::HarnessVersion { version } if version == "1.0.0"
+        )));
+        assert!(
+            !observations
+                .iter()
+                .any(|observation| matches!(observation, EvidenceObservation::ThreadLink { .. }))
+        );
+        assert!(
+            !observations.iter().any(|observation| matches!(
+                observation,
+                EvidenceObservation::DelegatedTurn { .. }
+            ))
+        );
+    }
+
+    #[test]
+    fn evidence_observations_is_context_observations_then_work_observations() {
+        let record = claude_assistant_record_with_tool("Agent");
+        let mut expected = context_observations(&record);
+        expected.extend(work_observations(&record));
+        assert_eq!(evidence_observations(&record), expected);
+    }
+
+    #[test]
+    fn thread_link_observation_is_none_without_uuid_or_parent_uuid() {
+        let record = json!({"type": "user"});
+        assert_eq!(thread_link_observation(&record), None);
+    }
+
+    #[test]
+    fn thread_link_observation_carries_uuid_and_parent_uuid() {
+        let record = json!({"type": "assistant", "uuid": "u2", "parentUuid": "u1"});
+        assert_eq!(
+            thread_link_observation(&record),
+            Some(EvidenceObservation::ThreadLink {
+                uuid: Some("u2".to_owned()),
+                parent_uuid: Some("u1".to_owned()),
+            })
         );
     }
 }

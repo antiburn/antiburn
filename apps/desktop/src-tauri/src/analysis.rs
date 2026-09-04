@@ -1296,6 +1296,7 @@ pub async fn analyze_for_evidence(
         agent: label.to_string(),
         session_id: session_id.to_string(),
         source: raw,
+        fork_parent_session_id: None,
     };
 
     // Sub-agent transcripts, resolved before the analysis so all of them ride
@@ -1334,6 +1335,7 @@ pub async fn analyze_for_evidence(
                 agent: label.to_string(),
                 session_id: subagent_id,
                 source: RawSource::File(path),
+                fork_parent_session_id: None,
             },
         ));
     }

@@ -138,7 +138,7 @@
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 24,
+      "parserRevision": 25,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },

@@ -140,6 +140,12 @@ fn fixture(name: &str) -> &'static str {
         "fork_replay_fork_meta" => {
             include_str!("fixtures/claude_characterization/fork_replay_fork.meta.json")
         }
+        "fork_lineage_parent" => {
+            include_str!("fixtures/claude_characterization/fork_lineage_parent.jsonl")
+        }
+        "fork_lineage_fork" => {
+            include_str!("fixtures/claude_characterization/fork_lineage_fork.jsonl")
+        }
         _ => panic!("unknown characterization fixture: {name}"),
     }
 }
@@ -149,6 +155,7 @@ fn input(name: &str) -> SessionInput {
         agent: "claude".to_string(),
         session_id: name.to_string(),
         source: RawSource::Jsonl(fixture(name).to_string()),
+        fork_parent_session_id: None,
     }
 }
 
@@ -239,6 +246,7 @@ fn file_input_bytes(name: &str, source: &[u8], directory: &tempfile::TempDir) ->
         agent: "claude".to_string(),
         session_id: name.to_string(),
         source: RawSource::File(path),
+        fork_parent_session_id: None,
     }
 }
 
@@ -1319,6 +1327,7 @@ fn incomplete_final_record_is_not_committed() {
         agent: "claude".to_string(),
         session_id: "incomplete_final_record".to_string(),
         source: RawSource::Jsonl(completed),
+        fork_parent_session_id: None,
     };
     let normalized = normalize_source(&completed_input).expect("completed source must normalize");
     assert_eq!(normalized.events.len(), 3);
@@ -1368,6 +1377,7 @@ fn an_in_memory_source_commits_an_unterminated_final_record() {
         agent: "claude".to_string(),
         session_id: "unterminated-memory".to_string(),
         source: RawSource::Jsonl(three_record_source()),
+        fork_parent_session_id: None,
     };
     let session = normalize_source(&input).expect("in-memory source must normalize");
     assert_eq!(session.events.len(), 3);
@@ -1379,6 +1389,7 @@ fn a_slash_command_skill_resolves_when_its_marker_arrives_later() {
         agent: "claude".to_string(),
         session_id: "late-skill-marker".to_string(),
         source: RawSource::Jsonl(late_skill_source(true)),
+        fork_parent_session_id: None,
     };
     let session = normalize_source(&input).expect("skill source must normalize");
     let detail = session.events[0]
@@ -1414,6 +1425,7 @@ fn a_builtin_named_skill_resolves_when_its_marker_arrives_later() {
         agent: "claude".to_string(),
         session_id: "builtin-named-skill".to_string(),
         source: RawSource::Jsonl(source),
+        fork_parent_session_id: None,
     };
     let mut metrics = SessionMetricsAccumulator::new("claude", "builtin-named-skill");
     adapter_for("claude")
@@ -1460,6 +1472,7 @@ fn builtin_commands_do_not_exhaust_late_skill_metric_candidates() {
         agent: "claude".to_string(),
         session_id: "builtin-command-budget".to_string(),
         source: RawSource::Jsonl(source),
+        fork_parent_session_id: None,
     };
     let mut metrics = SessionMetricsAccumulator::new("claude", "builtin-command-budget");
     adapter_for("claude")
@@ -1474,6 +1487,7 @@ fn a_skill_marker_in_a_record_with_no_role_is_still_collected() {
         agent: "claude".to_string(),
         session_id: "roleless-skill-marker".to_string(),
         source: RawSource::Jsonl(late_skill_source(false)),
+        fork_parent_session_id: None,
     };
     let session = normalize_source(&input).expect("skill source must normalize");
     let detail = session.events[0]
@@ -1497,6 +1511,7 @@ fn two_priceable_models_of_equal_rank_keep_the_first_seen() {
         agent: "claude".to_string(),
         session_id: "equal-rank-models".to_string(),
         source: RawSource::Jsonl(source),
+        fork_parent_session_id: None,
     };
     let session = normalize_source(&input).expect("model source must normalize");
     assert_eq!(session.model.as_deref(), Some("claude-opus-4-7-20260115"));
@@ -1509,6 +1524,7 @@ fn an_unopenable_file_source_omits_the_whole_session() {
         agent: "claude".to_string(),
         session_id: "unopenable".to_string(),
         source: RawSource::File(directory.path().join("missing.jsonl")),
+        fork_parent_session_id: None,
     };
     let normalize_failed = normalize_source(&input).is_err();
     let session_was_omitted = analyze_sources_with(vec![input], false).sessions.is_empty();
@@ -1539,6 +1555,7 @@ fn an_oversized_metric_bearing_record_is_dropped_for_both_source_variants() {
             agent: "claude".to_string(),
             session_id: "oversized-metrics-memory".to_string(),
             source: RawSource::Jsonl(source),
+            fork_parent_session_id: None,
         },
     ];
 
@@ -1679,16 +1696,19 @@ fn fork_replay_session(directory: &tempfile::TempDir) -> [SessionInput; 3] {
             agent: "claude".to_string(),
             session_id: "fork-replay-parent".to_string(),
             source: RawSource::File(parent_path),
+            fork_parent_session_id: None,
         },
         SessionInput {
             agent: "claude".to_string(),
             session_id: "fork-replay-normal-child".to_string(),
             source: RawSource::File(normal_path),
+            fork_parent_session_id: None,
         },
         SessionInput {
             agent: "claude".to_string(),
             session_id: "fork-replay-fork-child".to_string(),
             source: RawSource::File(fork_path),
+            fork_parent_session_id: None,
         },
     ]
 }
@@ -1793,4 +1813,121 @@ fn fork_replayed_uuids_are_counted_once_and_do_not_degrade_evidence() {
         "subagents must not degrade to attribution_incomplete: {:?}",
         evidence.subagents
     );
+}
+
+/* --------------------------------------------------------------------
+ * Phase 2: a Claude "resume as fork" session excludes the parent's
+ * records it copies into its own leading prefix from its own work,
+ * once the shell has linked it to that parent. See
+ * `crates/antiburn-local/src/analysis/vendors/claude.rs`
+ * `fork_parent_session_skip_uuids`.
+ * ----------------------------------------------------------------- */
+
+/// A "resume as fork" session named `fork` whose leading two records copy
+/// `parent`'s two records verbatim (same `uuid`s, new `sessionId`), then
+/// appends one new user/assistant turn of its own. Writes `parent.jsonl`
+/// and `fork.jsonl` to `directory` and returns `fork.jsonl`'s
+/// [`SessionInput`], with `fork_parent_session_id` set to `"parent"` — the
+/// link the shell records once it identifies the fork (see
+/// `apps/desktop/src-tauri/src/fork_lineage.rs`).
+fn fork_lineage_session(directory: &tempfile::TempDir) -> SessionInput {
+    fs::write(
+        directory.path().join("parent.jsonl"),
+        fixture("fork_lineage_parent"),
+    )
+    .expect("write parent transcript");
+    let fork_path = directory.path().join("fork.jsonl");
+    fs::write(&fork_path, fixture("fork_lineage_fork")).expect("write fork transcript");
+    SessionInput {
+        agent: "claude".to_string(),
+        session_id: "fork".to_string(),
+        source: RawSource::File(fork_path),
+        fork_parent_session_id: Some("parent".to_string()),
+    }
+}
+
+#[test]
+fn a_claude_fork_with_a_known_parent_excludes_the_inherited_prefix_from_its_own_work() {
+    let directory = tempfile::TempDir::new().expect("tempdir");
+    let input = fork_lineage_session(&directory);
+
+    let store = MemoryTurnRowStore::new("claude", "fork");
+    let metrics = SessionMetricsAccumulator::new("claude", "fork");
+    let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        agent: "claude".to_owned(),
+        session_id: "fork".to_owned(),
+        kind: SourceKind::from(&input.source),
+        capabilities: SourceCapabilities::claude(),
+    });
+    let turn_rows = TurnRowSink::new(
+        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+        "fork".to_string(),
+        None,
+    );
+    let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
+    let outcome = adapter_for("claude")
+        .visit(&input, &mut composite)
+        .expect("fork source must be visited");
+    composite.observe_source_outcome(outcome);
+    let (_metrics, residual) = composite.into_parts().expect("fork pass must publish");
+    let facts = store.query_turn_facts().expect("turn facts must query");
+    let evidence = residual.evidence(&facts);
+
+    // Only the fork's two new records became turn rows: the inherited
+    // prefix contributes no usage and no row of its own.
+    let (row_count, total_input, total_output): (i64, i64, i64) = store
+        .with_connection(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*), SUM(input_tokens), SUM(output_tokens) FROM turn",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+        })
+        .expect("query turn rows");
+    assert_eq!(row_count, 2);
+    assert_eq!(total_input, 18);
+    assert_eq!(total_output, 6);
+
+    let row_uuids: Vec<Option<String>> = store
+        .with_connection(|conn| {
+            let mut statement = conn.prepare("SELECT uuid FROM turn ORDER BY turn_index")?;
+            let rows = statement.query_map([], |row| row.get::<_, Option<String>>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .expect("query row uuids");
+    assert_eq!(
+        row_uuids,
+        vec![
+            Some("22222222-2222-4222-8222-000000000001".to_string()),
+            Some("22222222-2222-4222-8222-000000000002".to_string()),
+        ]
+    );
+
+    // All four records (the two inherited, the two new) were observed for
+    // coverage: an inherited record still counts against `records_observed`.
+    assert_eq!(evidence.diagnostics.records_observed, 4);
+
+    // The inherited records' `ThreadLink` still resolved the new prefix's
+    // parent, so `cache` does not degrade for an unresolved parent link.
+    assert!(
+        matches!(evidence.cache, EvidenceValue::Complete(_)),
+        "cache must stay clean, the inherited records still resolve thread links: {:?}",
+        evidence.cache
+    );
+
+    // The inherited records still contributed their context: the harness
+    // version, and the skill listing on the first inherited user record.
+    assert_eq!(
+        evidence.provenance.harness_version,
+        EvidenceValue::Complete(())
+    );
+    match &evidence.context_sources {
+        EvidenceValue::Complete(sources) => {
+            assert!(
+                sources.skills.contains_key("orbit-planner"),
+                "expected the inherited skill listing to still be observed: {sources:?}"
+            );
+        }
+        other => panic!("expected context_sources to be complete, got {other:?}"),
+    }
 }

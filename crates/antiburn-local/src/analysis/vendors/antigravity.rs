@@ -2648,6 +2648,7 @@ mod tests {
             agent: "antigravity".to_owned(),
             session_id: "synthetic-antigravity".to_owned(),
             source,
+            fork_parent_session_id: None,
         }
     }
 
@@ -2842,6 +2843,7 @@ mod tests {
                 agent: "antigravity".to_owned(),
                 session_id: session_id.to_owned(),
                 source: RawSource::Sqlite(db_path),
+                fork_parent_session_id: None,
             },
         )
     }
