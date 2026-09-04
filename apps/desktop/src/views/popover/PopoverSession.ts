@@ -52,7 +52,6 @@ import {
   prefersReducedMotion,
   type PopoverSurface,
 } from "../../lib/popoverHeight"
-import { hidePopoverPeek } from "../../lib/popoverPeekIpc"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
 import {
@@ -1108,9 +1107,7 @@ export class PopoverSession {
         this.update({ checksUnavailable: true })
         return
       }
-      const replacesVisibleReport = this.snapshot.checksReport != null
       this.update({ checksReport, checksUnavailable: false })
-      if (replacesVisibleReport) void hidePopoverPeek().catch(() => undefined)
     } catch {
       if (generation === this.generation && token === this.checksToken) {
         this.update({ checksUnavailable: true })
