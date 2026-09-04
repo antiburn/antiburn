@@ -150,13 +150,18 @@ describe("EfficiencyBreakdown", () => {
     expect(screen.queryByText(/fresh input and output/)).toBeNull()
   })
 
-  it("gives the cost reading its own tooltip", () => {
+  it("prints the cost reading's guidance inline under its scale", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
 
-    const costRow = screen.getByTestId("cost-row")
-    fireEvent.focus(costRow)
-    expect(screen.getAllByText(/average cost for each million tokens/).length).toBeGreaterThan(
-      0,
+    const guidance = within(screen.getByTestId("cost-guidance"))
+    expect(guidance.getByText(/average cost for each million tokens/)).toHaveClass(
+      "text-label-secondary",
     )
+    expect(
+      guidance.getByText("For Claude, aim for below $33. Above $80 is too high."),
+    ).toHaveClass("text-label-tertiary")
+    expect(guidance.getByText(/Context tab shows/)).toBeInTheDocument()
+    // The cost row is plain text now, not a tooltip trigger.
+    expect(screen.getByTestId("cost-row")).not.toHaveAttribute("tabindex")
   })
 })

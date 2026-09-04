@@ -50,7 +50,7 @@ const METRIC_SUMMARY: Record<MetricKey, string[]> = {
 const METRIC_GUIDANCE: Record<MetricKey, string[]> = {
   costPerMTok: [
     "Craft tight workflows, and use cheaper models when they're good enough.",
-    "Pay attention to which of these next three categories are out of band.",
+    "The Context tab shows which of work, rewrite, and carry is out of band.",
   ],
   realWorkShare: [
     "Maximise this by minimising the other two dimensions.",
@@ -249,31 +249,36 @@ function CompositionTrack({ segments }: { segments: ShareSegment[] }) {
  * The guidance for one reading, as the body of its tooltip. It names what the
  * reading measures, states the band it should sit in, and says what to change.
  *
- * The guidance lives in a tooltip so the block stays the height of its
- * readings. A panel that grows and shrinks under the rows moves everything
- * below it every time the pointer crosses a row.
+ * The composition rows keep their guidance in a tooltip so the block stays
+ * the height of its readings. A panel that grows and shrinks under the rows
+ * moves everything below it every time the pointer crosses a row. The cost
+ * reading stands alone on its tab, so it prints the same guidance inline.
  */
 function MetricGuidance({
   metricKey,
   profile,
+  inline = false,
 }: {
   metricKey: MetricKey
   profile: EfficiencyProfile
+  inline?: boolean
 }) {
+  const leadClass = inline ? "text-label-secondary" : "text-label"
+  const restClass = inline ? "text-label-tertiary" : "text-label-secondary"
   return (
-    <div className="space-y-1 text-pretty">
+    <div className={cn("space-y-1 text-pretty", inline && "type-callout")}>
       {METRIC_SUMMARY[metricKey].map((sentence) => (
-        <p key={sentence} className="text-label">
+        <p key={sentence} className={leadClass}>
           {sentence}
         </p>
       ))}
       {efficiencyThresholdGuidance(metricKey, profile).map((sentence) => (
-        <p key={sentence} className="text-label-secondary">
+        <p key={sentence} className={restClass}>
           {sentence}
         </p>
       ))}
       {METRIC_GUIDANCE[metricKey].map((sentence) => (
-        <p key={sentence} className="text-label-secondary">
+        <p key={sentence} className={restClass}>
           {sentence}
         </p>
       ))}
@@ -285,9 +290,10 @@ const ROW_CLASS =
   "-mx-1.5 rounded-control px-1.5 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
 
 /**
- * The $/MTok reading: label and figure on one baseline, with its scale
- * underneath. This metric is not part of the composition, so it keeps the
- * scale the other readings gave up.
+ * The $/MTok reading: label and figure on one baseline, its scale underneath,
+ * and its guidance printed below the scale. This metric is not part of the
+ * composition, so it keeps the scale the other readings gave up, and it has
+ * the room on its own tab to explain itself without a tooltip.
  */
 function CostRowLine({
   metric,
@@ -297,17 +303,18 @@ function CostRowLine({
   profile: EfficiencyProfile
 }) {
   return (
-    <Tooltip label={<MetricGuidance metricKey="costPerMTok" profile={profile} />} delayMs={150}>
-      <div className={cn(ROW_CLASS, "block")} tabIndex={0} data-testid="cost-row">
-        <span className="flex items-baseline justify-between gap-2 pb-1">
-          <span className="truncate text-label-secondary">$/MTok</span>
-          <span className="shrink-0 text-label tabular-nums">
-            {formatCostPerMTok(metric.value)}
-          </span>
+    <div className="type-body" data-testid="cost-row">
+      <span className="flex items-baseline justify-between gap-2 pb-1">
+        <span className="truncate text-label-secondary">$/MTok</span>
+        <span className="shrink-0 text-label tabular-nums">
+          {formatCostPerMTok(metric.value)}
         </span>
-        <CostScaleBar metric={metric} profile={profile} />
+      </span>
+      <CostScaleBar metric={metric} profile={profile} />
+      <div className="mt-3" data-testid="cost-guidance">
+        <MetricGuidance metricKey="costPerMTok" profile={profile} inline />
       </div>
-    </Tooltip>
+    </div>
   )
 }
 
