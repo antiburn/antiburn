@@ -108,3 +108,27 @@
 .animate-nudge-out {
   animation: nudge-out 160ms ease-in forwards;
 }
+
+/* ==========================================================================
+   Chart mark entrance.
+
+   Played by the context chart as it first draws. The areas grow first, then
+   the rewrite marks fade in over them, so the reader sees the session build
+   before the events on top of it. The chart sets the delay for each mark in
+   `--chart-mark-delay`. Neutralized by the reduced-motion clamp above.
+   ========================================================================== */
+
+@keyframes chart-mark-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-chart-mark {
+  animation: chart-mark-in var(--duration-slow) ease-out both;
+  animation-delay: var(--chart-mark-delay, 0ms);
+}

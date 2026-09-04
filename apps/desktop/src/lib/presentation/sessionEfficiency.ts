@@ -83,13 +83,22 @@ function bandFor(value: number, edges: BandEdges): EfficiencyBand {
   return "ok"
 }
 
-/** The three bands and marker position for one efficiency thermometer. */
+/**
+ * The three bands and marker position for one efficiency thermometer, with
+ * the four tick values that bound them: the start, the two band edges, and
+ * the top of the scale.
+ */
 export interface EfficiencyThermometer {
   segments: [EfficiencyBand, EfficiencyBand, EfficiencyBand]
   position: number
+  ticks: [string, string, string, string]
 }
 
-function thermometerFor(value: number, edges: BandEdges): EfficiencyThermometer {
+function thermometerFor(
+  value: number,
+  edges: BandEdges,
+  metricKey: keyof ProfileEdges,
+): EfficiencyThermometer {
   const low = Math.min(edges.good, edges.bad)
   const high = Math.max(edges.good, edges.bad)
   const top = high * 2
@@ -104,6 +113,12 @@ function thermometerFor(value: number, edges: BandEdges): EfficiencyThermometer 
   return {
     segments: edges.higherIsBetter ? ["bad", "ok", "good"] : ["good", "ok", "bad"],
     position,
+    ticks: [
+      formatEdge(metricKey, 0),
+      formatEdge(metricKey, low),
+      formatEdge(metricKey, high),
+      formatEdge(metricKey, top),
+    ],
   }
 }
 
@@ -113,7 +128,7 @@ export function efficiencyThermometer(
   metricKey: keyof ProfileEdges,
   profile: EfficiencyProfile,
 ): EfficiencyThermometer {
-  return thermometerFor(value, EDGES[profile][metricKey])
+  return thermometerFor(value, EDGES[profile][metricKey], metricKey)
 }
 
 function metric(value: number, edges: BandEdges): EfficiencyMetric {

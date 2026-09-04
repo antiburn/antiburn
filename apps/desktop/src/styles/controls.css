@@ -43,3 +43,36 @@ button:active,
     background: var(--color-bg-tertiary);
   }
 }
+
+/* --- Native segmented tabs ---
+   The macOS segmented control. The track is recessed and the selected
+   segment is raised on the surface: white on the light theme and a lighter
+   grey on the dark one, where the surface is darker than the track. A
+   hairline separates two unselected neighbours. */
+.ui-segmented-native {
+  border-radius: calc(var(--radius-control) + 2px);
+}
+
+.ui-segmented-native-segment[aria-selected="true"] {
+  background-color: var(--color-surface);
+}
+
+.ui-segmented-native-segment:not([aria-selected="true"])
+  + .ui-segmented-native-segment:not([aria-selected="true"])::before {
+  content: "";
+  position: absolute;
+  inset-block: 5px;
+  left: 0;
+  width: 1px;
+  background-color: var(--color-separator);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .ui-segmented-native-segment[aria-selected="true"] {
+    background-color: var(--color-surface-tertiary);
+  }
+}
+
+:root[data-theme="dark"] .ui-segmented-native-segment[aria-selected="true"] {
+  background-color: var(--color-surface-tertiary);
+}

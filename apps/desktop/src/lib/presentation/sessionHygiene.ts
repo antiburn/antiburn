@@ -38,6 +38,12 @@ interface HygieneCheckDefinition {
   notAssessedTitle: string
   summary: string
   guidance: readonly string[]
+  /**
+   * One or two short sentences for the checks tab's footer: what the check
+   * tests and what failing it costs in tokens. Kept apart from `summary`,
+   * which opens inside a row and can assume the row's verdict as context.
+   */
+  explainer: string
 }
 
 const CHECKS: readonly HygieneCheckDefinition[] = [
@@ -53,6 +59,8 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
       "Compaction works now, use it over about 200k tokens.",
       "Use subagents to preserve parent context.",
     ],
+    explainer:
+      "Past about 200k tokens, every turn resends the whole history as cache reads. Deep sessions cost more per message than fresh ones.",
   },
   {
     id: "modelOverthinking",
@@ -65,6 +73,8 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
       "Keep thinking/reasoning/effort below xhigh.",
       "Default to high for most tasks.",
     ],
+    explainer:
+      "High reasoning effort spends extra output tokens on every reply. Most tasks do fine on a lower setting.",
   },
   {
     id: "overpoweredSubagents",
@@ -75,6 +85,8 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
     summary:
       "Subagents have to reorient themselves. Using premium subagents gets expensive fast.",
     guidance: ["Get your premium main agent to delegate to cheaper subagents."],
+    explainer:
+      "Subagents inherit the big model for fetch-and-carry work. Routine lookups on a smaller model cost a fraction.",
   },
   {
     id: "obsoleteModel",
@@ -87,6 +99,7 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
       "Manually switch to the current replacement.",
       "Update the agent's default model in config.",
     ],
+    explainer: "Newer models do the same work better, usually at the same or lower price.",
   },
   {
     id: "fastModeOveruse",
@@ -96,6 +109,8 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
     notAssessedTitle: "Fast mode not assessed",
     summary: "Fast mode costs a lot more for a little extra speed.",
     guidance: ["Use standard speed by default.", "Rarely use fast mode for subagents."],
+    explainer:
+      "Fast mode trades a higher token rate for speed. Keep it for bursts, not as the default.",
   },
   {
     id: "excessCacheRehydration",
@@ -109,6 +124,8 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
       "If you have a long break, compact before or even after it.",
       "Avoid switching models with a large context accumulated.",
     ],
+    explainer:
+      "When the cache expires mid-session, the next turn rewrites the whole context at full price. Long idle gaps are the usual cause.",
   },
 ]
 
@@ -142,6 +159,15 @@ export const INITIAL_SESSION_HYGIENE: SessionHygienePayload = {
 /** The reader-facing name of one check, with no verdict attached. */
 export function sessionHygieneCheckName(id: SessionHygieneBadgeId): string {
   return CHECKS.find((check) => check.id === id)?.name ?? id
+}
+
+/** Every check's name and footer explainer, for the checks tab. */
+export function sessionHygieneExplainers(): Array<{
+  id: SessionHygieneBadgeId
+  name: string
+  explainer: string
+}> {
+  return CHECKS.map(({ id, name, explainer }) => ({ id, name, explainer }))
 }
 
 /** Add reader copy and semantic ink to the engine badge identifiers. */

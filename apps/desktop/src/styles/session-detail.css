@@ -1,0 +1,19 @@
+/* These styles are for the Session Detail view: the chart key. */
+
+/* --- Chart key stat cells --- */
+
+/* A cell takes the hover wash while the pointer is over it, and presses in
+   a little on click. The swatch inside carries the series color. */
+.chart-key-stat {
+  transition-property: background-color, transform;
+  transition-duration: var(--duration-fast);
+  transition-timing-function: var(--ease-out-quart);
+}
+
+.chart-key-stat:not(:disabled):hover {
+  background-color: var(--color-surface-hover);
+}
+
+.chart-key-stat:not(:disabled):active {
+  transform: scale(0.98);
+}
