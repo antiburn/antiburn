@@ -150,7 +150,7 @@ describe("SessionDetailPresentation — chrome", () => {
   it("renders the settled view: title, overview stats, and the tab strip", () => {
     view({ cost: cost() })
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
-    expect(screen.getByText("In:")).toBeTruthy()
+    expect(screen.getByText("In")).toBeTruthy()
     expect(screen.getByRole("tab", { name: /^Cost/ })).toBeTruthy()
   })
 
@@ -249,7 +249,7 @@ describe("SessionDetailPresentation — chrome", () => {
       cost: cost(),
       summary: summary({ sessions: [metrics({ cacheRoutingMissCount: 2 })] }),
     })
-    const cell = screen.getByText("Provider cache misses:").parentElement
+    const cell = screen.getByText("Cache misses").closest("button")
     expect(cell).toHaveTextContent("2")
   })
 
@@ -449,7 +449,7 @@ describe("SessionDetailPresentation — states", () => {
       session: { agent: "pi", sessionId: "pi-1", wslDistro: null },
       supportsAnalysis: true,
     })
-    expect(screen.getByText("In:")).toBeTruthy()
+    expect(screen.getByText("In")).toBeTruthy()
     expect(screen.queryByText(/Session analysis for Pi sessions/)).toBeNull()
   })
 
@@ -641,7 +641,7 @@ describe("SessionDetailPresentation — session facts", () => {
 
   it("still renders the token stats and chart when context occupancy is unavailable", () => {
     expect(() => view({ summary: summary({ contextAvailable: false }) })).not.toThrow()
-    expect(screen.getByText("In:")).toBeTruthy()
+    expect(screen.getByText("In")).toBeTruthy()
   })
 
   it("shows Skills, MCPs and tools on the Tools tab when the session has initial context", () => {

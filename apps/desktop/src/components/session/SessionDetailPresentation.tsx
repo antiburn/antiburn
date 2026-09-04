@@ -1,19 +1,12 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import {
-  ArrowDownToLine,
-  ArrowUpFromLine,
   ChevronLeft,
-  ChevronsDownUp,
   FolderOpen,
   GitBranchPlus,
   GitFork,
-  Layers,
   LoaderCircle,
   Moon,
-  Repeat2,
-  RotateCcw,
   Trash2,
-  type LucideIcon,
 } from "lucide-react"
 import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react"
 
@@ -262,42 +255,37 @@ function TabSectionHeading({ children }: { children: string }) {
 }
 
 /**
- * The ink each key entry carries. Each series repeats the color its own
- * chart layer takes when it lights, so the row reads as the chart's key.
+ * The swatch each key entry carries. Each series repeats the color its own
+ * chart layer takes when it lights, so the grid reads as the chart's key.
  */
-const SERIES_INK_CLASS: Record<ChartSeries, string> = {
-  context: "text-context-stroke",
-  in: "text-token-in",
-  out: "text-token-out",
-  rehydration: "text-mark-rehydration",
-  routingMiss: "text-mark-routing-miss",
-  compaction: "text-mark-compaction",
+const SERIES_SWATCH_CLASS: Record<ChartSeries, string> = {
+  context: "bg-context-stroke",
+  in: "bg-token-in",
+  out: "bg-token-out",
+  rehydration: "bg-mark-rehydration",
+  routingMiss: "bg-mark-routing-miss",
+  compaction: "bg-mark-compaction",
 }
 
-/** The icon that identifies each Context stat in place of a caption label. */
-const TOKEN_STAT_ICONS: Record<string, LucideIcon> = {
-  Context: Layers,
-  In: ArrowDownToLine,
-  Out: ArrowUpFromLine,
-  Compactions: ChevronsDownUp,
-  Rehydrations: RotateCcw,
-  "Provider cache misses": Repeat2,
+/** A shorter caption for a stat whose full name does not fit one cell. */
+const KEY_CAPTIONS: Record<string, string> = {
+  "Provider cache misses": "Cache misses",
 }
 
 /**
  * The chart's key, drawn under the plot it explains.
  *
- * Each figure is a chip: an outlined pill in the color its chart layer takes
- * when it lights, with the icon and the value in that same ink. The chips
- * sit in a grid of three equal columns, so every chip is the same width
- * whatever its figure. The icon carries the identity the caption
- * label used to; the tooltip and a screen-reader prefix keep the word.
+ * Each figure is a stat cell: a swatch in the color its chart layer takes
+ * when it lights, the value in the label ink, and a caption under them.
+ * The cells sit in a grid of three equal columns, so the key reads as one
+ * table and not as six badges. The swatch alone carries the color, so the
+ * text keeps its contrast on both surfaces.
  *
- * Pointing at a chip lights its layer in the plot above, and the chip takes
- * a wash of its color. Clicking a chip pins that layer, so it stays lit
- * when the pointer leaves; clicking it again unpins it. An entry whose
- * `series` is absent counts something the chart draws no mark for, so it
- * neither lights nor pins.
+ * Pointing at a cell lights its layer in the plot above, and the cell takes
+ * the hover wash. Clicking a cell pins that layer, so it stays lit when the
+ * pointer leaves; clicking it again unpins it. An entry whose `series` is
+ * absent counts something the chart draws no mark for, so it neither lights
+ * nor pins.
  */
 function ChartKey({
   stats,
@@ -318,9 +306,8 @@ function ChartKey({
   onPin: (series: ChartSeries) => void
 }) {
   return (
-    <div className="grid grid-cols-3 gap-1.5">
+    <div className="-mx-1.5 grid grid-cols-3 gap-x-1 gap-y-1">
       {stats.map((stat) => {
-        const Icon = TOKEN_STAT_ICONS[stat.label]
         const series = stat.series ?? null
         const isPinned = series != null && series === pinned
         return (
@@ -331,20 +318,25 @@ function ChartKey({
               disabled={series == null}
               data-series={series ?? undefined}
               className={cn(
-                "chart-key-chip min-w-0 rounded-full border border-current px-1.5 py-0.5 type-body tabular-nums disabled:opacity-100",
-                series != null ? SERIES_INK_CLASS[series] : "text-label-tertiary",
-                isPinned && "chart-key-chip-pinned",
+                "chart-key-stat flex min-w-0 flex-col items-start rounded-control px-1.5 py-1 text-left disabled:opacity-100",
+                isPinned && "bg-surface-secondary",
               )}
               onMouseEnter={() => onHighlight(series)}
               onMouseLeave={() => onHighlight(null)}
               onClick={() => series != null && onPin(series)}
             >
-              <span className="sr-only">{stat.label}: </span>
-              <span className="flex items-center justify-center gap-x-1">
-                {Icon && (
-                  <Icon size={12} strokeWidth={2.25} aria-hidden="true" className="shrink-0" />
-                )}
+              <span className="flex items-center gap-x-1.5 type-body font-medium text-label tabular-nums">
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "size-2 shrink-0 rounded-full",
+                    series != null ? SERIES_SWATCH_CLASS[series] : "bg-surface-tertiary",
+                  )}
+                />
                 {stat.value}
+              </span>
+              <span className="max-w-full truncate type-caption text-label-secondary">
+                {KEY_CAPTIONS[stat.label] ?? stat.label}
               </span>
             </button>
           </Tooltip>
@@ -736,14 +728,11 @@ export function SessionDetailPresentation({
 
         {ready && !error && !empty && summary && (
           <>
-            <div
-              className="flex flex-col gap-y-2 border-b border-separator px-4 pt-3 pb-4"
-              aria-label="Session summary"
-            >
+            <div className="flex flex-col gap-y-1 px-4 pt-3 pb-3" aria-label="Session summary">
               {/* The repo comes first because it is the container: you are
                   inside a repo, and the session is the work you do in it. */}
               {(session.repo || session.wslDistro) && (
-                <div className="flex min-w-0 items-center gap-1.5 font-mono type-caption text-label-secondary">
+                <div className="flex min-w-0 items-center gap-1.5 type-caption text-label-tertiary">
                   {session.repo && (
                     <Tooltip label={session.repo}>
                       <span className="truncate">{session.repo}</span>
@@ -754,7 +743,7 @@ export function SessionDetailPresentation({
               )}
 
               <TruncatedText
-                className="min-w-0 type-title-3 text-label break-words"
+                className="min-w-0 type-body-large font-semibold text-label break-words"
                 text={relations?.title?.trim() || session.title?.trim() || "Session"}
                 lines={2}
               />
@@ -790,7 +779,7 @@ export function SessionDetailPresentation({
                       {modelPairs.map((pair, index) => (
                         <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
                           {index > 0 && " · "}
-                          <span className="font-medium">{pair.model}</span>
+                          <span>{pair.model}</span>
                           {pair.thinkingMode && <span> {pair.thinkingMode}</span>}
                         </span>
                       ))}
@@ -809,7 +798,7 @@ export function SessionDetailPresentation({
               />
             )}
 
-            <div className="border-b border-separator px-3 py-2">
+            <div className="border-b border-separator px-4 pb-3">
               <SegmentedControl
                 options={DETAIL_TABS}
                 value={tab}
@@ -825,7 +814,7 @@ export function SessionDetailPresentation({
               id="session-detail-tabs-panel"
               role="tabpanel"
               aria-labelledby={`session-detail-tabs-${tab}`}
-              className="min-h-0 flex-1 overflow-y-auto px-4 py-3"
+              className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
             >
               {tab === "overview" && (
                 <div className="divide-y divide-separator">

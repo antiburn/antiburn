@@ -84,7 +84,7 @@ describe("EfficiencyBreakdown", () => {
     )
     const high = screen.getAllByText("high")
     expect(high).toHaveLength(2)
-    expect(high[0]?.getAttribute("class")).toContain("group-hover:text-share-waste-text")
+    expect(high[0]?.getAttribute("class")).toContain("text-share-waste-text")
     expect(screen.getByText("low")).toBeTruthy()
   })
 
@@ -98,7 +98,7 @@ describe("EfficiencyBreakdown", () => {
       />,
     )
     for (const good of screen.getAllByText("good")) {
-      expect(good.getAttribute("class")).toContain("group-hover:text-share-work-text")
+      expect(good.getAttribute("class")).toContain("text-share-work-text")
     }
   })
 

@@ -103,9 +103,9 @@
   --color-context-fill-base-val: hsl(221.2 83% 53.3% / 0.12);
   --color-context-rest-top-val: hsl(240 5.5% 25% / 0.16);
   --color-context-rest-base-val: hsl(240 5.5% 25% / 0.03);
-  --color-chart-rest-strong-val: hsl(240 5.5% 25% / 0.42);
-  --color-chart-rest-val: hsl(240 5.5% 25% / 0.26);
-  --color-chart-rest-faint-val: hsl(240 5.5% 25% / 0.14);
+  --color-chart-rest-strong-val: hsl(240 5.5% 25% / 0.3);
+  --color-chart-rest-val: hsl(240 5.5% 25% / 0.18);
+  --color-chart-rest-faint-val: hsl(240 5.5% 25% / 0.09);
   --color-chart-rest-mark-val: hsl(240 5.5% 25% / 0.55);
   --color-token-in-val: hsl(189 86% 53.3%); /* cyan */
   --color-token-out-val: hsl(258.3 89% 66.2%); /* violet */
@@ -135,9 +135,9 @@
     --color-context-fill-base-val: hsl(221 89% 59.8% / 0.1);
     --color-context-rest-top-val: hsl(240 33% 94% / 0.24);
     --color-context-rest-base-val: hsl(240 33% 94% / 0.05);
-    --color-chart-rest-strong-val: hsl(240 33% 94% / 0.4);
-    --color-chart-rest-val: hsl(240 33% 94% / 0.24);
-    --color-chart-rest-faint-val: hsl(240 33% 94% / 0.13);
+    --color-chart-rest-strong-val: hsl(240 33% 94% / 0.28);
+    --color-chart-rest-val: hsl(240 33% 94% / 0.16);
+    --color-chart-rest-faint-val: hsl(240 33% 94% / 0.08);
     --color-chart-rest-mark-val: hsl(240 33% 94% / 0.5);
     --color-token-in-val: hsl(188.7 87% 58.2%); /* cyan */
     --color-token-out-val: hsl(258 89% 69.8%); /* violet */
@@ -163,9 +163,9 @@
   --color-context-fill-base-val: hsl(221 89% 59.8% / 0.1);
   --color-context-rest-top-val: hsl(240 33% 94% / 0.24);
   --color-context-rest-base-val: hsl(240 33% 94% / 0.05);
-  --color-chart-rest-strong-val: hsl(240 33% 94% / 0.4);
-  --color-chart-rest-val: hsl(240 33% 94% / 0.24);
-  --color-chart-rest-faint-val: hsl(240 33% 94% / 0.13);
+  --color-chart-rest-strong-val: hsl(240 33% 94% / 0.28);
+  --color-chart-rest-val: hsl(240 33% 94% / 0.16);
+  --color-chart-rest-faint-val: hsl(240 33% 94% / 0.08);
   --color-chart-rest-mark-val: hsl(240 33% 94% / 0.5);
   --color-token-in-val: hsl(188.7 87% 58.2%);
   --color-token-out-val: hsl(258 89% 69.8%);

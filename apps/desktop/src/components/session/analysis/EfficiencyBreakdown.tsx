@@ -15,26 +15,20 @@ export interface EfficiencyBreakdownProps {
   metrics: EfficiencyMetrics
 }
 
-/* The block rests in grey and takes its colors while the pointer is over
-   it. Each ink pairs a resting grey with a `group-hover:` color, and the
-   block is the `group`. The greys differ by value, so the shapes keep their
-   steps with no color at all. */
-const INK_TRANSITION = "transition-colors duration-[var(--duration-fast)] ease-out"
-
-/* The band word. Teal is the good verdict and red the bad one; the middle
-   band stays in the label ink, because it is not a verdict. */
-const BAND_TEXT_CLASS: Record<EfficiencyBand, string> = {
-  good: cn(INK_TRANSITION, "text-label group-hover:text-share-work-text"),
-  ok: cn(INK_TRANSITION, "text-label"),
-  bad: cn(INK_TRANSITION, "text-label group-hover:text-share-waste-text"),
+/* The band word, as a small caption tag. Teal is the good verdict and red
+   the bad one; the middle band stays neutral, because it is not a verdict. */
+const BAND_TAG_CLASS: Record<EfficiencyBand, string> = {
+  good: "bg-share-work/15 text-share-work-text",
+  ok: "bg-surface-secondary text-label-secondary",
+  bad: "bg-share-waste/15 text-share-waste-text",
 }
 
 /* The fill for one band of the cost track. The track shows all three bands at
    full width, so these are the fixed backdrop the needle moves across. */
 const BAND_SEGMENT_CLASS: Record<EfficiencyBand, string> = {
-  good: cn(INK_TRANSITION, "bg-chart-rest-strong group-hover:bg-share-work"),
-  ok: cn(INK_TRANSITION, "bg-chart-rest-faint group-hover:bg-surface-tertiary"),
-  bad: cn(INK_TRANSITION, "bg-chart-rest group-hover:bg-share-waste"),
+  good: "bg-share-work",
+  ok: "bg-surface-tertiary",
+  bad: "bg-share-waste",
 }
 
 type MetricKey = "costPerMTok" | ShareMetricKey
@@ -85,17 +79,17 @@ const SHARE_ROWS: ShareRow[] = [
   {
     key: "realWorkShare",
     label: "Real Work %",
-    inkClassName: cn(INK_TRANSITION, "bg-chart-rest-strong group-hover:bg-share-work"),
+    inkClassName: "bg-share-work",
   },
   {
     key: "rewriteShare",
     label: "Rewrite Waste %",
-    inkClassName: cn(INK_TRANSITION, "bg-chart-rest group-hover:bg-share-waste"),
+    inkClassName: "bg-share-waste",
   },
   {
     key: "carryShare",
     label: "Carry %",
-    inkClassName: cn(INK_TRANSITION, "bg-chart-rest-faint group-hover:bg-share-carry"),
+    inkClassName: "bg-share-carry",
   },
 ]
 
@@ -248,7 +242,9 @@ function MetricGuidance({
 }
 
 const ROW_CLASS =
-  "-mx-1 rounded-control px-1 py-1.5 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
+  "-mx-1.5 rounded-control px-1.5 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
+
+const BAND_TAG_BASE = "rounded px-1.5 py-px type-caption font-medium whitespace-nowrap"
 
 /**
  * The $/MTok reading: label and figure on one baseline, with its VU meter
@@ -269,7 +265,7 @@ function CostRowLine({
           <span className="truncate text-label-secondary">$/MTok</span>
           <span className="flex shrink-0 items-baseline gap-2">
             <span className="text-label tabular-nums">{formatCostPerMTok(metric.value)}</span>
-            <span className={cn("whitespace-nowrap", BAND_TEXT_CLASS[metric.band])}>
+            <span className={cn(BAND_TAG_BASE, BAND_TAG_CLASS[metric.band])}>
               {efficiencyBandWord(metric.band, "costPerMTok")}
             </span>
           </span>
@@ -305,13 +301,10 @@ function ShareRowLine({
         />
         <span className="min-w-0 flex-1 truncate text-label-secondary">{segment.label}</span>
         <span className="shrink-0 text-label tabular-nums">{segment.displayPercent}</span>
-        <span
-          className={cn(
-            "w-10 shrink-0 text-right whitespace-nowrap",
-            BAND_TEXT_CLASS[segment.metric.band],
-          )}
-        >
-          {efficiencyBandWord(segment.metric.band, segment.key)}
+        <span className="flex w-12 shrink-0 justify-end">
+          <span className={cn(BAND_TAG_BASE, BAND_TAG_CLASS[segment.metric.band])}>
+            {efficiencyBandWord(segment.metric.band, segment.key)}
+          </span>
         </span>
       </div>
     </Tooltip>
@@ -328,7 +321,7 @@ function ShareRowPlaceholder({ row }: { row: ShareRow }) {
       />
       <span className="min-w-0 flex-1 truncate text-label-secondary">{row.label}</span>
       <span className="shrink-0 text-label tabular-nums">—</span>
-      <span className="w-10 shrink-0" />
+      <span className="w-12 shrink-0" />
     </div>
   )
 }
@@ -341,9 +334,9 @@ export function EfficiencyBreakdown({ metrics }: EfficiencyBreakdownProps) {
   }
 
   return (
-    <div className="group flex flex-col" data-testid="efficiency-block">
+    <div className="flex flex-col" data-testid="efficiency-block">
       <CostRowLine metric={metrics.costPerMTok} profile={metrics.profile} />
-      <div className="my-2 border-b border-dashed border-separator" />
+      <div className="my-3 border-b border-dashed border-separator" />
       {segments.length > 0 ? (
         <>
           <CompositionTrack segments={segments} />

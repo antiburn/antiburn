@@ -184,14 +184,14 @@ colors:
     light: "hsl(240 5.5% 25% / 0.03)"
     dark: "hsl(240 33% 94% / 0.05)"
   chart-rest-strong: # resting grey, strongest step; parent output
-    light: "hsl(240 5.5% 25% / 0.42)"
-    dark: "hsl(240 33% 94% / 0.4)"
+    light: "hsl(240 5.5% 25% / 0.3)"
+    dark: "hsl(240 33% 94% / 0.28)"
   chart-rest: # resting grey, middle step; parent input
-    light: "hsl(240 5.5% 25% / 0.26)"
-    dark: "hsl(240 33% 94% / 0.24)"
+    light: "hsl(240 5.5% 25% / 0.18)"
+    dark: "hsl(240 33% 94% / 0.16)"
   chart-rest-faint: # resting grey, faintest step; sub-agent tokens
-    light: "hsl(240 5.5% 25% / 0.14)"
-    dark: "hsl(240 33% 94% / 0.13)"
+    light: "hsl(240 5.5% 25% / 0.09)"
+    dark: "hsl(240 33% 94% / 0.08)"
   chart-rest-mark: # resting grey for a hairline mark over the plot
     light: "hsl(240 5.5% 25% / 0.55)"
     dark: "hsl(240 33% 94% / 0.5)"

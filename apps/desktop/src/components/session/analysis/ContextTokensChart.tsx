@@ -71,9 +71,7 @@ const LABEL_ANCHORS: Record<
   string,
   { textAnchor: "start" | "middle"; verticalAnchor: "start" | "end" }
 > = {
-  insideTopLeft: { textAnchor: "start", verticalAnchor: "start" },
   insideTop: { textAnchor: "middle", verticalAnchor: "start" },
-  insideBottom: { textAnchor: "middle", verticalAnchor: "end" },
   top: { textAnchor: "middle", verticalAnchor: "end" },
 }
 
@@ -157,6 +155,12 @@ const AXIS_LABEL = {
   fill: "var(--color-label-tertiary)",
   content: PillLabel,
 }
+/* Axis tick text, drawn outside the plot in the caption grey. */
+const AXIS_TICK = { fontSize: 11, fill: "var(--color-label-tertiary)" }
+/** The width the value axis takes on the left of the plot. */
+const VALUE_AXIS_WIDTH = 40
+/** The height the time axis takes under the plot. */
+const TIME_AXIS_HEIGHT = 16
 /** A cache event keeps the established prominent marker. */
 const CACHE_EVENT_BAR_WIDTH = 7
 /** An ordinary rewrite uses a quiet line, because the user usually cannot prevent it. */
@@ -594,11 +598,6 @@ export function ContextTokensChart({
   // With no window to scale against, the peak is the top of the plot, so the
   // curve fills the same height it would inside a known window.
   const contextCeiling = contextAxis?.ceiling ?? Math.max(1, peak)
-  // Every vertical `ReferenceLine` needs a `yAxisId` that names an axis the
-  // chart renders — recharts falls back to an axis id of "0", which does not
-  // exist here. The "tokens" axis always renders, so it is the fallback.
-  const markerAxisId = hasContextData ? "context" : "tokens"
-
   // The fill gradient is an SVG `objectBoundingBox` gradient, so its [0,1]
   // offsets map over the *area path's* bounding box, which spans 0..peak
   // tokens, not the fixed context window. Offset f sits at the absolute
@@ -651,13 +650,16 @@ export function ContextTokensChart({
     )
   }
 
+  const timeTicks = activeSecs != null ? timeAxisTicks(activeSecs, data.length, 6) : []
+  const timeTickLabels = new Map(timeTicks.map((tick) => [tick.index, tick.label]))
+
   return (
     <ResponsiveContainer
       width="100%"
       height={180}
       style={{ "--chart-mark-delay": `${markDelayMs}ms` } as CSSProperties}
     >
-      <AreaChart data={data} margin={{ top: 6, right: 4, bottom: 0, left: 0 }}>
+      <AreaChart data={data} margin={{ top: 6, right: 12, bottom: 0, left: 0 }}>
         <defs>
           {hasContextData && (
             <linearGradient id={fillId} x1={0} y1={0} x2={0} y2={1}>
@@ -668,8 +670,35 @@ export function ContextTokensChart({
         {/* A numeric axis on the bucket index. A category axis on the rounded
             `progress` value placed each vertical mark by its index instead of
             by its value, so marks drifted left of the points they belong to. */}
-        <XAxis dataKey="index" type="number" domain={[0, Math.max(1, data.length - 1)]} hide />
-        {hasContextData && <YAxis yAxisId="context" hide domain={[0, contextCeiling]} />}
+        <XAxis
+          dataKey="index"
+          type="number"
+          domain={[0, Math.max(1, data.length - 1)]}
+          hide={timeTicks.length === 0}
+          ticks={timeTicks.map((tick) => tick.index)}
+          tickFormatter={(value: number) => timeTickLabels.get(value) ?? ""}
+          interval={0}
+          axisLine={false}
+          tickLine={false}
+          tickMargin={2}
+          height={TIME_AXIS_HEIGHT}
+          tick={AXIS_TICK}
+        />
+        {/* The value axis sits outside the plot on the left, so its labels
+            never collide with the marks and the labels inside the plot. */}
+        {hasContextData && (
+          <YAxis
+            yAxisId="context"
+            domain={[0, contextCeiling]}
+            ticks={contextAxis?.ticks ?? []}
+            tickFormatter={formatTokenBand}
+            axisLine={false}
+            tickLine={false}
+            tickMargin={4}
+            width={VALUE_AXIS_WIDTH}
+            tick={AXIS_TICK}
+          />
+        )}
         <YAxis yAxisId="tokens" hide orientation="right" domain={[0, tokenCeiling]} />
         {/* The band lines only. Their labels draw after the plot layers. */}
         {contextAxis?.ticks.map((value) => (
@@ -776,35 +805,14 @@ export function ContextTokensChart({
                 />
               )
             })}
-        {/* Every text label draws last. SVG has no z-index, so document order
-            is the only way to keep a label over the areas it annotates. Each
-            of these marks carries a label and no line of its own; the lines
-            they belong to draw before the plot layers. */}
-        {contextAxis?.ticks.map((value) => (
-          <ReferenceLine
-            key={`band-label-${value}`}
-            yAxisId="context"
-            y={value}
-            stroke="none"
-            label={{ ...AXIS_LABEL, value: formatTokenBand(value), position: "insideTopLeft" }}
-          />
-        ))}
-        {/* Bars close on the x-axis share one "rewrite" label, so the labels
-            do not overlap each other. */}
-        {labeledRewritePoints(data)
-          .filter(({ showLabel }) => showLabel)
-          .map(({ point }) => rewriteBarLabel(point, hasContextData))}
-        {/* Elapsed active time along the bottom, as labels only. */}
-        {activeSecs != null &&
-          timeAxisTicks(activeSecs, data.length, 6).map((tick) => (
-            <ReferenceLine
-              key={`time-${tick.label}`}
-              yAxisId={markerAxisId}
-              x={tick.index}
-              stroke="none"
-              label={{ ...AXIS_LABEL, value: tick.label, position: "insideBottom" }}
-            />
-          ))}
+        {/* The rehydration label draws last, and only while that layer is
+            lit. SVG has no z-index, so document order keeps it over the
+            areas. At rest the plot carries the marks alone. Bars close on
+            the x-axis share one label, so the labels do not overlap. */}
+        {highlight === "rehydration" &&
+          labeledRewritePoints(data)
+            .filter(({ showLabel }) => showLabel)
+            .map(({ point }) => rewriteBarLabel(point, hasContextData))}
       </AreaChart>
     </ResponsiveContainer>
   )

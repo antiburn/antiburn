@@ -95,8 +95,17 @@ Done in the pass (2026-09-04):
   macOS segmented look, a recessed neutral track with the selected segment
   raised on the surface. The default `segmented` variant paints accent blue
   and is shared with the settings panes, so it stays as it is.
-- The chart-key chips are solid pills in their series colour with the icon
-  and the figure in white (Keith, mid-build). Open point: white on the yellow
-  rehydration chip is low contrast on the light theme.
+- The chart key is a stat grid: three equal columns, each cell a colour
+  swatch, the figure in the label ink, and a caption. It replaced the
+  coloured pills (solid, then outlined), which read as six badges and left
+  the yellow rehydration ink low on contrast in light.
+- The chart axes moved outside the plot: token bands on the left, elapsed
+  time under the plot, both in caption grey. The "rehydration" tag only
+  draws while that layer is lit. The resting greys are fainter.
+- The efficiency block carries its colours at rest (teal work, red waste,
+  neutral carry) and the band word is a caption tag.
+- Spacing rhythm: the hero flows into the tab strip with no hairline, the
+  title steps down to body-large semibold, the repo line and the models
+  line take one weight and one face.
 - No section was removed and no tab changed what it holds, so nothing needed
   a question.

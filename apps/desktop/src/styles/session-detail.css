@@ -1,26 +1,19 @@
-/* These styles are for the Session Detail view: the chart key chips and the
-   efficiency block. Both rest in grey and take color from the pointer. */
+/* These styles are for the Session Detail view's chart key. */
 
-/* --- Chart key chips --- */
+/* --- Chart key stat cells --- */
 
-/* A chip is an outlined pill in its series color: the stroke, the icon, and
-   the figure all take the series ink, and the inside stays open. The series
-   ink sets `color`, so one utility class drives the whole chip. */
-.chart-key-chip {
-  transition-property: background-color, transform, box-shadow;
+/* A cell takes the hover wash while the pointer is over it, and presses in
+   a little on click. The swatch inside carries the series color. */
+.chart-key-stat {
+  transition-property: background-color, transform;
   transition-duration: var(--duration-fast);
   transition-timing-function: var(--ease-out-quart);
 }
 
-.chart-key-chip:not(:disabled):hover {
-  background-color: color-mix(in srgb, currentColor 14%, transparent);
+.chart-key-stat:not(:disabled):hover {
+  background-color: var(--color-surface-hover);
 }
 
-.chart-key-chip:not(:disabled):active {
-  transform: scale(0.96);
-}
-
-/* A pinned chip adds a ring in its own color, so it reads as held. */
-.chart-key-chip-pinned {
-  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 35%, transparent);
+.chart-key-stat:not(:disabled):active {
+  transform: scale(0.98);
 }
