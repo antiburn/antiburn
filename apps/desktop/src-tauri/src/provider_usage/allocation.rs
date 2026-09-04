@@ -327,6 +327,7 @@ fn distribute_window(
     let mut output = HashMap::new();
     let mut previous_at = start_ms.saturating_sub(1);
     let mut previous_percent = 0.0;
+    let mut has_observation = false;
     for (at, percent) in points {
         let delta = percent - previous_percent;
         if delta > 0.0 {
@@ -340,8 +341,12 @@ fn distribute_window(
                 &mut output,
             );
         }
-        previous_at = at;
-        previous_percent = percent;
+        // Keep the first sample of a plateau. A later increase applies to all turns since that sample.
+        if !has_observation || delta > 0.0 {
+            previous_at = at;
+            previous_percent = percent;
+        }
+        has_observation = true;
     }
     (output, true)
 }
