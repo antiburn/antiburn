@@ -49,7 +49,7 @@ describe("HygieneBreakdown", () => {
     expect(summary.getAttribute("aria-expanded")).toBe("false")
     expect(screen.getByLabelText("Session hygiene checks").children).toHaveLength(2)
     expect(screen.getByText("Session overdepth")).toBeTruthy()
-    expect(screen.getByText("failing")).toBeTruthy()
+    expect(screen.getByText("Failed")).toBeTruthy()
     expect(screen.queryByText("Model overthinking")).toBeNull()
 
     fireEvent.click(summary)
@@ -60,7 +60,7 @@ describe("HygieneBreakdown", () => {
     expect(screen.getByText("Obsolete model")).toBeTruthy()
     expect(screen.getByText("Fast mode overuse")).toBeTruthy()
     expect(screen.getByText("Excess cache rehydration")).toBeTruthy()
-    expect(screen.getAllByText("passed")).toHaveLength(4)
+    expect(screen.getAllByText("Passed")).toHaveLength(4)
     expect(screen.queryByText(/not assessed/i)).toBeNull()
   })
 

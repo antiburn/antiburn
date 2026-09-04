@@ -206,13 +206,13 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(screen.getByRole("button", { name: "About Overpowered subagents" })).toBeTruthy()
     expect(
       screen.getByRole("button", { name: "Overpowered subagents details" }),
-    ).toHaveTextContent("failing")
+    ).toHaveTextContent("Failed")
 
     // A check nobody could assess leaves the list rather than claiming a verdict.
     expect(screen.queryByRole("button", { name: "Session overdepth details" })).toBeNull()
     expect(
       screen.getByRole("button", { name: "Model overthinking details" }),
-    ).toHaveTextContent("passed")
+    ).toHaveTextContent("Passed")
   })
 
   it("keeps the Cost tab free of evidence-state chrome", () => {

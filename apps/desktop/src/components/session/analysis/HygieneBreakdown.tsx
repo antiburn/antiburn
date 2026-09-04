@@ -23,6 +23,8 @@ interface HygieneStatusPresentation {
   Icon: LucideIcon
   label: string
   textClass: string
+  /** The ink of the status word. A passing word stays neutral. */
+  wordClass: string
 }
 
 type AssessedHygieneCheck = SessionHygieneCheck & { status: "finding" | "clean" }
@@ -37,13 +39,15 @@ const STATUS_ICON_SIZE = 14
 const STATUS_PRESENTATION: Record<AssessedHygieneCheck["status"], HygieneStatusPresentation> = {
   finding: {
     Icon: CircleX,
-    label: "failing",
+    label: "Failed",
     textClass: "text-share-waste-text",
+    wordClass: "text-share-waste-text",
   },
   clean: {
     Icon: CircleCheck,
-    label: "passed",
+    label: "Passed",
     textClass: "text-share-work-text",
+    wordClass: "text-label-secondary",
   },
 }
 
@@ -99,10 +103,10 @@ function HygieneRow({
           aria-expanded={open}
           aria-controls={bodyId}
           onClick={onToggle}
-          className="col-span-3 grid grid-cols-subgrid items-center gap-x-2 py-1.5 text-left active:transform-none active:opacity-100"
+          className="col-span-3 grid grid-cols-subgrid items-center gap-x-2 py-1 text-left active:transform-none active:opacity-100"
         >
           <span className="truncate text-label-tertiary">{check.name}</span>
-          <span className={status.textClass}>{status.label}</span>
+          <span className={status.wordClass}>{status.label}</span>
           <status.Icon
             size={STATUS_ICON_SIZE}
             strokeWidth={2}
@@ -164,7 +168,7 @@ export function HygieneBreakdown({ checks, collapsePassing = true }: HygieneBrea
   if (assessedCount === 0) return null
 
   return (
-    <div className="grid gap-y-1" aria-label="Session hygiene checks">
+    <div className="grid gap-y-0.5" aria-label="Session hygiene checks">
       {/* The full layout skips the rollup words: every row carries its own
           verdict mark, so a count above them restates the list. */}
       {collapsePassing && (

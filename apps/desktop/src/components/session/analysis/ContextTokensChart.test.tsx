@@ -336,7 +336,7 @@ describe("ContextTokensChart", () => {
     expect(screen.getAllByText("rehydration")).toHaveLength(1)
   })
 
-  it("rests the token layers in grey and keeps the context area lit", () => {
+  it("lights every layer at rest, with no grey in the plot", () => {
     const buckets = [
       bucket({ contextTokens: 100_000, tokensIn: 900, tokensOut: 400 }),
       bucket({ contextTokens: 120_000, tokensIn: 500, tokensOut: 800 }),
@@ -345,14 +345,11 @@ describe("ContextTokensChart", () => {
       <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
     )
 
-    expect(container.querySelector('path[fill="var(--color-token-in)"]')).toBeNull()
-    expect(container.querySelector('path[fill="var(--color-token-out)"]')).toBeNull()
-    expect(container.querySelector('path[fill="var(--color-chart-rest)"]')).not.toBeNull()
-    expect(
-      container.querySelector('path[fill="var(--color-chart-rest-strong)"]'),
-    ).not.toBeNull()
-    // The context area is the main shape, so it keeps its color at rest,
-    // without the warm ramp.
+    expect(container.querySelector('path[fill="var(--color-token-in)"]')).not.toBeNull()
+    expect(container.querySelector('path[fill="var(--color-token-out)"]')).not.toBeNull()
+    expect(container.querySelector('path[fill="var(--color-chart-rest)"]')).toBeNull()
+    expect(container.querySelector('path[fill="var(--color-chart-rest-strong)"]')).toBeNull()
+    // The context area keeps its color too, without the grey ramp.
     expect(
       container.querySelector('stop[stop-color="var(--color-context-fill-top)"]'),
     ).not.toBeNull()
@@ -398,10 +395,9 @@ describe("ContextTokensChart", () => {
       <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
     )
 
-    // The series carries a solid fill, not a gradient. At rest that fill is
-    // the faintest of the three greys, which keeps the stack's steps.
+    // The series carries a solid fill, not a gradient, in its own neutral.
     expect(container.querySelector('linearGradient[id$="-subagentTokens"]')).toBeNull()
-    expect(container.querySelector('path[fill="var(--color-chart-rest-faint)"]')).not.toBeNull()
+    expect(container.querySelector('path[fill="var(--color-token-subagent)"]')).not.toBeNull()
   })
 })
 

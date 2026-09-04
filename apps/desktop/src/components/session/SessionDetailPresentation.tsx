@@ -855,7 +855,7 @@ export function SessionDetailPresentation({
                   )}
                   <section
                     className={cn(
-                      hasAssessedHygieneChecks && "mt-3 border-t border-separator pt-3",
+                      hasAssessedHygieneChecks && "mt-4 border-t border-separator pt-4",
                     )}
                   >
                     <TabSectionHeading>Cost</TabSectionHeading>
@@ -881,14 +881,14 @@ export function SessionDetailPresentation({
                         head the table they summarize. The figure has no
                         ceiling, so it is a headline and not a meter. */}
                     {toolsUsage != null && toolsUsage.wastedTokens > 0 && (
-                      <p className="mb-1 flex items-center gap-x-3">
+                      <p className="my-1 flex items-center gap-x-3">
                         <span className="type-large-title font-semibold! text-brand tabular-nums">
                           {formatCompact(toolsUsage.wastedTokens)}
                         </span>
                         <span className="flex flex-col type-callout leading-tight">
                           <span className="font-semibold text-label">tokens burned</span>
                           <span className="text-label-secondary">
-                            by items the session never used
+                            by items loaded but never called in this session
                           </span>
                         </span>
                       </p>

@@ -45,8 +45,8 @@ export interface ContextTokensChartProps {
   /** Active seconds the buckets span; null hides the time marks. */
   activeSecs?: number | null
   /**
-   * The layer to draw in its own color. Null draws the context area in its
-   * blue and every other layer in grey; a named layer lights that one alone.
+   * The layer to isolate. Null draws every layer in its own color; a named
+   * layer keeps that one in color and rests every other layer in grey.
    */
   highlight?: ChartSeries | null
 }
@@ -726,7 +726,7 @@ export function ContextTokensChart({
               ? "rehydration"
               : null
           const stroke =
-            markSeries != null && highlight === markSeries
+            markSeries != null && (highlight == null || highlight === markSeries)
               ? MARK_STROKE[markSeries]
               : REST_MARK_STROKE
           return rewriteBar(point, "rewrite", hasContextData, opacity, strokeWidth, stroke)
@@ -774,7 +774,11 @@ export function ContextTokensChart({
             /* A solid block. A gradient made each layer fade into the one
                below it, so the stack lost its steps. */
             stroke="none"
-            fill={row.series != null && highlight === row.series ? row.colorVar : row.restVar}
+            fill={
+              highlight == null || (row.series != null && highlight === row.series)
+                ? row.colorVar
+                : row.restVar
+            }
             isAnimationActive={animate}
             animationDuration={animationDurationMs}
             animationBegin={entranceStepMs + index * tokenRowStepMs}
@@ -788,7 +792,8 @@ export function ContextTokensChart({
           data
             .filter((point) => point.isCompactionBoundary && point.index > 0)
             .map((point) => {
-              const lit = highlight === "compaction"
+              const lit = highlight == null || highlight === "compaction"
+              const emphasised = highlight === "compaction"
               return (
                 <ReferenceLine
                   key={`compaction-${point.index}`}
@@ -800,7 +805,9 @@ export function ContextTokensChart({
                     { x: point.index, y: point.contextTokens },
                   ]}
                   stroke={lit ? MARK_STROKE.compaction : REST_MARK_STROKE}
-                  strokeWidth={lit ? COMPACTION_LIT_STROKE_WIDTH : COMPACTION_STROKE_WIDTH}
+                  strokeWidth={
+                    emphasised ? COMPACTION_LIT_STROKE_WIDTH : COMPACTION_STROKE_WIDTH
+                  }
                   strokeLinecap="round"
                 />
               )

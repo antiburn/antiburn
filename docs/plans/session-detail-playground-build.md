@@ -109,3 +109,4 @@ Done in the pass (2026-09-04):
   line take one weight and one face.
 - No section was removed and no tab changed what it holds, so nothing needed
   a question.
+- Notate round two (2026-09-04): the chart is lit in full colour at rest and the key isolates one layer; the $/MTok bar is a hatched ruler with $0/$33/$80/$160 ticks; check words read "Passed"/"Failed" with a neutral passing word; Checks→Cost gap widened; Tools headline gets breathing room and states its period ("loaded but never called in this session").

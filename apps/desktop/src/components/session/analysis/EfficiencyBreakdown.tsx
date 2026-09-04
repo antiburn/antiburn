@@ -23,12 +23,14 @@ const BAND_TAG_CLASS: Record<EfficiencyBand, string> = {
   bad: "bg-share-waste/15 text-share-waste-text",
 }
 
-/* The fill for one band of the cost track. The track shows all three bands at
-   full width, so these are the fixed backdrop the needle moves across. */
+/* The fill for one band of the cost ruler. The ruler shows all three bands
+   at full width, so these are the fixed backdrop the needle moves across.
+   The bad band is hatched, so it reads as "out of bounds" and not as a
+   second solid. */
 const BAND_SEGMENT_CLASS: Record<EfficiencyBand, string> = {
   good: "bg-share-work",
   ok: "bg-surface-tertiary",
-  bad: "bg-share-waste",
+  bad: "efficiency-ruler-hatch text-share-waste",
 }
 
 type MetricKey = "costPerMTok" | ShareMetricKey
@@ -138,9 +140,10 @@ function shareSegments(metrics: EfficiencyMetrics): ShareSegment[] {
 }
 
 /**
- * The $/MTok scale as a banded track with a needle. The track shows the good,
- * middle, and bad bands at their fixed thirds, and the needle marks where this
- * session sits. The track never changes length.
+ * The $/MTok scale as a ruler. The strip shows the good, middle, and bad
+ * bands at their fixed thirds, the tick values under it name the band edges
+ * in dollars, and the needle marks where this session sits. The ruler never
+ * changes length.
  *
  * A fill that grows to the reading was the wrong form for this metric: a low
  * $/MTok is a good result, so a good session drew almost nothing. The question
@@ -149,32 +152,51 @@ function shareSegments(metrics: EfficiencyMetrics): ShareSegment[] {
  */
 function CostScaleBar({ value, profile }: { value: number; profile: EfficiencyProfile }) {
   const scale = efficiencyThermometer(value, "costPerMTok", profile)
+  const last = scale.ticks.length - 1
   return (
     <div
-      className="relative flex h-1 items-center"
       data-testid="thermometer-costPerMTok"
       data-position={scale.position.toFixed(3)}
       aria-hidden
     >
-      {scale.segments.map((band, index) => (
+      <div className="relative flex h-1.5 items-center">
+        {scale.segments.map((band, index) => (
+          <span
+            key={index}
+            data-testid={`cost-band-${band}`}
+            className={cn(
+              "h-full flex-1",
+              index === 0 && "rounded-s-sm",
+              index === scale.segments.length - 1 && "rounded-e-sm",
+              BAND_SEGMENT_CLASS[band],
+            )}
+          />
+        ))}
+        {/* The ring separates the needle from whichever band it lands on, so
+            the mark stays legible over the teal and the hatch alike. */}
         <span
-          key={index}
-          data-testid={`cost-band-${band}`}
-          className={cn(
-            "h-full flex-1",
-            index === 0 && "rounded-s-full",
-            index === scale.segments.length - 1 && "rounded-e-full",
-            BAND_SEGMENT_CLASS[band],
-          )}
+          data-testid="cost-needle"
+          className="absolute -inset-y-1 w-[3px] -translate-x-1/2 rounded-full bg-label ring-2 ring-surface"
+          style={{ left: `${scale.position * 100}%` }}
         />
-      ))}
-      {/* The ring separates the needle from whichever band it lands on, so the
-          mark stays legible over the teal and the red alike. */}
-      <span
-        data-testid="cost-needle"
-        className="absolute -inset-y-1 w-[3px] -translate-x-1/2 rounded-full bg-label ring-2 ring-surface"
-        style={{ left: `${scale.position * 100}%` }}
-      />
+      </div>
+      <div className="relative mt-0.5 h-4">
+        {scale.ticks.map((label, index) => (
+          <span
+            key={label}
+            className={cn(
+              "absolute top-0 flex flex-col type-caption text-label-tertiary tabular-nums",
+              index === 0 && "items-start",
+              index === last && "-translate-x-full items-end",
+              index > 0 && index < last && "-translate-x-1/2 items-center",
+            )}
+            style={{ left: `${(index / last) * 100}%` }}
+          >
+            <span className="h-1 w-px bg-separator" />
+            {label}
+          </span>
+        ))}
+      </div>
     </div>
   )
 }
