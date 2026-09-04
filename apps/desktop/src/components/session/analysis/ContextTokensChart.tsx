@@ -21,10 +21,8 @@ import {
   formatTokenBand,
   IDLE_GAP_SECS,
   timeAxisTicks,
-  modeChangeMarkers,
   sessionModeBaseline,
   type ContextTokenPoint,
-  type ModeChangeMarker,
   type SessionModeBaseline,
 } from "../../../lib/presentation/sessionAnalysis"
 import type { SessionBucket } from "../../../lib/types/session"
@@ -180,35 +178,14 @@ const COMPACTION_STROKE_WIDTH = 2.5
 const COMPACTION_LIT_STROKE_WIDTH = 3.5
 /** Every mark at rest. A mark is a hairline, so it takes the denser grey. */
 const REST_MARK_STROKE = "var(--color-chart-rest-mark)"
-/** Vertical step between stacked mode-label rows, in pixels. */
-const MODE_LABEL_ROW_HEIGHT = 13
-/** Nearer than this fraction of the x-domain, two mode labels would collide. */
-const MODE_LABEL_MIN_GAP_FRACTION = 0.18
-
-/**
- * Give each mode label a row, so labels close on the x-axis stack instead of
- * overlapping. A label joins the first row with enough room, and opens a new
- * row (up to three) when none has it.
- */
-function staggeredModeMarkers(
-  markers: ModeChangeMarker[],
-  domainMax: number,
-): Array<ModeChangeMarker & { row: number }> {
-  const minGap = Math.max(1, domainMax) * MODE_LABEL_MIN_GAP_FRACTION
-  const lastOnRow: number[] = []
-  return markers.map((marker) => {
-    let row = lastOnRow.findIndex((last) => marker.index - last >= minGap)
-    if (row === -1) row = lastOnRow.length < 3 ? lastOnRow.length : 0
-    lastOnRow[row] = marker.index
-    return { ...marker, row }
-  })
-}
+/** Nearer than this fraction of the x-domain, two rewrite labels would collide. */
+const REWRITE_LABEL_MIN_GAP_FRACTION = 0.18
 
 /**
  * The rewrite-family points, with a flag for which bars carry a label. Only a
  * cache rehydration is labeled: an ordinary rewrite and a provider cache miss
  * draw a quiet line, because the user usually cannot prevent them. A bar
- * nearer than the mode-label gap to the last labeled bar shares that label, so
+ * nearer than the label gap to the last labeled bar shares that label, so
  * the labels do not overlap each other.
  */
 function labeledRewritePoints(
@@ -220,7 +197,7 @@ function labeledRewritePoints(
       point.isCacheRehydration ||
       point.isCacheRoutingMiss,
   )
-  const minGap = Math.max(1, data.length - 1) * MODE_LABEL_MIN_GAP_FRACTION
+  const minGap = Math.max(1, data.length - 1) * REWRITE_LABEL_MIN_GAP_FRACTION
   let lastLabeled = Number.NEGATIVE_INFINITY
   return points.map((point) => {
     const showLabel = point.isCacheRehydration && point.index - lastLabeled >= minGap
@@ -677,10 +654,10 @@ export function ContextTokensChart({
   return (
     <ResponsiveContainer
       width="100%"
-      height={220}
+      height={180}
       style={{ "--chart-mark-delay": `${markDelayMs}ms` } as CSSProperties}
     >
-      <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+      <AreaChart data={data} margin={{ top: 6, right: 4, bottom: 0, left: 0 }}>
         <defs>
           {hasContextData && (
             <linearGradient id={fillId} x1={0} y1={0} x2={0} y2={1}>
@@ -828,24 +805,6 @@ export function ContextTokensChart({
               label={{ ...AXIS_LABEL, value: tick.label, position: "insideBottom" }}
             />
           ))}
-        {/* A mode change (model, thinking effort, or speed) draws no line at
-            all — only its label, at the top of the plot — so it stays a
-            calm annotation rather than another vertical mark competing with
-            compaction and rewrite markers. */}
-        {staggeredModeMarkers(modeChangeMarkers(data), data.length - 1).map((marker) => (
-          <ReferenceLine
-            key={`mode-${marker.index}`}
-            yAxisId={markerAxisId}
-            x={marker.index}
-            stroke="none"
-            label={{
-              ...AXIS_LABEL,
-              value: marker.label,
-              position: "insideTop",
-              dy: marker.row * MODE_LABEL_ROW_HEIGHT,
-            }}
-          />
-        ))}
       </AreaChart>
     </ResponsiveContainer>
   )

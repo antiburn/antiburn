@@ -283,7 +283,7 @@ const AXIS_STEPS = [
 export interface AxisScale {
   /** Top of the axis, in tokens. */
   ceiling: number
-  /** Marked values strictly between zero and the ceiling. */
+  /** Marked values above zero, up to and including the ceiling. */
   ticks: number[]
 }
 
@@ -297,6 +297,9 @@ export interface AxisScale {
  * top past the next clean step often enough that the plot stopped short of
  * it: a 380k peak topped out at 500k, so the area ended well below the top
  * of the chart.
+ *
+ * The ceiling is itself a mark, so the top of the plot always carries a
+ * value and the eye can read the peak against it.
  */
 export function axisScale(peak: number, cap: number, maxTicks: number): AxisScale {
   const target = Math.min(cap, Math.max(1, peak))
@@ -304,7 +307,7 @@ export function axisScale(peak: number, cap: number, maxTicks: number): AxisScal
     AXIS_STEPS.find((s) => target / s <= maxTicks) ?? AXIS_STEPS[AXIS_STEPS.length - 1]!
   const ceiling = Math.min(cap, Math.ceil(target / step) * step)
   const ticks: number[] = []
-  for (let v = step; v < ceiling; v += step) ticks.push(v)
+  for (let v = step; v <= ceiling; v += step) ticks.push(v)
   return { ceiling, ticks }
 }
 

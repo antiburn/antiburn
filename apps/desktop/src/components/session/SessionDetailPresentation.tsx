@@ -287,13 +287,14 @@ const TOKEN_STAT_ICONS: Record<string, LucideIcon> = {
 /**
  * The chart's key, drawn under the plot it explains.
  *
- * Each figure is a chip: a solid pill in the color its chart layer takes
- * when it lights, with the icon and the value in white. The icon carries the
- * identity the caption label used to; the tooltip and a screen-reader prefix
- * keep the word.
+ * Each figure is a chip: an outlined pill in the color its chart layer takes
+ * when it lights, with the icon and the value in that same ink. The chips
+ * share the row: each keeps the width its figure needs, and the rest of the
+ * row splits evenly between them. The icon carries the identity the caption
+ * label used to; the tooltip and a screen-reader prefix keep the word.
  *
- * Pointing at a chip lights its layer in the plot above, and the chip
- * brightens. Clicking a chip pins that layer, so it stays lit
+ * Pointing at a chip lights its layer in the plot above, and the chip takes
+ * a wash of its color. Clicking a chip pins that layer, so it stays lit
  * when the pointer leaves; clicking it again unpins it. An entry whose
  * `series` is absent counts something the chart draws no mark for, so it
  * neither lights nor pins.
@@ -317,7 +318,7 @@ function ChartKey({
   onPin: (series: ChartSeries) => void
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-1">
+    <div className="flex gap-1.5">
       {stats.map((stat) => {
         const Icon = TOKEN_STAT_ICONS[stat.label]
         const series = stat.series ?? null
@@ -330,7 +331,7 @@ function ChartKey({
               disabled={series == null}
               data-series={series ?? undefined}
               className={cn(
-                "chart-key-chip rounded-full px-2 py-0.5 type-body tabular-nums disabled:opacity-100",
+                "chart-key-chip min-w-fit grow basis-0 rounded-full border border-current px-1.5 py-0.5 type-body tabular-nums disabled:opacity-100",
                 series != null ? SERIES_INK_CLASS[series] : "text-label-tertiary",
                 isPinned && "chart-key-chip-pinned",
               )}
@@ -339,7 +340,7 @@ function ChartKey({
               onClick={() => series != null && onPin(series)}
             >
               <span className="sr-only">{stat.label}: </span>
-              <span className="flex items-center gap-x-1 text-white">
+              <span className="flex items-center justify-center gap-x-1">
                 {Icon && (
                   <Icon size={12} strokeWidth={2.25} aria-hidden="true" className="shrink-0" />
                 )}

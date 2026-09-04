@@ -219,21 +219,11 @@ describe("ContextTokensChart", () => {
     expect(rehydrationLine?.getAttribute("stroke-dasharray")).toBeFalsy()
   })
 
-  it("draws a mode-change marker with no line, only its label", () => {
+  it("draws no mode-change label in the plot; the tooltip carries the model", () => {
     const buckets = [
       bucket({ contextTokens: 100_000, model: "claude-opus-4-6" }),
       bucket({ contextTokens: 100_000, model: "claude-fable-5" }),
     ]
-    const { container } = render(
-      <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
-    )
-
-    expect(screen.getByText("opus-4-6 → fable-5")).toBeInTheDocument()
-    expect(container.querySelectorAll('line[stroke="none"]').length).toBeGreaterThan(0)
-  })
-
-  it("draws no mode-change marker when no bucket carries a mode signal", () => {
-    const buckets = [bucket({ contextTokens: 100_000 }), bucket({ contextTokens: 120_000 })]
     render(<ContextTokensChart buckets={buckets} contextWindow={200_000} />)
 
     expect(screen.queryAllByText(/→|effort |^fast$/)).toEqual([])

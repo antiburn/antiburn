@@ -3,18 +3,17 @@
 
 /* --- Chart key chips --- */
 
-/* A chip is a solid pill in its series color, with the icon and the figure
-   in white on top. The series ink sets `color`, and the pill draws that ink
-   as its fill, so one utility class drives the whole chip. */
+/* A chip is an outlined pill in its series color: the stroke, the icon, and
+   the figure all take the series ink, and the inside stays open. The series
+   ink sets `color`, so one utility class drives the whole chip. */
 .chart-key-chip {
-  background-color: currentColor;
-  transition-property: filter, transform, box-shadow;
+  transition-property: background-color, transform, box-shadow;
   transition-duration: var(--duration-fast);
   transition-timing-function: var(--ease-out-quart);
 }
 
 .chart-key-chip:not(:disabled):hover {
-  filter: brightness(1.1);
+  background-color: color-mix(in srgb, currentColor 14%, transparent);
 }
 
 .chart-key-chip:not(:disabled):active {
