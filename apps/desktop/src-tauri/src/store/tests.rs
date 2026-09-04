@@ -338,7 +338,7 @@ fn provider_hints_migration_keeps_old_analysis_unknown() {
         .unwrap()
         .expect("legacy analysis survives");
 
-    assert_eq!(store.schema_version().unwrap(), 32);
+    assert_eq!(store.schema_version().unwrap(), 33);
     assert_eq!(analysis.provider_hints_json, None);
 }
 

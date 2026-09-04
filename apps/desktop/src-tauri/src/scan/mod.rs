@@ -1384,6 +1384,10 @@ async fn describe_one_with_activity(
 /// bounded preview read for every other provider database. This runs only
 /// when describe runs, which the size cursor already gates, so it costs
 /// nothing for a session that has not changed.
+///
+/// Claude's own "resume as fork" writes no such marker. The insights worker
+/// links those fork sessions from published turn rows instead, once rows
+/// exist — see `fork_lineage`.
 async fn fork_parent_session_id_for(log: &SessionLog, preview: Option<&str>) -> Option<String> {
     match &log.source {
         SessionSource::ProviderDb {

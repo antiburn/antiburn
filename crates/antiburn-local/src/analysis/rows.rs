@@ -118,6 +118,19 @@ CREATE INDEX turn_assistant_session
  WHERE role = 'assistant';
 "#;
 
+/// DDL that indexes turn rows by their vendor `uuid`.
+///
+/// Serves the fork-lineage lookup: a resumed-as-fork session copies its
+/// parent's leading records byte for byte, with the same `uuid` values. The
+/// app's session store matches a fork's leading turn uuids against this
+/// index to find the session that already published them.
+///
+/// The partial predicate excludes rows with no `uuid` from index storage and
+/// write work.
+pub const TURN_SCHEMA_V6_SQL: &str = r#"
+CREATE INDEX turn_uuid ON turn (uuid) WHERE uuid IS NOT NULL;
+"#;
+
 /// DDL for the `session_coverage` table: one row per `(environment_key,
 /// agent, session_id, claim_fence)`, holding the serialized
 /// [`SessionCoverageRecord`] a pass wrote alongside its turn rows under the
@@ -187,8 +200,9 @@ CREATE TABLE source_resume (
 /// every entry in order; the app applies [`TURN_SCHEMA_SQL`],
 /// [`TURN_SCHEMA_V2_SQL`], [`TURN_SCHEMA_V3_SQL`],
 /// [`SESSION_COVERAGE_SCHEMA_SQL`], [`TURN_SCHEMA_V4_SQL`],
-/// [`SOURCE_RESUME_SCHEMA_SQL`], and [`TURN_SCHEMA_V5_SQL`] as its own migrations
-/// instead, since [`TURN_SCHEMA_SQL`] is already applied on user machines.
+/// [`SOURCE_RESUME_SCHEMA_SQL`], [`TURN_SCHEMA_V5_SQL`], and
+/// [`TURN_SCHEMA_V6_SQL`] as its own migrations instead, since
+/// [`TURN_SCHEMA_SQL`] is already applied on user machines.
 pub const TURN_MIGRATIONS: &[&str] = &[
     TURN_SCHEMA_SQL,
     TURN_SCHEMA_V2_SQL,
@@ -197,6 +211,7 @@ pub const TURN_MIGRATIONS: &[&str] = &[
     TURN_SCHEMA_V4_SQL,
     SOURCE_RESUME_SCHEMA_SQL,
     TURN_SCHEMA_V5_SQL,
+    TURN_SCHEMA_V6_SQL,
 ];
 
 /// Number of rows a [`TurnRowSink`] buffers before it writes them, unless the
