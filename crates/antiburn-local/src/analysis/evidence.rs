@@ -124,12 +124,26 @@ pub struct LoadedSource {
     pub origin: EvidenceValue<()>,
 }
 
+/// One built-in tool definition's context cost, resolved for the session's
+/// harness version and model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDefinition {
+    pub tokens: u32,
+    pub invoked: bool,
+    pub deferred: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextSourceEvidence {
     pub skills: BTreeMap<String, LoadedSource>,
     pub mcp_servers: BTreeMap<String, LoadedSource>,
-    pub tool_definitions: EvidenceValue<()>,
+    /// Keyed by each tool's display name (see
+    /// `tool_catalog::CatalogTool::display_name`). `Complete` only when
+    /// the session's harness version and model both resolve against the
+    /// built-in tool catalogue.
+    pub tool_definitions: EvidenceValue<BTreeMap<String, ToolDefinition>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -395,6 +409,12 @@ impl SourceCapabilities {
     /// non-root record's `parentUuid` (or its `logicalParentUuid` fallback
     /// at a compaction boundary) resolves to an id declared earlier in the
     /// same source.
+    ///
+    /// `tool_definitions` is set: the sink resolves the session's harness
+    /// version and model against the embedded built-in tool catalogue.
+    /// `context_sources.tool_definitions` still reports `Unsupported` when
+    /// the catalogue cannot resolve either — this flag only says Claude
+    /// carries the version and model signal the catalogue lookup needs.
     pub fn claude() -> Self {
         Self {
             request_context_tokens: true,
@@ -402,7 +422,7 @@ impl SourceCapabilities {
             timestamps_and_order: true,
             tool_invocations: true,
             skill_mcp_attribution: true,
-            tool_definitions: false,
+            tool_definitions: true,
             model_identity: true,
             token_classes: true,
             reasoning_effort_tier: true,
@@ -902,6 +922,15 @@ pub struct SessionCoverageRecord {
     /// TurnFacts::thread_identity_missing`]: that flags a counted turn with
     /// no `uuid` at all; this flags a `uuid` that does not resolve.
     pub thread_parent_unresolved: bool,
+    /// The harness's own version, first-seen. Old persisted evidence has
+    /// no field here, so it deserializes as `None`.
+    #[serde(default)]
+    pub harness_version: Option<String>,
+    /// Tool names the harness has deferred at least once this session.
+    /// Old persisted evidence has no field here, so it deserializes as
+    /// empty.
+    #[serde(default)]
+    pub deferred_tools: BTreeSet<String>,
     pub summary_observed: bool,
     pub child_loss_reason: Option<CoverageReason>,
 }
@@ -951,7 +980,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 12,
+            "schemaRevision": 13,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -960,7 +989,7 @@ mod tests {
                 "timestampsAndOrder": true,
                 "toolInvocations": true,
                 "skillMcpAttribution": true,
-                "toolDefinitions": false,
+                "toolDefinitions": true,
                 "modelIdentity": true,
                 "tokenClasses": true,
                 "reasoningEffortTier": true,
@@ -977,9 +1006,9 @@ mod tests {
             },
             "coverage": coverage,
             "provenance": {
-                "parserRevision": 23,
+                "parserRevision": 24,
                 "analyzerRevision": 17,
-                "evidenceSchemaRevision": 12,
+                "evidenceSchemaRevision": 13,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",

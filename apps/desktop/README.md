@@ -128,6 +128,10 @@ Settings teardown, and the memory rules behind those policies.
   item stays highlighted for as long as the popover is open: the system's own
   highlight is momentary and lets go on mouse-up, so the shell drives it, and
   clears it again on every path that puts the popover away.
+  The dot mark also shows the lowest remaining displayable provider allowance:
+  bright dots remain and depleted dots stay dim. It starts full on launch,
+  then moves to the cached reading without opening a provider connection.
+  Unknown or disabled live usage keeps the ordinary full mark.
 - **Popover.** 380pt wide, frameless, always on top, hidden from the taskbar.
   It is created on demand and anchored under its menu-bar item on each
   open, flipping above the item and clamping to the display when there is no

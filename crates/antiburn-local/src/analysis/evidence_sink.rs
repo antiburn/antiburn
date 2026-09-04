@@ -11,7 +11,8 @@ use crate::analysis::evidence::{
     RelationConfidence, RepeatedContext, RepeatedContextAccounting, SessionCoverageRecord,
     SessionEvidence, SessionEvidenceIdentity, SessionProvenance, SourceAcceptance,
     SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
-    ToolEvidence, ToolUse, cap_string, insert_diagnostic_field, record_diagnostic_set_cap,
+    ToolDefinition, ToolEvidence, ToolUse, cap_string, insert_diagnostic_field,
+    record_diagnostic_set_cap,
 };
 use crate::analysis::evidence_query::TurnFacts;
 use crate::analysis::interface::{
@@ -22,6 +23,7 @@ use crate::analysis::metrics_sink::SessionMetricsAccumulator;
 use crate::analysis::model::NormalizedEvent;
 use crate::analysis::resume::{AdapterResume, EvidenceSnapshot, StreamSnapshot};
 use crate::analysis::rows::TurnRowSink;
+use crate::analysis::tool_catalog::ToolCatalog;
 use crate::analysis::{
     ANALYZER_REVISION, COVERAGE_SCHEMA_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION,
     RESUME_SNAPSHOT_REVISION, SessionMetrics,
@@ -32,6 +34,20 @@ use crate::analysis::{
 /// tool call invokes a loaded skill under either its full name or this suffix.
 fn skill_suffix(name: &str) -> &str {
     name.rsplit_once(':').map_or(name, |(_, suffix)| suffix)
+}
+
+/// The most frequently observed full model id in `facts.by_model`, by
+/// turn count, or `None` when the transcript never named one. A bare
+/// alias (`sonnet`, `opus`, `haiku`) carries no hyphen and never resolves
+/// against the built-in tool catalogue, so it is excluded — mirroring
+/// `initial_context::ClaudeContextAccumulator::observe_model_id`.
+fn resolved_model_id(facts: &TurnFacts) -> Option<&str> {
+    facts
+        .by_model
+        .iter()
+        .filter(|(model, _)| model.contains('-'))
+        .max_by_key(|(_, tokens)| tokens.turns)
+        .map(|(model, _)| model.as_str())
 }
 
 /// Tests enforce this ceiling for the accumulator's retained heap bytes.
@@ -85,6 +101,11 @@ pub struct SessionEvidenceAccumulator {
     subagents_cap_exceeded: bool,
     seen_thread_uuids: HashSet<String>,
     thread_parent_unresolved: bool,
+    /// The harness's own version, from a `HarnessVersion` observation.
+    /// First-seen value wins.
+    harness_version: Option<String>,
+    /// Tool names named in a `DeferredTool` observation this session.
+    deferred_tools: BTreeSet<String>,
     summary_observed: bool,
     /// The worst [`CoverageReason`] any streamed child reported, folded in
     /// by [`Self::observe_child_coverage`]. `None` when every streamed
@@ -120,6 +141,8 @@ impl SessionEvidenceAccumulator {
             subagents_cap_exceeded: false,
             seen_thread_uuids: HashSet::new(),
             thread_parent_unresolved: false,
+            harness_version: None,
+            deferred_tools: BTreeSet::new(),
             summary_observed: false,
             child_loss_reason: None,
         }
@@ -231,6 +254,14 @@ impl SessionEvidenceAccumulator {
             EvidenceObservation::InheritedRecord => {
                 self.diagnostics.records_observed =
                     self.diagnostics.records_observed.saturating_add(1);
+            }
+            EvidenceObservation::HarnessVersion { version } => {
+                if self.harness_version.is_none() {
+                    self.harness_version = Some(version.clone());
+                }
+            }
+            EvidenceObservation::DeferredTool { name } => {
+                self.deferred_tools.insert(name.clone());
             }
             EvidenceObservation::UnrecognizedType {
                 discriminator,
@@ -509,6 +540,8 @@ impl SessionEvidenceAccumulator {
             subagent_examples: self.subagent_examples.clone(),
             subagents_cap_exceeded: self.subagents_cap_exceeded,
             thread_parent_unresolved: self.thread_parent_unresolved,
+            harness_version: self.harness_version.clone(),
+            deferred_tools: self.deferred_tools.clone(),
             summary_observed: self.summary_observed,
             child_loss_reason: self.child_loss_reason,
         }
@@ -561,6 +594,8 @@ impl SessionEvidenceAccumulator {
             subagents_cap_exceeded: record.subagents_cap_exceeded,
             seen_thread_uuids: resume.seen_thread_uuids,
             thread_parent_unresolved: record.thread_parent_unresolved,
+            harness_version: record.harness_version,
+            deferred_tools: record.deferred_tools,
             summary_observed: record.summary_observed,
             child_loss_reason: record.child_loss_reason,
         }
@@ -576,14 +611,26 @@ impl SessionEvidenceAccumulator {
         }
     }
 
+    /// Builds this session's [`SessionEvidence`] against the embedded
+    /// production tool catalogue. See [`Self::evidence_with_catalog`].
+    pub fn evidence(&self, facts: &TurnFacts) -> SessionEvidence {
+        self.evidence_with_catalog(facts, crate::analysis::tool_catalog::embedded())
+    }
+
     /// Builds this session's [`SessionEvidence`] from the row-derived
     /// `facts` plus whatever this residual observed directly. Most groups
     /// come from `facts` outright; `tools`, `context_sources`, and the
     /// subagent relationship shape (`spawn_count`, `children`, `examples`)
     /// still come from this residual — a row query has no tool catalog and
     /// no context-source contract, and a child's spawn is only ever seen
-    /// live, as an `EvidenceObservation`.
-    pub fn evidence(&self, facts: &TurnFacts) -> SessionEvidence {
+    /// live, as an `EvidenceObservation`. `catalog` resolves built-in tool
+    /// definitions; a test can supply a fixture catalogue in place of the
+    /// real embedded one (see [`Self::evidence`]).
+    pub fn evidence_with_catalog(
+        &self,
+        facts: &TurnFacts,
+        catalog: &ToolCatalog,
+    ) -> SessionEvidence {
         // A discovered child that never streamed (or streamed but lost
         // records of its own) makes every group computed over the union of
         // rows — models, subagents, cache, context, eligibility, time
@@ -616,7 +663,7 @@ impl SessionEvidenceAccumulator {
         };
         let eligibility = facts.eligibility.clone();
         let tools = self.classified_tools();
-        let context_sources = self.context_sources();
+        let context_sources = self.context_sources(catalog, resolved_model_id(facts));
         let models = ModelEvidence {
             by_model: facts.by_model.clone(),
             unattributed_turns: facts.unattributed_turns,
@@ -797,7 +844,18 @@ impl SessionEvidenceAccumulator {
                 source_kind: self.source_kind,
                 source_acceptance: self.source_acceptance,
                 ordering: self.ordering,
-                harness_version: EvidenceValue::Unsupported,
+                // `self.harness_version` is folded only from a
+                // `HarnessVersion` observation, which only the Claude
+                // adapter emits (`records::evidence_observations`), so
+                // every other source stays `Unsupported` here without a
+                // separate capability gate. The version string itself is
+                // not carried here — `harness_version` is a bare marker,
+                // like the other `EvidenceValue<()>` fields.
+                harness_version: if self.harness_version.is_some() {
+                    EvidenceValue::Complete(())
+                } else {
+                    EvidenceValue::Unsupported
+                },
             },
             diagnostics,
             time_range: self.supported_value(
@@ -937,7 +995,7 @@ impl SessionEvidenceAccumulator {
             .collect()
     }
 
-    fn context_sources(&self) -> ContextSourceEvidence {
+    fn context_sources(&self, catalog: &ToolCatalog, model: Option<&str>) -> ContextSourceEvidence {
         let mut skills = self.skills.clone();
         let mut mcp_servers = self.mcp_servers.clone();
         for (name, source) in &mut skills {
@@ -952,8 +1010,48 @@ impl SessionEvidenceAccumulator {
         ContextSourceEvidence {
             skills,
             mcp_servers,
-            tool_definitions: EvidenceValue::Unsupported,
+            tool_definitions: self.tool_definitions(catalog, model),
         }
+    }
+
+    /// Resolves this session's built-in tool definitions against
+    /// `catalog`, for `self.identity.agent` at `self.harness_version` and
+    /// `model`. `Unsupported` — never a partial map — when the source
+    /// declares no `tool_definitions` capability, the version was never
+    /// observed, `model` is `None`, or the catalogue cannot resolve the
+    /// version or model for this agent.
+    fn tool_definitions(
+        &self,
+        catalog: &ToolCatalog,
+        model: Option<&str>,
+    ) -> EvidenceValue<BTreeMap<String, ToolDefinition>> {
+        if !self.capabilities.tool_definitions {
+            return EvidenceValue::Unsupported;
+        }
+        let (Some(version), Some(model)) = (self.harness_version.as_deref(), model) else {
+            return EvidenceValue::Unsupported;
+        };
+        let Some(tools) = catalog.lookup(&self.identity.agent, version, model) else {
+            return EvidenceValue::Unsupported;
+        };
+        let mut definitions = BTreeMap::new();
+        for tool in tools {
+            let invoked = tool.match_names().iter().any(|match_name| {
+                self.tools
+                    .keys()
+                    .any(|name| name.eq_ignore_ascii_case(match_name))
+            });
+            let deferred = tool.is_deferred(&self.deferred_tools);
+            definitions.insert(
+                tool.display_name(),
+                ToolDefinition {
+                    tokens: tool.tokens,
+                    invoked,
+                    deferred,
+                },
+            );
+        }
+        EvidenceValue::Complete(definitions)
     }
 
     /// `child_dependent_reason` degrades a group that is computed over the
@@ -1302,7 +1400,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::analysis::model::Role;
+    use crate::analysis::evidence::ModelTokens;
+    use crate::analysis::model::{Role, ToolCall};
     use crate::analysis::rows::{MemoryTurnRowStore, TurnRowStore};
     use crate::analysis::{EVIDENCE_STRING_CAP, PartialReason, RawSource, VendorAdapter};
 
@@ -1545,6 +1644,49 @@ mod tests {
         assert!(matches!(evidence.tools, EvidenceValue::Complete(_)));
         // A child's loss does not change the session-level coverage either.
         assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+    }
+
+    #[test]
+    fn a_childs_tool_call_never_marks_a_parent_definition_invoked() {
+        let mut parent = accumulator(true);
+        parent.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::HarnessVersion {
+                version: "2.1.233".to_owned(),
+            },
+        )));
+        let mut child = accumulator(true);
+        let mut bash_call = assistant_event(0);
+        bash_call.tools.push(ToolCall::new("Bash"));
+        child.record(NormalizedRecord::MetricsEvent(Box::new(bash_call)));
+
+        // Tool definitions are parent-only, the same as `tools` and
+        // `context_sources`: folding a child's coverage never reaches
+        // them (see `Self::observe_child_coverage`'s doc comment).
+        parent.observe_child_coverage(&child);
+
+        let facts = TurnFacts {
+            by_model: BTreeMap::from([(
+                "claude-opus-4-6".to_owned(),
+                ModelTokens {
+                    turns: 1,
+                    ..ModelTokens::default()
+                },
+            )]),
+            ..TurnFacts::default()
+        };
+        let evidence = parent.evidence(&facts);
+        let EvidenceValue::Complete(sources) = evidence.context_sources else {
+            panic!("context sources must be complete");
+        };
+        let EvidenceValue::Complete(definitions) = sources.tool_definitions else {
+            panic!("tool definitions must resolve with a known version and model");
+        };
+        assert!(
+            definitions
+                .get("Bash")
+                .is_some_and(|definition| !definition.invoked),
+            "a child's own Bash call must never mark the parent's Bash definition invoked"
+        );
     }
 
     #[test]

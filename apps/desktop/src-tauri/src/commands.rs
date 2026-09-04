@@ -460,6 +460,14 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
         crate::onboarding::finish(app);
     }
 
+    if !saved.live_usage_active() {
+        crate::tray::clear_usage(app);
+    } else if !previous.live_usage_active()
+        && let Some(live) = app.try_state::<crate::usage_alerts::LiveUsage>()
+    {
+        crate::tray::sync_usage(app, &live.snapshot(), true, false);
+    }
+
     // The webviews restyle themselves from the event; the native side of the
     // theme (window chrome, scrollbars, the `prefers-color-scheme` each
     // webview reports) follows AppHandle::set_theme, which covers every
