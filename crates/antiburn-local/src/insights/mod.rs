@@ -20,6 +20,7 @@ pub use report::{
     CoverageCounts, DetectorCounts, DetectorRequirements, EfficiencyReport,
     EfficiencyReportAccumulator, Fact, FactState, MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS,
     MAX_EXAMPLES_PER_DETECTOR, MAX_REPORT_UNRECOGNIZED_TYPES, ReportContext, ReportWindow,
-    SessionExample, UnrecognizedRecords, clean_facts_complete, eligible, requirements,
+    SessionExample, SessionTokenBurnEvidence, TokenBurnSourceEvidence, TokenBurnTurnAccumulator,
+    TokenBurnTurnEvidence, UnrecognizedRecords, clean_facts_complete, eligible, requirements,
 };
 pub use status::{CoverageBucket, DetectorId};

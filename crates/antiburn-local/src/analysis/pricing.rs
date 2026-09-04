@@ -37,11 +37,19 @@ fn initial_pricing() -> HashMap<String, ModelPricing> {
         ("claude-opus-4-7".to_string(), opus.clone()),
         ("claude-opus-4-8".to_string(), opus),
         (
+            "claude-opus-5".to_string(),
+            price(4e-6, 20e-6, 0.4e-6, 8e-6),
+        ),
+        (
             "claude-sonnet-4-5".to_string(),
             price(3e-6, 15e-6, 0.3e-6, 6e-6),
         ),
         (
             "claude-sonnet-4-6".to_string(),
+            price(3e-6, 15e-6, 0.3e-6, 6e-6),
+        ),
+        (
+            "claude-sonnet-5".to_string(),
             price(3e-6, 15e-6, 0.3e-6, 6e-6),
         ),
         (
@@ -61,6 +69,22 @@ fn initial_pricing() -> HashMap<String, ModelPricing> {
         (
             "gpt-5.6-sol".to_string(),
             price(5e-6, 30e-6, 0.5e-6, 6.25e-6),
+        ),
+        (
+            "gpt-5.6-sol-fast".to_string(),
+            price(7.5e-6, 45e-6, 0.75e-6, 9.375e-6),
+        ),
+        (
+            "gpt-5.6-luna".to_string(),
+            price(1e-6, 6e-6, 0.1e-6, 1.25e-6),
+        ),
+        (
+            "gemini-3.8-pro".to_string(),
+            price(2e-6, 12e-6, 0.2e-6, 2e-6),
+        ),
+        (
+            "gemini-3.8-flash".to_string(),
+            price(0.5e-6, 3e-6, 0.05e-6, 0.5e-6),
         ),
     ])
 }

@@ -103,7 +103,7 @@ export interface ChecksCategoryPayload {
   clean: number
   /** Sessions without enough evidence for a finding or clean result. */
   unavailable: number
-  /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 5000. */
+  /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */
   estimatedTokenBurnBasisPoints: number | null
 }
 
@@ -111,7 +111,7 @@ export interface ChecksCategoryPayload {
 export interface ChecksReportPayload {
   /** False while this report snapshot still has queued or running evidence work. */
   evidenceSettled: boolean
-  /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 5000. */
+  /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */
   estimatedTokenBurnBasisPoints: number | null
   categories: ChecksCategoryPayload[]
 }

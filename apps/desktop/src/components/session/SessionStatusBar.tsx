@@ -2,6 +2,7 @@ import { Check, Flame, X, type LucideIcon } from "lucide-react"
 import { Fragment } from "react"
 
 import type { SessionHygieneEvidenceState } from "../../lib/insightsIpc"
+import { cn } from "../../lib/cn"
 import {
   sessionHygieneStateIsTransient,
   sessionHygieneStateLabel,
@@ -46,8 +47,11 @@ function verdictInk(failedShare: number, assessedCount: number): string {
 }
 
 function formatLimitPercent(percent: number): string {
-  if (percent > 0 && percent < 0.01) return "<0.01%"
-  return `${Number(percent.toFixed(2))}%`
+  return `${roundedLimitPercent(percent)}%`
+}
+
+function roundedLimitPercent(percent: number): number {
+  return Number(percent.toFixed(1))
 }
 
 interface StatusMark {
@@ -147,7 +151,7 @@ export function SessionStatusBar({
       }`
   const tooltip = showStateText ? verdictLabel : renderTooltip(failed, passed)
   const showVerdict = showStateText || assessedCount > 0
-  const isHighLimitShare = (limitBadge?.percent ?? 0) >= 5
+  const isHighLimitShare = roundedLimitPercent(limitBadge?.percent ?? 0) >= 5
 
   return (
     <div className="flex w-full items-center justify-between gap-x-1.5 text-label-secondary">
@@ -171,8 +175,8 @@ export function SessionStatusBar({
           <span
             className={
               isHighLimitShare
-                ? "flex shrink-0 items-center gap-0.5 rounded-full bg-brand-tint px-1.5 py-px font-mono type-footnote font-medium! leading-[13px] tracking-tight! text-white tabular-nums"
-                : "font-mono type-footnote tabular-nums text-label-secondary"
+                ? "ml-auto flex shrink-0 items-center gap-0.5 rounded-full bg-brand-tint px-1.5 py-px font-mono type-footnote font-medium! leading-[13px] tracking-tight! text-white tabular-nums"
+                : "ml-auto font-mono type-footnote tabular-nums text-label-secondary"
             }
             data-session-limit-provider={limitBadge.provider}
             data-session-limit-window={limitBadge.windowId}
@@ -193,7 +197,13 @@ export function SessionStatusBar({
           </span>
         </Tooltip>
       ) : (
-        cost && <SessionCostBadge {...cost} appearance={cost.isHighCost ? "pill" : "bare"} />
+        cost && (
+          <SessionCostBadge
+            {...cost}
+            appearance={cost.isHighCost ? "pill" : "bare"}
+            className={cn(cost.className, "ml-auto")}
+          />
+        )
       )}
     </div>
   )

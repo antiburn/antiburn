@@ -1764,11 +1764,10 @@ fn compaction_event(ts: Option<i64>) -> NormalizedEvent {
 }
 
 /// Splits a Codex `last_token_usage` / `total_token_usage` object into
-/// [`Usage`]'s buckets. Mirrors Cadence's `parse_codex_last_token_usage`
-/// (`crates/analysis/src/model_turns.rs`): `cache_read_tokens` is the
-/// largest of the cache-read alias keys, `cache_creation_tokens` is the
-/// largest of the cache-write alias keys ([`CACHE_WRITE_ALIAS_KEYS`]), and
-/// `input_tokens` is `input_tokens` with both subtracted, floored at 0.
+/// [`Usage`]'s buckets. `cache_read_tokens` is the largest cache-read alias.
+/// `cache_creation_tokens` is the largest cache-write alias from
+/// [`CACHE_WRITE_ALIAS_KEYS`]. `input_tokens` subtracts both values and
+/// floors the result at zero.
 /// Codex reports both cache classes *inside* `input_tokens`; leaving them
 /// in would double-count context occupancy ([`Usage::context_tokens`]).
 fn codex_usage(u: &Map<String, Value>) -> Usage {
@@ -1965,7 +1964,7 @@ mod tests {
 
     #[test]
     fn record_to_event_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 1_072_695_791_009_847_341;
+        const EXPECTED_FINGERPRINT: u64 = 1_497_480_403_568_533_056;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();

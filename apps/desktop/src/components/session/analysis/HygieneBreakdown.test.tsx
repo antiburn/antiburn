@@ -77,6 +77,19 @@ describe("HygieneBreakdown", () => {
     expect(
       screen.getByRole("region", { name: "Session overdepth guidance" }),
     ).toHaveTextContent("reviewed limit is 400,000")
+    const guidanceRegion = screen.getByRole("region", {
+      name: "Session overdepth guidance",
+    })
+    expect(guidanceRegion).toHaveClass("-mx-1")
+    expect(guidanceRegion).not.toHaveClass("px-1")
+    expect(guidanceRegion.firstElementChild).toHaveClass(
+      "mt-1",
+      "border",
+      "border-separator",
+      "p-3",
+    )
+    expect(guidanceRegion.firstElementChild).not.toHaveClass("px-3", "pb-3")
+    expect(guidanceRegion.querySelector('[class*="text-sm"]')).toBeNull()
 
     fireEvent.click(screen.getByRole("button", { name: "4/5 passed" }))
     fireEvent.click(screen.getByRole("button", { name: "Model overthinking details" }))
