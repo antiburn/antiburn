@@ -54,9 +54,9 @@ pub use model::{
     AnalysisRecord, AppSettings, DisabledAgents, DiskSpaceDisplay, EvidenceClaim,
     EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters,
     MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement,
-    ProjectionRevisions, PublishedEvidence, RETAIN_SESSION_DATA_FOREVER, RelationKind,
-    RelationRecord, RepositoryRecord, SessionActivityKey, SessionBadgeMetric, SessionKey,
-    SessionRecord, SessionUsageRecord, SessionUsageTurnRecord, SourcePublishMode,
+    OwningSession, ProjectionRevisions, PublishedEvidence, RETAIN_SESSION_DATA_FOREVER,
+    RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey, SessionBadgeMetric,
+    SessionKey, SessionRecord, SessionUsageRecord, SessionUsageTurnRecord, SourcePublishMode,
     SourcePublishOutcome, SourceVersionState, ThemePreference, UsageEvidenceRecord,
 };
 
@@ -187,6 +187,54 @@ const SESSIONS_ACTIVE_SINCE_SQL: &str = "SELECT environment_key, agent, session_
        FROM session
       WHERE COALESCE(updated_at_epoch, 0) >= ?1
       ORDER BY COALESCE(updated_at_epoch, 0) ASC";
+
+/// Ceiling on how many uuids [`Store::sessions_owning_turn_uuids`] matches
+/// in one call, applied to the `IN (...)` list it builds.
+const FORK_LINEAGE_UUID_CAP: usize = 8;
+
+/// [`Store::sessions_owning_turn_uuids`]'s query, built for `uuid_count`
+/// bound uuids since the `IN (...)` list varies in length. Pulled out for
+/// the same reason as [`RECENT_SESSIONS_SQL`]: a schema test can pin it to
+/// the `turn_uuid` index.
+///
+/// `INDEXED BY turn_uuid` is deliberate, not just a test convenience: a
+/// uuid is far more selective than `environment_key`/`agent`, but SQLite's
+/// planner cannot know that without `ANALYZE` statistics, and could
+/// otherwise pick `turn_session_thread` instead. Forcing `turn_uuid` keeps
+/// this lookup cheap regardless of how a reader's own database is shaped.
+fn sessions_owning_turn_uuids_sql(uuid_count: usize) -> String {
+    let placeholders = vec!["?"; uuid_count].join(", ");
+    format!(
+        "WITH matched AS (
+             SELECT DISTINCT t.session_id
+               FROM turn t INDEXED BY turn_uuid
+               JOIN session_evidence e
+                 ON e.environment_key = t.environment_key
+                AND e.agent = t.agent
+                AND e.session_id = t.session_id
+                AND e.published_fence = t.claim_fence
+              WHERE t.environment_key = ?
+                AND t.agent = ?
+                AND t.session_id <> ?
+                AND t.uuid IN ({placeholders})
+         )
+         SELECT s.session_id, s.first_seen_at,
+                (SELECT COUNT(*)
+                   FROM turn pt
+                   JOIN session_evidence pe
+                     ON pe.environment_key = pt.environment_key
+                    AND pe.agent = pt.agent
+                    AND pe.session_id = pt.session_id
+                    AND pe.published_fence = pt.claim_fence
+                  WHERE pt.environment_key = s.environment_key
+                    AND pt.agent = s.agent
+                    AND pt.session_id = s.session_id) AS published_turn_rows
+           FROM session s
+           JOIN matched m ON m.session_id = s.session_id
+          WHERE s.environment_key = ?
+            AND s.agent = ?"
+    )
+}
 
 impl Store {
     /// Open (creating if absent) and migrate the database under `data_dir`.
@@ -2152,6 +2200,47 @@ impl Store {
             params![key.environment_key, key.agent, key.session_id],
             |row| row.get::<_, String>(0),
         )?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Sessions that already hold a published turn row for one of `uuids`,
+    /// within `key`'s own environment and agent, excluding `key` itself.
+    ///
+    /// Serves the Claude fork-lineage lookup: a "resume as fork" session
+    /// copies its parent's leading turn records byte for byte, keeping
+    /// their `uuid`. A session this finds owning one of them is a
+    /// fork-parent candidate.
+    ///
+    /// `uuids` is capped at [`FORK_LINEAGE_UUID_CAP`] entries — the
+    /// caller's own extraction stays far under this, and the cap only
+    /// guards the `IN (...)` list against an oversized call.
+    pub fn sessions_owning_turn_uuids(
+        &self,
+        key: &SessionKey,
+        uuids: &[String],
+    ) -> Result<Vec<OwningSession>> {
+        let uuids = &uuids[..uuids.len().min(FORK_LINEAGE_UUID_CAP)];
+        if uuids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let connection = self.lock();
+        let sql = sessions_owning_turn_uuids_sql(uuids.len());
+        let mut statement = connection.prepare(&sql)?;
+        let mut values: Vec<rusqlite::types::Value> = vec![
+            rusqlite::types::Value::Text(key.environment_key.clone()),
+            rusqlite::types::Value::Text(key.agent.clone()),
+            rusqlite::types::Value::Text(key.session_id.clone()),
+        ];
+        values.extend(uuids.iter().cloned().map(rusqlite::types::Value::Text));
+        values.push(rusqlite::types::Value::Text(key.environment_key.clone()));
+        values.push(rusqlite::types::Value::Text(key.agent.clone()));
+        let rows = statement.query_map(rusqlite::params_from_iter(values.iter()), |row| {
+            Ok(OwningSession {
+                session_id: row.get(0)?,
+                first_seen_at: row.get(1)?,
+                published_turn_rows: row.get(2)?,
+            })
+        })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 

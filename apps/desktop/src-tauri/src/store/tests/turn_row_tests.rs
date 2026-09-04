@@ -11,10 +11,10 @@ use super::*;
 #[test]
 fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pin the count so each new migration requires an explicit test update.
-    assert_eq!(super::schema::MIGRATIONS.len(), 32);
+    assert_eq!(super::schema::MIGRATIONS.len(), 33);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 32);
+    assert_eq!(store.schema_version().unwrap(), 33);
     let index_exists = store
         .lock()
         .query_row(
@@ -110,6 +110,97 @@ fn v32_indexes_existing_assistant_turns() {
     assert_eq!(assistant_rows, 1);
     assert_eq!(all_rows, 2);
     assert!(query_plan.contains("USING INDEX turn_assistant_session"));
+}
+
+/// Publish `uuid` under a fresh claim for `session_id`, so
+/// [`Store::sessions_owning_turn_uuids`] can find it as an owner.
+fn publish_turn_row_with_uuid(store: &Store, session_id: &str, uuid: &str) -> SessionKey {
+    let (record, claim) = claimed_projection(store, session_id, 1_000, 60);
+    let mut row = turn_row(0);
+    row.uuid = Some(uuid.to_string());
+    FencedTurnRowStore::new(store.clone(), record.key.clone(), claim.claim_fence)
+        .write_turn_rows(&[row])
+        .unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+    record.key
+}
+
+#[test]
+fn sessions_owning_turn_uuids_finds_the_owner_and_excludes_self() {
+    let store = store();
+    let uuid = "11111111-1111-4111-8111-000000000001";
+    publish_turn_row_with_uuid(&store, "uuid-owner-parent", uuid);
+    // The querying session also owns a copy of the same uuid: it must not
+    // come back as its own candidate.
+    let querying_key = publish_turn_row_with_uuid(&store, "uuid-owner-fork", uuid);
+
+    let owners = store
+        .sessions_owning_turn_uuids(&querying_key, &[uuid.to_string()])
+        .unwrap();
+
+    assert_eq!(owners.len(), 1);
+    assert_eq!(owners[0].session_id, "uuid-owner-parent");
+    assert_eq!(owners[0].published_turn_rows, 1);
+}
+
+#[test]
+fn an_unpublished_turn_row_does_not_match_a_uuid_lookup() {
+    let store = store();
+    let uuid = "22222222-2222-4222-8222-000000000001";
+    let (record, claim) = claimed_projection(&store, "uuid-unpublished", 1_000, 60);
+    let mut row = turn_row(0);
+    row.uuid = Some(uuid.to_string());
+    FencedTurnRowStore::new(store.clone(), record.key.clone(), claim.claim_fence)
+        .write_turn_rows(&[row])
+        .unwrap();
+    // No `publish_projections` call: the row sits under `claim_fence`,
+    // never stamped onto `session_evidence.published_fence`.
+
+    let owners = store
+        .sessions_owning_turn_uuids(
+            &SessionKey::new("native", "claude-code", "uuid-lookup-key"),
+            &[uuid.to_string()],
+        )
+        .unwrap();
+
+    assert!(owners.is_empty());
+}
+
+#[test]
+fn sessions_owning_turn_uuids_query_plan_uses_the_turn_uuid_index() {
+    let store = store();
+    let sql = format!(
+        "EXPLAIN QUERY PLAN {}",
+        super::sessions_owning_turn_uuids_sql(1)
+    );
+    let connection = store.lock();
+    let mut statement = connection.prepare(&sql).unwrap();
+    // env, agent, excluded session_id, one uuid, env, agent — six `?`s for a
+    // one-uuid query. The bound values do not matter to a query plan.
+    let plan: Vec<String> = statement
+        .query_map(
+            params![
+                "native",
+                "claude-code",
+                "self",
+                "u1",
+                "native",
+                "claude-code"
+            ],
+            |row| row.get::<_, String>(3),
+        )
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(
+        plan.iter().any(|line| line.contains("turn_uuid")),
+        "expected the plan to use turn_uuid, got: {plan:?}"
+    );
 }
 
 #[test]
