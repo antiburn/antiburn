@@ -29,7 +29,11 @@ export function OverlayWindow() {
     >
       <div
         ref={panelRef}
-        className="relative mx-2 select-none rounded-xl border border-transparent px-3 pt-2 pb-2"
+        className="relative mx-2 select-none rounded-xl border border-transparent px-3 pt-2 pb-2 transition-colors duration-[var(--duration-fast)] ease-out"
+        // At rest the HUD paints no surface and the bars sit on the desktop.
+        // On hover it takes a surface, which groups the bars into one object
+        // the reader can point at and drag.
+        style={state.hovered ? { backgroundColor: "var(--color-bg-hud-hover)" } : undefined}
         onMouseDown={(event) => session.startDrag(event)}
       >
         <button
@@ -56,6 +60,7 @@ export function OverlayWindow() {
                 segments={HUD_SEGMENTS}
                 split={[{ fraction: bar.percent / 100, color: bar.color }]}
                 blinkLast={state.sessionLive && index === 0}
+                expectedFraction={bar.expectedFraction}
               />
             ))}
           </div>

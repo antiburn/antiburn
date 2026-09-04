@@ -1,3 +1,4 @@
+import { siClaude } from "simple-icons"
 import { describe, expect, it } from "vitest"
 
 import type {
@@ -127,10 +128,35 @@ describe("deriveUsageBars", () => {
         provider({ provider: "openai", displayName: "OpenAI", windows: [usageWindow()] }),
       ]),
     )
-    expect(bars[0]!.color).toBe("var(--color-burn)")
+    // Anthropic keeps Claude's own colour, and it comes from the package the
+    // brand marks come from — a hex written here would be the thing the
+    // design contract forbids.
+    expect(bars[0]!.color).toBe(`#${siClaude.hex}`)
     expect(bars[1]!.color).toBe("var(--color-label)")
     expect(providerBarColor("cursor")).toBe("var(--color-system-indigo)")
     expect(providerBarColor("somebody-new")).toBe("var(--color-burn)")
+  })
+
+  it("measures the notch from the snapshot's own time", () => {
+    // The window resets in two hours and its id states a five-hour period, so
+    // three of its five hours have gone.
+    const bars = deriveUsageBars(summary([provider()]))
+    expect(bars[0]!.expectedFraction).toBeCloseTo(0.6, 5)
+  })
+
+  it("draws no notch when nothing states the window's period", () => {
+    // A notch placed from an assumed period is a claim the provider never
+    // made, so there is no notch at all.
+    const bars = deriveUsageBars(
+      summary([provider({ windows: [usageWindow({ id: "monthly", kind: "monthly" })] })]),
+    )
+    expect(bars[0]!.expectedFraction).toBeNull()
+  })
+
+  it("draws no notch when the snapshot states no usable time", () => {
+    const broken = summary([provider()])
+    broken.generatedAt = "not a date"
+    expect(deriveUsageBars(broken)[0]!.expectedFraction).toBeNull()
   })
 })
 

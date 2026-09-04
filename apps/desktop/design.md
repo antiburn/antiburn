@@ -133,9 +133,15 @@ colors:
   bg-hud:
     light: "hsl(0 0% 96.4%)"
     dark: "hsl(0 0% 12.5%)"
+  bg-hud-hover: # the HUD surface on hover; the desktop stays visible through it
+    light: "hsl(0 0% 96.4% / 0.9)"
+    dark: "hsl(0 0% 12.5% / 0.9)"
   led-off: # unlit LED segment; one mid grey for both themes, because the HUD paints no surface and floats over any background
     light: "hsl(0 0% 50% / 0.45)"
     dark: "hsl(0 0% 50% / 0.45)"
+  led-notch: # the linear-use notch; one grey for both themes, for the same reason as led-off
+    light: "hsl(0 0% 45% / 0.9)"
+    dark: "hsl(0 0% 45% / 0.9)"
   # Session-analysis sub-palette only (src/styles/session-analysis-colors.css)
   context-fill-top:
     light: "hsl(217.2 91% 59.8% / 0.6)"
@@ -314,7 +320,10 @@ Notes for what isn't expressible as a token:
   filled paths, not stroked glyphs, and take `--color-agent-mark` rather than a `text-*` label
   colour — a deliberately firmer ink, because a shape has no letterforms to carry it at 18px. A mark
   whose identity _is_ its colour keeps that colour in both themes, taken from the value its source
-  package records. Marks are never drawn inline; they come from the `renderAgentIcon` slot.
+  package records. Marks are never drawn inline; they come from the `renderAgentIcon` slot. The
+  same rule covers the one other place a vendor colour appears: the HUD draws Anthropic's usage bar
+  in the hex `simple-icons` records for the Claude mark, read from the package rather than written
+  into the palette.
 - **Themes** — three sources, in cascade order. The system light/dark preference is the default. A
   platform whose webview exposes live system label/separator/accent tokens picks those up through
   `@supports`, so text and chrome track the OS exactly. A platform without them takes an explicit

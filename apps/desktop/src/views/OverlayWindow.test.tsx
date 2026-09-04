@@ -248,6 +248,26 @@ describe("OverlayWindow", () => {
     await waitFor(() => expect(resizeOverlayWindow).toHaveBeenCalledWith(44, false, true))
   })
 
+  it("takes a surface on hover and drops it on leave", async () => {
+    // At rest the bars sit on the desktop with nothing behind them. The
+    // surface arrives with the pointer and groups them into one object.
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
+    expect(panel(container).style.backgroundColor).toBe("")
+    fireEvent.mouseEnter(frame(container))
+    expect(panel(container).style.backgroundColor).toBe("var(--color-bg-hud-hover)")
+    fireEvent.mouseLeave(frame(container))
+    expect(panel(container).style.backgroundColor).toBe("")
+  })
+
+  it("marks how far through the window the clock has travelled", async () => {
+    // The fixture window resets in two hours and its id states a five-hour
+    // period, so three of its five hours have gone.
+    render(<OverlayWindow />)
+    await waitFor(() => expect(screen.getByTestId("led-bar-notch")).toBeInTheDocument())
+    expect(screen.getByTestId("led-bar-notch")).toHaveStyle({ left: "60%" })
+  })
+
   it("shows the close control at once and the detail window after the delay", async () => {
     vi.useFakeTimers()
     try {

@@ -40,7 +40,8 @@ function detailState(overrides: Partial<HudDetailState> = {}): HudDetailState {
         label: "5-hour limit",
         percent: 81,
         resetsAt: new Date(Date.now() + 2 * 3_600_000).toISOString(),
-        color: "var(--color-burn)",
+        color: "#D97757",
+        expectedFraction: 0.6,
       },
     ],
     ...overrides,
@@ -62,6 +63,13 @@ describe("HudDetailView", () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it("carries the linear-use notch through to the card", async () => {
+    render(<HudDetailView />)
+    await waitFor(() => expect(push.emit).not.toBeNull())
+    act(() => push.emit!(detailState()))
+    expect(screen.getByTestId("led-bar-notch")).toHaveStyle({ left: "60%" })
   })
 
   it("marks only its own document body as transparent", () => {
@@ -101,7 +109,8 @@ describe("HudDetailView", () => {
               label: "5-hour limit",
               percent: 82,
               resetsAt: null,
-              color: "var(--color-burn)",
+              color: "#D97757",
+              expectedFraction: null,
             },
           ],
         }),

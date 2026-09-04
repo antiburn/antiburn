@@ -1,6 +1,9 @@
+import { siClaude } from "simple-icons"
+
 import type { LiveUsageSummaryPayload } from "./ipc"
 import {
   liveDisplayableProviders,
+  liveWindowElapsed,
   liveWindowLabel,
   liveWindows,
 } from "./presentation/liveUsage"
@@ -11,11 +14,21 @@ export type UsageBarItem = {
   percent: number
   resetsAt: Date | null
   color: string
+  /** Elapsed share of the window's period, 0-1, or null when unknown. */
+  expectedFraction: number | null
 }
 
+/**
+ * Anthropic keeps its own colour, taken from the hex the `simple-icons`
+ * package records for the Claude mark. The brand-mark rule in `design.md`
+ * applies: a vendor colour comes from the source package, never from a hex
+ * written here. The other providers use antiburn's own palette.
+ */
+const CLAUDE_BRAND = `#${siClaude.hex}`
+
 const PROVIDER_COLORS: Record<string, string> = {
-  anthropic: "var(--color-burn)",
-  claude: "var(--color-burn)",
+  anthropic: CLAUDE_BRAND,
+  claude: CLAUDE_BRAND,
   openai: "var(--color-label)",
   cursor: "var(--color-system-indigo)",
   google: "var(--color-system-blue)",
@@ -57,6 +70,10 @@ export function deriveUsageBars(response: LiveUsageSummaryPayload | null): Usage
     .filter((group) => group.windows.length > 0)
 
   const multiProvider = withBars.length > 1
+  // The notch measures from the snapshot's own time, not the wall clock. A
+  // snapshot that states no usable time gets no notch, because a notch drawn
+  // from an assumed time is a claim the provider did not make.
+  const generatedAt = response ? Date.parse(response.generatedAt) : Number.NaN
 
   return withBars.flatMap((group) =>
     group.windows.map((window) => ({
@@ -67,6 +84,9 @@ export function deriveUsageBars(response: LiveUsageSummaryPayload | null): Usage
       percent: window.usedPercent!,
       resetsAt: resetDate(window.resetsAt),
       color: providerBarColor(group.provider.provider),
+      expectedFraction: Number.isNaN(generatedAt)
+        ? null
+        : liveWindowElapsed(window, generatedAt),
     })),
   )
 }
