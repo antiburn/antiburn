@@ -285,6 +285,8 @@ function liveProvider(
     extraUsage: null,
     resetCredits: null,
     plan: null,
+    accountUuid: null,
+    accountEmail: null,
     ...overrides,
   }
 }
@@ -320,6 +322,55 @@ describe("UsageView — plan limits layered over local estimates", () => {
       limits.compareDocumentPosition(within(card).getByText("This week")) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
+  })
+
+  it("hides the account email for a single provider account", () => {
+    const reading = liveProvider({
+      plan: { name: "max", tier: "default_claude_max_5x" },
+      accountEmail: "reader@example.test",
+    })
+    render(
+      <UsageView
+        summary={summary()}
+        live={live({ providers: [reading] })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    const card = screen.getByText("Anthropic").closest("li")!
+    expect(within(card).getByRole("heading", { level: 3 })).toHaveTextContent(
+      "Anthropic · Max 5x",
+    )
+    expect(within(card).queryByText("reader@example.test")).not.toBeInTheDocument()
+  })
+
+  it("shows account emails for multiple accounts of one provider", () => {
+    const first = liveProvider({
+      accountKey: "account-a",
+      plan: { name: "max", tier: "default_claude_max_5x" },
+      accountEmail: "first@example.test",
+    })
+    const second = liveProvider({
+      accountKey: "account-b",
+      plan: { name: "max", tier: "default_claude_max_5x" },
+      accountEmail: "second@example.test",
+    })
+    render(
+      <UsageView
+        summary={summary({ providers: [] })}
+        live={live({ providers: [first, second] })}
+        now={NOW}
+        onBack={vi.fn()}
+      />,
+    )
+
+    const card = document.querySelector<HTMLElement>('[data-provider-card="anthropic"]')!
+    expect(within(card).getByRole("heading", { level: 3 })).toHaveTextContent(
+      "Anthropic · Max 5x",
+    )
+    expect(within(card).getByText("Max 5x · first@example.test")).toBeInTheDocument()
+    expect(within(card).getByText("Max 5x · second@example.test")).toBeInTheDocument()
   })
 
   it("shows manual reset credits with the Codex command that uses one", () => {

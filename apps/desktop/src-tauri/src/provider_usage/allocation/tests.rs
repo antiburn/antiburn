@@ -82,6 +82,8 @@ fn live_for(
             provider: provider.to_string(),
             account_key: account.map(str::to_string),
             display_name: display_name.to_string(),
+            account_uuid: None,
+            account_email: None,
             support: LiveUsageSupport::Live,
             freshness: LiveUsageFreshness::Fresh,
             source_label: "test".to_string(),

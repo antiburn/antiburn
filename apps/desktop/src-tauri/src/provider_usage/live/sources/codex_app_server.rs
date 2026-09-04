@@ -121,6 +121,8 @@ pub fn fetch(now: OffsetDateTime) -> Result<Option<ProviderUsageSnapshot>, Provi
     Ok(Some(ProviderUsageSnapshot {
         provider: crate::provider_usage::providers::OPENAI,
         account: None,
+        account_uuid: None,
+        account_email: None,
         plan,
         // The app-server does not report a finer-grained tier below the
         // plan itself.

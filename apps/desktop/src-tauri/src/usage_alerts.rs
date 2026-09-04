@@ -462,6 +462,8 @@ mod tests {
                 extra_usage: None,
                 reset_credits: None,
                 plan: None,
+                account_uuid: None,
+                account_email: None,
             }],
             errors: vec![LiveUsageSourceError {
                 source: "fixture".into(),

@@ -24,6 +24,7 @@ import {
   liveUnavailableReason,
   liveWindowElapsed,
   liveWindowLabel,
+  livePlanAccountLabel,
   livePlanLabel,
   liveMetricRows,
   orderedLiveAccounts,
@@ -89,6 +90,8 @@ function provider(overrides: Partial<LiveProviderUsagePayload> = {}): LiveProvid
     extraUsage: null,
     resetCredits: null,
     plan: null,
+    accountUuid: null,
+    accountEmail: null,
     ...overrides,
   }
 }
@@ -213,6 +216,19 @@ describe("plan labels", () => {
 
   it("reads a missing plan as null, not as a guess", () => {
     expect(livePlanLabel(provider({ plan: null }))).toBeNull()
+  })
+
+  it("shows the email only when multiple accounts are visible", () => {
+    const withEmail = provider({
+      plan: { name: "max", tier: "default_claude_max_5x" },
+      accountEmail: "reader@example.test",
+    })
+    expect(livePlanAccountLabel(withEmail)).toBe("Max 5x")
+    expect(livePlanAccountLabel(withEmail, 2)).toBe("Max 5x · reader@example.test")
+    expect(livePlanAccountLabel(provider({ accountEmail: "reader@example.test" }), 2)).toBe(
+      "reader@example.test",
+    )
+    expect(livePlanAccountLabel(provider({ accountEmail: "reader@example.test" }))).toBeNull()
   })
 
   it("normalizes the Google AI plans that Antigravity reports", () => {

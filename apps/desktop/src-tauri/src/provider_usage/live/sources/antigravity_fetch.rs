@@ -721,6 +721,8 @@ fn fetch_cloud(
     Ok(ProviderUsageSnapshot {
         provider: crate::provider_usage::providers::GOOGLE,
         account: google_subject(transport, &credentials.access_token),
+        account_uuid: None,
+        account_email: None,
         plan: account.plan,
         plan_tier: account.tier,
         observed_at: now,
@@ -988,6 +990,8 @@ mod tests {
         ProviderUsageSnapshot {
             provider: crate::provider_usage::providers::GOOGLE,
             account: status.account,
+            account_uuid: None,
+            account_email: None,
             plan: status.plan,
             plan_tier: status.tier,
             observed_at: now,

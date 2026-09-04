@@ -7,7 +7,7 @@ import {
   liveFreshnessToneClass,
   liveSourceNote,
   liveStalenessNote,
-  livePlanLabel,
+  livePlanAccountLabel,
   liveWindows,
 } from "../../lib/presentation/liveUsage"
 import { LiveMetricRows } from "./LiveMetricRows"
@@ -30,6 +30,7 @@ export function LiveUsageDetail({
   live,
   now,
   accountLabel,
+  accountCount = 1,
   showPlan = false,
   showRunway = true,
   className = "",
@@ -38,6 +39,8 @@ export function LiveUsageDetail({
   /** Injected so the rendered output is a function of its inputs in tests. */
   now: number
   accountLabel?: string
+  /** Number of visible accounts for this provider. */
+  accountCount?: number
   showPlan?: boolean
   showRunway?: boolean
   className?: string
@@ -46,7 +49,7 @@ export function LiveUsageDetail({
   const extra = liveExtraUsageLabel(live)
   const windows = liveWindows(live)
   const primary = windows[0]
-  const plan = livePlanLabel(live)
+  const plan = livePlanAccountLabel(live, accountCount)
   if (!primary && !extra && !live.resetCredits && !live.plan) return null
 
   return (

@@ -151,6 +151,17 @@ export function livePlanLabel(provider: LiveProviderUsagePayload): string | null
   return label ? label(plan) : plan.name
 }
 
+/** The plan and account email suffix, when multiple accounts are visible. */
+export function livePlanAccountLabel(
+  provider: LiveProviderUsagePayload,
+  accountCount = 1,
+): string | null {
+  const plan = livePlanLabel(provider)
+  const email = accountCount > 1 ? provider.accountEmail?.trim() || null : null
+  if (plan && email) return `${plan} · ${email}`
+  return plan ?? email
+}
+
 /**
  * The full name of one window.
  *

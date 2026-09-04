@@ -213,6 +213,8 @@ mod tests {
         ProviderUsageSnapshot {
             provider: crate::provider_usage::providers::ANTHROPIC,
             account: Some("account-a".into()),
+            account_uuid: None,
+            account_email: None,
             plan: None,
             plan_tier: None,
             observed_at: OffsetDateTime::from_unix_timestamp(observed).unwrap(),

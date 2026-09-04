@@ -117,6 +117,8 @@ function summary(): LiveUsageSummaryPayload {
         extraUsage: null,
         resetCredits: null,
         plan: null,
+        accountUuid: null,
+        accountEmail: null,
       },
     ],
     errors: [],

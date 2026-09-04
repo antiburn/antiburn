@@ -299,6 +299,8 @@ fn snapshot(freshness: Freshness, observed: i64, percent: f64) -> ProviderUsageS
     ProviderUsageSnapshot {
         provider: crate::provider_usage::providers::ANTHROPIC,
         account: Some("account-a".into()),
+        account_uuid: None,
+        account_email: None,
         plan: None,
         plan_tier: None,
         observed_at: at(observed),
@@ -346,6 +348,59 @@ fn two_accounts_at_one_provider_never_merge() {
     ))];
     let collected = sources::collect(&sources, true, &HiddenMeters::default(), MAX_AGE);
     assert_eq!(collected.snapshots.len(), 2);
+}
+
+#[test]
+fn same_account_carriers_dedupe_and_preserve_display_identity() {
+    let mut first = snapshot(Freshness::Fresh, NOW, 81.0);
+    first.account = Some("opaque-key-source-identity".into());
+    first.account_uuid = Some("synthetic-uuid".into());
+    first.account_email = Some("reader@example.test".into());
+    let mut second = first.clone();
+    second.windows[0].used_percent = Some(12.0);
+    second.observed_at = at(NOW + 1);
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![
+        Box::new(Fixed("carrier-a", vec![first])),
+        Box::new(Fixed("carrier-b", vec![second])),
+    ];
+    let collected = sources::collect(&sources, true, &HiddenMeters::default(), MAX_AGE);
+    assert_eq!(collected.snapshots.len(), 1);
+    assert_eq!(
+        collected.snapshots[0].account.as_deref(),
+        Some("opaque-key-source-identity")
+    );
+    assert_eq!(
+        collected.snapshots[0].account_uuid.as_deref(),
+        Some("synthetic-uuid")
+    );
+    assert_eq!(
+        collected.snapshots[0].account_email.as_deref(),
+        Some("reader@example.test")
+    );
+}
+
+#[test]
+fn live_wire_payload_carries_account_display_fields() {
+    let mut reading = snapshot(Freshness::Fresh, NOW, 81.0);
+    reading.account = None;
+    reading.account_uuid = Some("synthetic-uuid".into());
+    reading.account_email = Some("reader@example.test".into());
+    let summary = summarize(
+        &[Box::new(Fixed("fixture", vec![reading]))],
+        None,
+        NOW,
+        0,
+        MAX_AGE,
+    );
+    assert_eq!(summary.providers[0].account_key, None);
+    assert_eq!(
+        summary.providers[0].account_uuid.as_deref(),
+        Some("synthetic-uuid")
+    );
+    assert_eq!(
+        summary.providers[0].account_email.as_deref(),
+        Some("reader@example.test")
+    );
 }
 
 #[test]
@@ -658,6 +713,8 @@ fn weekly_scoped_snapshot(
     ProviderUsageSnapshot {
         provider: crate::provider_usage::providers::ANTHROPIC,
         account: Some("account-a".into()),
+        account_uuid: None,
+        account_email: None,
         plan: None,
         plan_tier: None,
         observed_at: at(observed),

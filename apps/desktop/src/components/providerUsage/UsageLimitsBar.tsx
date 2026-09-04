@@ -18,7 +18,7 @@ import {
   liveDisplayableProviders,
   liveErrorNote,
   liveGraceNote,
-  livePlanLabel,
+  livePlanAccountLabel,
   liveProviderStatus,
   liveResetLabel,
   liveUnavailableProviders,
@@ -160,6 +160,7 @@ export function UsageLimitsBar({
               key={key}
               provider={reading}
               displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
+              accountCount={providerCounts.get(reading.provider) ?? 1}
               status={liveProviderStatus(live, reading)}
               now={at}
               action={index === 0 ? disclosure(true) : undefined}
@@ -259,6 +260,7 @@ function LimitsDisclosure({
 function ProviderGroup({
   provider,
   displayName,
+  accountCount,
   status,
   now,
   action,
@@ -267,6 +269,7 @@ function ProviderGroup({
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
+  accountCount: number
   status: LiveProviderStatus
   now: number
   /** The disclosure, on the topmost group only. */
@@ -274,7 +277,7 @@ function ProviderGroup({
   onHover?: (provider: string | null, anchor: AnchorRegion | null) => void
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
-  const plan = livePlanLabel(provider)
+  const plan = livePlanAccountLabel(provider, accountCount)
   const graceNote =
     status.kind === "grace"
       ? liveGraceNote(status.category, provider.provider, status.ageMs)
@@ -295,7 +298,7 @@ function ProviderGroup({
           source reports one, is a muted suffix on the same line rather than
           a second line — it is context for the name, not its own fact. */}
       <div className="flex items-center justify-between gap-2 pb-1.5">
-        <h3 className="type-footnote font-medium tracking-wide text-label">
+        <h3 className="min-w-0 truncate type-footnote font-medium tracking-wide text-label">
           <span className="uppercase">{displayName}</span>
           {plan && <span className="text-label-secondary"> · {plan}</span>}
         </h3>

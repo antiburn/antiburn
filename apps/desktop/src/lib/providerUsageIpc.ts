@@ -157,6 +157,10 @@ export interface LiveProviderUsagePayload {
   extraUsage: LiveExtraUsagePayload | null
   resetCredits: LiveUsageResetCreditsPayload | null
   plan: LiveUsagePlanPayload | null
+  /** The provider's account UUID for local display, when known. */
+  accountUuid: string | null
+  /** The provider's account email for local display, when known. */
+  accountEmail: string | null
 }
 
 /** A source that failed, in terms a reader can act on. */
