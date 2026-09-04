@@ -5,7 +5,9 @@ Owner-provided artwork (2026-08-13): a dot-grid mark on a dark plate. The
 `128x128.png`, and `32x32.png` are derived from it with `sips -Z`.
 `tray.png` (44px, 22pt @2x) is the menu-bar glyph, loaded with
 `icon_as_template(true)` on macOS so the system recolors it for the menu
-bar; only its alpha channel is significant there.
+bar; only its alpha channel is significant there. The shell derives bounded
+runtime usage-meter frames from this image by lowering the alpha of individual
+dots. The checked-in image stays the source artwork.
 
 A separate 256px copy ships in the frontend at `src/assets/app-icon.png`
 for in-app use (onboarding Welcome step, About).

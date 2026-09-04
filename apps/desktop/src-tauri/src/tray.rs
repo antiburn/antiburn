@@ -10,8 +10,13 @@
 //! every click opens the menu. So the menu's first item, Open antiburn, is what
 //! opens the popover there.
 
+use std::sync::Mutex;
+use std::time::Duration;
+
 use tauri::AppHandle;
 use tauri::image::Image;
+#[cfg(debug_assertions)]
+use tauri::menu::CheckMenuItem;
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, Wry};
@@ -19,6 +24,36 @@ use tauri::{Manager, Wry};
 #[cfg(debug_assertions)]
 use crate::commands;
 use crate::{nudges, popover, settings};
+
+const DOT_COUNT: usize = 13;
+const COLUMN_COUNT: usize = 5;
+const DOTS_PER_COLUMN: [usize; COLUMN_COUNT] = [4, 2, 3, 3, 1];
+const DEPLETED_ALPHA_DIVISOR: u8 = 4;
+const LAUNCH_TRANSITION: Duration = Duration::from_millis(1_500);
+const UPDATE_TRANSITION: Duration = Duration::from_millis(300);
+const LIVE_USAGE_GRACE_SECONDS: i64 = 600;
+const ANTIGRAVITY_PRIMARY_WINDOWS: [&str; 4] = [
+    "antigravity-gemini-5h",
+    "antigravity-gemini-weekly",
+    "antigravity-claude-gpt-5h",
+    "antigravity-claude-gpt-weekly",
+];
+/// Dot centers in column depletion order: right to left, then top to bottom.
+const DOT_CENTERS: [(u32, u32); DOT_COUNT] = [
+    (34, 15),
+    (34, 21),
+    (34, 28),
+    (34, 34),
+    (27, 9),
+    (27, 21),
+    (21, 9),
+    (21, 21),
+    (21, 34),
+    (15, 9),
+    (15, 21),
+    (15, 34),
+    (9, 28),
+];
 
 /// The tray item's id, and how anything else gets a handle back to it.
 pub const TRAY_ID: &str = "antiburn";
@@ -28,6 +63,31 @@ pub const TRAY_ID: &str = "antiburn";
 /// installation cannot leave the app running with no menu-bar presence.
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
 
+/// The mutable state of the bounded tray-meter transition.
+pub struct UsageMeter {
+    state: Mutex<UsageMeterState>,
+}
+
+struct UsageMeterState {
+    columns: usize,
+    generation: u64,
+    #[cfg(debug_assertions)]
+    debug_columns: Option<usize>,
+}
+
+impl Default for UsageMeter {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(UsageMeterState {
+                columns: COLUMN_COUNT,
+                generation: 0,
+                #[cfg(debug_assertions)]
+                debug_columns: None,
+            }),
+        }
+    }
+}
+
 /// Linux only: the item that stands in for the click the backend never reports.
 #[cfg(target_os = "linux")]
 const MENU_OPEN: &str = "open";
@@ -35,6 +95,8 @@ const MENU_PIN: &str = "pin";
 const MENU_SETTINGS: &str = "settings";
 #[cfg(debug_assertions)]
 const MENU_RESET_ONBOARDING: &str = "reset-onboarding";
+#[cfg(debug_assertions)]
+const MENU_RANDOM_USAGE: &str = "random-usage";
 const MENU_QUIT: &str = "quit";
 
 /// Title case, matching "Quit antiburn" and the platform's own menus.
@@ -46,6 +108,8 @@ const UNPIN_LABEL: &str = "Unpin Window";
 const OPEN_LABEL: &str = "Open antiburn";
 #[cfg(debug_assertions)]
 const RESET_ONBOARDING_LABEL: &str = "Reset Onboarding";
+#[cfg(debug_assertions)]
+const RANDOM_USAGE_LABEL: &str = "Simulate Random Usage";
 
 /// The tray menu items whose text follows app state.
 ///
@@ -56,6 +120,15 @@ const RESET_ONBOARDING_LABEL: &str = "Reset Onboarding";
 /// caller is already on the main thread — as [`on_menu_event`] is.
 pub struct TrayMenu {
     pin: MenuItem<Wry>,
+    #[cfg(debug_assertions)]
+    random_usage: CheckMenuItem<Wry>,
+}
+
+struct BuiltMenu {
+    menu: Menu<Wry>,
+    pin: MenuItem<Wry>,
+    #[cfg(debug_assertions)]
+    random_usage: CheckMenuItem<Wry>,
 }
 
 /// The label the pin item carries for a given state — it names the action, not
@@ -66,8 +139,12 @@ fn pin_label(pinned: bool) -> &'static str {
 
 /// Builds the menu-bar item and wires up its click and menu handling.
 pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
-    let (menu, pin) = build_menu(app)?;
-    app.manage(TrayMenu { pin });
+    let menu = build_menu(app)?;
+    app.manage(TrayMenu {
+        pin: menu.pin,
+        #[cfg(debug_assertions)]
+        random_usage: menu.random_usage,
+    });
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(Image::from_bytes(TRAY_ICON)?)
@@ -75,7 +152,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
         // appearance, including the inverted pressed state.
         .icon_as_template(true)
         .tooltip("antiburn")
-        .menu(&menu)
+        .menu(&menu.menu)
         // The menu belongs to the secondary button; the primary button is the
         // popover toggle. Linux ignores this option, because the AppIndicator
         // menu opens on every click.
@@ -83,6 +160,302 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
         .on_tray_icon_event(on_tray_event)
         .on_menu_event(on_menu_event)
         .build(app)
+}
+
+/// Register the tray meter after the initial full icon is visible.
+pub fn install_usage_meter(app: &AppHandle) {
+    app.manage(UsageMeter::default());
+}
+
+/// Move the tray meter to the most constrained valid allowance in a snapshot.
+///
+/// No valid percentage means the ordinary full mark. That is neutral: it does
+/// not claim that every allowance is unused.
+pub fn sync_usage(
+    app: &AppHandle,
+    summary: &crate::dto::LiveUsageSummary,
+    active: bool,
+    launch: bool,
+) {
+    #[cfg(debug_assertions)]
+    if let Some(columns) = debug_columns(app) {
+        set_columns(app, columns, Some(UPDATE_TRANSITION));
+        return;
+    }
+    let columns = active.then(|| usage_columns(summary)).flatten();
+    let transition = if columns.is_some() {
+        Some(if launch {
+            LAUNCH_TRANSITION
+        } else {
+            UPDATE_TRANSITION
+        })
+    } else {
+        None
+    };
+    set_columns(app, columns.unwrap_or(COLUMN_COUNT), transition);
+}
+
+/// Restore the neutral tray mark immediately when usage monitoring is inactive.
+pub fn clear_usage(app: &AppHandle) {
+    set_columns(app, COLUMN_COUNT, None);
+}
+
+/// Toggle a debug-only random usage value without changing persisted usage.
+#[cfg(debug_assertions)]
+fn toggle_random_usage(app: &AppHandle) -> bool {
+    let Some(meter) = app.try_state::<UsageMeter>() else {
+        return false;
+    };
+    let columns = {
+        let mut state = meter
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.debug_columns.is_some() {
+            state.debug_columns = None;
+            None
+        } else {
+            let columns = random_debug_columns(random_seed());
+            state.debug_columns = Some(columns);
+            Some(columns)
+        }
+    };
+    if let Some(columns) = columns {
+        set_columns(app, columns, Some(UPDATE_TRANSITION));
+        return true;
+    }
+
+    let active = app
+        .try_state::<crate::store::Store>()
+        .and_then(|store| store.settings().ok())
+        .is_some_and(|settings| settings.live_usage_active());
+    let summary = app
+        .try_state::<crate::usage_alerts::LiveUsage>()
+        .map(|live| live.snapshot())
+        .unwrap_or_default();
+    sync_usage(app, &summary, active, false);
+    false
+}
+
+#[cfg(debug_assertions)]
+fn debug_columns(app: &AppHandle) -> Option<usize> {
+    app.try_state::<UsageMeter>().and_then(|meter| {
+        meter
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .debug_columns
+    })
+}
+
+#[cfg(debug_assertions)]
+fn random_seed() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default()
+}
+
+#[cfg(debug_assertions)]
+fn random_debug_columns(seed: u128) -> usize {
+    let used = (seed % 101) as f64;
+    columns_for_used_percent(used)
+}
+
+fn set_columns(app: &AppHandle, target: usize, transition: Option<Duration>) {
+    let Some(meter) = app.try_state::<UsageMeter>() else {
+        return;
+    };
+    let immediate = transition.is_none();
+    let (current, generation) = {
+        let mut state = meter
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.generation = state.generation.wrapping_add(1);
+        let generation = state.generation;
+        let current = state.columns;
+        if immediate {
+            state.columns = target;
+        }
+        (current, generation)
+    };
+
+    let steps = current.abs_diff(target);
+    if steps == 0 {
+        return;
+    }
+    let Some(transition) = transition else {
+        schedule_columns(app, target, generation);
+        return;
+    };
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let delay = transition / u32::try_from(steps).expect("tray dot count fits in u32");
+        for step in 1..=steps {
+            tokio::time::sleep(delay).await;
+            let Some(meter) = app.try_state::<UsageMeter>() else {
+                return;
+            };
+            let mut state = meter
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.generation != generation {
+                return;
+            }
+            let columns = if target < current {
+                current - step
+            } else {
+                current + step
+            };
+            state.columns = columns;
+            drop(state);
+            schedule_columns(&app, columns, generation);
+        }
+    });
+}
+
+fn schedule_columns(app: &AppHandle, columns: usize, generation: u64) {
+    let main_thread_app = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        let current = main_thread_app
+            .try_state::<UsageMeter>()
+            .is_some_and(|meter| {
+                let state = meter
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                frame_is_current(&state, columns, generation)
+            });
+        if current {
+            apply_columns(&main_thread_app, columns);
+        }
+    }) {
+        ::tracing::warn!(event = "tray_usage_icon_schedule_failed", error = %error);
+    }
+}
+
+fn frame_is_current(state: &UsageMeterState, columns: usize, generation: u64) -> bool {
+    state.generation == generation && state.columns == columns
+}
+
+fn apply_columns(app: &AppHandle, columns: usize) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    let image = meter_image(columns);
+    if let Err(error) = tray.set_icon_with_as_template(Some(image), true) {
+        ::tracing::warn!(event = "tray_usage_icon_update_failed", error = %error);
+    }
+}
+
+fn meter_image(columns: usize) -> Image<'static> {
+    let source = Image::from_bytes(TRAY_ICON).expect("the embedded tray icon is a valid PNG");
+    let mut rgba = source.rgba().to_vec();
+    let dot_masks = tray_dot_alpha_indices(&rgba, source.width(), source.height());
+
+    let depleted_columns = COLUMN_COUNT.saturating_sub(columns);
+    let depleted_dots = DOTS_PER_COLUMN.iter().take(depleted_columns).sum();
+    for dot in dot_masks.into_iter().take(depleted_dots) {
+        for alpha in dot {
+            rgba[alpha] /= DEPLETED_ALPHA_DIVISOR;
+        }
+    }
+    Image::new_owned(rgba, source.width(), source.height())
+}
+
+fn tray_dot_alpha_indices(rgba: &[u8], width: u32, height: u32) -> Vec<Vec<usize>> {
+    let mut dots = vec![Vec::new(); DOT_COUNT];
+    for y in 0..height {
+        for x in 0..width {
+            let alpha = usize::try_from((y * width + x) * 4 + 3).expect("tray pixel fits usize");
+            if rgba[alpha] == 0 {
+                continue;
+            }
+            let dot = DOT_CENTERS
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, (center_x, center_y))| {
+                    let dx = i64::from(x) - i64::from(*center_x);
+                    let dy = i64::from(y) - i64::from(*center_y);
+                    dx * dx + dy * dy
+                })
+                .expect("the tray has dot centers")
+                .0;
+            dots[dot].push(alpha);
+        }
+    }
+    debug_assert!(dots.iter().all(|dot| !dot.is_empty()));
+    dots
+}
+
+fn usage_columns(summary: &crate::dto::LiveUsageSummary) -> Option<usize> {
+    let used = summary
+        .providers
+        .iter()
+        .filter(|provider| provider_is_displayable(summary, provider))
+        .flat_map(visible_windows)
+        .filter_map(|window| window.used_percent)
+        .filter(|percent| percent.is_finite() && (0.0..=100.0).contains(percent))
+        .max_by(f64::total_cmp)?;
+    Some(columns_for_used_percent(used))
+}
+
+fn columns_for_used_percent(used: f64) -> usize {
+    ((100.0 - used) * COLUMN_COUNT as f64 / 100.0).round() as usize
+}
+
+fn provider_is_displayable(
+    summary: &crate::dto::LiveUsageSummary,
+    provider: &crate::dto::LiveProviderUsage,
+) -> bool {
+    let Some(_error) = summary
+        .errors
+        .iter()
+        .find(|error| error.provider == provider.provider)
+    else {
+        return true;
+    };
+    let Ok(generated_at) = time::OffsetDateTime::parse(
+        &summary.generated_at,
+        &time::format_description::well_known::Rfc3339,
+    ) else {
+        return true;
+    };
+    let Ok(observed_at) = time::OffsetDateTime::parse(
+        &provider.observed_at,
+        &time::format_description::well_known::Rfc3339,
+    ) else {
+        return true;
+    };
+    generated_at - observed_at <= time::Duration::seconds(LIVE_USAGE_GRACE_SECONDS)
+}
+
+fn visible_windows(provider: &crate::dto::LiveProviderUsage) -> Vec<&crate::dto::LiveUsageWindow> {
+    let local_antigravity = provider.source_label.starts_with("Read from Antigravity");
+    let primary: Vec<_> = provider
+        .windows
+        .iter()
+        .filter(|window| ANTIGRAVITY_PRIMARY_WINDOWS.contains(&window.id.as_str()))
+        .collect();
+    let candidates = if primary.is_empty() {
+        provider.windows.iter().collect()
+    } else {
+        primary
+    };
+    candidates
+        .into_iter()
+        .filter(|window| {
+            provider.provider == "google"
+                || local_antigravity
+                || window.role != "supplemental"
+                || window.scope_model.is_none()
+                || window.used_percent.unwrap_or(0.0) > 0.0
+                || window.has_nonzero_usage_in_current_period
+        })
+        .collect()
 }
 
 /// Returns the menu and a handle to the one item that changes after the build.
@@ -93,7 +466,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
 /// On Linux the menu is the only route into the popover, so Open goes first as
 /// the default action. It needs no separator of its own, because it acts on the
 /// same window the pin does.
-fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<Wry>, MenuItem<Wry>)> {
+fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let pin_item = MenuItem::with_id(
         app,
         MENU_PIN,
@@ -110,6 +483,15 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<Wry>, MenuItem<Wry>)> {
         true,
         None::<&str>,
     )?;
+    #[cfg(debug_assertions)]
+    let random_usage_item = CheckMenuItem::with_id(
+        app,
+        MENU_RANDOM_USAGE,
+        RANDOM_USAGE_LABEL,
+        true,
+        false,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit antiburn", true, None::<&str>)?;
     #[cfg(target_os = "linux")]
@@ -122,11 +504,18 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<Wry>, MenuItem<Wry>)> {
         &settings_item,
         #[cfg(debug_assertions)]
         &reset_onboarding_item,
+        #[cfg(debug_assertions)]
+        &random_usage_item,
         &separator,
         &quit_item,
     ];
     let menu = Menu::with_items(app, &items)?;
-    Ok((menu, pin_item))
+    Ok(BuiltMenu {
+        menu,
+        pin: pin_item,
+        #[cfg(debug_assertions)]
+        random_usage: random_usage_item,
+    })
 }
 
 fn on_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
@@ -181,6 +570,15 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         MENU_RESET_ONBOARDING => {
             if let Err(error) = commands::restart_onboarding(app.clone()) {
                 ::tracing::error!(event = "onboarding_restart_failed", trigger = "tray", error);
+            }
+        }
+        #[cfg(debug_assertions)]
+        MENU_RANDOM_USAGE => {
+            let enabled = toggle_random_usage(app);
+            if let Some(menu) = app.try_state::<TrayMenu>()
+                && let Err(error) = menu.random_usage.set_checked(enabled)
+            {
+                ::tracing::warn!(event = "tray_random_usage_relabel_failed", enabled, error = %error);
             }
         }
         MENU_QUIT => {
@@ -262,6 +660,10 @@ pub fn set_highlight(_app: &AppHandle, _on: bool) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dto::{
+        LiveProviderUsage, LiveUsageForecast, LiveUsageFreshness, LiveUsageSourceError,
+        LiveUsageSupport, LiveUsageWindow,
+    };
 
     /// A pinned window offers the way out, not a restatement of where it is.
     /// This is the whole contract of the item, so it is worth a test that does
@@ -270,5 +672,179 @@ mod tests {
     fn the_pin_item_always_names_the_action_it_would_take() {
         assert_eq!(pin_label(false), "Pin Window");
         assert_eq!(pin_label(true), "Unpin Window");
+    }
+
+    #[test]
+    fn remaining_allowance_rounds_to_the_nearest_column() {
+        assert_eq!(columns_for_used_percent(0.0), 5);
+        assert_eq!(columns_for_used_percent(50.0), 3);
+        assert_eq!(columns_for_used_percent(100.0), 0);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_random_usage_stays_within_the_column_range() {
+        assert_eq!(random_debug_columns(0), COLUMN_COUNT);
+        assert_eq!(random_debug_columns(100), 0);
+        assert!(random_debug_columns(57) <= COLUMN_COUNT);
+    }
+
+    #[test]
+    fn a_newer_transition_rejects_an_older_queued_frame() {
+        let mut state = UsageMeterState {
+            columns: 3,
+            generation: 4,
+            #[cfg(debug_assertions)]
+            debug_columns: None,
+        };
+        assert!(frame_is_current(&state, 3, 4));
+
+        state.generation = 5;
+        state.columns = 4;
+        assert!(!frame_is_current(&state, 3, 4));
+        assert!(frame_is_current(&state, 4, 5));
+    }
+
+    #[test]
+    fn the_rightmost_column_depletes_as_one_dim_segment() {
+        let source = Image::from_bytes(TRAY_ICON).expect("valid tray icon");
+        let dots = tray_dot_alpha_indices(source.rgba(), source.width(), source.height());
+        assert_eq!(dots.len(), DOT_COUNT);
+
+        let full = meter_image(COLUMN_COUNT);
+        let one_depleted = meter_image(COLUMN_COUNT - 1);
+        for dot in dots.iter().take(DOTS_PER_COLUMN[0]) {
+            for alpha in dot {
+                assert_eq!(
+                    one_depleted.rgba()[*alpha],
+                    full.rgba()[*alpha] / DEPLETED_ALPHA_DIVISOR
+                );
+            }
+        }
+        for dot in dots
+            .iter()
+            .skip(DOTS_PER_COLUMN[0])
+            .take(DOTS_PER_COLUMN[1])
+        {
+            for alpha in dot {
+                assert_eq!(one_depleted.rgba()[*alpha], full.rgba()[*alpha]);
+            }
+        }
+        for (index, channel) in full.rgba().iter().enumerate() {
+            if index % 4 != 3 {
+                assert_eq!(one_depleted.rgba()[index], *channel);
+            }
+        }
+        assert_eq!(DOT_CENTERS[0], (34, 15));
+        assert_eq!(DOT_CENTERS[4], (27, 9));
+    }
+
+    #[test]
+    fn the_meter_uses_the_most_constrained_displayable_window() {
+        let summary = crate::dto::LiveUsageSummary {
+            providers: vec![
+                provider(
+                    "anthropic",
+                    "Read from Claude",
+                    vec![window("five-hour", "primaryShort", None, Some(20.0))],
+                ),
+                provider(
+                    "openai",
+                    "Read from Codex",
+                    vec![window("five-hour", "primaryShort", None, Some(80.0))],
+                ),
+            ],
+            generated_at: "2026-09-04T12:00:00Z".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(usage_columns(&summary), Some(1));
+    }
+
+    #[test]
+    fn the_antigravity_primary_windows_replace_fallback_model_detail() {
+        let summary = crate::dto::LiveUsageSummary {
+            providers: vec![provider(
+                "google",
+                "Read from Antigravity",
+                vec![
+                    window("fallback-model", "supplemental", Some("model"), Some(95.0)),
+                    window("antigravity-gemini-5h", "primaryShort", None, Some(30.0)),
+                ],
+            )],
+            ..Default::default()
+        };
+        assert_eq!(usage_columns(&summary), Some(4));
+    }
+
+    #[test]
+    fn hidden_supplemental_and_expired_failed_readings_do_not_drive_the_meter() {
+        let mut summary = crate::dto::LiveUsageSummary {
+            providers: vec![
+                provider(
+                    "anthropic",
+                    "Read from Claude",
+                    vec![window(
+                        "model-weekly",
+                        "supplemental",
+                        Some("model"),
+                        Some(0.0),
+                    )],
+                ),
+                provider(
+                    "openai",
+                    "Read from Codex",
+                    vec![window("five-hour", "primaryShort", None, Some(60.0))],
+                ),
+            ],
+            errors: vec![LiveUsageSourceError {
+                source: "codex".to_string(),
+                provider: "openai".to_string(),
+                display_name: "Codex".to_string(),
+                category: "unavailable".to_string(),
+            }],
+            generated_at: "2026-09-04T12:20:01Z".to_string(),
+            ..Default::default()
+        };
+        summary.providers[1].observed_at = "2026-09-04T12:10:00Z".to_string();
+        assert_eq!(usage_columns(&summary), None);
+    }
+
+    fn provider(
+        provider: &str,
+        source_label: &str,
+        windows: Vec<LiveUsageWindow>,
+    ) -> LiveProviderUsage {
+        LiveProviderUsage {
+            provider: provider.to_string(),
+            account_key: None,
+            display_name: provider.to_string(),
+            support: LiveUsageSupport::Live,
+            freshness: LiveUsageFreshness::Fresh,
+            source_label: source_label.to_string(),
+            observed_at: "2026-09-04T12:00:00Z".to_string(),
+            windows,
+            extra_usage: None,
+            reset_credits: None,
+            plan: None,
+        }
+    }
+
+    fn window(
+        id: &str,
+        role: &str,
+        scope_model: Option<&str>,
+        used_percent: Option<f64>,
+    ) -> LiveUsageWindow {
+        LiveUsageWindow {
+            id: id.to_string(),
+            role: role.to_string(),
+            kind: "rolling".to_string(),
+            scope_model: scope_model.map(str::to_string),
+            used_percent,
+            starts_at: None,
+            resets_at: None,
+            has_nonzero_usage_in_current_period: false,
+            forecast: LiveUsageForecast::default(),
+        }
     }
 }

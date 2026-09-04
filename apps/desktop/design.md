@@ -237,6 +237,7 @@ motion:
   segmented-indicator: "120ms ease-out slide; reduced motion swaps to a 60ms per-segment crossfade"
   anchored-content: "100ms opacity-only crossfade after native geometry commits; reduced motion uses 60ms"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
+  tray-usage-meter: "launch: 1.5s column-by-column depletion; later changes: 300ms column-by-column"
 components:
   button-secondary:
     className: ui-push-button
