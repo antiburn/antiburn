@@ -1,3 +1,4 @@
+import type { ChartSeries } from "./analysis/ContextTokensChart"
 import { formatCompact } from "../../lib/presentation/sessionAnalysis"
 import type { LocalCostSubject, LocalSessionCost } from "../../lib/presentation/sessionCosts"
 import type { SubagentMember } from "../../lib/types/session"
@@ -39,11 +40,20 @@ export interface TokensCardModel {
    * so the section reads in the same label-over-value grid as the hero.
    *
    * A cell's tone names the chart series or judgment the value belongs to,
-   * so the strip doubles as the chart's legend: "in" and "out" ink the two
-   * token-series colors, "waste" inks the critical color the chart draws
-   * rehydration bars in. A toneless cell stays neutral.
+   * so the strip doubles as the chart's key: "in" and "out" ink the two
+   * token-series colors, and "waste" inks the warning color the chart draws
+   * cache marks in. A toneless cell stays neutral.
+   *
+   * `series` names the layer of the plot the cell counts. The key lights that
+   * layer while the pointer rests on the cell. A cell with no series counts
+   * something the chart draws no mark for, so it never lights.
    */
-  stats: Array<{ label: string; value: string; tone?: "in" | "out" | "waste" }>
+  stats: Array<{
+    label: string
+    value: string
+    tone?: "in" | "out" | "waste"
+    series?: ChartSeries
+  }>
 }
 
 /** Decide what the Tokens card says, given the already-selected cost figures. */
@@ -107,20 +117,26 @@ export function tokensCardModel(input: {
 
   // A label names the category, so it stays plural whatever the count is.
   const stats: TokensCardModel["stats"] = [
-    { label: "In", value: formatCompact(tokensInTotal), tone: "in" },
-    { label: "Out", value: formatCompact(tokensOutTotal), tone: "out" },
+    { label: "In", value: formatCompact(tokensInTotal), tone: "in", series: "in" },
+    { label: "Out", value: formatCompact(tokensOutTotal), tone: "out", series: "out" },
   ]
   if (compactionCount > 0) {
     stats.push({ label: "Compactions", value: String(compactionCount) })
   }
   if (cacheRehydrationCount > 0) {
-    stats.push({ label: "Rehydrations", value: String(cacheRehydrationCount), tone: "waste" })
+    stats.push({
+      label: "Rehydrations",
+      value: String(cacheRehydrationCount),
+      tone: "waste",
+      series: "rehydration",
+    })
   }
   if (cacheRoutingMissCount > 0) {
     stats.push({
       label: "Provider cache misses",
       value: String(cacheRoutingMissCount),
       tone: "waste",
+      series: "routingMiss",
     })
   }
 

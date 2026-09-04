@@ -45,8 +45,8 @@ describe("tokensCardModel", () => {
   it("states the tokens as stat cells and leaves the cost to the Cost card", () => {
     const model = tokensCardModel({ ...base, hasCostSubagents: false, costScope: "topLevel" })
     expect(model.stats).toEqual([
-      { label: "In", value: "1.2M", tone: "in" },
-      { label: "Out", value: "34.0k", tone: "out" },
+      { label: "In", value: "1.2M", tone: "in", series: "in" },
+      { label: "Out", value: "34.0k", tone: "out", series: "out" },
     ])
     expect(model.costTotal).toBe(41.45)
   })
@@ -55,10 +55,10 @@ describe("tokensCardModel", () => {
     expect(
       tokensCardModel({ ...base, compactionCount: 3, cacheRehydrationCount: 1 }).stats,
     ).toEqual([
-      { label: "In", value: "1.2M", tone: "in" },
-      { label: "Out", value: "34.0k", tone: "out" },
+      { label: "In", value: "1.2M", tone: "in", series: "in" },
+      { label: "Out", value: "34.0k", tone: "out", series: "out" },
       { label: "Compactions", value: "3" },
-      { label: "Rehydrations", value: "1", tone: "waste" },
+      { label: "Rehydrations", value: "1", tone: "waste", series: "rehydration" },
     ])
   })
 
@@ -67,6 +67,7 @@ describe("tokensCardModel", () => {
       label: "Provider cache misses",
       value: "1",
       tone: "waste",
+      series: "routingMiss",
     })
     expect(tokensCardModel({ ...base, compactionCount: 1 }).stats).toContainEqual({
       label: "Compactions",
@@ -88,8 +89,8 @@ describe("tokensCardModel", () => {
     })
     expect(model.costTotal).toBeNull()
     expect(model.stats).toEqual([
-      { label: "In", value: "1.2M", tone: "in" },
-      { label: "Out", value: "34.0k", tone: "out" },
+      { label: "In", value: "1.2M", tone: "in", series: "in" },
+      { label: "Out", value: "34.0k", tone: "out", series: "out" },
     ])
   })
 

@@ -14,27 +14,28 @@ export interface MeterZone {
 }
 
 /**
- * The three steps of the meter palette: brand orange while a reading is fine,
- * yellow for warning, red for trouble. A meter places these steps along its
- * own track; it does not pick its own colors.
+ * The two steps of the meter palette: brand orange while a reading is fine,
+ * red for trouble. A meter places these steps along its own track; it does
+ * not pick its own colors.
  */
 const METER_INK = {
   normal: { fillClassName: "bg-brand-tint", trackClassName: "bg-brand-unlit/12" },
-  warning: {
-    fillClassName: "bg-system-yellow-tint",
-    trackClassName: "bg-system-yellow-unlit/12",
-  },
   critical: { fillClassName: "bg-system-red-tint", trackClassName: "bg-system-red-unlit/12" },
 } as const
 
 /**
- * The additive usage scale: orange from zero, yellow from 80%, red from 90%.
+ * The additive usage scale: orange from zero, red from 90%.
+ *
+ * The scale holds no yellow step. Yellow is a category color on the session
+ * surfaces, and a warning yellow inches from a category yellow reads as the
+ * same ink. A meter that runs orange until it turns red also states the one
+ * thing a reader needs: the reading is fine, or it is not.
+ *
  * Unlit segments keep a faint tint of their zone, so the scale shows its
  * bands before the reading reaches them.
  */
 const USAGE_METER_ZONES: MeterZone[] = [
   { from: 0, ...METER_INK.normal },
-  { from: 0.8, ...METER_INK.warning },
   { from: 0.9, ...METER_INK.critical },
 ]
 

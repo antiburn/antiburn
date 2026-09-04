@@ -304,7 +304,7 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(title.style.getPropertyValue("--truncated-text-lines")).toBe("2")
   })
 
-  it("arranges the session facts in the hero and the figures in the meter nav", () => {
+  it("arranges the session facts in the hero and each figure at the head of its tab", () => {
     const timestamp = new Date(Date.now() - 11 * 60_000).toISOString()
     view({
       session: {
@@ -324,13 +324,12 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(hero).toHaveTextContent("30m")
     expect(hero).toHaveTextContent("5.6-sol high")
     expect(hero).toHaveTextContent("11m ago")
-    // The figures live in the meter nav, not in the hero.
+    // Each figure heads its own tab, so the hero states the facts alone.
     expect(hero).not.toHaveTextContent("$2.40")
-    const costTab = screen.getByRole("tab", { name: /^Cost/ })
-    expect(costTab).toHaveTextContent("$2.40")
-    expect(costTab.getAttribute("title")).toContain("Estimated cost")
+    expect(screen.getByRole("tab", { name: /^Cost/ })).not.toHaveTextContent("$2.40")
 
     fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
+    expect(screen.getByRole("tabpanel")).toHaveTextContent("Estimated cost")
     expect(screen.queryByRole("button", { name: "6/6 passed" })).toBeNull()
     expect(screen.getByRole("button", { name: "Session overdepth details" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Model overthinking details" })).toBeTruthy()
@@ -474,18 +473,45 @@ describe("SessionDetailPresentation — states", () => {
   })
 })
 
+describe("SessionDetailPresentation — chart key", () => {
+  it("draws the key under the chart it explains", () => {
+    const { container } = view({})
+    const panel = screen.getByRole("tabpanel")
+    const chart = container.querySelector(".recharts-responsive-container")
+    const key = screen.getByText("120.0k").closest("div")
+    expect(chart).not.toBeNull()
+    expect(key).not.toBeNull()
+    // The key follows the plot in document order, so the reader meets the
+    // shape first and the figures that name it second.
+    expect(
+      panel.compareDocumentPosition(chart!) & Node.DOCUMENT_POSITION_CONTAINED_BY,
+    ).toBeTruthy()
+    expect(chart!.compareDocumentPosition(key!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it("names the context area first, at its peak in tokens", () => {
+    view({})
+    // The meter at the head of the panel reads the same peak against the
+    // window, so the key states the figure the meter does not.
+    expect(screen.getByText("90.0k")).toBeTruthy()
+    expect(screen.getByText("45%")).toBeTruthy()
+  })
+})
+
 describe("SessionDetailPresentation — session facts", () => {
-  it("shows the cost on its nav cell and its breakdown on the Cost tab", () => {
+  it("heads the Cost tab with the total and follows it with the breakdown", () => {
     view({
       cost: cost(),
     })
     const costTab = screen.getByRole("tab", { name: /^Cost/ })
-    expect(costTab).toHaveTextContent("$2.40")
-    expect(costTab.getAttribute("title")).toContain("Estimated cost")
+    // The nav carries the label alone. The figure heads the panel behind it.
+    expect(costTab).not.toHaveTextContent("$2.40")
 
     fireEvent.click(costTab)
+    const panel = screen.getByRole("tabpanel")
+    expect(panel).toHaveTextContent("Estimated cost")
     expect(screen.getByText("Input")).toBeTruthy()
-    // The nav figure and the breakdown headline are the same figure, by design.
+    // The panel heading and the breakdown headline are the same figure, by design.
     expect(screen.getAllByText("$2.40").length).toBeGreaterThan(1)
   })
 

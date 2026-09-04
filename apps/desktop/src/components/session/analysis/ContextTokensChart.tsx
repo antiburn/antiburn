@@ -30,12 +30,23 @@ import {
 import type { SessionBucket } from "../../../lib/types/session"
 import { GLASS_TOOLTIP_STYLE } from "./tooltip"
 
+/**
+ * A layer of the plot that a key entry can name.
+ *
+ * The chart draws grey and takes one layer's color at a time. A reader who
+ * points at a key entry sees which part of the plot the figure counts, which
+ * a static legend beside a colored chart never shows.
+ */
+export type ChartSeries = "context" | "in" | "out" | "rehydration" | "routingMiss"
+
 export interface ContextTokensChartProps {
   buckets: SessionBucket[]
   /** Null when context occupancy is unavailable for this model. */
   contextWindow: number | null
   /** Active seconds the buckets span; null hides the time marks. */
   activeSecs?: number | null
+  /** The layer to draw in its own color, or null to draw the plot in grey. */
+  highlight?: ChartSeries | null
 }
 
 /** Absolute token level where the context fill turns from calm to warm. */
@@ -161,8 +172,8 @@ const ROUTING_MISS_BAR_OPACITY = 0.4
  * a rehydration is the one rewrite the reader can act on.
  */
 const CACHE_EVENT_STROKE = "var(--color-context-warning)"
-/** The other rewrite marks stay quiet, on the neutral rewrite color. */
-const REWRITE_STROKE = "var(--color-context-rewrite)"
+/** Every mark at rest. A mark is a hairline, so it takes the denser grey. */
+const REST_MARK_STROKE = "var(--color-chart-rest-mark)"
 /** Vertical step between stacked mode-label rows, in pixels. */
 const MODE_LABEL_ROW_HEIGHT = 13
 /** Nearer than this fraction of the x-domain, two mode labels would collide. */
@@ -229,18 +240,41 @@ const NO_BASELINE: SessionModeBaseline = {
   hasThinking: false,
 }
 
-/** Row swatches for the token-series lines, matching the chart's fill colors. */
+/**
+ * Row swatches for the token-series lines. `colorVar` is the lit color, which
+ * the tooltip and the chart key always show: the swatch states what a series
+ * looks like, and lighting the layer proves it. `restVar` is the grey the
+ * layer draws in the rest of the time. The three greys differ by value, so
+ * the stack keeps its steps with no color at all. `series` is null for a row
+ * the key does not name, which therefore never lights.
+ */
 const TOKEN_ROWS: Array<{
   key: "tokensIn" | "tokensOut" | "subagentTokens"
   label: string
   colorVar: string
+  restVar: string
+  series: ChartSeries | null
 }> = [
-  { key: "tokensIn", label: "Parent in", colorVar: "var(--color-token-in)" },
-  { key: "tokensOut", label: "Parent out", colorVar: "var(--color-token-out)" },
+  {
+    key: "tokensIn",
+    label: "Parent in",
+    colorVar: "var(--color-token-in)",
+    restVar: "var(--color-chart-rest)",
+    series: "in",
+  },
+  {
+    key: "tokensOut",
+    label: "Parent out",
+    colorVar: "var(--color-token-out)",
+    restVar: "var(--color-chart-rest-strong)",
+    series: "out",
+  },
   {
     key: "subagentTokens",
     label: "Subagents",
     colorVar: "var(--color-token-subagent)",
+    restVar: "var(--color-chart-rest-faint)",
+    series: null,
   },
 ]
 
@@ -541,6 +575,7 @@ export function ContextTokensChart({
   buckets,
   contextWindow,
   activeSecs = null,
+  highlight = null,
 }: ContextTokensChartProps) {
   const data = contextTokenSeries(buckets)
   const fillId = `context-tokens-fill-${useId().replace(/:/g, "")}`
@@ -589,28 +624,47 @@ export function ContextTokensChart({
   // both turn warm at the same 400k mark. Below 400k the fill stays the calm
   // grey; from 400k up it ramps from amber to red, reaching red at 1M tokens
   // regardless of the window size.
+  const contextLit = highlight === "context"
   const stops: ReactElement[] = []
-  if (peak > WARM_FLOOR_TOKENS) {
-    const kinkOffset = (peak - WARM_FLOOR_TOKENS) / peak
-    const t = Math.min(
-      1,
-      Math.max(0, (peak - WARM_FLOOR_TOKENS) / (CRITICAL_TOKENS - WARM_FLOOR_TOKENS)),
-    )
-    const topColor = `color-mix(in oklch, var(--color-context-warning), var(--color-context-warning) ${Math.round(t * 100)}%)`
+  if (!contextLit) {
+    // At rest the fill is two flat greys. The warm ramp says how deep the
+    // session ran into its window, and the meter at the head of this panel
+    // already says that, so the resting plot does not repeat it in color.
     stops.push(
-      <stop key="warm-top" offset={0} stopColor={topColor} stopOpacity={0.55} />,
-      <stop
-        key="warm-edge"
-        offset={kinkOffset}
-        stopColor="var(--color-context-warning)"
-        stopOpacity={0.55}
-      />,
-      <stop key="healthy-edge" offset={kinkOffset} stopColor="var(--color-context-fill-top)" />,
+      <stop key="rest-top" offset={0} stopColor="var(--color-context-rest-top)" />,
+      <stop key="rest-base" offset={1} stopColor="var(--color-context-rest-base)" />,
     )
   } else {
-    stops.push(<stop key="healthy-edge" offset={0} stopColor="var(--color-context-fill-top)" />)
+    if (peak > WARM_FLOOR_TOKENS) {
+      const kinkOffset = (peak - WARM_FLOOR_TOKENS) / peak
+      const t = Math.min(
+        1,
+        Math.max(0, (peak - WARM_FLOOR_TOKENS) / (CRITICAL_TOKENS - WARM_FLOOR_TOKENS)),
+      )
+      const topColor = `color-mix(in oklch, var(--color-context-warning), var(--color-context-warning) ${Math.round(t * 100)}%)`
+      stops.push(
+        <stop key="warm-top" offset={0} stopColor={topColor} stopOpacity={0.55} />,
+        <stop
+          key="warm-edge"
+          offset={kinkOffset}
+          stopColor="var(--color-context-warning)"
+          stopOpacity={0.55}
+        />,
+        <stop
+          key="healthy-edge"
+          offset={kinkOffset}
+          stopColor="var(--color-context-fill-top)"
+        />,
+      )
+    } else {
+      stops.push(
+        <stop key="healthy-edge" offset={0} stopColor="var(--color-context-fill-top)" />,
+      )
+    }
+    stops.push(
+      <stop key="healthy-base" offset={1} stopColor="var(--color-context-fill-base)" />,
+    )
   }
-  stops.push(<stop key="healthy-base" offset={1} stopColor="var(--color-context-fill-base)" />)
 
   return (
     <ResponsiveContainer
@@ -653,7 +707,15 @@ export function ContextTokensChart({
           const strokeWidth = point.isCacheRehydration
             ? CACHE_EVENT_BAR_WIDTH
             : REWRITE_MARKER_WIDTH
-          const stroke = point.isCacheRehydration ? CACHE_EVENT_STROKE : REWRITE_STROKE
+          const markSeries: ChartSeries | null = point.isCacheRoutingMiss
+            ? "routingMiss"
+            : point.isCacheRehydration
+              ? "rehydration"
+              : null
+          const stroke =
+            markSeries != null && highlight === markSeries
+              ? CACHE_EVENT_STROKE
+              : REST_MARK_STROKE
           return rewriteBar(point, "rewrite", hasContextData, opacity, strokeWidth, stroke)
         })}
         <Tooltip
@@ -694,10 +756,10 @@ export function ContextTokensChart({
             type="monotone"
             dataKey={row.key}
             stackId="t"
-            /* A solid block of the series color. A gradient made each layer
-               fade into the one below it, so the stack lost its steps. */
+            /* A solid block. A gradient made each layer fade into the one
+               below it, so the stack lost its steps. */
             stroke="none"
-            fill={row.colorVar}
+            fill={row.series != null && highlight === row.series ? row.colorVar : row.restVar}
             isAnimationActive={animate}
             animationDuration={animationDurationMs}
             animationBegin={entranceStepMs + index * tokenRowStepMs}

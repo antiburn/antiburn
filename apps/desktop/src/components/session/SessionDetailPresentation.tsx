@@ -7,6 +7,7 @@ import {
   FolderOpen,
   GitBranchPlus,
   GitFork,
+  Layers,
   LoaderCircle,
   Moon,
   Repeat2,
@@ -48,10 +49,11 @@ import { useGlobalKeydown } from "../../lib/useGlobalKeydown"
 import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
+import { SegmentedControl } from "../ui/SegmentedControl"
 import { Skeleton } from "../ui/Skeleton"
-import { SessionMeterTabs, type MeterTab } from "./SessionMeterTabs"
+import { SessionTabMeter, type TabMeter } from "./SessionTabMeter"
 import { CostBreakdown } from "./analysis/CostBreakdown"
-import { ContextTokensChart } from "./analysis/ContextTokensChart"
+import { ContextTokensChart, type ChartSeries } from "./analysis/ContextTokensChart"
 import { EfficiencyBreakdown } from "./analysis/EfficiencyBreakdown"
 import { HygieneBreakdown } from "./analysis/HygieneBreakdown"
 import { SkillsMcpChart } from "./analysis/SkillsMcpChart"
@@ -247,6 +249,12 @@ function RelationControl({
 /** The three views of one session's analysis. */
 type SessionDetailTab = "overview" | "cost" | "tools"
 
+const DETAIL_TABS: ReadonlyArray<{ value: SessionDetailTab; label: string }> = [
+  { value: "overview", label: "Context" },
+  { value: "cost", label: "Cost" },
+  { value: "tools", label: "Tools" },
+]
+
 /** The name of one block inside a tab that holds more than one block. */
 function TabSectionHeading({ children }: { children: string }) {
   return (
@@ -255,17 +263,21 @@ function TabSectionHeading({ children }: { children: string }) {
 }
 
 /**
- * The ink each Context stat carries. The three tones repeat the chart's own
- * series and alert colors, so the row reads as the chart's legend.
+ * The ink each Context stat carries. Each tone repeats the color its own
+ * chart layer takes when it lights, so the row reads as the chart's key.
+ * "waste" carries the warning amber the cache marks draw in, not the critical
+ * red: the row must state the color the reader will actually see light up.
  */
 const STAT_TONE_CLASS = {
+  context: "text-context-stroke tabular-nums",
   in: "text-token-in tabular-nums",
   out: "text-token-out tabular-nums",
-  waste: "text-context-critical tabular-nums",
+  waste: "text-context-warning tabular-nums",
 } as const
 
 /** The icon that identifies each Context stat in place of a caption label. */
 const TOKEN_STAT_ICONS: Record<string, LucideIcon> = {
+  Context: Layers,
   In: ArrowDownToLine,
   Out: ArrowUpFromLine,
   Compactions: FoldVertical,
@@ -274,20 +286,37 @@ const TOKEN_STAT_ICONS: Record<string, LucideIcon> = {
 }
 
 /**
- * The Context figures as icon-and-value pairs. The icon carries the identity
- * the caption label used to; the tooltip and a screen-reader prefix keep the
- * word. A toned pair inks icon and value in its chart series color, so the
- * row still doubles as the chart's legend.
+ * The chart's key, drawn under the plot it explains.
+ *
+ * Each figure is an icon-and-value pair. The icon carries the identity the
+ * caption label used to; the tooltip and a screen-reader prefix keep the word.
+ * A toned pair inks icon and value in the color its chart layer takes when it
+ * lights, so the pair states what to look for before the reader points at it.
+ *
+ * Pointing at an entry lights its layer in the plot above. The plot rests in
+ * grey, so this is the only thing that puts color on the chart, and a reader
+ * can see exactly which part of the shape a figure counts. An entry whose
+ * `series` is absent counts something the chart draws no mark for, so it does
+ * not light.
  */
-function TokenStatsRow({
+function ChartKey({
   stats,
+  onHighlight,
 }: {
-  stats: ReadonlyArray<{ label: string; value: string; tone?: "in" | "out" | "waste" }>
+  stats: ReadonlyArray<{
+    label: string
+    value: string
+    tone?: "context" | "in" | "out" | "waste"
+    series?: ChartSeries
+  }>
+  /** Names the layer to light, or null to return the plot to grey. */
+  onHighlight: (series: ChartSeries | null) => void
 }) {
   return (
     <div className="flex items-center justify-between gap-x-4 rounded-[var(--radius-popover)] bg-surface-card/50 px-3 py-2">
       {stats.map((stat) => {
         const Icon = TOKEN_STAT_ICONS[stat.label]
+        const series = stat.series ?? null
         return (
           <Tooltip key={stat.label} label={stat.label}>
             <span
@@ -295,6 +324,8 @@ function TokenStatsRow({
                 "flex items-center gap-x-1 type-body",
                 stat.tone ? STAT_TONE_CLASS[stat.tone] : "text-label",
               )}
+              onMouseEnter={() => onHighlight(series)}
+              onMouseLeave={() => onHighlight(null)}
             >
               <span className="sr-only">{stat.label}: </span>
               {Icon && (
@@ -475,6 +506,9 @@ export function SessionDetailPresentation({
 }: SessionDetailPresentationProps) {
   const subagent = session.subagent
   const [tab, setTab] = useState<SessionDetailTab>("overview")
+  // Which chart layer the key points at. The pointer sets it and the pointer
+  // clears it, so the plot needs no synchronization of its own.
+  const [highlight, setHighlight] = useState<ChartSeries | null>(null)
   const modelPairs = modelRunShortPairs(modelRuns)
   const hygieneChecks = sessionHygieneChecks(hygiene)
   const hasAssessedHygieneChecks = hygieneChecks.some((check) => check.status !== "notAssessed")
@@ -547,35 +581,31 @@ export function SessionDetailPresentation({
         cacheRoutingMissCount: firstSession?.cacheRoutingMissCount ?? 0,
       })
     : null
-  // The navigation is also the figure strip. Each cell states what its tab is
-  // worth and one reading for the health of what is inside it. Every meter
-  // reads the same direction: a fuller meter always means more to look at.
+  // Each tab opens with its own reading. Every meter reads the same
+  // direction: a higher reading is worse, so a fuller meter always means more
+  // to look at.
   const contextPercent =
     summary && summary.contextAvailable !== false && summary.contextWindow > 0
       ? Math.min(100, (summary.peakContextTokens / summary.contextWindow) * 100)
       : null
   const rewriteShare = efficiencyCard?.rewriteShare ?? null
-  const detailTabs: ReadonlyArray<MeterTab<SessionDetailTab>> = [
-    {
-      value: "overview",
-      label: "Context",
+  const tabMeters: Record<SessionDetailTab, TabMeter> = {
+    overview: {
+      label: "Peak context",
       figure: contextPercent != null ? `${Math.round(contextPercent)}%` : "—",
       percent: contextPercent,
       meterLabel: "Peak context used of the window",
     },
-    {
-      value: "cost",
-      label: "Cost",
-      ...(costBadge ? { figureLabel: costBadge.figureLabel } : {}),
+    cost: {
+      label: costBadge ? costBadge.figureLabel : "Cost",
       figure: cost ? formatCost(cost.totalCostUsd) : "—",
       // Rewrite share is the cost-quality reading: how much of this money
       // re-sent context the session already had.
       percent: rewriteShare ? rewriteShare.value * 100 : null,
       meterLabel: "Share of the spend that was rewrite",
     },
-    {
-      value: "tools",
-      label: "Tools",
+    tools: {
+      label: "Startup context",
       figure: toolsUsage ? formatCompact(toolsUsage.totalTokens) : "—",
       percent:
         toolsUsage && toolsUsage.totalTokens > 0
@@ -583,7 +613,23 @@ export function SessionDetailPresentation({
           : null,
       meterLabel: "Share of startup context the session never used",
     },
-  ]
+  }
+
+  // The context area is the chart's main shape, so the key names it first. Its
+  // figure is the peak in tokens. The meter at the head of this panel reads
+  // the same peak against the window, so the two state different things.
+  const chartKeyStats =
+    summary && tokensCard
+      ? [
+          {
+            label: "Context",
+            value: formatCompact(summary.peakContextTokens),
+            tone: "context" as const,
+            series: "context" as const,
+          },
+          ...tokensCard.stats,
+        ]
+      : []
 
   const hasRelations = !!relations && (!!relations.parent || relations.children.length > 0)
 
@@ -780,11 +826,13 @@ export function SessionDetailPresentation({
             )}
 
             <div className="border-b border-separator px-3 py-2">
-              <SessionMeterTabs
-                tabs={detailTabs}
+              <SegmentedControl
+                options={DETAIL_TABS}
                 value={tab}
                 onChange={setTab}
                 ariaLabel="Session detail sections"
+                semantics="tabs"
+                variant="text-tabs"
                 idPrefix="session-detail-tabs"
               />
             </div>
@@ -795,16 +843,18 @@ export function SessionDetailPresentation({
               aria-labelledby={`session-detail-tabs-${tab}`}
               className="min-h-0 flex-1 overflow-y-auto px-4 py-3"
             >
+              <SessionTabMeter meter={tabMeters[tab]} />
               {tab === "overview" && (
                 <div className="divide-y divide-separator">
                   {tokensCard && (
                     <div className="flex flex-col gap-y-3 py-4 first:pt-0 last:pb-0">
-                      <TokenStatsRow stats={tokensCard.stats} />
                       <ContextTokensChart
                         buckets={summary.buckets}
                         contextWindow={summary.contextAvailable ? summary.contextWindow : null}
                         activeSecs={summary.avgActiveSecs}
+                        highlight={highlight}
                       />
+                      <ChartKey stats={chartKeyStats} onHighlight={setHighlight} />
                     </div>
                   )}
 

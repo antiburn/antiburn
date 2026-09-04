@@ -14,15 +14,15 @@ obvious which ones are real complaints and which are my guesses.
 | # | Item | Raised | Size | Status |
 |---|---|---|---|---|
 | A1 | Four colour families fight on one surface | K | L | open |
-| A2 | The chart body is 18% grey in dark mode | C | S | open |
-| A3 | Orange means both "brand" and "alert" | C | M | open |
+| A2 | The chart body is 18% grey in dark mode | C | S | done (round 6) |
+| A3 | Orange means both "brand" and "alert" | C | M | partly (round 6) |
 | A4 | Efficiency green/yellow is borrowed from nowhere | C | M | open |
-| A5 | Stat cells are tinted to match chart series | C | S | open |
+| A5 | Stat cells are tinted to match chart series | C | S | done (round 6) |
 | B1 | The chart lost its main body — put the fill back | K | S | done (round 4) |
-| B2 | The token stack and the context area fight | C | M | open |
-| B3 | Too many annotation layers on one plot | C | M | open |
-| C1 | Tabs should borrow the $/% meter's language | K | L | done (round 4) |
-| C2 | The stat strip and the tab bar do the same job twice | C | L | done (round 4) |
+| B2 | The token stack and the context area fight | C | M | done (round 6) |
+| B3 | Too many annotation layers on one plot | C | M | partly (round 6) |
+| C1 | Tabs should borrow the $/% meter's language | K | L | done (round 5) |
+| C2 | The stat strip and the tab bar do the same job twice | C | L | done (round 5) |
 | D1 | Header stacks four unrelated kinds of thing | K | M | done (round 4) |
 | D2 | Stat figures carry no visible label | C | S | done (round 4) |
 

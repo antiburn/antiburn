@@ -164,7 +164,7 @@ describe("ContextTokensChart", () => {
       bucket({ contextTokens: 200_000 }),
     ]
     const { container } = render(
-      <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
+      <ContextTokensChart buckets={buckets} contextWindow={200_000} highlight="rehydration" />,
     )
 
     const bar = container.querySelector('line[stroke="var(--color-context-warning)"]')
@@ -188,7 +188,7 @@ describe("ContextTokensChart", () => {
   it("draws no cache-rehydration marker when no bucket is flagged", () => {
     const buckets = [bucket({ contextTokens: 100_000 }), bucket({ contextTokens: 120_000 })]
     const { container } = render(
-      <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
+      <ContextTokensChart buckets={buckets} contextWindow={200_000} highlight="rehydration" />,
     )
 
     const rehydrationLines = container.querySelectorAll(
@@ -208,7 +208,7 @@ describe("ContextTokensChart", () => {
       }),
     ]
     const { container } = render(
-      <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
+      <ContextTokensChart buckets={buckets} contextWindow={200_000} highlight="rehydration" />,
     )
 
     const compactionLine = container.querySelector('line[stroke="var(--color-label-tertiary)"]')
@@ -257,10 +257,10 @@ describe("ContextTokensChart", () => {
       bucket({ contextTokens: 200_000 }),
     ]
     const { container } = render(
-      <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
+      <ContextTokensChart buckets={buckets} contextWindow={200_000} highlight="routingMiss" />,
     )
 
-    const bar = container.querySelector('line[stroke="var(--color-context-rewrite)"]')
+    const bar = container.querySelector('line[stroke="var(--color-context-warning)"]')
     expect(bar).not.toBeNull()
     expect(bar?.getAttribute("stroke-opacity")).toBe("0.4")
     expect(bar?.getAttribute("stroke-width")).toBe("2")
@@ -302,8 +302,10 @@ describe("ContextTokensChart", () => {
       <ContextTokensChart buckets={buckets} contextWindow={258_400} />,
     )
 
+    // A plain rewrite is on no key entry, so it never lights and always draws
+    // in the resting grey.
     expect(
-      container.querySelectorAll('line[stroke="var(--color-context-rewrite)"]'),
+      container.querySelectorAll('line[stroke="var(--color-chart-rest-mark)"]'),
     ).toHaveLength(2)
     for (const line of container.querySelectorAll(
       'line[stroke="var(--color-context-critical)"]',
@@ -335,7 +337,7 @@ describe("ContextTokensChart", () => {
       }),
     )
     const { container } = render(
-      <ContextTokensChart buckets={buckets} contextWindow={258_400} />,
+      <ContextTokensChart buckets={buckets} contextWindow={258_400} highlight="rehydration" />,
     )
 
     expect(
@@ -344,15 +346,68 @@ describe("ContextTokensChart", () => {
     expect(screen.getAllByText("rehydration")).toHaveLength(1)
   })
 
+  it("rests the whole plot in grey, so no layer claims the reader first", () => {
+    const buckets = [
+      bucket({ contextTokens: 100_000, tokensIn: 900, tokensOut: 400 }),
+      bucket({ contextTokens: 120_000, tokensIn: 500, tokensOut: 800 }),
+    ]
+    const { container } = render(
+      <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
+    )
+
+    expect(container.querySelector('path[fill="var(--color-token-in)"]')).toBeNull()
+    expect(container.querySelector('path[fill="var(--color-token-out)"]')).toBeNull()
+    expect(container.querySelector('path[fill="var(--color-chart-rest)"]')).not.toBeNull()
+    expect(
+      container.querySelector('path[fill="var(--color-chart-rest-strong)"]'),
+    ).not.toBeNull()
+    // The resting fill states the shape without the warm ramp.
+    expect(
+      container.querySelector('stop[stop-color="var(--color-context-rest-top)"]'),
+    ).not.toBeNull()
+  })
+
+  it("lights one named layer and leaves the rest grey", () => {
+    const buckets = [
+      bucket({ contextTokens: 100_000, tokensIn: 900, tokensOut: 400 }),
+      bucket({ contextTokens: 120_000, tokensIn: 500, tokensOut: 800 }),
+    ]
+    const { container } = render(
+      <ContextTokensChart buckets={buckets} contextWindow={200_000} highlight="in" />,
+    )
+
+    expect(container.querySelector('path[fill="var(--color-token-in)"]')).not.toBeNull()
+    // Output is not the named layer, so it keeps its grey.
+    expect(container.querySelector('path[fill="var(--color-token-out)"]')).toBeNull()
+    expect(
+      container.querySelector('path[fill="var(--color-chart-rest-strong)"]'),
+    ).not.toBeNull()
+  })
+
+  it("returns the context fill to brand orange only while the key names it", () => {
+    const buckets = [bucket({ contextTokens: 100_000 }), bucket({ contextTokens: 120_000 })]
+    const { container } = render(
+      <ContextTokensChart buckets={buckets} contextWindow={200_000} highlight="context" />,
+    )
+
+    expect(
+      container.querySelector('stop[stop-color="var(--color-context-fill-top)"]'),
+    ).not.toBeNull()
+    expect(
+      container.querySelector('stop[stop-color="var(--color-context-rest-top)"]'),
+    ).toBeNull()
+  })
+
   it("draws sub-agent tokens as a third series on the token axis", () => {
     const buckets = [bucket({ tokensIn: 100, tokensOut: 20 }), bucket({ subagentTokens: 500 })]
     const { container } = render(
       <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
     )
 
-    // The series carries its color as a solid fill, not a gradient.
+    // The series carries a solid fill, not a gradient. At rest that fill is
+    // the faintest of the three greys, which keeps the stack's steps.
     expect(container.querySelector('linearGradient[id$="-subagentTokens"]')).toBeNull()
-    expect(container.querySelector('path[fill="var(--color-token-subagent)"]')).not.toBeNull()
+    expect(container.querySelector('path[fill="var(--color-chart-rest-faint)"]')).not.toBeNull()
   })
 })
 

@@ -8,7 +8,7 @@ function segments(container: HTMLElement): HTMLElement[] {
 }
 
 // The full-strength zone fills; an unlit segment carries a /25 tint instead.
-const FILL_CLASSES = ["bg-brand-tint", "bg-system-yellow-tint", "bg-system-red-tint"]
+const FILL_CLASSES = ["bg-brand-tint", "bg-system-red-tint"]
 
 function filled(container: HTMLElement): number {
   return segments(container).filter((node) =>
@@ -53,11 +53,12 @@ describe("SegmentedMeter", () => {
   it("colors each segment by its zone, like a VU meter", () => {
     const { container } = render(<SegmentedMeter percent={95} />)
     const all = segments(container)
-    // At 95% the fill crosses into the red zone: the yellow zone (80–90%)
-    // is fully lit and the red zone has one lit segment before its tinted
-    // tail.
+    // At 95% the fill crosses into the red zone: the orange zone (0–90%) is
+    // fully lit and the red zone has one lit segment before its tinted tail.
+    // No segment is yellow, because the scale holds no warning step.
+    expect(all.filter((node) => node.classList.contains("bg-brand-tint"))).toHaveLength(29)
     expect(all.filter((node) => node.classList.contains("bg-system-yellow-tint"))).toHaveLength(
-      3,
+      0,
     )
     expect(all.filter((node) => node.classList.contains("bg-system-red-tint"))).toHaveLength(1)
     expect(

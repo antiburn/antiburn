@@ -5,11 +5,13 @@
    session-analysis surface, kept out of tokens.css so the core design tokens
    stay the ones every surface uses.
 
-   The palette is brand-led ("ember") and splits hot from cool. The context
-   line is the hot antiburn orange over a grey fill, so the line carries the
-   brand and the area stays quiet behind it. The token series below it use a
-   cool cyan-to-blue family — the complement of the flame — so the secondary
-   layer never competes with the line. Red stays for alerts only.
+   The palette is brand-led ("ember") and splits hot from cool. The chart
+   draws grey at rest and takes color one layer at a time, while the pointer
+   rests on that layer's key entry. The context line stays the hot antiburn
+   orange throughout, because it is the one shape that must read as the mark.
+   The token series use a cool cyan-to-blue family — the complement of the
+   flame — so a lit series never competes with the line. Red stays for
+   alerts only.
 
    The palette supplies context colors, token colors, and one context warning
    hue.
@@ -25,11 +27,27 @@
   --color-context-stroke: var(--color-context-stroke-val);
 
   /* Vertical area fill under that line, with the alpha baked in, fading out
-     toward the baseline. Light mode fills in the brand orange, which holds
-     the shape against a white surface. Dark mode keeps a neutral grey: the
-     same orange on a dark surface glares and swallows the token series. */
+     toward the baseline. This is the lit fill: the chart shows it while the
+     pointer rests on the key entry for the context area. */
   --color-context-fill-top: var(--color-context-fill-top-val);
   --color-context-fill-base: var(--color-context-fill-base-val);
+
+  /* The same fill at rest. The plot draws grey until a key entry names a
+     layer, so the chart states its shape first and its colors second. */
+  --color-context-rest-top: var(--color-context-rest-top-val);
+  --color-context-rest-base: var(--color-context-rest-base-val);
+
+  /* The resting greys for the stacked token series. The three steps separate
+     the stack by value alone, so the layer keeps its steps without color.
+     Output takes the strongest step, because output tokens cost the most. */
+  --color-chart-rest-strong: var(--color-chart-rest-strong-val);
+  --color-chart-rest: var(--color-chart-rest-val);
+  --color-chart-rest-faint: var(--color-chart-rest-faint-val);
+
+  /* The resting grey for a mark drawn over the plot: a rewrite bar, a cache
+     event, or a routing miss. Denser than the series greys, because a mark is
+     a hairline and needs the weight to hold. */
+  --color-chart-rest-mark: var(--color-chart-rest-mark-val);
 
   /* The pill behind a label drawn inside the plot. It is the opposite of the
      surface, at half strength, so a label stays legible over any fill, line,
@@ -77,6 +95,12 @@
   --color-context-stroke-val: hsl(17.6 100% 58.6%); /* brand-tint, the hot mark */
   --color-context-fill-top-val: hsl(17.6 100% 58.6% / 0.5); /* brand orange */
   --color-context-fill-base-val: hsl(17.6 100% 58.6% / 0.12);
+  --color-context-rest-top-val: hsl(240 5.5% 25% / 0.16);
+  --color-context-rest-base-val: hsl(240 5.5% 25% / 0.03);
+  --color-chart-rest-strong-val: hsl(240 5.5% 25% / 0.42);
+  --color-chart-rest-val: hsl(240 5.5% 25% / 0.26);
+  --color-chart-rest-faint-val: hsl(240 5.5% 25% / 0.14);
+  --color-chart-rest-mark-val: hsl(240 5.5% 25% / 0.55);
   --color-token-in-val: hsl(199 55% 62%); /* light cyan */
   --color-token-out-val: hsl(214 90% 42%); /* deep blue */
   --color-token-subagent-val: hsl(240 5.5% 25% / 0.45); /* label-family neutral */
@@ -96,8 +120,14 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --color-context-stroke-val: hsl(17.6 100% 58.6%); /* brand-tint, the hot mark */
-    --color-context-fill-top-val: hsl(240 33% 94% / 0.18); /* label-family neutral */
-    --color-context-fill-base-val: hsl(240 33% 94% / 0.03);
+    --color-context-fill-top-val: hsl(17.6 100% 58.6% / 0.42); /* brand orange */
+    --color-context-fill-base-val: hsl(17.6 100% 58.6% / 0.1);
+    --color-context-rest-top-val: hsl(240 33% 94% / 0.24);
+    --color-context-rest-base-val: hsl(240 33% 94% / 0.05);
+    --color-chart-rest-strong-val: hsl(240 33% 94% / 0.4);
+    --color-chart-rest-val: hsl(240 33% 94% / 0.24);
+    --color-chart-rest-faint-val: hsl(240 33% 94% / 0.13);
+    --color-chart-rest-mark-val: hsl(240 33% 94% / 0.5);
     --color-token-in-val: hsl(199 45% 50%); /* light cyan */
     --color-token-out-val: hsl(210 100% 70%); /* deep blue */
     --color-token-subagent-val: hsl(240 33% 94% / 0.4); /* label-family neutral */
@@ -113,8 +143,14 @@
 
 :root[data-theme="dark"] {
   --color-context-stroke-val: hsl(17.6 100% 58.6%);
-  --color-context-fill-top-val: hsl(240 33% 94% / 0.18);
-  --color-context-fill-base-val: hsl(240 33% 94% / 0.03);
+  --color-context-fill-top-val: hsl(17.6 100% 58.6% / 0.42);
+  --color-context-fill-base-val: hsl(17.6 100% 58.6% / 0.1);
+  --color-context-rest-top-val: hsl(240 33% 94% / 0.24);
+  --color-context-rest-base-val: hsl(240 33% 94% / 0.05);
+  --color-chart-rest-strong-val: hsl(240 33% 94% / 0.4);
+  --color-chart-rest-val: hsl(240 33% 94% / 0.24);
+  --color-chart-rest-faint-val: hsl(240 33% 94% / 0.13);
+  --color-chart-rest-mark-val: hsl(240 33% 94% / 0.5);
   --color-token-in-val: hsl(199 45% 50%);
   --color-token-out-val: hsl(210 100% 70%);
   --color-token-subagent-val: hsl(240 33% 94% / 0.4);

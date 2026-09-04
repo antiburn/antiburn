@@ -96,10 +96,10 @@ colors:
   system-yellow:
     light: "hsl(34 100% 31.3%)"
     dark: "hsl(48 100% 57.4%)"
-  system-yellow-tint: # vivid yellow for fills (a meter's warning zone)
+  system-yellow-tint: # vivid yellow for fills (a category, not a warning)
     light: "hsl(45 100% 50%)"
     dark: "hsl(48 100% 57.4%)"
-  system-yellow-unlit: # an unlit warning segment
+  system-yellow-unlit: # the yellow fill, a quarter less saturated
     light: "hsl(45 75% 50%)"
     dark: "hsl(48 75% 57.4%)"
   system-red:
@@ -170,12 +170,30 @@ colors:
   context-stroke: # the hot brand mark, unchanged between themes
     light: "hsl(17.6 100% 58.6%)"
     dark: "hsl(17.6 100% 58.6%)"
-  context-fill-top: # under the hot line: brand orange on light, grey on dark
+  context-fill-top: # under the hot line, lit: brand orange in both themes
     light: "hsl(17.6 100% 58.6% / 0.5)"
-    dark: "hsl(240 33% 94% / 0.18)"
+    dark: "hsl(17.6 100% 58.6% / 0.42)"
   context-fill-base:
     light: "hsl(17.6 100% 58.6% / 0.12)"
-    dark: "hsl(240 33% 94% / 0.03)"
+    dark: "hsl(17.6 100% 58.6% / 0.1)"
+  context-rest-top: # the same fill at rest, before a key entry lights it
+    light: "hsl(240 5.5% 25% / 0.16)"
+    dark: "hsl(240 33% 94% / 0.24)"
+  context-rest-base:
+    light: "hsl(240 5.5% 25% / 0.03)"
+    dark: "hsl(240 33% 94% / 0.05)"
+  chart-rest-strong: # resting grey, strongest step; parent output
+    light: "hsl(240 5.5% 25% / 0.42)"
+    dark: "hsl(240 33% 94% / 0.4)"
+  chart-rest: # resting grey, middle step; parent input
+    light: "hsl(240 5.5% 25% / 0.26)"
+    dark: "hsl(240 33% 94% / 0.24)"
+  chart-rest-faint: # resting grey, faintest step; sub-agent tokens
+    light: "hsl(240 5.5% 25% / 0.14)"
+    dark: "hsl(240 33% 94% / 0.13)"
+  chart-rest-mark: # resting grey for a hairline mark over the plot
+    light: "hsl(240 5.5% 25% / 0.55)"
+    dark: "hsl(240 33% 94% / 0.5)"
   chart-label-pill: # behind a label inside the plot; the opposite of the surface
     light: "hsl(0 0% 100% / 0.5)"
     dark: "hsl(0 0% 0% / 0.5)"
