@@ -122,6 +122,7 @@ impl DetectorFold {
 pub enum ModelFamily {
     Claude,
     OpenAi,
+    Google,
     /// No known vendor prefix matched. A tier or premium check can
     /// never classify an unknown family; it always reports a contract
     /// gap instead of a finding or clean result.
@@ -141,6 +142,8 @@ pub fn model_family(model: &str) -> ModelFamily {
         || canonical.starts_with("o4")
     {
         ModelFamily::OpenAi
+    } else if canonical.starts_with("gemini-") {
+        ModelFamily::Google
     } else {
         ModelFamily::Unknown
     }
@@ -164,9 +167,7 @@ pub struct SpeedPolicy {
     pub recognized: BTreeSet<String>,
 }
 
-/// One family's premium-tier policy for Overpowered Subagents, matching
-/// Cadence `SubagentTier::classify`
-/// (`crates/analysis/src/efficiency_findings.rs`).
+/// One family's premium-tier policy for Overpowered Subagents.
 ///
 /// `reviewed` states whether a maintainer has classified this family's
 /// premium tier at all. An unreviewed family's models can never prove
@@ -211,12 +212,13 @@ pub struct FamilyPolicy {
     pub effort: EffortPolicy,
     pub speed: SpeedPolicy,
     pub premium: PremiumPolicy,
+    /// Whether Cache Churn has a reviewed threshold for this family.
+    pub cache_policy_reviewed: bool,
     /// The overpay multiple (`RepeatedContext::paid_tokens` divided by
     /// unique paid tokens) at or above which Cache Churn calls a
-    /// finding, matching Cadence's `CACHE_OVERPAY_BAND_BOUNDS` "avg
-    /// efficiency" band bound. `premium.reviewed` gates this field the
-    /// same way it gates premium status: an unreviewed family's models
-    /// never prove a finding under this bound.
+    /// finding. This is the reviewed average-efficiency band bound.
+    /// `cache_policy_reviewed` gates this field. An unreviewed family's
+    /// models never prove a finding.
     pub cache_overpay_multiple_threshold: f64,
 }
 
@@ -239,10 +241,8 @@ pub struct ReportCatalogs {
 }
 
 /// Effort tiers above the recommended cap in every reviewed family:
-/// `xhigh`, `max`, and `ultra`. Cadence's production census
-/// (`REASONING_EFFORT_TIER_POLICY`,
-/// `crates/analysis/src/efficiency_findings.rs`) never observed
-/// `ultrathink` as an `effort` value, so it is not in this set.
+/// `xhigh`, `max`, and `ultra`. The reviewed production data did not contain
+/// `ultrathink` as an `effort` value, so this set does not include it.
 fn above_cap_effort_tiers() -> BTreeSet<String> {
     ["xhigh", "max", "ultra"]
         .into_iter()
@@ -250,20 +250,17 @@ fn above_cap_effort_tiers() -> BTreeSet<String> {
         .collect()
 }
 
-/// Cadence's per-family cache-overpay "avg efficiency" bands
-/// (`CACHE_OVERPAY_BAND_BOUNDS`,
-/// `web/src/components/efficiency/EfficiencyContent.tsx`), from the
-/// 2026-08-05 Cadence corpus: 115 Claude Code users and 33 Codex users
-/// with over 500k paid tokens in 30 days. Each band is four bounds —
-/// `[good, fair, poor, very poor]` — and `cache_overpay_multiple_threshold`
-/// below takes the "fair" bound, the point Cadence calls a finding:
+/// These per-family average-efficiency bands use production data from
+/// 2026-08-05. The data covers 115 Claude Code users and 33 Codex users
+/// with more than 500k paid tokens in 30 days. Each band has four bounds:
+/// `[good, fair, poor, very poor]`. `cache_overpay_multiple_threshold`
+/// uses the fair bound as the finding threshold:
 /// - Claude: `[1.9, 2.35, 3.35, 4.45]`, threshold `2.35`.
 /// - Codex (OpenAI): `[1.7, 2.0, 2.35, 2.8]`, threshold `2.0`.
 ///
-/// Cadence computes this multiple per user over a 30-day window; this
-/// rule computes it per session. A very small session's multiple is
-/// noisier than Cadence's per-user aggregate, so a session that trips
-/// the bound on a handful of paid tokens deserves a skeptical read.
+/// The source data computes this multiple per user over a 30-day window.
+/// This rule computes it per session. A small session is noisier than the
+/// per-user aggregate, so review findings based on few paid tokens carefully.
 impl Default for ReportCatalogs {
     fn default() -> Self {
         let mut families = BTreeMap::new();
@@ -293,6 +290,7 @@ impl Default for ReportCatalogs {
                     prefixes: Vec::new(),
                     exceptions: BTreeSet::new(),
                 },
+                cache_policy_reviewed: true,
                 cache_overpay_multiple_threshold: 2.35,
             },
         );
@@ -327,7 +325,21 @@ impl Default for ReportCatalogs {
                     .map(str::to_owned)
                     .collect(),
                 },
+                cache_policy_reviewed: true,
                 cache_overpay_multiple_threshold: 2.0,
+            },
+        );
+        families.insert(
+            ModelFamily::Google,
+            FamilyPolicy {
+                premium: PremiumPolicy {
+                    reviewed: true,
+                    substrings: vec!["pro".to_owned()],
+                    prefixes: Vec::new(),
+                    exceptions: BTreeSet::new(),
+                },
+                cache_policy_reviewed: false,
+                ..FamilyPolicy::default()
             },
         );
         // `Unknown` stays fully default: `premium.reviewed` is `false`
@@ -336,7 +348,7 @@ impl Default for ReportCatalogs {
         families.insert(ModelFamily::Unknown, FamilyPolicy::default());
 
         Self {
-            revision: 6,
+            revision: 7,
             depth_cap_tokens: 400_000,
             families,
             model_replacements: model_registry::default_registry(),
@@ -569,6 +581,25 @@ mod tests {
         assert_eq!(
             model_family("antigravity-claude-opus-4-6-thinking"),
             ModelFamily::Claude
+        );
+    }
+
+    #[test]
+    fn model_family_classifies_an_antigravity_prefixed_gemini_key() {
+        assert_eq!(
+            model_family("antigravity-gemini-3.8-pro-preview"),
+            ModelFamily::Google
+        );
+    }
+
+    #[test]
+    fn google_premium_policy_flags_canonical_gemini_pro() {
+        let catalogs = ReportCatalogs::default();
+        let canonical = canonical_model_key("antigravity-gemini-3.8-pro-preview");
+        assert!(
+            catalogs.families[&ModelFamily::Google]
+                .premium
+                .is_premium(&canonical)
         );
     }
 

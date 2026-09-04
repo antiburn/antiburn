@@ -48,9 +48,11 @@ export function checksPresentation(
 }
 
 export function formatTokenBurnPercent(basisPoints: number): string {
-  return `${Math.ceil(basisPoints / 100)}%`
+  if (basisPoints > 0 && basisPoints < 100) return "<1%"
+  return `${Math.floor(basisPoints / 100)}%`
 }
 
 export function tokenBurnTone(basisPoints: number): string {
-  return basisPoints > 1_500 ? "text-system-red-text" : "text-system-yellow"
+  if (basisPoints === 0) return "text-system-green"
+  return basisPoints < 500 ? "text-system-yellow" : "text-system-red-text"
 }

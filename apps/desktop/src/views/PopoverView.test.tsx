@@ -374,7 +374,7 @@ describe("PopoverView", () => {
 
     render(<PopoverView />)
 
-    expect(await screen.findByText("12.35%")).toHaveAttribute(
+    expect(await screen.findByText("12.3%")).toHaveAttribute(
       "data-session-limit-window",
       "weekly-main",
     )

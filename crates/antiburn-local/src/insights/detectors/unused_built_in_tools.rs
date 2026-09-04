@@ -1,12 +1,10 @@
 //! Unused Built-In Tools: native harness tool definitions that consume
 //! context and are never used.
 //!
-//! The current evidence contract carries no definition names:
-//! `ContextSourceEvidence::tool_definitions` is a bare marker. Without
-//! names, no unused definition can be identified and no absence can be
-//! concluded. Every eligible session therefore reports
-//! `ContractIncomplete` — never a finding and never clean — until
-//! CH-009 joins built-in definitions to invocation evidence.
+//! Stored detector evidence carries no definition names, so this pure
+//! evaluator cannot identify an unused definition. The report reducer can
+//! assess this check when the separate initial-context projection supplies
+//! complete named definitions and invocation counts.
 //!
 //! Partial-evidence rules:
 //! - No partial evidence permits a finding: the unused claim is an

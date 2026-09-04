@@ -2,32 +2,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analysis::{
     CacheEvidence, CoverageReason, EvidenceCoverage, EvidenceValue, SessionEvidence,
-    SourceAcceptance,
+    SourceAcceptance, lookup_pricing,
 };
+use crate::pricing::{ModelPricing, canonical_model_key};
 
-use super::detectors::{self, DetectorFold, DetectorStatus, ReportCatalogs};
+use super::detectors::{self, DetectorFold, DetectorStatus, ReportCatalogs, complete};
 use super::quota::{QuotaPressureAccumulator, QuotaPressureSection};
 use super::{CoverageBucket, DetectorId};
 
 pub const MAX_EXAMPLES_PER_DETECTOR: usize = 3;
 pub const MAX_REPORT_UNRECOGNIZED_TYPES: usize = 16;
-pub const MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS: u16 = 5_000;
+pub const MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS: u16 = 10_000;
 const UNRECOGNIZED_TYPES_DIAGNOSTIC: &str = "diagnostics.unrecognized_types";
 const BASIS_POINTS_SCALE: u16 = 10_000;
-
-const fn detector_token_burn_share(detector: DetectorId) -> u16 {
-    match detector {
-        DetectorId::SessionsOverDepth => 1_000,
-        DetectorId::ModelOverthinking => 2_500,
-        DetectorId::OverpoweredSubagents => 3_500,
-        DetectorId::UnusedMcpServers => 500,
-        DetectorId::UnusedBuiltInTools => 500,
-        DetectorId::UnusedSkills => 300,
-        DetectorId::OldModelUsage => 2_000,
-        DetectorId::OveruseOfFastMode => 2_000,
-        DetectorId::CacheChurn => 2_500,
-    }
-}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DetectorCounts {
@@ -402,12 +389,296 @@ pub struct EfficiencyReport {
     pub detector_estimated_token_burn_basis_points: [Option<u16>; 9],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenBurnSourceEvidence {
+    /// The agent and installation scope used for window-level grouping.
+    pub scope: String,
+    /// The normalized source name used for window-level grouping.
+    pub name: String,
+    /// Definition tokens repeated across compatible main turns.
+    pub replicated_tokens: u128,
+    /// Whether this session invoked the source after loading it.
+    pub invoked: bool,
+}
+
+/// One attributed assistant turn used only for report-time token estimates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenBurnTurnEvidence {
+    pub scope: String,
+    pub model: String,
+    pub effort: Option<String>,
+    pub speed: Option<String>,
+    pub ts_ms: Option<i64>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+}
+
+impl TokenBurnTurnEvidence {
+    fn total_tokens(&self) -> Option<u128> {
+        u128::from(self.input_tokens)
+            .checked_add(u128::from(self.output_tokens))?
+            .checked_add(u128::from(self.cache_read_tokens))?
+            .checked_add(u128::from(self.cache_write_tokens))
+    }
+
+    fn context_tokens(&self) -> Option<u128> {
+        u128::from(self.input_tokens)
+            .checked_add(u128::from(self.cache_read_tokens))?
+            .checked_add(u128::from(self.cache_write_tokens))
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionTokenBurnEvidence {
+    /// All attributed input, output, cache-read, and cache-write tokens.
+    pub total_tokens: Option<u128>,
+    /// Cache token events that a context cap would remove.
+    pub overdepth_avoidable_tokens: Option<u128>,
+    /// Paid context token events beyond positive context growth.
+    pub repeated_context_avoidable_tokens: Option<u128>,
+    /// Valid assistant turns with model attribution from the published fence.
+    pub turns: Option<Vec<TokenBurnTurnEvidence>>,
+    pub mcp_sources: Option<Vec<TokenBurnSourceEvidence>>,
+    pub built_in_tool_sources: Option<Vec<TokenBurnSourceEvidence>>,
+    pub skill_sources: Option<Vec<TokenBurnSourceEvidence>>,
+}
+
+impl SessionTokenBurnEvidence {
+    pub fn from_session(evidence: &SessionEvidence) -> Self {
+        let models = match &evidence.models {
+            EvidenceValue::Partial {
+                observed: models, ..
+            }
+            | EvidenceValue::Complete(models) => Some(models),
+            _ => None,
+        };
+        let total_tokens = models.and_then(|models| {
+            models.by_model.values().try_fold(0_u128, |total, tokens| {
+                total
+                    .checked_add(u128::from(tokens.input))?
+                    .checked_add(u128::from(tokens.output))?
+                    .checked_add(u128::from(tokens.cache_read))?
+                    .checked_add(u128::from(tokens.cache_creation))
+            })
+        });
+        let repeated_context_avoidable_tokens = models
+            .filter(|models| models.unattributed_turns == 0)
+            .and_then(|_| match &evidence.cache {
+                EvidenceValue::Partial {
+                    observed: cache, ..
+                }
+                | EvidenceValue::Complete(cache) => match &cache.repeated_context {
+                    EvidenceValue::Partial {
+                        observed: repeated, ..
+                    }
+                    | EvidenceValue::Complete(repeated) => {
+                        Some(u128::from(repeated.repeated_tokens))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            });
+        Self {
+            total_tokens,
+            repeated_context_avoidable_tokens,
+            ..Self::default()
+        }
+    }
+}
+
+fn percentage_of_tokens(tokens: u128, percentage: u128) -> Option<u128> {
+    tokens
+        .checked_mul(percentage)?
+        .checked_add(99)
+        .map(|scaled| scaled / 100)
+}
+
+fn token_cost(tokens: &TokenBurnTurnEvidence, pricing: &ModelPricing) -> f64 {
+    tokens.input_tokens as f64 * pricing.input_cost_per_token
+        + tokens.output_tokens as f64 * pricing.output_cost_per_token
+        + tokens.cache_read_tokens as f64 * pricing.cache_read_cost_per_token
+        + tokens.cache_write_tokens as f64 * pricing.cache_write_cost_per_token
+}
+
+fn cost_saving_tokens(
+    turn: &TokenBurnTurnEvidence,
+    actual: &ModelPricing,
+    replacement: &ModelPricing,
+) -> Option<u128> {
+    let total_tokens = turn.total_tokens()?;
+    let actual_cost = token_cost(turn, actual);
+    let replacement_cost = token_cost(turn, replacement);
+    if !actual_cost.is_finite()
+        || !replacement_cost.is_finite()
+        || actual_cost <= replacement_cost
+        || actual_cost <= 0.0
+    {
+        return None;
+    }
+    let equivalent = total_tokens as f64 * (actual_cost - replacement_cost) / actual_cost;
+    if !equivalent.is_finite() || equivalent <= 0.0 {
+        return None;
+    }
+    Some((equivalent.round() as u128).clamp(1, total_tokens))
+}
+
+fn report_pricing(model: &str) -> Option<ModelPricing> {
+    lookup_pricing(model).or_else(|| lookup_pricing(&canonical_model_key(model)))
+}
+
+fn priced_or_assumed_saving(turn: &TokenBurnTurnEvidence, replacement: &str) -> Option<u128> {
+    let priced = report_pricing(&turn.model)
+        .zip(report_pricing(replacement))
+        .and_then(|(actual, replacement)| cost_saving_tokens(turn, &actual, &replacement));
+    priced.or_else(|| percentage_of_tokens(turn.total_tokens()?, 10))
+}
+
+fn similar_context(left: &TokenBurnTurnEvidence, right: &TokenBurnTurnEvidence) -> bool {
+    let Some(left) = left.context_tokens() else {
+        return false;
+    };
+    let Some(right) = right.context_tokens() else {
+        return false;
+    };
+    let largest = left.max(right);
+    largest == 0
+        || left
+            .abs_diff(right)
+            .checked_mul(5)
+            .is_some_and(|difference| difference <= largest)
+}
+
+fn overthinking_tokens(turns: &[TokenBurnTurnEvidence], catalogs: &ReportCatalogs) -> Option<u128> {
+    turns.iter().try_fold(0_u128, |total, turn| {
+        let Some(effort) = turn.effort.as_deref() else {
+            return Some(total);
+        };
+        let effort = effort.trim().to_lowercase();
+        let family = detectors::model_family(&turn.model);
+        let policy = catalogs.families.get(&family)?;
+        if !policy.effort.above_cap.contains(&effort) {
+            return Some(total);
+        }
+        let observed = turns
+            .iter()
+            .filter(|candidate| {
+                candidate.scope == turn.scope
+                    && canonical_model_key(&candidate.model) == canonical_model_key(&turn.model)
+                    && similar_context(candidate, turn)
+                    && candidate.effort.as_deref().is_some_and(|candidate_effort| {
+                        let candidate_effort = candidate_effort.trim().to_lowercase();
+                        policy.effort.recognized.contains(&candidate_effort)
+                            && !policy.effort.above_cap.contains(&candidate_effort)
+                    })
+                    && candidate.output_tokens < turn.output_tokens
+            })
+            .filter_map(|candidate| {
+                Some((
+                    turn.context_tokens()?.abs_diff(candidate.context_tokens()?),
+                    u128::from(turn.output_tokens - candidate.output_tokens),
+                ))
+            })
+            .min_by_key(|(context_difference, _)| *context_difference)
+            .map(|(_, output_difference)| output_difference);
+        let assumed = match effort.as_str() {
+            "xhigh" => percentage_of_tokens(u128::from(turn.output_tokens), 20),
+            "max" | "ultra" => percentage_of_tokens(u128::from(turn.output_tokens), 35),
+            _ => percentage_of_tokens(u128::from(turn.output_tokens), 10),
+        };
+        total.checked_add(observed.or(assumed)?)
+    })
+}
+
+fn premium_replacement(model: &str, catalogs: &ReportCatalogs) -> Option<&'static str> {
+    let family = detectors::model_family(model);
+    let policy = &catalogs.families.get(&family)?.premium;
+    if !policy.reviewed || !policy.is_premium(&canonical_model_key(model)) {
+        return None;
+    }
+    match family {
+        detectors::ModelFamily::OpenAi => Some("gpt-5.6-luna"),
+        detectors::ModelFamily::Claude => Some("claude-sonnet-5"),
+        detectors::ModelFamily::Google => Some("gemini-3.8-flash"),
+        detectors::ModelFamily::Unknown => None,
+    }
+}
+
+fn overpowered_subagent_tokens(
+    turns: &[TokenBurnTurnEvidence],
+    catalogs: &ReportCatalogs,
+) -> Option<u128> {
+    turns
+        .iter()
+        .filter(|turn| turn.scope == "delegated")
+        .try_fold(0_u128, |total, turn| {
+            let Some(replacement) = premium_replacement(&turn.model, catalogs) else {
+                return Some(total);
+            };
+            total.checked_add(priced_or_assumed_saving(turn, replacement)?)
+        })
+}
+
+fn old_model_tokens(turns: &[TokenBurnTurnEvidence], catalogs: &ReportCatalogs) -> Option<u128> {
+    turns.iter().try_fold(0_u128, |total, turn| {
+        let Some(replacement) = catalogs.model_replacements.lookup(&turn.model) else {
+            return Some(total);
+        };
+        if !turn
+            .ts_ms
+            .is_some_and(|timestamp| timestamp >= replacement.available_since_ts_ms)
+        {
+            return Some(total);
+        }
+        total.checked_add(priced_or_assumed_saving(turn, &replacement.replacement)?)
+    })
+}
+
+fn fast_mode_tokens(turns: &[TokenBurnTurnEvidence]) -> Option<u128> {
+    turns
+        .iter()
+        .filter(|turn| {
+            turn.scope == "delegated"
+                && turn
+                    .speed
+                    .as_deref()
+                    .is_some_and(|speed| speed.trim().eq_ignore_ascii_case("fast"))
+        })
+        .try_fold(0_u128, |total, turn| {
+            let canonical = canonical_model_key(&turn.model);
+            let standard_model = canonical.strip_suffix("-fast").unwrap_or(&canonical);
+            let fast_model = format!("{standard_model}-fast");
+            let priced = report_pricing(&fast_model)
+                .zip(report_pricing(standard_model))
+                .and_then(|(fast, standard)| cost_saving_tokens(turn, &fast, &standard));
+            let saving = priced.or_else(|| percentage_of_tokens(turn.total_tokens()?, 10))?;
+            total.checked_add(saving)
+        })
+}
+
+#[derive(Default)]
+struct SourceAggregate {
+    invoked: bool,
+    by_session: BTreeMap<usize, u128>,
+}
+
+#[derive(Default)]
+struct SessionTokenContribution {
+    overdepth: Option<u128>,
+    repeated_context: Option<u128>,
+    model_overthinking: Option<u128>,
+    overpowered_subagents: Option<u128>,
+    old_model: Option<u128>,
+    fast_mode: Option<u128>,
+}
+
 #[derive(Default)]
 struct TokenBurnAccumulator {
     complete: bool,
     total_tokens: u128,
-    combined_weighted_basis_points: u128,
-    detector_weighted_basis_points: [u128; 9],
+    sessions: Vec<SessionTokenContribution>,
+    sources: [BTreeMap<(String, String), SourceAggregate>; 3],
 }
 
 impl TokenBurnAccumulator {
@@ -418,112 +689,235 @@ impl TokenBurnAccumulator {
         }
     }
 
-    fn observe(&mut self, evidence: &SessionEvidence, findings: [bool; 9]) {
-        let EvidenceValue::Complete(models) = &evidence.models else {
-            self.complete = false;
-            return;
-        };
-        if models.unattributed_turns != 0 {
-            self.complete = false;
-            return;
+    fn observe(
+        &mut self,
+        token_evidence: SessionTokenBurnEvidence,
+        findings: [bool; 9],
+        source_eligible: [bool; 3],
+        catalogs: &ReportCatalogs,
+    ) {
+        if let Some(session_tokens) = token_evidence.total_tokens {
+            if let Some(total_tokens) = self.total_tokens.checked_add(session_tokens) {
+                self.total_tokens = total_tokens;
+            } else {
+                self.complete = false;
+            }
         }
+        let session_index = self.sessions.len();
+        let turns = token_evidence.turns.as_deref();
+        self.sessions.push(SessionTokenContribution {
+            overdepth: if findings[DetectorId::SessionsOverDepth.index()] {
+                token_evidence.overdepth_avoidable_tokens
+            } else {
+                Some(0)
+            },
+            repeated_context: if findings[DetectorId::CacheChurn.index()] {
+                token_evidence.repeated_context_avoidable_tokens
+            } else {
+                Some(0)
+            },
+            model_overthinking: if findings[DetectorId::ModelOverthinking.index()] {
+                turns.and_then(|turns| overthinking_tokens(turns, catalogs))
+            } else {
+                Some(0)
+            },
+            overpowered_subagents: if findings[DetectorId::OverpoweredSubagents.index()] {
+                turns.and_then(|turns| overpowered_subagent_tokens(turns, catalogs))
+            } else {
+                Some(0)
+            },
+            old_model: if findings[DetectorId::OldModelUsage.index()] {
+                turns.and_then(|turns| old_model_tokens(turns, catalogs))
+            } else {
+                Some(0)
+            },
+            fast_mode: if findings[DetectorId::OveruseOfFastMode.index()] {
+                turns.and_then(fast_mode_tokens)
+            } else {
+                Some(0)
+            },
+        });
 
-        let Some(session_tokens) = models.by_model.values().try_fold(0_u128, |total, tokens| {
-            total
-                .checked_add(u128::from(tokens.input))?
-                .checked_add(u128::from(tokens.output))?
-                .checked_add(u128::from(tokens.cache_read))?
-                .checked_add(u128::from(tokens.cache_creation))
-        }) else {
-            self.complete = false;
-            return;
-        };
-        let Some(total_tokens) = self.total_tokens.checked_add(session_tokens) else {
-            self.complete = false;
-            return;
-        };
-        self.total_tokens = total_tokens;
+        let source_groups = [
+            token_evidence.mcp_sources,
+            token_evidence.built_in_tool_sources,
+            token_evidence.skill_sources,
+        ];
+        for (index, sources) in source_groups.into_iter().enumerate() {
+            let detector = [
+                DetectorId::UnusedMcpServers,
+                DetectorId::UnusedBuiltInTools,
+                DetectorId::UnusedSkills,
+            ][index];
+            let Some(sources) = sources else {
+                continue;
+            };
+            for source in sources {
+                let aggregate = self.sources[index]
+                    .entry((source.scope, source.name))
+                    .or_default();
+                aggregate.invoked |= source.invoked;
+                if !source_eligible[index] || !findings[detector.index()] {
+                    continue;
+                }
+                let entry = aggregate.by_session.entry(session_index).or_default();
+                let Some(total) = entry.checked_add(source.replicated_tokens) else {
+                    self.complete = false;
+                    continue;
+                };
+                *entry = total;
+            }
+        }
+    }
 
-        let mut remaining_basis_points = BASIS_POINTS_SCALE;
-        for detector in DetectorId::ALL {
-            if !findings[detector.index()] {
+    fn finish(self, statuses: &[DetectorStatus; 9]) -> (Option<u16>, [Option<u16>; 9]) {
+        let mut numerators = [None; 9];
+        let mut combined_by_session = vec![0_u128; self.sessions.len()];
+        let mut source_combined_by_session = vec![0_u128; self.sessions.len()];
+        let can_measure = self.complete && self.total_tokens > 0;
+
+        for (detector, value_for) in [
+            (
+                DetectorId::SessionsOverDepth,
+                (|session: &SessionTokenContribution| session.overdepth)
+                    as fn(&SessionTokenContribution) -> Option<u128>,
+            ),
+            (
+                DetectorId::CacheChurn,
+                (|session: &SessionTokenContribution| session.repeated_context)
+                    as fn(&SessionTokenContribution) -> Option<u128>,
+            ),
+            (
+                DetectorId::ModelOverthinking,
+                (|session: &SessionTokenContribution| session.model_overthinking)
+                    as fn(&SessionTokenContribution) -> Option<u128>,
+            ),
+            (
+                DetectorId::OverpoweredSubagents,
+                (|session: &SessionTokenContribution| session.overpowered_subagents)
+                    as fn(&SessionTokenContribution) -> Option<u128>,
+            ),
+            (
+                DetectorId::OldModelUsage,
+                (|session: &SessionTokenContribution| session.old_model)
+                    as fn(&SessionTokenContribution) -> Option<u128>,
+            ),
+            (
+                DetectorId::OveruseOfFastMode,
+                (|session: &SessionTokenContribution| session.fast_mode)
+                    as fn(&SessionTokenContribution) -> Option<u128>,
+            ),
+        ] {
+            if !matches!(statuses[detector.index()], DetectorStatus::Findings(_)) {
+                if matches!(statuses[detector.index()], DetectorStatus::Clean) {
+                    numerators[detector.index()] = Some(0);
+                }
                 continue;
             }
-            let share = detector_token_burn_share(detector);
-            let Some(weighted) = session_tokens.checked_mul(u128::from(share)) else {
-                self.complete = false;
-                return;
+            if !can_measure {
+                continue;
+            }
+            let values = self.sessions.iter().map(value_for).collect::<Vec<_>>();
+            if values.iter().any(Option::is_none) {
+                continue;
+            }
+            let Some(total) = values
+                .iter()
+                .flatten()
+                .try_fold(0_u128, |total, value| total.checked_add(*value))
+            else {
+                return (None, [None; 9]);
             };
-            let detector_total = &mut self.detector_weighted_basis_points[detector.index()];
-            let Some(total) = detector_total.checked_add(weighted) else {
-                self.complete = false;
-                return;
+            numerators[detector.index()] = Some(total);
+            for (index, value) in values.into_iter().enumerate() {
+                combined_by_session[index] = combined_by_session[index].max(value.unwrap_or(0));
+            }
+        }
+
+        for (source_index, detector) in [
+            DetectorId::UnusedMcpServers,
+            DetectorId::UnusedBuiltInTools,
+            DetectorId::UnusedSkills,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if matches!(statuses[detector.index()], DetectorStatus::Clean) {
+                numerators[detector.index()] = Some(0);
+                continue;
+            }
+            if !matches!(statuses[detector.index()], DetectorStatus::Findings(_)) || !can_measure {
+                continue;
+            }
+            let mut by_session = vec![0_u128; self.sessions.len()];
+            let mut qualifying_source = false;
+            for aggregate in self.sources[source_index].values() {
+                if aggregate.invoked {
+                    continue;
+                }
+                qualifying_source = true;
+                for (session, tokens) in &aggregate.by_session {
+                    let Some(total) = by_session[*session].checked_add(*tokens) else {
+                        return (None, [None; 9]);
+                    };
+                    by_session[*session] = total;
+                }
+            }
+            if !qualifying_source {
+                continue;
+            }
+            let Some(total) = by_session
+                .iter()
+                .try_fold(0_u128, |total, value| total.checked_add(*value))
+            else {
+                return (None, [None; 9]);
             };
-            *detector_total = total;
-            remaining_basis_points = u16::try_from(
-                u32::from(remaining_basis_points) * u32::from(BASIS_POINTS_SCALE - share)
-                    / u32::from(BASIS_POINTS_SCALE),
-            )
-            .expect("the complement product stays within the basis-point scale");
+            numerators[detector.index()] = Some(total);
+            for (index, value) in by_session.into_iter().enumerate() {
+                let Some(total) = source_combined_by_session[index].checked_add(value) else {
+                    return (None, [None; 9]);
+                };
+                source_combined_by_session[index] = total;
+            }
+        }
+        for (index, source_tokens) in source_combined_by_session.into_iter().enumerate() {
+            combined_by_session[index] = combined_by_session[index].max(source_tokens);
         }
 
-        let combined_basis_points = (BASIS_POINTS_SCALE - remaining_basis_points)
-            .min(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS);
-        let Some(weighted) = session_tokens.checked_mul(u128::from(combined_basis_points)) else {
-            self.complete = false;
-            return;
+        let percentage = |numerator: u128| {
+            if self.total_tokens == 0 {
+                return None;
+            }
+            numerator
+                .checked_mul(u128::from(BASIS_POINTS_SCALE))
+                .and_then(|scaled| scaled.checked_add(self.total_tokens / 2))
+                .map(|rounded| {
+                    (rounded / self.total_tokens)
+                        .min(u128::from(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS))
+                        as u16
+                })
         };
-        let Some(total) = self.combined_weighted_basis_points.checked_add(weighted) else {
-            self.complete = false;
-            return;
-        };
-        self.combined_weighted_basis_points = total;
-    }
-
-    fn finish(self, covers_ready_cohort: bool) -> (Option<u16>, [Option<u16>; 9]) {
-        if !covers_ready_cohort || !self.complete || self.total_tokens == 0 {
-            return (None, [None; 9]);
-        }
-        let percentage = |weighted: u128| {
-            u16::try_from(weighted / self.total_tokens)
-                .ok()
-                .map(|value| value.min(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS))
-        };
-        (
-            percentage(self.combined_weighted_basis_points),
-            core::array::from_fn(|index| percentage(self.detector_weighted_basis_points[index])),
-        )
-    }
-}
-
-fn finding_rate_token_burn_estimate(
-    detectors: [DetectorCounts; 9],
-    statuses: &[DetectorStatus; 9],
-) -> (u16, [Option<u16>; 9]) {
-    let estimates = core::array::from_fn(|index| match &statuses[index] {
-        DetectorStatus::Findings(findings) if detectors[index].eligible > 0 => {
-            let share = u128::from(detector_token_burn_share(DetectorId::ALL[index]));
-            let finding_sessions = u128::from(findings.finding_sessions);
-            let eligible = u128::from(detectors[index].eligible);
-            Some(u16::try_from(share * finding_sessions / eligible).unwrap_or(0))
-        }
-        DetectorStatus::Clean => Some(0),
-        DetectorStatus::Findings(_) | DetectorStatus::NotAssessed(_) => None,
-    });
-    let remaining = estimates
-        .iter()
-        .flatten()
-        .fold(BASIS_POINTS_SCALE, |remaining, estimate| {
-            u16::try_from(
-                u32::from(remaining) * u32::from(BASIS_POINTS_SCALE - estimate)
-                    / u32::from(BASIS_POINTS_SCALE),
-            )
-            .expect("the complement product stays within the basis-point scale")
+        let estimates = core::array::from_fn(|index| match &statuses[index] {
+            DetectorStatus::Findings(_) => numerators[index]
+                .and_then(percentage)
+                .map_or(Some(1), |value| Some(value.max(1))),
+            DetectorStatus::Clean => Some(0),
+            DetectorStatus::NotAssessed(_) => None,
         });
-    (
-        (BASIS_POINTS_SCALE - remaining).min(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS),
-        estimates,
-    )
+        let has_findings = statuses
+            .iter()
+            .any(|status| matches!(status, DetectorStatus::Findings(_)));
+        let combined = if has_findings {
+            combined_by_session
+                .into_iter()
+                .try_fold(0_u128, u128::checked_add)
+                .and_then(percentage)
+                .map_or(Some(1), |value| Some(value.max(1)))
+        } else {
+            None
+        };
+        (combined, estimates)
+    }
 }
 
 pub struct EfficiencyReportAccumulator {
@@ -571,6 +965,29 @@ impl EfficiencyReportAccumulator {
 
     /// Observes one session from the ready-and-current cohort.
     pub fn observe_session(&mut self, evidence: SessionEvidence) {
+        let token_evidence = SessionTokenBurnEvidence::from_session(&evidence);
+        self.observe_session_with_token_burn(evidence, token_evidence);
+    }
+
+    /// Observes one session with report-time token attribution that is not
+    /// part of the detector evidence contract.
+    pub fn observe_session_with_token_burn(
+        &mut self,
+        evidence: SessionEvidence,
+        token_evidence: SessionTokenBurnEvidence,
+    ) {
+        let built_in_sources = token_evidence.built_in_tool_sources.as_ref();
+        let built_in_not_applicable =
+            complete(&evidence.eligibility).is_some_and(|value| value.assistant_turns == 0);
+        let built_in_assessable = built_in_sources.is_some_and(|sources| !sources.is_empty())
+            && matches!(evidence.coverage, EvidenceCoverage::Complete)
+            && matches!(&evidence.tools, EvidenceValue::Complete(_))
+            && complete(&evidence.eligibility).is_some_and(|value| value.assistant_turns > 0);
+        let source_eligible = [
+            eligible(DetectorId::UnusedMcpServers, &evidence),
+            built_in_assessable,
+            eligible(DetectorId::UnusedSkills, &evidence),
+        ];
         self.assessed_sessions += 1;
         if let EvidenceCoverage::Partial(reason) = evidence.coverage {
             *self.coverage_reasons.entry(reason).or_default() += 1;
@@ -594,11 +1011,18 @@ impl EfficiencyReportAccumulator {
 
         for detector in DetectorId::ALL {
             let counts = &mut self.detectors[detector.index()];
-            if !detectors::in_denominator(detector, &evidence) {
+            if !detectors::in_denominator(detector, &evidence)
+                || (detector == DetectorId::UnusedBuiltInTools && built_in_not_applicable)
+            {
                 counts.not_applicable += 1;
                 continue;
             }
-            if !eligible(detector, &evidence) {
+            let detector_eligible = if detector == DetectorId::UnusedBuiltInTools {
+                built_in_assessable || eligible(detector, &evidence)
+            } else {
+                eligible(detector, &evidence)
+            };
+            if !detector_eligible {
                 counts.unavailable += 1;
                 *self.capability_gaps.entry(detector).or_default() += 1;
                 let examples = self.capability_gap_examples.entry(detector).or_default();
@@ -613,14 +1037,31 @@ impl EfficiencyReportAccumulator {
             }
 
             counts.eligible += 1;
-            let observation = detectors::evaluate(detector, &evidence, &self.catalogs);
+            let observation = if detector == DetectorId::UnusedBuiltInTools {
+                if built_in_assessable {
+                    if built_in_sources
+                        .is_some_and(|sources| sources.iter().any(|source| !source.invoked))
+                    {
+                        detectors::Observation::Finding
+                    } else {
+                        detectors::Observation::NoFinding
+                    }
+                } else {
+                    detectors::evaluate(detector, &evidence, &self.catalogs)
+                }
+            } else {
+                detectors::evaluate(detector, &evidence, &self.catalogs)
+            };
             match observation {
                 detectors::Observation::Finding => {
                     counts.finding += 1;
                     counts.assessed += 1;
                     findings[detector.index()] = true;
                 }
-                detectors::Observation::NoFinding if clean_facts_complete(detector, &evidence) => {
+                detectors::Observation::NoFinding
+                    if (detector == DetectorId::UnusedBuiltInTools && built_in_assessable)
+                        || clean_facts_complete(detector, &evidence) =>
+                {
                     counts.clean += 1;
                     counts.assessed += 1;
                 }
@@ -630,7 +1071,8 @@ impl EfficiencyReportAccumulator {
             }
             self.folds[detector.index()].observe(observation, &evidence);
         }
-        self.token_burn.observe(&evidence, findings);
+        self.token_burn
+            .observe(token_evidence, findings, source_eligible, &self.catalogs);
     }
 
     fn observe_unrecognized_records(&mut self, evidence: &SessionEvidence) {
@@ -678,15 +1120,8 @@ impl EfficiencyReportAccumulator {
                 self.assessed_sessions,
             )
         });
-        let covers_ready_cohort = self.assessed_sessions == context.coverage.ready;
-        let (mut estimated_token_burn_basis_points, mut detector_estimates) =
-            self.token_burn.finish(covers_ready_cohort);
-        if estimated_token_burn_basis_points.is_none() {
-            let (fallback, fallback_detectors) =
-                finding_rate_token_burn_estimate(self.detectors, &detector_statuses);
-            estimated_token_burn_basis_points = Some(fallback);
-            detector_estimates = fallback_detectors;
-        }
+        let (estimated_token_burn_basis_points, detector_estimates) =
+            self.token_burn.finish(&detector_statuses);
         EfficiencyReport {
             context,
             assessed_sessions: self.assessed_sessions,
@@ -770,7 +1205,7 @@ mod tests {
     }
 
     #[test]
-    fn token_burn_estimates_weight_session_findings_by_all_token_kinds() {
+    fn token_burn_estimates_use_measured_avoidable_tokens() {
         let mut finding = evidence_with_work("finding");
         finding.context = EvidenceValue::Complete(ContextEvidence {
             max_request_context_tokens: 400_001,
@@ -813,24 +1248,38 @@ mod tests {
         );
 
         let mut accumulator = EfficiencyReportAccumulator::new();
-        accumulator.observe_session(finding);
-        accumulator.observe_session(clean);
+        accumulator.observe_session_with_token_burn(
+            finding,
+            SessionTokenBurnEvidence {
+                total_tokens: Some(1_000),
+                overdepth_avoidable_tokens: Some(150),
+                ..SessionTokenBurnEvidence::default()
+            },
+        );
+        accumulator.observe_session_with_token_burn(
+            clean,
+            SessionTokenBurnEvidence {
+                total_tokens: Some(1_000),
+                overdepth_avoidable_tokens: Some(0),
+                ..SessionTokenBurnEvidence::default()
+            },
+        );
         let report = accumulator.finish(context(CoverageCounts {
             ready: 2,
             discovered: 2,
             ..CoverageCounts::default()
         }));
 
-        assert_eq!(report.estimated_token_burn_basis_points, Some(1_625));
+        assert_eq!(report.estimated_token_burn_basis_points, Some(750));
         assert_eq!(
             report.detector_estimated_token_burn_basis_points
                 [DetectorId::SessionsOverDepth.index()],
-            Some(500)
+            Some(750)
         );
         assert_eq!(
             report.detector_estimated_token_burn_basis_points
                 [DetectorId::ModelOverthinking.index()],
-            Some(1_250)
+            Some(1)
         );
         assert_eq!(
             report.detector_estimated_token_burn_basis_points[DetectorId::UnusedSkills.index()],
@@ -839,7 +1288,57 @@ mod tests {
     }
 
     #[test]
-    fn token_burn_estimates_fall_back_to_finding_rates_for_incomplete_tokens() {
+    fn report_assesses_built_in_tools_from_report_time_source_evidence() {
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session_with_token_burn(
+            evidence_with_work("built-in"),
+            SessionTokenBurnEvidence {
+                total_tokens: Some(1_000),
+                built_in_tool_sources: Some(vec![TokenBurnSourceEvidence {
+                    scope: "claude:bundled".to_owned(),
+                    name: "read".to_owned(),
+                    replicated_tokens: 100,
+                    invoked: false,
+                }]),
+                ..SessionTokenBurnEvidence::default()
+            },
+        );
+
+        let report = accumulator.finish(context(CoverageCounts {
+            ready: 1,
+            discovered: 1,
+            ..CoverageCounts::default()
+        }));
+
+        assert!(matches!(
+            report.detector_statuses[DetectorId::UnusedBuiltInTools.index()],
+            DetectorStatus::Findings(_)
+        ));
+        assert_eq!(
+            report.detector_estimated_token_burn_basis_points
+                [DetectorId::UnusedBuiltInTools.index()],
+            Some(1_000)
+        );
+    }
+
+    #[test]
+    fn idle_sessions_exclude_built_in_tools_without_source_attribution() {
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session(evidence("idle-built-in"));
+
+        let report = accumulator.finish(context(CoverageCounts {
+            ready: 1,
+            discovered: 1,
+            ..CoverageCounts::default()
+        }));
+        let counts = report.detectors[DetectorId::UnusedBuiltInTools.index()];
+
+        assert_eq!(counts.not_applicable, 1);
+        assert_eq!(counts.unavailable, 0);
+    }
+
+    #[test]
+    fn findings_use_the_floor_when_no_denominator_is_available() {
         let complete = evidence_with_work("complete");
         let mut unattributed = evidence_with_work("unattributed");
         unattributed.context = EvidenceValue::Complete(ContextEvidence {
@@ -863,70 +1362,302 @@ mod tests {
         assert_eq!(
             report.detector_estimated_token_burn_basis_points
                 [DetectorId::SessionsOverDepth.index()],
-            Some(500)
+            Some(1)
         );
-        assert!(report.estimated_token_burn_basis_points.unwrap() >= 500);
+        assert_eq!(report.estimated_token_burn_basis_points, Some(1));
     }
 
     #[test]
-    fn token_burn_estimates_fall_back_when_the_ready_cohort_is_incomplete() {
+    fn token_burn_estimates_use_attributed_tokens_from_an_incomplete_ready_cohort() {
         let mut evidence = evidence_with_work("observed");
-        let EvidenceValue::Complete(models) = &mut evidence.models else {
-            unreachable!()
-        };
-        models.by_model.insert(
-            "claude-sonnet-4-5".to_owned(),
-            ModelTokens {
-                input: 100,
-                ..ModelTokens::default()
-            },
-        );
+        evidence.context = EvidenceValue::Complete(ContextEvidence {
+            max_request_context_tokens: 400_001,
+            top_depth_examples: Vec::new(),
+        });
 
         let mut accumulator = EfficiencyReportAccumulator::new();
-        accumulator.observe_session(evidence);
+        accumulator.observe_session_with_token_burn(
+            evidence,
+            SessionTokenBurnEvidence {
+                total_tokens: Some(100),
+                overdepth_avoidable_tokens: Some(20),
+                ..SessionTokenBurnEvidence::default()
+            },
+        );
         let report = accumulator.finish(context(CoverageCounts {
             ready: 2,
             discovered: 2,
             ..CoverageCounts::default()
         }));
 
-        assert_eq!(report.estimated_token_burn_basis_points, Some(0));
-    }
-
-    #[test]
-    fn detector_token_burn_shares_match_the_fixed_policy() {
+        assert_eq!(report.estimated_token_burn_basis_points, Some(2_000));
         assert_eq!(
-            DetectorId::ALL.map(detector_token_burn_share),
-            [1_000, 2_500, 3_500, 500, 500, 300, 2_000, 2_000, 2_500]
+            report.detector_estimated_token_burn_basis_points
+                [DetectorId::SessionsOverDepth.index()],
+            Some(2_000)
         );
     }
 
     #[test]
-    fn combined_token_burn_is_capped_per_session() {
-        let mut evidence = evidence_with_work("finding");
-        let EvidenceValue::Complete(models) = &mut evidence.models else {
-            unreachable!()
-        };
-        models.by_model.insert(
-            "claude-sonnet-4-5".to_owned(),
-            ModelTokens {
-                input: 100,
-                ..ModelTokens::default()
-            },
-        );
+    fn combined_token_burn_uses_the_largest_overlapping_contribution() {
         let mut findings = [false; 9];
         findings[DetectorId::SessionsOverDepth.index()] = true;
-        findings[DetectorId::ModelOverthinking.index()] = true;
-        findings[DetectorId::OverpoweredSubagents.index()] = true;
+        findings[DetectorId::CacheChurn.index()] = true;
 
         let mut token_burn = TokenBurnAccumulator::new();
-        token_burn.observe(&evidence, findings);
-        let (combined, per_detector) = token_burn.finish(true);
+        token_burn.observe(
+            SessionTokenBurnEvidence {
+                total_tokens: Some(1_000),
+                overdepth_avoidable_tokens: Some(800),
+                repeated_context_avoidable_tokens: Some(700),
+                ..SessionTokenBurnEvidence::default()
+            },
+            findings,
+            [false; 3],
+            &ReportCatalogs::default(),
+        );
+        let mut statuses = core::array::from_fn(|_| {
+            DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
+        });
+        for detector in [DetectorId::SessionsOverDepth, DetectorId::CacheChurn] {
+            statuses[detector.index()] = DetectorStatus::Findings(detectors::DetectorFindings {
+                finding_sessions: 1,
+                examples: Vec::new(),
+            });
+        }
+        let (combined, per_detector) = token_burn.finish(&statuses);
+
+        assert_eq!(combined, Some(8_000));
+        assert_eq!(
+            per_detector[DetectorId::SessionsOverDepth.index()],
+            Some(8_000)
+        );
+        assert_eq!(per_detector[DetectorId::CacheChurn.index()], Some(7_000));
+    }
+
+    #[test]
+    fn token_burn_percentage_caps_before_the_wire_type_conversion() {
+        let mut findings = [false; 9];
+        findings[DetectorId::SessionsOverDepth.index()] = true;
+        let mut token_burn = TokenBurnAccumulator::new();
+        token_burn.observe(
+            SessionTokenBurnEvidence {
+                total_tokens: Some(1),
+                overdepth_avoidable_tokens: Some(100_000),
+                ..SessionTokenBurnEvidence::default()
+            },
+            findings,
+            [false; 3],
+            &ReportCatalogs::default(),
+        );
+        let statuses = finding_statuses(&[DetectorId::SessionsOverDepth]);
+
+        let (combined, estimates) = token_burn.finish(&statuses);
 
         assert_eq!(combined, Some(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS));
         assert_eq!(
-            per_detector[DetectorId::OverpoweredSubagents.index()],
-            Some(3_500)
+            estimates[DetectorId::SessionsOverDepth.index()],
+            Some(MAX_ESTIMATED_TOKEN_BURN_BASIS_POINTS)
+        );
+    }
+
+    fn finding_statuses(detectors: &[DetectorId]) -> [DetectorStatus; 9] {
+        let mut statuses = core::array::from_fn(|_| {
+            DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
+        });
+        for detector in detectors {
+            statuses[detector.index()] = DetectorStatus::Findings(detectors::DetectorFindings {
+                finding_sessions: 1,
+                examples: Vec::new(),
+            });
+        }
+        statuses
+    }
+
+    fn token_turn(
+        scope: &str,
+        model: &str,
+        effort: Option<&str>,
+        speed: Option<&str>,
+        output_tokens: u64,
+    ) -> TokenBurnTurnEvidence {
+        TokenBurnTurnEvidence {
+            scope: scope.to_owned(),
+            model: model.to_owned(),
+            effort: effort.map(str::to_owned),
+            speed: speed.map(str::to_owned),
+            ts_ms: Some(2_000_000_000_000),
+            input_tokens: 0,
+            output_tokens,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        }
+    }
+
+    #[test]
+    fn every_finding_has_a_positive_numeric_estimate() {
+        let all_findings = DetectorId::ALL;
+        let mut token_burn = TokenBurnAccumulator::new();
+        token_burn.observe(
+            SessionTokenBurnEvidence {
+                total_tokens: Some(10_000),
+                overdepth_avoidable_tokens: Some(800),
+                repeated_context_avoidable_tokens: Some(700),
+                turns: Some(vec![
+                    token_turn("main", "claude-sonnet-5", Some("max"), None, 1_000),
+                    token_turn("delegated", "claude-opus-4-6", None, None, 1_000),
+                    token_turn("main", "claude-opus-4-6", None, None, 1_000),
+                    token_turn("delegated", "gpt-5.6-sol", None, Some("fast"), 1_000),
+                ]),
+                mcp_sources: Some(vec![TokenBurnSourceEvidence {
+                    scope: "agent:user".to_owned(),
+                    name: "server".to_owned(),
+                    replicated_tokens: 100,
+                    invoked: false,
+                }]),
+                built_in_tool_sources: Some(vec![TokenBurnSourceEvidence {
+                    scope: "agent:bundled".to_owned(),
+                    name: "tool".to_owned(),
+                    replicated_tokens: 100,
+                    invoked: false,
+                }]),
+                skill_sources: Some(vec![TokenBurnSourceEvidence {
+                    scope: "agent:user".to_owned(),
+                    name: "skill".to_owned(),
+                    replicated_tokens: 100,
+                    invoked: false,
+                }]),
+            },
+            [true; 9],
+            [true; 3],
+            &ReportCatalogs::default(),
+        );
+        let (combined, estimates) = token_burn.finish(&finding_statuses(&all_findings));
+
+        assert_eq!(combined, Some(1_200));
+        for detector in all_findings {
+            assert!(estimates[detector.index()].is_some_and(|value| value > 0));
+        }
+        assert_eq!(
+            estimates,
+            [
+                Some(800),
+                Some(350),
+                Some(1_200),
+                Some(100),
+                Some(100),
+                Some(100),
+                Some(400),
+                Some(333),
+                Some(700),
+            ]
+        );
+    }
+
+    #[test]
+    fn comparable_lower_effort_output_overrides_the_tier_assumption() {
+        let turns = vec![
+            token_turn("main", "claude-sonnet-5", Some("high"), None, 100),
+            token_turn("main", "claude-sonnet-5", Some("max"), None, 300),
+        ];
+
+        assert_eq!(
+            overthinking_tokens(&turns, &ReportCatalogs::default()),
+            Some(200)
+        );
+    }
+
+    #[test]
+    fn model_mechanisms_fall_back_to_ten_percent_without_prices() {
+        let catalogs = ReportCatalogs::default();
+        let premium = token_turn("delegated", "gpt-5.5", None, None, 1_000);
+        let fast = token_turn("delegated", "unpriced-model", None, Some("fast"), 1_000);
+        let old = token_turn("main", "gpt-5.4-mini", None, None, 1_000);
+
+        assert_eq!(
+            overpowered_subagent_tokens(&[premium], &catalogs),
+            Some(100)
+        );
+        assert_eq!(fast_mode_tokens(&[fast]), Some(100));
+        assert_eq!(old_model_tokens(&[old], &catalogs), Some(100));
+    }
+
+    #[test]
+    fn partial_model_totals_are_a_denominator_fallback() {
+        let mut evidence = evidence_with_work("partial-models");
+        evidence.context = EvidenceValue::Complete(ContextEvidence {
+            max_request_context_tokens: 400_001,
+            top_depth_examples: Vec::new(),
+        });
+        let EvidenceValue::Complete(mut models) = evidence.models else {
+            unreachable!()
+        };
+        models.unattributed_turns = 2;
+        models.by_model.insert(
+            "claude-sonnet-5".to_owned(),
+            ModelTokens {
+                input: 100,
+                output: 200,
+                cache_read: 300,
+                cache_creation: 400,
+                ..ModelTokens::default()
+            },
+        );
+        evidence.models = EvidenceValue::Partial {
+            observed: models,
+            reason: CoverageReason::AttributionIncomplete,
+        };
+
+        let mut token_evidence = SessionTokenBurnEvidence::from_session(&evidence);
+        assert_eq!(token_evidence.total_tokens, Some(1_000));
+        token_evidence.overdepth_avoidable_tokens = Some(100);
+        let mut accumulator = EfficiencyReportAccumulator::new();
+        accumulator.observe_session_with_token_burn(evidence, token_evidence);
+        let report = accumulator.finish(context(CoverageCounts {
+            discovered: 1,
+            ready: 1,
+            ..CoverageCounts::default()
+        }));
+        assert_eq!(
+            report.detector_estimated_token_burn_basis_points
+                [DetectorId::SessionsOverDepth.index()],
+            Some(1_000)
+        );
+    }
+
+    #[test]
+    fn partial_cache_evidence_keeps_observed_repeated_tokens() {
+        let mut evidence = evidence_with_work("partial-cache");
+        let EvidenceValue::Complete(mut cache) = evidence.cache else {
+            unreachable!()
+        };
+        cache.repeated_context = EvidenceValue::Partial {
+            observed: RepeatedContext {
+                accounting: RepeatedContextAccounting::CacheWrite,
+                repeated_tokens: 123,
+                paid_tokens: 200,
+                pairs_considered: 1,
+                pairs_skipped: 0,
+            },
+            reason: CoverageReason::IncompleteTail,
+        };
+        evidence.cache = EvidenceValue::Partial {
+            observed: cache,
+            reason: CoverageReason::IncompleteTail,
+        };
+
+        assert_eq!(
+            SessionTokenBurnEvidence::from_session(&evidence).repeated_context_avoidable_tokens,
+            Some(123)
+        );
+
+        let EvidenceValue::Complete(models) = &mut evidence.models else {
+            unreachable!()
+        };
+        models.unattributed_turns = 1;
+        assert_eq!(
+            SessionTokenBurnEvidence::from_session(&evidence).repeated_context_avoidable_tokens,
+            None
         );
     }
 
@@ -1006,6 +1737,80 @@ mod tests {
                 "gamma".to_owned(),
             ])
         );
+    }
+
+    #[test]
+    fn any_window_invocation_suppresses_the_exact_source_estimate() {
+        let mut findings = [false; 9];
+        findings[DetectorId::UnusedMcpServers.index()] = true;
+        let mut token_burn = TokenBurnAccumulator::new();
+        for index in 0..5 {
+            token_burn.observe(
+                SessionTokenBurnEvidence {
+                    total_tokens: Some(1_000),
+                    mcp_sources: Some(vec![TokenBurnSourceEvidence {
+                        scope: "claude:unknown".to_owned(),
+                        name: "server-a".to_owned(),
+                        replicated_tokens: 100,
+                        invoked: index == 4,
+                    }]),
+                    ..SessionTokenBurnEvidence::default()
+                },
+                findings,
+                [true, false, false],
+                &ReportCatalogs::default(),
+            );
+        }
+        let mut statuses = core::array::from_fn(|_| {
+            DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
+        });
+        statuses[DetectorId::UnusedMcpServers.index()] =
+            DetectorStatus::Findings(detectors::DetectorFindings {
+                finding_sessions: 5,
+                examples: Vec::new(),
+            });
+
+        let (combined, estimates) = token_burn.finish(&statuses);
+
+        assert_eq!(combined, Some(1));
+        assert_eq!(estimates[DetectorId::UnusedMcpServers.index()], Some(1));
+    }
+
+    #[test]
+    fn missing_source_projection_keeps_available_measured_tokens() {
+        let mut finding = [false; 9];
+        finding[DetectorId::UnusedMcpServers.index()] = true;
+        let mut token_burn = TokenBurnAccumulator::new();
+        token_burn.observe(
+            SessionTokenBurnEvidence {
+                total_tokens: Some(1_000),
+                mcp_sources: Some(vec![TokenBurnSourceEvidence {
+                    scope: "claude:cwd:/project".to_owned(),
+                    name: "server-a".to_owned(),
+                    replicated_tokens: 100,
+                    invoked: false,
+                }]),
+                ..SessionTokenBurnEvidence::default()
+            },
+            finding,
+            [true, false, false],
+            &ReportCatalogs::default(),
+        );
+        token_burn.observe(
+            SessionTokenBurnEvidence {
+                total_tokens: Some(1_000),
+                ..SessionTokenBurnEvidence::default()
+            },
+            [false; 9],
+            [true, false, false],
+            &ReportCatalogs::default(),
+        );
+        let statuses = finding_statuses(&[DetectorId::UnusedMcpServers]);
+
+        let (combined, estimates) = token_burn.finish(&statuses);
+
+        assert_eq!(combined, Some(500));
+        assert_eq!(estimates[DetectorId::UnusedMcpServers.index()], Some(500));
     }
 
     #[test]
@@ -1137,6 +1942,52 @@ mod tests {
             report.detector_statuses[DetectorId::OldModelUsage.index()],
             DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete)
         );
+    }
+
+    #[test]
+    fn combined_token_burn_adds_disjoint_unused_source_types() {
+        let mut findings = [false; 9];
+        findings[DetectorId::UnusedMcpServers.index()] = true;
+        findings[DetectorId::UnusedSkills.index()] = true;
+        let mut token_burn = TokenBurnAccumulator::new();
+        for _ in 0..5 {
+            token_burn.observe(
+                SessionTokenBurnEvidence {
+                    total_tokens: Some(1_000),
+                    mcp_sources: Some(vec![TokenBurnSourceEvidence {
+                        scope: "claude:unknown".to_owned(),
+                        name: "server-a".to_owned(),
+                        replicated_tokens: 100,
+                        invoked: false,
+                    }]),
+                    skill_sources: Some(vec![TokenBurnSourceEvidence {
+                        scope: "claude:user".to_owned(),
+                        name: "review".to_owned(),
+                        replicated_tokens: 50,
+                        invoked: false,
+                    }]),
+                    ..SessionTokenBurnEvidence::default()
+                },
+                findings,
+                [true, false, true],
+                &ReportCatalogs::default(),
+            );
+        }
+        let mut statuses = core::array::from_fn(|_| {
+            DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
+        });
+        for detector in [DetectorId::UnusedMcpServers, DetectorId::UnusedSkills] {
+            statuses[detector.index()] = DetectorStatus::Findings(detectors::DetectorFindings {
+                finding_sessions: 5,
+                examples: Vec::new(),
+            });
+        }
+
+        let (combined, estimates) = token_burn.finish(&statuses);
+
+        assert_eq!(combined, Some(1_500));
+        assert_eq!(estimates[DetectorId::UnusedMcpServers.index()], Some(1_000));
+        assert_eq!(estimates[DetectorId::UnusedSkills.index()], Some(500));
     }
 
     #[test]
@@ -1571,6 +2422,9 @@ mod tests {
                 let model = match family {
                     ModelFamily::Claude => "claude-sonnet-4-6",
                     ModelFamily::OpenAi => "gpt-5.6",
+                    ModelFamily::Google => {
+                        unreachable!("Google family has no effort policy")
+                    }
                     ModelFamily::Unknown => unreachable!("Unknown family never recognizes a tier"),
                 };
                 // A `by_model` entry establishes the family as present,
@@ -1895,7 +2749,7 @@ mod tests {
     fn capability_gap_examples_keep_the_first_three_sessions() {
         let mut accumulator = EfficiencyReportAccumulator::new();
         for index in 0..5 {
-            accumulator.observe_session(evidence(&format!("session-{index}")));
+            accumulator.observe_session(evidence_with_work(&format!("session-{index}")));
         }
         let report = accumulator.finish(context(CoverageCounts::default()));
         let detector = DetectorId::UnusedBuiltInTools;

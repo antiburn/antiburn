@@ -46,8 +46,7 @@ function verdictInk(failedShare: number, assessedCount: number): string {
 }
 
 function formatLimitPercent(percent: number): string {
-  if (percent > 0 && percent < 0.01) return "<0.01%"
-  return `${Number(percent.toFixed(2))}%`
+  return `${Number(percent.toFixed(1))}%`
 }
 
 interface StatusMark {

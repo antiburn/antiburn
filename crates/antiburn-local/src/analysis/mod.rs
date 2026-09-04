@@ -152,9 +152,9 @@ pub const PARSER_REVISION: i64 = 23;
 // beside a nonzero derived `total_tokens` is now inert, and
 // `cache_write_input_tokens` is now a known usage key
 // (`vendors::codex::is_usage_free_token_count`).
-// +1 for parts A-E of the Cadence model-tier-policy parity fixups: dropped
-// `ultrathink`, canonical model-key namespacing, the replacement registry
-// and premium-policy rewrites, and dominant-main-model-by-output-tokens
+// +1 for parts A-E of the model-tier-policy updates: dropped `ultrathink`,
+// canonical model-key namespacing, the replacement registry and premium-policy
+// rewrites, and dominant-main-model-by-output-tokens
 // (`insights::detectors`), on top of the pre-existing +1 for per-thread
 // repeated-context accounting (`RepeatedContext`, below).
 // +1 more for part F: Cache Churn now scores `RepeatedContext` by overpay

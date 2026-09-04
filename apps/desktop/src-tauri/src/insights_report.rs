@@ -4,11 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SessionEvidence,
+    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, InitialContextBreakdown, METRICS_SCHEMA_REVISION,
+    PARSER_REVISION, SessionEvidence, SourceOrigin,
 };
 use antiburn_local::insights::{
     CoverageBucket, CoverageCounts, EfficiencyReport, EfficiencyReportAccumulator, ReportContext,
-    ReportWindow,
+    ReportWindow, SessionTokenBurnEvidence, TokenBurnSourceEvidence, TokenBurnTurnEvidence,
 };
 use anyhow::{Context, Result, ensure};
 use rusqlite::params;
@@ -54,17 +55,35 @@ SELECT bucket, COUNT(*), SUM(awaiting_provider_support), SUM(evidence_pending)
  ORDER BY bucket";
 
 const COHORT_SQL: &str = "
-SELECT e.evidence_json
+SELECT e.evidence_json, s.agent, s.session_id, e.published_fence, a.initial_context_json, s.cwd
   FROM session s
   JOIN session_evidence e
     ON e.environment_key = s.environment_key
    AND e.agent = s.agent
    AND e.session_id = s.session_id
+  LEFT JOIN session_analysis a
+    ON a.environment_key = s.environment_key
+   AND a.agent = s.agent
+   AND a.session_id = s.session_id
+   AND NOT (a.analyzed_generation IS NOT s.source_generation)
+   AND NOT (a.parser_revision IS NOT ?4)
+   AND NOT (a.analyzer_revision IS NOT ?5)
+   AND NOT (a.metrics_schema_revision IS NOT ?7)
  WHERE s.environment_key = ?1
    AND s.started_at_epoch >= ?2
    AND s.started_at_epoch < ?3
    AND {current}
-  ORDER BY s.started_at_epoch DESC, s.session_id DESC";
+   ORDER BY s.started_at_epoch DESC, s.session_id DESC";
+
+const TOKEN_BURN_TURNS_SQL: &str = "
+SELECT scope, role, model, effort, speed, ts_ms, input_tokens, output_tokens,
+       cache_read_tokens, cache_write_tokens
+  FROM turn
+ WHERE environment_key = ?1
+   AND agent = ?2
+   AND session_id = ?3
+   AND claim_fence = ?4
+ ORDER BY source_key, turn_index";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportRequest {
@@ -183,13 +202,36 @@ fn reduce_with_state_on_snapshot(
             PARSER_REVISION,
             ANALYZER_REVISION,
             EVIDENCE_SCHEMA_REVISION,
+            METRICS_SCHEMA_REVISION,
         ])?;
         while let Some(row) = rows.next()? {
             ensure_not_cancelled(cancel)?;
             let evidence_json: String = row.get(0)?;
             let evidence: SessionEvidence = serde_json::from_str(&evidence_json)
                 .context("stored session evidence is invalid")?;
-            accumulator.observe_session(evidence);
+            let agent: String = row.get(1)?;
+            let session_id: String = row.get(2)?;
+            let published_fence: i64 = row.get(3)?;
+            let initial_context_json: Option<String> = row.get(4)?;
+            let cwd: Option<String> = row.get(5)?;
+            let initial_context = initial_context_json
+                .as_deref()
+                .map(serde_json::from_str::<InitialContextBreakdown>)
+                .transpose()
+                .context("stored initial context is invalid")?;
+            let token_evidence = token_burn_evidence(
+                &transaction,
+                TokenBurnSessionKey {
+                    environment_key: &request.environment_key,
+                    agent: &agent,
+                    session_id: &session_id,
+                    published_fence,
+                    cwd: cwd.as_deref(),
+                },
+                initial_context.as_ref(),
+                &evidence,
+            )?;
+            accumulator.observe_session_with_token_burn(evidence, token_evidence);
         }
     }
 
@@ -212,6 +254,202 @@ fn reduce_with_state_on_snapshot(
         report,
         evidence_settled: pending_evidence == 0,
     })
+}
+
+struct TokenBurnSessionKey<'a> {
+    environment_key: &'a str,
+    agent: &'a str,
+    session_id: &'a str,
+    published_fence: i64,
+    cwd: Option<&'a str>,
+}
+
+fn token_burn_evidence(
+    connection: &rusqlite::Connection,
+    key: TokenBurnSessionKey<'_>,
+    initial_context: Option<&InitialContextBreakdown>,
+    evidence: &SessionEvidence,
+) -> Result<SessionTokenBurnEvidence> {
+    let mut statement = connection.prepare_cached(TOKEN_BURN_TURNS_SQL)?;
+    let mut rows = statement.query(params![
+        key.environment_key,
+        key.agent,
+        key.session_id,
+        key.published_fence
+    ])?;
+    let mut main_context_capacities = Vec::new();
+    let mut attributed_turns = Vec::new();
+    let mut has_unattributed_assistant_turn = false;
+    let mut raw_total_tokens = 0_u128;
+    let mut overdepth_avoidable_tokens = 0_u128;
+    let depth_cap =
+        u128::from(antiburn_local::insights::ReportCatalogs::default().depth_cap_tokens);
+    while let Some(row) = rows.next()? {
+        let scope: String = row.get(0)?;
+        let role: String = row.get(1)?;
+        let model: Option<String> = row.get(2)?;
+        let effort: Option<String> = row.get(3)?;
+        let speed: Option<String> = row.get(4)?;
+        let ts_ms: Option<i64> = row.get(5)?;
+        let input_tokens = u64::try_from(row.get::<_, i64>(6)?)?;
+        let output_tokens = u64::try_from(row.get::<_, i64>(7)?)?;
+        let cache_read_tokens = u64::try_from(row.get::<_, i64>(8)?)?;
+        let cache_write_tokens = u64::try_from(row.get::<_, i64>(9)?)?;
+        if role != "assistant" {
+            continue;
+        }
+        let Some(model) = model.filter(|model| !model.trim().is_empty()) else {
+            has_unattributed_assistant_turn = true;
+            continue;
+        };
+        let turn = TokenBurnTurnEvidence {
+            scope: scope.clone(),
+            model,
+            effort,
+            speed,
+            ts_ms,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+        };
+        let input = u128::from(input_tokens);
+        let output = u128::from(output_tokens);
+        let cache_read = u128::from(cache_read_tokens);
+        let cache_write = u128::from(cache_write_tokens);
+        let context = input
+            .checked_add(cache_read)
+            .and_then(|value| value.checked_add(cache_write))
+            .context("turn context token total overflowed")?;
+        let turn_total = context
+            .checked_add(output)
+            .context("turn token total overflowed")?;
+        raw_total_tokens = raw_total_tokens
+            .checked_add(turn_total)
+            .context("session token total overflowed")?;
+        if context > depth_cap {
+            overdepth_avoidable_tokens = overdepth_avoidable_tokens
+                .checked_add(
+                    avoidable_overdepth_tokens(input, cache_read, cache_write, depth_cap)
+                        .context("overdepth token calculation overflowed")?,
+                )
+                .context("overdepth token total overflowed")?;
+        }
+        if scope == "main" {
+            main_context_capacities.push(context);
+        }
+        attributed_turns.push(turn);
+    }
+
+    let mut result = SessionTokenBurnEvidence::from_session(evidence);
+    if raw_total_tokens > 0 {
+        result.total_tokens = Some(raw_total_tokens);
+    }
+    result.turns = Some(attributed_turns);
+    result.overdepth_avoidable_tokens = Some(overdepth_avoidable_tokens);
+    if has_unattributed_assistant_turn {
+        result.repeated_context_avoidable_tokens = None;
+    }
+    if let Some(initial_context) = initial_context {
+        result.mcp_sources = key.cwd.and_then(|cwd| {
+            let scope = format!("{}:cwd:{cwd}", key.agent);
+            source_token_evidence(
+                initial_context,
+                "mcp_instructions",
+                &scope,
+                None,
+                &main_context_capacities,
+            )
+        });
+        result.built_in_tool_sources = source_token_evidence(
+            initial_context,
+            "builtin_tool",
+            key.agent,
+            None,
+            &main_context_capacities,
+        )
+        .filter(|sources| !sources.is_empty());
+        result.skill_sources = source_token_evidence(
+            initial_context,
+            "skill_instructions",
+            key.agent,
+            key.cwd,
+            &main_context_capacities,
+        );
+    }
+    Ok(result)
+}
+
+fn avoidable_overdepth_tokens(
+    input: u128,
+    cache_read: u128,
+    cache_write: u128,
+    depth_cap: u128,
+) -> Option<u128> {
+    let context = input.checked_add(cache_read)?.checked_add(cache_write)?;
+    let excess = context.saturating_sub(depth_cap);
+    cache_read
+        .checked_add(cache_write)
+        .map(|cache| cache.min(excess))
+}
+
+fn source_token_evidence(
+    initial_context: &InitialContextBreakdown,
+    source_kind: &str,
+    agent: &str,
+    skill_cwd: Option<&str>,
+    main_context_capacities: &[u128],
+) -> Option<Vec<TokenBurnSourceEvidence>> {
+    let matching = initial_context
+        .sources
+        .iter()
+        .filter(|source| source.source == source_kind)
+        .collect::<Vec<_>>();
+    if matching.iter().any(|source| {
+        source.source_name.as_deref().is_none_or(|name| {
+            name == "Other skills" || name == "Other MCP servers" || name == "Other built-in tools"
+        }) || source.deferred
+    }) {
+        return None;
+    }
+    matching
+        .into_iter()
+        .filter(|source| source.token_count > 0)
+        .map(|source| {
+            let name = source.source_name.as_deref()?.trim().to_lowercase();
+            if name.is_empty() {
+                return None;
+            }
+            let source_tokens = u128::from(source.token_count);
+            let turn_count = main_context_capacities
+                .iter()
+                .filter(|capacity| **capacity >= source_tokens)
+                .count() as u128;
+            let scope = if source_kind == "skill_instructions"
+                && matches!(source.origin, SourceOrigin::Project | SourceOrigin::Unknown)
+            {
+                format!("{agent}:cwd:{}", skill_cwd?)
+            } else {
+                format!("{agent}:{}", source_origin_key(source.origin))
+            };
+            Some(TokenBurnSourceEvidence {
+                scope,
+                name,
+                replicated_tokens: source_tokens.checked_mul(turn_count)?,
+                invoked: source.use_count > 0,
+            })
+        })
+        .collect()
+}
+
+fn source_origin_key(origin: SourceOrigin) -> &'static str {
+    match origin {
+        SourceOrigin::Bundled => "bundled",
+        SourceOrigin::Plugin => "plugin",
+        SourceOrigin::User => "user",
+        SourceOrigin::Project => "project",
+        SourceOrigin::Unknown => "unknown",
+    }
 }
 
 fn coverage_bucket(value: &str) -> Result<CoverageBucket> {
@@ -253,6 +491,125 @@ mod tests {
             },
             computed_at_epoch: 200,
         }
+    }
+
+    #[test]
+    fn source_estimates_repeat_definition_tokens_across_compatible_turns() {
+        let initial_context: InitialContextBreakdown = serde_json::from_str(
+            r#"{"sources":[{"source":"skill_instructions","sourceName":"Review","tokenCount":200,"useCount":0,"origin":"user"}]}"#,
+        )
+        .unwrap();
+
+        let sources = source_token_evidence(
+            &initial_context,
+            "skill_instructions",
+            "claude",
+            None,
+            &[199, 200, 800],
+        )
+        .unwrap();
+
+        assert_eq!(
+            sources,
+            vec![TokenBurnSourceEvidence {
+                scope: "claude:user".to_owned(),
+                name: "review".to_owned(),
+                replicated_tokens: 400,
+                invoked: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn overdepth_estimates_only_avoidable_cache_buckets_above_the_cap() {
+        assert_eq!(
+            avoidable_overdepth_tokens(10_000, 450_000, 20_000, 400_000),
+            Some(80_000)
+        );
+        assert_eq!(
+            avoidable_overdepth_tokens(10_000, 300_000, 20_000, 400_000),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn source_estimates_reject_ambiguous_or_deferred_rows() {
+        for row in [
+            r#"{"source":"skill_instructions","sourceName":"Other skills","tokenCount":200,"useCount":0,"origin":"unknown"}"#,
+            r#"{"source":"skill_instructions","sourceName":"Review","tokenCount":200,"useCount":0,"origin":"unknown","deferred":true}"#,
+            r#"{"source":"skill_instructions","tokenCount":200,"useCount":0,"origin":"unknown"}"#,
+        ] {
+            let initial_context: InitialContextBreakdown =
+                serde_json::from_str(&format!(r#"{{"sources":[{row}]}}"#)).unwrap();
+            assert!(
+                source_token_evidence(
+                    &initial_context,
+                    "skill_instructions",
+                    "claude",
+                    None,
+                    &[500]
+                )
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn project_skill_origins_use_the_working_directory_scope() {
+        let initial_context: InitialContextBreakdown = serde_json::from_str(
+            r#"{"sources":[{"source":"skill_instructions","sourceName":"Review","tokenCount":200,"useCount":0,"origin":"project"}]}"#,
+        )
+        .unwrap();
+
+        let sources = source_token_evidence(
+            &initial_context,
+            "skill_instructions",
+            "claude",
+            Some("/projects/one"),
+            &[500],
+        )
+        .unwrap();
+
+        assert_eq!(sources[0].scope, "claude:cwd:/projects/one");
+        assert!(
+            source_token_evidence(
+                &initial_context,
+                "skill_instructions",
+                "claude",
+                None,
+                &[500]
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn unknown_skill_origins_use_the_working_directory_scope() {
+        let initial_context: InitialContextBreakdown = serde_json::from_str(
+            r#"{"sources":[{"source":"skill_instructions","sourceName":"Review","tokenCount":200,"useCount":0,"origin":"unknown"}]}"#,
+        )
+        .unwrap();
+
+        let sources = source_token_evidence(
+            &initial_context,
+            "skill_instructions",
+            "claude",
+            Some("/projects/one"),
+            &[500],
+        )
+        .unwrap();
+
+        assert_eq!(sources[0].scope, "claude:cwd:/projects/one");
+        assert!(
+            source_token_evidence(
+                &initial_context,
+                "skill_instructions",
+                "claude",
+                None,
+                &[500]
+            )
+            .is_none()
+        );
     }
 
     fn session(session_id: &str, updated_at_epoch: i64, fingerprint: &str) -> SessionRecord {
@@ -352,6 +709,7 @@ mod tests {
                     PARSER_REVISION,
                     ANALYZER_REVISION,
                     EVIDENCE_SCHEMA_REVISION,
+                    METRICS_SCHEMA_REVISION,
                 ],
                 |row| row.get::<_, String>(3),
             )
@@ -606,24 +964,19 @@ mod tests {
             assert_eq!(report.assessed_sessions, 1);
             assert!(coverage.is_consistent());
 
-            // Only the "ready" session is in the cohort, so every capability gap
-            // example must name it. The Claude capability set blocks only
-            // Unused Built-In Tools, so the example list cannot be empty.
+            // The ready session has no assistant work. Unused-source checks
+            // exclude it instead of reporting a capability gap.
             let all_examples: Vec<_> = report
                 .capability_gap_examples
                 .values()
                 .flat_map(|v| v.iter())
                 .collect();
-            assert!(!all_examples.is_empty());
-            for example in all_examples {
-                assert_eq!(example.session_id, "ready");
-            }
+            assert!(all_examples.is_empty());
 
             // The cohort session carries no assistant turns, so the
             // zero-work denominator exclusion (CH-011b) keeps it out of
-            // the Unused MCP Servers and Unused Skills denominators:
-            // Eight capability-eligible detectors minus the two absence
-            // detectors an idle session cannot support.
+            // all three unused-source denominators:
+            // Six capability-eligible detectors remain.
             assert_eq!(
                 report
                     .detectors

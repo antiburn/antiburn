@@ -290,6 +290,22 @@ describe("SessionStatusBar", () => {
     expect(figure.querySelector("svg")).toBeNull()
   })
 
+  it.each([
+    [1.46, "1.5%"],
+    [2.44, "2.4%"],
+    [7.76, "7.8%"],
+    [1.04, "1%"],
+  ])("formats a %s limit share as %s", (percent, expected) => {
+    render(
+      <SessionStatusBar
+        checks={ALL_PASSED}
+        limitBadge={{ label: "Estimated weekly share", percent }}
+      />,
+    )
+
+    expect(screen.getByText(expected)).toBeInTheDocument()
+  })
+
   it("omits the cost figure when nothing priced the session", () => {
     render(<SessionStatusBar checks={ALL_PASSED} cost={null} />)
     expect(screen.queryByLabelText(/cost/)).toBeNull()

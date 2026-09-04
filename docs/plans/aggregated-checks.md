@@ -18,17 +18,19 @@ Summarize the local detector results from recent sessions in the Activity header
 
 Token burn is the estimated percentage of used tokens that went to avoidable work. It is estimated wasted tokens divided by total used tokens.
 
-Use a versioned cohort policy. For each ready session, add input, output, cache-read, and cache-creation tokens. Prefer this token-weighted result when complete model-token evidence covers every ready session and has no unattributed turns.
+For each ready session, add input, output, cache-read, and cache-creation tokens from valid assistant turns with model attribution. This raw turn total is the preferred denominator. Use attributed model totals from complete or partial session evidence when raw rows do not provide a denominator.
 
-Version 1 uses these avoidable-token shares for a session where the detector finds a problem: session overdepth 10%, model overthinking 25%, overpowered subagents 35%, unused MCP servers 5%, unused built-in tools 5%, unused skills 3%, old model usage 20%, fast mode overuse 20%, and cache churn 25%. These shares are counterfactual policy assumptions, not observed token attribution.
+Use three estimate tiers in order: an observed counterfactual, a documented assumption, and a conservative positive floor of 1 basis point. Every detector with findings publishes a positive numeric estimate. A clean detector can publish zero.
 
-For one detector, multiply each affected session's token total by that detector's share. Add those values and divide by all cohort tokens to get the detector percentage.
+Session overdepth counts cache-read and cache-write tokens above the context cap. Cache churn counts observed paid context beyond positive growth, including values present in partial evidence. Unused source checks count each unused definition's tokens once per compatible main turn. One measured session is sufficient. Any observed invocation in the window suppresses that source estimate. Scope project and unknown-origin skills by agent and working directory. Publish no exact skill estimate when an unknown or project origin has no working directory.
 
-For the aggregate estimate, combine the finding shares inside each session with `1 - product(1 - share)`. Cap each session at 50%, weight by that session's tokens, then divide by all cohort tokens. This prevents overlapping checks from adding directly.
+For model overthinking, first use a positive output difference from a lower-effort turn on the same model and scope with similar context. Otherwise estimate 20% of affected `xhigh` output or 35% of affected `max` and `ultra` output. Use 10% of affected output when those values are unavailable.
 
-When complete cohort token totals are unavailable, estimate each detector from `finding sessions / eligible sessions * detector share`. Combine those detector percentages with the same complement-product formula and 50% cap. This fallback keeps an estimate beside each finding without presenting incomplete token totals as observed data.
+For overpowered subagents, compare each delegated premium turn's token-class cost with the family replacement: `gpt-5.6-luna` for OpenAI, `claude-sonnet-5` for Claude, and `gemini-3.8-flash` for Google. For old model usage, compare post-release turns with the registry replacement. For delegated fast mode, compare the fast model price with the standard model price. Convert a positive cost saving to token-equivalent affected tokens. Use 10% of affected tokens when prices are absent or do not save cost.
 
-Use checked integer arithmetic and publish percentages as basis points bounded to `0..=5000`. Round displayed estimates up to a whole percentage and show `~`. Explain token burn with one short sentence inside the companion. Do not calculate a USD or provider weekly-limit estimate for Aggregated checks. Other usage features keep their existing weekly-limit percentages.
+For one detector, divide its avoidable tokens by all cohort tokens. For the aggregate estimate, first add the mutually exclusive unused-source types per session. Then take the per-session maximum across that source sum, overdepth, cache churn, model overthinking, overpowered subagents, old model usage, and fast mode. Do not add potentially overlapping model or mechanism estimates.
+
+Use checked integer arithmetic and publish percentages as basis points bounded to `0..=10000`. Round estimates to the nearest basis point. Floor displayed token burn to a whole percentage, but show a positive value below 1% as `<1%`. Use green for zero, yellow below 5%, and red from 5%. Explain token burn with one short sentence inside the companion. Do not calculate a USD or provider weekly-limit estimate for Aggregated checks. Other usage features keep their existing weekly-limit percentages.
 
 ## Status Semantics
 
@@ -46,7 +48,7 @@ Use checked integer arithmetic and publish percentages as basis points bounded t
 - Put Usage and All checks inside one folding Activity header.
 - Conceal the passive preview when Activity scrolling starts.
 - Give each boundary one `border-separator` owner.
-- Use `~N% token burn` as the compact estimate wording.
+- Use `N% token burn` as the compact estimate wording.
 - Use `Last 30 days` and remove every mock-data label.
 - Use a red status icon on a neutral card when findings exist. Use green icon tiles for passed checks.
 - Give each detector a familiar Lucide icon in the anchored window.
@@ -69,7 +71,7 @@ Use checked integer arithmetic and publish percentages as basis points bounded t
 ## Verification
 
 - Test report serialization and privacy boundaries.
-- Test token totals, incomplete coverage, fixed shares, overlap arithmetic, and the 50% cap.
+- Test all nine numeric estimates, denominator fallbacks, measured counterfactuals, source gates, assumption fallbacks, and overlap arithmetic.
 - Test session-card and Session detail assessed-only denominators and zero-assessed behavior.
 - Test folding, preview concealment, hover, focus, all failed rows, and all passed rows.
 - Review light and dark rendering against `apps/desktop/design.md`.

@@ -1,9 +1,7 @@
 //! The compiled, reviewed model-replacement registry for the Obsolete
 //! Model detector.
 //!
-//! Source of truth: Cadence's reviewed registry at
-//! `crates/harness-kb/facts/model-replacements.json`, cross-checked
-//! against these vendor announcements:
+//! The reviewed registry is cross-checked against these vendor announcements:
 //!
 //! - Claude Opus 5: <https://www.anthropic.com/news/claude-opus-5>
 //!   (system card dated July 24, 2026). Released 2026-07-24.
@@ -14,8 +12,8 @@
 //!
 //! GPT-5.4 maps to GPT-5.6 Terra (the balanced tier), GPT-5.5 and
 //! GPT-5.5 Fast map to GPT-5.6 Sol (the flagship tier), and GPT-5.4 mini
-//! maps to GPT-5.6 Luna: Cadence's registry documents all three as
-//! OpenAI's own stated successors, not maintainer judgment calls.
+//! maps to GPT-5.6 Luna. OpenAI states these successor relationships;
+//! they are not maintainer judgment calls.
 
 use std::collections::BTreeMap;
 

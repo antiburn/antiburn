@@ -28,9 +28,8 @@ use crate::analysis::{
 };
 
 /// The suffix after a skill's last `:` (e.g. `deploy` from
-/// `plugin:deploy`), or the whole name when it carries no `:`. Cadence
-/// treats a `Skill` tool call as invoking a loaded skill under either
-/// its full name or this suffix.
+/// `plugin:deploy`), or the whole name when it carries no `:`. A `Skill`
+/// tool call invokes a loaded skill under either its full name or this suffix.
 fn skill_suffix(name: &str) -> &str {
     name.rsplit_once(':').map_or(name, |(_, suffix)| suffix)
 }
@@ -696,21 +695,13 @@ impl SessionEvidenceAccumulator {
         // cache-write accounting when the source bills cache creation
         // separately, else uncached-input accounting when the source
         // reports token classes and context occupancy, else unsupported.
-        // Codex is a fixed exception to that capability-driven choice,
-        // matching Cadence's `CacheAccountingMode::for_harness`
-        // (`crates/analysis/src/efficiency_findings.rs`): OpenAI now
-        // reports (and this sink's `codex` source now reads)
-        // `cache_write_tokens`, but OpenAI never bills Codex for a cache
-        // write, and Cache Churn's Codex overpay-multiple threshold
-        // (`insights::detectors::FamilyPolicy::
-        // cache_overpay_multiple_threshold`, itself matching Cadence's
-        // `CACHE_OVERPAY_BAND_BOUNDS`) was derived under uncached-input
-        // accounting. So `codex` always uses uncached-input accounting,
-        // when its prerequisites hold, even once cache-write tokens become
-        // available — the identity this accumulator was built from
-        // (`self.identity.agent`) names the agent to check. Cache-write
-        // tokens still feed `cache.cache_creation_tokens` and turn depth
-        // either way; only this finding's accounting bucket is pinned.
+        // Codex is a fixed exception to that capability-driven choice.
+        // OpenAI reports cache-write tokens but does not bill Codex for cache
+        // writes. The Codex overpay threshold uses uncached-input accounting.
+        // Thus, Codex always uses uncached-input accounting when its required
+        // signals exist. `self.identity.agent` identifies the agent. Cache-write
+        // tokens still feed `cache.cache_creation_tokens` and turn depth. Only
+        // this finding's accounting bucket stays fixed.
         let repeated_context_accounting = if self.identity.agent == "codex" {
             (self.capabilities.token_classes && self.capabilities.request_context_tokens)
                 .then_some(RepeatedContextAccounting::UncachedInput)
@@ -906,7 +897,7 @@ impl SessionEvidenceAccumulator {
     /// Returns whether a loaded skill's full name (e.g. `plugin:deploy`)
     /// was invoked: `invoked_skills` or `tools` names it either by its
     /// full name or by the suffix after its last `:` (e.g. `deploy`).
-    /// Cadence treats a loaded skill as invoked under either spelling.
+    /// Either spelling identifies an invocation of the loaded skill.
     fn skill_invoked(&self, full_name: &str) -> bool {
         let suffix = skill_suffix(full_name);
         self.invoked_skills.contains(full_name)
