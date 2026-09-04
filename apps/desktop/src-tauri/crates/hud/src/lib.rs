@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 #[cfg(target_os = "macos")]
-use objc2_app_kit::NSWindow;
+use objc2_app_kit::{NSScreenSaverWindowLevel, NSWindow, NSWindowCollectionBehavior};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 #[cfg(target_os = "macos")]
@@ -383,6 +383,7 @@ pub fn open(app: &AppHandle, entries: &[Placement]) -> tauri::Result<()> {
     .transparent(true)
     .build()?;
 
+    float_over_all_spaces(&window)?;
     spawn_hover_watcher(window.clone());
     place(&window, entries)?;
 
@@ -491,6 +492,43 @@ pub fn resize(
     Ok(())
 }
 
+/// Put the window above every other window, on every space, and over the
+/// full-screen space of another application.
+///
+/// The level must clear a full-screen space. The status level does not: macOS
+/// composites a full-screen space above it, so the HUD stays hidden behind a
+/// full-screen window. The screen-saver level clears it.
+///
+/// The collection behavior shows one window on all spaces. macOS moves that
+/// window with the reader, so the crate does not make a copy for each space.
+/// `FullScreenAuxiliary` adds the full-screen spaces of other applications.
+/// `Stationary` holds the position during a space switch and in Mission
+/// Control. `IgnoresCycle` keeps the window out of the window cycle.
+#[cfg(target_os = "macos")]
+fn apply_float_over_all_spaces(ns_window: &NSWindow) {
+    ns_window.setLevel(NSScreenSaverWindowLevel);
+    ns_window.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::IgnoresCycle,
+    );
+}
+
+/// Apply {@link apply_float_over_all_spaces} to a Tauri window.
+#[cfg(target_os = "macos")]
+fn float_over_all_spaces(window: &WebviewWindow) -> tauri::Result<()> {
+    let native_window = window.clone();
+    window.run_on_main_thread(move || {
+        let Ok(pointer) = native_window.ns_window() else {
+            return;
+        };
+        // SAFETY: The callback runs on the main thread and the pointer is the live NSWindow.
+        let ns_window = unsafe { &*pointer.cast::<NSWindow>() };
+        apply_float_over_all_spaces(ns_window);
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn show_without_activation(window: &WebviewWindow) -> tauri::Result<()> {
     let native_window = window.clone();
@@ -501,9 +539,12 @@ fn show_without_activation(window: &WebviewWindow) -> tauri::Result<()> {
         }
         if let Ok(pointer) = native_window.ns_window() {
             // SAFETY: The callback runs on the main thread and the pointer is the live NSWindow.
-            unsafe {
-                (&*pointer.cast::<NSWindow>()).orderFrontRegardless();
-            }
+            let ns_window = unsafe { &*pointer.cast::<NSWindow>() };
+            // The window is built hidden and revealed later. Set the level and
+            // the collection behavior again here, because the toolkit can
+            // reset them when it shows a window.
+            apply_float_over_all_spaces(ns_window);
+            ns_window.orderFrontRegardless();
             let _ = app.emit(OVERLAY_VISIBILITY_EVENT, true);
         }
     })
@@ -798,6 +839,7 @@ fn build_detail(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     .decorations(false)
     .transparent(true)
     .build()?;
+    float_over_all_spaces(&window)?;
     let _ = window.set_ignore_cursor_events(true);
     Ok(window)
 }

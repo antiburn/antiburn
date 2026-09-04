@@ -35,7 +35,7 @@ export function LedBar({
         return (
           <span
             key={index}
-            className={`h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "" : "bg-surface-tertiary"} ${index === blinkIndex ? "led-blink" : ""}`.trimEnd()}
+            className={`h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "" : "bg-led-off"} ${index === blinkIndex ? "led-blink" : ""}`.trimEnd()}
             style={
               hit
                 ? index === blinkIndex

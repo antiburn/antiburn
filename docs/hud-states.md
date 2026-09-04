@@ -160,6 +160,18 @@ windows joined.
 The native frame reserves no transparent expansion space. Desktop clicks
 outside the visible HUD reach the application underneath it.
 
+## Stacking and spaces
+
+The HUD and its detail window use the macOS screen-saver window level. A lower
+level is not enough: macOS composites a full-screen space above the status
+level, which hides the HUD behind any full-screen window. The shell sets the
+level again each time it reveals the window, because the toolkit can reset it.
+
+Both windows join all spaces, so one window follows the reader between spaces.
+The app draws no copy for each space. The windows also join the full-screen
+spaces of other applications, and they hold their position during a space
+switch and in Mission Control.
+
 ## Data and timing
 
 - Each LED bar has 20 segments.

@@ -4,7 +4,7 @@ use objc2_app_kit::{NSEvent, NSWindow};
 use tauri::window::{Effect, EffectState, EffectsBuilder};
 use tauri::{Manager, Runtime, WebviewWindow, WebviewWindowBuilder};
 
-use crate::geometry::{Rect, place_left_preferred};
+use crate::geometry::{CursorProximity, Point, Rect, classify_cursor, place_left_preferred};
 use crate::{AnchorRegion, WindowMaterial};
 
 pub(crate) struct FrameRequest {
@@ -171,20 +171,26 @@ fn cache_frame(native_frame: &Mutex<Option<Rect>>, x: f64, y: f64, width: f64, h
     });
 }
 
-pub(crate) fn cursor_inside(native_frame: &Mutex<Option<Rect>>) -> bool {
+pub(crate) fn cursor_location(
+    native_frame: &Mutex<Option<Rect>>,
+    edge_tolerance: f64,
+) -> Option<CursorProximity> {
     let Ok(cached) = native_frame.lock() else {
-        tracing::warn!("failed to read the anchored native frame");
-        return false;
+        return None;
     };
     let Some(frame) = *cached else {
-        return false;
+        return Some(CursorProximity::Outside);
     };
     let cursor = NSEvent::mouseLocation();
-    frame_contains(frame, cursor.x, cursor.y)
-}
-
-fn frame_contains(frame: Rect, x: f64, y: f64) -> bool {
-    x >= frame.x && x < frame.x + frame.width && y >= frame.y && y < frame.y + frame.height
+    Some(classify_cursor(
+        frame,
+        Point {
+            x: cursor.x,
+            y: cursor.y,
+        },
+        edge_tolerance,
+        1.0,
+    ))
 }
 
 fn vertical_origin(

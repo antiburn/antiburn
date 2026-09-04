@@ -237,8 +237,17 @@ pub struct EvidenceClaim {
 /// The two failure outcomes available after a claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceFailure {
-    Retry { next_attempt_at_epoch: i64 },
-    Failed { revisions: ProjectionRevisions },
+    Retry {
+        next_attempt_at_epoch: i64,
+        /// Whether this retry consumes one of the claim's attempts. `false`
+        /// for a pass abandoned before it read anything — cancellation, for
+        /// example — so it cannot exhaust the attempt cap for a source that
+        /// was never actually tried.
+        counts_as_attempt: bool,
+    },
+    Failed {
+        revisions: ProjectionRevisions,
+    },
 }
 
 /// The two successful publication states.
@@ -783,6 +792,13 @@ pub struct AppSettings {
     /// display preference — it never gates a fetch — so it defaults open and
     /// stays wherever the reader last left it.
     pub overview_limits_expanded: bool,
+    /// Whether a session's Skills & MCPs table shows every row, rather than
+    /// only the first group behind a "Show more" button. One answer for the
+    /// whole app: it applies to every session, it survives a restart, and it
+    /// carries across an upgrade. Purely a display preference — it never
+    /// changes what antiburn reads or analyzes — so it defaults closed and
+    /// stays wherever the reader last left it.
+    pub skills_mcp_expanded: bool,
     /// The metric shown in each activity-session badge.
     pub session_badge_metric: SessionBadgeMetric,
 }
@@ -834,6 +850,10 @@ impl Default for AppSettings {
             // Open by default: a reader who has live limits at all should see
             // them without an extra click the first time they notice this.
             overview_limits_expanded: true,
+            // Closed by default, unlike the limits section above. The table is
+            // a long tail behind a summary. Opening it for every session
+            // pushes the rest of the analysis off the screen.
+            skills_mcp_expanded: false,
             session_badge_metric: SessionBadgeMetric::default(),
         }
     }

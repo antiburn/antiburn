@@ -490,6 +490,9 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // Open by default, same reasoning: a reader who has limits to see should
     // see them without an extra click the first time they notice the section.
     assert!(defaults.overview_limits_expanded);
+    // Closed by default, unlike the limits section: the skills table is a long
+    // tail behind a summary, and opening it every time buries the rest.
+    assert!(!defaults.skills_mcp_expanded);
     assert_eq!(
         defaults.session_data_retention_days,
         RETAIN_SESSION_DATA_FOREVER
@@ -530,6 +533,7 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             disabled_agents: DisabledAgents::parse("windsurf,kiro"),
             analytics_enabled: false,
             overview_limits_expanded: false,
+            skills_mcp_expanded: true,
             session_badge_metric: SessionBadgeMetric::WeeklyPercent,
         })
         .unwrap();
@@ -552,6 +556,9 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // The disabled-agent set survives normalized to sorted slugs.
     assert_eq!(saved.disabled_agents.as_str(), "kiro,windsurf");
     assert!(!saved.overview_limits_expanded);
+    // The two display preferences keep separate answers: this reader closed
+    // the limits section and opened the skills table.
+    assert!(saved.skills_mcp_expanded);
     assert!(saved.onboarding_completed);
     assert!(saved.discovery_paused);
     // Each notification preference is stored on its own key, so a reader who
@@ -3222,6 +3229,7 @@ fn failing_session_evidence_with_retry_returns_it_to_pending_with_backoff() {
                 &claim,
                 EvidenceFailure::Retry {
                     next_attempt_at_epoch: 300,
+                    counts_as_attempt: true,
                 },
                 "try later",
             )

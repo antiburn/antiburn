@@ -258,6 +258,32 @@ describe("PopoverSession surface presentation", () => {
     expect(session.getSnapshot().now).toBeGreaterThan(before)
     unsubscribe()
   })
+
+  it("keeps the activity clock current while visible and refreshes it when shown", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime("2027-01-15T08:00:00Z")
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(popoverHiddenHandler).not.toBeNull()
+    expect(popoverShownHandler).not.toBeNull()
+
+    const initial = session.getSnapshot().now
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(session.getSnapshot().now).toBe(initial + 30_000)
+
+    popoverHiddenHandler?.()
+    const hidden = session.getSnapshot().now
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(session.getSnapshot().now).toBe(hidden)
+
+    popoverShownHandler?.()
+    expect(session.getSnapshot().now).toBe(Date.now())
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(session.getSnapshot().now).toBe(Date.now())
+    unsubscribe()
+  })
 })
 
 /**

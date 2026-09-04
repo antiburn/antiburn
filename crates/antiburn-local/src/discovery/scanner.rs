@@ -1481,7 +1481,7 @@ mod tests {
     /// test pins the contract against future loosening.
     #[tokio::test]
     async fn test_infer_agent_type_copilot_cli_wins_over_cursor() {
-        let path = Path::new("/Users/foo/.copilot/session-state/cursor/transcript.jsonl");
+        let path = Path::new("/Users/foo/.copilot/session-state/cursor/events.jsonl");
         assert_eq!(Explorers::DISK.infer_agent_type(path), AgentKind::Copilot);
     }
 

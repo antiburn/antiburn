@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use antiburn_anchored_window::{
     AnchorRegion, AnchoredWindowConfig, AnchoredWindowManager, AnchoredWindowRequest,
-    AnchoredWindowState, HeightPolicy, InteractionPolicy, PlacementPolicy, RevealPolicy,
-    WindowMaterial,
+    AnchoredWindowState, HeightPolicy, InteractionPolicy, PlacementPolicy, PointerExitPolicy,
+    RevealPolicy, WindowMaterial,
 };
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
@@ -97,6 +97,10 @@ pub fn manager() -> PopoverPeekManager {
             screen_margin: 8.0,
         },
         conceal_fallback: Duration::from_millis(80),
+        pointer_exit: Some(PointerExitPolicy {
+            edge_tolerance: 12.0,
+            outside_delay: Duration::from_millis(180),
+        }),
     })
 }
 

@@ -148,6 +148,9 @@ colors:
   bg-hud:
     light: "hsl(0 0% 96.4%)"
     dark: "hsl(0 0% 12.5%)"
+  led-off: # unlit LED segment; one mid grey for both themes, because the HUD paints no surface and floats over any background
+    light: "hsl(0 0% 50% / 0.45)"
+    dark: "hsl(0 0% 50% / 0.45)"
   # Session-analysis sub-palette only (src/styles/session-analysis-colors.css)
   context-stroke: # the hot brand mark, unchanged between themes
     light: "hsl(17.6 100% 58.6%)"

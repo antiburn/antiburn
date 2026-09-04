@@ -131,7 +131,12 @@ pub use vendors::{adapter_for, has_dedicated_adapter};
 // (`evidence_sink::SessionEvidenceAccumulator::observe_context_source`), so
 // a stored session must re-ingest to clear the degraded `context_sources`
 // group.
-pub const PARSER_REVISION: i64 = 22;
+// +1 for the compaction boundary link fix: `ThreadLink.parent_uuid` now
+// comes from `parentUuid` only, with no fallback to `logicalParentUuid`
+// (`records::evidence_observations`), so a stored session must re-ingest to
+// clear a stale `thread_parent_unresolved` flag and its degraded `cache`
+// group.
+pub const PARSER_REVISION: i64 = 23;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
