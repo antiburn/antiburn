@@ -192,6 +192,21 @@ const SESSIONS_ACTIVE_SINCE_SQL: &str = "SELECT environment_key, agent, session_
 /// in one call, applied to the `IN (...)` list it builds.
 const FORK_LINEAGE_UUID_CAP: usize = 8;
 
+/// A scalar subquery counting one session's published turn rows, correlated
+/// to an outer `session s` row. Shared by [`sessions_owning_turn_uuids_sql`]
+/// and [`Store::owning_session_stats`]'s query so the two definitions of
+/// "published turn rows" cannot drift apart.
+const PUBLISHED_TURN_ROW_COUNT_SQL: &str = "(SELECT COUNT(*)
+                   FROM turn pt
+                   JOIN session_evidence pe
+                     ON pe.environment_key = pt.environment_key
+                    AND pe.agent = pt.agent
+                    AND pe.session_id = pt.session_id
+                    AND pe.published_fence = pt.claim_fence
+                  WHERE pt.environment_key = s.environment_key
+                    AND pt.agent = s.agent
+                    AND pt.session_id = s.session_id)";
+
 /// [`Store::sessions_owning_turn_uuids`]'s query, built for `uuid_count`
 /// bound uuids since the `IN (...)` list varies in length. Pulled out for
 /// the same reason as [`RECENT_SESSIONS_SQL`]: a schema test can pin it to
@@ -219,16 +234,7 @@ fn sessions_owning_turn_uuids_sql(uuid_count: usize) -> String {
                 AND t.uuid IN ({placeholders})
          )
          SELECT s.session_id, s.first_seen_at,
-                (SELECT COUNT(*)
-                   FROM turn pt
-                   JOIN session_evidence pe
-                     ON pe.environment_key = pt.environment_key
-                    AND pe.agent = pt.agent
-                    AND pe.session_id = pt.session_id
-                    AND pe.published_fence = pt.claim_fence
-                  WHERE pt.environment_key = s.environment_key
-                    AND pt.agent = s.agent
-                    AND pt.session_id = s.session_id) AS published_turn_rows
+                {PUBLISHED_TURN_ROW_COUNT_SQL} AS published_turn_rows
            FROM session s
            JOIN matched m ON m.session_id = s.session_id
           WHERE s.environment_key = ?
@@ -2244,6 +2250,93 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// The uuid of `key`'s own earliest published turn row, scope `main`.
+    ///
+    /// This is the uuid a Claude "resume as fork" session's own leading
+    /// record carries, since a fork copies its parent's early records
+    /// byte for byte. `None` when the session has no published turn row
+    /// with a uuid yet — a describe pass has not published one, or the
+    /// source assigns no uuids at all.
+    pub fn first_turn_uuid(&self, key: &SessionKey) -> Result<Option<String>> {
+        let connection = self.lock();
+        Ok(connection
+            .query_row(
+                "SELECT t.uuid
+                   FROM turn t
+                   JOIN session_evidence e
+                     ON e.environment_key = t.environment_key
+                    AND e.agent = t.agent
+                    AND e.session_id = t.session_id
+                    AND e.published_fence = t.claim_fence
+                  WHERE t.environment_key = ?1
+                    AND t.agent = ?2
+                    AND t.session_id = ?3
+                    AND t.scope = 'main'
+                    AND t.uuid IS NOT NULL
+                  ORDER BY t.turn_index ASC
+                  LIMIT 1",
+                params![key.environment_key, key.agent, key.session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
+    /// `key`'s own `first_seen_at` and published turn row count, in the
+    /// same shape [`Self::sessions_owning_turn_uuids`] returns for a
+    /// candidate — so a caller can rank itself against those candidates
+    /// with the same comparison. `None` when `key` has no session row.
+    pub fn owning_session_stats(&self, key: &SessionKey) -> Result<Option<OwningSession>> {
+        let connection = self.lock();
+        Ok(connection
+            .query_row(
+                &format!(
+                    "SELECT s.session_id, s.first_seen_at,
+                            {PUBLISHED_TURN_ROW_COUNT_SQL} AS published_turn_rows
+                       FROM session s
+                      WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3"
+                ),
+                params![key.environment_key, key.agent, key.session_id],
+                |row| {
+                    Ok(OwningSession {
+                        session_id: row.get(0)?,
+                        first_seen_at: row.get(1)?,
+                        published_turn_rows: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Record `parent` as `key`'s fork parent. Returns whether this call
+    /// inserted the row.
+    ///
+    /// This does not check whether `key` already has a different parent —
+    /// see [`insert_fork_parent_in`]. A caller that must keep one parent
+    /// per session checks first with [`Self::fork_parent`].
+    pub fn record_fork_parent(&self, key: &SessionKey, parent: &str) -> Result<bool> {
+        let connection = self.lock();
+        insert_fork_parent_in(&connection, key, parent)
+    }
+
+    /// Test scaffolding only. Production code sets `first_seen_at` once, on
+    /// a session's first insert, and never updates it again. A fork-lineage
+    /// ranking test uses this to force two sessions to tie, or to order,
+    /// on `first_seen_at` without depending on wall-clock timing.
+    #[cfg(test)]
+    pub fn set_first_seen_at_for_test(&self, key: &SessionKey, first_seen_at: &str) -> Result<()> {
+        self.lock().execute(
+            "UPDATE session SET first_seen_at = ?1
+              WHERE environment_key = ?2 AND agent = ?3 AND session_id = ?4",
+            params![
+                first_seen_at,
+                key.environment_key,
+                key.agent,
+                key.session_id
+            ],
+        )?;
+        Ok(())
+    }
+
     /* --------------------------------------------------------------------
      * Scan state
      * ----------------------------------------------------------------- */
@@ -2635,6 +2728,26 @@ pub fn iso_from_epoch(epoch: Option<i64>) -> String {
         .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string())
 }
 
+/// Insert a `forkParent` relation naming `parent` as `key`'s fork parent.
+///
+/// The table's primary key covers `related_id`, so this only guards a
+/// repeat call naming the same `parent` — it does not stop a second call
+/// from giving `key` a second, different parent. A caller that must keep
+/// one parent per session checks for an existing one first.
+///
+/// Returns whether this call inserted the row, using `changes()` rather
+/// than the `execute` row count so a caller can log only a real insert.
+fn insert_fork_parent_in(connection: &Connection, key: &SessionKey, parent: &str) -> Result<bool> {
+    connection.execute(
+        "INSERT INTO session_relation
+             (environment_key, agent, session_id, kind, related_id, label)
+         VALUES (?1, ?2, ?3, 'forkParent', ?4, NULL)
+         ON CONFLICT DO NOTHING",
+        params![key.environment_key, key.agent, key.session_id, parent],
+    )?;
+    Ok(connection.changes() > 0)
+}
+
 fn upsert_session_in(
     connection: &Connection,
     record: &SessionRecord,
@@ -2733,18 +2846,7 @@ fn upsert_session_in(
     // Absence is not evidence. Some adapters resolve lineage only when a
     // session opens. A later scan must not erase that relation.
     if let Some(parent) = &record.fork_parent_session_id {
-        connection.execute(
-            "INSERT INTO session_relation
-                 (environment_key, agent, session_id, kind, related_id, label)
-             VALUES (?1, ?2, ?3, 'forkParent', ?4, NULL)
-             ON CONFLICT DO NOTHING",
-            params![
-                record.key.environment_key,
-                record.key.agent,
-                record.key.session_id,
-                parent
-            ],
-        )?;
+        insert_fork_parent_in(connection, &record.key, parent)?;
     }
     let source_generation = connection.query_row(
         "SELECT source_generation FROM session
