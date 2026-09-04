@@ -79,6 +79,10 @@ const storage = {
 }
 
 function summary(): LiveUsageSummaryPayload {
+  // One instant for the whole snapshot. Sampling the clock twice lets a
+  // millisecond fall between the reset time and the generated time, which
+  // moves the notch off the round percentage the tests state.
+  const at = Date.now()
   return {
     providers: [
       {
@@ -88,7 +92,7 @@ function summary(): LiveUsageSummaryPayload {
         support: "live",
         freshness: "fresh",
         sourceLabel: "cached usage",
-        observedAt: new Date().toISOString(),
+        observedAt: new Date(at).toISOString(),
         windows: [
           {
             id: "five-hour",
@@ -97,7 +101,7 @@ function summary(): LiveUsageSummaryPayload {
             scopeModel: null,
             usedPercent: 81,
             startsAt: null,
-            resetsAt: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+            resetsAt: new Date(at + 2 * 3_600_000).toISOString(),
             hasNonzeroUsageInCurrentPeriod: true,
             forecast: {
               unavailableReason: "sparseHistory",
@@ -117,7 +121,7 @@ function summary(): LiveUsageSummaryPayload {
     ],
     errors: [],
     meters: [],
-    generatedAt: new Date().toISOString(),
+    generatedAt: new Date(at).toISOString(),
   }
 }
 
@@ -265,7 +269,8 @@ describe("OverlayWindow", () => {
     // period, so three of its five hours have gone.
     render(<OverlayWindow />)
     await waitFor(() => expect(screen.getByTestId("led-bar-notch")).toBeInTheDocument())
-    expect(screen.getByTestId("led-bar-notch")).toHaveStyle({ left: "60%" })
+    const offset = Number.parseFloat(screen.getByTestId("led-bar-notch").style.left)
+    expect(offset).toBeCloseTo(60, 3)
   })
 
   it("shows the close control at once and the detail window after the delay", async () => {
