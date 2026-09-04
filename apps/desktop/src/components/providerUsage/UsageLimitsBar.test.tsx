@@ -52,6 +52,8 @@ function liveProvider(
     extraUsage: null,
     resetCredits: null,
     plan: null,
+    accountUuid: null,
+    accountEmail: null,
     ...overrides,
   }
 }

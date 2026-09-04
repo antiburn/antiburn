@@ -156,6 +156,8 @@ describe("UsagePane", () => {
             extraUsage: null,
             resetCredits: null,
             plan: null,
+            accountUuid: null,
+            accountEmail: null,
           },
         ],
       }),
@@ -267,6 +269,8 @@ describe("UsagePane — the grace period", () => {
           extraUsage: null,
           resetCredits: null,
           plan: null,
+          accountUuid: null,
+          accountEmail: null,
         },
       ],
       errors: [

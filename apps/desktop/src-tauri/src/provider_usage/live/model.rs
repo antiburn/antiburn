@@ -203,6 +203,10 @@ pub struct ProviderUsageSnapshot {
     /// one provider never merge. Local-only: nothing is uploaded, so this is
     /// the provider's own id rather than a hash of it.
     pub account: Option<String>,
+    /// The provider's raw account UUID for local display, when known.
+    pub account_uuid: Option<String>,
+    /// The provider's account email for local display, when known.
+    pub account_email: Option<String>,
     /// The plan, when the source stated one. Never inferred.
     pub plan: Option<String>,
     /// A finer-grained tier within `plan`, when the source stated one. For

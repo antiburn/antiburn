@@ -84,6 +84,7 @@ use crate::provider_usage::live::{LiveUsageSource, SourceOutcome};
 use super::codex_app_server;
 use super::cooldown::{Cooldown, FetchFailure};
 use super::http;
+use super::pi_auth;
 
 /// `auth.json` is a small, purpose-built token store — cap the read
 /// defensively rather than trust that.
@@ -261,6 +262,7 @@ impl CodexTransport for LiveCodexTransport {
 /// then falling back to the app-server RPC if neither attempt lands.
 pub struct CodexDirectFetch {
     auth_path: Option<PathBuf>,
+    pi_auth_path: Option<PathBuf>,
     /// The Codex CLI's session log root, for the seed read described in
     /// "Seeding from the session log" above. `None` skips that seed
     /// entirely — the state every test constructor below starts from.
@@ -274,6 +276,7 @@ impl CodexDirectFetch {
     pub fn new() -> CodexDirectFetch {
         CodexDirectFetch {
             auth_path: default_auth_path(),
+            pi_auth_path: pi_auth::default_auth_path(),
             sessions_root: default_sessions_root(),
             transport: Box::new(LiveCodexTransport),
             cached_refresh: Mutex::new(None),
@@ -286,6 +289,7 @@ impl CodexDirectFetch {
     pub fn at(path: PathBuf) -> CodexDirectFetch {
         CodexDirectFetch {
             auth_path: Some(path),
+            pi_auth_path: None,
             sessions_root: None,
             transport: Box::new(LiveCodexTransport),
             cached_refresh: Mutex::new(None),
@@ -295,8 +299,18 @@ impl CodexDirectFetch {
 
     #[cfg(test)]
     fn with_transport(path: PathBuf, transport: Box<dyn CodexTransport>) -> CodexDirectFetch {
+        Self::with_paths(Some(path), None, transport)
+    }
+
+    #[cfg(test)]
+    fn with_paths(
+        auth_path: Option<PathBuf>,
+        pi_auth_path: Option<PathBuf>,
+        transport: Box<dyn CodexTransport>,
+    ) -> CodexDirectFetch {
         CodexDirectFetch {
-            auth_path: Some(path),
+            auth_path,
+            pi_auth_path,
             sessions_root: None,
             transport,
             cached_refresh: Mutex::new(None),
@@ -350,28 +364,72 @@ impl LiveUsageSource for CodexDirectFetch {
 
     fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome {
         let now = OffsetDateTime::now_utc();
-        let Some(path) = &self.auth_path else {
-            return SourceOutcome::absent();
-        };
-        // Read inside the cooldown gate, mirroring the Claude source: a poll
-        // the cooldown is going to skip should not touch the disk either.
+        // Read inside the cooldown gate so skipped polls do not touch disk.
         self.cooldown.poll(now, max_age, || {
-            let Some(auth) = read_auth(path) else {
-                return Ok(None);
+            let auth = self.auth_path.as_deref().and_then(read_auth);
+            let direct_error = match &auth {
+                Some(auth) => {
+                    match fetch_direct(self.transport.as_ref(), &self.cached_refresh, auth, now) {
+                        Ok(snapshot) => return Ok(Some(snapshot)),
+                        Err(error) => Some(error),
+                    }
+                }
+                None => None,
             };
-            match fetch_direct(self.transport.as_ref(), &self.cached_refresh, &auth, now) {
-                Ok(snapshot) => Ok(Some(snapshot)),
-                Err(direct_error) => match codex_app_server::fetch(now) {
-                    Ok(snapshot) => Ok(snapshot),
-                    Err(fallback_error) => Err(FetchFailure {
-                        error: preferred_error(direct_error, fallback_error),
-                        last_known: self
-                            .rollout_reading(now)
-                            .map(|reading| Box::new(rollout_snapshot(reading, &auth))),
-                    }),
+
+            let pi_entry = self
+                .pi_auth_path
+                .as_deref()
+                .and_then(|path| pi_auth::read_entry(path, pi_auth::CODEX_KEY))
+                .filter(|entry| !entry.refresh_token.is_empty())
+                .filter(|entry| {
+                    i128::from(entry.expires_at_ms) > now.unix_timestamp_nanos() / 1_000_000
+                });
+            let pi_error = match &pi_entry {
+                Some(entry) => match fetch_pi(self.transport.as_ref(), entry, now) {
+                    Ok(snapshot) => return Ok(Some(snapshot)),
+                    Err(error) => Some(error),
                 },
+                None => None,
+            };
+
+            let carrier_error = match (direct_error, pi_error) {
+                (None, None) => return Ok(None),
+                (Some(error), None) | (None, Some(error)) => error,
+                (Some(first), Some(second)) => carrier_verdict(first, second),
+            };
+            match codex_app_server::fetch(now) {
+                Ok(snapshot) => Ok(snapshot),
+                Err(fallback_error) => Err(FetchFailure {
+                    error: preferred_error(carrier_error, fallback_error),
+                    last_known: auth.as_ref().and_then(|auth| {
+                        self.rollout_reading(now)
+                            .map(|reading| Box::new(rollout_snapshot(reading, auth)))
+                    }),
+                }),
             }
         })
+    }
+}
+
+/// Try Pi's access token once. Pi owns refresh, so this path never refreshes.
+fn fetch_pi(
+    transport: &dyn CodexTransport,
+    entry: &pi_auth::PiOauth,
+    now: OffsetDateTime,
+) -> Result<ProviderUsageSnapshot, ProviderUsageError> {
+    let body = transport.usage(&entry.access_token, entry.account_id.as_deref())?;
+    let plan_claim = claim_from_tokens(&entry.access_token, None, PLAN_CLAIM);
+    build_snapshot(&body, entry.account_id.clone(), plan_claim, now)
+}
+
+fn carrier_verdict(first: ProviderUsageError, second: ProviderUsageError) -> ProviderUsageError {
+    if matches!(first, ProviderUsageError::Unavailable)
+        && !matches!(second, ProviderUsageError::Unavailable)
+    {
+        second
+    } else {
+        first
     }
 }
 
@@ -402,6 +460,8 @@ fn rollout_snapshot(
     ProviderUsageSnapshot {
         provider: crate::provider_usage::providers::OPENAI,
         account: auth.account_id.clone(),
+        account_uuid: auth.account_id.clone(),
+        account_email: None,
         // The rollout event's own plan label wins; the JWT claim is only a
         // fallback for an event that omits it.
         plan: reading.plan.or_else(|| auth.plan_claim.clone()),
@@ -472,7 +532,9 @@ fn build_snapshot(
     let usage = codex::parse_wham_usage(body, now)?;
     Ok(ProviderUsageSnapshot {
         provider: crate::provider_usage::providers::OPENAI,
-        account: account_id,
+        account: account_id.clone(),
+        account_uuid: account_id,
+        account_email: None,
         // The usage response's own `plan_type` wins; the JWT claim is only a
         // fallback for a response shape that omits it.
         plan: usage.plan.or(plan_claim),
@@ -495,6 +557,7 @@ fn build_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use time::format_description::well_known::Rfc3339;
 
@@ -812,6 +875,70 @@ mod tests {
         let cache = Mutex::new(None);
         let snapshot = fetch_direct(&WorksFirstTry, &cache, &auth, now()).expect("ok");
         assert_eq!(snapshot.plan.as_deref(), Some("team"));
+    }
+
+    #[test]
+    fn a_live_pi_entry_uses_one_usage_call_without_refresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pi_path = dir.path().join("pi-auth.json");
+        fs::write(
+            &pi_path,
+            r#"{"openai-codex":{"type":"oauth","access":"pi-access","refresh":"pi-refresh","expires":9223372036854775807,"accountId":"synthetic-account"}}"#,
+        )
+        .expect("write");
+        struct PiOnly(Arc<AtomicUsize>);
+        impl CodexTransport for PiOnly {
+            fn usage(
+                &self,
+                token: &str,
+                account: Option<&str>,
+            ) -> Result<String, ProviderUsageError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                if token == "pi-access" && account == Some("synthetic-account") {
+                    Ok(WHAM_BODY.to_owned())
+                } else {
+                    Err(ProviderUsageError::Authentication)
+                }
+            }
+            fn refresh(&self, _: &str) -> Result<String, ProviderUsageError> {
+                unreachable!("Pi owns token refresh")
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let source =
+            CodexDirectFetch::with_paths(None, Some(pi_path), Box::new(PiOnly(Arc::clone(&calls))));
+        let outcome = source.fetch(TEST_MAX_AGE);
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.snapshots.len(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            outcome.snapshots[0].account.as_deref(),
+            Some("synthetic-account")
+        );
+    }
+
+    #[test]
+    fn an_expired_pi_entry_is_absent_without_network_or_refresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pi_path = dir.path().join("pi-auth.json");
+        fs::write(
+            &pi_path,
+            r#"{"openai-codex":{"type":"oauth","access":"pi-access","refresh":"pi-refresh","expires":1}}"#,
+        )
+        .expect("write");
+        struct Never;
+        impl CodexTransport for Never {
+            fn usage(&self, _: &str, _: Option<&str>) -> Result<String, ProviderUsageError> {
+                unreachable!("expired Pi credentials are absent")
+            }
+            fn refresh(&self, _: &str) -> Result<String, ProviderUsageError> {
+                unreachable!("Pi credentials are never refreshed")
+            }
+        }
+        let source = CodexDirectFetch::with_paths(None, Some(pi_path), Box::new(Never));
+        let outcome = source.fetch(TEST_MAX_AGE);
+        assert!(outcome.snapshots.is_empty());
+        assert_eq!(outcome.error, None);
     }
 
     #[test]

@@ -265,6 +265,8 @@ mod tests {
         ProviderUsageSnapshot {
             provider: crate::provider_usage::providers::ANTHROPIC,
             account: None,
+            account_uuid: None,
+            account_email: None,
             plan: None,
             plan_tier: None,
             observed_at,

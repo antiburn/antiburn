@@ -143,6 +143,8 @@ impl LocalUsageTransport for LocalProbe {
                         return Ok(Some(ProviderUsageSnapshot {
                             provider: crate::provider_usage::providers::GOOGLE,
                             account: status.account,
+                            account_uuid: None,
+                            account_email: None,
                             plan: status.plan,
                             plan_tier: status.tier,
                             observed_at: now,

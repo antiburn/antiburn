@@ -1285,6 +1285,12 @@ pub struct LiveProviderUsage {
     /// existed must still load.
     #[serde(default)]
     pub plan: Option<LiveProviderPlan>,
+    /// The provider's raw account UUID for local display.
+    #[serde(default)]
+    pub account_uuid: Option<String>,
+    /// The provider's account email for local display.
+    #[serde(default)]
+    pub account_email: Option<String>,
 }
 
 /// The provider's own plan label, raw. The frontend maps these strings to

@@ -342,6 +342,8 @@ pub fn summarize_collected(
                 name,
                 tier: snapshot.plan_tier,
             }),
+            account_uuid: snapshot.account_uuid,
+            account_email: snapshot.account_email,
         })
         .collect();
     providers.sort_by(|a, b| a.provider.cmp(&b.provider));

@@ -67,6 +67,8 @@ function provider(overrides: Partial<LiveProviderUsagePayload> = {}): LiveProvid
     extraUsage: null,
     resetCredits: null,
     plan: null,
+    accountUuid: null,
+    accountEmail: null,
     ...overrides,
   }
 }

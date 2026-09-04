@@ -83,17 +83,19 @@ use time::OffsetDateTime;
 
 use crate::provider_usage::live::anthropic;
 use crate::provider_usage::live::model::{
-    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, UsageSource,
+    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, UsageSource,
 };
 use crate::provider_usage::live::{LiveUsageSource, SourceOutcome};
 
 use super::claude_config_cache::{self, CachedUsage};
 use super::cooldown::{self, Cooldown, FetchFailure};
 use super::http;
+use super::pi_auth;
 
 /// The credentials file is a small, purpose-built OAuth token store, not a
 /// general state file — cap the read defensively rather than trust that.
 const MAX_CREDENTIAL_BYTES: u64 = 256 * 1024;
+const MAX_CLAUDE_JSON_BYTES: u64 = 8 * 1024 * 1024;
 
 const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 const PROFILE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/profile";
@@ -109,9 +111,14 @@ pub fn default_credentials_path() -> Option<PathBuf> {
     Some(dir.join(".credentials.json"))
 }
 
+fn default_claude_json_path() -> Option<PathBuf> {
+    Some(antiburn_local::paths::home_dir()?.join(".claude.json"))
+}
+
 /// What this source needs out of the CLI's own credential file. Nothing more
 /// is read — in particular, never `refreshToken`, since this source has no
 /// use for it and no business holding it.
+#[derive(Clone)]
 struct ClaudeCredentials {
     access_token: String,
     expires_at_ms: i64,
@@ -119,6 +126,12 @@ struct ClaudeCredentials {
     /// The finer-grained tier within `subscriptionType`, for example
     /// `default_claude_max_5x`.
     rate_limit_tier: Option<String>,
+}
+
+impl ClaudeCredentials {
+    fn is_live(&self, now: OffsetDateTime) -> bool {
+        i128::from(self.expires_at_ms) > now.unix_timestamp_nanos() / 1_000_000
+    }
 }
 
 /// Read and parse the credentials file. `None` covers both "no file" and "a
@@ -140,9 +153,14 @@ fn read_credentials_file(path: &Path) -> Option<ClaudeCredentials> {
 fn parse_credentials_json(contents: &str) -> Option<ClaudeCredentials> {
     let value: Value = serde_json::from_str(contents).ok()?;
     let oauth = value.get("claudeAiOauth")?;
+    let access_token = oauth.get("accessToken")?.as_str()?.to_owned();
+    let expires_at_ms = oauth.get("expiresAt")?.as_i64()?;
+    if access_token.is_empty() || expires_at_ms <= 0 {
+        return None;
+    }
     Some(ClaudeCredentials {
-        access_token: oauth.get("accessToken")?.as_str()?.to_owned(),
-        expires_at_ms: oauth.get("expiresAt")?.as_i64()?,
+        access_token,
+        expires_at_ms,
         subscription_type: oauth
             .get("subscriptionType")
             .and_then(Value::as_str)
@@ -305,8 +323,9 @@ mod macos_keychain {
 /// own cache" section.
 pub struct ClaudeDirectFetch {
     credentials_path: Option<PathBuf>,
-    /// Whether to consult the macOS Keychain before falling back to the
-    /// credentials file. Always true in production; the `at()` test
+    pi_auth_path: Option<PathBuf>,
+    claude_json_path: Option<PathBuf>,
+    /// Whether to consult the macOS Keychain before the file carriers. Always true in production; the `at()` test
     /// constructor disables it so a test exercises the file it names
     /// deterministically, rather than depending on — and risking a live
     /// network call through — whatever this machine's own Keychain happens
@@ -325,6 +344,8 @@ impl ClaudeDirectFetch {
     pub fn new() -> ClaudeDirectFetch {
         ClaudeDirectFetch {
             credentials_path: default_credentials_path(),
+            pi_auth_path: pi_auth::default_auth_path(),
+            claude_json_path: default_claude_json_path(),
             #[cfg(target_os = "macos")]
             try_keychain: true,
             config_cache_path: claude_config_cache::default_config_path(),
@@ -341,6 +362,8 @@ impl ClaudeDirectFetch {
     pub fn at(path: PathBuf) -> ClaudeDirectFetch {
         ClaudeDirectFetch {
             credentials_path: Some(path),
+            pi_auth_path: None,
+            claude_json_path: None,
             #[cfg(target_os = "macos")]
             try_keychain: false,
             config_cache_path: None,
@@ -364,6 +387,8 @@ impl ClaudeDirectFetch {
     ) -> ClaudeDirectFetch {
         ClaudeDirectFetch {
             credentials_path: Some(credentials_path),
+            pi_auth_path: None,
+            claude_json_path: None,
             #[cfg(target_os = "macos")]
             try_keychain: false,
             config_cache_path: Some(config_cache_path),
@@ -372,34 +397,55 @@ impl ClaudeDirectFetch {
         }
     }
 
-    /// The credential from whichever carrier answers first: the Keychain,
-    /// where this source is built to try it, then the credentials file.
-    ///
-    /// `Err` means the Keychain carrier could not say whether a credential
-    /// exists — a timeout, a spawn failure, or an exit this carrier does not
-    /// recognize — and the credentials-file fallback is skipped: falling
-    /// back would read a transient failure as "signed out". It is always
-    /// `ProviderUsageError::Unavailable`, reported as a real failure so
-    /// `Cooldown` keeps the last good snapshot instead of clearing it.
-    fn read_credentials(&self) -> Result<Option<ClaudeCredentials>, ProviderUsageError> {
+    /// Read all credential carriers in their documented order. A Keychain
+    /// read failure stays separate so a later live carrier can suppress it.
+    fn read_carriers(
+        &self,
+    ) -> (
+        Vec<ClaudeCredentials>,
+        Option<ProviderUsageError>,
+        Vec<ClaudeCredentials>,
+    ) {
+        let mut carriers = Vec::new();
+        let mut native_carriers = Vec::new();
+        let mut error = None;
         #[cfg(target_os = "macos")]
         if self.try_keychain {
             match macos_keychain::read() {
                 macos_keychain::KeychainRead::Found(text) => {
                     if let Some(credentials) = parse_credentials_json(&text) {
-                        return Ok(Some(credentials));
+                        native_carriers.push(credentials.clone());
+                        carriers.push(credentials);
                     }
                 }
                 macos_keychain::KeychainRead::Unreadable => {
-                    return Err(ProviderUsageError::Unavailable);
+                    error = Some(ProviderUsageError::Unavailable);
                 }
                 macos_keychain::KeychainRead::Absent => {}
             }
         }
-        Ok(self
+        if let Some(credentials) = self
             .credentials_path
             .as_deref()
-            .and_then(read_credentials_file))
+            .and_then(read_credentials_file)
+        {
+            native_carriers.push(credentials.clone());
+            carriers.push(credentials);
+        }
+        if let Some(entry) = self
+            .pi_auth_path
+            .as_deref()
+            .and_then(|path| pi_auth::read_entry(path, pi_auth::ANTHROPIC_KEY))
+            .filter(|entry| !entry.refresh_token.is_empty())
+        {
+            carriers.push(ClaudeCredentials {
+                access_token: entry.access_token,
+                expires_at_ms: entry.expires_at_ms,
+                subscription_type: None,
+                rate_limit_tier: None,
+            });
+        }
+        (carriers, error, native_carriers)
     }
 }
 
@@ -432,14 +478,47 @@ impl LiveUsageSource for ClaudeDirectFetch {
         // skip anyway should not pay for either — nor re-raise a Keychain
         // access prompt the reader has already seen.
         self.cooldown.poll(now, max_age, || {
-            let Some(credentials) = self.read_credentials()? else {
-                return Ok(None);
-            };
+            let (carriers, carrier_error, native_carriers) = self.read_carriers();
+            let native = native_carriers
+                .into_iter()
+                .find(|credentials| credentials.is_live(now));
             let cached = self
                 .config_cache_path
                 .as_deref()
                 .and_then(claude_config_cache::read_cached_usage);
-            fetch_with_cache(self.transport.as_ref(), &credentials, cached, max_age, now)
+            if let Some(native) = native.as_ref()
+                && let Some(cached) = cached.as_ref()
+                && cache_covers(now, cached.observed_at, max_age)
+            {
+                log_cache_reading_used(cached, now, "fresh");
+                return Ok(Some(snapshot_from_cache(cached.clone(), native)));
+            }
+            match fetch_from_carriers(
+                self.transport.as_ref(),
+                carriers,
+                self.claude_json_path.as_deref(),
+                now,
+            ) {
+                Ok(Some(snapshot)) => Ok(Some(snapshot)),
+                Ok(None) => match carrier_error {
+                    Some(error) => Err(FetchFailure {
+                        error,
+                        last_known: None,
+                    }),
+                    None => Ok(None),
+                },
+                Err(error) => Err(FetchFailure {
+                    error: carrier_error.map_or(error, |carrier| preferred_error(carrier, error)),
+                    last_known: native.as_ref().and_then(|native| {
+                        cached
+                            .filter(|cached| now - cached.observed_at <= cooldown::MAX_AGE)
+                            .map(|cached| {
+                                log_cache_reading_used(&cached, now, "seed");
+                                Box::new(snapshot_from_cache(cached, native))
+                            })
+                    }),
+                }),
+            }
         })
     }
 }
@@ -449,8 +528,7 @@ impl LiveUsageSource for ClaudeDirectFetch {
 /// gives that source.
 trait AnthropicTransport: Send + Sync {
     fn usage(&self, access_token: &str) -> Result<String, ProviderUsageError>;
-    /// The account id from the profile endpoint. `None` on any failure: this
-    /// is a best-effort enrichment, never a reason to fail the snapshot.
+    /// The profile body, or `None` when enrichment fails.
     fn profile(&self, access_token: &str) -> Option<String>;
 }
 
@@ -484,8 +562,7 @@ impl AnthropicTransport for LiveAnthropicTransport {
         if http::status_error(response.status()).is_some() {
             return None;
         }
-        let body = http::read_capped_body(response).ok()?;
-        profile_subject(&body)
+        http::read_capped_body(response).ok()
     }
 }
 
@@ -493,10 +570,23 @@ impl AnthropicTransport for LiveAnthropicTransport {
 /// describes. A free function over [`AnthropicTransport`] rather than a
 /// method, so a test calls it with a fake transport and nothing else this
 /// source owns — mirrors `codex_fetch::fetch_direct`.
+#[cfg(test)]
 fn fetch_with_cache(
     transport: &dyn AnthropicTransport,
     credentials: &ClaudeCredentials,
     cached: Option<CachedUsage>,
+    max_age: std::time::Duration,
+    now: OffsetDateTime,
+) -> Result<Option<ProviderUsageSnapshot>, FetchFailure> {
+    fetch_with_cache_at(transport, credentials, cached, None, max_age, now)
+}
+
+#[cfg(test)]
+fn fetch_with_cache_at(
+    transport: &dyn AnthropicTransport,
+    credentials: &ClaudeCredentials,
+    cached: Option<CachedUsage>,
+    claude_json_path: Option<&Path>,
     max_age: std::time::Duration,
     now: OffsetDateTime,
 ) -> Result<Option<ProviderUsageSnapshot>, FetchFailure> {
@@ -507,7 +597,7 @@ fn fetch_with_cache(
         return Ok(Some(snapshot_from_cache(cached, credentials)));
     }
 
-    match fetch_live(transport, credentials, now) {
+    match fetch_live(transport, credentials, claude_json_path, now) {
         Ok(snapshot) => Ok(Some(snapshot)),
         Err(error) => {
             let last_known = cached
@@ -518,6 +608,50 @@ fn fetch_with_cache(
                 });
             Err(FetchFailure { error, last_known })
         }
+    }
+}
+
+/// Try live carriers in order. Expired carriers are absent, while an
+/// all-expired set reports authentication because re-sign-in is actionable.
+fn fetch_from_carriers(
+    transport: &dyn AnthropicTransport,
+    carriers: Vec<ClaudeCredentials>,
+    claude_json_path: Option<&Path>,
+    now: OffsetDateTime,
+) -> Result<Option<ProviderUsageSnapshot>, ProviderUsageError> {
+    if carriers.is_empty() {
+        return Ok(None);
+    }
+    let mut live = false;
+    let mut error = None;
+    for credentials in carriers
+        .iter()
+        .filter(|credentials| credentials.is_live(now))
+    {
+        live = true;
+        match fetch_live(transport, credentials, claude_json_path, now) {
+            Ok(snapshot) => return Ok(Some(snapshot)),
+            Err(next) => {
+                error = Some(match error {
+                    Some(current) => preferred_error(current, next),
+                    None => next,
+                });
+            }
+        }
+    }
+    if !live {
+        return Err(ProviderUsageError::Authentication);
+    }
+    Err(error.unwrap_or(ProviderUsageError::Unavailable))
+}
+
+fn preferred_error(current: ProviderUsageError, next: ProviderUsageError) -> ProviderUsageError {
+    if matches!(current, ProviderUsageError::Unavailable)
+        && !matches!(next, ProviderUsageError::Unavailable)
+    {
+        next
+    } else {
+        current
     }
 }
 
@@ -557,7 +691,9 @@ fn snapshot_from_cache(
 ) -> ProviderUsageSnapshot {
     ProviderUsageSnapshot {
         provider: crate::provider_usage::providers::ANTHROPIC,
-        account: Some(cached.account),
+        account: Some(cached.account.clone()),
+        account_uuid: Some(cached.account),
+        account_email: None,
         plan: credentials.subscription_type.clone(),
         plan_tier: credentials.rate_limit_tier.clone(),
         observed_at: cached.observed_at,
@@ -576,23 +712,24 @@ fn snapshot_from_cache(
 fn fetch_live(
     transport: &dyn AnthropicTransport,
     credentials: &ClaudeCredentials,
+    claude_json_path: Option<&Path>,
     now: OffsetDateTime,
 ) -> Result<ProviderUsageSnapshot, ProviderUsageError> {
-    let expires_at = OffsetDateTime::from_unix_timestamp(credentials.expires_at_ms / 1_000)
-        .map_err(|_| ProviderUsageError::Schema(SchemaReason::InvalidValue))?;
-    if expires_at <= now {
-        return Err(ProviderUsageError::Authentication);
-    }
-
     let body = transport.usage(&credentials.access_token)?;
     let usage = anthropic::parse_usage(&body)?;
-    let account = transport.profile(&credentials.access_token);
+    let identity = resolve_identity(transport, &credentials.access_token, claude_json_path);
 
     Ok(ProviderUsageSnapshot {
         provider: crate::provider_usage::providers::ANTHROPIC,
-        account,
-        plan: credentials.subscription_type.clone(),
-        plan_tier: credentials.rate_limit_tier.clone(),
+        account: identity.uuid.clone(),
+        account_uuid: identity.uuid,
+        account_email: identity.email,
+        plan: identity
+            .plan
+            .or_else(|| credentials.subscription_type.clone()),
+        plan_tier: identity
+            .tier
+            .or_else(|| credentials.rate_limit_tier.clone()),
         observed_at: now,
         source: UsageSource {
             id: SOURCE_ID,
@@ -608,20 +745,84 @@ fn fetch_live(
     })
 }
 
-fn profile_subject(body: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+#[derive(Default)]
+struct ClaudeIdentity {
+    uuid: Option<String>,
+    email: Option<String>,
+    plan: Option<String>,
+    tier: Option<String>,
+}
+
+fn non_empty_str(value: Option<&Value>) -> Option<String> {
     value
-        .get("account")?
-        .get("uuid")?
-        .as_str()
+        .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|subject| !subject.is_empty() && subject.len() <= 512)
+        .filter(|value| !value.is_empty() && value.len() <= 512)
         .map(str::to_owned)
+}
+
+fn parse_profile(body: &str) -> Option<ClaudeIdentity> {
+    let value: Value = serde_json::from_str(body).ok()?;
+    let account = value.get("account")?;
+    let plan = if account
+        .get("has_claude_max")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        Some("max".to_owned())
+    } else if account
+        .get("has_claude_pro")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        Some("pro".to_owned())
+    } else {
+        None
+    };
+    Some(ClaudeIdentity {
+        uuid: non_empty_str(account.get("uuid")),
+        email: non_empty_str(account.get("email")),
+        plan,
+        tier: non_empty_str(
+            value
+                .get("organization")
+                .and_then(|organization| organization.get("rate_limit_tier")),
+        ),
+    })
+}
+
+fn read_claude_json_identity(path: &Path) -> Option<ClaudeIdentity> {
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() > MAX_CLAUDE_JSON_BYTES {
+        return None;
+    }
+    let contents = fs::read_to_string(path).ok()?;
+    let value: Value = serde_json::from_str(&contents).ok()?;
+    let account = value.get("oauthAccount")?;
+    Some(ClaudeIdentity {
+        uuid: non_empty_str(account.get("accountUuid")),
+        email: non_empty_str(account.get("emailAddress")),
+        plan: None,
+        tier: non_empty_str(account.get("userRateLimitTier")),
+    })
+}
+
+fn resolve_identity(
+    transport: &dyn AnthropicTransport,
+    access_token: &str,
+    claude_json_path: Option<&Path>,
+) -> ClaudeIdentity {
+    transport
+        .profile(access_token)
+        .and_then(|body| parse_profile(&body))
+        .or_else(|| claude_json_path.and_then(read_claude_json_identity))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const NOW: i64 = 1_800_000_000;
 
@@ -824,21 +1025,23 @@ mod tests {
     #[test]
     fn profile_identity_uses_only_the_account_uuid() {
         assert_eq!(
-            profile_subject(
+            parse_profile(
                 r#"{"account":{"uuid":"account-uuid","email":"private@example.test"},"organization":{"uuid":"organization-uuid"}}"#
             )
-            .as_deref(),
-            Some("account-uuid")
+            .and_then(|identity| identity.uuid),
+            Some("account-uuid".to_owned())
         );
         assert_eq!(
-            profile_subject(r#"{"account":{"email":"private@example.test"}}"#),
+            parse_profile(r#"{"account":{"email":"private@example.test"}}"#)
+                .and_then(|identity| identity.uuid),
             None
         );
         assert_eq!(
-            profile_subject(&format!(
+            parse_profile(&format!(
                 r#"{{"account":{{"uuid":"{}"}}}}"#,
                 "a".repeat(513)
-            )),
+            ))
+            .and_then(|identity| identity.uuid),
             None
         );
     }
@@ -881,18 +1084,118 @@ mod tests {
     }
 
     #[test]
-    fn an_expired_token_is_an_authentication_failure_with_no_network_call() {
-        let now = OffsetDateTime::from_unix_timestamp(NOW).unwrap();
-        let credentials = ClaudeCredentials {
-            access_token: "synthetic-token".into(),
+    fn a_tombstone_is_absent_and_does_not_shadow_a_live_carrier() {
+        assert!(
+            parse_credentials_json(
+                r#"{"claudeAiOauth":{"accessToken":"","expiresAt":0,"subscriptionType":"max"}}"#
+            )
+            .is_none()
+        );
+        let live = ClaudeCredentials {
+            access_token: "live-token".into(),
+            expires_at_ms: (NOW + 3_600) * 1_000,
+            subscription_type: None,
+            rate_limit_tier: None,
+        };
+        struct LiveOnly;
+        impl AnthropicTransport for LiveOnly {
+            fn usage(&self, token: &str) -> Result<String, ProviderUsageError> {
+                (token == "live-token")
+                    .then_some(LIVE_USAGE_BODY.to_owned())
+                    .ok_or(ProviderUsageError::Authentication)
+            }
+            fn profile(&self, _: &str) -> Option<String> {
+                None
+            }
+        }
+        let result = fetch_from_carriers(&LiveOnly, vec![live], None, now())
+            .expect("live carrier")
+            .expect("snapshot");
+        assert_eq!(result.windows.len(), 1);
+    }
+
+    #[test]
+    fn a_later_live_carrier_success_mutes_an_earlier_failure() {
+        struct LaterOnly(AtomicUsize);
+        impl AnthropicTransport for LaterOnly {
+            fn usage(&self, token: &str) -> Result<String, ProviderUsageError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                if token == "later" {
+                    Ok(LIVE_USAGE_BODY.to_owned())
+                } else {
+                    Err(ProviderUsageError::Unavailable)
+                }
+            }
+            fn profile(&self, _: &str) -> Option<String> {
+                None
+            }
+        }
+        let carriers = vec![
+            ClaudeCredentials {
+                access_token: "earlier".into(),
+                expires_at_ms: (NOW + 3_600) * 1_000,
+                subscription_type: None,
+                rate_limit_tier: None,
+            },
+            ClaudeCredentials {
+                access_token: "later".into(),
+                expires_at_ms: (NOW + 3_600) * 1_000,
+                subscription_type: None,
+                rate_limit_tier: None,
+            },
+        ];
+        let transport = LaterOnly(AtomicUsize::new(0));
+        let result = fetch_from_carriers(&transport, carriers, None, now())
+            .expect("later carrier succeeds")
+            .expect("snapshot");
+        assert_eq!(transport.0.load(Ordering::SeqCst), 2);
+        assert_eq!(result.source.label, "Asked Claude directly");
+    }
+
+    #[test]
+    fn only_positive_expiry_expired_carriers_report_authentication() {
+        let expired = ClaudeCredentials {
+            access_token: "expired-token".into(),
             expires_at_ms: (NOW - 3_600) * 1_000,
-            subscription_type: Some("max".into()),
+            subscription_type: None,
             rate_limit_tier: None,
         };
         assert_eq!(
-            fetch_live(&UnreachableTransport, &credentials, now),
+            fetch_from_carriers(&UnreachableTransport, vec![expired], None, now()),
             Err(ProviderUsageError::Authentication)
         );
+        assert_eq!(
+            fetch_from_carriers(&UnreachableTransport, Vec::new(), None, now()),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn profile_supplies_identity_plan_and_tier_without_putting_identity_in_label() {
+        let identity = parse_profile(
+            r#"{"account":{"uuid":"synthetic-uuid","email":"reader@example.test","has_claude_max":true,"has_claude_pro":false},"organization":{"rate_limit_tier":"synthetic-tier"}}"#,
+        )
+        .expect("profile");
+        assert_eq!(identity.uuid.as_deref(), Some("synthetic-uuid"));
+        assert_eq!(identity.email.as_deref(), Some("reader@example.test"));
+        assert_eq!(identity.plan.as_deref(), Some("max"));
+        assert_eq!(identity.tier.as_deref(), Some("synthetic-tier"));
+    }
+
+    #[test]
+    fn failed_profile_uses_claude_json_identity_fallback() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".claude.json");
+        fs::write(
+            &path,
+            r#"{"oauthAccount":{"accountUuid":"synthetic-uuid","emailAddress":"reader@example.test","organizationName":"Synthetic Org","userRateLimitTier":"synthetic-tier"}}"#,
+        )
+        .expect("write");
+        let identity = read_claude_json_identity(&path).expect("identity");
+        assert_eq!(identity.uuid.as_deref(), Some("synthetic-uuid"));
+        assert_eq!(identity.email.as_deref(), Some("reader@example.test"));
+        assert_eq!(identity.plan, None);
+        assert_eq!(identity.tier.as_deref(), Some("synthetic-tier"));
     }
 
     #[test]

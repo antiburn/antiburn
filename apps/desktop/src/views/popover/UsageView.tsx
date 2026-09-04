@@ -26,6 +26,7 @@ import {
   liveAuthNote,
   liveErrorNote,
   liveGraceNote,
+  livePlanAccountLabel,
   livePlanLabel,
   liveProviderStatus,
   liveWindows,
@@ -466,11 +467,12 @@ function ProviderCard({
     shownLocal.some((entry) => entry.accountKey == null)
   const accountGroupCount = identifiedAccountKeys.size + (hasUnassignedAccount ? 1 : 0)
   const accountPlans = accounts.map(({ reading }) => livePlanLabel(reading))
-  const plan =
+  const aggregatePlan =
     accountPlans.length > 0 && accountPlans.every((entry) => entry === accountPlans[0])
       ? accountPlans[0]
       : null
-  const showAccountPlans = accountPlans.some((entry) => entry !== plan)
+  const plan = live.length === 1 ? livePlanAccountLabel(live[0]!) : aggregatePlan
+  const showAccountPlans = accountPlans.some((entry) => entry !== aggregatePlan)
   const provider = primaryLocal?.provider ?? live[0]?.provider ?? errors[0]?.provider ?? ""
   const displayName =
     primaryLocal?.displayName ?? live[0]?.displayName ?? errors[0]?.displayName ?? provider
@@ -561,7 +563,9 @@ function ProviderCard({
                 <LiveUsageDetail
                   live={reading}
                   now={now}
-                  showPlan={showAccountPlans}
+                  showPlan={
+                    showAccountPlans || (accounts.length > 1 && reading.accountEmail != null)
+                  }
                   showRunway={!matchingLocal}
                   {...(accountLabel ? { accountLabel } : {})}
                 />

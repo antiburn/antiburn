@@ -151,6 +151,14 @@ export function livePlanLabel(provider: LiveProviderUsagePayload): string | null
   return label ? label(plan) : plan.name
 }
 
+/** The plan and account email suffix, with the plan first for truncation. */
+export function livePlanAccountLabel(provider: LiveProviderUsagePayload): string | null {
+  const plan = livePlanLabel(provider)
+  const email = provider.accountEmail?.trim() || null
+  if (plan && email) return `${plan} · ${email}`
+  return plan ?? email
+}
+
 /**
  * The full name of one window.
  *

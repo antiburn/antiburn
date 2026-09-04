@@ -7,7 +7,7 @@ import {
   liveFreshnessToneClass,
   liveSourceNote,
   liveStalenessNote,
-  livePlanLabel,
+  livePlanAccountLabel,
   liveWindows,
 } from "../../lib/presentation/liveUsage"
 import { LiveMetricRows } from "./LiveMetricRows"
@@ -46,7 +46,7 @@ export function LiveUsageDetail({
   const extra = liveExtraUsageLabel(live)
   const windows = liveWindows(live)
   const primary = windows[0]
-  const plan = livePlanLabel(live)
+  const plan = livePlanAccountLabel(live)
   if (!primary && !extra && !live.resetCredits && !live.plan) return null
 
   return (
