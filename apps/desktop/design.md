@@ -13,6 +13,7 @@ sources:
   - src/styles/hud.css
   - src/styles/session-analysis-colors.css
   - src/styles/session-rows.css
+  - src/styles/session-detail.css
   - src/components/ui/text-roll.css
 colors:
   # Concrete token colors use modern HSL function syntax.
@@ -167,16 +168,16 @@ colors:
     light: "hsl(0 0% 100% / 0.85)"
     dark: "hsl(0 0% 100% / 0.85)"
   # Session-analysis sub-palette only (src/styles/session-analysis-colors.css)
-  context-stroke: # the hot brand mark, unchanged between themes
-    light: "hsl(17.6 100% 58.6%)"
-    dark: "hsl(17.6 100% 58.6%)"
-  context-fill-top: # under the hot line, lit: brand orange in both themes
-    light: "hsl(17.6 100% 58.6% / 0.5)"
-    dark: "hsl(17.6 100% 58.6% / 0.42)"
+  context-stroke: # the context line; a cool blue, lit at rest
+    light: "hsl(221.2 83% 53.3%)"
+    dark: "hsl(221 89% 59.8%)"
+  context-fill-top: # under the line, in the same blue
+    light: "hsl(221.2 83% 53.3% / 0.5)"
+    dark: "hsl(221 89% 59.8% / 0.42)"
   context-fill-base:
-    light: "hsl(17.6 100% 58.6% / 0.12)"
-    dark: "hsl(17.6 100% 58.6% / 0.1)"
-  context-rest-top: # the same fill at rest, before a key entry lights it
+    light: "hsl(221.2 83% 53.3% / 0.12)"
+    dark: "hsl(221 89% 59.8% / 0.1)"
+  context-rest-top: # the same fill in grey, while another layer is lit
     light: "hsl(240 5.5% 25% / 0.16)"
     dark: "hsl(240 33% 94% / 0.24)"
   context-rest-base:
@@ -200,21 +201,36 @@ colors:
   context-rewrite: # the rewrite bar over the plot; white in both themes
     light: "hsl(0 0% 100%)"
     dark: "hsl(0 0% 100%)"
-  token-in: # the quieter cyan of the secondary series palette
-    light: "hsl(199 55% 62%)"
-    dark: "hsl(199 45% 50%)"
-  token-out: # deep blue; the strongest series, because output costs the most
-    light: "hsl(214 90% 42%)"
-    dark: "hsl(210 100% 70%)"
+  token-in: # parent input; cyan
+    light: "hsl(189 86% 53.3%)"
+    dark: "hsl(188.7 87% 58.2%)"
+  token-out: # parent output; violet
+    light: "hsl(258.3 89% 66.2%)"
+    dark: "hsl(258 89% 69.8%)"
   token-subagent: # quiet label-family neutral
     light: "hsl(240 5.5% 25% / 0.45)"
     dark: "hsl(240 33% 94% / 0.4)"
-  share-work: # efficiency composition, real work; the system green
-    light: "hsl(135 59% 34%)"
-    dark: "hsl(135 70% 52.3%)"
-  share-waste: # efficiency composition, rewrite waste; the warning yellow
-    light: "hsl(45 100% 50%)"
-    dark: "hsl(48 100% 57.4%)"
+  mark-rehydration: # a cache rehydration mark, lit; yellow
+    light: "hsl(45.5 96% 56.2%)"
+    dark: "hsl(45.2 96% 60.1%)"
+  mark-routing-miss: # a provider routing-miss mark, lit; pink
+    light: "hsl(330.3 81% 60.3%)"
+    dark: "hsl(330.6 82% 64.5%)"
+  mark-compaction: # a compaction mark, lit; the brand tint in both themes
+    light: "hsl(17.6 100% 58.6%)"
+    dark: "hsl(17.6 100% 58.6%)"
+  share-work: # efficiency composition, real work; teal, for fills
+    light: "hsl(173.4 80% 40%)"
+    dark: "hsl(173.5 78% 46.4%)"
+  share-work-text: # the same teal as ink for words; darker on light
+    light: "hsl(174 80% 25.4%)"
+    dark: "hsl(173.5 78% 46.4%)"
+  share-waste: # efficiency composition, rewrite waste; hot red, for fills
+    light: "hsl(347.9 100% 56%)"
+    dark: "hsl(348 100% 60.5%)"
+  share-waste-text: # the same red as ink for words; darker on light
+    light: "hsl(348 100% 34.5%)"
+    dark: "hsl(348 100% 60.5%)"
   share-carry: # efficiency composition, carry; the mid neutral
     light: "hsl(240 5% 52%)"
     dark: "hsl(240 6% 62%)"
@@ -356,6 +372,15 @@ components:
     typography: "{typography.callout}" # font-semibold! selected / font-medium! rest
     rounded: "7px track, {rounded.control} segment" # 5px + 2px track padding keeps the curves concentric
     shadow: "{shadow.raised}"
+  detail-tabs:
+    className: "SegmentedControl variant=native-tabs (ui-segmented-native)"
+    trackColor: "{colors.surface-secondary}"
+    segmentColor: { light: "{colors.surface}", dark: "{colors.surface-tertiary}" } # the selected segment, raised like the macOS control
+    selectedInk: "{colors.label}"
+    typography: "{typography.caption}" # font-semibold! selected / font-medium! rest
+    rounded: "7px track, {rounded.control} segment"
+    shadow: "{shadow.raised}"
+    separator: "{colors.separator} hairline between two unselected neighbours"
   scroll:
     className: "ui-scrollbar + ui-scrollbar-thumb"
     width: 6px
@@ -437,5 +462,6 @@ Notes for what isn't expressible as a token:
   a self-evident value — identification that is genuinely needed uses an icon with a tooltip, the
   session-row fork-glyph pattern. Every horizontal bar uses the usage meter (`SegmentedMeter`)
   silhouette; judgment is carried by the band word's ink, never by a multi-color bar. Color only
-  where it means something: brand orange for cost and real work, the token series colors for
-  in/out, red for bad. Everything else stays greyscale.
+  where it means a category: blue for context, the token series colors for in/out, yellow and
+  pink for cache marks, brand orange for a compaction, teal for real work, red for waste.
+  Everything else stays greyscale until the pointer names a layer.

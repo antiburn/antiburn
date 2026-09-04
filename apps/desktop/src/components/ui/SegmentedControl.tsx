@@ -7,7 +7,7 @@ export type SegmentedOption<T extends string> = {
   label: string
 }
 
-export type SegmentedControlVariant = "segmented" | "text-tabs" | "raised-tabs"
+export type SegmentedControlVariant = "segmented" | "text-tabs" | "raised-tabs" | "native-tabs"
 
 /** A single-select pill group exposed as a radiogroup (or a tablist). Works
  *  for any number of options.
@@ -19,7 +19,12 @@ export type SegmentedControlVariant = "segmented" | "text-tabs" | "raised-tabs"
  *
  *  `variant="raised-tabs"` is the segmented view picker: a recessed neutral
  *  pill track with the selected segment raised on the hot brand fill, white
- *  label on top, the same in both themes. It is always equal-width. */
+ *  label on top, the same in both themes. It is always equal-width.
+ *
+ *  `variant="native-tabs"` is the macOS segmented control: a recessed neutral
+ *  track with the selected segment raised on the surface in a semibold label.
+ *  Quiet, so it sits under a hero without competing with it. It is always
+ *  equal-width. */
 export function SegmentedControl<T extends string>({
   options,
   value,
@@ -47,7 +52,8 @@ export function SegmentedControl<T extends string>({
 }) {
   const textTabs = variant === "text-tabs"
   const raisedTabs = variant === "raised-tabs"
-  const showAnimatedIndicator = animatedIndicator && !textTabs && !raisedTabs
+  const nativeTabs = variant === "native-tabs"
+  const showAnimatedIndicator = animatedIndicator && !textTabs && !raisedTabs && !nativeTabs
   const selectedIndex = Math.max(
     0,
     options.findIndex((option) => option.value === value),
@@ -75,15 +81,17 @@ export function SegmentedControl<T extends string>({
             ? // A full-round track: the segments inside are pills, so the
               // outer curve matches them at any padding.
               cn("grid gap-0.5 rounded-full bg-surface-secondary p-0.5", className)
-            : cn(
-                showAnimatedIndicator && "relative",
-                equalWidth ? "grid" : "inline-flex",
-                "h-6 overflow-hidden rounded-control border border-separator bg-surface-secondary",
-                className,
-              )
+            : nativeTabs
+              ? cn("ui-segmented-native grid bg-surface-secondary p-0.5", className)
+              : cn(
+                  showAnimatedIndicator && "relative",
+                  equalWidth ? "grid" : "inline-flex",
+                  "h-6 overflow-hidden rounded-control border border-separator bg-surface-secondary",
+                  className,
+                )
       }
       style={
-        (equalWidth || raisedTabs) && !textTabs
+        (equalWidth || raisedTabs || nativeTabs) && !textTabs
           ? {
               gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))`,
             }
@@ -141,22 +149,29 @@ export function SegmentedControl<T extends string>({
                       ? "font-medium text-accent"
                       : "text-label-tertiary hover:text-label-secondary",
                   )
-                : raisedTabs
+                : nativeTabs
                   ? cn(
-                      "min-w-0 rounded-full py-1 type-callout transition-colors duration-[var(--duration-quick)] ease-out-quart disabled:opacity-50",
+                      "ui-segmented-native-segment relative min-w-0 rounded-control py-0.5 type-caption transition-colors duration-[var(--duration-quick)] ease-out-quart disabled:opacity-50",
                       selected
-                        ? // The hot brand fill with white ink, in both themes:
-                          // the active view carries the mark.
-                          "bg-brand-tint font-semibold! text-white shadow-raised"
+                        ? "font-semibold! text-label shadow-raised"
                         : "font-medium! text-label-secondary hover:text-label",
                     )
-                  : cn(
-                      showAnimatedIndicator && "relative",
-                      equalWidth && "min-w-0",
-                      "type-footnote px-2 disabled:opacity-50",
-                      selected && !showAnimatedIndicator && "bg-accent-fill",
-                      selected ? "text-white" : "text-label-secondary hover:bg-surface-hover",
-                    )
+                  : raisedTabs
+                    ? cn(
+                        "min-w-0 rounded-full py-1 type-callout transition-colors duration-[var(--duration-quick)] ease-out-quart disabled:opacity-50",
+                        selected
+                          ? // The hot brand fill with white ink, in both themes:
+                            // the active view carries the mark.
+                            "bg-brand-tint font-semibold! text-white shadow-raised"
+                          : "font-medium! text-label-secondary hover:text-label",
+                      )
+                    : cn(
+                        showAnimatedIndicator && "relative",
+                        equalWidth && "min-w-0",
+                        "type-footnote px-2 disabled:opacity-50",
+                        selected && !showAnimatedIndicator && "bg-accent-fill",
+                        selected ? "text-white" : "text-label-secondary hover:bg-surface-hover",
+                      )
             }
           >
             {textTabs ? (

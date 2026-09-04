@@ -3,7 +3,7 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   ChevronLeft,
-  FoldVertical,
+  ChevronsDownUp,
   FolderOpen,
   GitBranchPlus,
   GitFork,
@@ -32,7 +32,6 @@ import {
   costBreakdownRows,
   costFigureLabel,
   formatCompact,
-  formatCost,
   formatDuration,
   isEmptySummary,
   skillMcpUsage,
@@ -46,12 +45,12 @@ import type {
   LocalSessionRelations,
 } from "../../lib/types/session"
 import { useGlobalKeydown } from "../../lib/useGlobalKeydown"
+import "../../styles/session-detail.css"
 import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import { SegmentedControl } from "../ui/SegmentedControl"
 import { Skeleton } from "../ui/Skeleton"
-import { SessionTabMeter, type TabMeter } from "./SessionTabMeter"
 import { CostBreakdown } from "./analysis/CostBreakdown"
 import { ContextTokensChart, type ChartSeries } from "./analysis/ContextTokensChart"
 import { EfficiencyBreakdown } from "./analysis/EfficiencyBreakdown"
@@ -263,24 +262,24 @@ function TabSectionHeading({ children }: { children: string }) {
 }
 
 /**
- * The ink each Context stat carries. Each tone repeats the color its own
+ * The ink each key entry carries. Each series repeats the color its own
  * chart layer takes when it lights, so the row reads as the chart's key.
- * "waste" carries the warning amber the cache marks draw in, not the critical
- * red: the row must state the color the reader will actually see light up.
  */
-const STAT_TONE_CLASS = {
-  context: "text-context-stroke tabular-nums",
-  in: "text-token-in tabular-nums",
-  out: "text-token-out tabular-nums",
-  waste: "text-context-warning tabular-nums",
-} as const
+const SERIES_INK_CLASS: Record<ChartSeries, string> = {
+  context: "text-context-stroke",
+  in: "text-token-in",
+  out: "text-token-out",
+  rehydration: "text-mark-rehydration",
+  routingMiss: "text-mark-routing-miss",
+  compaction: "text-mark-compaction",
+}
 
 /** The icon that identifies each Context stat in place of a caption label. */
 const TOKEN_STAT_ICONS: Record<string, LucideIcon> = {
   Context: Layers,
   In: ArrowDownToLine,
   Out: ArrowUpFromLine,
-  Compactions: FoldVertical,
+  Compactions: ChevronsDownUp,
   Rehydrations: RotateCcw,
   "Provider cache misses": Repeat2,
 }
@@ -288,51 +287,65 @@ const TOKEN_STAT_ICONS: Record<string, LucideIcon> = {
 /**
  * The chart's key, drawn under the plot it explains.
  *
- * Each figure is an icon-and-value pair. The icon carries the identity the
- * caption label used to; the tooltip and a screen-reader prefix keep the word.
- * A toned pair inks icon and value in the color its chart layer takes when it
- * lights, so the pair states what to look for before the reader points at it.
+ * Each figure is a chip: a solid pill in the color its chart layer takes
+ * when it lights, with the icon and the value in white. The icon carries the
+ * identity the caption label used to; the tooltip and a screen-reader prefix
+ * keep the word.
  *
- * Pointing at an entry lights its layer in the plot above. The plot rests in
- * grey, so this is the only thing that puts color on the chart, and a reader
- * can see exactly which part of the shape a figure counts. An entry whose
- * `series` is absent counts something the chart draws no mark for, so it does
- * not light.
+ * Pointing at a chip lights its layer in the plot above, and the chip
+ * brightens. Clicking a chip pins that layer, so it stays lit
+ * when the pointer leaves; clicking it again unpins it. An entry whose
+ * `series` is absent counts something the chart draws no mark for, so it
+ * neither lights nor pins.
  */
 function ChartKey({
   stats,
+  pinned,
   onHighlight,
+  onPin,
 }: {
   stats: ReadonlyArray<{
     label: string
     value: string
-    tone?: "context" | "in" | "out" | "waste"
     series?: ChartSeries
   }>
-  /** Names the layer to light, or null to return the plot to grey. */
+  /** The layer held lit by a click, or null. */
+  pinned: ChartSeries | null
+  /** Names the layer under the pointer, or null when the pointer leaves. */
   onHighlight: (series: ChartSeries | null) => void
+  /** Toggles the pinned layer. */
+  onPin: (series: ChartSeries) => void
 }) {
   return (
-    <div className="flex items-center justify-between gap-x-4 rounded-[var(--radius-popover)] bg-surface-card/50 px-3 py-2">
+    <div className="flex flex-wrap items-center gap-1">
       {stats.map((stat) => {
         const Icon = TOKEN_STAT_ICONS[stat.label]
         const series = stat.series ?? null
+        const isPinned = series != null && series === pinned
         return (
           <Tooltip key={stat.label} label={stat.label}>
-            <span
+            <button
+              type="button"
+              aria-pressed={series != null ? isPinned : undefined}
+              disabled={series == null}
+              data-series={series ?? undefined}
               className={cn(
-                "flex items-center gap-x-1 type-body",
-                stat.tone ? STAT_TONE_CLASS[stat.tone] : "text-label",
+                "chart-key-chip rounded-full px-2 py-0.5 type-body tabular-nums disabled:opacity-100",
+                series != null ? SERIES_INK_CLASS[series] : "text-label-tertiary",
+                isPinned && "chart-key-chip-pinned",
               )}
               onMouseEnter={() => onHighlight(series)}
               onMouseLeave={() => onHighlight(null)}
+              onClick={() => series != null && onPin(series)}
             >
               <span className="sr-only">{stat.label}: </span>
-              {Icon && (
-                <Icon size={12} strokeWidth={2} aria-hidden="true" className="shrink-0" />
-              )}
-              {stat.value}
-            </span>
+              <span className="flex items-center gap-x-1 text-white">
+                {Icon && (
+                  <Icon size={12} strokeWidth={2.25} aria-hidden="true" className="shrink-0" />
+                )}
+                {stat.value}
+              </span>
+            </button>
           </Tooltip>
         )
       })}
@@ -507,8 +520,14 @@ export function SessionDetailPresentation({
   const subagent = session.subagent
   const [tab, setTab] = useState<SessionDetailTab>("overview")
   // Which chart layer the key points at. The pointer sets it and the pointer
-  // clears it, so the plot needs no synchronization of its own.
-  const [highlight, setHighlight] = useState<ChartSeries | null>(null)
+  // clears it; a click pins a layer, which holds when the pointer leaves.
+  const [hovered, setHovered] = useState<ChartSeries | null>(null)
+  const [pinned, setPinned] = useState<ChartSeries | null>(null)
+  const highlight = hovered ?? pinned
+  const togglePin = useCallback(
+    (series: ChartSeries) => setPinned((current) => (current === series ? null : series)),
+    [],
+  )
   const modelPairs = modelRunShortPairs(modelRuns)
   const hygieneChecks = sessionHygieneChecks(hygiene)
   const hasAssessedHygieneChecks = hygieneChecks.some((check) => check.status !== "notAssessed")
@@ -581,50 +600,14 @@ export function SessionDetailPresentation({
         cacheRoutingMissCount: firstSession?.cacheRoutingMissCount ?? 0,
       })
     : null
-  // Each tab opens with its own reading. Every meter reads the same
-  // direction: a higher reading is worse, so a fuller meter always means more
-  // to look at.
-  const contextPercent =
-    summary && summary.contextAvailable !== false && summary.contextWindow > 0
-      ? Math.min(100, (summary.peakContextTokens / summary.contextWindow) * 100)
-      : null
-  const rewriteShare = efficiencyCard?.rewriteShare ?? null
-  const tabMeters: Record<SessionDetailTab, TabMeter> = {
-    overview: {
-      label: "Peak context",
-      figure: contextPercent != null ? `${Math.round(contextPercent)}%` : "—",
-      percent: contextPercent,
-      meterLabel: "Peak context used of the window",
-    },
-    cost: {
-      label: costBadge ? costBadge.figureLabel : "Cost",
-      figure: cost ? formatCost(cost.totalCostUsd) : "—",
-      // Rewrite share is the cost-quality reading: how much of this money
-      // re-sent context the session already had.
-      percent: rewriteShare ? rewriteShare.value * 100 : null,
-      meterLabel: "Share of the spend that was rewrite",
-    },
-    tools: {
-      label: "Startup context",
-      figure: toolsUsage ? formatCompact(toolsUsage.totalTokens) : "—",
-      percent:
-        toolsUsage && toolsUsage.totalTokens > 0
-          ? (toolsUsage.wastedTokens / toolsUsage.totalTokens) * 100
-          : null,
-      meterLabel: "Share of startup context the session never used",
-    },
-  }
-
-  // The context area is the chart's main shape, so the key names it first. Its
-  // figure is the peak in tokens. The meter at the head of this panel reads
-  // the same peak against the window, so the two state different things.
+  // The context area is the chart's main shape, so the key names it first.
+  // Its figure is the peak in tokens.
   const chartKeyStats =
     summary && tokensCard
       ? [
           {
             label: "Context",
             value: formatCompact(summary.peakContextTokens),
-            tone: "context" as const,
             series: "context" as const,
           },
           ...tokensCard.stats,
@@ -832,7 +815,7 @@ export function SessionDetailPresentation({
                 onChange={setTab}
                 ariaLabel="Session detail sections"
                 semantics="tabs"
-                variant="text-tabs"
+                variant="native-tabs"
                 idPrefix="session-detail-tabs"
               />
             </div>
@@ -843,7 +826,6 @@ export function SessionDetailPresentation({
               aria-labelledby={`session-detail-tabs-${tab}`}
               className="min-h-0 flex-1 overflow-y-auto px-4 py-3"
             >
-              <SessionTabMeter meter={tabMeters[tab]} />
               {tab === "overview" && (
                 <div className="divide-y divide-separator">
                   {tokensCard && (
@@ -854,7 +836,12 @@ export function SessionDetailPresentation({
                         activeSecs={summary.avgActiveSecs}
                         highlight={highlight}
                       />
-                      <ChartKey stats={chartKeyStats} onHighlight={setHighlight} />
+                      <ChartKey
+                        stats={chartKeyStats}
+                        pinned={pinned}
+                        onHighlight={setHovered}
+                        onPin={togglePin}
+                      />
                     </div>
                   )}
 
@@ -901,11 +888,19 @@ export function SessionDetailPresentation({
                 (firstSession?.initialContext ? (
                   <div className="flex flex-col gap-y-2">
                     {/* The wasted tokens are the finding of this tab, so they
-                        come before the table they summarize. */}
+                        head the table they summarize. The figure has no
+                        ceiling, so it is a headline and not a meter. */}
                     {toolsUsage != null && toolsUsage.wastedTokens > 0 && (
-                      <p className="type-callout text-label-tertiary">
-                        The unused items here burned {formatCompact(toolsUsage.wastedTokens)}{" "}
-                        tokens.
+                      <p className="mb-1 flex items-center gap-x-3">
+                        <span className="type-large-title font-semibold! text-brand tabular-nums">
+                          {formatCompact(toolsUsage.wastedTokens)}
+                        </span>
+                        <span className="flex flex-col type-callout leading-tight">
+                          <span className="font-semibold text-label">tokens burned</span>
+                          <span className="text-label-secondary">
+                            by items the session never used
+                          </span>
+                        </span>
                       </p>
                     )}
                     <SkillsMcpChart breakdown={firstSession.initialContext} />

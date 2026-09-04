@@ -38,12 +38,12 @@ const STATUS_PRESENTATION: Record<AssessedHygieneCheck["status"], HygieneStatusP
   finding: {
     Icon: CircleX,
     label: "failing",
-    textClass: "text-system-red-text",
+    textClass: "text-share-waste-text",
   },
   clean: {
     Icon: CircleCheck,
     label: "passed",
-    textClass: "text-system-green",
+    textClass: "text-share-work-text",
   },
 }
 
@@ -53,7 +53,7 @@ function HygieneGuidance({ check }: { check: AssessedHygieneCheck }) {
   return (
     <div className="mt-1 flex flex-col gap-2 rounded-control border border-separator p-3 text-pretty type-callout text-label-secondary">
       {documentation.findingDetails.length > 0 && (
-        <div className="flex flex-col gap-1 text-system-red-text">
+        <div className="flex flex-col gap-1 text-share-waste-text">
           {documentation.findingDetails.map((sentence) => (
             <p key={sentence}>{sentence}</p>
           ))}

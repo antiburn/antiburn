@@ -143,11 +143,31 @@ describe("the chart key lights one layer", () => {
     expect(screen.getByTestId("chart").getAttribute("data-highlight")).toBe("context")
   })
 
-  it("names no layer for a figure the chart draws no mark for", () => {
+  it("names the compaction marks from the compactions entry", () => {
     view()
-    // Compactions are read off the context area's own drop, so the key entry
-    // has no mark of its own to light.
     fireEvent.mouseOver(screen.getByText("3"))
-    expect(screen.getByTestId("chart").getAttribute("data-highlight")).toBe("none")
+    expect(screen.getByTestId("chart").getAttribute("data-highlight")).toBe("compaction")
+  })
+
+  it("pins a layer on click, and unpins it on the next click", () => {
+    view()
+    const chart = () => screen.getByTestId("chart").getAttribute("data-highlight")
+    const chip = screen.getByText("120.0k").closest("button")!
+
+    fireEvent.click(chip)
+    fireEvent.mouseOut(chip)
+    expect(chart()).toBe("in")
+    expect(chip.getAttribute("aria-pressed")).toBe("true")
+
+    // Another chip under the pointer wins while it is there.
+    fireEvent.mouseOver(screen.getByText("8.0k"))
+    expect(chart()).toBe("out")
+    fireEvent.mouseOut(screen.getByText("8.0k"))
+    expect(chart()).toBe("in")
+
+    fireEvent.click(chip)
+    fireEvent.mouseOut(chip)
+    expect(chart()).toBe("none")
+    expect(chip.getAttribute("aria-pressed")).toBe("false")
   })
 })

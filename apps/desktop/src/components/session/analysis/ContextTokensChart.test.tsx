@@ -167,7 +167,7 @@ describe("ContextTokensChart", () => {
       <ContextTokensChart buckets={buckets} contextWindow={200_000} highlight="rehydration" />,
     )
 
-    const bar = container.querySelector('line[stroke="var(--color-context-warning)"]')
+    const bar = container.querySelector('line[stroke="var(--color-mark-rehydration)"]')
     // The mark carries the entrance class, so it fades in after the areas
     // have finished growing.
     expect(container.querySelector(".animate-chart-mark")).toBeTruthy()
@@ -192,7 +192,7 @@ describe("ContextTokensChart", () => {
     )
 
     const rehydrationLines = container.querySelectorAll(
-      'line[stroke="var(--color-context-warning)"]',
+      'line[stroke="var(--color-mark-rehydration)"]',
     )
     expect(rehydrationLines.length).toBe(0)
   })
@@ -213,7 +213,7 @@ describe("ContextTokensChart", () => {
 
     const compactionLine = container.querySelector('line[stroke="var(--color-label-tertiary)"]')
     const rehydrationLine = container.querySelector(
-      'line[stroke="var(--color-context-warning)"]',
+      'line[stroke="var(--color-mark-rehydration)"]',
     )
     expect(compactionLine).toBeNull()
     expect(rehydrationLine?.getAttribute("stroke-dasharray")).toBeFalsy()
@@ -260,7 +260,7 @@ describe("ContextTokensChart", () => {
       <ContextTokensChart buckets={buckets} contextWindow={200_000} highlight="routingMiss" />,
     )
 
-    const bar = container.querySelector('line[stroke="var(--color-context-warning)"]')
+    const bar = container.querySelector('line[stroke="var(--color-mark-routing-miss)"]')
     expect(bar).not.toBeNull()
     expect(bar?.getAttribute("stroke-opacity")).toBe("0.4")
     expect(bar?.getAttribute("stroke-width")).toBe("2")
@@ -341,12 +341,12 @@ describe("ContextTokensChart", () => {
     )
 
     expect(
-      container.querySelectorAll('line[stroke="var(--color-context-warning)"]'),
+      container.querySelectorAll('line[stroke="var(--color-mark-rehydration)"]'),
     ).toHaveLength(2)
     expect(screen.getAllByText("rehydration")).toHaveLength(1)
   })
 
-  it("rests the whole plot in grey, so no layer claims the reader first", () => {
+  it("rests the token layers in grey and keeps the context area lit", () => {
     const buckets = [
       bucket({ contextTokens: 100_000, tokensIn: 900, tokensOut: 400 }),
       bucket({ contextTokens: 120_000, tokensIn: 500, tokensOut: 800 }),
@@ -361,10 +361,14 @@ describe("ContextTokensChart", () => {
     expect(
       container.querySelector('path[fill="var(--color-chart-rest-strong)"]'),
     ).not.toBeNull()
-    // The resting fill states the shape without the warm ramp.
+    // The context area is the main shape, so it keeps its color at rest,
+    // without the warm ramp.
+    expect(
+      container.querySelector('stop[stop-color="var(--color-context-fill-top)"]'),
+    ).not.toBeNull()
     expect(
       container.querySelector('stop[stop-color="var(--color-context-rest-top)"]'),
-    ).not.toBeNull()
+    ).toBeNull()
   })
 
   it("lights one named layer and leaves the rest grey", () => {

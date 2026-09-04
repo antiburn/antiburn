@@ -491,10 +491,7 @@ describe("SessionDetailPresentation — chart key", () => {
 
   it("names the context area first, at its peak in tokens", () => {
     view({})
-    // The meter at the head of the panel reads the same peak against the
-    // window, so the key states the figure the meter does not.
     expect(screen.getByText("90.0k")).toBeTruthy()
-    expect(screen.getByText("45%")).toBeTruthy()
   })
 })
 
@@ -511,8 +508,7 @@ describe("SessionDetailPresentation — session facts", () => {
     const panel = screen.getByRole("tabpanel")
     expect(panel).toHaveTextContent("Estimated cost")
     expect(screen.getByText("Input")).toBeTruthy()
-    // The panel heading and the breakdown headline are the same figure, by design.
-    expect(screen.getAllByText("$2.40").length).toBeGreaterThan(1)
+    expect(screen.getByText("$2.40")).toBeTruthy()
   })
 
   it("marks a WSL session origin in the header", () => {

@@ -5,16 +5,14 @@
    session-analysis surface, kept out of tokens.css so the core design tokens
    stay the ones every surface uses.
 
-   The palette is brand-led ("ember") and splits hot from cool. The chart
-   draws grey at rest and takes color one layer at a time, while the pointer
-   rests on that layer's key entry. The context line stays the hot antiburn
-   orange throughout, because it is the one shape that must read as the mark.
-   The token series use a cool cyan-to-blue family — the complement of the
-   flame — so a lit series never competes with the line. Red stays for
-   alerts only.
+   Color names a category here. Each series and each mark has its own hue,
+   so the key can name a layer by color. The context area is lit at rest,
+   because it is the main shape of the plot; every other layer draws grey
+   until its key entry lights it. The brand orange marks a compaction, and
+   red is the verdict for waste.
 
-   The palette supplies context colors, token colors, and one context warning
-   hue.
+   The palette supplies context colors, token colors, mark colors, the
+   efficiency composition, and the context heat ramp.
 
    Every token is presentation only: nothing here knows what a value means,
    only what it looks like. Tailwind v4 processes `@theme` in any file the
@@ -22,18 +20,19 @@
    ========================================================================== */
 
 @theme {
-  /* The context line. The hot brand orange, unchanged between themes: it is
-     the one shape that must read as the antiburn mark. */
+  /* The context line. A cool blue, lit at rest: the context area is the
+     main shape of the plot, so it keeps its color while the other layers
+     wait in grey. The brand orange is the verdict mark for a compaction. */
   --color-context-stroke: var(--color-context-stroke-val);
 
   /* Vertical area fill under that line, with the alpha baked in, fading out
-     toward the baseline. This is the lit fill: the chart shows it while the
-     pointer rests on the key entry for the context area. */
+     toward the baseline. This fill draws at rest and while the pointer rests
+     on the key entry for the context area. */
   --color-context-fill-top: var(--color-context-fill-top-val);
   --color-context-fill-base: var(--color-context-fill-base-val);
 
-  /* The same fill at rest. The plot draws grey until a key entry names a
-     layer, so the chart states its shape first and its colors second. */
+  /* The same fill in grey. The plot uses it while another layer is lit, so
+     the lit layer is the only color on the chart. */
   --color-context-rest-top: var(--color-context-rest-top-val);
   --color-context-rest-base: var(--color-context-rest-base-val);
 
@@ -58,22 +57,29 @@
      alike. */
   --color-context-rewrite: var(--color-context-rewrite-val);
 
-  /* The token series below the context line: a deep blue for parent output,
-     a lighter cyan for parent input, and a neutral for combined sub-agent
-     tokens. Output leads, because output tokens cost the most and show best
-     that work is getting done. Cool by design, so the layer reads as
-     secondary to the hot line above it. */
+  /* The token series below the context line: a violet for parent output, a
+     cyan for parent input, and a neutral for combined sub-agent tokens. Each
+     series has its own hue, so a lit layer names itself. */
   --color-token-in: var(--color-token-in-val);
   --color-token-out: var(--color-token-out-val);
   --color-token-subagent: var(--color-token-subagent-val);
 
+  /* The lit color of each mark drawn over the plot. A rehydration takes a
+     yellow, a routing miss a pink, and a compaction the brand orange. Each
+     event has its own hue, like the series, so the key can name it. */
+  --color-mark-rehydration: var(--color-mark-rehydration-val);
+  --color-mark-routing-miss: var(--color-mark-routing-miss-val);
+  --color-mark-compaction: var(--color-mark-compaction-val);
+
   /* The three parts of the efficiency composition: real work, rewrite waste,
-     and carry. Real work takes the system green and rewrite waste the warning
-     yellow, so the composition reads good to bad in the same language as the
-     cost track beside it. Carry takes a mid grey, because carry is neither
-     good nor bad. */
+     and carry. Real work takes a teal and rewrite waste a hot red, so the
+     composition reads good to bad. Carry takes a mid grey, because carry is
+     neither good nor bad. The `-text` pair is the same hue as ink for words:
+     a fill color is too light to read on the light surface. */
   --color-share-work: var(--color-share-work-val);
+  --color-share-work-text: var(--color-share-work-text-val);
   --color-share-waste: var(--color-share-waste-val);
+  --color-share-waste-text: var(--color-share-waste-text-val);
   --color-share-carry: var(--color-share-carry-val);
 
   /* The one alert hue in this palette, shared by every surface that needs an
@@ -92,22 +98,27 @@
 /* --- Light (default and explicit) --- */
 :root,
 :root[data-theme="light"] {
-  --color-context-stroke-val: hsl(17.6 100% 58.6%); /* brand-tint, the hot mark */
-  --color-context-fill-top-val: hsl(17.6 100% 58.6% / 0.5); /* brand orange */
-  --color-context-fill-base-val: hsl(17.6 100% 58.6% / 0.12);
+  --color-context-stroke-val: hsl(221.2 83% 53.3%); /* blue */
+  --color-context-fill-top-val: hsl(221.2 83% 53.3% / 0.5);
+  --color-context-fill-base-val: hsl(221.2 83% 53.3% / 0.12);
   --color-context-rest-top-val: hsl(240 5.5% 25% / 0.16);
   --color-context-rest-base-val: hsl(240 5.5% 25% / 0.03);
   --color-chart-rest-strong-val: hsl(240 5.5% 25% / 0.42);
   --color-chart-rest-val: hsl(240 5.5% 25% / 0.26);
   --color-chart-rest-faint-val: hsl(240 5.5% 25% / 0.14);
   --color-chart-rest-mark-val: hsl(240 5.5% 25% / 0.55);
-  --color-token-in-val: hsl(199 55% 62%); /* light cyan */
-  --color-token-out-val: hsl(214 90% 42%); /* deep blue */
+  --color-token-in-val: hsl(189 86% 53.3%); /* cyan */
+  --color-token-out-val: hsl(258.3 89% 66.2%); /* violet */
   --color-token-subagent-val: hsl(240 5.5% 25% / 0.45); /* label-family neutral */
   --color-chart-label-pill-val: hsl(0 0% 100% / 0.5);
   --color-context-rewrite-val: hsl(0 0% 100%);
-  --color-share-work-val: hsl(135 59% 34%);
-  --color-share-waste-val: hsl(45 100% 50%);
+  --color-mark-rehydration-val: hsl(45.5 96% 56.2%); /* yellow */
+  --color-mark-routing-miss-val: hsl(330.3 81% 60.3%); /* pink */
+  --color-mark-compaction-val: hsl(17.6 100% 58.6%); /* brand-tint */
+  --color-share-work-val: hsl(173.4 80% 40%); /* teal */
+  --color-share-work-text-val: hsl(174 80% 25.4%);
+  --color-share-waste-val: hsl(347.9 100% 56%); /* hot red */
+  --color-share-waste-text-val: hsl(348 100% 34.5%);
   --color-share-carry-val: hsl(240 5% 52%);
   --color-context-warning-val: hsl(32 95% 43.72%); /* amber-600 */
   --color-context-critical-val: hsl(0 72% 50.5%); /* red-600 */
@@ -119,22 +130,27 @@
    written separately, mirroring how tokens.css duplicates its dark palette. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-context-stroke-val: hsl(17.6 100% 58.6%); /* brand-tint, the hot mark */
-    --color-context-fill-top-val: hsl(17.6 100% 58.6% / 0.42); /* brand orange */
-    --color-context-fill-base-val: hsl(17.6 100% 58.6% / 0.1);
+    --color-context-stroke-val: hsl(221 89% 59.8%); /* blue, lifted for the dark surface */
+    --color-context-fill-top-val: hsl(221 89% 59.8% / 0.42);
+    --color-context-fill-base-val: hsl(221 89% 59.8% / 0.1);
     --color-context-rest-top-val: hsl(240 33% 94% / 0.24);
     --color-context-rest-base-val: hsl(240 33% 94% / 0.05);
     --color-chart-rest-strong-val: hsl(240 33% 94% / 0.4);
     --color-chart-rest-val: hsl(240 33% 94% / 0.24);
     --color-chart-rest-faint-val: hsl(240 33% 94% / 0.13);
     --color-chart-rest-mark-val: hsl(240 33% 94% / 0.5);
-    --color-token-in-val: hsl(199 45% 50%); /* light cyan */
-    --color-token-out-val: hsl(210 100% 70%); /* deep blue */
+    --color-token-in-val: hsl(188.7 87% 58.2%); /* cyan */
+    --color-token-out-val: hsl(258 89% 69.8%); /* violet */
     --color-token-subagent-val: hsl(240 33% 94% / 0.4); /* label-family neutral */
     --color-chart-label-pill-val: hsl(0 0% 0% / 0.5);
     --color-context-rewrite-val: hsl(0 0% 100%);
-    --color-share-work-val: hsl(135 70% 52.3%);
-    --color-share-waste-val: hsl(48 100% 57.4%);
+    --color-mark-rehydration-val: hsl(45.2 96% 60.1%); /* yellow */
+    --color-mark-routing-miss-val: hsl(330.6 82% 64.5%); /* pink */
+    --color-mark-compaction-val: hsl(17.6 100% 58.6%); /* brand-tint */
+    --color-share-work-val: hsl(173.5 78% 46.4%); /* teal */
+    --color-share-work-text-val: hsl(173.5 78% 46.4%);
+    --color-share-waste-val: hsl(348 100% 60.5%); /* hot red */
+    --color-share-waste-text-val: hsl(348 100% 60.5%);
     --color-share-carry-val: hsl(240 6% 62%);
     --color-context-warning-val: hsl(36.4 100% 52%); /* vivid amber */
     --color-context-critical-val: hsl(0 90% 70.7%); /* red-400 */
@@ -142,22 +158,27 @@
 }
 
 :root[data-theme="dark"] {
-  --color-context-stroke-val: hsl(17.6 100% 58.6%);
-  --color-context-fill-top-val: hsl(17.6 100% 58.6% / 0.42);
-  --color-context-fill-base-val: hsl(17.6 100% 58.6% / 0.1);
+  --color-context-stroke-val: hsl(221 89% 59.8%);
+  --color-context-fill-top-val: hsl(221 89% 59.8% / 0.42);
+  --color-context-fill-base-val: hsl(221 89% 59.8% / 0.1);
   --color-context-rest-top-val: hsl(240 33% 94% / 0.24);
   --color-context-rest-base-val: hsl(240 33% 94% / 0.05);
   --color-chart-rest-strong-val: hsl(240 33% 94% / 0.4);
   --color-chart-rest-val: hsl(240 33% 94% / 0.24);
   --color-chart-rest-faint-val: hsl(240 33% 94% / 0.13);
   --color-chart-rest-mark-val: hsl(240 33% 94% / 0.5);
-  --color-token-in-val: hsl(199 45% 50%);
-  --color-token-out-val: hsl(210 100% 70%);
+  --color-token-in-val: hsl(188.7 87% 58.2%);
+  --color-token-out-val: hsl(258 89% 69.8%);
   --color-token-subagent-val: hsl(240 33% 94% / 0.4);
   --color-chart-label-pill-val: hsl(0 0% 0% / 0.5);
   --color-context-rewrite-val: hsl(0 0% 100%);
-  --color-share-work-val: hsl(135 70% 52.3%);
-  --color-share-waste-val: hsl(48 100% 57.4%);
+  --color-mark-rehydration-val: hsl(45.2 96% 60.1%);
+  --color-mark-routing-miss-val: hsl(330.6 82% 64.5%);
+  --color-mark-compaction-val: hsl(17.6 100% 58.6%);
+  --color-share-work-val: hsl(173.5 78% 46.4%);
+  --color-share-work-text-val: hsl(173.5 78% 46.4%);
+  --color-share-waste-val: hsl(348 100% 60.5%);
+  --color-share-waste-text-val: hsl(348 100% 60.5%);
   --color-share-carry-val: hsl(240 6% 62%);
   --color-context-warning-val: hsl(36.4 100% 52%);
   --color-context-critical-val: hsl(0 90% 70.7%);

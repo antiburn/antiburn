@@ -19,26 +19,20 @@ function skillMcpKindLabel(kind: SkillMcpRow["kind"]): string {
   return "Tool"
 }
 
-/* Token levels where an unused source's status steps up in heat. */
-const UNUSED_WARM_TOKENS = 10_000
-const UNUSED_CRITICAL_TOKENS = 40_000
-
 /* The use count where a "Used ×N" status turns red: heavy repeat use is
    where a session's tool spend concentrates. */
 const USED_HOT_COUNT = 20
 
 /**
- * Ink for a source's status word. A heavily used source reads red, because
- * its repeat calls carry a large token bill. An unused source steps up in
- * heat with the tokens it burned without a use. A deferred tool stays
- * neutral: it cost close to nothing.
+ * Ink for a source's status word. Red is the one verdict: a heavily used
+ * source, because its repeat calls carry a large token bill, and an unused
+ * source that cost tokens. The count beside the word carries the size. A
+ * used or deferred source stays neutral.
  */
 function statusClass(row: SkillMcpRow): string | null {
-  if (row.useCount >= USED_HOT_COUNT) return "text-system-red-text"
+  if (row.useCount >= USED_HOT_COUNT) return "text-share-waste-text"
   if (row.useCount > 0 || row.deferred) return null
-  if (row.tokenCount >= UNUSED_CRITICAL_TOKENS) return "text-system-red-text"
-  if (row.tokenCount >= UNUSED_WARM_TOKENS) return "text-system-orange"
-  return "text-context-warning"
+  return row.tokenCount > 0 ? "text-share-waste-text" : null
 }
 
 /**

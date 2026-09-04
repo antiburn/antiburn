@@ -39,19 +39,14 @@ export interface TokensCardModel {
    * rehydrations when any. Each cell carries a category label and its value,
    * so the section reads in the same label-over-value grid as the hero.
    *
-   * A cell's tone names the chart series or judgment the value belongs to,
-   * so the strip doubles as the chart's key: "in" and "out" ink the two
-   * token-series colors, and "waste" inks the warning color the chart draws
-   * cache marks in. A toneless cell stays neutral.
-   *
-   * `series` names the layer of the plot the cell counts. The key lights that
+   * `series` names the layer of the plot the cell counts, and the color the
+   * cell takes, so the strip doubles as the chart's key. The key lights that
    * layer while the pointer rests on the cell. A cell with no series counts
    * something the chart draws no mark for, so it never lights.
    */
   stats: Array<{
     label: string
     value: string
-    tone?: "in" | "out" | "waste"
     series?: ChartSeries
   }>
 }
@@ -117,17 +112,16 @@ export function tokensCardModel(input: {
 
   // A label names the category, so it stays plural whatever the count is.
   const stats: TokensCardModel["stats"] = [
-    { label: "In", value: formatCompact(tokensInTotal), tone: "in", series: "in" },
-    { label: "Out", value: formatCompact(tokensOutTotal), tone: "out", series: "out" },
+    { label: "In", value: formatCompact(tokensInTotal), series: "in" },
+    { label: "Out", value: formatCompact(tokensOutTotal), series: "out" },
   ]
   if (compactionCount > 0) {
-    stats.push({ label: "Compactions", value: String(compactionCount) })
+    stats.push({ label: "Compactions", value: String(compactionCount), series: "compaction" })
   }
   if (cacheRehydrationCount > 0) {
     stats.push({
       label: "Rehydrations",
       value: String(cacheRehydrationCount),
-      tone: "waste",
       series: "rehydration",
     })
   }
@@ -135,7 +129,6 @@ export function tokensCardModel(input: {
     stats.push({
       label: "Provider cache misses",
       value: String(cacheRoutingMissCount),
-      tone: "waste",
       series: "routingMiss",
     })
   }

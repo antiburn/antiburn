@@ -15,21 +15,26 @@ export interface EfficiencyBreakdownProps {
   metrics: EfficiencyMetrics
 }
 
-/* Red marks a bad reading, in the word, because orange is the brand color
-   here and cannot also mean trouble. */
+/* The block rests in grey and takes its colors while the pointer is over
+   it. Each ink pairs a resting grey with a `group-hover:` color, and the
+   block is the `group`. The greys differ by value, so the shapes keep their
+   steps with no color at all. */
+const INK_TRANSITION = "transition-colors duration-[var(--duration-fast)] ease-out"
+
+/* The band word. Teal is the good verdict and red the bad one; the middle
+   band stays in the label ink, because it is not a verdict. */
 const BAND_TEXT_CLASS: Record<EfficiencyBand, string> = {
-  good: "text-system-green",
-  ok: "text-context-warning",
-  bad: "text-system-red-text",
+  good: cn(INK_TRANSITION, "text-label group-hover:text-share-work-text"),
+  ok: cn(INK_TRANSITION, "text-label"),
+  bad: cn(INK_TRANSITION, "text-label group-hover:text-share-waste-text"),
 }
 
 /* The fill for one band of the cost track. The track shows all three bands at
-   full width, so these are the fixed backdrop the needle moves across. They
-   run at full strength: a half-strength band cannot be told from the track. */
+   full width, so these are the fixed backdrop the needle moves across. */
 const BAND_SEGMENT_CLASS: Record<EfficiencyBand, string> = {
-  good: "bg-system-green",
-  ok: "bg-surface-tertiary",
-  bad: "bg-system-orange-tint",
+  good: cn(INK_TRANSITION, "bg-chart-rest-strong group-hover:bg-share-work"),
+  ok: cn(INK_TRANSITION, "bg-chart-rest-faint group-hover:bg-surface-tertiary"),
+  bad: cn(INK_TRANSITION, "bg-chart-rest group-hover:bg-share-waste"),
 }
 
 type MetricKey = "costPerMTok" | ShareMetricKey
@@ -70,16 +75,28 @@ interface ShareRow {
   key: ShareMetricKey
   label: string
   /* The slice keeps one color for the life of the feature, so a reader
-     recognizes it between sessions. Real work runs green and rewrite waste
-     yellow, which reads in the same language as the cost track above. Carry
+     recognizes it between sessions. Real work runs teal and rewrite waste
+     red, which reads in the same language as the cost track above. Carry
      stays neutral, because carry is neither good nor bad. */
   inkClassName: string
 }
 
 const SHARE_ROWS: ShareRow[] = [
-  { key: "realWorkShare", label: "Real Work %", inkClassName: "bg-share-work" },
-  { key: "rewriteShare", label: "Rewrite Waste %", inkClassName: "bg-share-waste" },
-  { key: "carryShare", label: "Carry %", inkClassName: "bg-share-carry" },
+  {
+    key: "realWorkShare",
+    label: "Real Work %",
+    inkClassName: cn(INK_TRANSITION, "bg-chart-rest-strong group-hover:bg-share-work"),
+  },
+  {
+    key: "rewriteShare",
+    label: "Rewrite Waste %",
+    inkClassName: cn(INK_TRANSITION, "bg-chart-rest group-hover:bg-share-waste"),
+  },
+  {
+    key: "carryShare",
+    label: "Carry %",
+    inkClassName: cn(INK_TRANSITION, "bg-chart-rest-faint group-hover:bg-share-carry"),
+  },
 ]
 
 interface ShareSegment extends ShareRow {
@@ -140,7 +157,7 @@ function CostScaleBar({ value, profile }: { value: number; profile: EfficiencyPr
   const scale = efficiencyThermometer(value, "costPerMTok", profile)
   return (
     <div
-      className="relative flex h-3.5 items-center"
+      className="relative flex h-1 items-center"
       data-testid="thermometer-costPerMTok"
       data-position={scale.position.toFixed(3)}
       aria-hidden
@@ -158,7 +175,7 @@ function CostScaleBar({ value, profile }: { value: number; profile: EfficiencyPr
         />
       ))}
       {/* The ring separates the needle from whichever band it lands on, so the
-          mark stays legible over the green and the orange alike. */}
+          mark stays legible over the teal and the red alike. */}
       <span
         data-testid="cost-needle"
         className="absolute -inset-y-1 w-[3px] -translate-x-1/2 rounded-full bg-label ring-2 ring-surface"
@@ -179,7 +196,7 @@ function CompositionTrack({ segments }: { segments: ShareSegment[] }) {
     <div
       data-testid="efficiency-composition"
       aria-hidden
-      className="flex h-3.5 gap-px overflow-hidden rounded-full bg-surface-secondary"
+      className="flex h-1 gap-px overflow-hidden rounded-full bg-surface-secondary"
     >
       {segments.map((segment) => (
         <span
@@ -324,7 +341,7 @@ export function EfficiencyBreakdown({ metrics }: EfficiencyBreakdownProps) {
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="group flex flex-col" data-testid="efficiency-block">
       <CostRowLine metric={metrics.costPerMTok} profile={metrics.profile} />
       <div className="my-2 border-b border-dashed border-separator" />
       {segments.length > 0 ? (

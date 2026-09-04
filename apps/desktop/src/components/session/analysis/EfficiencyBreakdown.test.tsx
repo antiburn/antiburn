@@ -73,7 +73,7 @@ describe("EfficiencyBreakdown", () => {
     expect(screen.queryByTestId("share-segment-realWorkShare")).toBeNull()
   })
 
-  it("colours a good reading green and names a bad one by direction", () => {
+  it("colours a good reading teal and names a bad one by direction", () => {
     render(
       <EfficiencyBreakdown
         metrics={efficiencyMetrics(
@@ -84,11 +84,11 @@ describe("EfficiencyBreakdown", () => {
     )
     const high = screen.getAllByText("high")
     expect(high).toHaveLength(2)
-    expect(high[0]?.getAttribute("class")).toContain("text-system-red-text")
+    expect(high[0]?.getAttribute("class")).toContain("group-hover:text-share-waste-text")
     expect(screen.getByText("low")).toBeTruthy()
   })
 
-  it("marks a good reading in green", () => {
+  it("marks a good reading in teal", () => {
     render(
       <EfficiencyBreakdown
         metrics={efficiencyMetrics(
@@ -98,7 +98,7 @@ describe("EfficiencyBreakdown", () => {
       />,
     )
     for (const good of screen.getAllByText("good")) {
-      expect(good.getAttribute("class")).toContain("text-system-green")
+      expect(good.getAttribute("class")).toContain("group-hover:text-share-work-text")
     }
   })
 

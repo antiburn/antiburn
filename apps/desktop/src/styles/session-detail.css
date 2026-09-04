@@ -1,0 +1,27 @@
+/* These styles are for the Session Detail view: the chart key chips and the
+   efficiency block. Both rest in grey and take color from the pointer. */
+
+/* --- Chart key chips --- */
+
+/* A chip is a solid pill in its series color, with the icon and the figure
+   in white on top. The series ink sets `color`, and the pill draws that ink
+   as its fill, so one utility class drives the whole chip. */
+.chart-key-chip {
+  background-color: currentColor;
+  transition-property: filter, transform, box-shadow;
+  transition-duration: var(--duration-fast);
+  transition-timing-function: var(--ease-out-quart);
+}
+
+.chart-key-chip:not(:disabled):hover {
+  filter: brightness(1.1);
+}
+
+.chart-key-chip:not(:disabled):active {
+  transform: scale(0.96);
+}
+
+/* A pinned chip adds a ring in its own color, so it reads as held. */
+.chart-key-chip-pinned {
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 35%, transparent);
+}

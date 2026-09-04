@@ -37,7 +37,8 @@ import { GLASS_TOOLTIP_STYLE } from "./tooltip"
  * points at a key entry sees which part of the plot the figure counts, which
  * a static legend beside a colored chart never shows.
  */
-export type ChartSeries = "context" | "in" | "out" | "rehydration" | "routingMiss"
+export type ChartSeries =
+  "context" | "in" | "out" | "rehydration" | "routingMiss" | "compaction"
 
 export interface ContextTokensChartProps {
   buckets: SessionBucket[]
@@ -45,7 +46,10 @@ export interface ContextTokensChartProps {
   contextWindow: number | null
   /** Active seconds the buckets span; null hides the time marks. */
   activeSecs?: number | null
-  /** The layer to draw in its own color, or null to draw the plot in grey. */
+  /**
+   * The layer to draw in its own color. Null draws the context area in its
+   * blue and every other layer in grey; a named layer lights that one alone.
+   */
   highlight?: ChartSeries | null
 }
 
@@ -165,13 +169,15 @@ const MATERIAL_REWRITE_TOKENS = 20_000
 const REWRITE_BAR_OPACITY = 0.9
 /** Bar opacity for a routing miss: the same cost, but not avoidable, so the mark draws lighter. */
 const ROUTING_MISS_BAR_OPACITY = 0.4
-/**
- * A rehydration draws in the warning amber, not the white the other rewrite
- * marks use. White reads as barely there over the context fill, and the red
- * this mark once used read as an alarm. The amber sits between the two, and
- * a rehydration is the one rewrite the reader can act on.
- */
-const CACHE_EVENT_STROKE = "var(--color-context-warning)"
+/** The lit stroke of each mark drawn over the plot. Each event has its own hue. */
+const MARK_STROKE: Record<"rehydration" | "routingMiss" | "compaction", string> = {
+  rehydration: "var(--color-mark-rehydration)",
+  routingMiss: "var(--color-mark-routing-miss)",
+  compaction: "var(--color-mark-compaction)",
+}
+/** A compaction mark at rest and lit. It is heavier than a hairline, because it traces the drop. */
+const COMPACTION_STROKE_WIDTH = 2.5
+const COMPACTION_LIT_STROKE_WIDTH = 3.5
 /** Every mark at rest. A mark is a hairline, so it takes the denser grey. */
 const REST_MARK_STROKE = "var(--color-chart-rest-mark)"
 /** Vertical step between stacked mode-label rows, in pixels. */
@@ -514,7 +520,7 @@ export function ContextTokensTooltip({
         ))}
         {point.isCacheRehydration && cacheEvent != null && (
           <>
-            <span style={{ color: "var(--color-context-warning)" }}>
+            <span style={{ color: MARK_STROKE.rehydration }}>
               Cache rehydration · {formatCompact(cacheEvent.contextTokens)} context
             </span>
             <span className="pl-3">
@@ -529,14 +535,12 @@ export function ContextTokensTooltip({
           </>
         )}
         {point.isCacheRehydration && cacheEvent == null && (
-          <span style={{ color: "var(--color-context-warning)" }}>
+          <span style={{ color: MARK_STROKE.rehydration }}>
             {legacyRehydrationLabel(point)}
           </span>
         )}
         {point.isCacheRoutingMiss && (
-          <span style={{ color: "var(--color-context-warning)" }}>
-            {routingMissLabel(point)}
-          </span>
+          <span style={{ color: MARK_STROKE.routingMiss }}>{routingMissLabel(point)}</span>
         )}
         {point.rewriteTokens > 0 && cacheEvent == null && (
           <span style={{ color: "var(--color-context-warning)" }}>{rewriteLabel(point)}</span>
@@ -547,7 +551,9 @@ export function ContextTokensTooltip({
         {point.secsSincePriorTurn != null && cacheEvent?.userInactiveSecs == null && (
           <span>Since prior turn · {formatDuration(point.secsSincePriorTurn)}</span>
         )}
-        {point.isCompactionBoundary && <span>{compactionLabel(point)}</span>}
+        {point.isCompactionBoundary && (
+          <span style={{ color: MARK_STROKE.compaction }}>{compactionLabel(point)}</span>
+        )}
         {point.subagentLaunches > 0 && (
           <span>Subagents launched · {point.subagentLaunches}</span>
         )}
@@ -624,18 +630,20 @@ export function ContextTokensChart({
   // both turn warm at the same 400k mark. Below 400k the fill stays the calm
   // grey; from 400k up it ramps from amber to red, reaching red at 1M tokens
   // regardless of the window size.
+  // The context area is the main shape, so it keeps its blue at rest and
+  // gives it up only while another layer is lit. Pointing at the context key
+  // entry adds the warm ramp, which says how deep the session ran into its
+  // window.
   const contextLit = highlight === "context"
+  const contextGrey = highlight != null && !contextLit
   const stops: ReactElement[] = []
-  if (!contextLit) {
-    // At rest the fill is two flat greys. The warm ramp says how deep the
-    // session ran into its window, and the meter at the head of this panel
-    // already says that, so the resting plot does not repeat it in color.
+  if (contextGrey) {
     stops.push(
       <stop key="rest-top" offset={0} stopColor="var(--color-context-rest-top)" />,
       <stop key="rest-base" offset={1} stopColor="var(--color-context-rest-base)" />,
     )
   } else {
-    if (peak > WARM_FLOOR_TOKENS) {
+    if (contextLit && peak > WARM_FLOOR_TOKENS) {
       const kinkOffset = (peak - WARM_FLOOR_TOKENS) / peak
       const t = Math.min(
         1,
@@ -696,10 +704,9 @@ export function ContextTokensChart({
             strokeDasharray="2 4"
           />
         ))}
-        {/* A compaction adds no separate mark because the context area shows
-            its drop. A material rewrite draws a quiet white line over the part
-            of the context it re-sent. A cache event keeps the wider marker,
-            and a routing miss draws lighter. */}
+        {/* A material rewrite draws a quiet line over the part of the
+            context it re-sent. A cache event keeps the wider marker, and a
+            routing miss draws lighter. */}
         {labeledRewritePoints(data).map(({ point }) => {
           const opacity = point.isCacheRoutingMiss
             ? ROUTING_MISS_BAR_OPACITY
@@ -714,7 +721,7 @@ export function ContextTokensChart({
               : null
           const stroke =
             markSeries != null && highlight === markSeries
-              ? CACHE_EVENT_STROKE
+              ? MARK_STROKE[markSeries]
               : REST_MARK_STROKE
           return rewriteBar(point, "rewrite", hasContextData, opacity, strokeWidth, stroke)
         })}
@@ -737,8 +744,10 @@ export function ContextTokensChart({
             yAxisId="context"
             type="monotone"
             dataKey="contextTokens"
-            stroke="var(--color-context-stroke)"
-            /* A fine line: the hot color carries the mark without weight. */
+            stroke={
+              contextGrey ? "var(--color-chart-rest-strong)" : "var(--color-context-stroke)"
+            }
+            /* A fine line: the color carries the mark without weight. */
             strokeWidth={1.5}
             fill={`url(#${fillId})`}
             isAnimationActive={animate}
@@ -766,6 +775,30 @@ export function ContextTokensChart({
             animationEasing="ease-out"
           />
         ))}
+        {/* A compaction traces the drop in the context area, from the last
+            level before the boundary to the first level after it. It draws
+            over the fills, so the stroke stays whole where the area thins. */}
+        {hasContextData &&
+          data
+            .filter((point) => point.isCompactionBoundary && point.index > 0)
+            .map((point) => {
+              const lit = highlight === "compaction"
+              return (
+                <ReferenceLine
+                  key={`compaction-${point.index}`}
+                  className="animate-chart-mark"
+                  data-series="compaction"
+                  yAxisId="context"
+                  segment={[
+                    { x: point.index - 1, y: data[point.index - 1]!.contextTokens },
+                    { x: point.index, y: point.contextTokens },
+                  ]}
+                  stroke={lit ? MARK_STROKE.compaction : REST_MARK_STROKE}
+                  strokeWidth={lit ? COMPACTION_LIT_STROKE_WIDTH : COMPACTION_STROKE_WIDTH}
+                  strokeLinecap="round"
+                />
+              )
+            })}
         {/* Every text label draws last. SVG has no z-index, so document order
             is the only way to keep a label over the areas it annotates. Each
             of these marks carries a label and no line of its own; the lines
