@@ -29,14 +29,18 @@ export function OverlayWindow() {
     >
       <div
         ref={panelRef}
-        className="relative mx-2 select-none rounded-xl border border-transparent px-3 pt-2 pb-2"
+        className="relative mx-2 select-none rounded-xl border border-transparent px-3 pt-2 pb-2 transition-colors duration-[var(--duration-fast)] ease-out"
+        // At rest the HUD paints no surface and the bars sit on the desktop.
+        // On hover it takes a surface, which groups the bars into one object
+        // the reader can point at and drag.
+        style={state.hovered ? { backgroundColor: "var(--color-bg-hud-hover)" } : undefined}
         onMouseDown={(event) => session.startDrag(event)}
       >
         <button
           type="button"
           aria-label="Close overlay"
           onClick={() => session.close()}
-          className={`absolute top-2 right-3 translate-x-1/2 -translate-y-1/2 rounded-full border border-separator p-0.5 text-label-tertiary hover:text-label-secondary transition-opacity duration-[var(--duration-fast)] ease-out ${
+          className={`hud-close absolute top-2 right-3 translate-x-1/2 -translate-y-1/2 rounded-full border border-hud-control-edge p-0.5 text-hud-control-ink hover:text-label transition-opacity duration-[var(--duration-fast)] ease-out ${
             showClose ? "opacity-100" : "pointer-events-none opacity-0"
           }`}
           style={{ backgroundColor: "var(--color-bg-hud)" }}
@@ -56,6 +60,7 @@ export function OverlayWindow() {
                 segments={HUD_SEGMENTS}
                 split={[{ fraction: bar.percent / 100, color: bar.color }]}
                 blinkLast={state.sessionLive && index === 0}
+                expectedFraction={bar.expectedFraction}
               />
             ))}
           </div>

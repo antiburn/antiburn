@@ -79,6 +79,10 @@ const storage = {
 }
 
 function summary(): LiveUsageSummaryPayload {
+  // One instant for the whole snapshot. Sampling the clock twice lets a
+  // millisecond fall between the reset time and the generated time, which
+  // moves the notch off the round percentage the tests state.
+  const at = Date.now()
   return {
     providers: [
       {
@@ -88,7 +92,7 @@ function summary(): LiveUsageSummaryPayload {
         support: "live",
         freshness: "fresh",
         sourceLabel: "cached usage",
-        observedAt: new Date().toISOString(),
+        observedAt: new Date(at).toISOString(),
         windows: [
           {
             id: "five-hour",
@@ -97,7 +101,7 @@ function summary(): LiveUsageSummaryPayload {
             scopeModel: null,
             usedPercent: 81,
             startsAt: null,
-            resetsAt: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+            resetsAt: new Date(at + 2 * 3_600_000).toISOString(),
             hasNonzeroUsageInCurrentPeriod: true,
             forecast: {
               unavailableReason: "sparseHistory",
@@ -117,7 +121,7 @@ function summary(): LiveUsageSummaryPayload {
     ],
     errors: [],
     meters: [],
-    generatedAt: new Date().toISOString(),
+    generatedAt: new Date(at).toISOString(),
   }
 }
 
@@ -246,6 +250,27 @@ describe("OverlayWindow", () => {
     getLiveUsage.mockResolvedValue(withSecondBar())
     render(<OverlayWindow />)
     await waitFor(() => expect(resizeOverlayWindow).toHaveBeenCalledWith(44, false, true))
+  })
+
+  it("takes a surface on hover and drops it on leave", async () => {
+    // At rest the bars sit on the desktop with nothing behind them. The
+    // surface arrives with the pointer and groups them into one object.
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
+    expect(panel(container).style.backgroundColor).toBe("")
+    fireEvent.mouseEnter(frame(container))
+    expect(panel(container).style.backgroundColor).toBe("var(--color-bg-hud-hover)")
+    fireEvent.mouseLeave(frame(container))
+    expect(panel(container).style.backgroundColor).toBe("")
+  })
+
+  it("marks how far through the window the clock has travelled", async () => {
+    // The fixture window resets in two hours and its id states a five-hour
+    // period, so three of its five hours have gone.
+    render(<OverlayWindow />)
+    await waitFor(() => expect(screen.getByTestId("led-bar-notch")).toBeInTheDocument())
+    const offset = Number.parseFloat(screen.getByTestId("led-bar-notch").style.left)
+    expect(offset).toBeCloseTo(60, 3)
   })
 
   it("shows the close control at once and the detail window after the delay", async () => {

@@ -143,6 +143,13 @@ export interface AppSettings {
    * where the reader last left it.
    */
   overviewLimitsExpanded: boolean
+  /**
+   * Whether a session's Skills & MCPs table shows every row, rather than only
+   * the first group behind a "Show more" button. One answer for the whole
+   * app, across every session and every launch. It defaults closed and stays
+   * where the reader last left it.
+   */
+  skillsMcpExpanded: boolean
   /** The metric shown in each activity-session badge. */
   sessionBadgeMetric: "cost" | "weeklyPercent" | "fiveHourPercent"
 }
@@ -478,6 +485,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   disabledAgents: [],
   analyticsEnabled: true,
   overviewLimitsExpanded: true,
+  skillsMcpExpanded: false,
   sessionBadgeMetric: "cost",
 }
 
@@ -937,6 +945,8 @@ export interface HudDetailBar {
   /** ISO timestamp, or null when the reset time is unknown. */
   resetsAt: string | null
   color: string
+  /** Elapsed share of the window's period, 0-1, or null when unknown. */
+  expectedFraction: number | null
 }
 
 /** The payload the HUD pushes to the hover detail window. */

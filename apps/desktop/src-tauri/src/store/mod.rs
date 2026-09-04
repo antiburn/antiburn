@@ -2404,6 +2404,10 @@ fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("overviewLimitsExpanded")
             .map(|value| value == "true")
             .unwrap_or(defaults.overview_limits_expanded),
+        skills_mcp_expanded: stored
+            .get("skillsMcpExpanded")
+            .map(|value| value == "true")
+            .unwrap_or(defaults.skills_mcp_expanded),
         session_badge_metric: stored
             .get("sessionBadgeMetric")
             .and_then(|value| SessionBadgeMetric::parse(value))
@@ -2501,6 +2505,10 @@ fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()>
     put.execute(params![
         "overviewLimitsExpanded",
         bool_text(settings.overview_limits_expanded)
+    ])?;
+    put.execute(params![
+        "skillsMcpExpanded",
+        bool_text(settings.skills_mcp_expanded)
     ])?;
     put.execute(params![
         "sessionBadgeMetric",

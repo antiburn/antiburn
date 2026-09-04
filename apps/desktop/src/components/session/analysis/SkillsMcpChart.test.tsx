@@ -1,13 +1,24 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { DEFAULT_SETTINGS, type AppSettings } from "../../../lib/ipc"
 import type { InitialContextBreakdown } from "../../../lib/types/session"
 import { SKILLS_MCP_COLLAPSED_ROWS, SkillsMcpChart } from "./SkillsMcpChart"
 import { skillsMcpExpandedStore } from "./useSkillsMcpExpanded"
 
+// The expanded flag is a stored preference now. These cases are about what the
+// chart draws, so the settings channel is stubbed to a store that always
+// agrees with the default.
+vi.mock("../../../lib/ipc", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getSettings: () => Promise.resolve({ ...DEFAULT_SETTINGS }),
+  setSettings: (settings: AppSettings) => Promise.resolve(settings),
+  onSettingsChanged: () => Promise.resolve(() => {}),
+}))
+
 afterEach(() => {
   cleanup()
-  skillsMcpExpandedStore.set(false)
+  skillsMcpExpandedStore.set(DEFAULT_SETTINGS.skillsMcpExpanded)
 })
 
 function breakdown(sources: InitialContextBreakdown["sources"]): InitialContextBreakdown {

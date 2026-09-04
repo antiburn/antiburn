@@ -133,9 +133,24 @@ colors:
   bg-hud:
     light: "hsl(0 0% 96.4%)"
     dark: "hsl(0 0% 12.5%)"
+  bg-hud-hover: # the HUD surface on hover; the desktop stays visible through it
+    light: "hsl(0 0% 96.4% / 0.9)"
+    dark: "hsl(0 0% 12.5% / 0.9)"
+  hud-control-ink: # the close control's glyph; no alpha, so it stays solid on the hover surface
+    light: "hsl(0 0% 32%)"
+    dark: "hsl(0 0% 78%)"
+  hud-control-edge: # the close control's edge; no alpha, for the same reason
+    light: "hsl(0 0% 80%)"
+    dark: "hsl(0 0% 32%)"
   led-off: # unlit LED segment; one mid grey for both themes, because the HUD paints no surface and floats over any background
     light: "hsl(0 0% 50% / 0.45)"
     dark: "hsl(0 0% 50% / 0.45)"
+  led-notch: # the dark line of the linear-use notch; one value for both themes, for the same reason as led-off
+    light: "hsl(0 0% 20% / 0.95)"
+    dark: "hsl(0 0% 20% / 0.95)"
+  led-notch-highlight: # the light line beside it; the pair reads on a light document and on a dark one
+    light: "hsl(0 0% 100% / 0.85)"
+    dark: "hsl(0 0% 100% / 0.85)"
   # Session-analysis sub-palette only (src/styles/session-analysis-colors.css)
   context-fill-top:
     light: "hsl(217.2 91% 59.8% / 0.6)"
@@ -314,7 +329,13 @@ Notes for what isn't expressible as a token:
   filled paths, not stroked glyphs, and take `--color-agent-mark` rather than a `text-*` label
   colour — a deliberately firmer ink, because a shape has no letterforms to carry it at 18px. A mark
   whose identity _is_ its colour keeps that colour in both themes, taken from the value its source
-  package records. Marks are never drawn inline; they come from the `renderAgentIcon` slot.
+  package records. Marks are never drawn inline; they come from the `renderAgentIcon` slot. The
+  same rule covers the one other place a vendor colour appears: the HUD draws Anthropic's usage bar
+  in the hex `simple-icons` records for the Claude mark, read from the package rather than written
+  into the palette. The bar raises the saturation of that hex and keeps its hue and lightness. A
+  published brand value is made for a filled mark at 18px, and a row of 6px dots on an uncontrolled
+  desktop needs more chroma to read as the same colour. The lift is a factor applied to the package
+  value, so the source stays the package.
 - **Themes** — three sources, in cascade order. The system light/dark preference is the default. A
   platform whose webview exposes live system label/separator/accent tokens picks those up through
   `@supports`, so text and chrome track the OS exactly. A platform without them takes an explicit
