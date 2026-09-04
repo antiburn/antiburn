@@ -48,8 +48,8 @@ import { useGlobalKeydown } from "../../lib/useGlobalKeydown"
 import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
-import { SegmentedControl } from "../ui/SegmentedControl"
 import { Skeleton } from "../ui/Skeleton"
+import { SessionMeterTabs, type MeterTab } from "./SessionMeterTabs"
 import { CostBreakdown } from "./analysis/CostBreakdown"
 import { ContextTokensChart } from "./analysis/ContextTokensChart"
 import { EfficiencyBreakdown } from "./analysis/EfficiencyBreakdown"
@@ -247,12 +247,6 @@ function RelationControl({
 /** The three views of one session's analysis. */
 type SessionDetailTab = "overview" | "cost" | "tools"
 
-const DETAIL_TABS: ReadonlyArray<{ value: SessionDetailTab; label: string }> = [
-  { value: "overview", label: "Overview" },
-  { value: "cost", label: "Cost" },
-  { value: "tools", label: "Tools" },
-]
-
 /** The name of one block inside a tab that holds more than one block. */
 function TabSectionHeading({ children }: { children: string }) {
   return (
@@ -261,48 +255,14 @@ function TabSectionHeading({ children }: { children: string }) {
 }
 
 /**
- * The ink each stat tone carries. "brand" is the hero cost. "in", "out", and
- * "waste" repeat the chart's series and alert colors, so a toned cell reads
- * as that chart layer's legend entry.
+ * The ink each Context stat carries. The three tones repeat the chart's own
+ * series and alert colors, so the row reads as the chart's legend.
  */
 const STAT_TONE_CLASS = {
-  brand: "font-mono text-brand-tint tabular-nums",
   in: "text-token-in tabular-nums",
   out: "text-token-out tabular-nums",
   waste: "text-context-critical tabular-nums",
 } as const
-
-type StatTone = keyof typeof STAT_TONE_CLASS
-
-/**
- * One hero figure, standing alone: the value is self-evident, so the label
- * lives in the tooltip and in a screen-reader prefix rather than as a caption
- * above it.
- */
-function StatCell({
-  value,
-  label,
-  tone,
-}: {
-  value: ReactNode
-  /** What the figure is, for the tooltip and assistive technology. */
-  label: string
-  tone?: StatTone
-}) {
-  return (
-    <Tooltip label={label}>
-      <span
-        className={cn(
-          "min-w-0 truncate type-headline",
-          tone ? STAT_TONE_CLASS[tone] : "text-label",
-        )}
-      >
-        <span className="sr-only">{label}: </span>
-        {value}
-      </span>
-    </Tooltip>
-  )
-}
 
 /** The icon that identifies each Context stat in place of a caption label. */
 const TOKEN_STAT_ICONS: Record<string, LucideIcon> = {
@@ -587,6 +547,44 @@ export function SessionDetailPresentation({
         cacheRoutingMissCount: firstSession?.cacheRoutingMissCount ?? 0,
       })
     : null
+  // The navigation is also the figure strip. Each cell states what its tab is
+  // worth and one reading for the health of what is inside it. Every meter
+  // reads the same direction: a fuller meter always means more to look at.
+  const contextPercent =
+    summary && summary.contextAvailable !== false && summary.contextWindow > 0
+      ? Math.min(100, (summary.peakContextTokens / summary.contextWindow) * 100)
+      : null
+  const rewriteShare = efficiencyCard?.rewriteShare ?? null
+  const detailTabs: ReadonlyArray<MeterTab<SessionDetailTab>> = [
+    {
+      value: "overview",
+      label: "Context",
+      figure: contextPercent != null ? `${Math.round(contextPercent)}%` : "—",
+      percent: contextPercent,
+      meterLabel: "Peak context used of the window",
+    },
+    {
+      value: "cost",
+      label: "Cost",
+      ...(costBadge ? { figureLabel: costBadge.figureLabel } : {}),
+      figure: cost ? formatCost(cost.totalCostUsd) : "—",
+      // Rewrite share is the cost-quality reading: how much of this money
+      // re-sent context the session already had.
+      percent: rewriteShare ? rewriteShare.value * 100 : null,
+      meterLabel: "Share of the spend that was rewrite",
+    },
+    {
+      value: "tools",
+      label: "Tools",
+      figure: toolsUsage ? formatCompact(toolsUsage.totalTokens) : "—",
+      percent:
+        toolsUsage && toolsUsage.totalTokens > 0
+          ? (toolsUsage.wastedTokens / toolsUsage.totalTokens) * 100
+          : null,
+      meterLabel: "Share of startup context the session never used",
+    },
+  ]
+
   const hasRelations = !!relations && (!!relations.parent || relations.children.length > 0)
 
   return (
@@ -731,46 +729,43 @@ export function SessionDetailPresentation({
                 lines={2}
               />
 
-              <div className="flex min-w-0 flex-col gap-y-2">
-                <div className="grid grid-cols-3 gap-x-3">
-                  <StatCell
-                    label={costBadge ? costBadge.figureLabel : "Cost"}
-                    value={cost ? formatCost(cost.totalCostUsd) : "—"}
-                    {...(cost ? { tone: "brand" as const } : {})}
-                  />
-                  <StatCell
-                    label={`Active time (${formatDuration(summary.avgDurationSecs)} overall)`}
-                    value={formatDuration(summary.avgActiveSecs)}
-                  />
-                  <StatCell
-                    label="Last activity"
-                    value={
-                      session.timestamp ? (
-                        <time dateTime={session.timestamp}>
-                          {relativeTime(session.timestamp)}
-                        </time>
-                      ) : (
-                        "—"
-                      )
-                    }
-                  />
-                </div>
-
+              {/* Active time, last activity, and the models on one quiet
+                  line. The figures that carry a reading live in the meter nav
+                  below; these three are context for the title. */}
+              <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 type-caption text-label-secondary">
+                <Tooltip
+                  label={`Active time (${formatDuration(summary.avgDurationSecs)} overall)`}
+                >
+                  <span className="tabular-nums">
+                    {formatDuration(summary.avgActiveSecs)} active
+                  </span>
+                </Tooltip>
+                {session.timestamp && (
+                  <>
+                    <span aria-hidden="true" className="text-label-tertiary">
+                      ·
+                    </span>
+                    <time dateTime={session.timestamp}>{relativeTime(session.timestamp)}</time>
+                  </>
+                )}
                 {modelPairs.length > 0 && (
-                  <div
-                    className="min-w-0 truncate type-callout text-label-tertiary"
-                    title={modelRunNames(modelRuns).join("\n")}
-                  >
-                    {modelPairs.map((pair, index) => (
-                      <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
-                        {index > 0 && " · "}
-                        <span className="font-medium">{pair.model}</span>
-                        {pair.thinkingMode && (
-                          <span className="type-caption"> {pair.thinkingMode}</span>
-                        )}
-                      </span>
-                    ))}
-                  </div>
+                  <>
+                    <span aria-hidden="true" className="text-label-tertiary">
+                      ·
+                    </span>
+                    <span
+                      className="min-w-0 truncate"
+                      title={modelRunNames(modelRuns).join("\n")}
+                    >
+                      {modelPairs.map((pair, index) => (
+                        <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
+                          {index > 0 && " · "}
+                          <span className="font-medium">{pair.model}</span>
+                          {pair.thinkingMode && <span> {pair.thinkingMode}</span>}
+                        </span>
+                      ))}
+                    </span>
+                  </>
                 )}
               </div>
             </div>
@@ -785,13 +780,11 @@ export function SessionDetailPresentation({
             )}
 
             <div className="border-b border-separator px-3 py-2">
-              <SegmentedControl
-                options={DETAIL_TABS}
+              <SessionMeterTabs
+                tabs={detailTabs}
                 value={tab}
                 onChange={setTab}
                 ariaLabel="Session detail sections"
-                semantics="tabs"
-                variant="raised-tabs"
                 idPrefix="session-detail-tabs"
               />
             </div>

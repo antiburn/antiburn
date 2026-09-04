@@ -544,7 +544,6 @@ export function ContextTokensChart({
 }: ContextTokensChartProps) {
   const data = contextTokenSeries(buckets)
   const fillId = `context-tokens-fill-${useId().replace(/:/g, "")}`
-  const hasContext = contextWindow != null
   const [initialBuckets] = useState(() => buckets)
   const animate = !prefersReducedMotion()
   const animationDurationMs = slowAnimationDurationMs()
@@ -568,11 +567,19 @@ export function ContextTokensChart({
   // The largest spike reaches the top of the plot, so the token layer keeps
   // its full range of variation. Its low alpha keeps it secondary.
   const tokenCeiling = Math.max(1, tokenPeak)
-  const contextAxis = hasContext ? axisScale(peak, contextWindow, 5) : null
+  // The context area draws whenever the session has context to show. The
+  // window only places the band marks. A model with an unknown window still
+  // has a context curve, and dropping that curve left the plot with the token
+  // spikes alone and no main shape.
+  const hasContextData = peak > 0
+  const contextAxis = contextWindow != null ? axisScale(peak, contextWindow, 5) : null
+  // With no window to scale against, the peak is the top of the plot, so the
+  // curve fills the same height it would inside a known window.
+  const contextCeiling = contextAxis?.ceiling ?? Math.max(1, peak)
   // Every vertical `ReferenceLine` needs a `yAxisId` that names an axis the
   // chart renders — recharts falls back to an axis id of "0", which does not
   // exist here. The "tokens" axis always renders, so it is the fallback.
-  const markerAxisId = hasContext ? "context" : "tokens"
+  const markerAxisId = hasContextData ? "context" : "tokens"
 
   // The fill gradient is an SVG `objectBoundingBox` gradient, so its [0,1]
   // offsets map over the *area path's* bounding box, which spans 0..peak
@@ -613,7 +620,7 @@ export function ContextTokensChart({
     >
       <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
         <defs>
-          {hasContext && (
+          {hasContextData && (
             <linearGradient id={fillId} x1={0} y1={0} x2={0} y2={1}>
               {stops}
             </linearGradient>
@@ -623,7 +630,7 @@ export function ContextTokensChart({
             `progress` value placed each vertical mark by its index instead of
             by its value, so marks drifted left of the points they belong to. */}
         <XAxis dataKey="index" type="number" domain={[0, Math.max(1, data.length - 1)]} hide />
-        {contextAxis && <YAxis yAxisId="context" hide domain={[0, contextAxis.ceiling]} />}
+        {hasContextData && <YAxis yAxisId="context" hide domain={[0, contextCeiling]} />}
         <YAxis yAxisId="tokens" hide orientation="right" domain={[0, tokenCeiling]} />
         {/* The band lines only. Their labels draw after the plot layers. */}
         {contextAxis?.ticks.map((value) => (
@@ -647,7 +654,7 @@ export function ContextTokensChart({
             ? CACHE_EVENT_BAR_WIDTH
             : REWRITE_MARKER_WIDTH
           const stroke = point.isCacheRehydration ? CACHE_EVENT_STROKE : REWRITE_STROKE
-          return rewriteBar(point, "rewrite", !!contextAxis, opacity, strokeWidth, stroke)
+          return rewriteBar(point, "rewrite", hasContextData, opacity, strokeWidth, stroke)
         })}
         <Tooltip
           cursor={{ stroke: "var(--color-separator)" }}
@@ -663,7 +670,7 @@ export function ContextTokensChart({
             />
           }
         />
-        {hasContext && (
+        {hasContextData && (
           <Area
             yAxisId="context"
             type="monotone"
@@ -714,7 +721,7 @@ export function ContextTokensChart({
             do not overlap each other. */}
         {labeledRewritePoints(data)
           .filter(({ showLabel }) => showLabel)
-          .map(({ point }) => rewriteBarLabel(point, !!contextAxis))}
+          .map(({ point }) => rewriteBarLabel(point, hasContextData))}
         {/* Elapsed active time along the bottom, as labels only. */}
         {activeSecs != null &&
           timeAxisTicks(activeSecs, data.length, 6).map((tick) => (

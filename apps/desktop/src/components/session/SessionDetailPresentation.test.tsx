@@ -151,7 +151,7 @@ describe("SessionDetailPresentation — chrome", () => {
     view({ cost: cost() })
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
     expect(screen.getByText("In:")).toBeTruthy()
-    expect(screen.getByRole("tab", { name: "Cost" })).toBeTruthy()
+    expect(screen.getByRole("tab", { name: /^Cost/ })).toBeTruthy()
   })
 
   it("renders only assessed hygiene checks", () => {
@@ -193,7 +193,7 @@ describe("SessionDetailPresentation — chrome", () => {
       },
     })
 
-    fireEvent.click(screen.getByRole("tab", { name: "Cost" }))
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
 
     // Every check shows with its own verdict mark. No rollup count restates
     // the list. Each row carries an info button that holds its explainer, so
@@ -224,7 +224,7 @@ describe("SessionDetailPresentation — chrome", () => {
     })
 
     // The status bar carries the evidence state, so the tab does not repeat it.
-    fireEvent.click(screen.getByRole("tab", { name: "Cost" }))
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
     expect(screen.queryByText("Burn Checks")).toBeNull()
     expect(screen.queryByText("Refreshing")).toBeNull()
     expect(screen.queryByText("0/0")).toBeNull()
@@ -238,7 +238,7 @@ describe("SessionDetailPresentation — chrome", () => {
       },
     })
 
-    fireEvent.click(screen.getByRole("tab", { name: "Cost" }))
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
     expect(screen.queryByText("Checks")).toBeNull()
     expect(screen.queryByLabelText("Session hygiene checks")).toBeNull()
     expect(screen.queryByText(/not assessed/i)).toBeNull()
@@ -255,7 +255,7 @@ describe("SessionDetailPresentation — chrome", () => {
 
   it("explains an unpriced session on the Cost tab instead of showing cost rows", () => {
     view({ cost: null })
-    fireEvent.click(screen.getByRole("tab", { name: "Cost" }))
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
     expect(screen.getByText("No cost has been recorded for this session.")).toBeTruthy()
     expect(screen.queryByText("Input")).toBeNull()
   })
@@ -304,7 +304,7 @@ describe("SessionDetailPresentation — chrome", () => {
     expect(title.style.getPropertyValue("--truncated-text-lines")).toBe("2")
   })
 
-  it("arranges the session facts in the hero stat strip", () => {
+  it("arranges the session facts in the hero and the figures in the meter nav", () => {
     const timestamp = new Date(Date.now() - 11 * 60_000).toISOString()
     view({
       session: {
@@ -321,13 +321,16 @@ describe("SessionDetailPresentation — chrome", () => {
 
     const hero = screen.getByLabelText("Session summary")
     expect(hero).toHaveTextContent("antiburn")
-    expect(hero).toHaveTextContent("Estimated cost")
-    expect(hero).toHaveTextContent("$2.40")
     expect(hero).toHaveTextContent("30m")
     expect(hero).toHaveTextContent("5.6-sol high")
     expect(hero).toHaveTextContent("11m ago")
+    // The figures live in the meter nav, not in the hero.
+    expect(hero).not.toHaveTextContent("$2.40")
+    const costTab = screen.getByRole("tab", { name: /^Cost/ })
+    expect(costTab).toHaveTextContent("$2.40")
+    expect(costTab.getAttribute("title")).toContain("Estimated cost")
 
-    fireEvent.click(screen.getByRole("tab", { name: "Cost" }))
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
     expect(screen.queryByRole("button", { name: "6/6 passed" })).toBeNull()
     expect(screen.getByRole("button", { name: "Session overdepth details" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Model overthinking details" })).toBeTruthy()
@@ -472,17 +475,17 @@ describe("SessionDetailPresentation — states", () => {
 })
 
 describe("SessionDetailPresentation — session facts", () => {
-  it("shows the cost in the hero and its breakdown on the Cost tab", () => {
+  it("shows the cost on its nav cell and its breakdown on the Cost tab", () => {
     view({
       cost: cost(),
     })
-    const hero = screen.getByLabelText("Session summary")
-    expect(hero).toHaveTextContent("Estimated cost")
-    expect(hero).toHaveTextContent("$2.40")
+    const costTab = screen.getByRole("tab", { name: /^Cost/ })
+    expect(costTab).toHaveTextContent("$2.40")
+    expect(costTab.getAttribute("title")).toContain("Estimated cost")
 
-    fireEvent.click(screen.getByRole("tab", { name: "Cost" }))
+    fireEvent.click(costTab)
     expect(screen.getByText("Input")).toBeTruthy()
-    // The hero stat and the breakdown headline are the same figure, by design.
+    // The nav figure and the breakdown headline are the same figure, by design.
     expect(screen.getAllByText("$2.40").length).toBeGreaterThan(1)
   })
 
@@ -537,7 +540,7 @@ describe("SessionDetailPresentation — session facts", () => {
 
     expect(screen.queryByText(/Orchestrated \d+ agents/)).toBeNull()
 
-    fireEvent.click(screen.getByRole("tab", { name: "Cost" }))
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
     fireEvent.click(screen.getByText("2 sub-agents"))
     fireEvent.click(screen.getByText("Write tests"))
     expect(onOpenSubagent).toHaveBeenCalledWith("b", "Write tests")
@@ -637,12 +640,12 @@ describe("SessionDetailPresentation — session facts", () => {
       ],
     })
     const { unmount } = view({ summary: withContext })
-    fireEvent.click(screen.getByRole("tab", { name: "Tools" }))
+    fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
     expect(screen.getByText("research")).toBeTruthy()
     unmount()
 
     view({ summary: summary() })
-    fireEvent.click(screen.getByRole("tab", { name: "Tools" }))
+    fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
     expect(screen.queryByText("research")).toBeNull()
     expect(
       screen.getByText("No startup context has been recorded for this session."),

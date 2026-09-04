@@ -125,6 +125,26 @@ describe("ContextTokensChart", () => {
     ).toBe(true)
   })
 
+  it("draws the context area when the model's context window is unknown", () => {
+    const buckets = [
+      bucket({ contextTokens: 100_000, tokensIn: 900, tokensOut: 400 }),
+      bucket({ contextTokens: 140_000, tokensIn: 700, tokensOut: 300 }),
+    ]
+    const { container } = render(<ContextTokensChart buckets={buckets} contextWindow={null} />)
+
+    // The context curve plus the three token series. An unknown window used
+    // to drop the context layer, which left the plot with no main shape.
+    expect(container.querySelectorAll("g[data-animation-active]")).toHaveLength(4)
+    expect(container.querySelector(".recharts-area-area")).toBeTruthy()
+  })
+
+  it("draws no context area for a session with no context tokens", () => {
+    const buckets = [bucket({ tokensIn: 900, tokensOut: 400 }), bucket({ tokensIn: 700 })]
+    const { container } = render(<ContextTokensChart buckets={buckets} contextWindow={null} />)
+
+    expect(container.querySelectorAll("g[data-animation-active]")).toHaveLength(3)
+  })
+
   it("positions a cache-rehydration bar between the cached prefix and context growth", () => {
     const buckets = [
       bucket({ contextTokens: 200_000 }),
