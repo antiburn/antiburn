@@ -7,7 +7,12 @@
   --color-burn: var(--color-burn-val);
   --color-burn-muted: var(--color-burn-muted-val);
   --color-bg-hud: var(--color-bg-hud-val);
+  --color-bg-hud-hover: var(--color-bg-hud-hover-val);
+  --color-hud-control-ink: var(--color-hud-control-ink-val);
+  --color-hud-control-edge: var(--color-hud-control-edge-val);
   --color-led-off: var(--color-led-off-val);
+  --color-led-notch: var(--color-led-notch-val);
+  --color-led-notch-highlight: var(--color-led-notch-highlight-val);
 }
 
 :root {
@@ -22,6 +27,29 @@
    * disappeared on a dark one. Only a mid grey holds on both.
    */
   --color-led-off-val: hsl(0 0% 50% / 0.45);
+
+  /*
+   * The two lines of the linear-use notch. The HUD paints no surface, so one
+   * grey cannot hold on every background: a dark line disappears on a dark
+   * document and a light line disappears on a light one. The notch draws both
+   * lines, side by side, so one of the two always holds. Each line keeps its
+   * value in both themes, as the unlit segment does.
+   */
+  --color-led-notch-val: hsl(0 0% 20% / 0.95);
+  --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
+
+  /* The HUD surface on hover. The reader can see the desktop through it. */
+  --color-bg-hud-hover-val: hsl(0 0% 96.4% / 0.9);
+
+  /*
+   * The close control. Its glyph and its edge carry no alpha, because the
+   * label and separator inks are partly transparent: on the hover surface,
+   * which is itself partly transparent, the control read as see-through.
+   * The control paints its own opaque surface, so these values follow the
+   * theme rather than holding one value for both.
+   */
+  --color-hud-control-ink-val: hsl(0 0% 32%);
+  --color-hud-control-edge-val: hsl(0 0% 80%);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -29,7 +57,12 @@
     --color-burn-val: hsl(25 100% 50%);
     --color-burn-muted-val: hsl(23 88.8% 54%);
     --color-bg-hud-val: hsl(0 0% 12.5%);
+    --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
+    --color-hud-control-ink-val: hsl(0 0% 78%);
+    --color-hud-control-edge-val: hsl(0 0% 32%);
     --color-led-off-val: hsl(0 0% 50% / 0.45);
+    --color-led-notch-val: hsl(0 0% 20% / 0.95);
+    --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
   }
 }
 
@@ -37,14 +70,24 @@
   --color-burn-val: hsl(18 100% 50%);
   --color-burn-muted-val: hsl(18.1 88% 51.4%);
   --color-bg-hud-val: hsl(0 0% 96.4%);
+  --color-bg-hud-hover-val: hsl(0 0% 96.4% / 0.9);
+  --color-hud-control-ink-val: hsl(0 0% 32%);
+  --color-hud-control-edge-val: hsl(0 0% 80%);
   --color-led-off-val: hsl(0 0% 50% / 0.45);
+  --color-led-notch-val: hsl(0 0% 20% / 0.95);
+  --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
 }
 
 :root[data-theme="dark"] {
   --color-burn-val: hsl(25 100% 50%);
   --color-burn-muted-val: hsl(23 88.8% 54%);
   --color-bg-hud-val: hsl(0 0% 12.5%);
+  --color-bg-hud-hover-val: hsl(0 0% 12.5% / 0.9);
+  --color-hud-control-ink-val: hsl(0 0% 78%);
+  --color-hud-control-edge-val: hsl(0 0% 32%);
   --color-led-off-val: hsl(0 0% 50% / 0.45);
+  --color-led-notch-val: hsl(0 0% 20% / 0.95);
+  --color-led-notch-highlight-val: hsl(0 0% 100% / 0.85);
 }
 
 /*
@@ -67,6 +110,30 @@ body[data-transparent-window] #root {
   font-family: var(--font-bitcount);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+
+/*
+ * The linear-use notch: a dark line and a light line, one pixel each, side by
+ * side. The pair reads on a light document and on a dark one.
+ */
+.led-notch {
+  width: 2px;
+  background: linear-gradient(
+    to right,
+    var(--color-led-notch) 0 1px,
+    var(--color-led-notch-highlight) 1px 2px
+  );
+}
+
+/*
+ * The HUD close control. It straddles the panel edge, and on hover the panel
+ * behind it is almost its own colour. The shadow is what separates the two.
+ * The value is the design system's `raised` shadow.
+ */
+.hud-close {
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.15),
+    0 0 0 0.5px rgb(0 0 0 / 0.04);
 }
 
 .led-blink {

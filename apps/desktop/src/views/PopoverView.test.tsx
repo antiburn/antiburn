@@ -374,7 +374,7 @@ describe("PopoverView", () => {
 
     render(<PopoverView />)
 
-    expect(await screen.findByText("12.35%")).toHaveAttribute(
+    expect(await screen.findByText("12.3%")).toHaveAttribute(
       "data-session-limit-window",
       "weekly-main",
     )
@@ -807,9 +807,15 @@ describe("PopoverView", () => {
     expect(await screen.findByText("1 check failed")).toBeInTheDocument()
   })
 
-  it("refreshes Checks after the evidence worker queue settles", async () => {
+  it("keeps an anchored preview open when Checks refreshes in the background", async () => {
     render(<PopoverView />)
     await screen.findByText("1 check failed")
+    const trigger = await screen.findByRole("button", { name: "Codex at 40 percent" })
+    fireEvent.mouseEnter(trigger)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("show_popover_peek", expect.anything()),
+    )
+
     const callsBefore = invoke.mock.calls.filter(
       ([command]) => command === "get_checks_report",
     ).length
@@ -827,7 +833,7 @@ describe("PopoverView", () => {
     })
     expect(
       invoke.mock.calls.filter(([command]) => command === "hide_popover_peek"),
-    ).toHaveLength(hidesBefore + 1)
+    ).toHaveLength(hidesBefore)
   })
 
   it("publishes the current report while evidence is still processing", async () => {

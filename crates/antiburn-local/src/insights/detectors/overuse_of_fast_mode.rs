@@ -29,14 +29,10 @@
 //!   value. A turn without the signal is not negative evidence.
 //!   Claude Code writes `speed` on every main-loop turn. It omits
 //!   `speed` on most delegated turns. A full-coverage rule never
-//!   clears a session with subagent work. Cadence, the golden source,
-//!   applies the same principle in
-//!   `crates/analysis/src/efficiency_findings.rs`: its turn `speed`
-//!   field doc states that absence is never negative evidence of "not
-//!   fast", and its `detect_fast_mode` function skips a no-signal turn
-//!   instead of failing the whole session. The rule reports the
-//!   signal as missing only when no turn in the session carries a
-//!   speed value.
+//!   clears a session with subagent work. A missing signal is not
+//!   negative evidence because delegated turns often omit this field.
+//!   The rule skips each no-signal turn and reports the signal as
+//!   missing only when no turn carries a speed value.
 
 use crate::analysis::{FAST_SPEED_KEY, SessionEvidence};
 

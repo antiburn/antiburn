@@ -593,7 +593,7 @@ pub struct ChecksCategoryPayload {
     pub finding: u64,
     pub clean: u64,
     pub unavailable: u64,
-    /// Hundredths of one percent, bounded to `0..=5000`.
+    /// Hundredths of one percent, bounded to `0..=10000`.
     pub estimated_token_burn_basis_points: Option<u16>,
 }
 
@@ -602,7 +602,7 @@ pub struct ChecksCategoryPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ChecksReportPayload {
     pub evidence_settled: bool,
-    /// Hundredths of one percent, bounded to `0..=5000`.
+    /// Hundredths of one percent, bounded to `0..=10000`.
     pub estimated_token_burn_basis_points: Option<u16>,
     pub categories: Vec<ChecksCategoryPayload>,
 }

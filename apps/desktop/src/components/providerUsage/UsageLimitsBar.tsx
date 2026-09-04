@@ -202,9 +202,10 @@ function accountDisplayName(
  * answer to "is it open", and an orange glyph competed with the orange arcs
  * and segments it sits among.
  *
- * `compact` is the open placement: the button shares a line with a provider's
- * name, so it pulls its own padding back out of the line box and leaves the
- * line the height the name alone would give it.
+ * `compact` is the open placement beside a provider name. Both placements use
+ * the same `h-5` slot, so flex centering keeps the button and spinner fixed.
+ * The compact offset cancels one gutter step. The button keeps its block
+ * margin to preserve the provider name's line height.
  */
 function LimitsDisclosure({
   expanded,
@@ -220,7 +221,7 @@ function LimitsDisclosure({
   compact: boolean
 }) {
   return (
-    <span className="inline-flex items-center gap-1">
+    <span className={cn("inline-flex h-5 items-center gap-1", compact && "relative -right-1")}>
       {refreshing && (
         <span role="status" className="inline-flex shrink-0 items-center text-label-tertiary">
           <LoaderCircle size={12} strokeWidth={2} aria-hidden="true" className="animate-spin" />

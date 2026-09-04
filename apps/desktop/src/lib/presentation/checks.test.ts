@@ -78,21 +78,20 @@ describe("Checks presentation", () => {
     expect(presentation.estimate.tokenBurnBasisPoints).toBeNull()
   })
 
-  it("rounds token burn estimates up to whole percentages", () => {
-    expect(formatTokenBurnPercent(1_625)).toBe("17%")
-    expect(formatTokenBurnPercent(5)).toBe("1%")
+  it("floors basis-point estimates to whole percentages", () => {
+    expect(formatTokenBurnPercent(1_625)).toBe("16%")
+    expect(formatTokenBurnPercent(1_250)).toBe("12%")
+    expect(formatTokenBurnPercent(99)).toBe("<1%")
+    expect(formatTokenBurnPercent(1)).toBe("<1%")
     expect(formatTokenBurnPercent(1_800)).toBe("18%")
     expect(formatTokenBurnPercent(0)).toBe("0%")
   })
 
-  it("assigns the requested token burn color thresholds", () => {
-    expect(tokenBurnTone(0)).toBe("text-system-yellow")
-    expect(tokenBurnTone(99)).toBe("text-system-yellow")
-    expect(tokenBurnTone(100)).toBe("text-system-yellow")
+  it("uses green for zero, yellow below five percent, and red from five percent", () => {
+    expect(tokenBurnTone(0)).toBe("text-system-green")
+    expect(tokenBurnTone(1)).toBe("text-system-yellow")
     expect(tokenBurnTone(499)).toBe("text-system-yellow")
-    expect(tokenBurnTone(500)).toBe("text-system-yellow")
-    expect(tokenBurnTone(1_499)).toBe("text-system-yellow")
-    expect(tokenBurnTone(1_500)).toBe("text-system-yellow")
-    expect(tokenBurnTone(1_501)).toBe("text-system-red-text")
+    expect(tokenBurnTone(500)).toBe("text-system-red-text")
+    expect(tokenBurnTone(1_500)).toBe("text-system-red-text")
   })
 })

@@ -139,7 +139,7 @@ describe("SessionList — rows", () => {
       },
     })
 
-    const badge = screen.getByText("12.35%")
+    const badge = screen.getByText("12.3%")
     expect(badge.dataset.sessionLimitProvider).toBe("anthropic")
     expect(badge.dataset.sessionLimitWindow).toBe("weekly-main")
     expect(badge.dataset.sessionLimitPercent).toBe("12.3450")
@@ -306,7 +306,7 @@ describe("SessionList — rows", () => {
     const { rerender } = render(<SessionList {...props} />)
 
     expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByText("6.25%")).toBeInTheDocument()
+    expect(screen.getByText("6.3%")).toBeInTheDocument()
 
     rerender(<SessionList {...props} now={new Date(NOW.getTime() + 3_600_001)} />)
     expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
@@ -652,7 +652,7 @@ describe("SessionList — virtualization", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Fixture session 224")).toBeTruthy()
-      expect(screen.getByText("7.25%")).toBeTruthy()
+      expect(screen.getByText("7.3%")).toBeTruthy()
     })
     expect(screen.queryByText("Fixture session 0")).toBeNull()
     expect(screen.getAllByRole("button").length).toBeLessThan(20)
