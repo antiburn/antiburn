@@ -570,6 +570,87 @@ fn history_deltas_are_allocated_only_to_turns_in_each_interval() {
 }
 
 #[test]
+fn an_unchanged_percentage_keeps_the_start_of_the_plateau() {
+    let turns = weighted_turns(vec![
+        turn("early", NOW - 50, 1_000_000, &[]),
+        turn("late", NOW - 10, 1_000_000, &[]),
+    ]);
+    let refs: Vec<_> = turns.iter().collect();
+    let samples = vec![
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 60).unwrap(),
+            used_percent: Some(24.0),
+            freshness: Freshness::Fresh,
+        },
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 30).unwrap(),
+            used_percent: Some(24.0),
+            freshness: Freshness::Fresh,
+        },
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW).unwrap(),
+            used_percent: Some(25.0),
+            freshness: Freshness::Fresh,
+        },
+    ];
+
+    let (shares, uses_history) = distribute_window(
+        &refs,
+        25.0,
+        (NOW - 100) * 1_000,
+        NOW * 1_000,
+        &samples,
+        WeightBasis::Price,
+    );
+
+    assert!(uses_history);
+    assert!((shares[&SessionKey::new("native", "claude-code", "early")] - 0.5).abs() < 1e-9);
+    assert!((shares[&SessionKey::new("native", "claude-code", "late")] - 0.5).abs() < 1e-9);
+}
+
+#[test]
+fn an_initial_zero_starts_the_first_plateau() {
+    let turns = weighted_turns(vec![
+        turn("before-zero", NOW - 70, 1_000_000, &[]),
+        turn("after-zero", NOW - 10, 1_000_000, &[]),
+    ]);
+    let refs: Vec<_> = turns.iter().collect();
+    let samples = vec![
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 60).unwrap(),
+            used_percent: Some(0.0),
+            freshness: Freshness::Fresh,
+        },
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 30).unwrap(),
+            used_percent: Some(0.0),
+            freshness: Freshness::Fresh,
+        },
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW).unwrap(),
+            used_percent: Some(1.0),
+            freshness: Freshness::Fresh,
+        },
+    ];
+
+    let (shares, uses_history) = distribute_window(
+        &refs,
+        1.0,
+        (NOW - 100) * 1_000,
+        NOW * 1_000,
+        &samples,
+        WeightBasis::Price,
+    );
+
+    assert!(uses_history);
+    assert!(!shares.contains_key(&SessionKey::new("native", "claude-code", "before-zero",)));
+    assert_eq!(
+        shares[&SessionKey::new("native", "claude-code", "after-zero")],
+        1.0,
+    );
+}
+
+#[test]
 fn decreasing_history_falls_back_to_the_current_window_share() {
     let turns = weighted_turns(vec![
         turn("one", NOW - 90, 1_000_000, &[]),
