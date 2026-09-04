@@ -62,7 +62,7 @@ export function LedBar({
       {expectedFraction != null && (
         <span
           data-testid="led-bar-notch"
-          className="absolute -inset-y-[2px] w-[1.5px] bg-led-notch"
+          className="led-notch absolute -inset-y-[2px]"
           style={{ left: `${Math.min(100, Math.max(0, expectedFraction * 100))}%` }}
         />
       )}
