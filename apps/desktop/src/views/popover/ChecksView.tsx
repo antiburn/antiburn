@@ -5,6 +5,7 @@ import {
   CircleDashed,
   CircleX,
   Database,
+  Flame,
   Gauge,
   History,
   Layers3,
@@ -14,6 +15,7 @@ import {
 } from "lucide-react"
 import { useRef } from "react"
 
+import { TextRoll } from "../../components/ui/TextRoll"
 import { measureAnchorRegion } from "../../lib/anchorRegion"
 import type { ChecksCategoryPayload } from "../../lib/insightsIpc"
 import {
@@ -35,30 +37,22 @@ const CHECK_ICONS: Record<string, LucideIcon> = {
   cacheChurn: Database,
 }
 
-function findingCount(category: ChecksCategoryPayload): string {
-  const count = category.finding
-  return `${count} failed session${count === 1 ? "" : "s"}`
-}
-
-function coverageSummary(category: ChecksCategoryPayload, includeFinding: boolean): string {
-  const parts: string[] = []
-  if (includeFinding) parts.push(findingCount(category))
-  if (category.clean > 0) parts.push(`${category.clean} passed`)
-  if (category.unavailable > 0) parts.push(`${category.unavailable} need evidence`)
-  return parts.join(" · ")
+function failureSummary(category: ChecksCategoryPayload): string {
+  const assessed = category.finding + category.clean
+  return `${category.finding}/${assessed} session${assessed === 1 ? "" : "s"} failed`
 }
 
 function tokenEstimate(category: ChecksCategoryPayload): string | null {
   return category.estimatedTokenBurnBasisPoints == null
     ? null
-    : `~${formatTokenBurnPercent(category.estimatedTokenBurnBasisPoints)} token burn`
+    : `${formatTokenBurnPercent(category.estimatedTokenBurnBasisPoints)} token burn`
 }
 
 function summaryEstimate(presentation: ChecksPresentation): string | null {
   const basisPoints = presentation.estimate.tokenBurnBasisPoints
   return basisPoints == null || presentation.failures.length === 0
     ? null
-    : `~${formatTokenBurnPercent(basisPoints)} token burn`
+    : `${formatTokenBurnPercent(basisPoints)} token burn`
 }
 
 function refreshFailureSuffix(presentation: ChecksPresentation): string {
@@ -116,7 +110,6 @@ export function ChecksSummary({
     >
       <div
         tabIndex={presentation ? 0 : undefined}
-        aria-disabled={!presentation}
         aria-busy={!presentation && !reportUnavailable}
         onFocus={(event) => {
           focused.current = true
@@ -131,7 +124,7 @@ export function ChecksSummary({
         <StatusIcon
           size={14}
           strokeWidth={presentation == null ? 2 : 2.5}
-          className={`shrink-0 ${hasFindings ? "text-system-red-text" : "text-label-tertiary"}`}
+          className={`shrink-0 ${hasFindings ? "text-system-red-text" : completePass ? "text-system-green" : "text-label-tertiary"}`}
           aria-hidden="true"
         />
         <span className="min-w-0">
@@ -151,7 +144,7 @@ export function ChecksSummary({
         <span
           className={`type-footnote font-medium! tabular-nums ${presentation?.estimate.tokenBurnBasisPoints == null ? "text-label-secondary" : tokenBurnTone(presentation.estimate.tokenBurnBasisPoints)}`}
         >
-          {presentation ? estimate : null}
+          {presentation && estimate ? <TextRoll text={estimate} /> : null}
         </span>
       </div>
     </div>
@@ -177,14 +170,14 @@ function FailureRows({ failures }: { failures: readonly ChecksCategoryPayload[] 
                 {CHECK_LABELS[check.id] ?? check.id}
               </span>
               <span className="block type-footnote tabular-nums text-label-tertiary">
-                {coverageSummary(check, true)}
+                {failureSummary(check)}
               </span>
             </span>
             {estimate && (
               <span
                 className={`flex items-center gap-1 type-footnote font-medium! tabular-nums ${tokenBurnTone(check.estimatedTokenBurnBasisPoints!)}`}
               >
-                {estimate}
+                <TextRoll text={estimate} />
               </span>
             )}
           </div>
@@ -202,7 +195,7 @@ function WinRows({ wins }: { wins: readonly ChecksCategoryPayload[] }) {
         return (
           <div
             key={win.id}
-            className="grid grid-cols-[28px_minmax(0,1fr)_max-content] items-center gap-x-2 border-b border-separator bg-surface-card px-2 py-2 last:border-b-0"
+            className="grid grid-cols-[28px_minmax(0,1fr)] items-center gap-x-2 border-b border-separator bg-surface-card px-2 py-2 last:border-b-0"
           >
             <span className="flex h-7 w-7 items-center justify-center rounded-control bg-system-green/10 text-system-green">
               <Icon size={15} strokeWidth={2} aria-hidden="true" />
@@ -212,10 +205,9 @@ function WinRows({ wins }: { wins: readonly ChecksCategoryPayload[] }) {
                 {CHECK_LABELS[win.id] ?? win.id}
               </span>
               <span className="block truncate type-footnote tabular-nums text-label-tertiary">
-                {coverageSummary(win, false)}
+                {win.clean} passed
               </span>
             </span>
-            <span className="type-footnote font-medium! text-label-secondary">Passed</span>
           </div>
         )
       })}
@@ -256,10 +248,10 @@ export function ChecksPeek({ presentation }: { presentation: ChecksPresentation 
 
       <section className="mt-3 flex items-center gap-3 rounded-control border border-separator bg-surface-card p-3">
         <span
-          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${hasFindings ? "bg-system-red/10 text-system-red-text" : "bg-surface-secondary text-label-tertiary"}`}
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${hasFindings ? "bg-system-red/10 text-system-red-text" : completePass ? "bg-system-green/10 text-system-green" : "bg-surface-secondary text-label-tertiary"}`}
         >
           {hasFindings ? (
-            <CircleX size={20} strokeWidth={2.5} aria-hidden="true" />
+            <Flame size={20} strokeWidth={2.5} aria-hidden="true" />
           ) : completePass ? (
             <CheckCircle2 size={20} strokeWidth={2.5} aria-hidden="true" />
           ) : (
@@ -270,15 +262,21 @@ export function ChecksPeek({ presentation }: { presentation: ChecksPresentation 
           <span
             className={`block type-title-2 tabular-nums ${hasFindings && estimate.tokenBurnBasisPoints != null ? tokenBurnTone(estimate.tokenBurnBasisPoints) : "text-label"}`}
           >
-            {hasFindings
-              ? estimate.tokenBurnBasisPoints == null
-                ? `${failures.length} check${failures.length === 1 ? "" : "s"} failed`
-                : `~${formatTokenBurnPercent(estimate.tokenBurnBasisPoints)} token burn`
-              : completePass
-                ? "All checks passed"
-                : hasWins
-                  ? "No issues found where assessed"
-                  : "More evidence is needed"}
+            {hasFindings ? (
+              estimate.tokenBurnBasisPoints == null ? (
+                `${failures.length} check${failures.length === 1 ? "" : "s"} failed`
+              ) : (
+                <TextRoll
+                  text={`${formatTokenBurnPercent(estimate.tokenBurnBasisPoints)} token burn`}
+                />
+              )
+            ) : completePass ? (
+              "All checks passed"
+            ) : hasWins ? (
+              "No issues found where assessed"
+            ) : (
+              "More evidence is needed"
+            )}
           </span>
           {summaryStatus && (
             <span className="block type-footnote text-label-secondary">{summaryStatus}</span>

@@ -477,7 +477,7 @@ mod tests {
             unavailable: Vec::new(),
             refresh_unavailable: false,
             estimate: ChecksEstimate {
-                token_burn_basis_points: Some(5_001),
+                token_burn_basis_points: Some(10_001),
             },
         };
         assert!(validate_checks_presentation(&invalid).is_err());
@@ -534,7 +534,7 @@ mod tests {
                 finding: 1,
                 clean: 0,
                 unavailable: 0,
-                estimated_token_burn_basis_points: Some(5_001),
+                estimated_token_burn_basis_points: Some(10_001),
             }],
             wins: Vec::new(),
             unavailable: Vec::new(),

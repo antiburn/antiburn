@@ -199,6 +199,25 @@ describe("SessionStatusBar", () => {
     expect(screen.queryByLabelText(/assessed/i)).toBeNull()
   })
 
+  it("keeps the cost at the right edge when no checks were assessed", () => {
+    render(
+      <SessionStatusBar checks={[]} cost={{ totalUsd: 2.4, figureLabel: "Estimated cost" }} />,
+    )
+
+    expect(screen.getByLabelText("Estimated cost $2.40")).toHaveClass("ml-auto")
+  })
+
+  it("keeps a limit share at the right edge when no checks were assessed", () => {
+    render(
+      <SessionStatusBar
+        checks={[]}
+        limitBadge={{ label: "Estimated weekly share", percent: 2.4 }}
+      />,
+    )
+
+    expect(screen.getByLabelText("Estimated weekly share")).toHaveClass("ml-auto")
+  })
+
   it("omits unavailable checks from the tooltip", async () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
     fireEvent.focus(screen.getByLabelText("4 of 5 burn checks passed"))
@@ -276,7 +295,7 @@ describe("SessionStatusBar", () => {
     expect(figure.querySelector("svg")).not.toBeNull()
   })
 
-  it("keeps a smaller limit share as plain text", () => {
+  it("uses the hot pill when a limit share rounds to five percent", () => {
     render(
       <SessionStatusBar
         checks={ALL_PASSED}
@@ -284,10 +303,44 @@ describe("SessionStatusBar", () => {
       />,
     )
 
+    const figure = screen.getByLabelText(
+      "Estimated weekly share This session uses 5% or more of your limit.",
+    )
+    expect(figure).toHaveTextContent("5%")
+    expect(figure.className).toContain("rounded-full")
+    expect(figure.className).toContain("bg-brand-tint")
+    expect(figure.querySelector("svg")).not.toBeNull()
+  })
+
+  it("keeps a displayed value below five percent as plain text", () => {
+    render(
+      <SessionStatusBar
+        checks={ALL_PASSED}
+        limitBadge={{ label: "Estimated weekly share", percent: 4.94 }}
+      />,
+    )
+
     const figure = screen.getByLabelText("Estimated weekly share")
+    expect(figure).toHaveTextContent("4.9%")
     expect(figure.className).not.toContain("rounded-full")
     expect(figure.className).not.toContain("bg-brand-tint")
     expect(figure.querySelector("svg")).toBeNull()
+  })
+
+  it.each([
+    [1.46, "1.5%"],
+    [2.44, "2.4%"],
+    [7.76, "7.8%"],
+    [1.04, "1%"],
+  ])("formats a %s limit share as %s", (percent, expected) => {
+    render(
+      <SessionStatusBar
+        checks={ALL_PASSED}
+        limitBadge={{ label: "Estimated weekly share", percent }}
+      />,
+    )
+
+    expect(screen.getByText(expected)).toBeInTheDocument()
   })
 
   it("omits the cost figure when nothing priced the session", () => {

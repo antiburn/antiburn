@@ -716,17 +716,12 @@ pub fn query_model_runs(
  * ----------------------------------------------------------------- */
 
 /// Groups `scope = 'main'` assistant turns by model and picks the one
-/// with the most summed `output_tokens` (Cadence
-/// `dominant_subagent_tier`, `crates/analysis/src/efficiency_findings.rs`:
-/// the dominant tier is the one with the most output tokens, not the
-/// most turns). A tie breaks on turn count (`COUNT(*)` per model,
-/// descending), then the earliest `last_ts_ms` (`MAX(ts_ms)` per model,
-/// ascending — the model whose activity ended soonest), then the
-/// earliest `turn_index` (`MIN(turn_index)` per model, ascending).
-/// Cadence breaks ties by a fixed tier-priority order instead; that
-/// order has no antiburn equivalent (this query has no premium/tier
-/// concept), so this tie-break is only a stable, deterministic
-/// substitute. `LIMIT 1` keeps this a single bounded row.
+/// with the most summed `output_tokens`. Output volume, not turn count,
+/// determines the dominant model. A tie breaks on turn count (`COUNT(*)`
+/// per model, descending), then the earliest `last_ts_ms` (`MAX(ts_ms)`
+/// per model, ascending), then the earliest `turn_index` (`MIN(turn_index)`
+/// per model, ascending). This query has no premium-tier order, so these
+/// tie-breaks provide a stable result. `LIMIT 1` keeps one bounded row.
 const DOMINANT_MAIN_MODEL_SQL: &str = "SELECT model
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))

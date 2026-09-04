@@ -1,29 +1,22 @@
 //! Cache Churn: per-thread repeated-context accounting scored as an
-//! overpay multiple, matching Cadence's `detect_cache_rehydration`
-//! (`crates/analysis/src/efficiency_findings.rs`).
+//! overpay multiple.
 //!
-//! Cadence has no absolute token threshold. It computes
+//! The rule has no absolute token threshold. It computes
 //! `paid_per_unique_token = total_paid / unique_paid_tokens` where
-//! `unique_paid_tokens = total_paid - overpaid`, and calls a finding
-//! when that multiple reaches the family's reviewed "avg efficiency"
-//! band bound. This rule ports that math onto
-//! `RepeatedContext::{paid_tokens, repeated_tokens}` (`repeated_tokens`
-//! is antiburn's name for Cadence's `overpaid`), summed per session
-//! instead of per 30-day user.
+//! `unique_paid_tokens = paid_tokens - repeated_tokens`. It reports a
+//! finding when that multiple reaches the family's reviewed average
+//! efficiency bound. The token totals are summed per session rather
+//! than per user over 30 days.
 //!
 //! The bound comes from `catalogs.families[family]
 //! .cache_overpay_multiple_threshold`, where `family` is
 //! `ModelEvidence::dominant_main_model`'s family, falling back to the
 //! family of the first model key in `by_model` (`BTreeMap` order) when
 //! no dominant model was computed. Neither present, or the resolved
-//! family's premium policy is not reviewed (including
-//! `ModelFamily::Unknown`, which is never reviewed), reports a
-//! contract gap: the rule reuses the premium policy's `reviewed` flag
-//! rather than adding a second per-family flag, since both flags mean
-//! the same thing — a maintainer has classified this family's models.
+//! family has no reviewed cache policy, the detector reports a contract gap.
 //!
-//! The finding fires only when `repeated_tokens > 0` (Cadence: "only
-//! ever fires when overpaid > 0") and the multiple reaches the bound.
+//! The finding fires only when `repeated_tokens > 0` and the multiple
+//! reaches the bound.
 //! `unique_paid_tokens == 0` (every paid token in a considered pair was
 //! a repeat) is treated as an infinite multiple, so it is always a
 //! finding.
@@ -60,7 +53,7 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
     let Some(policy) = catalogs.families.get(&family) else {
         return Observation::ContractIncomplete;
     };
-    if !policy.premium.reviewed {
+    if !policy.cache_policy_reviewed {
         return Observation::ContractIncomplete;
     }
 

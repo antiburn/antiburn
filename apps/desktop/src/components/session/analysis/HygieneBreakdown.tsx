@@ -46,13 +46,11 @@ function HygieneGuidance({ check }: { check: AssessedHygieneCheck }) {
   const documentation = sessionHygieneDocumentation(check)
 
   return (
-    <div className="space-y-1 rounded-control border-x border-b border-separator px-3 pb-3 text-pretty type-footnote text-label-secondary">
+    <div className="mt-1 flex flex-col gap-2 rounded-control border border-separator p-3 text-pretty type-footnote text-label-secondary">
       {documentation.findingDetails.length > 0 && (
-        <div className="mb-2">
+        <div className="flex flex-col gap-1 text-system-red-text">
           {documentation.findingDetails.map((sentence) => (
-            <p key={sentence} className="type-footnote font-semibold! text-system-red-text">
-              {sentence}
-            </p>
+            <p key={sentence}>{sentence}</p>
           ))}
         </div>
       )}
@@ -60,11 +58,9 @@ function HygieneGuidance({ check }: { check: AssessedHygieneCheck }) {
         {documentation.summary}
       </p>
       {documentation.guidance.length > 0 && (
-        <ul className="mt-2 list-disc space-y-0.5 pl-5 text-sm/5">
+        <ul className="grid list-disc gap-1 pl-4 text-label-secondary">
           {documentation.guidance.map((sentence) => (
-            <li key={sentence} className="mt-1">
-              {sentence}
-            </li>
+            <li key={sentence}>{sentence}</li>
           ))}
         </ul>
       )}
@@ -110,7 +106,7 @@ function HygieneRow({
           id={bodyId}
           role="region"
           aria-label={`${check.name} guidance`}
-          className="px-1 pb-2"
+          className="-mx-1 pb-2"
         >
           <HygieneGuidance check={check} />
         </div>

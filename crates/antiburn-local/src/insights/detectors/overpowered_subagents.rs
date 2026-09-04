@@ -294,12 +294,25 @@ mod tests {
     }
 
     #[test]
-    fn an_unreviewed_family_delegate_reports_the_contract_gap() {
+    fn a_gemini_pro_delegate_is_premium() {
         let evidence = evidence_with_models(Some("claude-opus-4-6"), &["gemini-3.1-pro"]);
 
         assert_eq!(
             evaluate(&evidence, &ReportCatalogs::default()),
-            Observation::ContractIncomplete
+            Observation::Finding
+        );
+    }
+
+    #[test]
+    fn an_antigravity_prefixed_gemini_pro_delegate_is_premium() {
+        let evidence = evidence_with_models(
+            Some("claude-opus-4-6"),
+            &["antigravity-gemini-3.8-pro-preview"],
+        );
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::Finding
         );
     }
 
