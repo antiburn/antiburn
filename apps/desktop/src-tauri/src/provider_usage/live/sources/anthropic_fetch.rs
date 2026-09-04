@@ -408,7 +408,10 @@ impl ClaudeDirectFetch {
     ) {
         let mut carriers = Vec::new();
         let mut native_carriers = Vec::new();
+        #[cfg(target_os = "macos")]
         let mut error = None;
+        #[cfg(not(target_os = "macos"))]
+        let error = None;
         #[cfg(target_os = "macos")]
         if self.try_keychain {
             match macos_keychain::read() {
