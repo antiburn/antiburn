@@ -65,6 +65,27 @@ fn record_text(value: &Value) -> String {
     }
 }
 
+/// Parses a Claude `uuid` string into a compact `u128`. Reads the hex
+/// digits only and ignores dashes, case-insensitive. Returns `None` when
+/// `uuid` holds anything but exactly 32 hex digits, so a non-standard
+/// identity never collides with a real one.
+fn parse_uuid_u128(uuid: &str) -> Option<u128> {
+    let mut value: u128 = 0;
+    let mut digits = 0u32;
+    for ch in uuid.chars() {
+        if ch == '-' {
+            continue;
+        }
+        let digit = ch.to_digit(16)?;
+        if digits == 32 {
+            return None;
+        }
+        value = (value << 4) | u128::from(digit);
+        digits += 1;
+    }
+    (digits == 32).then_some(value)
+}
+
 /// Record the skill name from every "Base directory for this skill: <path>" marker
 /// in `text` — the set of skills that actually loaded this session.
 fn collect_skill_base_names_from_text(text: &str, out: &mut HashSet<String>) {
@@ -576,6 +597,24 @@ impl ClaudeAdapter {
                         continue;
                     };
 
+                    // A resumed session appends a replay of its
+                    // post-compaction segment to the same file, each
+                    // record with its original `uuid` and timestamp. A
+                    // `uuid` already in `seen_uuids` marks a replayed
+                    // record: skip it entirely and count it in
+                    // `records_replayed`. Insert every parseable `uuid`
+                    // here, even one the fork-replay check below then
+                    // skips, so a later duplicate of it is caught too.
+                    if let Some(uuid) = thread_identity_field(&value, "uuid")
+                        && let Some(uuid) = parse_uuid_u128(&uuid)
+                        && !state.seen_uuids.insert(uuid)
+                    {
+                        sink.record(NormalizedRecord::Observation(Box::new(
+                            EvidenceObservation::ReplayedRecord,
+                        )));
+                        continue;
+                    }
+
                     // A fork replays its parent's records with the parent's
                     // own `uuid` before it appends its own new records. The
                     // fork's first own request still carries this inherited
@@ -697,6 +736,12 @@ struct ClaudeStreamState {
     ordinal: usize,
     context: ClaudeContextAccumulator,
     threads: ThreadResolver,
+    /// Every uuid-bearing record's `uuid` seen so far this stream, parsed
+    /// to a compact `u128`. Finds an in-file resume replay: a record whose
+    /// `uuid` is already here is a replay and the parser skips it. Costs
+    /// 16 bytes plus hash overhead per uuid-bearing record, kept for the
+    /// life of the stream and carried in the resume snapshot.
+    seen_uuids: HashSet<u128>,
 }
 
 impl ClaudeStreamState {
@@ -1374,6 +1419,32 @@ mod tests {
         fn finish(&mut self, _summary: SessionSummary) {}
     }
 
+    /// Collects every record kind a visit emits, for tests that must see
+    /// events, turn content, and observations together.
+    #[derive(Default)]
+    struct RecordingSink {
+        events: Vec<NormalizedEvent>,
+        turn_contents: usize,
+        replayed_records: usize,
+    }
+
+    impl RecordSink for RecordingSink {
+        fn record(&mut self, record: NormalizedRecord) {
+            match record {
+                NormalizedRecord::MetricsEvent(event) => self.events.push(*event),
+                NormalizedRecord::TurnContent(_) => self.turn_contents += 1,
+                NormalizedRecord::Observation(observation) => {
+                    if matches!(*observation, EvidenceObservation::ReplayedRecord) {
+                        self.replayed_records += 1;
+                    }
+                }
+                NormalizedRecord::Unusable(_) => {}
+            }
+        }
+
+        fn finish(&mut self, _summary: SessionSummary) {}
+    }
+
     struct DataThenError {
         data: Vec<u8>,
         returned_data: bool,
@@ -1797,6 +1868,116 @@ mod tests {
             .map(|event| event.uuid.clone())
             .collect();
         assert_eq!(uuids, vec![Some("new-1".to_string())]);
+    }
+
+    /* ------------------------------------------------------------------
+     * In-file resume replay: a resumed session appends a replay of its
+     * post-compaction segment to the same file, each record under its
+     * original uuid. `ClaudeStreamState::seen_uuids` finds and skips it.
+     * ------------------------------------------------------------------ */
+
+    #[test]
+    fn visit_reader_skips_an_in_file_replay_of_two_assistant_turns() {
+        let source = concat!(
+            r#"{"type":"assistant","uuid":"11111111-1111-4111-8111-000000000001","parentUuid":null,"timestamp":"2024-06-01T12:00:00Z","message":{"id":"m1","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"first"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","uuid":"11111111-1111-4111-8111-000000000002","parentUuid":"11111111-1111-4111-8111-000000000001","timestamp":"2024-06-01T12:00:05Z","message":{"id":"m2","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":4,"output_tokens":2},"content":[{"type":"text","text":"second"}]}}"#,
+            "\n",
+            // Replay: same uuids, same timestamps, same message ids.
+            r#"{"type":"assistant","uuid":"11111111-1111-4111-8111-000000000001","parentUuid":null,"timestamp":"2024-06-01T12:00:00Z","message":{"id":"m1","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"first"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","uuid":"11111111-1111-4111-8111-000000000002","parentUuid":"11111111-1111-4111-8111-000000000001","timestamp":"2024-06-01T12:00:05Z","message":{"id":"m2","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":4,"output_tokens":2},"content":[{"type":"text","text":"second"}]}}"#,
+            "\n",
+        );
+        let mut sink = RecordingSink::default();
+        ClaudeAdapter
+            .visit_reader(
+                BufReader::new(source.as_bytes()),
+                &|| false,
+                &mut sink,
+                &HashSet::new(),
+                ClaudeStreamState::default(),
+            )
+            .expect("read must succeed");
+        assert_eq!(sink.events.len(), 2);
+        assert_eq!(sink.turn_contents, 2);
+        assert_eq!(sink.replayed_records, 2);
+    }
+
+    #[test]
+    fn visit_reader_skips_a_replayed_compact_boundary() {
+        let source = concat!(
+            r#"{"type":"assistant","uuid":"22222222-2222-4222-8222-000000000001","parentUuid":null,"timestamp":"2024-06-01T12:00:00Z","message":{"id":"m1","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"before"}]}}"#,
+            "\n",
+            r#"{"type":"system","subtype":"compact_boundary","uuid":"22222222-2222-4222-8222-000000000002","parentUuid":null,"logicalParentUuid":"22222222-2222-4222-8222-000000000001","timestamp":"2024-06-01T12:00:05Z","compactMetadata":{"trigger":"manual","preTokens":95000,"postTokens":15000}}"#,
+            "\n",
+            r#"{"type":"assistant","uuid":"22222222-2222-4222-8222-000000000003","parentUuid":"22222222-2222-4222-8222-000000000002","timestamp":"2024-06-01T12:00:10Z","message":{"id":"m2","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":4,"output_tokens":2},"content":[{"type":"text","text":"after"}]}}"#,
+            "\n",
+            // Replay of the compaction boundary only, under the same uuid.
+            r#"{"type":"system","subtype":"compact_boundary","uuid":"22222222-2222-4222-8222-000000000002","parentUuid":null,"logicalParentUuid":"22222222-2222-4222-8222-000000000001","timestamp":"2024-06-01T12:00:05Z","compactMetadata":{"trigger":"manual","preTokens":95000,"postTokens":15000}}"#,
+            "\n",
+        );
+        let mut sink = RecordingSink::default();
+        ClaudeAdapter
+            .visit_reader(
+                BufReader::new(source.as_bytes()),
+                &|| false,
+                &mut sink,
+                &HashSet::new(),
+                ClaudeStreamState::default(),
+            )
+            .expect("read must succeed");
+        let boundaries = sink
+            .events
+            .iter()
+            .filter(|event| event.is_compaction_boundary)
+            .count();
+        assert_eq!(boundaries, 1);
+        assert_eq!(sink.replayed_records, 1);
+    }
+
+    #[test]
+    fn visit_reader_never_skips_a_repeated_unparseable_uuid() {
+        let source = concat!(
+            r#"{"type":"assistant","uuid":"not-a-uuid","parentUuid":null,"timestamp":"2024-06-01T12:00:00Z","message":{"id":"m1","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"first"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","uuid":"not-a-uuid","parentUuid":null,"timestamp":"2024-06-01T12:00:05Z","message":{"id":"m2","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":4,"output_tokens":2},"content":[{"type":"text","text":"second"}]}}"#,
+            "\n",
+        );
+        let mut sink = RecordingSink::default();
+        ClaudeAdapter
+            .visit_reader(
+                BufReader::new(source.as_bytes()),
+                &|| false,
+                &mut sink,
+                &HashSet::new(),
+                ClaudeStreamState::default(),
+            )
+            .expect("read must succeed");
+        assert_eq!(sink.events.len(), 2);
+        assert_eq!(sink.replayed_records, 0);
+    }
+
+    #[test]
+    fn visit_reader_never_skips_a_record_with_no_uuid() {
+        let source = concat!(
+            r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"id":"m1","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":5},"content":[{"type":"text","text":"first"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2024-06-01T12:00:05Z","message":{"id":"m2","role":"assistant","model":"claude-sonnet-4-6","usage":{"input_tokens":4,"output_tokens":2},"content":[{"type":"text","text":"second"}]}}"#,
+            "\n",
+        );
+        let mut sink = RecordingSink::default();
+        ClaudeAdapter
+            .visit_reader(
+                BufReader::new(source.as_bytes()),
+                &|| false,
+                &mut sink,
+                &HashSet::new(),
+                ClaudeStreamState::default(),
+            )
+            .expect("read must succeed");
+        assert_eq!(sink.events.len(), 2);
+        assert_eq!(sink.replayed_records, 0);
     }
 
     /* ------------------------------------------------------------------

@@ -86,6 +86,7 @@
       "childrenUnreadable": 0,
       "duplicateTurnIdentities": 0,
       "recordsObserved": 2,
+      "recordsReplayed": 0,
       "recordsUnrecognizedInert": 0,
       "recordsUnusable": 0,
       "truncatedStrings": [],
@@ -138,19 +139,19 @@
     },
     "provenance": {
       "analyzerRevision": 18,
-      "evidenceSchemaRevision": 13,
+      "evidenceSchemaRevision": 14,
       "harnessVersion": {
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 25,
+      "parserRevision": 26,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 13,
+    "schemaRevision": 14,
     "subagents": {
       "state": "unsupported"
     },

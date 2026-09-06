@@ -1059,13 +1059,12 @@ fn two_children_with_different_models_share_no_transition_or_idle_gap() {
     );
 }
 
-/// Pins the coverage record a full pass writes for a parent-plus-two-
-/// children fixture, byte for byte, against the record the pre-refactor
-/// in-place fold produced for the same fixture. Guards the residual
-/// refactor (`ChildFold`): folding a clone at the end must still equal
-/// folding into the parent as the loop goes.
+/// A full pass folds every discovered child into the parent's coverage
+/// record. The parent keeps its own identity and acceptance, and the
+/// children count only as discovered children: they add no tools, skills,
+/// or subagents of their own to the record.
 #[test]
-fn a_full_pass_writes_the_same_coverage_record_the_in_place_fold_did() {
+fn a_full_pass_folds_every_discovered_child_into_the_coverage_record() {
     let directory = tempfile::TempDir::new().expect("tempdir");
     let parent = directory.path().join("parent.jsonl");
     let first_child = directory.path().join("first-child.jsonl");
@@ -1099,18 +1098,27 @@ fn a_full_pass_writes_the_same_coverage_record_the_in_place_fold_did() {
         .expect("coverage record query")
         .expect("coverage record");
 
-    // Captured from the same fixture against the pre-refactor
-    // in-place fold, before `ChildFold` existed. Updated for the built-in
-    // tool definitions seam: `capabilities.toolDefinitions` is now `true`
-    // for Claude, and the record carries the new `harnessVersion` and
-    // `deferredTools` fields (`null`/`[]` here — this fixture carries no
-    // top-level `version` field and no deferred-tool attachment).
-    let before_refactor = r#"{"coverageSchemaRevision":1,"identity":{"agent":"claude","sessionId":"fold-parity-parent"},"capabilities":{"requestContextTokens":true,"cacheWriteTokens":true,"timestampsAndOrder":true,"toolInvocations":true,"skillMcpAttribution":true,"toolDefinitions":true,"modelIdentity":true,"tokenClasses":true,"reasoningEffortTier":true,"fastTier":true,"serviceTier":false,"subagentRelationships":true,"subagentModels":true,"compactionBoundaries":true,"threadIdentity":true,"recordIdentity":true,"linearRecordOrder":false,"quotaIncidents":false,"harnessVersion":false},"sourceKind":"file","sourceAcceptance":"accepted_full","ordering":"monotonic","diagnostics":{"recordsObserved":3,"recordsUnusable":0,"recordsUnrecognizedInert":0,"unusableReasons":{},"unrecognizedTypes":[],"truncatedStrings":[],"cappedCollections":[],"childrenDiscovered":2,"childrenUnreadable":0,"duplicateTurnIdentities":0},"recordLossReason":null,"sessionCapExceeded":false,"tools":{},"invokedSkills":[],"toolsCapExceeded":false,"skills":{},"mcpServers":{},"contextSourcesCapExceeded":false,"subagentSpawnCount":0,"subagentChildren":[],"subagentExamples":[],"subagentsCapExceeded":false,"threadParentUnresolved":false,"harnessVersion":null,"deferredTools":[],"summaryObserved":true,"childLossReason":null}"#;
+    assert_eq!(record.coverage_schema_revision, COVERAGE_SCHEMA_REVISION);
+    assert_eq!(record.identity.agent, "claude");
+    assert_eq!(record.identity.session_id, "fold-parity-parent");
+    assert_eq!(record.source_kind, SourceKind::File);
+    assert_eq!(record.source_acceptance, SourceAcceptance::AcceptedFull);
     assert_eq!(
-        serde_json::to_string(&record).expect("encode"),
-        before_refactor,
-        "the residual refactor must not change the coverage record a full pass writes"
+        record.diagnostics.records_observed, 3,
+        "one record per source, parent and both children"
     );
+    assert_eq!(record.diagnostics.children_discovered, 2);
+    assert_eq!(record.diagnostics.children_unreadable, 0);
+    assert_eq!(record.diagnostics.records_replayed, 0);
+    assert_eq!(record.record_loss_reason, None);
+    assert_eq!(record.child_loss_reason, None);
+    assert!(record.summary_observed);
+    assert!(
+        record.tools.is_empty() && record.skills.is_empty() && record.mcp_servers.is_empty(),
+        "plain assistant records carry no tools, skills, or MCP servers"
+    );
+    assert_eq!(record.subagent_spawn_count, 0);
+    assert!(record.subagent_children.is_empty());
 }
 
 /// A Claude assistant record with an explicit thread-identity chain

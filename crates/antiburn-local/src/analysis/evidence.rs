@@ -794,6 +794,11 @@ pub struct ParseDiagnostics {
     /// `source_key` in this session. Copied from [`super::evidence_query::TurnFacts`].
     #[serde(default)]
     pub duplicate_turn_identities: u64,
+    /// Records skipped because their `uuid` already appeared earlier in
+    /// the same stream (an in-file resume replay). Diagnostic only: it
+    /// does not degrade any evidence group or change eligibility.
+    #[serde(default)]
+    pub records_replayed: u64,
 }
 
 impl ParseDiagnostics {
@@ -980,7 +985,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 13,
+            "schemaRevision": 14,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -1006,9 +1011,9 @@ mod tests {
             },
             "coverage": coverage,
             "provenance": {
-                "parserRevision": 25,
+                "parserRevision": 26,
                 "analyzerRevision": 18,
-                "evidenceSchemaRevision": 13,
+                "evidenceSchemaRevision": 14,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",
@@ -1024,7 +1029,8 @@ mod tests {
                 "cappedCollections": [],
                 "childrenDiscovered": 0,
                 "childrenUnreadable": 0,
-                "duplicateTurnIdentities": 0
+                "duplicateTurnIdentities": 0,
+                "recordsReplayed": 0
             },
             "timeRange": {"state": "complete", "value": {"firstTsMs": 0, "lastTsMs": 0, "timestampedTurns": 0}},
             "eligibility": {"state": "complete", "value": {"turns": 0, "assistantTurns": 0, "toolTurns": 0, "depthEligibleTurns": 0}},

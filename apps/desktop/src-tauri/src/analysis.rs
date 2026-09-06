@@ -38,7 +38,7 @@ use antiburn_local::pricing::ModelTokens;
 #[cfg(test)]
 use antiburn_local::analysis::{
     ClaudeAdapter, CoverageReason, EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore,
-    analyze_sources_with,
+    SourceAcceptance, analyze_sources_with,
 };
 #[cfg(test)]
 use antiburn_local::insights::{DetectorId, clean_facts_complete, eligible};
