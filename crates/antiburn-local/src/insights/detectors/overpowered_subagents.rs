@@ -281,6 +281,19 @@ mod tests {
     }
 
     #[test]
+    fn an_astra_parent_and_child_are_a_finding() {
+        let evidence = with_dominant_main_model(
+            evidence_with_models(Some("gpt-6-astra"), &["gpt-6-astra"]),
+            "gpt-6-astra",
+        );
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::Finding
+        );
+    }
+
+    #[test]
     fn an_openai_non_premium_luna_child_reports_no_finding() {
         let evidence = with_dominant_main_model(
             evidence_with_models(Some("gpt-5.6-sol"), &["gpt-5.6-luna"]),

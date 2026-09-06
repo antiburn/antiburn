@@ -775,6 +775,7 @@ mod tests {
         let analysis = AnalysisRecord {
             key: session.key,
             model_breakdown_json: "{}".to_owned(),
+            pricing_breakdown_json: "{}".to_owned(),
             inclusive_models_json: "[]".to_owned(),
             initial_context_json: None,
             source_summaries_json: None,
@@ -1291,6 +1292,7 @@ mod tests {
                     &AnalysisRecord {
                         key: pi.key.clone(),
                         model_breakdown_json: "{}".to_owned(),
+                        pricing_breakdown_json: "{}".to_owned(),
                         inclusive_models_json: "[]".to_owned(),
                         initial_context_json: None,
                         source_summaries_json: None,

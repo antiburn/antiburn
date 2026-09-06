@@ -172,6 +172,7 @@ pub struct StreamedSession {
 /// values — see `analyze_for_evidence`.
 pub struct RowProjections {
     pub model_breakdown: std::collections::BTreeMap<String, ModelTokens>,
+    pub pricing_breakdown: std::collections::BTreeMap<String, ModelTokens>,
     pub model_runs: Vec<ModelRun>,
 }
 
@@ -240,7 +241,7 @@ enum ComputedAnalysis {
         started_at_epoch: Option<i64>,
         parent_fingerprint: Option<String>,
         evidence: Box<Option<SessionEvidence>>,
-        row_projections: Option<RowProjections>,
+        row_projections: Option<Box<RowProjections>>,
         source_summaries: Option<BTreeMap<String, SessionSummary>>,
         source_outcomes: Vec<SourcePublishOutcome>,
     },
@@ -290,6 +291,8 @@ pub struct SessionAnalysis {
     /// every sub-agent. The cache stores this map, so a later pass can
     /// re-price the session without reading any transcript again.
     pub inclusive_model_breakdown: HashMap<String, ModelTokens>,
+    /// This map groups billable tokens by the catalog key for the observed speed tier.
+    pub inclusive_pricing_breakdown: HashMap<String, ModelTokens>,
     pub orchestration: Option<OrchestrationStatus>,
     /// The transcript this analysis was read from, when it is a file.
     pub source_path: Option<String>,
@@ -324,6 +327,7 @@ impl SessionAnalysis {
             models: Vec::new(),
             model_runs: Vec::new(),
             inclusive_model_breakdown: HashMap::new(),
+            inclusive_pricing_breakdown: HashMap::new(),
             orchestration: None,
             source_path: None,
             fingerprint: MISSING_FINGERPRINT.to_string(),
@@ -373,6 +377,8 @@ impl SessionAnalysis {
         Some(AnalysisRecord {
             key: key.clone(),
             model_breakdown_json: serde_json::to_string(&self.inclusive_model_breakdown)
+                .unwrap_or_else(|_| "{}".to_string()),
+            pricing_breakdown_json: serde_json::to_string(&self.inclusive_pricing_breakdown)
                 .unwrap_or_else(|_| "{}".to_string()),
             inclusive_models_json: serde_json::to_string(&self.model_runs)
                 .unwrap_or_else(|_| "[]".to_string()),
@@ -1211,6 +1217,12 @@ fn stream_vendor_with_hooks(
                     return StreamOutcome::ParentUnreadable(UnreadableReason::RowsReadbackFailed);
                 }
             };
+            let pricing_breakdown = match store.query_pricing_breakdown() {
+                Ok(pricing_breakdown) => pricing_breakdown,
+                Err(_) => {
+                    return StreamOutcome::ParentUnreadable(UnreadableReason::RowsReadbackFailed);
+                }
+            };
             let model_runs = match store.query_model_runs() {
                 Ok(model_runs) => model_runs,
                 Err(_) => {
@@ -1221,6 +1233,7 @@ fn stream_vendor_with_hooks(
                 evidence,
                 Some(RowProjections {
                     model_breakdown,
+                    pricing_breakdown,
                     model_runs,
                 }),
             )
@@ -1387,7 +1400,7 @@ pub async fn analyze_for_evidence(
                 started_at_epoch: session.started_at_epoch,
                 parent_fingerprint,
                 evidence: Box::new(session.evidence),
-                row_projections: session.row_projections,
+                row_projections: session.row_projections.map(Box::new),
                 source_summaries: session.source_summaries,
                 source_outcomes: session.source_outcomes,
             },
@@ -1437,7 +1450,7 @@ pub async fn analyze_for_evidence(
             started_at_epoch,
             parent_fingerprint,
             *evidence,
-            row_projections,
+            row_projections.map(|projections| *projections),
             source_summaries,
             source_outcomes,
         ),
@@ -1585,7 +1598,8 @@ fn assemble_session_analysis(input: AssembledMetrics) -> SessionAnalysis {
             // transcript could not be analyzed this pass, so its cost and
             // tokens are `None` rather than a zeroed figure.
             let child_metrics = by_id.get(&subagent_id);
-            let cost = child_metrics.and_then(|(child, _)| price_breakdown(&child.model_breakdown));
+            let cost =
+                child_metrics.and_then(|(child, _)| price_breakdown(&child.pricing_breakdown));
             let tokens =
                 child_metrics.map(|(child, _)| sum_billable_tokens(&child.model_breakdown));
             let model_runs = child_metrics
@@ -1626,24 +1640,43 @@ fn assemble_session_analysis(input: AssembledMetrics) -> SessionAnalysis {
         .collect();
     let has_subagents = !subagent_breakdowns.is_empty();
     let subagents_model_breakdown = merge_model_breakdowns(subagent_breakdowns.iter().copied());
+    let subagent_pricing_breakdowns: Vec<&HashMap<String, ModelTokens>> = by_id
+        .values()
+        .map(|(child, _)| &child.pricing_breakdown)
+        .collect();
+    let subagents_pricing_breakdown =
+        merge_model_breakdowns(subagent_pricing_breakdowns.iter().copied());
     let accumulator_model_breakdown = metrics.model_breakdown.clone();
+    let accumulator_pricing_breakdown = metrics.pricing_breakdown.clone();
     let accumulator_model_runs =
         model_runs_parent_first(&parent_metrics, by_id.values().map(|(child, _)| child));
     // The worker path (`row_projections` is `Some`) reads
     // `inclusive_model_breakdown` and `model_runs` back from published turn
     // rows instead of the accumulator — see `RowProjections`. Every other
     // caller keeps the accumulator's own values.
-    let (inclusive_model_breakdown, model_runs) = match row_projections {
+    let (inclusive_model_breakdown, inclusive_pricing_breakdown, model_runs) = match row_projections
+    {
         Some(RowProjections {
             model_breakdown,
+            pricing_breakdown,
             model_runs,
-        }) => (model_breakdown.into_iter().collect(), model_runs),
-        None => (accumulator_model_breakdown, accumulator_model_runs),
+        }) => (
+            model_breakdown.into_iter().collect(),
+            pricing_breakdown.into_iter().collect(),
+            model_runs,
+        ),
+        None => (
+            accumulator_model_breakdown,
+            accumulator_pricing_breakdown,
+            accumulator_model_runs,
+        ),
     };
 
-    let top_level_cost = price_breakdown(&parent_metrics.model_breakdown);
-    let subagents_cost = price_breakdown(&subagents_model_breakdown);
-    let cost = metrics.cost;
+    let top_level_cost = price_breakdown(&parent_metrics.pricing_breakdown);
+    let subagents_cost = price_breakdown(&subagents_pricing_breakdown);
+    let cost = price_breakdown(&inclusive_pricing_breakdown);
+    metrics.pricing_breakdown = inclusive_pricing_breakdown.clone();
+    metrics.cost = cost;
     let models = sorted_models(&inclusive_model_breakdown);
     let inclusive_tokens = Some(sum_billable_tokens(&inclusive_model_breakdown));
     let subagents_tokens = has_subagents.then(|| sum_billable_tokens(&subagents_model_breakdown));
@@ -1661,6 +1694,7 @@ fn assemble_session_analysis(input: AssembledMetrics) -> SessionAnalysis {
         models,
         model_runs,
         inclusive_model_breakdown,
+        inclusive_pricing_breakdown,
         orchestration,
         source_path,
         fingerprint,
@@ -1913,10 +1947,11 @@ fn standalone_session_analysis(
 ) -> SessionAnalysis {
     metrics.agent = agent_slug;
 
-    let cost = price_breakdown(&metrics.model_breakdown);
+    let cost = price_breakdown(&metrics.pricing_breakdown);
     let models = sorted_models(&metrics.model_breakdown);
     let model_runs = model_runs_for_metrics(&metrics);
     let inclusive_model_breakdown = metrics.model_breakdown.clone();
+    let inclusive_pricing_breakdown = metrics.pricing_breakdown.clone();
     let inclusive_tokens = Some(sum_billable_tokens(&inclusive_model_breakdown));
     let summary = aggregate_metrics(vec![metrics.clone()]);
 
@@ -1932,6 +1967,7 @@ fn standalone_session_analysis(
         models,
         model_runs,
         inclusive_model_breakdown,
+        inclusive_pricing_breakdown,
         orchestration: None,
         source_path,
         fingerprint,
@@ -2120,12 +2156,19 @@ pub fn is_active(updated_at_epoch: Option<i64>, now: i64) -> bool {
 }
 
 /// Re-price a cached model breakdown against the current pricing table.
-pub fn price_cached_breakdown(model_breakdown_json: &str) -> (Option<SessionCost>, Vec<String>) {
-    let Ok(breakdown) = serde_json::from_str::<HashMap<String, ModelTokens>>(model_breakdown_json)
+pub fn price_cached_breakdown(
+    model_breakdown_json: &str,
+    pricing_breakdown_json: &str,
+) -> (Option<SessionCost>, Vec<String>) {
+    let Ok(models) = serde_json::from_str::<HashMap<String, ModelTokens>>(model_breakdown_json)
     else {
         return (None, Vec::new());
     };
-    (price_breakdown(&breakdown), sorted_models(&breakdown))
+    let Ok(pricing) = serde_json::from_str::<HashMap<String, ModelTokens>>(pricing_breakdown_json)
+    else {
+        return (None, sorted_models(&models));
+    };
+    (price_breakdown(&pricing), sorted_models(&models))
 }
 
 #[cfg(test)]

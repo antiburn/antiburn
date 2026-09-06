@@ -598,7 +598,12 @@ pub(crate) fn activity_entry(
     let analysis = store.analysis(&session.key)?;
     let (cost, models) = analysis
         .as_ref()
-        .map(|record| analysis::price_cached_breakdown(&record.model_breakdown_json))
+        .map(|record| {
+            analysis::price_cached_breakdown(
+                &record.model_breakdown_json,
+                &record.pricing_breakdown_json,
+            )
+        })
         .unwrap_or((None, Vec::new()));
     let model_runs = analysis
         .as_ref()

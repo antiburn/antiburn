@@ -4063,6 +4063,15 @@
         }
       ],
       "peakContextTokens": 0,
+      "pricingBreakdown": {
+        "claude-sonnet-4-6": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 300,
+          "output_tokens": 30
+        }
+      },
       "sessionId": "subagent_single_timestamp",
       "tokensIn": 300,
       "tokensOut": 30

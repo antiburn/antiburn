@@ -68,7 +68,7 @@ pub use evidence::{
 };
 pub use evidence_query::{
     FenceScope, PublishedScope, TurnFacts, query_model_breakdown, query_model_runs,
-    query_turn_facts, query_turn_rows,
+    query_pricing_breakdown, query_turn_facts, query_turn_rows,
 };
 pub use evidence_replay::evidence_from_facts;
 pub use evidence_sink::{
@@ -90,7 +90,10 @@ pub use metrics_sink::{RETAINED_METRICS_BYTES_BOUND, SessionMetricsAccumulator, 
 pub use model::{
     EventSource, ModelRun, NormalizedEvent, NormalizedSession, Role, ToolCall, ToolCategory, Usage,
 };
-pub use pricing::{install_runtime_pricing, lookup_pricing, price_breakdown, pricing_generation};
+pub use pricing::{
+    install_runtime_pricing, lookup_pricing, lookup_turn_pricing, price_breakdown,
+    pricing_generation, strip_window_tag, turn_pricing_key,
+};
 pub use replay::{MissingParentRows, metrics_by_source, metrics_from_rows};
 pub use resume::{AdapterResume, AdapterSnapshot, EvidenceSnapshot, StreamSnapshot};
 pub use rows::{
@@ -187,7 +190,8 @@ pub const PARSER_REVISION: i64 = 25;
 // longer counts toward `unattributed_turns` or `delegated_model_missing`
 // (`evidence_query::CORE_SQL`), so a session with such a record may now
 // assess `models` and `subagents` clean.
-pub const ANALYZER_REVISION: i64 = 17;
+// This revision adds speed-aware Fast tier cost accounting.
+pub const ANALYZER_REVISION: i64 = 18;
 // +1 for seam R2: the worker path now derives `inclusive_model_breakdown`
 // and `model_runs` from published turn rows instead of the accumulator
 // (`query_model_breakdown`, `query_model_runs`), so every session in the
@@ -201,7 +205,8 @@ pub const ANALYZER_REVISION: i64 = 17;
 // inference. Stored analyses must rerun for the corrected event data.
 // +1 for provider-specific rehydration thresholds and exact user inactivity.
 // Stored analyses must rerun for the corrected cache-event classification.
-pub const METRICS_SCHEMA_REVISION: i64 = 6;
+// This revision adds the separate speed-aware pricing breakdown.
+pub const METRICS_SCHEMA_REVISION: i64 = 7;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
 // +1 more for `RepeatedContext::paid_tokens` (part F).
 // +1 more for `SourceCapabilities::linear_record_order`.
@@ -227,7 +232,7 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 1;
 /// before it restores a snapshot; this constant and the rule are
 /// documented here so a future revision bump remembers to bump this one
 /// too, when the change touches resumable state.
-pub const RESUME_SNAPSHOT_REVISION: i64 = 1;
+pub const RESUME_SNAPSHOT_REVISION: i64 = 2;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

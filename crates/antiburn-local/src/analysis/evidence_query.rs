@@ -634,6 +634,50 @@ pub fn query_model_breakdown(
     Ok(breakdown)
 }
 
+const PRICING_BREAKDOWN_SQL: &str = "SELECT model, speed, input_tokens, output_tokens,
+        cache_read_tokens, cache_write_tokens
+   FROM turn
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+    AND role = 'assistant' AND model IS NOT NULL
+    AND (input_tokens != 0 OR output_tokens != 0
+         OR cache_read_tokens != 0 OR cache_write_tokens != 0)";
+
+/// Return billable token totals grouped by the exact catalog pricing tier.
+pub fn query_pricing_breakdown(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    scope: &FenceScope<'_>,
+) -> rusqlite::Result<BTreeMap<String, crate::pricing::ModelTokens>> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
+    let mut statement = conn.prepare(PRICING_BREAKDOWN_SQL)?;
+    let mut rows = statement.query(params![
+        key.environment_key,
+        key.agent,
+        key.session_id,
+        claim_fence,
+        published_fence,
+        source_keys_json
+    ])?;
+    let mut breakdown: BTreeMap<String, crate::pricing::ModelTokens> = BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        let model: String = row.get(0)?;
+        let speed: Option<String> = row.get(1)?;
+        let model = strip_window_tag(&model).trim();
+        if model.is_empty() {
+            continue;
+        }
+        let key = crate::analysis::pricing::turn_pricing_key(model, speed.as_deref());
+        let entry = breakdown.entry(key).or_default();
+        entry.input_tokens = entry.input_tokens.saturating_add(as_u64(row.get(2)?));
+        entry.output_tokens = entry.output_tokens.saturating_add(as_u64(row.get(3)?));
+        entry.cache_read_tokens = entry.cache_read_tokens.saturating_add(as_u64(row.get(4)?));
+        entry.cache_creation_tokens = entry
+            .cache_creation_tokens
+            .saturating_add(as_u64(row.get(5)?));
+    }
+    Ok(breakdown)
+}
+
 const MODEL_RUNS_SQL: &str = "SELECT source_key, model, effort
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))

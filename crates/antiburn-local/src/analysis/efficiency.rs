@@ -23,7 +23,9 @@ use std::mem::size_of;
 use serde::{Deserialize, Serialize};
 
 use crate::analysis::model::{EventSource, NormalizedEvent, Role, Usage};
-use crate::analysis::pricing::{lookup_pricing, strip_window_tag};
+#[cfg(test)]
+use crate::analysis::pricing::lookup_pricing;
+use crate::analysis::pricing::{lookup_turn_pricing, strip_window_tag};
 use crate::pricing::ModelPricing;
 
 /// Open message state covers heavily interleaved parent and sidechain records.
@@ -97,8 +99,10 @@ fn hash_bytes(bytes: &[u8], seed: u64) -> u64 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum ModelStatus {
     Missing,
-    Priced(ModelPricing),
-    Unpriced,
+    Known {
+        standard: Option<ModelPricing>,
+        fast: Option<ModelPricing>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -109,6 +113,7 @@ struct Turn {
     id: Option<MessageKey>,
     source: EventSource,
     model: ModelStatus,
+    fast: bool,
     usage: Usage,
 }
 
@@ -120,6 +125,7 @@ pub(crate) struct EfficiencyInput<'a> {
     pub(crate) source: EventSource,
     pub(crate) message_id: Option<&'a str>,
     pub(crate) model: Option<&'a str>,
+    pub(crate) speed: Option<&'a str>,
     pub(crate) usage: Usage,
 }
 
@@ -157,7 +163,7 @@ pub(crate) struct EfficiencyReducer {
     evicted: VecDeque<MessageKey>,
     reorder: Vec<Turn>,
     totals: EfficiencyTotals,
-    fallback_overflow: FallbackOverflow,
+    fallback_overflow: [FallbackOverflow; 2],
     rewrite_marks: Vec<RewriteMark>,
     previous_context: Option<u64>,
     previous_parent_context: Option<u64>,
@@ -175,7 +181,7 @@ impl Default for EfficiencyReducer {
             evicted: VecDeque::new(),
             reorder: Vec::new(),
             totals: EfficiencyTotals::default(),
-            fallback_overflow: FallbackOverflow::default(),
+            fallback_overflow: [FallbackOverflow::default(); 2],
             rewrite_marks: Vec::new(),
             previous_context: None,
             previous_parent_context: None,
@@ -204,9 +210,10 @@ impl EfficiencyReducer {
         }) {
             let turn = &mut self.open[index];
             turn.usage = turn.usage.saturating_add(input.usage);
-            if matches!(turn.model, ModelStatus::Missing) {
+            if matches!(turn.model, ModelStatus::Missing) && input.model.is_some() {
                 turn.model = model_status(input.model);
             }
+            turn.fast |= is_fast(input.speed);
             return;
         }
         // A message that returns after its turn was evicted splits its usage
@@ -237,6 +244,7 @@ impl EfficiencyReducer {
             id: message_key,
             source: input.source,
             model: model_status(input.model),
+            fast: is_fast(input.speed),
             usage: input.usage,
         });
         self.creation = self.creation.saturating_add(1);
@@ -295,15 +303,18 @@ impl EfficiencyReducer {
         match turn.model {
             // The session fallback model prices a missing-model turn later,
             // at finish. Until then, only its raw usage can be kept.
-            ModelStatus::Missing => {
-                add_fallback_overflow(&mut self.fallback_overflow, turn.usage, growth)
-            }
-            ModelStatus::Priced(price) => {
-                let amounts = priced_contribution(turn.usage, growth, &price);
-                add_priced(&mut self.totals, amounts, 1);
-            }
-            ModelStatus::Unpriced => {
-                self.totals.unpriced_turns = self.totals.unpriced_turns.saturating_add(1);
+            ModelStatus::Missing => add_fallback_overflow(
+                &mut self.fallback_overflow[usize::from(turn.fast)],
+                turn.usage,
+                growth,
+            ),
+            ModelStatus::Known { standard, fast } => {
+                if let Some(price) = if turn.fast { fast } else { standard } {
+                    let amounts = priced_contribution(turn.usage, growth, &price);
+                    add_priced(&mut self.totals, amounts, 1);
+                } else {
+                    self.totals.unpriced_turns = self.totals.unpriced_turns.saturating_add(1);
+                }
             }
         }
     }
@@ -321,8 +332,10 @@ impl EfficiencyReducer {
 
     pub(crate) fn finish(mut self, fallback_model: Option<&str>) -> EfficiencyTotals {
         self.flush();
-        let fallback = model_status(fallback_model);
-        apply_fallback_overflow(&mut self.totals, self.fallback_overflow, &fallback);
+        for (fast, contribution) in self.fallback_overflow.into_iter().enumerate() {
+            let fallback = model_status(fallback_model);
+            apply_fallback_overflow(&mut self.totals, contribution, &fallback, fast == 1);
+        }
         self.totals
     }
 
@@ -349,15 +362,25 @@ impl EfficiencyReducer {
     }
 }
 
+fn is_fast(speed: Option<&str>) -> bool {
+    speed.is_some_and(|speed| speed.trim().eq_ignore_ascii_case("fast"))
+}
+
 fn model_status(model: Option<&str>) -> ModelStatus {
     let Some(model) = model else {
         return ModelStatus::Missing;
     };
     let model = strip_window_tag(model).trim();
     if model.is_empty() {
-        return ModelStatus::Unpriced;
+        return ModelStatus::Known {
+            standard: None,
+            fast: None,
+        };
     }
-    lookup_pricing(model).map_or(ModelStatus::Unpriced, ModelStatus::Priced)
+    ModelStatus::Known {
+        standard: lookup_turn_pricing(model, None),
+        fast: lookup_turn_pricing(model, Some("fast")),
+    }
 }
 
 fn priced_contribution(usage: Usage, growth: u64, price: &ModelPricing) -> PricedAmounts {
@@ -441,8 +464,17 @@ fn apply_fallback_overflow(
     totals: &mut EfficiencyTotals,
     contribution: FallbackOverflow,
     fallback: &ModelStatus,
+    fast: bool,
 ) {
-    let ModelStatus::Priced(price) = fallback else {
+    let ModelStatus::Known {
+        standard,
+        fast: fast_price,
+    } = fallback
+    else {
+        totals.unpriced_turns = totals.unpriced_turns.saturating_add(contribution.turns);
+        return;
+    };
+    let Some(price) = (if fast { fast_price } else { standard }) else {
         totals.unpriced_turns = totals.unpriced_turns.saturating_add(contribution.turns);
         return;
     };
@@ -485,6 +517,7 @@ pub fn thread_efficiency(
                 source: event.source,
                 message_id: event.message_id.as_deref(),
                 model: event.model.as_deref(),
+                speed: event.speed.as_deref(),
                 usage: event.usage,
             }),
         fallback_model,
@@ -720,6 +753,22 @@ mod tests {
     }
 
     #[test]
+    fn one_fast_fragment_prices_the_whole_message_as_fast() {
+        let mut first = turn(1, 0, 500_000, 0, 0);
+        first.model = Some("gpt-6-astra".to_string());
+        first.message_id = Some("message".to_string());
+        first.speed = Some("fast".to_string());
+        let mut tail = turn(2, 0, 500_000, 0, 0);
+        tail.model = Some("gpt-6-astra".to_string());
+        tail.message_id = Some("message".to_string());
+
+        let totals = thread_efficiency(&[first, tail], None);
+
+        assert_eq!(totals.priced_turns, 1);
+        assert!((totals.total_usd - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn non_assistant_records_advance_the_carried_timestamp() {
         let first = turn(10, 100, 10, 0, 0);
         let mut user = NormalizedEvent::new(Role::User);
@@ -804,6 +853,7 @@ mod tests {
                 source: EventSource::Parent,
                 message_id: Some(&message_id),
                 model: Some(MODEL),
+                speed: None,
                 usage: Usage {
                     input_tokens: 1,
                     output_tokens: 1,
@@ -884,6 +934,7 @@ mod tests {
                 source: event.source,
                 message_id: event.message_id.as_deref(),
                 model: event.model.as_deref(),
+                speed: event.speed.as_deref(),
                 usage: event.usage,
             });
         }

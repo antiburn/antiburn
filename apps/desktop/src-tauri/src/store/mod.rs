@@ -43,7 +43,8 @@ use antiburn_local::analysis::{
     delete_source_rows_at_fence, delete_stale_source_resume, delete_turn_rows,
     delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_coverage_record,
     insert_source_resume, insert_turn_rows, query_coverage_record, query_model_breakdown,
-    query_model_runs, query_source_resume, query_turn_facts, query_turn_rows, restamp_source_rows,
+    query_model_runs, query_pricing_breakdown, query_source_resume, query_turn_facts,
+    query_turn_rows, restamp_source_rows,
 };
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -1444,13 +1445,15 @@ impl Store {
         transaction.execute(
             "INSERT INTO session_analysis (
                  environment_key, agent, session_id, model_breakdown_json,
+                 pricing_breakdown_json,
                  inclusive_models_json, initial_context_json, source_summaries_json,
                  provider_hints_json,
                  source_fingerprint, pricing_generation, analyzed_generation,
                  parser_revision, analyzer_revision, metrics_schema_revision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
                  model_breakdown_json = excluded.model_breakdown_json,
+                 pricing_breakdown_json = excluded.pricing_breakdown_json,
                  inclusive_models_json = excluded.inclusive_models_json,
                  initial_context_json = excluded.initial_context_json,
                  source_summaries_json = excluded.source_summaries_json,
@@ -1466,6 +1469,7 @@ impl Store {
                 record.key.agent,
                 record.key.session_id,
                 record.model_breakdown_json,
+                record.pricing_breakdown_json,
                 record.inclusive_models_json,
                 record.initial_context_json,
                 record.source_summaries_json,
@@ -1802,13 +1806,15 @@ impl Store {
         transaction.execute(
             "INSERT INTO session_analysis (
                  environment_key, agent, session_id, model_breakdown_json,
+                 pricing_breakdown_json,
                  inclusive_models_json, initial_context_json, source_summaries_json,
                  provider_hints_json,
                  source_fingerprint, pricing_generation, analyzed_generation,
                  parser_revision, analyzer_revision, metrics_schema_revision)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
                  model_breakdown_json = excluded.model_breakdown_json,
+                 pricing_breakdown_json = excluded.pricing_breakdown_json,
                  inclusive_models_json = excluded.inclusive_models_json,
                  initial_context_json = excluded.initial_context_json,
                  source_summaries_json = excluded.source_summaries_json,
@@ -1824,6 +1830,7 @@ impl Store {
                 record.key.agent,
                 record.key.session_id,
                 record.model_breakdown_json,
+                record.pricing_breakdown_json,
                 record.inclusive_models_json,
                 record.initial_context_json,
                 record.source_summaries_json,
@@ -1857,6 +1864,7 @@ impl Store {
         let connection = self.lock();
         let mut statement = connection.prepare(
             "SELECT environment_key, agent, session_id, model_breakdown_json,
+                    pricing_breakdown_json,
                     inclusive_models_json, initial_context_json, source_summaries_json,
                     provider_hints_json,
                     source_fingerprint, pricing_generation, analyzed_generation,
@@ -1875,16 +1883,17 @@ impl Store {
                             row.get::<_, String>(2)?,
                         ),
                         model_breakdown_json: row.get(3)?,
-                        inclusive_models_json: row.get(4)?,
-                        initial_context_json: row.get(5)?,
-                        source_summaries_json: row.get(6)?,
-                        provider_hints_json: row.get(7)?,
-                        source_fingerprint: row.get(8)?,
-                        pricing_generation: row.get(9)?,
-                        analyzed_generation: row.get(10)?,
-                        parser_revision: row.get(11)?,
-                        analyzer_revision: row.get(12)?,
-                        metrics_schema_revision: row.get(13)?,
+                        pricing_breakdown_json: row.get(4)?,
+                        inclusive_models_json: row.get(5)?,
+                        initial_context_json: row.get(6)?,
+                        source_summaries_json: row.get(7)?,
+                        provider_hints_json: row.get(8)?,
+                        source_fingerprint: row.get(9)?,
+                        pricing_generation: row.get(10)?,
+                        analyzed_generation: row.get(11)?,
+                        parser_revision: row.get(12)?,
+                        analyzer_revision: row.get(13)?,
+                        metrics_schema_revision: row.get(14)?,
                     })
                 },
             )
@@ -1905,7 +1914,7 @@ impl Store {
         let connection = self.lock();
         let mut statement = connection.prepare(
             "SELECT s.agent, COALESCE(s.updated_at_epoch, 0), a.model_breakdown_json,
-                    a.provider_hints_json,
+                    a.pricing_breakdown_json, a.provider_hints_json,
                     COALESCE((
                         SELECT json_group_array(json_object(
                             'provider', spa.provider,
@@ -1929,8 +1938,9 @@ impl Store {
                 agent: row.get(0)?,
                 updated_at_epoch: row.get(1)?,
                 model_breakdown_json: row.get(2)?,
-                provider_hints_json: row.get(3)?,
-                provider_accounts_json: row.get(4)?,
+                pricing_breakdown_json: row.get(3)?,
+                provider_hints_json: row.get(4)?,
+                provider_accounts_json: row.get(5)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -1994,7 +2004,7 @@ impl Store {
             .collect();
         let mut statement = connection.prepare(
             "SELECT t.environment_key, t.agent, t.session_id,
-                    t.ts_ms, t.model, t.input_tokens, t.cache_read_tokens,
+                    t.ts_ms, t.model, t.speed, t.input_tokens, t.cache_read_tokens,
                     t.cache_write_tokens, t.output_tokens
                FROM turn t
                JOIN session_evidence e
@@ -2019,10 +2029,11 @@ impl Store {
             sessions[index].turns.push(SessionUsageTurnRecord {
                 ts_ms: row.get(3)?,
                 model: row.get(4)?,
-                input_tokens: row.get(5)?,
-                cache_read_tokens: row.get(6)?,
-                cache_write_tokens: row.get(7)?,
-                output_tokens: row.get(8)?,
+                speed: row.get(5)?,
+                input_tokens: row.get(6)?,
+                cache_read_tokens: row.get(7)?,
+                cache_write_tokens: row.get(8)?,
+                output_tokens: row.get(9)?,
             });
         }
         Ok(sessions)
@@ -3201,6 +3212,22 @@ impl TurnRowStore for FencedTurnRowStore {
         let resumed = self.resumed_sources();
         let scope = self.fact_query_scope(&connection, &resumed)?;
         Ok(query_model_runs(
+            &connection,
+            &turn_session_key(&self.key),
+            &scope,
+        )?)
+    }
+
+    fn query_pricing_breakdown(
+        &self,
+    ) -> Result<
+        std::collections::BTreeMap<String, antiburn_local::pricing::ModelTokens>,
+        TurnRowError,
+    > {
+        let connection = self.store.lock();
+        let resumed = self.resumed_sources();
+        let scope = self.fact_query_scope(&connection, &resumed)?;
+        Ok(query_pricing_breakdown(
             &connection,
             &turn_session_key(&self.key),
             &scope,

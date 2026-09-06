@@ -138,6 +138,8 @@ pub struct SessionMetricsAccumulator {
     skill_match_counts: Vec<(String, u32)>,
     model_breakdown: Vec<(NameId, ModelTokens)>,
     unattributed_model_tokens: ModelTokens,
+    pricing_breakdown: Vec<((NameId, bool), ModelTokens)>,
+    unattributed_pricing_tokens: [ModelTokens; 2],
     model_runs: Vec<ModelRunMark>,
     last_effective_ts: i64,
     folded_last_ts: Option<i64>,
@@ -185,6 +187,8 @@ impl SessionMetricsAccumulator {
             skill_match_counts: Vec::new(),
             model_breakdown: Vec::new(),
             unattributed_model_tokens: ModelTokens::default(),
+            pricing_breakdown: Vec::new(),
+            unattributed_pricing_tokens: std::array::from_fn(|_| ModelTokens::default()),
             model_runs: Vec::new(),
             last_effective_ts: i64::MIN,
             folded_last_ts: None,
@@ -311,6 +315,11 @@ impl SessionMetricsAccumulator {
                     .saturating_mul(size_of::<(NameId, ModelTokens)>()),
             )
             .saturating_add(
+                self.pricing_breakdown
+                    .capacity()
+                    .saturating_mul(size_of::<((NameId, bool), ModelTokens)>()),
+            )
+            .saturating_add(
                 self.model_runs
                     .capacity()
                     .saturating_mul(size_of::<ModelRunMark>()),
@@ -367,6 +376,7 @@ impl SessionMetricsAccumulator {
             source: event.source,
             message_id: event.message_id.as_deref(),
             model: event.model.as_deref(),
+            speed: event.speed.as_deref(),
             usage: event.usage,
         });
         let mut slot = SlotAggregate::new(ordinal, effective_ts);
@@ -693,8 +703,16 @@ impl SessionMetricsAccumulator {
                 tracing::debug!(event = "metrics_model_runs_capped");
             }
         }
+        let fast = event
+            .speed
+            .as_deref()
+            .is_some_and(|speed| speed.trim().eq_ignore_ascii_case("fast"));
         let Some(model) = model else {
             add_usage(&mut self.unattributed_model_tokens, usage);
+            add_usage(
+                &mut self.unattributed_pricing_tokens[usize::from(fast)],
+                usage,
+            );
             return;
         };
         if let Some((_, tokens)) = self
@@ -709,8 +727,24 @@ impl SessionMetricsAccumulator {
             self.model_breakdown.push((model, tokens));
         } else {
             add_usage(&mut self.unattributed_model_tokens, usage);
+            add_usage(
+                &mut self.unattributed_pricing_tokens[usize::from(fast)],
+                usage,
+            );
             self.models_truncated = self.models_truncated.saturating_add(1);
             tracing::debug!(event = "metrics_model_breakdown_capped");
+            return;
+        }
+        if let Some((_, tokens)) = self
+            .pricing_breakdown
+            .iter_mut()
+            .find(|(current, _)| *current == (model, fast))
+        {
+            add_usage(tokens, usage);
+        } else {
+            let mut tokens = ModelTokens::default();
+            add_usage(&mut tokens, usage);
+            self.pricing_breakdown.push(((model, fast), tokens));
         }
     }
 
@@ -971,7 +1005,8 @@ impl SessionMetricsAccumulator {
             .collect::<Vec<_>>();
 
         let mut model_breakdown = self.model_breakdown_map(summary.model.as_deref());
-        let cost = crate::analysis::pricing::price_breakdown(&model_breakdown);
+        let mut pricing_breakdown = self.pricing_breakdown_map(summary.model.as_deref());
+        let cost = crate::analysis::pricing::price_breakdown(&pricing_breakdown);
         let model_runs = self.model_runs(summary.model.as_deref());
         let tool_calls_by_name = count_map(&self.tool_calls_by_name, &self.interner);
         let mcp_tool_calls = count_map(&self.mcp_tool_calls, &self.mcp_interner);
@@ -991,6 +1026,9 @@ impl SessionMetricsAccumulator {
         };
         if model_breakdown.is_empty() {
             model_breakdown.shrink_to_fit();
+        }
+        if pricing_breakdown.is_empty() {
+            pricing_breakdown.shrink_to_fit();
         }
 
         SessionMetrics {
@@ -1016,6 +1054,7 @@ impl SessionMetricsAccumulator {
             billable_cache_read_tokens: self.tallies.billable_cache_read_tokens,
             billable_cache_creation_tokens: self.tallies.billable_cache_creation_tokens,
             model_breakdown,
+            pricing_breakdown,
             cost,
             efficiency: self.efficiency.clone().finish(summary.model.as_deref()),
             skill_uses,
@@ -1039,6 +1078,31 @@ impl SessionMetricsAccumulator {
                 result.entry(model.to_string()).or_default(),
                 &self.unattributed_model_tokens,
             );
+        }
+        result
+    }
+
+    fn pricing_breakdown_map(&self, fallback: Option<&str>) -> HashMap<String, ModelTokens> {
+        let mut result = HashMap::new();
+        for ((model, fast), tokens) in &self.pricing_breakdown {
+            let model = self.model_interner.get(*model);
+            let key = crate::analysis::pricing::turn_pricing_key(model, fast.then_some("fast"));
+            add_model_tokens(result.entry(key).or_default(), tokens);
+        }
+        if let Some(model) = fallback
+            .map(crate::analysis::pricing::strip_window_tag)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+        {
+            for (fast, tokens) in self.unattributed_pricing_tokens.iter().enumerate() {
+                if has_model_tokens(tokens) {
+                    let key = crate::analysis::pricing::turn_pricing_key(
+                        model,
+                        (fast == 1).then_some("fast"),
+                    );
+                    add_model_tokens(result.entry(key).or_default(), tokens);
+                }
+            }
         }
         result
     }
@@ -1577,6 +1641,7 @@ pub fn merge_metrics(
         .summary
         .as_ref()
         .and_then(|summary| summary.model.as_deref());
+    let mut pricing_complete = true;
     let mut merged_runs = Vec::new();
     collect_merged_runs(
         &mut merged_runs,
@@ -1696,6 +1761,20 @@ pub fn merge_metrics(
                 );
             }
         }
+        for (model, tokens) in subagent.pricing_breakdown_map(parent_fallback) {
+            if !pricing_complete {
+                continue;
+            }
+            if merged.pricing_breakdown.len() < MAX_MODELS.saturating_mul(2)
+                || merged.pricing_breakdown.contains_key(&model)
+            {
+                add_model_tokens(merged.pricing_breakdown.entry(model).or_default(), &tokens);
+            } else {
+                merged.pricing_breakdown.clear();
+                pricing_complete = false;
+                tracing::debug!(event = "metrics_pricing_breakdown_capped");
+            }
+        }
     }
     if !subagents.is_empty() {
         merged_runs.sort_by_key(|(position, stream_index, ordinal, _)| {
@@ -1714,7 +1793,9 @@ pub fn merge_metrics(
     merged
         .skill_uses
         .sort_by(|left, right| left.progress.total_cmp(&right.progress));
-    merged.cost = crate::analysis::pricing::price_breakdown(&merged.model_breakdown);
+    merged.cost = pricing_complete
+        .then(|| crate::analysis::pricing::price_breakdown(&merged.pricing_breakdown))
+        .flatten();
     merged
 }
 

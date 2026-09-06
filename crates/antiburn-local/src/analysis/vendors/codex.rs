@@ -2451,6 +2451,8 @@ mod tests {
             "\n",
             r#"{"timestamp":"2026-08-05T10:00:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":40,"total_tokens":340},"total_token_usage":{"input_tokens":300,"cached_input_tokens":100,"output_tokens":40,"total_tokens":340},"model_context_window":100000}}}"#,
             "\n",
+            r#"{"timestamp":"2026-08-05T10:00:07Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":350,"cached_input_tokens":100,"output_tokens":50,"total_tokens":400},"total_token_usage":{"input_tokens":650,"cached_input_tokens":200,"output_tokens":90,"total_tokens":740},"model_context_window":100000}}}"#,
+            "\n",
         );
         let input = SessionInput {
             agent: "codex".to_string(),
@@ -2471,6 +2473,13 @@ mod tests {
             .find(|event| event.model.as_deref() == Some("gpt-child"))
             .expect("the child's owned token_count turn is emitted");
         assert_eq!(owned_event.speed.as_deref(), Some("fast"));
+        assert!(
+            session
+                .events
+                .iter()
+                .filter(|event| event.usage.output_tokens > 0)
+                .all(|event| event.speed.as_deref() == Some("fast"))
+        );
     }
 
     /// Collects every `EvidenceObservation` and `Unusable` reason a visit

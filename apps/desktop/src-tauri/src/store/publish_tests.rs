@@ -43,6 +43,7 @@ fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> Ana
     AnalysisRecord {
         key,
         model_breakdown_json: "{}".into(),
+        pricing_breakdown_json: "{}".into(),
         inclusive_models_json: "[]".into(),
         initial_context_json: None,
         source_summaries_json: None,

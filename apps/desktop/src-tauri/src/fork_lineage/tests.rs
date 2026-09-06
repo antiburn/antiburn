@@ -87,6 +87,7 @@ fn publish_turns(store: &Store, session_id: &str, uuid: &str, row_count: u64) ->
     let record = AnalysisRecord {
         key: claim.key.clone(),
         model_breakdown_json: "{}".into(),
+        pricing_breakdown_json: "{}".into(),
         inclusive_models_json: "[]".into(),
         initial_context_json: None,
         source_summaries_json: None,

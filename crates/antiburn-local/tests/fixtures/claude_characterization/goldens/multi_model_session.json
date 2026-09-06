@@ -4128,6 +4128,29 @@
         }
       ],
       "peakContextTokens": 400,
+      "pricingBreakdown": {
+        "claude-3-5-haiku": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 100,
+          "output_tokens": 10
+        },
+        "claude-opus-4-6": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 700,
+          "output_tokens": 70
+        },
+        "claude-opus-4-7": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 200,
+          "output_tokens": 20
+        }
+      },
       "sessionId": "multi_model_session",
       "tokensIn": 1000,
       "tokensOut": 100

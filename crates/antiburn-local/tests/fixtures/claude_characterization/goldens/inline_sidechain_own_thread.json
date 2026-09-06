@@ -4227,6 +4227,22 @@
         }
       ],
       "peakContextTokens": 10,
+      "pricingBreakdown": {
+        "claude-opus-4-6": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 20,
+          "output_tokens": 4
+        },
+        "claude-sonnet-4-6": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 20,
+          "output_tokens": 4
+        }
+      },
       "sessionId": "inline_sidechain_own_thread",
       "tokensIn": 40,
       "tokensOut": 8

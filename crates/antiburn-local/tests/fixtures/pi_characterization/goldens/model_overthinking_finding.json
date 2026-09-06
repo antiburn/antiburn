@@ -137,7 +137,7 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 17,
+      "analyzerRevision": 18,
       "evidenceSchemaRevision": 13,
       "harnessVersion": {
         "state": "unsupported"
@@ -4173,6 +4173,15 @@
       }
     ],
     "peakContextTokens": 10,
+    "pricingBreakdown": {
+      "claude-opus-4-6": {
+        "cache_creation_1h_tokens": 0,
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
+        "input_tokens": 10,
+        "output_tokens": 5
+      }
+    },
     "sessionId": "model_overthinking_finding",
     "tokensIn": 10,
     "tokensOut": 5

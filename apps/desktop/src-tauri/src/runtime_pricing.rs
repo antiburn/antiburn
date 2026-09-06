@@ -583,6 +583,54 @@ mod tests {
     }
 
     #[test]
+    fn astra_fast_mode_keeps_official_rates_for_all_creator_keys() {
+        let catalog = BTreeMap::from([(
+            "openai".to_string(),
+            ModelsDevProvider {
+                models: BTreeMap::from([(
+                    "gpt-6-astra".to_string(),
+                    ModelsDevModel {
+                        last_updated: Some("2026-09-01".to_string()),
+                        cost: Some(ModelsDevCost {
+                            input: Some(10.0),
+                            output: Some(50.0),
+                            cache_read: Some(1.0),
+                            cache_write: Some(12.5),
+                        }),
+                        experimental: Some(ModelsDevExperimental {
+                            modes: BTreeMap::from([(
+                                "fast".to_string(),
+                                ModelsDevMode {
+                                    cost: Some(ModelsDevCost {
+                                        input: Some(20.0),
+                                        output: Some(100.0),
+                                        cache_read: Some(2.0),
+                                        cache_write: Some(25.0),
+                                    }),
+                                },
+                            )]),
+                        }),
+                    },
+                )]),
+            },
+        )]);
+
+        let snapshot = snapshot_from_catalog(catalog, None).expect("build snapshot");
+
+        for key in [
+            "gpt-6-astra-fast",
+            "openai/gpt-6-astra-fast",
+            "openai.gpt-6-astra-fast",
+        ] {
+            let price = &snapshot.models[key];
+            assert_eq!(price.input_cost_per_token, 20e-6);
+            assert_eq!(price.output_cost_per_token, 100e-6);
+            assert_eq!(price.cache_read_cost_per_token, 2e-6);
+            assert_eq!(price.cache_write_cost_per_token, 25e-6);
+        }
+    }
+
+    #[test]
     fn a_single_reseller_price_stays_provider_qualified() {
         let candidates = vec![(
             "reseller".to_string(),

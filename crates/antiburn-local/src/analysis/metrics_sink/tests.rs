@@ -766,6 +766,53 @@ fn merged_model_overflow_uses_a_normalized_fallback_key() {
 }
 
 #[test]
+fn merged_pricing_overflow_returns_no_partial_cost() {
+    let parent = finished(Vec::new(), SessionSummary::default());
+    let children = (0..=MAX_MODELS)
+        .map(|index| {
+            let mut standard = event(Some(index as i64), Role::Assistant, 1, 1);
+            standard.model = Some(format!("synthetic-model-{index}"));
+            let mut fast = standard.clone();
+            fast.speed = Some("fast".to_string());
+            finished(vec![standard, fast], SessionSummary::default())
+        })
+        .collect::<Vec<_>>();
+
+    let merged = merge_metrics(&parent, &children);
+
+    assert!(merged.pricing_breakdown.is_empty());
+    assert!(merged.cost.is_none());
+}
+
+#[test]
+fn merged_parent_and_fast_child_keep_both_astra_pricing_tiers() {
+    let mut parent_event = event(Some(0), Role::Assistant, 0, 1_000_000);
+    parent_event.model = Some("gpt-6-astra".to_string());
+    let parent = finished(vec![parent_event], SessionSummary::default());
+    let mut child_event = event(Some(1), Role::Assistant, 0, 1_000_000);
+    child_event.model = Some("gpt-6-astra".to_string());
+    child_event.speed = Some("fast".to_string());
+    let child = finished(vec![child_event], SessionSummary::default());
+
+    let merged = merge_metrics(&parent, &[child]);
+
+    assert_eq!(merged.model_breakdown.len(), 1);
+    assert_eq!(
+        merged.model_breakdown["gpt-6-astra"].output_tokens,
+        2_000_000
+    );
+    assert_eq!(
+        merged.pricing_breakdown["gpt-6-astra"].output_tokens,
+        1_000_000
+    );
+    assert_eq!(
+        merged.pricing_breakdown["gpt-6-astra-fast"].output_tokens,
+        1_000_000
+    );
+    assert!((merged.cost.expect("both tiers price").total_usd - 150.0).abs() < 1e-9);
+}
+
+#[test]
 fn merged_skill_uses_follow_shared_chronology() {
     let make_skill = |timestamp, name: &str| {
         let mut current = event(Some(timestamp), Role::Assistant, 1, 1);
@@ -1261,6 +1308,34 @@ fn tagged_models_do_not_share_the_breakdown_interner_budget() {
     let metrics = accumulator.metrics();
     assert_eq!(metrics.model_breakdown.len(), MAX_MODELS);
     assert_eq!(accumulator.models_truncated, 0);
+}
+
+#[test]
+fn mixed_astra_speeds_keep_one_identity_and_two_pricing_tiers() {
+    let mut standard = event(Some(1), Role::Assistant, 0, 1_000_000);
+    standard.model = Some("gpt-6-astra".to_string());
+    standard.speed = Some("standard".to_string());
+    let mut fast = event(Some(2), Role::Assistant, 0, 1_000_000);
+    fast.model = Some("gpt-6-astra".to_string());
+    fast.speed = Some("fast".to_string());
+
+    let metrics = finished(vec![standard, fast], SessionSummary::default()).metrics();
+
+    assert_eq!(metrics.model_breakdown.len(), 1);
+    assert_eq!(
+        metrics.model_breakdown["gpt-6-astra"].output_tokens,
+        2_000_000
+    );
+    assert_eq!(
+        metrics.pricing_breakdown["gpt-6-astra"].output_tokens,
+        1_000_000
+    );
+    assert_eq!(
+        metrics.pricing_breakdown["gpt-6-astra-fast"].output_tokens,
+        1_000_000
+    );
+    assert!((metrics.cost.expect("both tiers price").total_usd - 150.0).abs() < 1e-9);
+    assert!((metrics.efficiency.total_usd - 150.0).abs() < 1e-9);
 }
 
 #[test]

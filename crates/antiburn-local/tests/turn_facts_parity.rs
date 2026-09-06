@@ -68,6 +68,15 @@ struct Mismatch {
     detail: String,
 }
 
+type FixtureProjections = (
+    SessionEvidence,
+    TurnFacts,
+    SessionMetrics,
+    BTreeMap<String, ModelTokens>,
+    BTreeMap<String, ModelTokens>,
+    Vec<ModelRun>,
+);
+
 /// Streams `jsonl` through the named vendor's adapter into both an evidence
 /// accumulator and a `MemoryTurnRowStore`, and returns both projections.
 fn run_fixture(
@@ -76,7 +85,7 @@ fn run_fixture(
     jsonl: &str,
     capabilities: SourceCapabilities,
 ) -> (SessionEvidence, TurnFacts) {
-    let (evidence, facts, _, _, _) = run_fixture_with_row_projections(
+    let (evidence, facts, _, _, _, _) = run_fixture_with_row_projections(
         agent,
         fixture,
         &SessionInput {
@@ -102,13 +111,7 @@ fn run_fixture_with_row_projections(
     fixture: &str,
     input: &SessionInput,
     capabilities: SourceCapabilities,
-) -> (
-    SessionEvidence,
-    TurnFacts,
-    SessionMetrics,
-    BTreeMap<String, ModelTokens>,
-    Vec<ModelRun>,
-) {
+) -> FixtureProjections {
     let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
         agent: input.agent.clone(),
@@ -142,6 +145,9 @@ fn run_fixture_with_row_projections(
     let model_breakdown = store
         .query_model_breakdown()
         .expect("model breakdown query must succeed");
+    let pricing_breakdown = store
+        .query_pricing_breakdown()
+        .expect("pricing breakdown query must succeed");
     let model_runs = store
         .query_model_runs()
         .expect("model runs query must succeed");
@@ -150,6 +156,7 @@ fn run_fixture_with_row_projections(
         facts,
         session_metrics,
         model_breakdown,
+        pricing_breakdown,
         model_runs,
     )
 }
@@ -340,6 +347,7 @@ fn compare_model_projections(
     fixture: &str,
     metrics: &SessionMetrics,
     model_breakdown: &BTreeMap<String, ModelTokens>,
+    pricing_breakdown: &BTreeMap<String, ModelTokens>,
     model_runs: &[ModelRun],
 ) {
     let expected_breakdown: BTreeMap<String, ModelTokens> = metrics
@@ -353,6 +361,18 @@ fn compare_model_projections(
         "model_breakdown",
         model_breakdown.clone(),
         expected_breakdown,
+    );
+    let expected_pricing: BTreeMap<String, ModelTokens> = metrics
+        .pricing_breakdown
+        .iter()
+        .map(|(model, tokens)| (model.clone(), tokens.clone()))
+        .collect();
+    diff(
+        mismatches,
+        fixture,
+        "pricing_breakdown",
+        pricing_breakdown.clone(),
+        expected_pricing,
     );
     diff(
         mismatches,
@@ -575,7 +595,7 @@ fn claude_model_projections_match_the_accumulator_for_every_fixture() {
             source: RawSource::Jsonl(claude_fixture(name).to_owned()),
             fork_parent_session_id: None,
         };
-        let (_, _, metrics, model_breakdown, model_runs) =
+        let (_, _, metrics, model_breakdown, pricing_breakdown, model_runs) =
             run_fixture_with_row_projections("claude", name, &input, SourceCapabilities::claude());
         // `delegated_model_missing` carries an assistant turn with billable
         // tokens and no model. `SessionMetricsAccumulator` folds such a
@@ -607,6 +627,7 @@ fn claude_model_projections_match_the_accumulator_for_every_fixture() {
             name,
             &metrics,
             &model_breakdown,
+            &pricing_breakdown,
             &model_runs,
         );
     }
@@ -688,13 +709,14 @@ fn codex_model_projections_match_the_accumulator_for_every_fixture() {
             source: RawSource::Jsonl(codex_fixture(name).to_owned()),
             fork_parent_session_id: None,
         };
-        let (_, _, metrics, model_breakdown, model_runs) =
+        let (_, _, metrics, model_breakdown, pricing_breakdown, model_runs) =
             run_fixture_with_row_projections("codex", name, &input, SourceCapabilities::codex());
         compare_model_projections(
             &mut mismatches,
             name,
             &metrics,
             &model_breakdown,
+            &pricing_breakdown,
             &model_runs,
         );
     }
@@ -834,13 +856,14 @@ fn pi_model_projections_match_the_accumulator_for_every_fixture() {
             source: RawSource::Jsonl(pi_fixture(name).to_owned()),
             fork_parent_session_id: None,
         };
-        let (_, _, metrics, model_breakdown, model_runs) =
+        let (_, _, metrics, model_breakdown, pricing_breakdown, model_runs) =
             run_fixture_with_row_projections("pi", name, &input, SourceCapabilities::pi());
         compare_model_projections(
             &mut mismatches,
             name,
             &metrics,
             &model_breakdown,
+            &pricing_breakdown,
             &model_runs,
         );
     }
@@ -941,7 +964,7 @@ fn opencode_sqlite_input(path: &Path, session_id: &str) -> SessionInput {
 /// Streams one OpenCode `SessionInput` through the real adapter and the
 /// real evidence and turn-row pipeline, the same path production uses.
 fn run_opencode_fixture(fixture: &str, input: &SessionInput) -> (SessionEvidence, TurnFacts) {
-    let (evidence, facts, _, _, _) = run_fixture_with_row_projections(
+    let (evidence, facts, _, _, _, _) = run_fixture_with_row_projections(
         "opencode",
         fixture,
         input,
@@ -1136,78 +1159,88 @@ fn opencode_model_projections_match_the_accumulator_for_every_fixture() {
     let mut mismatches = Vec::new();
 
     let (_messages_dir, messages_input) = opencode_fixture_messages_with_cache_and_reasoning();
-    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
-        "opencode",
-        "messages_with_cache_and_reasoning",
-        &messages_input,
-        SourceCapabilities::opencode(),
-    );
+    let (_, _, metrics, model_breakdown, pricing_breakdown, model_runs) =
+        run_fixture_with_row_projections(
+            "opencode",
+            "messages_with_cache_and_reasoning",
+            &messages_input,
+            SourceCapabilities::opencode(),
+        );
     compare_model_projections(
         &mut mismatches,
         "messages_with_cache_and_reasoning",
         &metrics,
         &model_breakdown,
+        &pricing_breakdown,
         &model_runs,
     );
 
     let (_subagent_dir, subagent_input) =
         opencode_fixture_subagent_delegation_with_model_transition();
-    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
-        "opencode",
-        "subagent_delegation_with_model_transition",
-        &subagent_input,
-        SourceCapabilities::opencode(),
-    );
+    let (_, _, metrics, model_breakdown, pricing_breakdown, model_runs) =
+        run_fixture_with_row_projections(
+            "opencode",
+            "subagent_delegation_with_model_transition",
+            &subagent_input,
+            SourceCapabilities::opencode(),
+        );
     compare_model_projections(
         &mut mismatches,
         "subagent_delegation_with_model_transition",
         &metrics,
         &model_breakdown,
+        &pricing_breakdown,
         &model_runs,
     );
 
     let (_malformed_dir, malformed_input) = opencode_fixture_malformed_between_valid();
-    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
-        "opencode",
-        "malformed_between_valid",
-        &malformed_input,
-        SourceCapabilities::opencode(),
-    );
+    let (_, _, metrics, model_breakdown, pricing_breakdown, model_runs) =
+        run_fixture_with_row_projections(
+            "opencode",
+            "malformed_between_valid",
+            &malformed_input,
+            SourceCapabilities::opencode(),
+        );
     compare_model_projections(
         &mut mismatches,
         "malformed_between_valid",
         &metrics,
         &model_breakdown,
+        &pricing_breakdown,
         &model_runs,
     );
 
     let (_compaction_dir, compaction_input) = opencode_fixture_compaction_boundary();
-    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
-        "opencode",
-        "compaction_boundary",
-        &compaction_input,
-        SourceCapabilities::opencode(),
-    );
+    let (_, _, metrics, model_breakdown, pricing_breakdown, model_runs) =
+        run_fixture_with_row_projections(
+            "opencode",
+            "compaction_boundary",
+            &compaction_input,
+            SourceCapabilities::opencode(),
+        );
     compare_model_projections(
         &mut mismatches,
         "compaction_boundary",
         &metrics,
         &model_breakdown,
+        &pricing_breakdown,
         &model_runs,
     );
 
     let export_input = opencode_fixture_export_jsonl_child_delegation();
-    let (_, _, metrics, model_breakdown, model_runs) = run_fixture_with_row_projections(
-        "opencode",
-        "export_jsonl_child_delegation",
-        &export_input,
-        SourceCapabilities::opencode(),
-    );
+    let (_, _, metrics, model_breakdown, pricing_breakdown, model_runs) =
+        run_fixture_with_row_projections(
+            "opencode",
+            "export_jsonl_child_delegation",
+            &export_input,
+            SourceCapabilities::opencode(),
+        );
     compare_model_projections(
         &mut mismatches,
         "export_jsonl_child_delegation",
         &metrics,
         &model_breakdown,
+        &pricing_breakdown,
         &model_runs,
     );
 

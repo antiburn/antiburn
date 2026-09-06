@@ -4070,6 +4070,15 @@
         }
       ],
       "peakContextTokens": 100,
+      "pricingBreakdown": {
+        "claude-opus-4-6": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 100,
+          "output_tokens": 10
+        }
+      },
       "sessionId": "late_skill_metrics",
       "tokensIn": 100,
       "tokensOut": 10

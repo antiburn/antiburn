@@ -161,7 +161,7 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 17,
+      "analyzerRevision": 18,
       "evidenceSchemaRevision": 13,
       "harnessVersion": {
         "state": "unsupported"
@@ -4202,6 +4202,15 @@
       }
     ],
     "peakContextTokens": 8,
+    "pricingBreakdown": {
+      "model-a": {
+        "cache_creation_1h_tokens": 0,
+        "cache_creation_tokens": 4,
+        "cache_read_tokens": 3,
+        "input_tokens": 1,
+        "output_tokens": 2
+      }
+    },
     "sessionId": "unknown_content_block",
     "tokensIn": 5,
     "tokensOut": 2

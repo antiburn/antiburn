@@ -4117,6 +4117,15 @@
         }
       ],
       "peakContextTokens": 15,
+      "pricingBreakdown": {
+        "claude-opus-4-6": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 20,
+          "output_tokens": 8
+        }
+      },
       "sessionId": "within_file_duplicate_uuid",
       "tokensIn": 20,
       "tokensOut": 8

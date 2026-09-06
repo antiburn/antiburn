@@ -52,6 +52,7 @@ fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> Ana
     AnalysisRecord {
         key,
         model_breakdown_json: "{}".into(),
+        pricing_breakdown_json: "{}".into(),
         inclusive_models_json: "[]".into(),
         initial_context_json: None,
         source_summaries_json: None,
@@ -306,12 +307,13 @@ fn session_analysis_holds_the_cache_values_and_the_projection_revisions() {
             "initial_context_json",
             "source_summaries_json",
             "provider_hints_json",
+            "pricing_breakdown_json",
         ]
     );
 }
 
 #[test]
-fn provider_hints_migration_keeps_old_analysis_unknown() {
+fn pricing_breakdown_migration_invalidates_old_analysis() {
     let connection = rusqlite::Connection::open_in_memory().unwrap();
     for &sql in &super::schema::MIGRATIONS[..23] {
         connection.execute_batch(sql).unwrap();
@@ -336,11 +338,10 @@ fn provider_hints_migration_keeps_old_analysis_unknown() {
     .expect("V24 migrates the prior schema");
     let analysis = store
         .analysis(&SessionKey::new("native", "pi", "legacy"))
-        .unwrap()
-        .expect("legacy analysis survives");
+        .unwrap();
 
-    assert_eq!(store.schema_version().unwrap(), 33);
-    assert_eq!(analysis.provider_hints_json, None);
+    assert_eq!(store.schema_version().unwrap(), 34);
+    assert!(analysis.is_none());
 }
 
 #[test]
@@ -841,6 +842,7 @@ fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
             &AnalysisRecord {
                 key: SessionKey::new("native", "claude-code", "abc"),
                 model_breakdown_json: "{}".into(),
+                pricing_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
                 source_summaries_json: None,
@@ -1070,6 +1072,7 @@ fn session_retention_removes_all_derived_session_data() {
             &AnalysisRecord {
                 key: key.clone(),
                 model_breakdown_json: "{}".into(),
+                pricing_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
                 source_summaries_json: None,
@@ -1556,6 +1559,7 @@ fn analysis_round_trips_and_is_replaced_rather_than_duplicated() {
     let record = AnalysisRecord {
         key: key.clone(),
         model_breakdown_json: r#"{"claude-opus-4-6":{"inputTokens":10}}"#.into(),
+        pricing_breakdown_json: r#"{"claude-opus-4-6":{"inputTokens":10}}"#.into(),
         inclusive_models_json:
             r#"[{"model":"claude-haiku-4-5"},{"model":"claude-opus-4-6","thinkingMode":"high"}]"#
                 .into(),
@@ -1794,6 +1798,7 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
             &AnalysisRecord {
                 key: key.clone(),
                 model_breakdown_json: "{}".into(),
+                pricing_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
                 source_summaries_json: None,
@@ -1939,6 +1944,7 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
             &AnalysisRecord {
                 key: SessionKey::new("native", "claude-code", "analyzed"),
                 model_breakdown_json: r#"{"claude-opus-4-6":{"input_tokens":10}}"#.into(),
+                pricing_breakdown_json: r#"{"claude-opus-4-6":{"input_tokens":10}}"#.into(),
                 inclusive_models_json: r#"[{"model":"claude-opus-4-6","thinkingMode":"high"}]"#
                     .into(),
                 initial_context_json: None,
@@ -2862,6 +2868,7 @@ fn a_catalog_change_requeues_no_session_evidence() {
             &AnalysisRecord {
                 key: record.key.clone(),
                 model_breakdown_json: "{}".into(),
+                pricing_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
                 source_summaries_json: None,

@@ -414,6 +414,13 @@ pub trait TurnRowStore: Send + Sync {
         &self,
     ) -> Result<std::collections::BTreeMap<String, crate::pricing::ModelTokens>, TurnRowError>;
 
+    /// Read the speed-aware pricing breakdown for this session's rows.
+    fn query_pricing_breakdown(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, crate::pricing::ModelTokens>, TurnRowError> {
+        self.query_model_breakdown()
+    }
+
     /// Reads the distinct model runs for every row this store wrote under
     /// its own session key and fence, parent runs first. See
     /// [`crate::analysis::query_model_runs`].
@@ -1246,6 +1253,18 @@ impl TurnRowStore for MemoryTurnRowStore {
         .map_err(TurnRowError::from)
     }
 
+    fn query_pricing_breakdown(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, crate::pricing::ModelTokens>, TurnRowError> {
+        let connection = self.connection.lock().expect("lock");
+        crate::analysis::evidence_query::query_pricing_breakdown(
+            &connection,
+            &self.key(),
+            &FenceScope::single(self.claim_fence),
+        )
+        .map_err(TurnRowError::from)
+    }
+
     fn query_model_runs(&self) -> Result<Vec<crate::analysis::model::ModelRun>, TurnRowError> {
         let connection = self.connection.lock().expect("lock");
         crate::analysis::evidence_query::query_model_runs(
@@ -1373,6 +1392,35 @@ mod tests {
 
         assert_eq!(count_turn_rows(&conn, &key, 7).expect("count"), 2);
         assert_eq!(count_turn_rows(&conn, &key, 8).expect("count"), 0);
+    }
+
+    #[test]
+    fn pricing_breakdown_splits_standard_and_fast_rows() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "codex",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        let mut standard = sample_row(0);
+        standard.model = Some("openai/gpt-6-astra-20260901[272k]".to_owned());
+        standard.output_tokens = 10;
+        let mut fast = sample_row(1);
+        fast.model = standard.model.clone();
+        fast.speed = Some("fast".to_owned());
+        fast.output_tokens = 20;
+        insert_turn_rows(&conn, &key, 7, &[standard, fast]).expect("insert rows");
+
+        let breakdown = crate::analysis::evidence_query::query_pricing_breakdown(
+            &conn,
+            &key,
+            &FenceScope::single(7),
+        )
+        .expect("query pricing breakdown");
+
+        assert_eq!(breakdown["openai/gpt-6-astra"].output_tokens, 10);
+        assert_eq!(breakdown["openai/gpt-6-astra-fast"].output_tokens, 20);
     }
 
     #[test]

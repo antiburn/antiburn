@@ -126,7 +126,7 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 17,
+      "analyzerRevision": 18,
       "evidenceSchemaRevision": 13,
       "harnessVersion": {
         "state": "unsupported"
@@ -4162,6 +4162,7 @@
     "modelBreakdown": {},
     "modelRuns": [],
     "peakContextTokens": 0,
+    "pricingBreakdown": {},
     "sessionId": "content_blocks",
     "tokensIn": 0,
     "tokensOut": 0

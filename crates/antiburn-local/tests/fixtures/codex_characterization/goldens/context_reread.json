@@ -147,7 +147,7 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 17,
+      "analyzerRevision": 18,
       "evidenceSchemaRevision": 13,
       "harnessVersion": {
         "state": "unsupported"
@@ -4194,6 +4194,15 @@
       }
     ],
     "peakContextTokens": 60000,
+    "pricingBreakdown": {
+      "gpt-test": {
+        "cache_creation_1h_tokens": 0,
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 58000,
+        "input_tokens": 64000,
+        "output_tokens": 170
+      }
+    },
     "sessionId": "context_reread",
     "tokensIn": 64000,
     "tokensOut": 170
