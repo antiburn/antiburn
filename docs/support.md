@@ -134,15 +134,18 @@ signed bundle and restarts antiburn. The app never depends on either connection.
 - Development builds carry no updater at all.
 - Linux AppImage releases update in the app. Debian packages remain install-only
   and require the next package to be installed manually.
-- **Anonymised analytics** are the one thing antiburn reports about itself.
+- **Anonymised product analytics** are the one thing antiburn reports to us.
   Official release builds start with it on, including during onboarding. The Ready
-  screen explains it, and the switch is in Settings → Privacy. Each event carries thirteen fields and
+  screen explains it, and the switch is in Settings → Privacy. The event schema has twenty-two fields and
   no others: the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier replaced every 30 days;
-  the event name; the time it happened and the time it was delivered; the
+  a random application-run identifier; the event name; the time it happened and the time it was delivered; the
   processor architecture; a count rounded into a range where the event has one;
   a short label naming which setting changed or which kind of failure occurred,
-  never the value; the app version; and the operating system. The payload has no
+  never the value; a second fixed label where needed; a coarse five-hour usage
+  band; the reset response shape; eligibility, experiment membership, experiment
+  arm, and availability states; an allowlisted ineligibility reason; a reset-count
+  bucket; whether a next-reset date was present; the app version; and the operating system. The payload has no
   field able to carry anything else. Because each event is timestamped and the
   identifier lasts up to 30 days, the events do show roughly when the
   application is used within that window; they do not show what it was used on.

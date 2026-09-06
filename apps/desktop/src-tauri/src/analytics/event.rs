@@ -48,6 +48,9 @@ pub enum EventName {
     ErrorOccurred,
     /// An Insights cohort contains unknown record vocabulary.
     UnrecognizedRecordsObserved,
+    /// Claude's limit-reset diagnostic changed during this run.
+    #[cfg(feature = "analytics")]
+    ClaudeLimitResetObserved,
 }
 
 /// Every event this application may send.
@@ -69,6 +72,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::UsageViewed,
     EventName::ErrorOccurred,
     EventName::UnrecognizedRecordsObserved,
+    EventName::ClaudeLimitResetObserved,
 ];
 
 #[cfg(feature = "analytics")]
@@ -84,6 +88,7 @@ impl EventName {
             EventName::UsageViewed => "antiburn.usage_viewed",
             EventName::ErrorOccurred => "antiburn.error_occurred",
             EventName::UnrecognizedRecordsObserved => "antiburn.unrecognized_records_observed",
+            EventName::ClaudeLimitResetObserved => "antiburn.claude_limit_reset_observed",
         }
     }
 }
@@ -153,6 +158,33 @@ pub struct Properties {
     /// under WSL. Same rules as [`Properties::label`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<&'static str>,
+    /// The short-window usage position returned with a Claude reset probe.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_band: Option<&'static str>,
+    /// Whether the reset member was absent, null, malformed, or an object.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_shape: Option<&'static str>,
+    /// Claude's reset eligibility boolean, including absent field states.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eligibility: Option<&'static str>,
+    /// Claude's ineligibility reason from an allowlisted vocabulary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ineligible_reason: Option<&'static str>,
+    /// Claude's experiment-membership boolean, including absent field states.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experiment: Option<&'static str>,
+    /// Claude's experiment arm from an allowlisted vocabulary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_arm: Option<&'static str>,
+    /// Claude's reset availability boolean, including absent field states.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reset_availability: Option<&'static str>,
+    /// Claude's weekly reset count reduced to a fixed bucket.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resets_per_week: Option<&'static str>,
+    /// Whether Claude returned a next-availability timestamp.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_reset_available: Option<&'static str>,
 }
 
 /// What a caller may attach to an event.
@@ -169,6 +201,34 @@ pub struct Facts {
     pub label: Option<&'static str>,
     /// The secondary dimension, where the event has one.
     pub detail: Option<&'static str>,
+    pub usage_band: Option<&'static str>,
+    pub response_shape: Option<&'static str>,
+    pub eligibility: Option<&'static str>,
+    pub ineligible_reason: Option<&'static str>,
+    pub experiment: Option<&'static str>,
+    pub reset_arm: Option<&'static str>,
+    pub reset_availability: Option<&'static str>,
+    pub resets_per_week: Option<&'static str>,
+    pub next_reset_available: Option<&'static str>,
+}
+
+#[cfg(feature = "analytics")]
+pub fn claude_limit_reset_facts(
+    diagnostic: crate::provider_usage::live::anthropic::LimitResetDiagnostic,
+) -> Facts {
+    Facts {
+        label: Some(diagnostic.request_outcome),
+        usage_band: Some(diagnostic.usage_band),
+        response_shape: Some(diagnostic.response_shape),
+        eligibility: diagnostic.eligibility,
+        ineligible_reason: diagnostic.ineligible_reason,
+        experiment: diagnostic.experiment,
+        reset_arm: diagnostic.arm,
+        reset_availability: diagnostic.availability,
+        resets_per_week: diagnostic.resets_per_week,
+        next_reset_available: diagnostic.next_available,
+        ..Facts::default()
+    }
 }
 
 /// The install context the contract stamps on every track event.
@@ -363,6 +423,15 @@ mod tests {
                 bucket: Some("10-49"),
                 label: Some("claude-code"),
                 detail: Some("native"),
+                usage_band: Some("80_to_under_100"),
+                response_shape: Some("object"),
+                eligibility: Some("eligible"),
+                ineligible_reason: Some("null"),
+                experiment: Some("in_experiment"),
+                reset_arm: Some("reset"),
+                reset_availability: Some("available"),
+                resets_per_week: Some("1"),
+                next_reset_available: Some("present"),
             },
             context: Context {
                 app_version: "antiburn:1.2.3".into(),
@@ -392,7 +461,7 @@ mod tests {
     /// `apps/desktop/src/views/settings/PrivacyPane.tsx` is the bug this
     /// comment exists to prevent.
     #[test]
-    fn the_wire_payload_is_exactly_these_thirteen_fields() {
+    fn the_wire_payload_is_exactly_these_twenty_two_fields() {
         let json = serde_json::to_value(sample()).expect("serializes");
         let object = json.as_object().expect("an object");
         let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
@@ -418,7 +487,24 @@ mod tests {
             .map(String::as_str)
             .collect();
         property_keys.sort_unstable();
-        assert_eq!(property_keys, ["arch", "bucket", "detail", "label"]);
+        assert_eq!(
+            property_keys,
+            [
+                "arch",
+                "bucket",
+                "detail",
+                "eligibility",
+                "experiment",
+                "ineligibleReason",
+                "label",
+                "nextResetAvailable",
+                "resetArm",
+                "resetAvailability",
+                "resetsPerWeek",
+                "responseShape",
+                "usageBand",
+            ]
+        );
 
         let mut context_keys: Vec<_> = object["context"]
             .as_object()
@@ -457,6 +543,15 @@ mod tests {
         event.properties.bucket = None;
         event.properties.label = None;
         event.properties.detail = None;
+        event.properties.usage_band = None;
+        event.properties.response_shape = None;
+        event.properties.eligibility = None;
+        event.properties.ineligible_reason = None;
+        event.properties.experiment = None;
+        event.properties.reset_arm = None;
+        event.properties.reset_availability = None;
+        event.properties.resets_per_week = None;
+        event.properties.next_reset_available = None;
         let json = serde_json::to_string(&event).expect("serializes");
         assert!(!json.contains("bucket"), "{json}");
         assert!(!json.contains("label"), "{json}");
@@ -480,12 +575,13 @@ mod tests {
                 | EventName::SessionOpened
                 | EventName::UsageViewed
                 | EventName::ErrorOccurred
-                | EventName::UnrecognizedRecordsObserved => true,
+                | EventName::UnrecognizedRecordsObserved
+                | EventName::ClaudeLimitResetObserved => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            9,
+            10,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -540,6 +636,7 @@ mod tests {
             12 => "twelve",
             13 => "thirteen",
             14 => "fourteen",
+            22 => "twenty-two",
             other => panic!("no word for {other} fields; add one and update the documents"),
         };
 

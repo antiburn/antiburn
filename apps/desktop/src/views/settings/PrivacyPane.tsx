@@ -144,7 +144,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
           keeps the data it needs locally. Your sessions, prompts, and file paths never leave
           it.{" "}
           {analyticsSupported
-            ? "The one thing antiburn reports about itself is anonymised analytics, which you can turn off below."
+            ? "The one thing antiburn reports to us is anonymised product analytics, which you can turn off below."
             : "This build sends no analytics at all."}{" "}
           Each promise opens into the specifics a reader could reasonably want to check.
         </p>
@@ -178,8 +178,8 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             startup and hourly while running; it asks GitHub Releases whether a newer version
             exists; where a source is enabled, it can ask a provider for your current plan
             limits using the credentials your own tools already stored; and, in a released build
-            with the switch below on, it sends anonymised analytics about the application
-            itself. Handing a provider back a credential it issued you is not a disclosure — it
+            with the switch below on, it sends the anonymised product analytics listed below.
+            Handing a provider back a credential it issued you is not a disclosure — it
             already has it. Those analytics are the one thing that goes to us; they are listed
             field by field below, and they contain none of your work. This build
             {analyticsSupported
@@ -215,7 +215,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   ? "Off for this launch because ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use this setting."
                   : loaded && !settings.analyticsEnabled
                     ? "Off. Antiburn deleted its analytics identifier and anything waiting to be sent."
-                    : `Sends app launches, onboarding progress, feature use, and error categories${
+                    : `Sends app launches, onboarding progress, feature use, error categories, and coarse Claude reset status${
                         operator ? ` to ${operator}` : ""
                       }. Never prompts, sessions, source code, filenames, or paths.`
               }
@@ -243,10 +243,8 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   field is added there, it is named here in the same change or
                   the promise below stops being true.
 
-                  A list rather than one long sentence: a reader auditing this
-                  is counting items against that struct, and thirteen clauses
-                  separated by semicolons cannot be counted. */}
-              <p>Thirteen fields, and these are all of them:</p>
+                  The list lets a reader count every field. */}
+              <p>The schema has twenty-two fields, and these are all of them:</p>
               {/* `pl-7`, not the `pl-4` this started as. Root font-size here
                   is 13px, so `pl-4` is 13px of padding — less than the disc
                   marker's own 17.5px advance, which left the bullets painting
@@ -270,6 +268,15 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   A second such label when an event has two things to tell apart, such as native
                   versus WSL.
                 </li>
+                <li>A range for Claude&rsquo;s current five-hour usage.</li>
+                <li>Whether Claude returned reset data, null, or a malformed value.</li>
+                <li>Claude&rsquo;s reset eligibility state.</li>
+                <li>An allowlisted reason when Claude says a reset is not eligible.</li>
+                <li>Claude&rsquo;s reset-experiment membership state.</li>
+                <li>Claude&rsquo;s reset experiment arm: reset, control, or other.</li>
+                <li>Claude&rsquo;s reset availability state.</li>
+                <li>Claude&rsquo;s weekly reset count rounded to zero, one, or two-plus.</li>
+                <li>Whether Claude supplied a next-reset date, never the date itself.</li>
                 <li>The app version.</li>
                 <li>Your operating system.</li>
               </ul>

@@ -45,6 +45,217 @@ pub struct AnthropicUsage {
     pub supplemental: Option<SupplementalUsage>,
 }
 
+/// The closed, privacy-safe summary of Claude's limit-reset experiment data.
+///
+/// Every value is a fixed category. The provider response and its timestamps
+/// never leave the machine.
+#[cfg(feature = "analytics")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LimitResetDiagnostic {
+    pub request_outcome: &'static str,
+    pub usage_band: &'static str,
+    pub response_shape: &'static str,
+    pub eligibility: Option<&'static str>,
+    pub ineligible_reason: Option<&'static str>,
+    pub experiment: Option<&'static str>,
+    pub arm: Option<&'static str>,
+    pub availability: Option<&'static str>,
+    pub resets_per_week: Option<&'static str>,
+    pub next_available: Option<&'static str>,
+}
+
+/// Reduce the `juniper_tide` response member to a closed diagnostic.
+#[cfg(feature = "analytics")]
+pub fn parse_limit_reset_diagnostic(input: &str) -> LimitResetDiagnostic {
+    let Ok(value) = serde_json::from_str::<Value>(input) else {
+        return empty_limit_reset_diagnostic("success", "invalid_json");
+    };
+    let Some(envelope) = value.as_object() else {
+        return empty_limit_reset_diagnostic("success", "malformed_envelope");
+    };
+    let usage_band = usage_band(&value);
+    let Some(tide) = envelope.get("juniper_tide") else {
+        return empty_limit_reset_diagnostic_with_band("success", usage_band, "missing");
+    };
+    if tide.is_null() {
+        return empty_limit_reset_diagnostic_with_band("success", usage_band, "null");
+    }
+    let Some(tide) = tide.as_object() else {
+        return empty_limit_reset_diagnostic_with_band("success", usage_band, "malformed");
+    };
+
+    LimitResetDiagnostic {
+        request_outcome: "success",
+        usage_band,
+        response_shape: "object",
+        eligibility: Some(bool_state(tide.get("eligible"), "eligible", "ineligible")),
+        ineligible_reason: Some(reason_state(tide.get("ineligible_reason"))),
+        experiment: Some(bool_state(
+            tide.get("in_experiment"),
+            "in_experiment",
+            "not_in_experiment",
+        )),
+        arm: Some(string_state(tide.get("arm"), |value| match value {
+            "reset" => "reset",
+            "control" => "control",
+            _ => "other",
+        })),
+        availability: Some(bool_state(
+            tide.get("available"),
+            "available",
+            "unavailable",
+        )),
+        resets_per_week: Some(number_state(tide.get("resets_per_week"))),
+        next_available: Some(presence_state(tide.get("next_available_at"))),
+    }
+}
+
+#[cfg(feature = "analytics")]
+pub fn empty_limit_reset_diagnostic(
+    request_outcome: &'static str,
+    response_shape: &'static str,
+) -> LimitResetDiagnostic {
+    empty_limit_reset_diagnostic_with_band(request_outcome, "unknown", response_shape)
+}
+
+#[cfg(feature = "analytics")]
+fn empty_limit_reset_diagnostic_with_band(
+    request_outcome: &'static str,
+    usage_band: &'static str,
+    response_shape: &'static str,
+) -> LimitResetDiagnostic {
+    LimitResetDiagnostic {
+        request_outcome,
+        usage_band,
+        response_shape,
+        eligibility: None,
+        ineligible_reason: None,
+        experiment: None,
+        arm: None,
+        availability: None,
+        resets_per_week: None,
+        next_available: None,
+    }
+}
+
+#[cfg(feature = "analytics")]
+fn usage_band(value: &Value) -> &'static str {
+    let Ok(usage) = parse_usage_value(value) else {
+        return "unknown";
+    };
+    let Some(percent) = usage
+        .windows
+        .iter()
+        .find(|window| matches!(window.role, WindowRole::PrimaryShort))
+        .and_then(|window| window.used_percent)
+    else {
+        return "unknown";
+    };
+    if percent >= 100.0 {
+        "at_limit"
+    } else if percent >= 80.0 {
+        "80_to_under_100"
+    } else {
+        "below_80"
+    }
+}
+
+#[cfg(feature = "analytics")]
+fn missing_null_or_malformed(value: Option<&Value>) -> Option<&'static str> {
+    match value {
+        None => Some("missing"),
+        Some(value) if value.is_null() => Some("null"),
+        Some(_) => None,
+    }
+}
+
+#[cfg(feature = "analytics")]
+fn bool_state(
+    value: Option<&Value>,
+    when_true: &'static str,
+    when_false: &'static str,
+) -> &'static str {
+    if let Some(state) = missing_null_or_malformed(value) {
+        return state;
+    }
+    match value.and_then(Value::as_bool) {
+        Some(true) => when_true,
+        Some(false) => when_false,
+        None => "malformed",
+    }
+}
+
+#[cfg(feature = "analytics")]
+fn string_state(
+    value: Option<&Value>,
+    classify: impl FnOnce(&str) -> &'static str,
+) -> &'static str {
+    if let Some(state) = missing_null_or_malformed(value) {
+        return state;
+    }
+    match value
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => classify(value),
+        None => "malformed",
+    }
+}
+
+#[cfg(feature = "analytics")]
+fn reason_state(value: Option<&Value>) -> &'static str {
+    string_state(value, |reason| match reason {
+        "tier" => "tier",
+        "tenure" => "tenure",
+        "surface" => "surface",
+        "mobile" => "mobile",
+        "cli_version" => "cli_version",
+        "not_at_wall" => "not_at_wall",
+        "weekly_limit" => "weekly_limit",
+        "no_weekly_limit" => "no_weekly_limit",
+        "other_experiment" => "other_experiment",
+        "extra_usage" => "extra_usage",
+        "unavailable" => "unavailable",
+        "unknown" => "unknown",
+        _ => "other",
+    })
+}
+
+#[cfg(feature = "analytics")]
+fn number_state(value: Option<&Value>) -> &'static str {
+    if let Some(state) = missing_null_or_malformed(value) {
+        return state;
+    }
+    match value.and_then(Value::as_u64) {
+        Some(0) => "0",
+        Some(1) => "1",
+        Some(_) => "2_plus",
+        None => "malformed",
+    }
+}
+
+#[cfg(feature = "analytics")]
+fn presence_state(value: Option<&Value>) -> &'static str {
+    if let Some(state) = missing_null_or_malformed(value) {
+        return state;
+    }
+    let Some(value) = value else {
+        return "missing";
+    };
+    if value
+        .as_str()
+        .is_some_and(|raw| OffsetDateTime::parse(raw, &Rfc3339).is_ok())
+        || value.as_f64().is_some_and(|seconds| {
+            seconds.is_finite()
+                && OffsetDateTime::from_unix_timestamp(seconds.trunc() as i64).is_ok()
+        })
+    {
+        "present"
+    } else {
+        "malformed"
+    }
+}
+
 /// Parse an Anthropic usage payload into windows and supplemental metering.
 ///
 /// Fails rather than returning a partial reading: a payload we only half

@@ -1,6 +1,6 @@
 # Privacy policy
 
-Effective: 28 August 2026
+Effective: 6 September 2026
 
 This policy explains the analytics sent by the antiburn desktop application.
 Antiburn is operated by **Cadence AI (Vic) Pty Ltd** ("we", "us"). Contact us
@@ -22,14 +22,21 @@ Official release builds send limited events about how the application works and
 which features are used. This includes application launch and progress through
 the fixed onboarding steps.
 
-Each event contains thirteen fields:
+The event schema contains twenty-two fields:
 
 - the constant product surface `desktop`;
 - random message, installation, and application-run identifiers;
 - the event name and capture and delivery times;
 - the processor architecture, operating-system family, and app version;
 - an optional count rounded to a range; and
-- optional labels selected from a fixed list in the application.
+- optional labels selected from a fixed list in the application;
+- a range for Claude's current five-hour usage;
+- whether Claude returned reset data, null, or a malformed value;
+- Claude's reset eligibility and experiment-membership states;
+- an allowlisted reason when Claude reports ineligibility;
+- Claude's reset experiment arm and availability state;
+- the weekly reset count rounded to zero, one, or two-plus; and
+- whether Claude supplied a next-reset date, never the date itself.
 
 The installation identifier is random and changes every 30 days. The run
 identifier exists only in memory and changes when the app restarts or after 30
@@ -48,7 +55,8 @@ type, and app runtime. We store them with the raw event.
 ## Why we use analytics
 
 We use these events to understand whether onboarding works, which product
-features are useful, and which operations fail. We do not use them for
+features are useful, which operations fail, and when Claude makes its session
+limit-reset feature available. We do not use them for
 advertising, user profiling, or decisions about a person.
 
 We process this data for our legitimate interest in maintaining and improving
