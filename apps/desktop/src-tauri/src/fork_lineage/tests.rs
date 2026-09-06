@@ -4,7 +4,8 @@ use antiburn_local::analysis::{TurnRow, TurnRowStore, TurnScope};
 
 use super::*;
 use crate::store::{
-    AnalysisRecord, EvidenceCompletion, FencedTurnRowStore, PublishedEvidence, SessionRecord,
+    AnalysisRecord, EvidenceCompletion, EvidenceStatus, FencedTurnRowStore, PublishedEvidence,
+    SessionRecord,
 };
 
 fn store() -> Store {
@@ -291,4 +292,108 @@ fn a_non_claude_key_is_ignored() {
     // return early on the agent guard before it ever queries the store.
     link_claude_fork(&store, &key).unwrap();
     assert_eq!(store.fork_parent(&key).unwrap(), None);
+}
+
+/* --------------------------------------------------------------------
+ * Requeuing the child once a relation is newly recorded.
+ * ----------------------------------------------------------------- */
+
+#[test]
+fn a_newly_recorded_relation_requeues_the_child_once() {
+    let store = store();
+    let parent_key = publish_first_turn(&store, "parent", "u1");
+    store
+        .set_first_seen_at_for_test(&parent_key, "2024-01-01T00:00:00Z")
+        .unwrap();
+    let fork_key = publish_first_turn(&store, "fork", "u1");
+    store
+        .set_first_seen_at_for_test(&fork_key, "2024-01-02T00:00:00Z")
+        .unwrap();
+    assert_eq!(
+        store.evidence(&fork_key).unwrap().unwrap().status,
+        EvidenceStatus::Ready
+    );
+
+    link_claude_fork(&store, &fork_key).unwrap();
+
+    // The fork is the child in the newly recorded relation: its stale
+    // evidence (ingested before the parent link existed) is requeued.
+    assert_eq!(
+        store.evidence(&fork_key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+    // The parent recorded no relation of its own, so it is untouched.
+    assert_eq!(
+        store.evidence(&parent_key).unwrap().unwrap().status,
+        EvidenceStatus::Ready
+    );
+}
+
+#[test]
+fn a_later_publish_of_the_already_linked_child_does_not_requeue_again() {
+    let store = store();
+    let parent_key = publish_first_turn(&store, "parent", "u1");
+    store
+        .set_first_seen_at_for_test(&parent_key, "2024-01-01T00:00:00Z")
+        .unwrap();
+    let fork_key = publish_first_turn(&store, "fork", "u1");
+    store
+        .set_first_seen_at_for_test(&fork_key, "2024-01-02T00:00:00Z")
+        .unwrap();
+
+    link_claude_fork(&store, &fork_key).unwrap();
+    assert_eq!(
+        store.evidence(&fork_key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+
+    // The requeued child re-ingests and republishes, then calls
+    // `link_claude_fork` again the same way the worker does after every
+    // publish. `record_fork_parent` now finds the relation already
+    // present and returns `false`, so this must not requeue again.
+    publish_first_turn(&store, "fork", "u1");
+    assert_eq!(
+        store.evidence(&fork_key).unwrap().unwrap().status,
+        EvidenceStatus::Ready
+    );
+
+    link_claude_fork(&store, &fork_key).unwrap();
+
+    assert_eq!(
+        store.evidence(&fork_key).unwrap().unwrap().status,
+        EvidenceStatus::Ready
+    );
+}
+
+#[test]
+fn a_newly_named_later_child_is_requeued_when_the_parent_publishes_second() {
+    let store = store();
+    let fork_key = publish_first_turn(&store, "fork", "u1");
+    store
+        .set_first_seen_at_for_test(&fork_key, "2024-01-02T00:00:00Z")
+        .unwrap();
+    // The fork ran the lookup first and found no candidate yet.
+    link_claude_fork(&store, &fork_key).unwrap();
+    assert_eq!(
+        store.evidence(&fork_key).unwrap().unwrap().status,
+        EvidenceStatus::Ready
+    );
+
+    let parent_key = publish_first_turn(&store, "parent", "u1");
+    store
+        .set_first_seen_at_for_test(&parent_key, "2024-01-01T00:00:00Z")
+        .unwrap();
+
+    link_claude_fork(&store, &parent_key).unwrap();
+
+    // `fork` is the child named from the parent's side of the lookup: it
+    // must be requeued too, even though `fork` itself did not just publish.
+    assert_eq!(
+        store.evidence(&fork_key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
+    );
+    assert_eq!(
+        store.evidence(&parent_key).unwrap().unwrap().status,
+        EvidenceStatus::Ready
+    );
 }

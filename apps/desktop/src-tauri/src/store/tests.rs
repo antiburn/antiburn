@@ -177,6 +177,7 @@ fn published_evidence_pass(record: &SessionRecord) -> crate::analysis::EvidenceP
 "#
                 .into(),
             ),
+            fork_parent_session_id: None,
         }],
         &|| false,
         Some(store),
@@ -2560,6 +2561,7 @@ async fn analysis_from_rows_serves_a_published_pass_without_reading_a_transcript
 "#
                     .into(),
                 ),
+                fork_parent_session_id: None,
             }],
             &|| false,
             Some(row_store),
@@ -2639,6 +2641,7 @@ async fn analysis_from_rows_still_serves_a_published_pass_after_a_requeue() {
 "#
                     .into(),
                 ),
+                fork_parent_session_id: None,
             }],
             &|| false,
             Some(row_store),

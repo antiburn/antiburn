@@ -23,9 +23,9 @@ use crate::analysis::interface::{
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall, Usage};
 use crate::analysis::records::{
-    RecordShape, evidence_observations, extract_content_parts, is_inert_recognized_eventless,
-    is_inert_unrecognized, is_recognized_eventless, parse_record, record_discriminator,
-    thread_identity_field,
+    RecordShape, context_observations, evidence_observations, extract_content_parts,
+    is_inert_recognized_eventless, is_inert_unrecognized, is_recognized_eventless, parse_record,
+    record_discriminator, thread_identity_field, thread_link_observation,
 };
 use crate::analysis::resume::{AdapterResume, StreamSnapshot};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
@@ -157,17 +157,35 @@ fn skill_listing_observations(value: &Value) -> Vec<EvidenceObservation> {
         .collect()
 }
 
-/// The `uuid` set of `path`'s direct replay source, when `path` is a fork
-/// sub-agent transcript. Empty when `path` is not a fork, or when its
-/// `.meta.json` sidecar or its replay source cannot be read: this fails
-/// open, so a session with an unreadable parent still shows its duplicate
-/// records rather than silently dropping data.
+/// The `uuid` set to skip when replaying `path`: everything
+/// [`sidecar_fork_skip_uuids`] finds, unioned with everything
+/// [`fork_parent_session_skip_uuids`] finds from `fork_parent_session_id`
+/// (the shell's own resume-as-fork link, phase 2). Either source can be
+/// empty; a session with neither kind of fork returns an empty set.
+///
+/// Both parent files are re-read on every pass — a resume snapshot does not
+/// cover them, since they are not `path` itself. This is deliberate, not an
+/// oversight: a fork parent's leading records never change once written, so
+/// the re-read is cheap and keeps the skip set correct without its own
+/// resume tracking.
+fn replay_skip_uuids(path: &Path, fork_parent_session_id: Option<&str>) -> HashSet<String> {
+    let mut uuids = sidecar_fork_skip_uuids(path);
+    uuids.extend(fork_parent_session_skip_uuids(path, fork_parent_session_id));
+    uuids
+}
+
+/// The `uuid` set of `path`'s direct sidecar replay source, when `path` is a
+/// fork sub-agent transcript (a `.meta.json` sidecar with `isFork: true`).
+/// Empty when `path` is not a sidecar fork, or when its `.meta.json`
+/// sidecar or its replay source cannot be read: this fails open, so a
+/// session with an unreadable parent still shows its duplicate records
+/// rather than silently dropping data.
 ///
 /// A fork sub-agent transcript replays its parent agent's records (same
 /// `uuid`) before it appends its own new records. The direct parent covers
 /// a whole fork chain: the parent transcript already holds its own replayed
 /// records, so the direct parent's `uuid` set covers the chain transitively.
-fn replay_skip_uuids(path: &Path) -> HashSet<String> {
+fn sidecar_fork_skip_uuids(path: &Path) -> HashSet<String> {
     let Some(meta) = read_fork_meta(path) else {
         return HashSet::new();
     };
@@ -181,6 +199,47 @@ fn replay_skip_uuids(path: &Path) -> HashSet<String> {
         return HashSet::new();
     };
     collect_record_uuids(BufReader::new(file))
+}
+
+/// `fork_parent_session_id`'s `uuid` set for `path`, when the shell has
+/// already linked this Claude session to a fork parent (phase 2's own
+/// lineage, not the sidecar mechanism above). Empty when
+/// `fork_parent_session_id` is `None`, when the parent file cannot be
+/// read, or when `path` is a sub-agent transcript already claimed by the
+/// sidecar mechanism — that mechanism names the exact parent agent id and
+/// takes priority over guessing a same-named sibling under the parent
+/// session.
+///
+/// Covers two shapes: `path` the top-level file `<dir>/<id>.jsonl` reads
+/// `<dir>/<parent-id>.jsonl`; a sub-agent file
+/// `<dir>/<id>/subagents/<name>` reads `<dir>/<parent-id>/subagents/<name>`.
+/// A missing parent file yields no uuids either way — the parent may have
+/// been deleted, and a later phase may fall back to the store.
+fn fork_parent_session_skip_uuids(
+    path: &Path,
+    fork_parent_session_id: Option<&str>,
+) -> HashSet<String> {
+    let Some(parent_session_id) = fork_parent_session_id else {
+        return HashSet::new();
+    };
+    if is_subagent_path(path) && read_fork_meta(path).is_some_and(|meta| meta.is_fork) {
+        return HashSet::new();
+    }
+    let Some(parent_path) = fork_parent_session_path(path, parent_session_id) else {
+        return HashSet::new();
+    };
+    let Ok(file) = File::open(&parent_path) else {
+        return HashSet::new();
+    };
+    collect_record_uuids(BufReader::new(file))
+}
+
+/// True when `path` sits in a session's `subagents/` directory, i.e.
+/// `<dir>/<session-id>/subagents/<name>` rather than `<dir>/<session-id>.jsonl`.
+fn is_subagent_path(path: &Path) -> bool {
+    path.parent()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == "subagents")
 }
 
 /// Reads and parses `path`'s `.meta.json` sidecar. `None` when the sidecar
@@ -206,6 +265,27 @@ fn fork_parent_path(path: &Path, parent_agent_id: Option<&str>) -> Option<std::p
     let session_dir = subagents_dir.parent()?;
     let session_id = session_dir.file_name()?.to_str()?;
     Some(session_dir.parent()?.join(format!("{session_id}.jsonl")))
+}
+
+/// `path`'s own sibling under `parent_session_id`, same shape, used to find
+/// `fork_parent_session_id`'s replay source. Handles the top-level
+/// transcript (`<dir>/<id>.jsonl` → `<dir>/<parent-id>.jsonl`) and a
+/// sub-agent transcript (`<dir>/<id>/subagents/<name>` →
+/// `<dir>/<parent-id>/subagents/<name>`).
+fn fork_parent_session_path(path: &Path, parent_session_id: &str) -> Option<std::path::PathBuf> {
+    if is_subagent_path(path) {
+        let subagents_dir = path.parent()?;
+        let session_dir = subagents_dir.parent()?;
+        let dir = session_dir.parent()?;
+        let file_name = path.file_name()?;
+        return Some(
+            dir.join(parent_session_id)
+                .join("subagents")
+                .join(file_name),
+        );
+    }
+    let dir = path.parent()?;
+    Some(dir.join(format!("{parent_session_id}.jsonl")))
 }
 
 /// Every `uuid` a JSONL source declares at the top level of a record. A line
@@ -248,7 +328,8 @@ impl VendorAdapter for ClaudeAdapter {
         (|| -> anyhow::Result<VisitOutcome> {
             let state = match &input.source {
                 RawSource::File(path) => {
-                    let replayed_uuids = replay_skip_uuids(path);
+                    let replayed_uuids =
+                        replay_skip_uuids(path, input.fork_parent_session_id.as_deref());
                     let file = File::open(path)?;
                     self.visit_reader(
                         BufReader::new(file),
@@ -335,7 +416,7 @@ impl ClaudeAdapter {
             let RawSource::File(path) = &input.source else {
                 anyhow::bail!("a claimed Claude source must be a file");
             };
-            let replayed_uuids = replay_skip_uuids(path);
+            let replayed_uuids = replay_skip_uuids(path, input.fork_parent_session_id.as_deref());
             let mut pinned = match PinnedSource::open(path, claim.clone())? {
                 Ok(pinned) => pinned,
                 Err(reason) => return Ok(VisitOutcome::SourceChanged(reason)),
@@ -411,7 +492,7 @@ impl ClaudeAdapter {
             };
             // Reruns on every pass: it reads the fork parent's own file, a
             // source this snapshot does not cover. See the module doc.
-            let replayed_uuids = replay_skip_uuids(path);
+            let replayed_uuids = replay_skip_uuids(path, input.fork_parent_session_id.as_deref());
             let mut pinned = match PinnedSource::open_resumed(path, claim.clone(), &resume.resume)?
             {
                 Ok(pinned) => pinned,
@@ -495,14 +576,33 @@ impl ClaudeAdapter {
                         continue;
                     };
 
-                    // A fork sub-agent replays its parent's records with the
-                    // parent's own `uuid` before it appends its own new
-                    // records. A replayed record is not new work: skip it
-                    // here, before it can become a turn row, duplicate
-                    // usage, or any other evidence signal.
+                    // A fork replays its parent's records with the parent's
+                    // own `uuid` before it appends its own new records. The
+                    // fork's first own request still carries this inherited
+                    // prefix in its context window, so its context sources
+                    // are real — but the inherited turns, tokens, and tool
+                    // calls were the parent's work, not the fork's. Record
+                    // the thread link first, so a later record's parent
+                    // link still resolves, then mark the record inherited,
+                    // then record only its context contribution. Do not
+                    // record the metrics event, turn content, tool use,
+                    // subagent spawn, timestamp, or usage.
                     if thread_identity_field(&value, "uuid")
                         .is_some_and(|uuid| replayed_uuids.contains(&uuid))
                     {
+                        if let Some(link) = thread_link_observation(&value) {
+                            sink.record(NormalizedRecord::Observation(Box::new(link)));
+                        }
+                        sink.record(NormalizedRecord::Observation(Box::new(
+                            EvidenceObservation::InheritedRecord,
+                        )));
+                        state.context.observe(&value);
+                        for observation in skill_listing_observations(&value)
+                            .into_iter()
+                            .chain(context_observations(&value))
+                        {
+                            sink.record(NormalizedRecord::Observation(Box::new(observation)));
+                        }
                         continue;
                     }
 
@@ -796,6 +896,7 @@ mod tests {
             agent: "claude".to_string(),
             session_id: "claimed-session".to_string(),
             source: RawSource::File(path.to_path_buf()),
+            fork_parent_session_id: None,
         }
     }
 
@@ -1129,6 +1230,7 @@ mod tests {
             agent: "claude".to_string(),
             session_id: "plain-session".to_string(),
             source: RawSource::Jsonl(FIRST_RECORD.to_string()),
+            fork_parent_session_id: None,
         };
         let mut sink = CountingSink::default();
 
@@ -1168,6 +1270,7 @@ mod tests {
             agent: "claude".to_string(),
             session_id: "content-session".to_string(),
             source: RawSource::Jsonl(format!("{assistant_record}\n{tool_result_record}\n")),
+            fork_parent_session_id: None,
         };
         let mut sink = ContentCapturingSink::default();
 
@@ -1594,7 +1697,7 @@ mod tests {
             &path,
             r#"{"agentType":"general-purpose","toolUseId":"toolu_x","spawnDepth":1,"model":"sonnet"}"#,
         );
-        assert!(replay_skip_uuids(&path).is_empty());
+        assert!(sidecar_fork_skip_uuids(&path).is_empty());
     }
 
     #[test]
@@ -1609,7 +1712,7 @@ mod tests {
             &path,
             r#"{"agentType":"fork","isFork":true,"parentAgentId":"missing-parent"}"#,
         );
-        assert!(replay_skip_uuids(&path).is_empty());
+        assert!(sidecar_fork_skip_uuids(&path).is_empty());
     }
 
     #[test]
@@ -1641,7 +1744,7 @@ mod tests {
             &fork_path,
             r#"{"agentType":"fork","isFork":true,"parentAgentId":"aaaa"}"#,
         );
-        let skip = replay_skip_uuids(&fork_path);
+        let skip = sidecar_fork_skip_uuids(&fork_path);
         assert_eq!(skip, HashSet::from(["u1".to_string(), "u2".to_string()]));
     }
 
@@ -1662,7 +1765,7 @@ mod tests {
             r#"{"type":"user","uuid":"root-1","parentUuid":null,"message":{"role":"user","content":"hi"}}"#,
         );
         write_subagent_meta(&fork_path, r#"{"agentType":"fork","isFork":true}"#);
-        let skip = replay_skip_uuids(&fork_path);
+        let skip = sidecar_fork_skip_uuids(&fork_path);
         assert_eq!(skip, HashSet::from(["root-1".to_string()]));
     }
 
@@ -1694,5 +1797,166 @@ mod tests {
             .map(|event| event.uuid.clone())
             .collect();
         assert_eq!(uuids, vec![Some("new-1".to_string())]);
+    }
+
+    /* ------------------------------------------------------------------
+     * Phase 2: excluding a Claude fork's inherited records once the
+     * shell has linked it to its parent session (fork_parent_session_id).
+     * ------------------------------------------------------------------ */
+
+    #[test]
+    fn fork_parent_session_path_uses_the_sibling_top_level_transcript() {
+        let path = PathBuf::from("/p/-Users-foo-bar/fork.jsonl");
+        assert_eq!(
+            fork_parent_session_path(&path, "parent").unwrap(),
+            PathBuf::from("/p/-Users-foo-bar/parent.jsonl"),
+        );
+    }
+
+    #[test]
+    fn fork_parent_session_path_uses_the_sibling_subagent_transcript() {
+        let path = PathBuf::from("/p/-Users-foo-bar/fork/subagents/agent-x.jsonl");
+        assert_eq!(
+            fork_parent_session_path(&path, "parent").unwrap(),
+            PathBuf::from("/p/-Users-foo-bar/parent/subagents/agent-x.jsonl"),
+        );
+    }
+
+    #[test]
+    fn fork_parent_session_skip_uuids_is_empty_when_fork_parent_session_id_is_none() {
+        let home = TempDir::new().unwrap();
+        let path = write_subagent_file(home.path(), "fork", "x", "{}");
+        assert!(fork_parent_session_skip_uuids(&path, None).is_empty());
+    }
+
+    #[test]
+    fn fork_parent_session_skip_uuids_is_empty_when_the_parent_session_file_is_missing() {
+        // A `fork_parent_session_id` naming a session with no matching
+        // file on disk fails open, same as the sidecar mechanism: nothing
+        // is skipped.
+        let home = TempDir::new().unwrap();
+        let path = write_subagent_file(home.path(), "fork", "x", "{}");
+        assert!(fork_parent_session_skip_uuids(&path, Some("missing-parent")).is_empty());
+    }
+
+    #[test]
+    fn fork_parent_session_skip_uuids_collects_the_top_level_parents_uuids() {
+        let home = TempDir::new().unwrap();
+        let project = home.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("parent.jsonl"),
+            concat!(
+                r#"{"type":"user","uuid":"p1","parentUuid":null,"message":{"role":"user","content":"hi"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let fork_path = project.join("fork.jsonl");
+        std::fs::write(&fork_path, "{}").unwrap();
+
+        let skip = fork_parent_session_skip_uuids(&fork_path, Some("parent"));
+        assert_eq!(skip, HashSet::from(["p1".to_string()]));
+    }
+
+    #[test]
+    fn fork_parent_session_skip_uuids_collects_a_sibling_subagent_transcript() {
+        let home = TempDir::new().unwrap();
+        write_subagent_file(
+            home.path(),
+            "parent",
+            "x",
+            concat!(
+                r#"{"type":"user","uuid":"s1","parentUuid":null,"message":{"role":"user","content":"hi"}}"#,
+                "\n",
+            ),
+        );
+        let fork_path = write_subagent_file(
+            home.path(),
+            "fork",
+            "x",
+            concat!(
+                r#"{"type":"user","uuid":"s1","parentUuid":null,"message":{"role":"user","content":"hi"}}"#,
+                "\n",
+            ),
+        );
+
+        let skip = fork_parent_session_skip_uuids(&fork_path, Some("parent"));
+        assert_eq!(skip, HashSet::from(["s1".to_string()]));
+    }
+
+    #[test]
+    fn fork_parent_session_skip_uuids_defers_to_an_existing_sidecar_fork() {
+        // `fork`'s sub-agent `bbbb` is already a sidecar fork of sibling
+        // `aaaa`. A same-named session-wide parent also exists, but the
+        // sidecar mechanism names the exact parent agent id and takes
+        // priority: the session-wide lookup must not also run.
+        let home = TempDir::new().unwrap();
+        write_subagent_file(
+            home.path(),
+            "fork",
+            "aaaa",
+            concat!(
+                r#"{"type":"user","uuid":"sidecar-1","parentUuid":null,"message":{"role":"user","content":"hi"}}"#,
+                "\n",
+            ),
+        );
+        let fork_path = write_subagent_file(home.path(), "fork", "bbbb", "{}");
+        write_subagent_meta(
+            &fork_path,
+            r#"{"agentType":"fork","isFork":true,"parentAgentId":"aaaa"}"#,
+        );
+        write_subagent_file(
+            home.path(),
+            "parent-session",
+            "bbbb",
+            concat!(
+                r#"{"type":"user","uuid":"session-wide-1","parentUuid":null,"message":{"role":"user","content":"hi"}}"#,
+                "\n",
+            ),
+        );
+
+        let skip = fork_parent_session_skip_uuids(&fork_path, Some("parent-session"));
+        assert!(skip.is_empty());
+    }
+
+    #[test]
+    fn a_subagent_forked_via_the_session_wide_parent_id_yields_no_events() {
+        // `fork`'s sub-agent transcript is byte-identical to `parent`'s,
+        // with no sidecar of its own: the shell's own fork lineage (not
+        // the sidecar mechanism) is the only thing that can skip it.
+        let home = TempDir::new().unwrap();
+        write_subagent_file(
+            home.path(),
+            "parent",
+            "x",
+            concat!(
+                r#"{"type":"user","uuid":"s1","parentUuid":null,"message":{"role":"user","content":"hi"}}"#,
+                "\n",
+            ),
+        );
+        let fork_path = write_subagent_file(
+            home.path(),
+            "fork",
+            "x",
+            concat!(
+                r#"{"type":"user","uuid":"s1","parentUuid":null,"message":{"role":"user","content":"hi"}}"#,
+                "\n",
+            ),
+        );
+        let input = SessionInput {
+            agent: "claude".to_string(),
+            session_id: "agent-x".to_string(),
+            source: RawSource::File(fork_path),
+            fork_parent_session_id: Some("parent".to_string()),
+        };
+        let mut collector = SessionCollector::new("claude", "agent-x");
+
+        ClaudeAdapter
+            .visit(&input, &mut collector)
+            .expect("visit must succeed");
+
+        let session = collector.into_session().expect("session must build");
+        assert!(session.events.is_empty());
     }
 }

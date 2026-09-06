@@ -75,6 +75,7 @@ type RecordAnalyzer<'a> = dyn Fn(
         analysis::ClaimedSource,
         PassSignal,
         Option<Arc<dyn TurnRowStore>>,
+        Option<String>,
     ) -> PassFuture
     + Send
     + Sync
@@ -101,7 +102,13 @@ fn run_record_pass(
         signal,
         claim_fence,
         store,
-        &|agent, session_id, wsl_distro, claimed, signal, turn_row_store| {
+        &|agent,
+          session_id,
+          wsl_distro,
+          claimed,
+          signal,
+          turn_row_store,
+          fork_parent_session_id| {
             Box::pin(async move {
                 analysis::analyze_for_evidence(
                     agent,
@@ -110,6 +117,7 @@ fn run_record_pass(
                     claimed,
                     signal,
                     turn_row_store,
+                    fork_parent_session_id,
                 )
                 .await
             })
@@ -127,6 +135,11 @@ fn run_record_pass_with(
     let Some(agent) = crate::agents::kind_from_slug(&record.key.agent) else {
         return Box::pin(async { analysis::unsupported_evidence_pass() });
     };
+    // The relation changes what the adapter counts (a linked Claude fork
+    // excludes its inherited prefix), so this pass needs it fresh every
+    // time, not cached on `record`. A lookup failure reads the same as "no
+    // parent known yet" — the pass still runs, just without the skip set.
+    let fork_parent_session_id = store.fork_parent(&record.key).ok().flatten();
     let writer: Arc<dyn TurnRowStore> = Arc::new(FencedTurnRowStore::new(
         store,
         record.key.clone(),
@@ -142,6 +155,7 @@ fn run_record_pass_with(
         },
         signal,
         Some(writer),
+        fork_parent_session_id,
     )
 }
 

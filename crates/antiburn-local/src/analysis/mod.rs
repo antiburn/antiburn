@@ -22,6 +22,7 @@
 //!     agent: "claude".into(),
 //!     session_id: "abc".into(),
 //!     source: RawSource::File("/path/to/abc.jsonl".into()),
+//!     fork_parent_session_id: None,
 //! }];
 //! let summary = analyze_sources(inputs);
 //! println!("{} live sessions", summary.session_count);
@@ -142,7 +143,14 @@ pub use vendors::{adapter_for, has_dedicated_adapter};
 // (`records::evidence_observations`), so a stored Claude session must
 // re-ingest to populate `context_sources.tool_definitions` and
 // `provenance.harness_version`.
-pub const PARSER_REVISION: i64 = 24;
+// +1 for excluding a Claude fork's inherited records from its own work:
+// once the shell links a "resume as fork" session to its parent
+// (`fork_parent_session_id`), the adapter also skips the parent's records
+// copied into the fork's own file or subagent transcript
+// (`vendors::claude::fork_parent_session_skip_uuids`), so a linked fork
+// must re-ingest to drop the parent's turns, tokens, and tool calls from
+// its own coverage.
+pub const PARSER_REVISION: i64 = 25;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to

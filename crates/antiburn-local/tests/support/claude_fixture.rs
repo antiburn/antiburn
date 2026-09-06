@@ -23,6 +23,7 @@ pub fn session_input(name: &str) -> SessionInput {
         agent: "claude".to_owned(),
         session_id: name.to_owned(),
         source: RawSource::Jsonl(read_fixture(name)),
+        fork_parent_session_id: None,
     }
 }
 
@@ -35,6 +36,7 @@ pub fn stream_source(name: &str, source: String) -> CompositeSink {
         agent: "claude".to_owned(),
         session_id: name.to_owned(),
         source: RawSource::Jsonl(source),
+        fork_parent_session_id: None,
     })
 }
 

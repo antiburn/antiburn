@@ -1006,7 +1006,7 @@ mod tests {
             },
             "coverage": coverage,
             "provenance": {
-                "parserRevision": 24,
+                "parserRevision": 25,
                 "analyzerRevision": 17,
                 "evidenceSchemaRevision": 13,
                 "sourceKind": "file",
@@ -1138,6 +1138,7 @@ mod tests {
 "#
                 .to_owned(),
             ),
+            fork_parent_session_id: None,
         };
         let session = adapter_for("cursor")
             .normalize(&input)
@@ -1182,6 +1183,7 @@ mod tests {
 "#
                 .to_owned(),
             ),
+            fork_parent_session_id: None,
         };
         let session = adapter_for("antigravity")
             .normalize(&input)

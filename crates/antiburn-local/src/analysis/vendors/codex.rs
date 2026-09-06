@@ -2199,6 +2199,7 @@ mod tests {
             agent: "codex".to_string(),
             session_id: "old-allowlist-with-signal".to_string(),
             source: RawSource::Jsonl(jsonl.to_string()),
+            fork_parent_session_id: None,
         };
         let mut sink = ObservationCapturingSink::default();
 
@@ -2229,6 +2230,7 @@ mod tests {
             agent: "codex".to_string(),
             session_id: "zero-component-heartbeat".to_string(),
             source: RawSource::Jsonl(jsonl.to_string()),
+            fork_parent_session_id: None,
         };
         let mut sink = ObservationCapturingSink::default();
 
@@ -2340,6 +2342,7 @@ mod tests {
             agent: "codex".to_string(),
             session_id: "content-session".to_string(),
             source: RawSource::Jsonl(jsonl),
+            fork_parent_session_id: None,
         };
         let mut sink = ContentCapturingSink::default();
 
@@ -2453,6 +2456,7 @@ mod tests {
             agent: "codex".to_string(),
             session_id: "fork-speed".to_string(),
             source: RawSource::Jsonl(jsonl.to_string()),
+            fork_parent_session_id: None,
         };
         let mut sink = SessionCollector::new("codex", "fork-speed");
 
@@ -2510,6 +2514,7 @@ mod tests {
             agent: "codex".to_string(),
             session_id: "spawn-owned".to_string(),
             source: RawSource::Jsonl(jsonl.to_string()),
+            fork_parent_session_id: None,
         };
         let mut sink = ObservationCapturingSink::default();
 
@@ -2557,6 +2562,7 @@ mod tests {
             agent: "codex".to_string(),
             session_id: "spawn-replayed-prefix".to_string(),
             source: RawSource::Jsonl(jsonl.to_string()),
+            fork_parent_session_id: None,
         };
         let mut sink = ObservationCapturingSink::default();
 
@@ -2579,6 +2585,7 @@ mod tests {
             agent: "codex".to_string(),
             session_id: "spawn-other-name".to_string(),
             source: RawSource::Jsonl(jsonl.to_string()),
+            fork_parent_session_id: None,
         };
         let mut sink = ObservationCapturingSink::default();
 
@@ -2624,6 +2631,7 @@ mod tests {
                 agent: "codex".to_string(),
                 session_id: "claimed-session".to_string(),
                 source: RawSource::File(path.to_path_buf()),
+                fork_parent_session_id: None,
             }
         }
 

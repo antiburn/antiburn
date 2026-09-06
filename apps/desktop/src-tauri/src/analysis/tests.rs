@@ -81,6 +81,7 @@ fn file_input(path: &std::path::Path, id: &str) -> SessionInput {
         agent: "claude".to_string(),
         session_id: id.to_string(),
         source: RawSource::File(path.to_path_buf()),
+        fork_parent_session_id: None,
     }
 }
 
@@ -89,6 +90,7 @@ fn inline_input(content: String, id: &str) -> SessionInput {
         agent: "claude".to_string(),
         session_id: id.to_string(),
         source: RawSource::Jsonl(content),
+        fork_parent_session_id: None,
     }
 }
 
@@ -227,6 +229,7 @@ async fn a_claimed_antigravity_database_stays_native_and_publishes() {
         agent: "antigravity".to_owned(),
         session_id: "root".to_owned(),
         source: RawSource::Sqlite(path),
+        fork_parent_session_id: None,
     };
 
     let outcome = stream_vendor_with_hooks(
@@ -265,6 +268,7 @@ fn a_claimed_opencode_database_publishes_from_the_validated_snapshot() {
         agent: "opencode".to_owned(),
         session_id: "root".to_owned(),
         source: RawSource::Sqlite(path),
+        fork_parent_session_id: None,
     };
 
     let outcome = stream_vendor_with_hooks(
@@ -339,6 +343,7 @@ fn an_opencode_parent_id_child_links_as_a_delegated_thread() {
         agent: "opencode".to_owned(),
         session_id: "root".to_owned(),
         source: RawSource::Sqlite(path),
+        fork_parent_session_id: None,
     };
 
     let pass = evidence_pass_with_turn_rows(
@@ -370,6 +375,7 @@ fn codex_file_input(path: &std::path::Path, id: &str) -> SessionInput {
         agent: "codex".to_string(),
         session_id: id.to_string(),
         source: RawSource::File(path.to_path_buf()),
+        fork_parent_session_id: None,
     }
 }
 
@@ -406,6 +412,7 @@ fn codex_read_publishes_its_capabilities_and_provider_start() {
         agent: "codex".to_owned(),
         session_id: "codex-inline".to_owned(),
         source: RawSource::Jsonl(codex_record()),
+        fork_parent_session_id: None,
     };
 
     let StreamOutcome::Published { session, .. } =
@@ -438,6 +445,7 @@ fn pi_read_publishes_through_the_evidence_path() {
         agent: "pi".to_owned(),
         session_id: "pi-inline".to_owned(),
         source: RawSource::Jsonl(pi_record()),
+        fork_parent_session_id: None,
     };
 
     let StreamOutcome::Published { session, .. } =
@@ -487,6 +495,7 @@ fn pi_thread_chain_through_a_model_change_supports_cache_and_overdepth() {
             .join("\n")
                 + "\n",
         ),
+        fork_parent_session_id: None,
     };
 
     let pass = evidence_pass_with_turn_rows(
@@ -525,6 +534,7 @@ fn codex_thread_identity_without_record_identity_still_attests_linkage_from_orde
         agent: "codex".to_owned(),
         session_id: "codex-thread-identity".to_owned(),
         source: RawSource::Jsonl(codex_record()),
+        fork_parent_session_id: None,
     };
 
     let pass = evidence_pass_with_turn_rows(
@@ -1167,6 +1177,7 @@ fn an_unsupported_schema_terminates() {
             agent: "claude".to_string(),
             session_id: "unsupported".to_string(),
             source: RawSource::Sqlite(std::path::PathBuf::from("unsupported.sqlite")),
+            fork_parent_session_id: None,
         }],
         &|| false,
     );
@@ -1212,6 +1223,7 @@ fn an_inline_source_records_matching_and_mismatching_generations() {
             agent: "claude".to_string(),
             session_id: "inline".to_string(),
             source: RawSource::Jsonl(content),
+            fork_parent_session_id: None,
         }],
         &CancelFlag::never(),
     ) else {

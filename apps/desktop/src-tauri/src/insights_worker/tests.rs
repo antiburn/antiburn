@@ -65,6 +65,7 @@ fn published_pass(record: &SessionRecord) -> EvidencePass {
 "#
                 .into(),
             ),
+            fork_parent_session_id: None,
         }],
         &|| false,
         Some(store),
@@ -93,6 +94,7 @@ fn generic_published_pass(record: &SessionRecord) -> EvidencePass {
 "#
                 .into(),
             ),
+            fork_parent_session_id: None,
         }],
         &|| false,
         Some(store),
@@ -1026,7 +1028,8 @@ async fn a_published_pass_leaves_the_expected_turn_rows_under_its_claim_fence() 
                     _wsl_distro: Option<String>,
                     claimed: analysis::ClaimedSource,
                     signal: PassSignal,
-                    turn_row_store: Option<Arc<dyn TurnRowStore>>| {
+                    turn_row_store: Option<Arc<dyn TurnRowStore>>,
+                    _fork_parent_session_id: Option<String>| {
         Box::pin(async move {
             let mut pass = analysis::evidence_pass_with_turn_rows(
                 &[SessionInput {
@@ -1039,6 +1042,7 @@ async fn a_published_pass_leaves_the_expected_turn_rows_under_its_claim_fence() 
                         "\n",
                     )
                     .into()),
+                    fork_parent_session_id: None,
                 }],
                 &|| signal.observe(),
                 turn_row_store,
@@ -1076,6 +1080,114 @@ async fn a_published_pass_leaves_the_expected_turn_rows_under_its_claim_fence() 
     );
 }
 
+/// A Claude "resume as fork" session, already linked to its parent (as
+/// `fork_lineage::link_claude_fork` would have done from an earlier
+/// publish), produces turn rows only for its own new turns — not the
+/// parent's records it copies into its own leading prefix. Exercises the
+/// whole wiring `run_record_pass_with` adds: it looks up `store.
+/// fork_parent(&record.key)` itself and hands the result to the analyzer,
+/// same as production hands it to `analysis::analyze_for_evidence`.
+#[tokio::test]
+async fn a_linked_forks_pass_publishes_turn_rows_only_for_its_own_turns() {
+    let store = store();
+    let directory = tempfile::tempdir().unwrap();
+    let parent_prefix = concat!(
+        r#"{"type":"user","uuid":"p1","parentUuid":null,"timestamp":"2026-08-20T09:00:00Z","message":{"role":"user","content":"hi"}}"#,
+        "\n",
+        r#"{"type":"assistant","uuid":"p2","parentUuid":"p1","timestamp":"2026-08-20T09:00:05Z","message":{"id":"m1","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":30,"output_tokens":12},"content":[{"type":"text","text":"ok"}]}}"#,
+        "\n",
+    );
+    std::fs::write(directory.path().join("parent.jsonl"), parent_prefix).unwrap();
+    let fork_path = directory.path().join("fork.jsonl");
+    std::fs::write(
+        &fork_path,
+        format!(
+            "{parent_prefix}{}",
+            concat!(
+                r#"{"type":"user","uuid":"c1","parentUuid":"p2","timestamp":"2026-08-20T09:00:10Z","message":{"role":"user","content":"more"}}"#,
+                "\n",
+                r#"{"type":"assistant","uuid":"c2","parentUuid":"c1","timestamp":"2026-08-20T09:00:15Z","message":{"id":"m2","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":8,"output_tokens":4},"content":[{"type":"text","text":"done"}]}}"#,
+                "\n",
+            )
+        ),
+    )
+    .unwrap();
+
+    let fork_record = record("fork");
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&fork_record),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    // The parent has no session row of its own here — only its published
+    // relation matters to this pass, and a real parent publish is covered
+    // by the `fork_lineage` tests.
+    assert!(
+        store
+            .record_fork_parent(&fork_record.key, "parent")
+            .unwrap()
+    );
+
+    let analyzer = move |_agent: AgentKind,
+                         session_id: String,
+                         _wsl_distro: Option<String>,
+                         claimed: analysis::ClaimedSource,
+                         signal: PassSignal,
+                         turn_row_store: Option<Arc<dyn TurnRowStore>>,
+                         fork_parent_session_id: Option<String>| {
+        let path = fork_path.clone();
+        Box::pin(async move {
+            let mut pass = analysis::evidence_pass_with_turn_rows(
+                &[SessionInput {
+                    agent: "claude".into(),
+                    session_id,
+                    source: RawSource::File(path),
+                    fork_parent_session_id,
+                }],
+                &|| signal.observe(),
+                turn_row_store,
+            );
+            if let Some(fingerprint) = claimed.fingerprint {
+                pass.analysis.fingerprint = fingerprint;
+            }
+            pass
+        }) as PassFuture
+    };
+    let store_for_runner = store.clone();
+    let runner = move |rec: &SessionRecord, signal: PassSignal, claim_fence: i64| {
+        run_record_pass_with(
+            rec,
+            signal,
+            claim_fence,
+            store_for_runner.clone(),
+            &analyzer,
+        )
+    };
+
+    assert!(
+        process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+            .await
+            .unwrap()
+    );
+
+    let evidence = store.evidence(&fork_record.key).unwrap().unwrap();
+    assert_eq!(evidence.status, EvidenceStatus::Ready);
+    // Only the fork's two own turns became rows — the two inherited ones
+    // contribute no row of their own.
+    assert_eq!(
+        store
+            .count_turn_rows_for_session(&fork_record.key, evidence.claim_fence)
+            .unwrap(),
+        2
+    );
+    let session_evidence: SessionEvidence =
+        serde_json::from_str(evidence.evidence_json.as_deref().unwrap()).unwrap();
+    // The inherited records still counted for coverage: two inherited,
+    // two new.
+    assert_eq!(session_evidence.diagnostics.records_observed, 4);
+}
+
 #[tokio::test]
 async fn pi_file_flows_through_worker_persistence_and_report() {
     let data_dir = tempfile::tempdir().unwrap();
@@ -1106,7 +1218,8 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
                          wsl_distro: Option<String>,
                          claimed: analysis::ClaimedSource,
                          signal: PassSignal,
-                         turn_row_store: Option<Arc<dyn TurnRowStore>>| {
+                         turn_row_store: Option<Arc<dyn TurnRowStore>>,
+                         fork_parent_session_id: Option<String>| {
         if agent != AgentKind::Pi || session_id != "pi-worker-report" {
             return Box::pin(async move {
                 analysis::analyze_for_evidence(
@@ -1116,6 +1229,7 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
                     claimed,
                     signal,
                     turn_row_store,
+                    fork_parent_session_id,
                 )
                 .await
             }) as PassFuture;
@@ -1124,6 +1238,7 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
             agent: crate::agents::vendor_label(agent).to_owned(),
             session_id,
             source: antiburn_local::analysis::RawSource::File(pi_source.clone()),
+            fork_parent_session_id: None,
         };
         Box::pin(async move {
             let mut pass = analysis::evidence_pass_with_turn_rows(

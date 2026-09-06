@@ -39,6 +39,7 @@ fn sqlite_input(path: &std::path::Path, session_id: &str) -> SessionInput {
         agent: "opencode".to_owned(),
         session_id: session_id.to_owned(),
         source: RawSource::Sqlite(path.to_owned()),
+        fork_parent_session_id: None,
     }
 }
 
@@ -523,6 +524,7 @@ fn export_stream_marks_a_child_message_as_delegated_with_one_spawn() {
         agent: "opencode".to_owned(),
         session_id: "root".to_owned(),
         source: RawSource::Jsonl(jsonl.to_owned()),
+        fork_parent_session_id: None,
     };
 
     let mut collector = SessionCollector::new("opencode", "root");
@@ -672,6 +674,7 @@ fn exported_messages_stream_without_session_wide_collection() {
         agent: "opencode".to_owned(),
         session_id: "many".to_owned(),
         source: RawSource::Jsonl(jsonl),
+        fork_parent_session_id: None,
     };
     let mut sink = CountingSink {
         records: 0,
@@ -699,6 +702,7 @@ fn metrics_and_evidence_publish_from_the_stream() {
             )
             .to_owned(),
         ),
+        fork_parent_session_id: None,
     };
     let metrics = SessionMetricsAccumulator::new("opencode", "evidence");
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {

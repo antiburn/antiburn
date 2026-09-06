@@ -55,6 +55,7 @@ fn file_input(session_id: &str, path: &Path) -> SessionInput {
         agent: "claude".to_string(),
         session_id: session_id.to_string(),
         source: RawSource::File(path.to_path_buf()),
+        fork_parent_session_id: None,
     }
 }
 
@@ -383,6 +384,7 @@ fn provider_db_backed_source_flows_end_to_end_into_a_report() {
         agent: "opencode".to_string(),
         session_id: session.session_id.clone(),
         source: RawSource::Sqlite(db_path),
+        fork_parent_session_id: None,
     };
     let mut composite = composite_for(&input);
     let outcome = adapter_for(&input.agent)

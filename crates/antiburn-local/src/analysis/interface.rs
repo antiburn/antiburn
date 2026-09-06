@@ -35,6 +35,9 @@ pub struct SessionInput {
     pub agent: String,
     pub session_id: String,
     pub source: RawSource,
+    /// The session this one was forked from, when the shell knows it. An
+    /// adapter that cannot use this ignores it.
+    pub fork_parent_session_id: Option<String>,
 }
 
 /// One framed record's outcome, in transcript order.

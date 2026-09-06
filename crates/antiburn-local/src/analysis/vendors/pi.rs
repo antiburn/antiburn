@@ -761,6 +761,7 @@ mod tests {
             agent: "pi".to_string(),
             session_id: "claimed-session".to_string(),
             source: RawSource::File(path.to_path_buf()),
+            fork_parent_session_id: None,
         }
     }
 
@@ -963,6 +964,7 @@ mod tests {
             agent: "pi".to_owned(),
             session_id: "providers".to_owned(),
             source: RawSource::Jsonl(content.to_owned()),
+            fork_parent_session_id: None,
         };
         let mut sink = SummarySink::default();
 
@@ -1000,6 +1002,7 @@ mod tests {
             agent: "pi".to_owned(),
             session_id: "bounded-providers".to_owned(),
             source: RawSource::Jsonl(content),
+            fork_parent_session_id: None,
         };
         let mut sink = SummarySink::default();
 
@@ -1102,6 +1105,7 @@ mod tests {
             agent: "pi".to_string(),
             session_id: "content-session".to_string(),
             source: RawSource::Jsonl(format!("{assistant_record}\n{tool_result_record}\n")),
+            fork_parent_session_id: None,
         };
         let mut sink = ContentCapturingSink::default();
 

@@ -1445,6 +1445,7 @@ mod tests {
             source: RawSource::Jsonl(
                 r#"{"type":"attachment","attachment":{"type":"skill_listing","content":"- orbit: Synthetic source."}}"#.to_owned(),
             ),
+            fork_parent_session_id: None,
         };
         let mut composite = composite_with_rows("claude", "attachment");
         let outcome = crate::analysis::ClaudeAdapter
@@ -1463,6 +1464,7 @@ mod tests {
             agent: "claude".to_owned(),
             session_id: "unknown".to_owned(),
             source: RawSource::Jsonl(r#"{"type":"telemetry_ping","payload":"private"}"#.to_owned()),
+            fork_parent_session_id: None,
         };
         let mut composite = composite_with_rows("claude", "unknown");
         let outcome = crate::analysis::ClaudeAdapter

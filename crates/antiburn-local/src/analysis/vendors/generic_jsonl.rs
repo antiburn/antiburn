@@ -52,6 +52,7 @@ mod tests {
             agent: "generic".to_owned(),
             session_id: "generic-session".to_owned(),
             source: RawSource::Jsonl(String::new()),
+            fork_parent_session_id: None,
         };
 
         let session = GenericJsonlAdapter

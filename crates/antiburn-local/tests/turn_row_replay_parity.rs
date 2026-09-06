@@ -464,6 +464,7 @@ fn claude_metrics_from_rows_matches_the_accumulator_for_every_fixture() {
             agent: "claude".to_owned(),
             session_id: name.to_owned(),
             source: RawSource::Jsonl(claude_fixture(name).to_owned()),
+            fork_parent_session_id: None,
         };
         let (live, replayed) =
             run_fixture_and_replay("claude", name, &input, SourceCapabilities::claude());
@@ -529,6 +530,7 @@ fn codex_metrics_from_rows_matches_the_accumulator_for_every_fixture() {
             agent: "codex".to_owned(),
             session_id: name.to_owned(),
             source: RawSource::Jsonl(codex_fixture(name).to_owned()),
+            fork_parent_session_id: None,
         };
         let (live, replayed) =
             run_fixture_and_replay("codex", name, &input, SourceCapabilities::codex());
@@ -657,6 +659,7 @@ fn pi_metrics_from_rows_matches_the_accumulator_for_every_fixture() {
             agent: "pi".to_owned(),
             session_id: name.to_owned(),
             source: RawSource::Jsonl(pi_fixture(name).to_owned()),
+            fork_parent_session_id: None,
         };
         let (live, replayed) = run_fixture_and_replay("pi", name, &input, SourceCapabilities::pi());
         compare_metrics(&mut mismatches, name, &live, &replayed);
@@ -747,6 +750,7 @@ fn opencode_sqlite_input(path: &Path, session_id: &str) -> SessionInput {
         agent: "opencode".to_owned(),
         session_id: session_id.to_owned(),
         source: RawSource::Sqlite(path.to_owned()),
+        fork_parent_session_id: None,
     }
 }
 
@@ -860,6 +864,7 @@ fn opencode_fixture_export_jsonl_child_delegation() -> SessionInput {
         agent: "opencode".to_owned(),
         session_id: "root".to_owned(),
         source: RawSource::Jsonl(jsonl.to_owned()),
+        fork_parent_session_id: None,
     }
 }
 
@@ -1000,11 +1005,13 @@ fn metrics_by_source_and_metrics_from_rows_match_the_accumulators_for_a_parent_a
         agent: "claude".to_owned(),
         session_id: "multi-source-parent".to_owned(),
         source: RawSource::Jsonl(MULTI_SOURCE_PARENT_JSONL.to_owned()),
+        fork_parent_session_id: None,
     };
     let child_input = SessionInput {
         agent: "claude".to_owned(),
         session_id: "multi-source-child".to_owned(),
         source: RawSource::Jsonl(MULTI_SOURCE_CHILD_JSONL.to_owned()),
+        fork_parent_session_id: None,
     };
 
     // One shared row store under the parent's own session id: the parent's
