@@ -116,6 +116,7 @@ fn fixture(name: &str) -> &'static str {
         "within_file_duplicate_uuid" => {
             include_str!("fixtures/claude_characterization/within_file_duplicate_uuid.jsonl")
         }
+        "resume_replay" => include_str!("fixtures/claude_characterization/resume_replay.jsonl"),
         "session_overdepth_finding" => {
             include_str!("fixtures/claude_characterization/session_overdepth_finding.jsonl")
         }
@@ -296,7 +297,7 @@ fn stream_composite(input: &SessionInput) -> CompositeSink {
     composite
 }
 
-fn fixture_names() -> [&'static str; 27] {
+fn fixture_names() -> [&'static str; 28] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
@@ -325,6 +326,7 @@ fn fixture_names() -> [&'static str; 27] {
         "session_overdepth_finding",
         "model_overthinking_finding",
         "fast_mode_overuse_clean",
+        "resume_replay",
     ]
 }
 
@@ -475,7 +477,7 @@ fn tool_definitions_are_unsupported_not_inferred_from_invocations() {
     ));
 }
 
-fn evidence_fixture_names() -> [&'static str; 31] {
+fn evidence_fixture_names() -> [&'static str; 32] {
     [
         "records_all_kinds",
         "timestamps_repeated_and_out_of_order",
@@ -508,6 +510,7 @@ fn evidence_fixture_names() -> [&'static str; 31] {
         "compaction_continues_thread",
         "inline_sidechain_own_thread",
         "within_file_duplicate_uuid",
+        "resume_replay",
     ]
 }
 
@@ -887,8 +890,12 @@ fn a_within_file_duplicate_uuid_keeps_one_thread_and_is_not_a_duplicate_identity
         .evidence()
         .expect("evidence must publish");
     // The duplicate-identity diagnostic is a cross-source-key signal — a
-    // within-file re-logged uuid must not trip it.
+    // within-file repeated uuid must not trip it.
     assert_eq!(evidence.diagnostics.duplicate_turn_identities, 0);
+    // The synthetic repeat shares its first copy's uuid, so `seen_uuids`
+    // finds it as an in-file replay and skips it instead of folding its
+    // usage in through `dedup_usage`, the same as a distant resume replay.
+    assert_eq!(evidence.diagnostics.records_replayed, 1);
     let EvidenceValue::Complete(cache) = evidence.cache else {
         panic!("a within-file duplicate uuid must keep the cache group complete");
     };
@@ -897,13 +904,11 @@ fn a_within_file_duplicate_uuid_keeps_one_thread_and_is_not_a_duplicate_identity
         panic!("models must be complete");
     };
     let tokens = &models.by_model["claude-opus-4-6"];
-    // `dedup_usage` keeps the re-logged message's final usage from being
-    // counted twice: 15 input from the completed copy (not 15 + 15) plus 5
-    // from the follow-up turn; 6 output from the completed copy (not
-    // double-counted against the partial copy's 0) plus 2 from the
-    // follow-up turn.
+    // The skipped replay copy contributes nothing: 15 input from the
+    // first (kept) copy plus 5 from the follow-up turn; 0 output from the
+    // first copy plus 2 from the follow-up turn.
     assert_eq!(tokens.input, 20);
-    assert_eq!(tokens.output, 8);
+    assert_eq!(tokens.output, 2);
 }
 
 #[test]
@@ -1258,6 +1263,54 @@ fn golden_inline_sidechain_own_thread() {
 #[test]
 fn golden_within_file_duplicate_uuid() {
     check_fixture_golden("within_file_duplicate_uuid");
+}
+
+#[test]
+fn golden_resume_replay() {
+    check_fixture_golden("resume_replay");
+}
+
+#[test]
+fn a_resumed_sessions_in_file_replay_contributes_nothing_but_a_diagnostic() {
+    let normalized_session = normalize_source(&input("resume_replay")).expect("must normalize");
+    // The replayed boundary, summary, and two assistant turns contribute
+    // no second copy of anything: five assistant turns total, not seven.
+    let assistant_turns = normalized_session
+        .events
+        .iter()
+        .filter(|event| event.role == antiburn_local::analysis::Role::Assistant)
+        .count();
+    assert_eq!(assistant_turns, 5);
+    let boundaries = normalized_session
+        .events
+        .iter()
+        .filter(|event| event.is_compaction_boundary)
+        .count();
+    assert_eq!(boundaries, 1);
+
+    let evidence = stream_composite(&input("resume_replay"))
+        .evidence()
+        .expect("evidence must publish");
+    assert_eq!(evidence.diagnostics.records_replayed, 4);
+    let EvidenceValue::Complete(cache) = evidence.cache else {
+        panic!("a resumed replay must keep the cache group complete");
+    };
+    let EvidenceValue::Complete(repeated_context) = cache.repeated_context else {
+        panic!("repeated context must be complete");
+    };
+    assert_eq!(repeated_context.pairs_skipped, 0);
+    let EvidenceValue::Complete(compactions) = evidence.compactions else {
+        panic!("compactions must be complete");
+    };
+    assert_eq!(compactions.boundaries.len(), 1);
+    // The new turn continues the original thread through the boundary:
+    // the replay never introduces a second thread.
+    let threads: BTreeSet<_> = normalized_session
+        .events
+        .iter()
+        .filter_map(|event| event.thread_id.as_deref())
+        .collect();
+    assert_eq!(threads.len(), 1);
 }
 
 #[test]
