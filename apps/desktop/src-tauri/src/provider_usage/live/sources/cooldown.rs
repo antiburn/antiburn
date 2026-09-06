@@ -164,6 +164,24 @@ impl Cooldown {
             (None, None) => SourceOutcome::absent(),
         }
     }
+
+    /// Return the remaining provider retry delay after a rate limit.
+    #[cfg(feature = "analytics")]
+    pub fn rate_limit_retry_after(&self, max_age: Duration) -> Option<Duration> {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !matches!(inner.error, Some(ProviderUsageError::RateLimited)) {
+            return None;
+        }
+        let (at, _) = inner.last_attempt?;
+        failure_cooldown(max_age).checked_sub(at.elapsed())
+    }
+}
+
+fn failure_cooldown(max_age: Duration) -> Duration {
+    max_age.clamp(MIN_FAILURE_COOLDOWN, FAILURE_COOLDOWN)
 }
 
 /// A failed attempt, with the best reading the source found without the
@@ -224,7 +242,7 @@ fn off_cooldown(last: Option<(Instant, bool)>, max_age: Duration) -> bool {
                 >= if succeeded {
                     max_age
                 } else {
-                    max_age.clamp(MIN_FAILURE_COOLDOWN, FAILURE_COOLDOWN)
+                    failure_cooldown(max_age)
                 }
         }
     }
@@ -319,6 +337,26 @@ mod tests {
         // Both calls landed on the same in-memory cooldown, so only the first
         // one actually reached the network.
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn a_rate_limit_exposes_only_its_remaining_retry_delay() {
+        let cooldown = Cooldown::new();
+        cooldown.poll(at(1_000), SHORT_MAX_AGE, || {
+            Err(ProviderUsageError::RateLimited.into())
+        });
+
+        let remaining = cooldown
+            .rate_limit_retry_after(SHORT_MAX_AGE)
+            .expect("rate limit has a delay");
+        assert!(remaining > Duration::ZERO);
+        assert!(remaining <= failure_cooldown(SHORT_MAX_AGE));
+
+        let mut inner = cooldown.inner.lock().unwrap();
+        inner.error = Some(ProviderUsageError::Unavailable);
+        drop(inner);
+        assert_eq!(cooldown.rate_limit_retry_after(SHORT_MAX_AGE), None);
     }
 
     #[test]

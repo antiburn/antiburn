@@ -77,6 +77,10 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "analytics")]
+use std::sync::Mutex;
+#[cfg(feature = "analytics")]
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -98,7 +102,18 @@ const MAX_CREDENTIAL_BYTES: u64 = 256 * 1024;
 const MAX_CLAUDE_JSON_BYTES: u64 = 8 * 1024 * 1024;
 
 const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
+#[cfg(feature = "analytics")]
+const LIMIT_RESET_ENDPOINT: &str =
+    "https://api.anthropic.com/api/oauth/usage?at_wall=1&skip_spend=1";
 const PROFILE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/profile";
+/// A verified Claude Code identity for provider compatibility.
+///
+/// Keep this pinned until a newer identity is verified against the endpoint.
+/// The diagnostic reports `cli_version` if the provider rejects this version.
+const CLAUDE_CODE_COMPATIBILITY_USER_AGENT: &str = "claude-cli/2.1.261 (external, cli)";
+
+#[cfg(feature = "analytics")]
+const LIMIT_RESET_DIAGNOSTIC_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 
 /// The stable id [`SourceOutcome::error`] and the milestone engine key this
 /// source under.
@@ -338,6 +353,78 @@ pub struct ClaudeDirectFetch {
     config_cache_path: Option<PathBuf>,
     transport: Box<dyn AnthropicTransport>,
     cooldown: Cooldown,
+    #[cfg(feature = "analytics")]
+    limit_reset_diagnostic: LimitResetDiagnosticState,
+}
+
+#[cfg(feature = "analytics")]
+#[derive(Default)]
+struct LimitResetDiagnosticState {
+    inner: Mutex<LimitResetDiagnosticInner>,
+}
+
+#[cfg(feature = "analytics")]
+#[derive(Default)]
+struct LimitResetDiagnosticInner {
+    next_attempt: Option<Instant>,
+    blocked_for_run: bool,
+}
+
+#[cfg(feature = "analytics")]
+impl LimitResetDiagnosticState {
+    fn observe(
+        &self,
+        fetch: impl FnOnce() -> LimitResetFetch,
+    ) -> Option<anthropic::LimitResetDiagnostic> {
+        let now = Instant::now();
+        {
+            let mut inner = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if inner.blocked_for_run || inner.next_attempt.is_some_and(|next| next > now) {
+                return None;
+            }
+            inner.next_attempt = Some(now + LIMIT_RESET_DIAGNOSTIC_COOLDOWN);
+        }
+
+        let fetched = fetch();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(retry_after) = fetched.retry_after {
+            match now.checked_add(retry_after) {
+                Some(retry_at) if inner.next_attempt.is_none_or(|next| retry_at > next) => {
+                    inner.next_attempt = Some(retry_at);
+                }
+                None => inner.blocked_for_run = true,
+                Some(_) => {}
+            }
+        }
+        Some(fetched.diagnostic)
+    }
+
+    fn defer(&self, delay: Duration) {
+        let next = Instant::now().checked_add(delay);
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match next {
+            Some(next) if inner.next_attempt.is_none_or(|current| next > current) => {
+                inner.next_attempt = Some(next);
+            }
+            None => inner.blocked_for_run = true,
+            Some(_) => {}
+        }
+    }
+}
+
+#[cfg(feature = "analytics")]
+struct LimitResetFetch {
+    diagnostic: anthropic::LimitResetDiagnostic,
+    retry_after: Option<Duration>,
 }
 
 impl ClaudeDirectFetch {
@@ -351,6 +438,8 @@ impl ClaudeDirectFetch {
             config_cache_path: claude_config_cache::default_config_path(),
             transport: Box::new(LiveAnthropicTransport),
             cooldown: Cooldown::new(),
+            #[cfg(feature = "analytics")]
+            limit_reset_diagnostic: LimitResetDiagnosticState::default(),
         }
     }
 
@@ -369,6 +458,8 @@ impl ClaudeDirectFetch {
             config_cache_path: None,
             transport: Box::new(LiveAnthropicTransport),
             cooldown: Cooldown::new(),
+            #[cfg(feature = "analytics")]
+            limit_reset_diagnostic: LimitResetDiagnosticState::default(),
         }
     }
 
@@ -394,6 +485,8 @@ impl ClaudeDirectFetch {
             config_cache_path: Some(config_cache_path),
             transport,
             cooldown: Cooldown::new(),
+            #[cfg(feature = "analytics")]
+            limit_reset_diagnostic: LimitResetDiagnosticState::default(),
         }
     }
 
@@ -480,7 +573,7 @@ impl LiveUsageSource for ClaudeDirectFetch {
         // `security` subprocess, and a poll that the cooldown is going to
         // skip anyway should not pay for either — nor re-raise a Keychain
         // access prompt the reader has already seen.
-        self.cooldown.poll(now, max_age, || {
+        let outcome = self.cooldown.poll(now, max_age, || {
             let (carriers, carrier_error, native_carriers) = self.read_carriers();
             let native = native_carriers
                 .into_iter()
@@ -522,7 +615,47 @@ impl LiveUsageSource for ClaudeDirectFetch {
                     }),
                 }),
             }
-        })
+        });
+        #[cfg(feature = "analytics")]
+        if let Some(delay) = self.cooldown.rate_limit_retry_after(max_age) {
+            self.limit_reset_diagnostic.defer(delay);
+        }
+        outcome
+    }
+
+    #[cfg(feature = "analytics")]
+    fn analytics_diagnostic(&self) -> Option<crate::provider_usage::live::AnalyticsDiagnostic> {
+        self.limit_reset_diagnostic
+            .observe(|| {
+                let now = OffsetDateTime::now_utc();
+                let (carriers, carrier_error, _) = self.read_carriers();
+                let live = carriers.iter().find(|credentials| credentials.is_live(now));
+                match live {
+                    Some(credentials) => self.transport.limit_reset(&credentials.access_token),
+                    None if !carriers.is_empty() => LimitResetFetch {
+                        diagnostic: anthropic::empty_limit_reset_diagnostic(
+                            "credential_expired",
+                            "not_requested",
+                        ),
+                        retry_after: None,
+                    },
+                    None if carrier_error.is_some() => LimitResetFetch {
+                        diagnostic: anthropic::empty_limit_reset_diagnostic(
+                            "credential_unavailable",
+                            "not_requested",
+                        ),
+                        retry_after: None,
+                    },
+                    None => LimitResetFetch {
+                        diagnostic: anthropic::empty_limit_reset_diagnostic(
+                            "credential_absent",
+                            "not_requested",
+                        ),
+                        retry_after: None,
+                    },
+                }
+            })
+            .map(crate::provider_usage::live::AnalyticsDiagnostic::ClaudeLimitReset)
     }
 }
 
@@ -531,6 +664,13 @@ impl LiveUsageSource for ClaudeDirectFetch {
 /// gives that source.
 trait AnthropicTransport: Send + Sync {
     fn usage(&self, access_token: &str) -> Result<String, ProviderUsageError>;
+    #[cfg(feature = "analytics")]
+    fn limit_reset(&self, _access_token: &str) -> LimitResetFetch {
+        LimitResetFetch {
+            diagnostic: anthropic::empty_limit_reset_diagnostic("unavailable", "not_received"),
+            retry_after: None,
+        }
+    }
     /// The profile body, or `None` when enrichment fails.
     fn profile(&self, access_token: &str) -> Option<String>;
 }
@@ -539,12 +679,7 @@ struct LiveAnthropicTransport;
 
 impl AnthropicTransport for LiveAnthropicTransport {
     fn usage(&self, access_token: &str) -> Result<String, ProviderUsageError> {
-        let response = http::client()
-            .get(USAGE_ENDPOINT)
-            .bearer_auth(access_token)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .header("anthropic-beta", "oauth-2025-04-20")
+        let response = claude_request(USAGE_ENDPOINT, access_token)
             .send()
             .map_err(|_| ProviderUsageError::Unavailable)?;
         if let Some(error) = http::status_error(response.status()) {
@@ -553,20 +688,73 @@ impl AnthropicTransport for LiveAnthropicTransport {
         http::read_capped_body(response)
     }
 
+    #[cfg(feature = "analytics")]
+    fn limit_reset(&self, access_token: &str) -> LimitResetFetch {
+        let response = match claude_request(LIMIT_RESET_ENDPOINT, access_token).send() {
+            Ok(response) => response,
+            Err(_) => {
+                return LimitResetFetch {
+                    diagnostic: anthropic::empty_limit_reset_diagnostic(
+                        "unavailable",
+                        "not_received",
+                    ),
+                    retry_after: None,
+                };
+            }
+        };
+        let retry_after = retry_after(&response);
+        if let Some(error) = http::status_error(response.status()) {
+            return LimitResetFetch {
+                diagnostic: anthropic::empty_limit_reset_diagnostic(
+                    error.category(),
+                    "not_received",
+                ),
+                retry_after,
+            };
+        }
+        let diagnostic = match http::read_capped_body(response) {
+            Ok(body) => anthropic::parse_limit_reset_diagnostic(&body),
+            Err(error) => anthropic::empty_limit_reset_diagnostic(error.category(), "unreadable"),
+        };
+        LimitResetFetch {
+            diagnostic,
+            retry_after: None,
+        }
+    }
+
     fn profile(&self, access_token: &str) -> Option<String> {
-        let response = http::client()
-            .get(PROFILE_ENDPOINT)
-            .bearer_auth(access_token)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .header("anthropic-beta", "oauth-2025-04-20")
-            .send()
-            .ok()?;
+        let response = claude_request(PROFILE_ENDPOINT, access_token).send().ok()?;
         if http::status_error(response.status()).is_some() {
             return None;
         }
         http::read_capped_body(response).ok()
     }
+}
+
+#[cfg(feature = "analytics")]
+fn retry_after(response: &reqwest::blocking::Response) -> Option<Duration> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
+}
+
+fn claude_request(endpoint: &str, access_token: &str) -> reqwest::blocking::RequestBuilder {
+    http::client()
+        .get(endpoint)
+        .bearer_auth(access_token)
+        .header(
+            reqwest::header::USER_AGENT,
+            CLAUDE_CODE_COMPATIBILITY_USER_AGENT,
+        )
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header("anthropic-beta", "oauth-2025-04-20")
 }
 
 /// The two-tier decision the module doc's "The CLI's own cache" section
@@ -825,6 +1013,8 @@ fn resolve_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "analytics")]
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const NOW: i64 = 1_800_000_000;
@@ -851,6 +1041,68 @@ mod tests {
             subscription_type: Some("max".into()),
             rate_limit_tier: Some("default_claude_max_5x".into()),
         }
+    }
+
+    #[test]
+    fn claude_requests_use_the_recognised_cli_identity() {
+        let request = claude_request(USAGE_ENDPOINT, "synthetic-token")
+            .build()
+            .expect("request builds");
+        assert_eq!(request.url().as_str(), USAGE_ENDPOINT);
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::USER_AGENT)
+                .and_then(|value| value.to_str().ok()),
+            Some(CLAUDE_CODE_COMPATIBILITY_USER_AGENT)
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("anthropic-beta")
+                .and_then(|value| value.to_str().ok()),
+            Some("oauth-2025-04-20")
+        );
+    }
+
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn the_limit_reset_request_uses_the_separate_probe_query() {
+        let request = claude_request(LIMIT_RESET_ENDPOINT, "synthetic-token")
+            .build()
+            .expect("request builds");
+        assert_eq!(
+            request.url().as_str(),
+            "https://api.anthropic.com/api/oauth/usage?at_wall=1&skip_spend=1"
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::USER_AGENT)
+                .and_then(|value| value.to_str().ok()),
+            Some(CLAUDE_CODE_COMPATIBILITY_USER_AGENT)
+        );
+    }
+
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn the_limit_reset_diagnostic_is_bounded_and_honors_retry_after() {
+        let state = LimitResetDiagnosticState::default();
+        let first = state.observe(|| LimitResetFetch {
+            diagnostic: anthropic::empty_limit_reset_diagnostic("rateLimited", "not_received"),
+            retry_after: Some(Duration::from_secs(20 * 60)),
+        });
+        assert!(first.is_some());
+
+        let second = state.observe(|| panic!("the cooldown must skip this request"));
+        assert_eq!(second, None);
+        let inner = state.inner.lock().unwrap();
+        let delay = inner
+            .next_attempt
+            .expect("retry deadline")
+            .checked_duration_since(Instant::now())
+            .expect("future deadline");
+        assert!(delay > Duration::from_secs(19 * 60));
     }
 
     fn cached_usage(observed_at: OffsetDateTime) -> CachedUsage {
@@ -889,6 +1141,49 @@ mod tests {
         fn profile(&self, _access_token: &str) -> Option<String> {
             None
         }
+    }
+
+    #[cfg(feature = "analytics")]
+    struct RateLimitedTransport {
+        limit_reset_calls: Arc<AtomicUsize>,
+    }
+
+    #[cfg(feature = "analytics")]
+    impl AnthropicTransport for RateLimitedTransport {
+        fn usage(&self, _access_token: &str) -> Result<String, ProviderUsageError> {
+            Err(ProviderUsageError::RateLimited)
+        }
+
+        fn limit_reset(&self, _access_token: &str) -> LimitResetFetch {
+            self.limit_reset_calls.fetch_add(1, Ordering::SeqCst);
+            LimitResetFetch {
+                diagnostic: anthropic::empty_limit_reset_diagnostic("success", "null"),
+                retry_after: None,
+            }
+        }
+
+        fn profile(&self, _access_token: &str) -> Option<String> {
+            None
+        }
+    }
+
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn an_ordinary_rate_limit_suppresses_the_immediate_reset_probe() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".credentials.json");
+        let expires_at_ms = (OffsetDateTime::now_utc().unix_timestamp() + 3_600) * 1_000;
+        fs::write(&path, credentials_file(expires_at_ms, "max")).expect("write");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut source = ClaudeDirectFetch::at(path);
+        source.transport = Box::new(RateLimitedTransport {
+            limit_reset_calls: Arc::clone(&calls),
+        });
+
+        let outcome = source.fetch(SHORT_MAX_AGE);
+        assert_eq!(outcome.error, Some(ProviderUsageError::RateLimited));
+        assert_eq!(source.analytics_diagnostic(), None);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Anonymised events about the application, behind build and opt-out gates.
+//! Anonymised product events behind build and opt-out gates.
 //!
 //! This is the one place antiburn sends anything of its own beyond the update
 //! check. The properties below define its privacy boundary.
@@ -45,7 +45,20 @@ pub fn install(_app: &tauri::AppHandle) {}
 
 #[cfg(not(feature = "analytics"))]
 pub fn record(_app: &tauri::AppHandle, _name: event::EventName, facts: event::Facts) {
-    let _ = (facts.bucket, facts.label, facts.detail);
+    let _ = (
+        facts.bucket,
+        facts.label,
+        facts.detail,
+        facts.usage_band,
+        facts.response_shape,
+        facts.eligibility,
+        facts.ineligible_reason,
+        facts.experiment,
+        facts.reset_arm,
+        facts.reset_availability,
+        facts.resets_per_week,
+        facts.next_reset_available,
+    );
 }
 
 #[cfg(not(feature = "analytics"))]
@@ -149,7 +162,7 @@ mod enabled {
     ///
     /// Read fresh, and default to *not* acting: an unreadable preference is not
     /// permission, the same rule every notifier in this app follows. The
-    fn allowed(app: &tauri::AppHandle) -> bool {
+    pub fn allowed(app: &tauri::AppHandle) -> bool {
         if !available() || environment_disabled() {
             return false;
         }
@@ -164,14 +177,18 @@ mod enabled {
     /// fail an operation the reader actually asked for, would be the tail wagging
     /// the dog; a dropped event is not worth a single line of user-facing text.
     pub fn record(app: &tauri::AppHandle, name: EventName, facts: Facts) {
+        let _ = record_event(app, name, facts);
+    }
+
+    fn record_event(app: &tauri::AppHandle, name: EventName, facts: Facts) -> bool {
         if !allowed(app) {
-            return;
+            return false;
         }
         let Some(store) = app.try_state::<Store>() else {
-            return;
+            return false;
         };
         let Some(install_id) = current_install_id(&store) else {
-            return;
+            return false;
         };
         let payload = Event {
             platform: event::PLATFORM,
@@ -188,6 +205,15 @@ mod enabled {
                 bucket: facts.bucket,
                 label: facts.label,
                 detail: facts.detail,
+                usage_band: facts.usage_band,
+                response_shape: facts.response_shape,
+                eligibility: facts.eligibility,
+                ineligible_reason: facts.ineligible_reason,
+                experiment: facts.experiment,
+                reset_arm: facts.reset_arm,
+                reset_availability: facts.reset_availability,
+                resets_per_week: facts.resets_per_week,
+                next_reset_available: facts.next_reset_available,
             },
             context: event::Context {
                 app_version: format!("antiburn:{}", app.package_info().version),
@@ -195,7 +221,31 @@ mod enabled {
             },
         };
         if let Ok(json) = serde_json::to_string(&payload) {
-            let _ = store.queue_analytics_event(name.as_str(), &json);
+            return store.queue_analytics_event(name.as_str(), &json).is_ok();
+        }
+        false
+    }
+
+    /// Record a changed Claude reset observation after all consent checks pass.
+    pub fn record_claude_limit_reset(
+        app: &tauri::AppHandle,
+        diagnostic: crate::provider_usage::live::anthropic::LimitResetDiagnostic,
+    ) {
+        if !allowed(app) {
+            return;
+        }
+        let mut last = LAST_CLAUDE_LIMIT_RESET
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *last == Some(diagnostic) {
+            return;
+        }
+        if record_event(
+            app,
+            EventName::ClaudeLimitResetObserved,
+            event::claude_limit_reset_facts(diagnostic),
+        ) {
+            *last = Some(diagnostic);
         }
     }
 
@@ -217,6 +267,11 @@ mod enabled {
     static LAST_UNRECOGNIZED: std::sync::Mutex<Option<UnrecognizedOutcome>> =
         std::sync::Mutex::new(None);
 
+    /// The last Claude limit-reset observation queued during this run.
+    static LAST_CLAUDE_LIMIT_RESET: std::sync::Mutex<
+        Option<crate::provider_usage::live::anthropic::LimitResetDiagnostic>,
+    > = std::sync::Mutex::new(None);
+
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum UnrecognizedOutcome {
         None,
@@ -234,7 +289,7 @@ mod enabled {
             Some(Facts {
                 bucket: Some(bucket),
                 label: Some(label),
-                detail: None,
+                ..Facts::default()
             })
         }
     }
@@ -351,6 +406,9 @@ mod enabled {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         *LAST_UNRECOGNIZED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *LAST_CLAUDE_LIMIT_RESET
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
@@ -798,11 +856,17 @@ mod enabled {
             };
             assert!(scan_outcome_is_new(Some("1-9")));
             assert!(unrecognized_outcome_is_new(inert));
+            *LAST_CLAUDE_LIMIT_RESET.lock().unwrap() = Some(
+                crate::provider_usage::live::anthropic::empty_limit_reset_diagnostic(
+                    "success", "null",
+                ),
+            );
 
             reset_suppression();
 
             assert!(scan_outcome_is_new(Some("1-9")));
             assert!(unrecognized_outcome_is_new(inert));
+            assert_eq!(*LAST_CLAUDE_LIMIT_RESET.lock().unwrap(), None);
             reset_suppression();
         }
 

@@ -117,6 +117,22 @@ pub trait LiveUsageSource: Send + Sync {
     /// than a network endpoint is free to ignore it: there is no round trip
     /// there for a cooldown to gate.
     fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome;
+
+    /// Collect a provider-specific diagnostic for anonymised analytics.
+    ///
+    /// The default keeps sources out of analytics unless they explicitly
+    /// implement a bounded diagnostic. Callers apply consent before this runs.
+    #[cfg(feature = "analytics")]
+    fn analytics_diagnostic(&self) -> Option<AnalyticsDiagnostic> {
+        None
+    }
+}
+
+/// A provider diagnostic that can become a closed analytics event.
+#[cfg(feature = "analytics")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalyticsDiagnostic {
+    ClaudeLimitReset(anthropic::LimitResetDiagnostic),
 }
 
 /// One source's answer for one collection pass.

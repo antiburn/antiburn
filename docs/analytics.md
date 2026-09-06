@@ -1,7 +1,7 @@
 # Anonymised analytics
 
-antiburn sends anonymised events about **the application itself** — which
-features get used, and what breaks. This document is the complete account of
+antiburn sends anonymised product events — which features get used, what
+breaks, and a coarse diagnostic of Claude's session-limit reset. This document is the complete account of
 that: every field, every event, what is deliberately excluded, what antiburn
 cannot promise, and how to verify all of it yourself without trusting this
 page.
@@ -24,9 +24,11 @@ process-level opt-out.
   development build and **every build made from a clean checkout of this
   repository** — the endpoint is injected at build time and is not in the tree.
 
-## Exactly what every event carries
+## Exactly what the event schema can carry
 
-Thirteen fields, and this is the whole list. The payload is a closed Rust struct
+Twenty-two fields, and this is the whole list. Thirteen are the established
+event envelope and general properties. The nine Claude reset fields are optional
+and appear only on `antiburn.claude_limit_reset_observed`. The payload is a closed Rust struct
 ([`analytics/event.rs`](../apps/desktop/src-tauri/src/analytics/event.rs))
 with no map and no free-form string, so there is nowhere for anything else to
 be put.
@@ -44,6 +46,15 @@ be put.
 | `properties.bucket`  | A count rounded into a range. Never exact.                                                                                                                 | `10-49`                   |
 | `properties.label`   | A key from a closed vocabulary — which setting changed, which agent's session was opened, or which kind of failure. Never the value.                       | `live_usage`              |
 | `properties.detail`  | A second value from a closed vocabulary, where one event has two things worth telling apart.                                                               | `native`                  |
+| `properties.usageBand` | Claude's five-hour usage from the same reset-check response: `below_80`, `80_to_under_100`, `at_limit`, or `unknown`. | `80_to_under_100` |
+| `properties.responseShape` | Whether `juniper_tide` was an `object`, `missing`, `null`, or `malformed`; also `invalid_json`, `malformed_envelope`, `not_received`, `unreadable`, or `not_requested` for request and envelope outcomes. | `object` |
+| `properties.eligibility` | Claude's `eligible` boolean as `eligible` or `ineligible`, or `missing`, `null`, or `malformed`. | `eligible` |
+| `properties.ineligibleReason` | An allowlisted Claude reason: `tier`, `tenure`, `surface`, `mobile`, `cli_version`, `not_at_wall`, `weekly_limit`, `no_weekly_limit`, `other_experiment`, `extra_usage`, `unavailable`, `unknown`, or `other`; also `missing`, `null`, or `malformed`. | `not_at_wall` |
+| `properties.experiment` | Claude's `in_experiment` boolean as `in_experiment` or `not_in_experiment`, or `missing`, `null`, or `malformed`. | `in_experiment` |
+| `properties.resetArm` | Claude's experiment arm as `reset`, `control`, or `other`, or `missing`, `null`, or `malformed`. | `reset` |
+| `properties.resetAvailability` | Claude's `available` boolean as `available` or `unavailable`, or `missing`, `null`, or `malformed`. | `available` |
+| `properties.resetsPerWeek` | Claude's reset count as `0`, `1`, or `2_plus`, or `missing`, `null`, or `malformed`. | `1` |
+| `properties.nextResetAvailable` | Whether `next_available_at` was `present`, `missing`, `null`, or `malformed`. The timestamp itself is never sent. | `present` |
 | `context.appVersion` | The application version.                                                                                                                                   | `antiburn:0.1.0`          |
 | `context.os`         | Operating-system family.                                                                                                                                   | `macos`                   |
 
@@ -64,7 +75,7 @@ exists only in memory: quitting antiburn ends it, and nothing on your machine
 remembers it afterwards. It is the shortest-lived thing in the payload, and it
 cannot connect one run of the application to another.
 
-### Which agents you use
+### Agent and provider categories
 
 `antiburn.session_opened` carries the agent that recorded the session you
 opened — `claude-code`, `codex`, `cursor`, and so on, from the fixed list
@@ -72,9 +83,9 @@ antiburn knows how to read. Nothing else about the session travels with it: not
 its title, not its repository, not its path, and not the name of your WSL
 distribution, which you chose and which would identify your machine.
 
-This is called out separately because it is the one field that says something
-about your tools rather than about the application. If that is more than you
-want to share, the switch turns all of it off.
+The Claude reset event also reveals that this provider is enabled. These are the
+only analytics fields that identify an agent or provider category. If that is
+more than you want to share, the switch turns all analytics off.
 
 ### Why counts are bucketed
 
@@ -110,8 +121,9 @@ Event names are namespaced `antiburn.*`.
 | `antiburn.usage_viewed`        | You open the usage view.                                                                                                                                                                                    | `bucket` — how many providers had anything to show. `label` — `live` if any provider reported its own limit figures, `estimated_only` if there were only antiburn's estimates, `none` if there was nothing. |
 | `antiburn.error_occurred`      | Something failed, and the previous pass had not already reported the same failure.                                                                                                                          | `label` — a category, currently `scan_failed`. No message, no path, no backtrace.                                                                                                                           |
 | `antiburn.unrecognized_records_observed` | Settings → Insights returns a cohort containing unknown record vocabulary, and its outcome differs from the last one reported during this run. | `bucket` — sessions containing unknown types. `label` — `inert_only`, `inert_capped`, or `evidence_bearing`. No discriminator, payload, session identifier, or second dimension. |
+| `antiburn.claude_limit_reset_observed` | After an ordinary Claude usage refresh, when analytics and Claude live usage are both enabled and the observation differs from the last one queued during this run. The probe uses a separate five-minute cooldown. | `label` — `success`, `authentication`, `rateLimited`, `unavailable`, `credential_absent`, `credential_expired`, or `credential_unavailable`. The nine reset fields listed above. No response body, credential, account identifier, exact usage percentage, or date. |
 
-Three of those are deliberately not sent once per occurrence. A scan result that
+Four of those are deliberately not sent once per occurrence. A scan result that
 repeats the last one is dropped, so a machine left running does not report the
 same number every minute and a machine stuck failing does not report the same
 failure six hundred times a day. What survives is the first pass of each run,
@@ -119,6 +131,23 @@ every crossing of a bucket boundary, and every move into or out of failure. The
 unrecognized-record event likewise reports only a changed `(label, bucket)`
 outcome. A clean cohort updates that in-memory comparison without sending an
 event, so a later return to unknown vocabulary is visible.
+
+The Claude limit-reset event reports the first observation in a run and then
+only a changed observation. It calls the same provider usage endpoint through a
+separate `at_wall=1&skip_spend=1` GET after the ordinary usage result has already
+been published. It runs only when analytics is configured and enabled, live
+usage is active, and Claude is visible. A 429 from either Claude usage request
+defers the probe; the probe also honors a numeric `Retry-After` value. The app
+does not invoke the reset operation. The diagnostic response can
+therefore affect only this analytics event, never the displayed usage result,
+notifications, or provider cache.
+
+The event's usage band comes from the diagnostic response itself. That keeps an
+80–99% or at-limit observation aligned with the reset fields it describes. The
+event preserves missing, null, and malformed field states, and keeps eligibility,
+experiment membership, arm, and availability separate so contradictory server
+states remain visible. It sends only the presence of `next_available_at`, because
+the exact date adds little diagnostic value and reveals more timing detail.
 
 The `inert_capped` label covers either too many distinct unknown types or one
 type name that exceeds the local string limit. The event never sends those

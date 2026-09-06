@@ -107,6 +107,60 @@ fn the_legacy_flat_shape_produces_the_same_two_primary_ids() {
     assert_eq!(usage.windows.len(), 2);
 }
 
+#[cfg(feature = "analytics")]
+#[test]
+fn the_limit_reset_diagnostic_preserves_independent_server_states() {
+    let diagnostic = anthropic::parse_limit_reset_diagnostic(
+        r#"{
+          "five_hour": {"utilization": 86.5, "resets_at": 1800000000},
+          "juniper_tide": {
+            "eligible": false,
+            "ineligible_reason": "not_at_wall",
+            "in_experiment": true,
+            "arm": "control",
+            "available": true,
+            "resets_per_week": 1,
+            "next_available_at": "2026-09-07T00:00:00Z"
+          }
+        }"#,
+    );
+
+    assert_eq!(diagnostic.request_outcome, "success");
+    assert_eq!(diagnostic.usage_band, "80_to_under_100");
+    assert_eq!(diagnostic.response_shape, "object");
+    assert_eq!(diagnostic.eligibility, Some("ineligible"));
+    assert_eq!(diagnostic.ineligible_reason, Some("not_at_wall"));
+    assert_eq!(diagnostic.experiment, Some("in_experiment"));
+    assert_eq!(diagnostic.arm, Some("control"));
+    assert_eq!(diagnostic.availability, Some("available"));
+    assert_eq!(diagnostic.resets_per_week, Some("1"));
+    assert_eq!(diagnostic.next_available, Some("present"));
+}
+
+#[cfg(feature = "analytics")]
+#[test]
+fn the_limit_reset_diagnostic_distinguishes_null_missing_and_malformed() {
+    let null = anthropic::parse_limit_reset_diagnostic(
+        r#"{"five_hour":{"utilization":100,"resets_at":1800000000},"juniper_tide":null}"#,
+    );
+    assert_eq!(null.usage_band, "at_limit");
+    assert_eq!(null.response_shape, "null");
+    assert_eq!(null.eligibility, None);
+
+    let missing = anthropic::parse_limit_reset_diagnostic(r#"{"juniper_tide":{}}"#);
+    assert_eq!(missing.usage_band, "unknown");
+    assert_eq!(missing.eligibility, Some("missing"));
+    assert_eq!(missing.ineligible_reason, Some("missing"));
+
+    let malformed = anthropic::parse_limit_reset_diagnostic(
+        r#"{"juniper_tide":{"eligible":"yes","ineligible_reason":"new_reason","arm":"new_arm","next_available_at":true}}"#,
+    );
+    assert_eq!(malformed.eligibility, Some("malformed"));
+    assert_eq!(malformed.ineligible_reason, Some("other"));
+    assert_eq!(malformed.arm, Some("other"));
+    assert_eq!(malformed.next_available, Some("malformed"));
+}
+
 #[test]
 fn a_payload_carrying_both_shapes_does_not_report_a_window_twice() {
     let both = r#"{

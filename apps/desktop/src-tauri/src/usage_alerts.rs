@@ -285,7 +285,62 @@ pub(crate) fn refresh_publish_and_evaluate(
     if let Some(settings) = settings.as_ref() {
         evaluate_milestones(app, &live, settings, &snapshots, now);
     }
+    #[cfg(feature = "analytics")]
+    schedule_claude_limit_reset_diagnostic(app);
     summary
+}
+
+/// Run the reset probe after the ordinary usage result is already published.
+///
+/// The worker checks every consent gate again immediately before it reads a
+/// credential. The source applies its own five-minute request cooldown.
+#[cfg(feature = "analytics")]
+fn schedule_claude_limit_reset_diagnostic(app: &AppHandle) {
+    if !crate::analytics::allowed(app) {
+        return;
+    }
+    let app = app.clone();
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        if !crate::analytics::allowed(&app) {
+            return;
+        }
+        let Some(store) = app.try_state::<Store>() else {
+            return;
+        };
+        let Ok(settings) = store.settings() else {
+            return;
+        };
+        if !claude_limit_reset_diagnostic_allowed(true, &settings) {
+            return;
+        }
+        let Some(live) = app.try_state::<LiveUsage>() else {
+            return;
+        };
+        for source in &live.sources {
+            if source.provider() != crate::provider_usage::providers::ANTHROPIC {
+                continue;
+            }
+            let Some(provider_usage::live::AnalyticsDiagnostic::ClaudeLimitReset(diagnostic)) =
+                source.analytics_diagnostic()
+            else {
+                continue;
+            };
+            crate::analytics::record_claude_limit_reset(&app, diagnostic);
+        }
+    }));
+}
+
+#[cfg(feature = "analytics")]
+fn claude_limit_reset_diagnostic_allowed(
+    analytics_allowed: bool,
+    settings: &crate::store::AppSettings,
+) -> bool {
+    analytics_allowed
+        && settings.analytics_enabled
+        && settings.live_usage_active()
+        && !settings
+            .live_usage_hidden_providers
+            .contains(crate::provider_usage::providers::ANTHROPIC)
 }
 
 fn evaluate_milestones(
@@ -424,6 +479,28 @@ mod tests {
 
     fn at(epoch: i64) -> time::OffsetDateTime {
         time::OffsetDateTime::from_unix_timestamp(epoch).unwrap()
+    }
+
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn the_claude_reset_diagnostic_requires_every_product_gate() {
+        let mut settings = crate::store::AppSettings {
+            onboarding_completed: true,
+            ..crate::store::AppSettings::default()
+        };
+        assert!(claude_limit_reset_diagnostic_allowed(true, &settings));
+        assert!(!claude_limit_reset_diagnostic_allowed(false, &settings));
+
+        settings.analytics_enabled = false;
+        assert!(!claude_limit_reset_diagnostic_allowed(true, &settings));
+        settings.analytics_enabled = true;
+        settings.live_usage_enabled = false;
+        assert!(!claude_limit_reset_diagnostic_allowed(true, &settings));
+        settings.live_usage_enabled = true;
+        settings.live_usage_hidden_providers = crate::store::HiddenMeters::selected([
+            crate::provider_usage::providers::ANTHROPIC.to_string(),
+        ]);
+        assert!(!claude_limit_reset_diagnostic_allowed(true, &settings));
     }
 
     #[test]
