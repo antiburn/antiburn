@@ -613,6 +613,69 @@ fn an_accepted_child_read_publishes_the_merged_metrics() {
 }
 
 #[test]
+fn mixed_astra_speeds_match_live_rows_cache_and_child_costs() {
+    let inputs = [
+        inline_input(
+            claude_record_with("parent", 1_760_000_000, "gpt-6-astra", None),
+            "parent",
+        ),
+        inline_input(
+            claude_record_with("child", 1_760_000_001, "gpt-6-astra", Some("fast")),
+            "child",
+        ),
+    ];
+    let outcome = stream_vendor_with_hooks(
+        &inputs,
+        &|| false,
+        &|_, _| {},
+        None,
+        Some(turn_row_store("claude", "parent")),
+    );
+    let StreamOutcome::Published { session, .. } = outcome else {
+        panic!("the stable mixed-speed sources must publish");
+    };
+    let expected = 2.0 * 10.0e-6 + 3.0 * 50.0e-6 + 2.0 * 20.0e-6 + 3.0 * 100.0e-6;
+    let live = session
+        .merged
+        .cost
+        .expect("the live mixed-speed metrics price")
+        .total_usd;
+    let row_pricing: HashMap<String, ModelTokens> = session
+        .row_projections
+        .as_ref()
+        .expect("the row projection")
+        .pricing_breakdown
+        .clone()
+        .into_iter()
+        .collect();
+    let rows = price_breakdown(&row_pricing)
+        .expect("the row projection prices")
+        .total_usd;
+    let model_json = serde_json::to_string(&session.merged.model_breakdown).unwrap();
+    let pricing_json = serde_json::to_string(
+        &session
+            .row_projections
+            .as_ref()
+            .expect("the row projection")
+            .pricing_breakdown,
+    )
+    .unwrap();
+    let (cached, displayed) = price_cached_breakdown(&model_json, &pricing_json);
+    let cached = cached.expect("the cached projection prices").total_usd;
+    let child = session.subagents[0]
+        .0
+        .cost
+        .expect("the fast child prices")
+        .total_usd;
+
+    assert!((live - expected).abs() < 1e-12);
+    assert!((rows - expected).abs() < 1e-12);
+    assert!((cached - expected).abs() < 1e-12);
+    assert!((child - (2.0 * 20.0e-6 + 3.0 * 100.0e-6)).abs() < 1e-12);
+    assert_eq!(displayed, ["gpt-6-astra"]);
+}
+
+#[test]
 fn a_changed_parent_source_publishes_neither_projection() {
     let directory = tempfile::TempDir::new().expect("tempdir");
     let path = directory.path().join("parent.jsonl");
@@ -1454,7 +1517,7 @@ fn cached_costs_re_price_from_the_stored_breakdown() {
     )]))
     .unwrap();
 
-    let (cost, models) = price_cached_breakdown(&stored);
+    let (cost, models) = price_cached_breakdown(&stored, &stored);
     assert_eq!(models, vec!["claude-opus-4-6".to_string()]);
     let cost = cost.expect("a known model prices");
     assert!((cost.input_usd - 5.0).abs() < 1e-9);
@@ -1465,12 +1528,46 @@ fn cached_costs_re_price_from_the_stored_breakdown() {
         ModelTokens::default(),
     )]))
     .unwrap();
-    let (cost, models) = price_cached_breakdown(&unknown);
+    let (cost, models) = price_cached_breakdown(&unknown, &unknown);
     assert!(cost.is_none());
     assert_eq!(models, vec!["some-unreleased-model".to_string()]);
 
     // Garbage in the cache degrades to "unknown", never to a panic.
-    assert_eq!(price_cached_breakdown("not json").0, None);
+    assert_eq!(price_cached_breakdown("not json", "not json").0, None);
+}
+
+#[test]
+fn cached_mixed_astra_speeds_keep_the_display_identity() {
+    let models = serde_json::to_string(&HashMap::from([(
+        "gpt-6-astra".to_string(),
+        ModelTokens {
+            output_tokens: 2_000_000,
+            ..ModelTokens::default()
+        },
+    )]))
+    .unwrap();
+    let pricing = serde_json::to_string(&HashMap::from([
+        (
+            "gpt-6-astra".to_string(),
+            ModelTokens {
+                output_tokens: 1_000_000,
+                ..ModelTokens::default()
+            },
+        ),
+        (
+            "gpt-6-astra-fast".to_string(),
+            ModelTokens {
+                output_tokens: 1_000_000,
+                ..ModelTokens::default()
+            },
+        ),
+    ]))
+    .unwrap();
+
+    let (cost, displayed) = price_cached_breakdown(&models, &pricing);
+
+    assert_eq!(displayed, ["gpt-6-astra"]);
+    assert!((cost.expect("both tiers price").total_usd - 150.0).abs() < 1e-9);
 }
 
 fn tokens(input: u64) -> ModelTokens {

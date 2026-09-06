@@ -4063,6 +4063,15 @@
         }
       ],
       "peakContextTokens": 24,
+      "pricingBreakdown": {
+        "claude-3-5-haiku": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 24,
+          "output_tokens": 12
+        }
+      },
       "sessionId": "housekeeping_records",
       "tokensIn": 24,
       "tokensOut": 12

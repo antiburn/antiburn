@@ -179,7 +179,7 @@ pub struct PremiumPolicy {
     /// substrings (Claude: `opus`, `fable`, `mythos`).
     pub substrings: Vec<String>,
     /// A canonical model key is premium when it starts with any of these
-    /// prefixes (OpenAI: `gpt-5.6`, `gpt-5.5`), unless it is in
+    /// prefixes (OpenAI: `gpt-6-astra`, `gpt-5.6`, `gpt-5.5`), unless it is in
     /// `exceptions`.
     pub prefixes: Vec<String>,
     /// Canonical model keys that a substring or prefix match would
@@ -314,7 +314,11 @@ impl Default for ReportCatalogs {
                 premium: PremiumPolicy {
                     reviewed: true,
                     substrings: Vec::new(),
-                    prefixes: vec!["gpt-5.6".to_owned(), "gpt-5.5".to_owned()],
+                    prefixes: vec![
+                        "gpt-6-astra".to_owned(),
+                        "gpt-5.6".to_owned(),
+                        "gpt-5.5".to_owned(),
+                    ],
                     exceptions: [
                         "gpt-5.6-terra",
                         "gpt-5.6-luna",
@@ -348,7 +352,7 @@ impl Default for ReportCatalogs {
         families.insert(ModelFamily::Unknown, FamilyPolicy::default());
 
         Self {
-            revision: 7,
+            revision: 8,
             depth_cap_tokens: 400_000,
             families,
             model_replacements: model_registry::default_registry(),
@@ -613,6 +617,19 @@ mod tests {
     fn openai_premium_policy_flags_gpt_5_5_fast() {
         let policy = &ReportCatalogs::default().families[&ModelFamily::OpenAi].premium;
         assert!(policy.is_premium("gpt-5.5-fast"));
+    }
+
+    #[test]
+    fn openai_premium_policy_flags_gpt_6_astra() {
+        let policy = &ReportCatalogs::default().families[&ModelFamily::OpenAi].premium;
+        assert!(policy.is_premium("gpt-6-astra"));
+        assert!(policy.is_premium("gpt-6-astra-fast"));
+    }
+
+    #[test]
+    fn openai_premium_policy_does_not_guess_other_gpt_6_models() {
+        let policy = &ReportCatalogs::default().families[&ModelFamily::OpenAi].premium;
+        assert!(!policy.is_premium("gpt-6-unknown"));
     }
 
     #[test]

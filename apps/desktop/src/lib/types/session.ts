@@ -198,6 +198,8 @@ export interface SessionMetrics {
   billableCacheReadTokens?: number
   billableCacheCreationTokens?: number
   modelBreakdown?: Record<string, ModelTokens>
+  /** This map groups billable tokens by the pricing key for the observed speed tier. */
+  pricingBreakdown?: Record<string, ModelTokens>
   cost?: SessionCostComponents | null
   efficiency?: SessionEfficiency
 }

@@ -79,6 +79,14 @@ fn initial_pricing() -> HashMap<String, ModelPricing> {
             price(1e-6, 6e-6, 0.1e-6, 1.25e-6),
         ),
         (
+            "gpt-6-astra".to_string(),
+            price(10e-6, 50e-6, 1e-6, 12.5e-6),
+        ),
+        (
+            "gpt-6-astra-fast".to_string(),
+            price(20e-6, 100e-6, 2e-6, 25e-6),
+        ),
+        (
             "gemini-3.8-pro".to_string(),
             price(2e-6, 12e-6, 0.2e-6, 2e-6),
         ),
@@ -135,6 +143,22 @@ pub fn lookup_pricing(model: &str) -> Option<ModelPricing> {
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     crate::pricing::lookup_pricing(strip_window_tag(model), &table).cloned()
+}
+
+/// Return the catalog key for one model turn and its observed speed.
+pub fn turn_pricing_key(model: &str, speed: Option<&str>) -> String {
+    let model = crate::pricing::normalize_model_key(strip_window_tag(model).trim());
+    if !speed.is_some_and(|speed| speed.trim().eq_ignore_ascii_case("fast"))
+        || crate::pricing::canonical_model_key(model).ends_with("-fast")
+    {
+        return model.to_string();
+    }
+    format!("{model}-fast")
+}
+
+/// Look up the exact catalog tier observed for one model turn.
+pub fn lookup_turn_pricing(model: &str, speed: Option<&str>) -> Option<ModelPricing> {
+    lookup_pricing(&turn_pricing_key(model, speed))
 }
 
 /// Estimate a complete per-model token breakdown.
@@ -199,5 +223,28 @@ mod tests {
             rate.clone(),
         )]));
         assert_eq!(normalized.get("sample-model"), Some(&rate));
+    }
+
+    #[test]
+    fn fast_pricing_keys_preserve_namespaces_and_avoid_double_suffixes() {
+        assert_eq!(
+            turn_pricing_key("openai/gpt-6-astra-20260901[272k]", Some(" FAST ")),
+            "openai/gpt-6-astra-fast"
+        );
+        assert_eq!(
+            turn_pricing_key("openai.gpt-6-astra-fast[272k]", Some("fast")),
+            "openai.gpt-6-astra-fast"
+        );
+        assert_eq!(
+            turn_pricing_key("gpt-6-astra", Some("standard")),
+            "gpt-6-astra"
+        );
+    }
+
+    #[test]
+    fn fast_pricing_does_not_fall_back_to_standard() {
+        assert!(lookup_turn_pricing("gpt-6-astra", Some("fast")).is_some());
+        assert!(lookup_turn_pricing("gpt-5.6", Some("fast")).is_none());
+        assert!(lookup_turn_pricing("gpt-5.6-sol-fast", Some("fast")).is_some());
     }
 }

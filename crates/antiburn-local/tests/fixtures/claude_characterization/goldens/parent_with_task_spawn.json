@@ -4090,6 +4090,15 @@
         }
       ],
       "peakContextTokens": 50,
+      "pricingBreakdown": {
+        "claude-3-5-haiku": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 80,
+          "output_tokens": 40
+        }
+      },
       "sessionId": "parent_with_task_spawn",
       "tokensIn": 80,
       "tokensOut": 40

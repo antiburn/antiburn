@@ -152,7 +152,7 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 17,
+      "analyzerRevision": 18,
       "evidenceSchemaRevision": 13,
       "harnessVersion": {
         "state": "unsupported"
@@ -4198,6 +4198,22 @@
       }
     ],
     "peakContextTokens": 9040,
+    "pricingBreakdown": {
+      "claude-opus-4-6": {
+        "cache_creation_1h_tokens": 0,
+        "cache_creation_tokens": 8000,
+        "cache_read_tokens": 0,
+        "input_tokens": 30,
+        "output_tokens": 6
+      },
+      "claude-sonnet-4-6": {
+        "cache_creation_1h_tokens": 0,
+        "cache_creation_tokens": 9000,
+        "cache_read_tokens": 0,
+        "input_tokens": 40,
+        "output_tokens": 8
+      }
+    },
     "sessionId": "excess_cache_rehydration_finding",
     "tokensIn": 17070,
     "tokensOut": 14

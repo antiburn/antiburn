@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analysis::{
     CacheEvidence, CoverageReason, EvidenceCoverage, EvidenceValue, SessionEvidence,
-    SourceAcceptance, lookup_pricing,
+    SourceAcceptance, lookup_turn_pricing, strip_window_tag,
 };
 use crate::pricing::{ModelPricing, canonical_model_key};
 
@@ -776,8 +776,12 @@ fn cost_saving_tokens(
     Some((equivalent.round() as u128).clamp(1, total_tokens))
 }
 
-fn report_pricing(model: &str, canonical_model: &str) -> Option<ModelPricing> {
-    lookup_pricing(model).or_else(|| lookup_pricing(canonical_model))
+fn report_turn_pricing(
+    model: &str,
+    canonical_model: &str,
+    speed: Option<&str>,
+) -> Option<ModelPricing> {
+    lookup_turn_pricing(model, speed).or_else(|| lookup_turn_pricing(canonical_model, speed))
 }
 
 fn priced_or_assumed_saving(
@@ -786,8 +790,12 @@ fn priced_or_assumed_saving(
     replacement: &str,
 ) -> Option<u128> {
     let replacement_canonical = canonical_model_key(replacement);
-    let priced = report_pricing(&turn.model, canonical_model)
-        .zip(report_pricing(replacement, &replacement_canonical))
+    let priced = report_turn_pricing(&turn.model, canonical_model, turn.speed.as_deref())
+        .zip(report_turn_pricing(
+            replacement,
+            &replacement_canonical,
+            turn.speed.as_deref(),
+        ))
         .and_then(|(actual, replacement)| cost_saving_tokens(turn, &actual, &replacement));
     priced.or_else(|| percentage_of_tokens(turn.total_tokens()?, 10))
 }
@@ -826,12 +834,20 @@ fn premium_replacement(
 }
 
 fn fast_mode_saving(turn: &TokenBurnTurnEvidence, canonical_model: &str) -> Option<u128> {
-    let standard_model = canonical_model
+    let observed_model = strip_window_tag(&turn.model).trim();
+    let observed_model = crate::pricing::normalize_model_key(observed_model);
+    let standard_model = observed_model
+        .strip_suffix("-fast")
+        .unwrap_or(observed_model);
+    let standard_canonical = canonical_model
         .strip_suffix("-fast")
         .unwrap_or(canonical_model);
-    let fast_model = format!("{standard_model}-fast");
-    let priced = report_pricing(&fast_model, &fast_model)
-        .zip(report_pricing(standard_model, standard_model))
+    let priced = report_turn_pricing(standard_model, standard_canonical, Some("fast"))
+        .zip(report_turn_pricing(
+            standard_model,
+            standard_canonical,
+            None,
+        ))
         .and_then(|(fast, standard)| cost_saving_tokens(turn, &fast, &standard));
     priced.or_else(|| percentage_of_tokens(turn.total_tokens()?, 10))
 }
@@ -1729,7 +1745,7 @@ mod tests {
         token_burn.observe(token_evidence, [true; 9], [true; 3]);
         let (combined, estimates) = token_burn.finish(&finding_statuses(&all_findings));
 
-        assert_eq!(combined, Some(1_200));
+        assert_eq!(combined, Some(800));
         for detector in all_findings {
             assert!(estimates[detector.index()].is_some_and(|value| value > 0));
         }
@@ -1738,7 +1754,7 @@ mod tests {
             [
                 Some(800),
                 Some(350),
-                Some(1_200),
+                Some(500),
                 Some(100),
                 Some(100),
                 Some(100),
@@ -1800,6 +1816,34 @@ mod tests {
         );
         assert_eq!(turn_evidence([fast], &catalogs).fast_mode, Some(100));
         assert_eq!(turn_evidence([old], &catalogs).old_model, Some(100));
+    }
+
+    #[test]
+    fn astra_parent_usage_is_excluded_but_delegated_usage_has_savings() {
+        let catalogs = ReportCatalogs::default();
+        let evidence = turn_evidence(
+            [
+                token_turn("main", "gpt-6-astra", None, None, 1_000),
+                token_turn("delegated", "gpt-6-astra", None, None, 1_000),
+            ],
+            &catalogs,
+        );
+
+        assert_eq!(evidence.overpowered_subagents, Some(880));
+    }
+
+    #[test]
+    fn namespaced_astra_fast_savings_use_fast_and_standard_rates() {
+        let catalogs = ReportCatalogs::default();
+        let turn = token_turn(
+            "delegated",
+            "openai/gpt-6-astra-20260901[272k]",
+            None,
+            Some("fast"),
+            1_000,
+        );
+
+        assert_eq!(turn_evidence([turn], &catalogs).fast_mode, Some(500));
     }
 
     #[test]

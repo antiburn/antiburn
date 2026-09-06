@@ -37,6 +37,7 @@ fn row(agent: &str, at: i64, models: &[(&str, ModelTokens)]) -> UsageEvidenceRec
         agent: agent.to_string(),
         updated_at_epoch: at,
         model_breakdown_json: Some(serde_json::to_string(&breakdown).unwrap()),
+        pricing_breakdown_json: Some(serde_json::to_string(&breakdown).unwrap()),
         provider_hints_json: None,
         provider_accounts_json: "[]".into(),
     }
@@ -48,6 +49,7 @@ fn unanalyzed(agent: &str, at: i64) -> UsageEvidenceRecord {
         agent: agent.to_string(),
         updated_at_epoch: at,
         model_breakdown_json: None,
+        pricing_breakdown_json: None,
         provider_hints_json: None,
         provider_accounts_json: "[]".into(),
     }
@@ -304,6 +306,67 @@ fn an_explicit_provider_overrides_model_family_inference() {
 }
 
 #[test]
+fn a_model_specific_hint_owns_its_fast_tier_cost() {
+    let mut record = row_with_hints(
+        "pi",
+        NOW - 60,
+        &[("gpt-6-astra", tokens(0, 1_000_000, 0, 0))],
+        &[("openrouter", Some("gpt-6-astra"))],
+    );
+    record.pricing_breakdown_json = Some(
+        serde_json::to_string(&BTreeMap::from([(
+            "gpt-6-astra-fast".to_string(),
+            tokens(0, 1_000_000, 0, 0),
+        )]))
+        .unwrap(),
+    );
+
+    let summary = summarize(&[record], NOW, 0);
+    let openrouter = find(&summary, providers::OPENROUTER);
+
+    assert_eq!(openrouter.state, ProviderUsageState::Estimated);
+    assert!((openrouter.windows.today.estimated_usd.expect("priced") - 100.0).abs() < 1e-9);
+    assert!(
+        summary
+            .providers
+            .iter()
+            .all(|provider| provider.provider != providers::OPENAI)
+    );
+}
+
+#[test]
+fn colliding_fast_key_provider_hints_leave_cost_unavailable() {
+    let mut record = row_with_hints(
+        "pi",
+        NOW - 60,
+        &[
+            ("gpt-6-astra", tokens(0, 500_000, 0, 0)),
+            ("gpt-6-astra-fast", tokens(0, 500_000, 0, 0)),
+        ],
+        &[
+            ("openrouter", Some("gpt-6-astra")),
+            ("openai", Some("gpt-6-astra-fast")),
+        ],
+    );
+    record.pricing_breakdown_json = Some(
+        serde_json::to_string(&BTreeMap::from([(
+            "gpt-6-astra-fast".to_string(),
+            tokens(0, 1_000_000, 0, 0),
+        )]))
+        .unwrap(),
+    );
+
+    let summary = summarize(&[record], NOW, 0);
+
+    for provider in [providers::OPENROUTER, providers::OPENAI] {
+        let usage = find(&summary, provider);
+        assert_eq!(usage.state, ProviderUsageState::Observed);
+        assert_eq!(usage.windows.today.estimated_usd, None);
+        assert!(!usage.windows.today.cost_complete);
+    }
+}
+
+#[test]
 fn an_unknown_explicit_gateway_does_not_fall_through_to_the_model_family() {
     let rows = [row_with_hints(
         "pi",
@@ -496,6 +559,38 @@ fn aggregate_cost_is_incomplete_when_any_provider_window_is_unpriced() {
 }
 
 #[test]
+fn a_missing_pricing_map_keeps_a_mixed_provider_total_incomplete() {
+    let priced = row(
+        "claude-code",
+        NOW,
+        &[(PRICED_MODEL, tokens(1_000_000, 0, 0, 0))],
+    );
+    let mut missing_tier = row(
+        "claude-code",
+        NOW,
+        &[(PRICED_MODEL, tokens(1_000_000, 0, 0, 0))],
+    );
+    missing_tier.pricing_breakdown_json = Some("{}".to_string());
+
+    let summary = summarize(&[priced, missing_tier], NOW, 0);
+    let anthropic = find(&summary, providers::ANTHROPIC);
+
+    assert_eq!(anthropic.state, ProviderUsageState::Observed);
+    assert_eq!(anthropic.windows.today.tokens_in, 2_000_000);
+    assert!(
+        (anthropic
+            .windows
+            .today
+            .estimated_usd
+            .expect("the priced portion")
+            - 5.0)
+            .abs()
+            < 1e-9
+    );
+    assert!(!anthropic.windows.today.cost_complete);
+}
+
+#[test]
 fn a_session_with_no_analysis_yet_is_unknown_rather_than_zero() {
     let rows = [unanalyzed("claude-code", NOW - 60)];
     let summary = summarize(&rows, NOW, 0);
@@ -513,6 +608,7 @@ fn an_unparseable_cache_row_degrades_to_unknown_rather_than_failing() {
         agent: "claude-code".to_string(),
         updated_at_epoch: NOW - 60,
         model_breakdown_json: Some("not json".to_string()),
+        pricing_breakdown_json: Some("not json".to_string()),
         provider_hints_json: None,
         provider_accounts_json: "[]".into(),
     }];

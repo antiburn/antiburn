@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use antiburn_local::analysis::{ProviderHint, lookup_pricing};
+use antiburn_local::analysis::{ProviderHint, lookup_turn_pricing};
 use antiburn_local::pricing::{
     ModelPricing, ModelTokens, calc::calculate_cache_write_cost, canonical_model_key,
 };
@@ -169,9 +169,11 @@ fn weighted_turns(rows: Vec<SessionUsageRecord>) -> Vec<WeightedTurn> {
             }) else {
                 continue;
             };
+            let pricing_key =
+                antiburn_local::analysis::turn_pricing_key(model, row.speed.as_deref());
             let rates = pricing
-                .entry(model.to_string())
-                .or_insert_with(|| lookup_pricing(model));
+                .entry(pricing_key)
+                .or_insert_with(|| lookup_turn_pricing(model, row.speed.as_deref()));
             let price_weight = rates.as_ref().map(|rates| {
                 tokens.input_tokens as f64 * rates.input_cost_per_token
                     + tokens.output_tokens as f64 * rates.output_cost_per_token

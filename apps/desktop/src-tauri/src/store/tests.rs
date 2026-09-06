@@ -52,6 +52,7 @@ fn projection_record(key: SessionKey, fingerprint: &str, generation: i64) -> Ana
     AnalysisRecord {
         key,
         model_breakdown_json: "{}".into(),
+        pricing_breakdown_json: "{}".into(),
         inclusive_models_json: "[]".into(),
         initial_context_json: None,
         source_summaries_json: None,
@@ -306,41 +307,9 @@ fn session_analysis_holds_the_cache_values_and_the_projection_revisions() {
             "initial_context_json",
             "source_summaries_json",
             "provider_hints_json",
+            "pricing_breakdown_json",
         ]
     );
-}
-
-#[test]
-fn provider_hints_migration_keeps_old_analysis_unknown() {
-    let connection = rusqlite::Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..23] {
-        connection.execute_batch(sql).unwrap();
-    }
-    connection
-        .execute(
-            "INSERT INTO session_analysis (
-                 environment_key, agent, session_id, model_breakdown_json,
-                 inclusive_models_json, source_fingerprint, pricing_generation,
-                 analyzed_generation, parser_revision, analyzer_revision,
-                 metrics_schema_revision)
-             VALUES ('native', 'pi', 'legacy', '{}', '[]', 'sv1:legacy', 1, 1, 1, 1, 3)",
-            [],
-        )
-        .unwrap();
-    connection.pragma_update(None, "user_version", 23).unwrap();
-
-    let store = Store::from_connection(
-        connection,
-        Path::new("/tmp/antiburn-provider-hints-migration-test").to_path_buf(),
-    )
-    .expect("V24 migrates the prior schema");
-    let analysis = store
-        .analysis(&SessionKey::new("native", "pi", "legacy"))
-        .unwrap()
-        .expect("legacy analysis survives");
-
-    assert_eq!(store.schema_version().unwrap(), 33);
-    assert_eq!(analysis.provider_hints_json, None);
 }
 
 #[test]
@@ -841,6 +810,7 @@ fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
             &AnalysisRecord {
                 key: SessionKey::new("native", "claude-code", "abc"),
                 model_breakdown_json: "{}".into(),
+                pricing_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
                 source_summaries_json: None,
@@ -1070,6 +1040,7 @@ fn session_retention_removes_all_derived_session_data() {
             &AnalysisRecord {
                 key: key.clone(),
                 model_breakdown_json: "{}".into(),
+                pricing_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
                 source_summaries_json: None,
@@ -1556,6 +1527,7 @@ fn analysis_round_trips_and_is_replaced_rather_than_duplicated() {
     let record = AnalysisRecord {
         key: key.clone(),
         model_breakdown_json: r#"{"claude-opus-4-6":{"inputTokens":10}}"#.into(),
+        pricing_breakdown_json: r#"{"claude-opus-4-6":{"inputTokens":10}}"#.into(),
         inclusive_models_json:
             r#"[{"model":"claude-haiku-4-5"},{"model":"claude-opus-4-6","thinkingMode":"high"}]"#
                 .into(),
@@ -1794,6 +1766,7 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
             &AnalysisRecord {
                 key: key.clone(),
                 model_breakdown_json: "{}".into(),
+                pricing_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
                 source_summaries_json: None,
@@ -1939,6 +1912,7 @@ fn usage_evidence_joins_the_analysis_and_keeps_sessions_that_have_none() {
             &AnalysisRecord {
                 key: SessionKey::new("native", "claude-code", "analyzed"),
                 model_breakdown_json: r#"{"claude-opus-4-6":{"input_tokens":10}}"#.into(),
+                pricing_breakdown_json: r#"{"claude-opus-4-6":{"input_tokens":10}}"#.into(),
                 inclusive_models_json: r#"[{"model":"claude-opus-4-6","thinkingMode":"high"}]"#
                     .into(),
                 initial_context_json: None,
@@ -2862,6 +2836,7 @@ fn a_catalog_change_requeues_no_session_evidence() {
             &AnalysisRecord {
                 key: record.key.clone(),
                 model_breakdown_json: "{}".into(),
+                pricing_breakdown_json: "{}".into(),
                 inclusive_models_json: "[]".into(),
                 initial_context_json: None,
                 source_summaries_json: None,

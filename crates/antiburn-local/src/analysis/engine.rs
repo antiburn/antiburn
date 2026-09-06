@@ -205,6 +205,10 @@ pub struct SessionMetrics {
     /// single-model breakdown after analysis.
     #[serde(default)]
     pub model_breakdown: HashMap<String, ModelTokens>,
+    /// This map retains billable tokens per catalog pricing key. Fast turns use
+    /// their `-fast` key while `model_breakdown` keeps the model identity.
+    #[serde(default)]
+    pub pricing_breakdown: HashMap<String, ModelTokens>,
     /// On-device cost estimate (`~$`), or `None` when `model` is unknown/unpriceable.
     #[serde(default)]
     pub cost: Option<SessionCost>,

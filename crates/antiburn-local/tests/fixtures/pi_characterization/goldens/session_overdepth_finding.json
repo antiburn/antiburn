@@ -132,7 +132,7 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 17,
+      "analyzerRevision": 18,
       "evidenceSchemaRevision": 13,
       "harnessVersion": {
         "state": "unsupported"
@@ -4167,6 +4167,15 @@
       }
     ],
     "peakContextTokens": 450000,
+    "pricingBreakdown": {
+      "model-a": {
+        "cache_creation_1h_tokens": 0,
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
+        "input_tokens": 450000,
+        "output_tokens": 50
+      }
+    },
     "sessionId": "session_overdepth_finding",
     "tokensIn": 450000,
     "tokensOut": 50

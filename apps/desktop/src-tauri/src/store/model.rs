@@ -128,6 +128,8 @@ pub struct AnalysisRecord {
     pub key: SessionKey,
     /// Billable tokens per normalized model key, as camelCase JSON.
     pub model_breakdown_json: String,
+    /// This JSON groups billable tokens by the catalog key for each observed speed tier.
+    pub pricing_breakdown_json: String,
     /// This JSON array puts parent model runs before sub-agent-only runs.
     pub inclusive_models_json: String,
     /// Serialized `InitialContextBreakdown`. `None` until an analysis pass
@@ -325,6 +327,8 @@ pub struct UsageEvidenceRecord {
     /// Billable tokens per normalized model key, or `None` when the session has
     /// not been analyzed. Absence is "we do not know yet", never "zero".
     pub model_breakdown_json: Option<String>,
+    /// This value contains speed-aware billable tokens after a current analysis pass.
+    pub pricing_breakdown_json: Option<String>,
     /// Bounded provider hints, or `None` when analysis has not observed them.
     pub provider_hints_json: Option<String>,
     /// Opaque account observations keyed by canonical provider.
@@ -346,6 +350,7 @@ pub struct SessionUsageRecord {
 pub struct SessionUsageTurnRecord {
     pub ts_ms: Option<i64>,
     pub model: Option<String>,
+    pub speed: Option<String>,
     pub input_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,

@@ -33,6 +33,7 @@ fn turn(session: &str, at: i64, tokens: u64, accounts: &[&str]) -> SessionUsageR
         turns: vec![SessionUsageTurnRecord {
             ts_ms: Some(at * 1_000),
             model: Some(MODEL.to_string()),
+            speed: None,
             input_tokens: tokens,
             cache_read_tokens: 0,
             cache_write_tokens: 0,
@@ -134,6 +135,29 @@ fn sessions_divide_the_share_by_priced_turn_weight() {
         .collect();
     assert!((shares["one"] - 20.0).abs() < 1e-9);
     assert!((shares["two"] - 60.0).abs() < 1e-9);
+}
+
+#[test]
+fn fast_astra_turns_use_the_fast_price_weight() {
+    let mut standard = turn("standard", NOW - 60, 0, &[]);
+    standard.turns[0].model = Some("gpt-6-astra".to_string());
+    standard.turns[0].output_tokens = 1_000_000;
+    let mut fast = turn("fast", NOW - 30, 0, &[]);
+    fast.turns[0].model = Some("gpt-6-astra".to_string());
+    fast.turns[0].speed = Some("fast".to_string());
+    fast.turns[0].output_tokens = 1_000_000;
+
+    let allocations = weekly(
+        &[standard, fast],
+        &live(None, vec![window(SessionLimitMetric::Weekly, 60.0)]),
+    );
+    let shares: HashMap<_, _> = allocations
+        .into_iter()
+        .map(|entry| (entry.session_id, entry.percent))
+        .collect();
+
+    assert!((shares["standard"] - 20.0).abs() < 1e-9);
+    assert!((shares["fast"] - 40.0).abs() < 1e-9);
 }
 
 #[test]

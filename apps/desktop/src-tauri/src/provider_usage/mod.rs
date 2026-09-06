@@ -32,9 +32,9 @@ pub mod providers;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use antiburn_local::analysis::price_breakdown;
+use antiburn_local::analysis::{price_breakdown, turn_pricing_key};
 use antiburn_local::pricing::ModelTokens;
 use time::{OffsetDateTime, Time, UtcOffset};
 
@@ -168,13 +168,32 @@ impl Membership {
 /// source of flicker.
 #[derive(Debug, Default)]
 struct Bucket {
+    /// Actual model identities supply displayed token totals.
     models: BTreeMap<String, ModelTokens>,
+    /// Catalog pricing keys preserve the observed speed tier.
+    pricing: BTreeMap<String, ModelTokens>,
+    pricing_incomplete: bool,
     session_count: u32,
 }
 
 impl Bucket {
     fn add_tokens(&mut self, model: &str, tokens: &ModelTokens) {
         let entry = self.models.entry(model.to_string()).or_default();
+        entry.input_tokens = entry.input_tokens.saturating_add(tokens.input_tokens);
+        entry.output_tokens = entry.output_tokens.saturating_add(tokens.output_tokens);
+        entry.cache_read_tokens = entry
+            .cache_read_tokens
+            .saturating_add(tokens.cache_read_tokens);
+        entry.cache_creation_tokens = entry
+            .cache_creation_tokens
+            .saturating_add(tokens.cache_creation_tokens);
+        entry.cache_creation_1h_tokens = entry
+            .cache_creation_1h_tokens
+            .saturating_add(tokens.cache_creation_1h_tokens);
+    }
+
+    fn add_pricing_tokens(&mut self, model: &str, tokens: &ModelTokens) {
+        let entry = self.pricing.entry(model.to_string()).or_default();
         entry.input_tokens = entry.input_tokens.saturating_add(tokens.input_tokens);
         entry.output_tokens = entry.output_tokens.saturating_add(tokens.output_tokens);
         entry.cache_read_tokens = entry
@@ -247,7 +266,8 @@ fn price(models: &BTreeMap<String, ModelTokens>) -> Priced {
 
 /// Turn one bucket into its wire shape.
 fn window_of(bucket: &Bucket) -> ProviderUsageWindow {
-    let priced = price(&bucket.models);
+    let mut priced = price(&bucket.pricing);
+    priced.any_unpriced |= bucket.pricing_incomplete;
     let mut window = ProviderUsageWindow {
         session_count: bucket.session_count,
         estimated_usd: priced.any_priced.then_some(priced.usd),
@@ -277,7 +297,8 @@ fn state_of(accumulator: &Accumulator) -> ProviderUsageState {
             ProviderUsageState::Unknown
         };
     }
-    let priced = price(&accumulator.all.models);
+    let mut priced = price(&accumulator.all.pricing);
+    priced.any_unpriced |= accumulator.all.pricing_incomplete;
     if priced.any_unpriced || !priced.any_priced {
         ProviderUsageState::Observed
     } else {
@@ -293,6 +314,17 @@ fn has_tokens(tokens: &ModelTokens) -> bool {
         || tokens.cache_creation_1h_tokens > 0
 }
 
+fn token_totals<'a>(tokens: impl Iterator<Item = &'a ModelTokens>) -> [u128; 5] {
+    tokens.fold([0; 5], |mut totals, tokens| {
+        totals[0] += u128::from(tokens.input_tokens);
+        totals[1] += u128::from(tokens.output_tokens);
+        totals[2] += u128::from(tokens.cache_read_tokens);
+        totals[3] += u128::from(tokens.cache_creation_tokens);
+        totals[4] += u128::from(tokens.cache_creation_1h_tokens);
+        totals
+    })
+}
+
 /// Whether the newest evidence still describes now.
 fn staleness_of(last_activity: Option<i64>, now: i64) -> ProviderUsageStaleness {
     match last_activity {
@@ -306,8 +338,8 @@ fn staleness_of(last_activity: Option<i64>, now: i64) -> ProviderUsageStaleness 
 ///
 /// Unparseable JSON reads as no evidence rather than as an error: a cache row
 /// written by an older build is a state the surface already renders honestly.
-fn breakdown_of(record: &UsageEvidenceRecord) -> BTreeMap<String, ModelTokens> {
-    let Some(json) = record.model_breakdown_json.as_deref() else {
+fn breakdown_json(json: Option<&str>) -> BTreeMap<String, ModelTokens> {
+    let Some(json) = json else {
         return BTreeMap::new();
     };
     serde_json::from_str::<BTreeMap<String, ModelTokens>>(json)
@@ -315,6 +347,14 @@ fn breakdown_of(record: &UsageEvidenceRecord) -> BTreeMap<String, ModelTokens> {
         .into_iter()
         .filter(|(model, _)| !model.trim().is_empty())
         .collect()
+}
+
+fn breakdown_of(record: &UsageEvidenceRecord) -> BTreeMap<String, ModelTokens> {
+    breakdown_json(record.model_breakdown_json.as_deref())
+}
+
+fn pricing_breakdown_of(record: &UsageEvidenceRecord) -> BTreeMap<String, ModelTokens> {
+    breakdown_json(record.pricing_breakdown_json.as_deref())
 }
 
 fn provider_hints_of(record: &UsageEvidenceRecord) -> Vec<ProviderHint> {
@@ -454,6 +494,7 @@ pub fn summarize(
         }
 
         let breakdown = breakdown_of(record);
+        let pricing_breakdown = pricing_breakdown_of(record);
         let hints = provider_hints_of(record);
         let attributed = if breakdown.is_empty() {
             match providers::route_for_agent(&record.agent) {
@@ -484,8 +525,43 @@ pub fn summarize(
         } else {
             attribute(&record.agent, breakdown, &hints)
         };
+        let mut remaining_pricing = pricing_breakdown;
+        let mut pricing_owners: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+        for (provider, attributed) in &attributed {
+            for model in attributed.models.keys() {
+                pricing_owners
+                    .entry(turn_pricing_key(model, None))
+                    .or_default()
+                    .insert(provider);
+                pricing_owners
+                    .entry(turn_pricing_key(model, Some("fast")))
+                    .or_default()
+                    .insert(provider);
+            }
+        }
 
         for (provider, attributed) in attributed {
+            let mut pricing_models = BTreeMap::new();
+            let mut pricing_incomplete = false;
+            let mut keys = BTreeSet::new();
+            for model in attributed.models.keys() {
+                keys.insert(turn_pricing_key(model, None));
+                keys.insert(turn_pricing_key(model, Some("fast")));
+            }
+            for key in keys {
+                if pricing_owners
+                    .get(&key)
+                    .is_some_and(|owners| owners.len() > 1)
+                {
+                    pricing_incomplete |= remaining_pricing.contains_key(&key);
+                    continue;
+                }
+                if let Some(tokens) = remaining_pricing.remove(&key) {
+                    pricing_models.insert(key, tokens);
+                }
+            }
+            pricing_incomplete |=
+                token_totals(attributed.models.values()) != token_totals(pricing_models.values());
             let account_key = account_for(record, provider);
             let accumulator = accumulators.entry((provider, account_key)).or_default();
             accumulator.explicit_provider_detected |= attributed.explicit;
@@ -512,8 +588,12 @@ pub fn summarize(
             }
             for bucket in buckets {
                 bucket.session_count = bucket.session_count.saturating_add(1);
+                bucket.pricing_incomplete |= pricing_incomplete;
                 for (model, tokens) in &attributed.models {
                     bucket.add_tokens(model, tokens);
+                }
+                for (model, tokens) in &pricing_models {
+                    bucket.add_pricing_tokens(model, tokens);
                 }
             }
 
@@ -533,8 +613,12 @@ pub fn summarize(
             }
             for bucket in agent_buckets {
                 bucket.session_count = bucket.session_count.saturating_add(1);
+                bucket.pricing_incomplete |= pricing_incomplete;
                 for (model, tokens) in &attributed.models {
                     bucket.add_tokens(model, tokens);
+                }
+                for (model, tokens) in &pricing_models {
+                    bucket.add_pricing_tokens(model, tokens);
                 }
             }
         }

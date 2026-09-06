@@ -10,7 +10,7 @@ use crate::analysis::model::{
     CompactionTrigger, EventSource, ModelRun, NormalizedEvent, Role, ToolCall, Usage,
     is_subagent_launch_tool,
 };
-use crate::analysis::pricing::{lookup_pricing, strip_window_tag};
+use crate::analysis::pricing::{lookup_turn_pricing, strip_window_tag, turn_pricing_key};
 use crate::pricing::ModelTokens;
 
 const CONTEXT_WINDOW_TIERS: [u64; 2] = [200_000, 1_000_000];
@@ -482,6 +482,7 @@ struct ReferenceEfficiencyTurn<'a> {
     ts: i64,
     source: EventSource,
     model: Option<&'a str>,
+    speed: Option<&'a str>,
     usage: Usage,
 }
 
@@ -547,6 +548,9 @@ fn reference_efficiency(
             if current.model.is_none() {
                 current.model = event.model.as_deref();
             }
+            if event.speed.is_some() {
+                current.speed = event.speed.as_deref();
+            }
             continue;
         }
         if let Some(id) = event.message_id.as_deref() {
@@ -557,6 +561,7 @@ fn reference_efficiency(
             ts: last_ts,
             source: *source,
             model: event.model.as_deref(),
+            speed: event.speed.as_deref(),
             usage: event.usage,
         });
     }
@@ -564,7 +569,10 @@ fn reference_efficiency(
     merged.sort_by_key(|turn| turn.ts);
 
     let mut totals = EfficiencyTotals::default();
-    let mut fallback = ReferenceFallbackAggregate::default();
+    let mut fallback = [
+        ReferenceFallbackAggregate::default(),
+        ReferenceFallbackAggregate::default(),
+    ];
     let mut rewrites = Vec::new();
     let mut previous_context = None;
     let mut previous_parent_context = None;
@@ -588,6 +596,10 @@ fn reference_efficiency(
         }
 
         let Some(model) = turn.model else {
+            let fast = turn
+                .speed
+                .is_some_and(|speed| speed.trim().eq_ignore_ascii_case("fast"));
+            let fallback = &mut fallback[usize::from(fast)];
             let fresh = usage
                 .input_tokens
                 .saturating_add(usage.cache_creation_tokens);
@@ -616,7 +628,7 @@ fn reference_efficiency(
             totals.unpriced_turns = totals.unpriced_turns.saturating_add(1);
             continue;
         }
-        let Some(price) = lookup_pricing(model) else {
+        let Some(price) = lookup_turn_pricing(model, turn.speed) else {
             totals.unpriced_turns = totals.unpriced_turns.saturating_add(1);
             continue;
         };
@@ -647,28 +659,30 @@ fn reference_efficiency(
 
     // The fallback aggregate prices once, after every priced turn above has
     // already summed. This matches `EfficiencyReducer::finish`'s order.
-    let priced_fallback = fallback_model
-        .map(|name| strip_window_tag(name).trim())
-        .filter(|name| !name.is_empty())
-        .and_then(lookup_pricing);
-    match priced_fallback {
-        None => {
-            totals.unpriced_turns = totals.unpriced_turns.saturating_add(fallback.turns);
-        }
-        Some(price) => {
-            let new_work = fallback.output_tokens as f64 * price.output_cost_per_token
-                + fallback.new_input_tokens * price.input_cost_per_token
-                + fallback.new_cache_tokens * price.cache_write_cost_per_token;
-            let carry = fallback.cache_read_tokens as f64 * price.cache_read_cost_per_token;
-            let rewrite = fallback.rewrite_input_tokens * price.input_cost_per_token
-                + fallback.rewrite_cache_tokens * price.cache_write_cost_per_token;
-            totals.new_work_usd += new_work;
-            totals.carry_usd += carry;
-            totals.rewrite_usd += rewrite;
-            totals.total_usd += new_work + carry + rewrite;
-            totals.growth_tokens = totals.growth_tokens.saturating_add(fallback.growth_tokens);
-            totals.output_tokens = totals.output_tokens.saturating_add(fallback.output_tokens);
-            totals.priced_turns = totals.priced_turns.saturating_add(fallback.turns);
+    for (fast, fallback) in fallback.into_iter().enumerate() {
+        let priced_fallback = fallback_model
+            .map(|name| strip_window_tag(name).trim())
+            .filter(|name| !name.is_empty())
+            .and_then(|model| lookup_turn_pricing(model, (fast == 1).then_some("fast")));
+        match priced_fallback {
+            None => {
+                totals.unpriced_turns = totals.unpriced_turns.saturating_add(fallback.turns);
+            }
+            Some(price) => {
+                let new_work = fallback.output_tokens as f64 * price.output_cost_per_token
+                    + fallback.new_input_tokens * price.input_cost_per_token
+                    + fallback.new_cache_tokens * price.cache_write_cost_per_token;
+                let carry = fallback.cache_read_tokens as f64 * price.cache_read_cost_per_token;
+                let rewrite = fallback.rewrite_input_tokens * price.input_cost_per_token
+                    + fallback.rewrite_cache_tokens * price.cache_write_cost_per_token;
+                totals.new_work_usd += new_work;
+                totals.carry_usd += carry;
+                totals.rewrite_usd += rewrite;
+                totals.total_usd += new_work + carry + rewrite;
+                totals.growth_tokens = totals.growth_tokens.saturating_add(fallback.growth_tokens);
+                totals.output_tokens = totals.output_tokens.saturating_add(fallback.output_tokens);
+                totals.priced_turns = totals.priced_turns.saturating_add(fallback.turns);
+            }
         }
     }
     (totals, rewrites)
@@ -862,6 +876,7 @@ pub(crate) fn finalize_metrics(
     }
 
     let mut model_breakdown: HashMap<String, ModelTokens> = HashMap::new();
+    let mut pricing_breakdown: HashMap<String, ModelTokens> = HashMap::new();
     let mut model_runs = Vec::new();
     let mut seen_model_runs = HashSet::new();
     for (_, turn) in turns {
@@ -887,13 +902,27 @@ pub(crate) fn finalize_metrics(
                 if seen_model_runs.insert(run.clone()) {
                     model_runs.push(run);
                 }
-                let entry = model_breakdown.entry(model).or_default();
+                let entry = model_breakdown.entry(model.clone()).or_default();
                 entry.input_tokens = entry.input_tokens.saturating_add(usage.input_tokens);
                 entry.output_tokens = entry.output_tokens.saturating_add(usage.output_tokens);
                 entry.cache_read_tokens = entry
                     .cache_read_tokens
                     .saturating_add(usage.cache_read_tokens);
                 entry.cache_creation_tokens = entry
+                    .cache_creation_tokens
+                    .saturating_add(usage.cache_creation_tokens);
+                let pricing_key = turn_pricing_key(&model, turn.speed.as_deref());
+                let pricing_entry = pricing_breakdown.entry(pricing_key).or_default();
+                pricing_entry.input_tokens = pricing_entry
+                    .input_tokens
+                    .saturating_add(usage.input_tokens);
+                pricing_entry.output_tokens = pricing_entry
+                    .output_tokens
+                    .saturating_add(usage.output_tokens);
+                pricing_entry.cache_read_tokens = pricing_entry
+                    .cache_read_tokens
+                    .saturating_add(usage.cache_read_tokens);
+                pricing_entry.cache_creation_tokens = pricing_entry
                     .cache_creation_tokens
                     .saturating_add(usage.cache_creation_tokens);
             }
@@ -905,7 +934,7 @@ pub(crate) fn finalize_metrics(
         summary.context_window.unwrap_or(CONTEXT_WINDOW),
         tallies.peak_context_tokens,
     );
-    let cost = crate::analysis::pricing::price_breakdown(&model_breakdown);
+    let cost = crate::analysis::pricing::price_breakdown(&pricing_breakdown);
     let (efficiency, rewrites) = reference_efficiency(turns, summary.model.as_deref());
     for rewrite in rewrites {
         let progress = if active_ms > 0 {
@@ -945,6 +974,7 @@ pub(crate) fn finalize_metrics(
         billable_cache_read_tokens: tallies.billable_cache_read_tokens,
         billable_cache_creation_tokens: tallies.billable_cache_creation_tokens,
         model_breakdown,
+        pricing_breakdown,
         cost,
         efficiency,
         skill_uses,

@@ -4073,6 +4073,22 @@
         }
       ],
       "peakContextTokens": 20,
+      "pricingBreakdown": {
+        "claude-opus-4-6": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 20,
+          "output_tokens": 5
+        },
+        "claude-sonnet-4-6": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 15,
+          "output_tokens": 4
+        }
+      },
       "sessionId": "fast_mode_overuse_clean",
       "tokensIn": 35,
       "tokensOut": 9

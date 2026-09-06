@@ -4106,6 +4106,22 @@
         }
       ],
       "peakContextTokens": 20,
+      "pricingBreakdown": {
+        "claude-opus-4-6": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 32,
+          "output_tokens": 7
+        },
+        "claude-sonnet-4-6": {
+          "cache_creation_1h_tokens": 0,
+          "cache_creation_tokens": 0,
+          "cache_read_tokens": 0,
+          "input_tokens": 10,
+          "output_tokens": 2
+        }
+      },
       "sessionId": "delegated_models",
       "tokensIn": 42,
       "tokensOut": 9
