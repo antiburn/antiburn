@@ -57,6 +57,7 @@ mod consent;
 mod diagnostics_export;
 mod disk_monitor;
 mod dto;
+mod fork_lineage;
 mod global_click;
 mod hud;
 mod insights_ipc;

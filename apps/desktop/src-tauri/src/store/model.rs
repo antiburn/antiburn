@@ -352,6 +352,19 @@ pub struct SessionUsageTurnRecord {
     pub output_tokens: u64,
 }
 
+/// A session [`super::Store::sessions_owning_turn_uuids`] found already
+/// holding a published turn row for one of the queried uuids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwningSession {
+    pub session_id: String,
+    /// When antiburn first indexed this session, RFC3339. Plain text
+    /// comparison sorts an earlier value first.
+    pub first_seen_at: String,
+    /// How many turn rows this session has published under its current
+    /// fence — a proxy for how long the session ran.
+    pub published_turn_rows: i64,
+}
+
 /// One local relationship between two sessions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelationRecord {

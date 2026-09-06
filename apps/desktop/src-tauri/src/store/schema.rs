@@ -12,7 +12,7 @@
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
-    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32,
+    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -597,3 +597,12 @@ CREATE INDEX session_insights_window
 
 /// v32 indexes only assistant rows used by the Insights token-burn reduction.
 const V32: &str = antiburn_local::analysis::TURN_SCHEMA_V5_SQL;
+
+/// v33 indexes turn rows by their vendor `uuid`, serving
+/// [`super::Store::sessions_owning_turn_uuids`]'s Claude fork-lineage
+/// lookup.
+///
+/// `antiburn_local::analysis::TURN_SCHEMA_V6_SQL` owns the index, for the
+/// same reason [`V15`] re-exports `TURN_SCHEMA_SQL` instead of stating its
+/// own DDL.
+const V33: &str = antiburn_local::analysis::TURN_SCHEMA_V6_SQL;

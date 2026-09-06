@@ -14,6 +14,7 @@ use tokio::sync::{Notify, Semaphore};
 use crate::analysis::{self, EvidencePass, PassOutcome, PassSignal, UnreadableReason};
 use crate::commands;
 use crate::dto::ActivityEntry;
+use crate::fork_lineage;
 use crate::store::{
     EvidenceClaim, EvidenceCompletion, EvidenceFailure, FencedTurnRowStore, PublishedEvidence,
     RelationKind, RelationRecord, SessionKey, SessionRecord, Store,
@@ -392,6 +393,9 @@ pub(crate) async fn process_next(
     pass.analysis.analyzed_generation = claim.source_generation;
     let applied = apply_outcome(store, &claim, &pass, clock())?;
     let published = applied && pass.outcome == PassOutcome::Published;
+    if published {
+        fork_lineage::link_claude_fork(store, &claim.key)?;
+    }
     if published && let Some(entry) = completion_entry(store, &claim.key, clock()) {
         announce(entry);
     }
