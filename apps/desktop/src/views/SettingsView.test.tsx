@@ -809,7 +809,9 @@ describe("SettingsView", () => {
     // The count sits beside the list it counts. The Rust guard
     // `every_document_that_counts_the_fields_counts_the_same_number` greps
     // this pane for that phrase, so it has to survive edits to this section.
-    expect(screen.getByText(/schema has twenty-two fields, and these are all of them/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/schema has twenty-two fields, and these are all of them/i),
+    ).toBeInTheDocument()
     for (const field of [
       /the word .desktop./i,
       /a random id for the message, so a retry/i,

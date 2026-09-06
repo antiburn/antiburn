@@ -179,9 +179,9 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             exists; where a source is enabled, it can ask a provider for your current plan
             limits using the credentials your own tools already stored; and, in a released build
             with the switch below on, it sends the anonymised product analytics listed below.
-            Handing a provider back a credential it issued you is not a disclosure — it
-            already has it. Those analytics are the one thing that goes to us; they are listed
-            field by field below, and they contain none of your work. This build
+            Handing a provider back a credential it issued you is not a disclosure — it already
+            has it. Those analytics are the one thing that goes to us; they are listed field by
+            field below, and they contain none of your work. This build
             {analyticsSupported
               ? " can send them."
               : " has no analytics endpoint, so it cannot send them at all."}
