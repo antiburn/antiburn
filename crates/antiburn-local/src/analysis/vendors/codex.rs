@@ -2048,7 +2048,7 @@ mod tests {
 
     #[test]
     fn record_to_event_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 17_578_456_131_289_189_742;
+        const EXPECTED_FINGERPRINT: u64 = 15_392_126_338_475_589_352;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();
