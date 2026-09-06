@@ -446,8 +446,10 @@ fn resume_replay_resumes_identically_when_split_inside_the_replay_run() {
         12,
         "resume_replay.jsonl's record count moved; update the split point"
     );
+    // Build both steps from the split lines, so a CRLF checkout on Windows
+    // cannot make the full step's bytes disagree with the prefix's bytes.
     let step_1 = lines[..9].join("\n") + "\n";
-    let step_2 = jsonl.clone();
+    let step_2 = lines.join("\n") + "\n";
     assert_resume_parity(
         "claude",
         "resume-replay-split-inside-replay",
