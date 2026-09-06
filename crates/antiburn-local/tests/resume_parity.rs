@@ -431,6 +431,33 @@ fn every_claude_characterization_fixture_resumes_identically_in_three_steps() {
     }
 }
 
+/// `resume_replay.jsonl` replays its compaction boundary, its
+/// `isCompactSummary` record, and two assistant turns (records 8-11) under
+/// their original uuids. Splitting after record 9 lands the resume point
+/// inside that replay run — before the resumed pass has skipped the last
+/// two replayed records — so this proves `ClaudeStreamState::seen_uuids`
+/// survives the snapshot round trip and keeps skipping them.
+#[test]
+fn resume_replay_resumes_identically_when_split_inside_the_replay_run() {
+    let jsonl = claude_fixture::read_fixture("resume_replay");
+    let lines: Vec<&str> = jsonl.lines().collect();
+    assert_eq!(
+        lines.len(),
+        12,
+        "resume_replay.jsonl's record count moved; update the split point"
+    );
+    // Build both steps from the split lines, so a CRLF checkout on Windows
+    // cannot make the full step's bytes disagree with the prefix's bytes.
+    let step_1 = lines[..9].join("\n") + "\n";
+    let step_2 = lines.join("\n") + "\n";
+    assert_resume_parity(
+        "claude",
+        "resume-replay-split-inside-replay",
+        SourceCapabilities::claude(),
+        &[step_1, step_2],
+    );
+}
+
 /// Every `.jsonl` fixture name (without extension) directly inside
 /// `tests/fixtures/<dir>/`, sorted for a stable sweep order. Unlike
 /// `claude_fixture_names`'s curated list, the Codex and Pi sweeps below

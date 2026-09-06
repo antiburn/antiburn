@@ -255,6 +255,10 @@ impl SessionEvidenceAccumulator {
                 self.diagnostics.records_observed =
                     self.diagnostics.records_observed.saturating_add(1);
             }
+            EvidenceObservation::ReplayedRecord => {
+                self.diagnostics.records_replayed =
+                    self.diagnostics.records_replayed.saturating_add(1);
+            }
             EvidenceObservation::HarnessVersion { version } => {
                 if self.harness_version.is_none() {
                     self.harness_version = Some(version.clone());
@@ -468,6 +472,10 @@ impl SessionEvidenceAccumulator {
             .diagnostics
             .records_unrecognized_inert
             .saturating_add(child.records_unrecognized_inert);
+        self.diagnostics.records_replayed = self
+            .diagnostics
+            .records_replayed
+            .saturating_add(child.records_replayed);
         for (reason, count) in &child.unusable_reasons {
             let entry = self
                 .diagnostics

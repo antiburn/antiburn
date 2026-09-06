@@ -148,6 +148,10 @@ pub enum EvidenceObservation {
     },
     /// One inherited record does not contribute to the child session.
     InheritedRecord,
+    /// One record's `uuid` already appeared earlier in the same stream. A
+    /// resumed Claude Code session replays this record with its original
+    /// `uuid` and timestamp. The record contributes nothing to the session.
+    ReplayedRecord,
     UnrecognizedType {
         discriminator: String,
         inert: bool,
