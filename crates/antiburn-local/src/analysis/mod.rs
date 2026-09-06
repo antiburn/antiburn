@@ -153,7 +153,9 @@ pub use vendors::{adapter_for, has_dedicated_adapter};
 // (`vendors::claude::fork_parent_session_skip_uuids`), so a linked fork
 // must re-ingest to drop the parent's turns, tokens, and tool calls from
 // its own coverage.
-pub const PARSER_REVISION: i64 = 25;
+// +1 for Codex `token_usage_record` support. Stored Codex sessions must
+// re-ingest to restore complete coverage and deduplicate paired usage rows.
+pub const PARSER_REVISION: i64 = 26;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
@@ -168,7 +170,7 @@ pub const PARSER_REVISION: i64 = 25;
 // +1 for the Codex `token_count` fix: a heartbeat with zero-component usage
 // beside a nonzero derived `total_tokens` is now inert, and
 // `cache_write_input_tokens` is now a known usage key
-// (`vendors::codex::is_usage_free_token_count`).
+// (`vendors::codex::is_usage_free_record`).
 // +1 for parts A-E of the model-tier-policy updates: dropped `ultrathink`,
 // canonical model-key namespacing, the replacement registry and premium-policy
 // rewrites, and dominant-main-model-by-output-tokens
