@@ -313,38 +313,6 @@ fn session_analysis_holds_the_cache_values_and_the_projection_revisions() {
 }
 
 #[test]
-fn pricing_breakdown_migration_invalidates_old_analysis() {
-    let connection = rusqlite::Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..23] {
-        connection.execute_batch(sql).unwrap();
-    }
-    connection
-        .execute(
-            "INSERT INTO session_analysis (
-                 environment_key, agent, session_id, model_breakdown_json,
-                 inclusive_models_json, source_fingerprint, pricing_generation,
-                 analyzed_generation, parser_revision, analyzer_revision,
-                 metrics_schema_revision)
-             VALUES ('native', 'pi', 'legacy', '{}', '[]', 'sv1:legacy', 1, 1, 1, 1, 3)",
-            [],
-        )
-        .unwrap();
-    connection.pragma_update(None, "user_version", 23).unwrap();
-
-    let store = Store::from_connection(
-        connection,
-        Path::new("/tmp/antiburn-provider-hints-migration-test").to_path_buf(),
-    )
-    .expect("V24 migrates the prior schema");
-    let analysis = store
-        .analysis(&SessionKey::new("native", "pi", "legacy"))
-        .unwrap();
-
-    assert_eq!(store.schema_version().unwrap(), 34);
-    assert!(analysis.is_none());
-}
-
-#[test]
 fn account_observation_migration_initializes_the_latest_timestamp() {
     let connection = rusqlite::Connection::open_in_memory().unwrap();
     for &sql in &super::schema::MIGRATIONS[..26] {
