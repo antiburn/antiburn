@@ -6,9 +6,16 @@ import { useSyncExternalStore } from "react"
  * windows use dedicated entries and pass their route directly.
  */
 export type Route =
-  "popover" | "popover-peek" | "settings" | "nudge" | "onboarding" | "overlay" | "hud-detail"
+  | "popover"
+  | "popover-peek"
+  | "settings"
+  | "nudge"
+  | "onboarding"
+  | "overlay"
+  | "hud-detail"
+  | "main"
 
-type ShellRoute = Exclude<Route, "settings" | "onboarding">
+type ShellRoute = Exclude<Route, "settings" | "onboarding" | "main">
 
 /** Fragment the nudge crate opens the notification window with. */
 export const NUDGE_FRAGMENT = "#/nudge"

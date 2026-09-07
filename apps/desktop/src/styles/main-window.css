@@ -1,0 +1,80 @@
+/* The retained window paints an opaque canvas over the native window surface. */
+.main-window {
+  --main-window-titlebar-height: calc(var(--space-2xl) + var(--space-lg));
+
+  position: relative;
+  display: flex;
+  block-size: 100%;
+  min-block-size: 0;
+  overflow: hidden;
+  background-color: var(--color-bg-window);
+}
+
+/* This matches the macOS overlay clearance used by the window chrome. */
+.main-window-titlebar {
+  position: absolute;
+  z-index: 20;
+  inset: 0 0 auto;
+  block-size: var(--main-window-titlebar-height);
+}
+
+.main-window-navigation {
+  display: flex;
+  min-block-size: 0;
+  inline-size: var(--sidebar-width);
+  flex: 0 0 var(--sidebar-width);
+  flex-direction: column;
+}
+
+.main-window-macos .main-window-sidebar {
+  padding-block-start: calc(var(--main-window-titlebar-height) - var(--space-xs));
+}
+
+.main-window-sidebar > [role="tablist"] {
+  gap: calc(var(--space-xs) / 2);
+  padding: var(--space-md) var(--space-sm);
+}
+
+/* Main navigation uses a denser rhythm than the Settings source list. */
+.main-window-sidebar [role="tab"] {
+  block-size: calc(var(--space-2xl) + var(--space-xs));
+  flex-shrink: 0;
+  gap: var(--space-sm);
+  padding-inline: var(--space-sm);
+}
+
+.main-window-sidebar [role="tab"] svg {
+  inline-size: 14px;
+  block-size: 14px;
+}
+
+.main-window-content {
+  display: flex;
+  min-inline-size: 0;
+  min-block-size: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.main-window-scroll-viewport {
+  min-inline-size: 0;
+}
+
+.main-window-pane {
+  min-block-size: 100%;
+  padding: var(--space-2xl);
+}
+
+.main-window-content-macos .main-window-pane {
+  padding-block-start: calc(var(--main-window-titlebar-height) + var(--space-2xl));
+}
+
+.main-window-placeholder {
+  display: grid;
+  max-inline-size: 480px;
+  gap: var(--space-sm);
+}
+
+.main-window-placeholder p {
+  max-inline-size: 52ch;
+}

@@ -22,6 +22,7 @@ updates:
       - "/crates/antiburn-local"
       - "/apps/desktop/src-tauri"
       - "/apps/desktop/src-tauri/crates/nudge"
+      - "/apps/desktop/src-tauri/crates/main-window"
       - "/apps/desktop/src-tauri/crates/sound"
     schedule:
       interval: "weekly"

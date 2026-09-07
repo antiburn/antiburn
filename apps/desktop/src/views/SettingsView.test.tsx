@@ -1055,14 +1055,9 @@ describe("SettingsView", () => {
     expect(screen.getByText(/· aarch64$/)).toBeInTheDocument()
   })
 
-  it("quits antiburn from the sidebar, through the shell", async () => {
+  it("keeps application Quit out of the Settings sidebar", () => {
     render(<SettingsView />)
-
-    fireEvent.click(await screen.findByRole("button", { name: "Quit antiburn" }))
-
-    // Through the shell, not by closing a window: a menu-bar app outlives its
-    // windows, and only `exit(0)` is a deliberate quit.
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("quit_app"))
+    expect(screen.queryByRole("button", { name: /quit/i })).toBeNull()
   })
 
   it("opens on the pane the shell was asked for, when the window is new", async () => {
