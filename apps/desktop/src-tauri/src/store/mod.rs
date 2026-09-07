@@ -23,6 +23,7 @@
 
 pub mod model;
 pub(crate) mod provider_usage_history;
+pub(crate) mod provider_usage_ledger;
 mod schema;
 
 #[cfg(test)]
@@ -1951,6 +1952,21 @@ impl Store {
 
     /// Published timestamped turns at or after `since_ms`, grouped by session.
     pub fn session_usage_turns(&self, since_ms: i64) -> Result<Vec<SessionUsageRecord>> {
+        self.session_usage_turns_between(since_ms, i64::MAX)
+    }
+
+    /// Published timestamped turns in one half-open provider allowance period.
+    ///
+    /// The range is explicit so allocation never reads an archive only to
+    /// discard rows that a period cannot contain.
+    pub fn session_usage_turns_between(
+        &self,
+        start_ms: i64,
+        end_ms: i64,
+    ) -> Result<Vec<SessionUsageRecord>> {
+        if end_ms <= start_ms {
+            return Ok(Vec::new());
+        }
         let connection = self.lock();
         let mut statement = connection.prepare(
             "WITH recent_session AS (
@@ -1961,7 +1977,7 @@ impl Store {
                    AND e.agent = t.agent
                    AND e.session_id = t.session_id
                    AND e.published_fence = t.claim_fence
-                 WHERE t.ts_ms >= ?1
+                 WHERE t.ts_ms >= ?1 AND t.ts_ms < ?2
             )
              SELECT s.environment_key, s.agent, s.session_id, s.wsl_distro,
                     a.provider_hints_json,
@@ -1985,7 +2001,7 @@ impl Store {
                 AND a.agent = s.agent
                 AND a.session_id = s.session_id",
         )?;
-        let rows = statement.query_map(params![since_ms], |row| {
+        let rows = statement.query_map(params![start_ms, end_ms], |row| {
             Ok(SessionUsageRecord {
                 key: SessionKey {
                     environment_key: row.get(0)?,
@@ -2015,10 +2031,10 @@ impl Store {
                 AND e.agent = t.agent
                 AND e.session_id = t.session_id
                 AND e.published_fence = t.claim_fence
-              WHERE t.ts_ms >= ?1
+              WHERE t.ts_ms >= ?1 AND t.ts_ms < ?2
               ORDER BY t.ts_ms, t.rowid",
         )?;
-        let mut rows = statement.query(params![since_ms])?;
+        let mut rows = statement.query(params![start_ms, end_ms])?;
         while let Some(row) = rows.next()? {
             let key = SessionKey {
                 environment_key: row.get(0)?,

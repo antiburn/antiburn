@@ -35,7 +35,8 @@ use crate::dto::{
     ActivityEntry, AgentScanState, AppInfo, ChecksReportPayload, DeferredPermissionDir,
     HygieneSummaryPayload, InsightsReportPayload, InsightsStatusPayload, LiveUsageSummary,
     OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis,
-    SessionHygienePayload, SessionHygieneRequest, SessionIdentity, SessionLimitAllocationSummary,
+    SessionHygienePayload, SessionHygieneRequest, SessionIdentity, SessionLimitAllocation,
+    SessionLimitAllocationSummary,
     SessionRelation, SessionRelations, SubagentMember,
 };
 use crate::insights_ipc::InsightsController;
@@ -763,19 +764,37 @@ pub async fn get_session_limit_allocations(
     app: tauri::AppHandle,
 ) -> CommandResult<SessionLimitAllocationSummary> {
     let now = scan::unix_now();
-    let since_ms = now.saturating_sub(8 * 24 * 60 * 60).saturating_mul(1_000);
     let store = app.state::<Store>().inner().clone();
-    let live = cached_live_usage(&app);
     tauri::async_runtime::spawn_blocking(move || {
-        let turns = store.session_usage_turns(since_ms).map_err(fail)?;
-        let history = provider_usage::live::history::load(&store);
+        let settings = store.settings().map_err(fail)?;
+        let since = now.saturating_sub(i64::from(settings.activity_window_days) * 86_400);
+        let sessions = store
+            .recent_sessions_excluding(since, MAX_ACTIVITY_ROWS, &settings.disabled_agents)
+            .map_err(fail)?;
+        let keys = sessions.iter().map(|session| session.key.clone()).collect::<Vec<_>>();
+        let allocations = store.cumulative_session_limit_allocations(&keys).map_err(fail)?;
         Ok(SessionLimitAllocationSummary {
-            allocations: provider_usage::allocation::estimate(
-                turns,
-                &live,
-                &history,
-                now.saturating_mul(1_000),
-            ),
+            allocations: allocations
+                .into_iter()
+                .map(|allocation| SessionLimitAllocation {
+                    agent: allocation.key.agent,
+                    session_id: allocation.key.session_id,
+                    wsl_distro: allocation.wsl_distro,
+                    metric: match allocation.metric.as_str() {
+                        "weekly" => crate::dto::SessionLimitMetric::Weekly,
+                        _ => crate::dto::SessionLimitMetric::FiveHour,
+                    },
+                    provider: allocation.provider.clone(),
+                    display_name: provider_usage::providers::display_name(&allocation.provider)
+                        .to_string(),
+                    account_key: Some(allocation.account_key),
+                    window_id: allocation.window_id,
+                    resets_at: None,
+                    percent: allocation.percent,
+                    coverage: if allocation.partial { "partial" } else { "complete" }.to_string(),
+                    period_count: allocation.period_count,
+                })
+                .collect(),
             generated_at: crate::store::iso_from_epoch(Some(now)),
         })
     })
