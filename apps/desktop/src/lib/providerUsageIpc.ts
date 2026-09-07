@@ -57,7 +57,7 @@ export interface ProviderUsageSummaryPayload {
 
 export type SessionLimitMetricPayload = "weekly" | "fiveHour"
 
-/** One session's cumulative estimate across provider allowance periods. */
+/** One session's cumulative estimate summed across retained provider periods. */
 export interface SessionLimitAllocationPayload {
   agent: string
   sessionId: string

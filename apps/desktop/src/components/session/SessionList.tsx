@@ -100,9 +100,6 @@ export interface SessionListProps {
   onBadgeMetricChange?: (metric: "cost" | "weeklyPercent" | "fiveHourPercent") => void
   liveUsage?: LiveUsageSummaryPayload
   sessionLimitAllocations?: SessionLimitAllocationSummaryPayload
-  onLimitBadgeHover?: (
-    badge: { provider: string; windowId: string; percent: number } | null,
-  ) => void
 }
 
 function primaryLine(entry: SessionListEntry): string {
@@ -151,7 +148,7 @@ function sessionLimitBadge(
     }
   }
   return {
-    label: `Estimated ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit share across ${allocation.periodCount} provider ${allocation.periodCount === 1 ? "period" : "periods"}. ${allocation.coverage === "partial" ? "Coverage is partial." : "Coverage uses retained provider history."}`,
+    label: `Estimated cumulative ${metric === "weeklyPercent" ? "weekly" : "5-hour"} allowance share, summed across ${allocation.periodCount} provider ${allocation.periodCount === 1 ? "period" : "periods"}. ${allocation.coverage === "partial" ? "Coverage is partial." : "Coverage is complete for retained provider history."}`,
     percent: allocation.percent,
     provider: allocation.provider,
     windowId: allocation.windowId,
@@ -217,7 +214,6 @@ interface SessionRowProps {
         windowId?: string
       }
     | undefined
-  onLimitBadgeHover?: SessionListProps["onLimitBadgeHover"]
 }
 
 /**
@@ -234,7 +230,6 @@ function SessionRow({
   renderAgentIcon,
   wslIcon,
   limitBadge,
-  onLimitBadgeHover,
   showCost = true,
 }: SessionRowProps) {
   const clickable = !!entry.sessionId && !!onOpen
@@ -283,17 +278,6 @@ function SessionRow({
           evidenceState={hygiene.evidenceState}
           cost={showCost ? (entry.cost ?? null) : null}
           limitBadge={limitBadge}
-          onLimitBadgeHover={(badge) => {
-            if (badge?.percent == null || !badge.provider || !badge.windowId) {
-              onLimitBadgeHover?.(null)
-              return
-            }
-            onLimitBadgeHover?.({
-              provider: badge.provider,
-              windowId: badge.windowId,
-              percent: badge.percent,
-            })
-          }}
         />
       </div>
 
@@ -427,19 +411,20 @@ export function SessionList({
   onBadgeMetricChange,
   liveUsage,
   sessionLimitAllocations,
-  onLimitBadgeHover,
 }: SessionListProps) {
   const fiveHourAvailable =
     badgeMetric === "fiveHourPercent" ||
     hasDisplayedFiveHourWindow(liveUsage) ||
-    (sessionLimitAllocations?.allocations.some((allocation) => allocation.metric === "fiveHour") ??
+    (sessionLimitAllocations?.allocations.some(
+      (allocation) => allocation.metric === "fiveHour",
+    ) ??
       false)
   const selectedMetric = badgeMetric
   const allocationBySession = new Map(
     (sessionLimitAllocations?.allocations ?? []).map((allocation) => [
-        `${localSessionKey(allocation.agent, allocation.sessionId, allocation.wslDistro)}:${allocation.metric}`,
-        allocation,
-      ]),
+      `${localSessionKey(allocation.agent, allocation.sessionId, allocation.wslDistro)}:${allocation.metric}`,
+      allocation,
+    ]),
   )
   const items = entries.map((entry, index) => ({
     entry,
@@ -713,7 +698,6 @@ export function SessionList({
                                             )
                                           : undefined,
                                       ),
-                                      ...(onLimitBadgeHover ? { onLimitBadgeHover } : {}),
                                     }
                                   : {})}
                               />

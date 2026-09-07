@@ -179,7 +179,7 @@ describe("PopoverSession surface presentation", () => {
     unsubscribe()
   })
 
-  it("updates the snapshot when the next cached allocation expires", async () => {
+  it("keeps a cumulative allocation after its latest reset", async () => {
     vi.useFakeTimers()
     vi.setSystemTime("2027-01-15T08:00:00Z")
     getSessionLimitAllocations.mockResolvedValue({
@@ -196,6 +196,8 @@ describe("PopoverSession surface presentation", () => {
           windowId: "weekly-main",
           resetsAt: "2027-01-15T08:00:01Z",
           percent: 10,
+          coverage: "complete",
+          periodCount: 1,
         },
       ],
     })
@@ -203,11 +205,9 @@ describe("PopoverSession surface presentation", () => {
     const unsubscribe = session.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
     expect(session.getSnapshot().sessionLimitAllocations.allocations).toHaveLength(1)
-    const before = session.getSnapshot().now
-
     await vi.advanceTimersByTimeAsync(1_001)
 
-    expect(session.getSnapshot().now).toBeGreaterThan(before)
+    expect(session.getSnapshot().sessionLimitAllocations.allocations).toHaveLength(1)
     unsubscribe()
   })
 

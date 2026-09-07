@@ -24,7 +24,6 @@ export interface SessionStatusBarProps {
         windowId?: string
       }
     | undefined
-  onLimitBadgeHover?: (badge: NonNullable<SessionStatusBarProps["limitBadge"]> | null) => void
 }
 
 /**
@@ -119,7 +118,6 @@ export function SessionStatusBar({
   evidenceState = "ready",
   cost,
   limitBadge,
-  onLimitBadgeHover,
 }: SessionStatusBarProps) {
   const assessedChecks = checks.filter(isAssessed)
   const failed = assessedChecks.filter((check) => check.status === "finding")
@@ -186,14 +184,10 @@ export function SessionStatusBar({
               data-session-limit-percent={limitBadge.percent.toFixed(4)}
               aria-label={
                 isHighLimitShare
-                  ? `${limitBadge.label} This session uses 5% or more of your limit.`
+                  ? `${limitBadge.label} This cumulative estimate is 5% or more.`
                   : limitBadge.label
               }
               tabIndex={0}
-              onMouseEnter={() => onLimitBadgeHover?.(limitBadge)}
-              onMouseLeave={() => onLimitBadgeHover?.(null)}
-              onFocus={() => onLimitBadgeHover?.(limitBadge)}
-              onBlur={() => onLimitBadgeHover?.(null)}
             >
               {isHighLimitShare && <Flame size={11} className="shrink-0" aria-hidden="true" />}
               {formatLimitPercent(limitBadge.percent)}

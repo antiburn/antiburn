@@ -287,7 +287,7 @@ describe("SessionStatusBar", () => {
     )
 
     const figure = screen.getByLabelText(
-      "Estimated weekly share This session uses 5% or more of your limit.",
+      "Estimated weekly share This cumulative estimate is 5% or more.",
     )
     expect(figure.className).toContain("rounded-full")
     expect(figure.className).toContain("bg-brand-tint")
@@ -304,7 +304,7 @@ describe("SessionStatusBar", () => {
     )
 
     const figure = screen.getByLabelText(
-      "Estimated weekly share This session uses 5% or more of your limit.",
+      "Estimated weekly share This cumulative estimate is 5% or more.",
     )
     expect(figure).toHaveTextContent("5%")
     expect(figure.className).toContain("rounded-full")
