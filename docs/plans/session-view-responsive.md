@@ -12,10 +12,10 @@ layout questions first; the build follows the playground's settings block.
 |---|---|---|---|
 | 0 | Playground at 380 → 1280 wide, tab schemes, wide layouts | scratchpad `proto/session-view-responsive/playground.html` | v1 built |
 | 1 | Decisions A and B | this doc | decided 2026-09-07, see below |
-| 2 | Two tabs: merge panels, default tab, tests | `SessionDetailPresentation.tsx`, tests | in progress |
-| 3 | Container-query layout for the detail view, tab bar kept at every width | `SessionDetailPresentation.tsx`, new `session-detail-layout.css`, `design.md` sources | not started |
-| 4 | Test wide in a plain window (sandbox in the browser), no Rust change | | not started |
-| 5 | Drift check, tests, screenshots, PR (Keith uploads the image) | | not started |
+| 2 | Two tabs: merge panels, default tab, tests | `SessionDetailPresentation.tsx`, tests | done (21f3fb9b) |
+| 3 | Container-query layout for the detail view, tab bar kept at every width | `SessionDetailPresentation.tsx`, `--container-session-wide` in `tokens.css`, `design.md` sizes | done (21f3fb9b): Tailwind `@session-wide:` variants, no new stylesheet |
+| 4 | Test wide in a plain window (sandbox in the browser), no Rust change | | done: verified at 380 and 1200 with the sandbox branch applied locally |
+| 5 | Drift check, tests, screenshots, PR (Keith uploads the image) | | checks pass; screenshots captured; PR waits for Keith |
 
 ## Where things are today
 
