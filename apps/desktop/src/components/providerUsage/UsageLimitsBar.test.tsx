@@ -110,7 +110,11 @@ function filledSegments(): number {
 describe("UsageLimitsBar — the ring row", () => {
   it("states each provider's worst window as an accessible percentage", () => {
     bar()
-    expect(screen.getByRole("img", { name: "Claude at 42 percent" })).toBeInTheDocument()
+    const dial = screen.getByRole("img", { name: "Claude at 42 percent" })
+    expect(dial).toBeInTheDocument()
+    expect(dial).toHaveAttribute("tabindex", "0")
+    dial.focus()
+    expect(dial).toHaveFocus()
     expect(
       screen.queryByRole("button", { name: "Claude at 42 percent" }),
     ).not.toBeInTheDocument()

@@ -344,6 +344,7 @@ function ProviderRadial({
   return (
     <div
       role="img"
+      tabIndex={0}
       onMouseEnter={(event) =>
         onHover?.(provider.provider, measureAnchorRegion(event.currentTarget))
       }

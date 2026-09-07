@@ -282,13 +282,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
       plan: { name: "max", tier: "default_claude_max_5x" },
       accountEmail: "reader@example.test",
     })
-    render(
-      <UsageView
-        summary={summary()}
-        live={live({ providers: [reading] })}
-        now={NOW}
-      />,
-    )
+    render(<UsageView summary={summary()} live={live({ providers: [reading] })} now={NOW} />)
 
     const card = screen.getByText("Anthropic").closest("li")!
     expect(within(card).getByRole("heading", { level: 3 })).toHaveTextContent(
