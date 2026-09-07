@@ -121,6 +121,7 @@ impl Store {
                 if !should_replace(existing.as_ref(), &reading) {
                     continue;
                 }
+                let reading = merge_boundary_evidence(reading, existing.as_ref());
                 let assignment = period_for(&tx, &reading)?;
                 let old_period_id = existing.as_ref().and_then(|row| row.period_id);
                 let period_id = assignment.id.or(old_period_id);
@@ -442,6 +443,26 @@ fn is_more_complete(reading: &Reading<'_>, existing: &ProviderUsageObservation) 
         || existing.reported_resets_at_epoch.is_some()
             && reading.resets_at_epoch.is_some()
             && existing.reported_resets_at_epoch != reading.resets_at_epoch
+}
+
+fn merge_boundary_evidence<'a>(
+    mut reading: Reading<'a>,
+    existing: Option<&ProviderUsageObservation>,
+) -> Reading<'a> {
+    let Some(existing) = existing else {
+        return reading;
+    };
+    reading.starts_at_epoch = reading
+        .starts_at_epoch
+        .or(existing.reported_starts_at_epoch);
+    reading.resets_at_epoch = reading
+        .resets_at_epoch
+        .or(existing.reported_resets_at_epoch);
+    reading.duration_seconds = match (reading.starts_at_epoch, reading.resets_at_epoch) {
+        (Some(start), Some(reset)) if reset > start => Some(reset - start),
+        _ => None,
+    };
+    reading
 }
 
 fn write_observation(

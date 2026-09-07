@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod tests {
+mod history_tests {
     use std::path::Path;
 
     use time::OffsetDateTime;
