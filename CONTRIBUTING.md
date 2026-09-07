@@ -23,8 +23,9 @@ credentials, or other user data to the project or to an unrelated third party.
 The update check and anonymised application analytics are the only
 project-operated network channels. Neither is required for the app to work.
 Analytics must keep all properties documented in [docs/analytics.md](docs/analytics.md):
-it starts automatically only after onboarding completes, Settings → Privacy
-provides the opt-out, payloads contain no work or credentials, identifiers
+official configured builds can record launch and onboarding progress before
+setup completes, Settings → Privacy provides the opt-out, payloads contain no
+work or credentials, identifiers
 rotate, and builds without a configured endpoint send nothing.
 
 Take extra care with operations that modify files, stop processes, or can cost
@@ -67,6 +68,20 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+For analytics changes, also run these shell checks with the feature enabled:
+
+```bash
+cd apps/desktop/src-tauri
+cargo clippy --all-targets --features analytics -- -D warnings
+ANTIBURN_ANALYTICS_URL=http://127.0.0.1:8787 \
+ANTIBURN_ANALYTICS_OPERATOR="Local development" \
+cargo test --features analytics
+```
+
+The endpoint and operator are build-time inputs. Use the loopback collector in
+[docs/analytics.md](docs/analytics.md#verifying-this-yourself) for manual delivery
+checks. Never use the production collector for synthetic test events.
 
 Run `pnpm run slop:all` and `pnpm run secrets` before you push. Pull-request CI
 also runs `pnpm run slop` against the changed files. See
@@ -115,6 +130,11 @@ names as repository secrets for CI and as `release` environment secrets for
 signed builds.
 
 ## Pull requests
+
+For user-facing changes, describe the product question, existing or new analytics
+coverage, and the validation. Explain any intentional measurement gap. Follow
+the [event review contract](docs/analytics-measurement.md#event-review-contract)
+and update the [public catalog](docs/analytics.md) when instrumentation changes.
 
 Describe the user impact, tests, privacy or performance effects, and any known
 limits. Do not include credentials or private session content in issues, logs,
