@@ -621,7 +621,6 @@ export function SessionList({
               value={selectedMetric}
               onChange={onBadgeMetricChange}
               ariaLabel="Session badge metric"
-              variant="text-tabs"
               className="normal-case"
             />
           )}
