@@ -20,6 +20,61 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-07
+
+### Added
+
+- Insights now estimates the share of token use associated with each failed
+  check and shows one combined estimate without counting overlapping causes
+  several times.
+- Claude sessions can identify built-in tools that were loaded into context but
+  never called. Deferred and situational tools do not produce findings.
+- The tray icon now reflects the lowest remaining provider allowance, so usage
+  pressure stays visible while the popover is closed.
+
+### Changed
+
+- Session Detail now uses Context, Cost, and Tools tabs with a larger context
+  chart, clearer cost guidance, and simpler check verdicts. The view remembers
+  whether Skills & MCPs is expanded.
+- The floating usage HUD now shows how far each limit window has elapsed, uses
+  Claude's brand colour, gains a readable hover surface, and stays above
+  full-screen spaces on macOS.
+- Activity rows use shorter check summaries, keep their time display current,
+  and show a clear “no limit” state when the selected five-hour or weekly
+  allocation is unavailable.
+- Claude and Codex usage can start from the coding agent's saved local reading,
+  keeping recent limits visible while a live refresh is pending or briefly
+  unavailable.
+- GPT-6 Astra Fast turns now use the observed Fast rate throughout session
+  costs, provider totals, allocation, and savings estimates. Missing or
+  ambiguous Fast pricing leaves the affected total unavailable instead of
+  silently applying the standard rate.
+
+### Fixed
+
+- Claude resume-as-fork sessions no longer count inherited or replayed records
+  as new work. Parent links, sub-agent attribution, compaction, cache, and token
+  totals remain consistent across resumed transcripts.
+- Codex `token_usage` records now contribute usage without double counting the
+  matching event. Agent tool calls count as sub-agent launches, and zero-usage
+  synthetic turns no longer receive attributed work.
+- Claude context charts remain available for unknown model identifiers and use
+  the correct limits for tagged one-million-token models and Opus 5.
+- Session-limit estimates now allocate usage correctly when provider readings
+  stay on the same rounded percentage, and usage milestone notifications use
+  fresh readings.
+- Anchored usage and Checks previews stay open during refreshes and allow brief
+  pointer movement without closing. Their controls no longer shift when the
+  limits section expands.
+- The Source column keeps the origin of an invoked Claude skill, including a
+  user skill from a worktree that was later removed.
+- Claude live usage now skips expired credential tombstones and tries the next
+  local credential source. Pi Codex credentials can supply read-only live usage,
+  and views with multiple accounts identify each one by plan and email.
+- Codex session titles refresh when its local title store changes, and Copilot
+  discovery no longer treats unrelated JSONL files as sessions.
+
 ## [0.3.3] - 2026-09-03
 
 ### Added
@@ -47,10 +102,6 @@ CI changes, and documentation that no user acts on stay out — see
   renderer startup failures on newer graphics stacks.
 - Claude session details now apply the Claude inactivity threshold when they
   rebuild metrics from stored rows, and name provider cache misses consistently.
-- The Source column in the session-analysis skills table names where a
-  skill came from after the session invoked it, instead of showing an em
-  dash. Skills you installed for yourself keep their source after the
-  session's working directory is deleted, such as a removed git worktree.
 - Session hygiene scores now count only assessed checks in their denominator;
   checks without enough evidence remain identified separately.
 - When a live usage check fails, its last successful reading remains visible
