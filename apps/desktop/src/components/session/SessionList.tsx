@@ -143,12 +143,12 @@ function sessionLimitBadge(
 } {
   if (!allocation || !Number.isFinite(allocation.percent)) {
     return {
-      label: `${metric === "weeklyPercent" ? "Weekly" : "5-hour"} limit estimate unavailable for this session.`,
+      label: `No ${metric === "weeklyPercent" ? "weekly" : "5h"} limit for this session.`,
       percent: null,
     }
   }
   return {
-    label: `Estimated cumulative share of your ${allocation.displayName} ${metric === "weeklyPercent" ? "weekly" : "5-hour"} allowance, summed across ${allocation.periodCount} provider ${allocation.periodCount === 1 ? "period" : "periods"}. ${allocation.coverage === "partial" ? "Some usage may be missing." : "Based on retained usage history."}`,
+    label: `Estimated share of your ${allocation.displayName} ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit.`,
     percent: allocation.percent,
     provider: allocation.provider,
     windowId: allocation.windowId,
