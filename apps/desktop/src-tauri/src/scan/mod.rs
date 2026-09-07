@@ -429,12 +429,10 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                     );
                     overflowed = true;
                 } else {
-                    let work = scoped::classify_burst(&burst.paths, &home, &|label: &str| {
+                    let work = scoped::classify_burst(&burst.paths, &home, &|source_labels| {
                         store
-                            .session_record_by_source_label(label)
-                            .ok()
-                            .flatten()
-                            .map(|(key, _)| key)
+                            .native_file_session_activity_keys(source_labels)
+                            .unwrap_or_default()
                     });
                     pending_work.merge(work);
                 }

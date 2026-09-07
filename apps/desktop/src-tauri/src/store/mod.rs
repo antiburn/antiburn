@@ -33,7 +33,7 @@ mod publish_tests;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -194,6 +194,21 @@ const SESSIONS_ACTIVE_SINCE_SQL: &str = "SELECT environment_key, agent, session_
 /// Ceiling on how many uuids [`Store::sessions_owning_turn_uuids`] matches
 /// in one call, applied to the `IN (...)` list it builds.
 const FORK_LINEAGE_UUID_CAP: usize = 8;
+
+/// Keep each watcher lookup below SQLite's host-parameter limit.
+const SOURCE_LABEL_LOOKUP_CHUNK_SIZE: usize = 500;
+
+/// Build the indexed query for one chunk of native file source labels.
+fn native_file_session_activity_keys_sql(source_label_count: usize) -> String {
+    let placeholders = vec!["?"; source_label_count].join(", ");
+    format!(
+        "SELECT agent, source_label
+           FROM session
+          WHERE source_label IN ({placeholders})
+            AND environment_key = 'native'
+            AND source_kind = 'file'"
+    )
+}
 
 /// A scalar subquery counting one session's published turn rows, correlated
 /// to an outer `session s` row. Shared by [`sessions_owning_turn_uuids_sql`]
@@ -944,31 +959,62 @@ impl Store {
             .optional()?)
     }
 
-    /// One native file session's cached record, addressed by its
-    /// `source_label` (the transcript path) rather than its session id.
+    /// Return native file activity keys grouped by their requested transcript
+    /// paths. One lock and bounded query chunks cover the whole watcher burst.
     ///
-    /// T1: the watcher names a changed path, not a session id, so the scoped
-    /// scan classifies a burst's paths against `source_label` before it can
-    /// build a targeted refresh.
-    pub fn session_record_by_source_label(
+    /// A path can match more than one agent row. Keep every full activity key
+    /// so the classifier does not merge agents or native and WSL identities.
+    pub fn native_file_session_activity_keys(
         &self,
-        source_label: &str,
-    ) -> Result<Option<(SessionActivityKey, SessionRecord)>> {
+        source_labels: &BTreeSet<String>,
+    ) -> Result<HashMap<String, BTreeSet<SessionActivityKey>>> {
+        if source_labels.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let connection = self.lock();
+        let labels = source_labels.iter().collect::<Vec<_>>();
+        let mut matches: HashMap<String, BTreeSet<SessionActivityKey>> = HashMap::new();
+        for chunk in labels.chunks(SOURCE_LABEL_LOOKUP_CHUNK_SIZE) {
+            let mut statement =
+                connection.prepare(&native_file_session_activity_keys_sql(chunk.len()))?;
+            let rows = statement.query_map(
+                params_from_iter(chunk.iter().map(|label| label.as_str())),
+                |row| {
+                    let agent = row.get::<_, String>(0)?;
+                    let source_label = row.get::<_, String>(1)?;
+                    Ok((
+                        source_label.clone(),
+                        SessionActivityKey::new("native", agent, source_label),
+                    ))
+                },
+            )?;
+            for row in rows {
+                let (source_label, key) = row?;
+                matches.entry(source_label).or_default().insert(key);
+            }
+        }
+        Ok(matches)
+    }
+
+    /// Return one file session by its complete activity identity.
+    pub fn session_record_by_activity_key(
+        &self,
+        key: &SessionActivityKey,
+    ) -> Result<Option<SessionRecord>> {
         let connection = self.lock();
         let mut statement = connection.prepare(&format!(
-            "{SESSION_SELECT_SQL}\n              WHERE source_label = ?1"
+            "{SESSION_SELECT_SQL}
+              WHERE source_label = ?3
+                AND environment_key = ?1
+                AND agent = ?2
+                AND source_kind = 'file'"
         ))?;
-        let record = statement
-            .query_row(params![source_label], session_from_row)
-            .optional()?;
-        Ok(record.map(|record| {
-            let key = SessionActivityKey::new(
-                record.key.environment_key.clone(),
-                record.key.agent.clone(),
-                record.source_label.clone(),
-            );
-            (key, record)
-        }))
+        Ok(statement
+            .query_row(
+                params![key.environment_key, key.agent, key.source_label],
+                session_from_row,
+            )
+            .optional()?)
     }
 
     /// Keys of every session whose evidence last failed because its source
@@ -3271,7 +3317,7 @@ fn evidence_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceRow> {
 
 /// Column list and join shared by every reader of the `session` table:
 /// [`Store::session_records`], [`Store::session`], and
-/// [`Store::session_record_by_source_label`]. One copy means a schema change
+/// [`Store::session_record_by_activity_key`]. One copy means a schema change
 /// updates every reader together, and [`session_from_row`] stays the single
 /// row mapper for all three.
 const SESSION_SELECT_SQL: &str =
