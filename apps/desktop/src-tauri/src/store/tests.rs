@@ -2186,6 +2186,44 @@ fn migrating_forward_renames_the_analytics_tables_and_keeps_their_rows() {
 }
 
 #[test]
+fn migrating_forward_drops_queued_events_for_the_retired_usage_surface() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..34] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO analytics_event (name, payload, queued_at) VALUES
+             ('antiburn.usage_viewed', '{}', '2026-01-01T00:00:00Z'),
+             ('antiburn.app_launched', '{}', '2026-01-01T00:00:01Z')",
+            [],
+        )
+        .unwrap();
+    connection
+        .pragma_update(None, "user_version", 34i64)
+        .unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-migration-test").to_path_buf(),
+    )
+    .expect("migrates cleanly to the latest version");
+
+    let remaining_names = {
+        let connection = store.lock();
+        let mut statement = connection
+            .prepare("SELECT name FROM analytics_event ORDER BY id")
+            .unwrap();
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert_eq!(remaining_names, vec!["antiburn.app_launched"]);
+}
+
+#[test]
 fn migrating_from_every_prior_schema_version_reaches_the_current_head() {
     for start in 0..super::schema::MIGRATIONS.len() {
         let connection = rusqlite::Connection::open_in_memory().unwrap();

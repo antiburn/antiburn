@@ -40,9 +40,6 @@ pub enum EventName {
     /// A session was opened from the activity list.
     #[cfg(feature = "analytics")]
     SessionOpened,
-    /// The usage view was opened.
-    #[cfg(feature = "analytics")]
-    UsageViewed,
     /// Something failed, by category. No message, no path, no backtrace.
     #[cfg(feature = "analytics")]
     ErrorOccurred,
@@ -69,7 +66,6 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::ScanCompleted,
     EventName::SettingToggled,
     EventName::SessionOpened,
-    EventName::UsageViewed,
     EventName::ErrorOccurred,
     EventName::UnrecognizedRecordsObserved,
     EventName::ClaudeLimitResetObserved,
@@ -85,7 +81,6 @@ impl EventName {
             EventName::ScanCompleted => "antiburn.scan_completed",
             EventName::SettingToggled => "antiburn.setting_toggled",
             EventName::SessionOpened => "antiburn.session_opened",
-            EventName::UsageViewed => "antiburn.usage_viewed",
             EventName::ErrorOccurred => "antiburn.error_occurred",
             EventName::UnrecognizedRecordsObserved => "antiburn.unrecognized_records_observed",
             EventName::ClaudeLimitResetObserved => "antiburn.claude_limit_reset_observed",
@@ -264,11 +259,6 @@ pub enum Interaction {
         agent: AgentKind,
         environment: Environment,
     },
-    /// The usage view was opened, with how much there was to show.
-    UsageViewed {
-        providers: u64,
-        evidence: UsageEvidence,
-    },
 }
 
 /// A screen in the fixed first-run flow.
@@ -291,23 +281,6 @@ pub enum Environment {
     Wsl,
 }
 
-/// What the usage view had to work with when it opened.
-///
-/// The product question this exists to answer is whether an installation ever
-/// gets the provider's own figures or only antiburn's estimates from local
-/// transcripts. Three values answer it; a per-provider breakdown would not
-/// answer it better and would say more about the reader.
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UsageEvidence {
-    /// At least one provider reported its own limit figures.
-    Live,
-    /// Estimates from local transcripts only.
-    EstimatedOnly,
-    /// Nothing to show.
-    None,
-}
-
 #[cfg(feature = "analytics")]
 impl Interaction {
     /// The event and the facts this interaction becomes.
@@ -325,17 +298,6 @@ impl Interaction {
                 Facts {
                     label: Some(agent.slug()),
                     detail: Some(environment.as_str()),
-                    ..Facts::default()
-                },
-            ),
-            Interaction::UsageViewed {
-                providers,
-                evidence,
-            } => (
-                EventName::UsageViewed,
-                Facts {
-                    bucket: Some(bucket(providers)),
-                    label: Some(evidence.as_str()),
                     ..Facts::default()
                 },
             ),
@@ -361,17 +323,6 @@ impl Environment {
         match self {
             Environment::Native => "native",
             Environment::Wsl => "wsl",
-        }
-    }
-}
-
-#[cfg(feature = "analytics")]
-impl UsageEvidence {
-    fn as_str(self) -> &'static str {
-        match self {
-            UsageEvidence::Live => "live",
-            UsageEvidence::EstimatedOnly => "estimated_only",
-            UsageEvidence::None => "none",
         }
     }
 }
@@ -573,7 +524,6 @@ mod tests {
                 | EventName::ScanCompleted
                 | EventName::SettingToggled
                 | EventName::SessionOpened
-                | EventName::UsageViewed
                 | EventName::ErrorOccurred
                 | EventName::UnrecognizedRecordsObserved
                 | EventName::ClaudeLimitResetObserved => true,
@@ -581,7 +531,7 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            10,
+            9,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -675,16 +625,6 @@ mod tests {
         assert_eq!(facts.label, Some("claude-code"));
         assert_eq!(facts.detail, Some("wsl"));
         assert_eq!(facts.bucket, None);
-
-        let (name, facts) = Interaction::UsageViewed {
-            providers: 12,
-            evidence: UsageEvidence::EstimatedOnly,
-        }
-        .resolve();
-        assert_eq!(name, EventName::UsageViewed);
-        assert_eq!(facts.bucket, Some("10-49"), "counts are never exact");
-        assert_eq!(facts.label, Some("estimated_only"));
-        assert_eq!(facts.detail, None);
     }
 
     /// The renderer cannot invent a value. This is the whole reason the IPC

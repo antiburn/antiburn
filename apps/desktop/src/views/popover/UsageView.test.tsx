@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, within } from "@testing-library/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 
 import type {
   LiveProviderUsagePayload,
@@ -11,36 +11,6 @@ import type {
   ProviderUsageWindowPayload,
 } from "../../lib/ipc"
 import { UsageView } from "./UsageView"
-
-const platform = vi.hoisted(() => ({ mac: false }))
-vi.mock("../../lib/platform", async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>()
-  return { ...actual, isMacOS: () => platform.mac }
-})
-
-const hudWindow = vi.hoisted(() => ({ visible: false }))
-const openOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
-const hideOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
-const setFloatingHudEnabled = vi.hoisted(() => vi.fn())
-vi.mock("../../lib/overlayWindow", async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>()
-  class HudVisibilitySession {
-    private listeners = new Set<() => void>()
-    private visible = hudWindow.visible
-    getSnapshot = () => this.visible
-    subscribe = (listener: () => void) => {
-      this.listeners.add(listener)
-      return () => this.listeners.delete(listener)
-    }
-    toggle = () => {
-      this.visible = !this.visible
-      setFloatingHudEnabled(this.visible)
-      void (this.visible ? openOverlayWindow() : hideOverlayWindow())
-      for (const listener of this.listeners) listener()
-    }
-  }
-  return { ...actual, HudVisibilitySession }
-})
 
 function usageWindow(
   overrides: Partial<ProviderUsageWindowPayload> = {},
@@ -101,17 +71,13 @@ function summary(
 
 describe("UsageView", () => {
   it("sections current work first: used-today providers under Recently used", () => {
-    render(<UsageView summary={summary()} onBack={vi.fn()} />)
-
-    expect(screen.getByRole("heading", { name: "Usage" })).toBeInTheDocument()
+    render(<UsageView summary={summary()} />)
 
     const recent = within(screen.getByRole("region", { name: "Recently used" }))
-    expect(recent.getByRole("heading", { name: "Recently used" })).toBeInTheDocument()
     expect(recent.getByText("Anthropic")).toBeInTheDocument()
     expect(recent.getByText("Used today")).toBeInTheDocument()
 
     const rest = within(screen.getByRole("region", { name: "All detected" }))
-    expect(rest.getByRole("heading", { name: "All detected" })).toBeInTheDocument()
     expect(rest.getByText("OpenAI")).toBeInTheDocument()
     expect(rest.queryByText("Used today")).not.toBeInTheDocument()
   })
@@ -126,12 +92,7 @@ describe("UsageView", () => {
         today: usageWindow({ tokensIn: 50_000, sessionCount: 3 }),
       },
     }
-    render(
-      <UsageView
-        summary={summary({ providers: [unattributed, ANTHROPIC, OPENAI] })}
-        onBack={vi.fn()}
-      />,
-    )
+    render(<UsageView summary={summary({ providers: [unattributed, ANTHROPIC, OPENAI] })} />)
 
     const cards = [...document.querySelectorAll<HTMLElement>("[data-provider-card]")]
     expect(cards.map((card) => card.dataset.providerCard)).toEqual([
@@ -152,8 +113,8 @@ describe("UsageView", () => {
     expect(within(cards[2]!).getByText("Trend")).toBeInTheDocument()
   })
 
-  it("hides embedded section headings but keeps their accessible regions", () => {
-    render(<UsageView summary={summary()} onBack={vi.fn()} embedded />)
+  it("omits navigation headings but keeps accessible provider regions", () => {
+    render(<UsageView summary={summary()} />)
 
     expect(screen.queryByRole("heading", { name: "Usage" })).not.toBeInTheDocument()
 
@@ -167,7 +128,7 @@ describe("UsageView", () => {
   })
 
   it("shows every window on one card, with sessions beside each figure", () => {
-    render(<UsageView summary={summary()} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} />)
 
     const card = screen.getByText("Anthropic").closest("li")
     expect(card).not.toBeNull()
@@ -180,7 +141,7 @@ describe("UsageView", () => {
   })
 
   it("keeps only the local spend trend above the windows", () => {
-    render(<UsageView summary={summary()} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} />)
 
     const card = screen.getByText("Anthropic").closest("li")
     expect(within(card!).queryByText("Today's spend")).not.toBeInTheDocument()
@@ -190,7 +151,7 @@ describe("UsageView", () => {
   })
 
   it("marks an unpriced provider observed and shows its tokens instead of a dollar zero", () => {
-    render(<UsageView summary={summary()} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} />)
 
     const card = screen.getByText("OpenAI").closest("li")
     expect(card).not.toBeNull()
@@ -202,23 +163,15 @@ describe("UsageView", () => {
   })
 
   it("is honest when there is nothing to show", () => {
-    render(<UsageView summary={summary({ providers: [] })} onBack={vi.fn()} />)
+    render(<UsageView summary={summary({ providers: [] })} />)
 
     expect(screen.getByText("No local evidence yet")).toBeInTheDocument()
-  })
-
-  it("goes back to the activity list", () => {
-    const onBack = vi.fn()
-    render(<UsageView summary={summary()} onBack={onBack} />)
-
-    fireEvent.click(screen.getByRole("button", { name: "Back to activity" }))
-    expect(onBack).toHaveBeenCalledTimes(1)
   })
 })
 
 describe("UsageWindowRows shares", () => {
   it("fills each bar with the window’s share of the provider’s own month", () => {
-    render(<UsageView summary={summary()} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} />)
 
     const card = screen.getByText("Anthropic").closest("li")!
     // Fixture: today $2.50 of this month's $8.00 → 31% (rounded).
@@ -303,7 +256,7 @@ function live(overrides: Partial<LiveUsageSummaryPayload> = {}): LiveUsageSummar
 
 describe("UsageView — plan limits layered over local estimates", () => {
   it("puts the provider’s limits above the spend estimates on the same card", () => {
-    render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} live={live()} now={NOW} />)
 
     const card = screen.getByText("Anthropic").closest("li")!
     const limits = within(card).getByRole("region", { name: "Anthropic plan limits" })
@@ -334,7 +287,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
         summary={summary()}
         live={live({ providers: [reading] })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -361,7 +313,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
         summary={summary({ providers: [] })}
         live={live({ providers: [first, second] })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -384,7 +335,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
         },
       ],
     })
-    render(<UsageView summary={summary()} live={codex} now={NOW} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} live={codex} now={NOW} />)
 
     const card = screen.getByText("OpenAI").closest("li")!
     expect(within(card).getByText("1 usage limit reset available.")).toBeInTheDocument()
@@ -403,14 +354,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
         }),
       ],
     })
-    render(
-      <UsageView
-        summary={summary({ providers: [] })}
-        live={antigravity}
-        now={NOW}
-        onBack={vi.fn()}
-      />,
-    )
+    render(<UsageView summary={summary({ providers: [] })} live={antigravity} now={NOW} />)
 
     expect(screen.getByText("2 usage limit resets available.")).toBeInTheDocument()
     expect(screen.getByText(/Use Google to apply one/)).toBeInTheDocument()
@@ -439,12 +383,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
       ],
     })
     render(
-      <UsageView
-        summary={summary({ providers: [google] })}
-        live={antigravity}
-        now={NOW}
-        onBack={vi.fn()}
-      />,
+      <UsageView summary={summary({ providers: [google] })} live={antigravity} now={NOW} />,
     )
 
     const card = screen.getByText("Google").closest("li")!
@@ -514,14 +453,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
         }),
       ],
     })
-    render(
-      <UsageView
-        summary={summary({ providers: [] })}
-        live={antigravity}
-        now={NOW}
-        onBack={vi.fn()}
-      />,
-    )
+    render(<UsageView summary={summary({ providers: [] })} live={antigravity} now={NOW} />)
 
     const card = screen.getByText("Google", { selector: "h3" }).closest("li")!
     expect(within(card).getByRole("region", { name: "Google plan limits" })).toBeInTheDocument()
@@ -574,7 +506,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
         summary={summary({ providers: [google] })}
         live={live({ providers: [first, second] })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -624,7 +555,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
         summary={summary({ providers: [assigned, unassigned] })}
         live={live({ providers: [account] })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -675,7 +605,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
         summary={summary({ providers: [accountA, accountB] })}
         live={live({ providers: [first, second] })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -713,12 +642,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
     }
     const initial = live({ providers: [second, first] })
     const { rerender } = render(
-      <UsageView
-        summary={summary({ providers: [] })}
-        live={initial}
-        now={NOW}
-        onBack={vi.fn()}
-      />,
+      <UsageView summary={summary({ providers: [] })} live={initial} now={NOW} />,
     )
     const card = document.querySelector<HTMLElement>('[data-provider-card="google"]')!
     const accountA = within(card).getByRole("region", { name: "Google Account 2 plan limits" })
@@ -733,7 +657,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
           ],
         })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -747,7 +670,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
         summary={summary({ providers: [] })}
         live={live({ providers: [{ ...first, observedAt: "2027-01-15T12:02:00Z" }] })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
     expect(within(card).getByRole("region", { name: "Google plan limits" })).toBe(accountA)
@@ -766,7 +688,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
         summary={summary({ providers: [] })}
         live={live({ providers: [initial] })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
     const account = screen.getByRole("region", { name: "Google plan limits" })
@@ -787,7 +708,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
           ],
         })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -812,7 +732,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
         summary={summary({ providers: [accountA, accountB] })}
         live={live({ providers: [] })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -847,7 +766,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
           ],
         })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -887,7 +805,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
         summary={summary({ providers: [] })}
         live={live({ providers: [fallback] })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -921,7 +838,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
         summary={summary({ providers: [] })}
         live={live({ providers: [credits] })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -935,7 +851,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
     const pro = live({
       providers: [{ ...liveProvider(), plan: { name: "pro", tier: null } }],
     })
-    render(<UsageView summary={summary()} live={pro} now={NOW} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} live={pro} now={NOW} />)
 
     const recent = within(screen.getByRole("region", { name: "Recently used" }))
     const heading = recent.getByRole("heading", { level: 3 })
@@ -947,7 +863,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
   it("omits the separator and suffix entirely when the source reports no plan", () => {
     // liveProvider()'s default carries no plan. The heading stays the bare
     // provider name, with no trailing separator left dangling.
-    render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} live={live()} now={NOW} />)
 
     const recent = within(screen.getByRole("region", { name: "Recently used" }))
     const heading = recent.getByRole("heading", { level: 3 })
@@ -956,7 +872,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
   })
 
   it("marks how far through the period the clock has travelled", () => {
-    render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} live={live()} now={NOW} />)
 
     // 09:30 → 14:30 with the clock at 12:00 is half the period gone against
     // 81% of the allowance: the whole point of showing both.
@@ -971,7 +887,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
   it("renders an unknown percentage as indeterminate rather than empty", () => {
     const unknown = live()
     unknown.providers = [{ ...liveProvider(), windows: [liveWindow({ usedPercent: null })] }]
-    render(<UsageView summary={summary()} live={unknown} now={NOW} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} live={unknown} now={NOW} />)
 
     expect(screen.getByText("Unknown")).toBeInTheDocument()
     const bar = screen.getByRole("progressbar", { name: "5-hour limit" })
@@ -1001,7 +917,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
         },
       ],
     })
-    render(<UsageView summary={summary()} live={bounded} now={NOW} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} live={bounded} now={NOW} />)
 
     // 2027-01-12T18:00 → 2027-01-19T18:00, clock at 2027-01-15T12:00: 66 of
     // 168 hours into a seven-day period.
@@ -1031,7 +947,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
         },
       ],
     })
-    render(<UsageView summary={summary()} live={unbounded} now={NOW} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} live={unbounded} now={NOW} />)
 
     expect(screen.queryByTestId("live-usage-elapsed-monthly-window")).not.toBeInTheDocument()
     expect(screen.getByRole("progressbar", { name: "Monthly limit" })).toHaveAttribute(
@@ -1046,7 +962,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
         summary={summary()}
         live={live({ providers: [{ ...liveProvider(), freshness: "stale" }] })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -1056,7 +971,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
   })
 
   it("shows nothing at all where no source could prove a limit", () => {
-    render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} live={live()} now={NOW} />)
 
     // Anthropic has a live reading; OpenAI does not, and gets no empty frame.
     const openai = screen.getByText("OpenAI").closest("li")!
@@ -1067,7 +982,7 @@ describe("UsageView — plan limits layered over local estimates", () => {
   })
 
   it("falls back to the estimate surface alone when no live payload is given", () => {
-    render(<UsageView summary={summary()} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} />)
 
     expect(screen.queryByRole("region", { name: /plan limits/ })).not.toBeInTheDocument()
     // One per provider card, and both remain without live limits.
@@ -1089,7 +1004,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
           ],
         })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
     expect(screen.getByRole("status")).toHaveTextContent(/sign in again/i)
@@ -1111,7 +1025,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
           ],
         })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -1146,7 +1059,6 @@ describe("UsageView — plan limits layered over local estimates", () => {
           ],
         })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -1186,7 +1098,6 @@ describe("UsageView — the grace period", () => {
         summary={summary()}
         live={withGracedReading("2027-01-15T11:56:00Z")}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -1207,7 +1118,6 @@ describe("UsageView — the grace period", () => {
         summary={summary()}
         live={withGracedReading("2027-01-15T11:49:00Z")}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -1228,7 +1138,6 @@ describe("UsageView — the grace period", () => {
         summary={summary()}
         live={withGracedReading("2027-01-15T11:50:00Z")}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -1240,7 +1149,7 @@ describe("UsageView — the grace period", () => {
   })
 
   it("changes nothing about a live reading with no error", () => {
-    render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} live={live()} now={NOW} />)
 
     const card = screen.getByText("Anthropic").closest("li")!
     expect(
@@ -1280,7 +1189,6 @@ describe("UsageView — what history says about a limit", () => {
           runwayAt: "2027-01-15T13:12:00Z",
         })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -1291,7 +1199,7 @@ describe("UsageView — what history says about a limit", () => {
   })
 
   it("keeps the rows and gives the reason when the series does not", () => {
-    render(<UsageView summary={summary()} live={live()} now={NOW} onBack={vi.fn()} />)
+    render(<UsageView summary={summary()} live={live()} now={NOW} />)
 
     const card = screen.getByText("Anthropic").closest("li")!
     const rows = within(card).getByRole("group", { name: /pace$/ })
@@ -1307,49 +1215,11 @@ describe("UsageView — what history says about a limit", () => {
         summary={summary()}
         live={withForecast({ unavailableReason: "transition" })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
     // The numbers are fine and simply too new — a different message from
     // "come back later", and a different one again from "go use your agent".
     expect(screen.getAllByText("Just reset").length).toBeGreaterThan(0)
-  })
-})
-
-describe("UsageView — HUD pop-out", () => {
-  beforeEach(() => {
-    platform.mac = true
-    hudWindow.visible = false
-    openOverlayWindow.mockClear()
-    hideOverlayWindow.mockClear()
-    setFloatingHudEnabled.mockClear()
-  })
-
-  it("offers the pop-out only on macOS", () => {
-    platform.mac = false
-    render(<UsageView summary={summary()} onBack={vi.fn()} />)
-    expect(
-      screen.queryByRole("button", { name: /floating usage hud/i }),
-    ).not.toBeInTheDocument()
-  })
-
-  it("opens the HUD and records the preference", () => {
-    render(<UsageView summary={summary()} onBack={vi.fn()} />)
-    const button = screen.getByRole("button", { name: "Show the floating usage HUD" })
-    fireEvent.click(button)
-    expect(openOverlayWindow).toHaveBeenCalled()
-    expect(setFloatingHudEnabled).toHaveBeenCalledWith(true)
-    expect(button).toHaveAttribute("aria-pressed", "true")
-  })
-
-  it("reflects a visible HUD and hides it on the second press", () => {
-    hudWindow.visible = true
-    render(<UsageView summary={summary()} onBack={vi.fn()} />)
-    const button = screen.getByRole("button", { name: "Hide the floating usage HUD" })
-    fireEvent.click(button)
-    expect(hideOverlayWindow).toHaveBeenCalled()
-    expect(setFloatingHudEnabled).toHaveBeenCalledWith(false)
-    expect(button).toHaveAttribute("aria-pressed", "false")
   })
 })
 
@@ -1366,7 +1236,6 @@ describe("UsageView — every meter turned off", () => {
           ],
         })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 
@@ -1387,7 +1256,6 @@ describe("UsageView — every meter turned off", () => {
           ],
         })}
         now={NOW}
-        onBack={vi.fn()}
       />,
     )
 

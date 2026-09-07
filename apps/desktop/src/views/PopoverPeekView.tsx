@@ -198,12 +198,7 @@ function PeekPayloadContent({ payload }: { payload: PeekPayload }) {
   return (
     <>
       <div data-popover-peek-usage className="pt-2">
-        <UsageView
-          summary={payload.data.summary}
-          live={payload.data.live}
-          onBack={() => undefined}
-          embedded
-        />
+        <UsageView summary={payload.data.summary} live={payload.data.live} />
       </div>
     </>
   )

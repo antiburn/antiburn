@@ -11,8 +11,8 @@ hover shows the detail in a second window, like a large tooltip.
 ```mermaid
 stateDiagram-v2
     [*] --> Hidden
-    Hidden --> Collapsed: Usage pop-out button<br/>or Settings toggle
-    Collapsed --> Hidden: ✕ on the HUD<br/>or Usage pop-out button
+    Hidden --> Collapsed: Settings toggle
+    Collapsed --> Hidden: ✕ on the HUD<br/>or Settings toggle
 
     Collapsed --> DetailShown: pointer rests on it 400ms
     DetailShown --> Collapsed: pointer leaves
@@ -189,20 +189,19 @@ switch and in Mission Control.
 ## Preference and entry points
 
 The preference key is `antiburn.showFloatingHud` in localStorage. Settings →
-Usage writes it. The Usage header pop-out button writes it. The popover session
-restores the HUD at startup when it reads `1`. The HUD close button writes `0`
-before it calls the native hide command.
+Usage writes it. The popover session restores the HUD at startup when it reads
+`1`. The HUD close button writes `0` before it calls the native hide command.
 
 Each webview can hold a different localStorage copy. The native window therefore
-broadcasts each visibility change. Settings and the pop-out button use that live
-state, refresh it when they receive focus, and update their cached preference.
-Closing the HUD with its ✕ turns both controls off. The cached value only restores
-the HUD at startup.
+broadcasts each visibility change. Settings uses that live state, refreshes it
+when it receives focus, and updates its cached preference. Closing the HUD with
+its ✕ turns the Settings control off. The cached value only restores the HUD at
+startup.
 
 ## Platform boundary
 
 v1 is macOS-only. The native crate returns without creating a window on other
-platforms, and the frontend hides both entry points there. Windows needs tuning
+platforms, and the frontend hides the Settings entry point there. Windows needs tuning
 for its taskbar position. Linux waits for reliable Wayland positioning and
 always-on-top behavior.
 

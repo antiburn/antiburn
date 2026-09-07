@@ -93,8 +93,6 @@ export interface PopoverSnapshot {
   sessionLimitAllocations: SessionLimitAllocationSummaryPayload
   /** Whether a `refreshUsage` call is in flight, for the limits section's spinner. */
   usageRefreshing: boolean
-  /** Whether the full Usage view is showing over the activity list. */
-  showUsage: boolean
   /** The real local report rendered by the Activity summary and anchored preview. */
   checksReport: ChecksReportPayload | null
   /** True when the latest Checks report request fails. */
@@ -321,7 +319,6 @@ export class PopoverSession {
     liveUsage: EMPTY_LIVE_USAGE,
     sessionLimitAllocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
     usageRefreshing: false,
-    showUsage: false,
     checksReport: null,
     checksUnavailable: false,
     presentedSurface: "activity",
@@ -377,11 +374,6 @@ export class PopoverSession {
   sessionDeleted = (): void => {
     this.goBack()
     void this.refreshEntries(this.windowDays()).catch(() => {})
-  }
-
-  setShowUsage = (show: boolean): void => {
-    this.update({ showUsage: show })
-    this.syncHeight()
   }
 
   dismissBanner = (id: AttentionKind): void => {
@@ -920,11 +912,6 @@ export class PopoverSession {
           .catch(() => undefined),
       ])
       await this.refreshSessionLimitAllocations()
-      // Usage arriving can flip the derived surface to 'usage' on its own —
-      // the reader may have already asked to see it before there was
-      // anything to show — so the height request has to follow this update
-      // too, not only the click-driven ones.
-      this.syncHeight()
     } finally {
       this.usageRefreshCount -= 1
       this.update({ usageRefreshing: this.usageRefreshCount > 0 })
@@ -1125,8 +1112,7 @@ export class PopoverSession {
   }
 
   private surface(): PopoverSurface {
-    const { showUsage, usage, stack } = this.snapshot
-    return showUsage && usage ? "usage" : stack.length > 0 ? "session" : "activity"
+    return this.snapshot.stack.length > 0 ? "session" : "activity"
   }
 
   // Reduced motion is a webview preference, so the decision is made here and

@@ -1,6 +1,6 @@
-import { useId, useState, useSyncExternalStore } from "react"
+import { useId, useState } from "react"
 
-import { ChevronDown, ChevronLeft, PictureInPicture2 } from "lucide-react"
+import { ChevronDown } from "lucide-react"
 
 import { ProviderGlyph } from "../../components/providerUsage"
 import { LiveUsageDetail } from "../../components/providerUsage/LiveUsageDetail"
@@ -20,8 +20,6 @@ import type {
   ProviderUsageSummaryPayload,
 } from "../../lib/ipc"
 import { EMPTY_LIVE_USAGE } from "../../lib/ipc"
-import { HudVisibilitySession } from "../../lib/overlayWindow"
-import { isMacOS } from "../../lib/platform"
 import {
   liveAuthNote,
   liveErrorNote,
@@ -55,9 +53,6 @@ export interface UsageViewProps {
    * a little further from it on every re-render.
    */
   now?: number
-  onBack: () => void
-  /** Omit navigation chrome when another surface owns the view context. */
-  embedded?: boolean
 }
 
 /** Providers split the way a reader scans them: current work first. */
@@ -258,13 +253,7 @@ function usageCards(
  * commands, so the estimate payload's "no percentage, no allowance, no reset"
  * guarantee survives this feature intact.
  */
-export function UsageView({
-  summary,
-  live = EMPTY_LIVE_USAGE,
-  now,
-  onBack,
-  embedded = false,
-}: UsageViewProps) {
+export function UsageView({ summary, live = EMPTY_LIVE_USAGE, now }: UsageViewProps) {
   // `|| 0` rather than a fallback clock: with no snapshot there is no live
   // section to render, so nothing consumes this.
   const at = now ?? (Date.parse(live.generatedAt) || 0)
@@ -295,25 +284,6 @@ export function UsageView({
 
   return (
     <div className="flex h-full flex-col">
-      {!embedded && (
-        <header className="flex h-11 shrink-0 items-center gap-1 px-2">
-          <button
-            type="button"
-            onClick={onBack}
-            aria-label="Back to activity"
-            className="inline-flex h-6 shrink-0 items-center rounded-control px-1 text-label-secondary hover:bg-surface-hover"
-          >
-            <ChevronLeft size={15} strokeWidth={2} aria-hidden="true" />
-          </button>
-          {/* Focused by the popover when this surface takes over, so a keyboard
-              or screen-reader user lands in the view rather than on <body>. */}
-          <h1 data-view-heading tabIndex={-1} className="type-headline text-label outline-none">
-            Usage
-          </h1>
-          {isMacOS() && <HudPopOutButton />}
-        </header>
-      )}
-
       <ScrollPane viewportClassName="px-2 pb-2">
         {providerlessAuthNote && (
           <p
@@ -339,14 +309,12 @@ export function UsageView({
               cards={recent}
               now={at}
               generatedAt={live.generatedAt}
-              showTitle={!embedded}
             />
             <UsageSection
               title="All detected"
               cards={rest}
               now={at}
               generatedAt={live.generatedAt}
-              showTitle={!embedded}
             />
           </>
         )}
@@ -355,53 +323,21 @@ export function UsageView({
   )
 }
 
-function HudPopOutButton() {
-  const [session] = useState(() => new HudVisibilitySession())
-  const shown = useSyncExternalStore(
-    session.subscribe,
-    session.getSnapshot,
-    session.getSnapshot,
-  )
-  const label = shown ? "Hide the floating usage HUD" : "Show the floating usage HUD"
-
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      aria-pressed={shown}
-      onClick={session.toggle}
-      className={`ml-auto inline-flex h-6 shrink-0 items-center rounded-control px-1 hover:bg-surface-hover ${
-        shown ? "text-burn" : "text-label-secondary"
-      }`}
-    >
-      <PictureInPicture2 size={14} strokeWidth={2} aria-hidden="true" />
-    </button>
-  )
-}
-
 function UsageSection({
   title,
   cards,
   now,
   generatedAt,
-  showTitle,
 }: {
   title: string
   cards: readonly UsageCardEntry[]
   now: number
   /** The snapshot's own moment, for measuring a grace-period reading's age. */
   generatedAt: string
-  showTitle: boolean
 }) {
   if (cards.length === 0) return null
   return (
     <section aria-label={title} className="pt-2 first:pt-0">
-      {showTitle && (
-        <h2 className="px-1 pb-1 type-caption font-medium tracking-wide uppercase text-label-tertiary">
-          {title}
-        </h2>
-      )}
       <ul className="space-y-2">
         {cards.map(({ key, ...card }) => (
           <ProviderCard key={key} {...card} now={now} generatedAt={generatedAt} />

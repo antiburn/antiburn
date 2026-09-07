@@ -70,12 +70,6 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::SessionOpened { agent, environment } => {
             let _ = (agent, environment);
         }
-        event::Interaction::UsageViewed {
-            providers,
-            evidence,
-        } => {
-            let _ = (providers, evidence);
-        }
     }
 }
 

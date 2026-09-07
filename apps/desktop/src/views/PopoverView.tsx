@@ -20,8 +20,6 @@ import {
   noteInteraction,
   openGithubRepo,
   openSettingsWindow,
-  type LiveUsageSummaryPayload,
-  type ProviderUsageSummaryPayload,
 } from "../lib/ipc"
 import {
   getPopoverPeekAnchorState,
@@ -37,7 +35,6 @@ import { checksPresentation } from "../lib/presentation/checks"
 import { PopoverSession, sessionKey } from "./popover/PopoverSession"
 import { ChecksSummary } from "./popover/ChecksView"
 import { foldActivityHeader } from "./popover/usageChartFold"
-import { UsageView } from "./popover/UsageView"
 import type { SessionSubject } from "./popover/SessionPane"
 
 // Session analysis pulls in the charting library and a substantial set of
@@ -95,15 +92,15 @@ function selectedProviderPresentation(
 /**
  * The tray popover.
  *
- * Three surfaces share one 380px window: activity, one session's analysis,
- * and local provider usage. Checks stays in the anchored companion, not a
- * fourth popover surface. There is no router — a popover is a single place,
- * and a stack of "where I came from" is all the navigation it needs.
+ * Two surfaces share one 380px window: activity and one session's analysis.
+ * Usage and Checks stay in the anchored companion. There is no router — a
+ * popover is a single place, and a stack of "where I came from" is all the
+ * navigation it needs.
  *
  * There used to be a fourth. The first-run flow now has its own window
  * (`views/OnboardingView.tsx`, `src-tauri/src/onboarding.rs`), and with
  * it went the scan roots, folder permissions, and repository toggling this
- * component carried for one surface out of four. What is left of that here is
+ * component carried for an earlier surface. What is left of that here is
  * only what the attention banners genuinely read.
  *
  * Three things are owned by `PopoverSession` rather than by any one surface,
@@ -157,22 +154,6 @@ function SessionPaneLoading() {
       </div>
     </div>
   )
-}
-
-/**
- * What the usage view had to show when it opened.
- *
- * The product question is whether an installation ever gets the provider's own
- * limit figures or only antiburn's estimates from local transcripts. Three
- * values answer that; a per-provider breakdown would answer it no better and
- * would say more about the reader than the question needs.
- */
-function usageEvidence(
-  usage: ProviderUsageSummaryPayload | null,
-  live: LiveUsageSummaryPayload,
-): "live" | "estimated_only" | "none" {
-  if (live.providers.length > 0) return "live"
-  return (usage?.providers.length ?? 0) > 0 ? "estimated_only" : "none"
 }
 
 /**
@@ -318,18 +299,6 @@ export function PopoverView() {
    * ------------------------------------------------------------------ */
 
   function body() {
-    // Usage sits over the list rather than in the session stack: it is a second
-    // way of reading the same activity, not a place a session leads to.
-    if (surface === "usage" && state.usage) {
-      return (
-        <UsageView
-          summary={state.usage}
-          live={state.liveUsage}
-          onBack={() => session.setShowUsage(false)}
-        />
-      )
-    }
-
     if (surface === "session" && current) {
       // Traversal only applies to a session that is actually in the list; a
       // sub-agent or a fork opened from elsewhere has no neighbours.
@@ -422,18 +391,6 @@ export function PopoverView() {
                   session.setOverviewLimitsExpanded(!limitsExpanded)
                 }}
                 refreshing={state.usageRefreshing}
-                onViewAll={() => {
-                  void peekTriggers.leave()
-                  // A provider pill is the one place the reader asks for the full
-                  // Usage view from the activity surface. Counts and a three-value
-                  // evidence label, never a per-provider list.
-                  noteInteraction({
-                    kind: "usageViewed",
-                    providers: state.usage?.providers.length ?? 0,
-                    evidence: usageEvidence(state.usage, state.liveUsage),
-                  })
-                  session.setShowUsage(true)
-                }}
                 onHoverProvider={(provider, anchor) => {
                   if (provider && anchor) {
                     void peekTriggers.hover(

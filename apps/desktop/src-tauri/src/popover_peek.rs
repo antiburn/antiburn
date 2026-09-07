@@ -75,6 +75,9 @@ pub enum PopoverPeekData {
 
 pub type PopoverPeekManager = AnchoredWindowManager<PopoverPeekTarget, PopoverPeekData>;
 
+/// Tallest the anchored Usage preview may get, in logical pixels.
+const MAX_CONTENT_HEIGHT: f64 = 780.0;
+
 pub fn manager() -> PopoverPeekManager {
     AnchoredWindowManager::new(AnchoredWindowConfig {
         label: LABEL.to_string(),
@@ -90,7 +93,7 @@ pub fn manager() -> PopoverPeekManager {
         height: HeightPolicy::Content {
             initial: 320.0,
             min: 60.0,
-            max: crate::popover::MAX_HEIGHT,
+            max: MAX_CONTENT_HEIGHT,
         },
         placement: PlacementPolicy::LeftPreferred {
             gap: 8.0,

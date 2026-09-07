@@ -71,7 +71,6 @@ const SETTINGS = {
   launchAtLogin: false,
   autoUpdate: true,
   discoveryPaused: false,
-  // The collapsed state lets each test open Usage with one provider-pill click.
   // `UsageLimitsBar.test.tsx` covers the expanded state.
   overviewLimitsExpanded: false,
 }
@@ -739,7 +738,7 @@ describe("PopoverView", () => {
     expect(invoke).toHaveBeenCalledWith("get_provider_usage", {
       utcOffsetMinutes: -new Date().getTimezoneOffset(),
     })
-    expect(screen.getByRole("button", { name: "Codex at 40 percent" })).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: "Codex at 40 percent" })).toBeInTheDocument()
   })
 
   it("shows Checks in one passive anchored preview", async () => {
@@ -810,7 +809,7 @@ describe("PopoverView", () => {
   it("keeps an anchored preview open when Checks refreshes in the background", async () => {
     render(<PopoverView />)
     await screen.findByText("1 check failed")
-    const trigger = await screen.findByRole("button", { name: "Codex at 40 percent" })
+    const trigger = await screen.findByRole("img", { name: "Codex at 40 percent" })
     fireEvent.mouseEnter(trigger)
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("show_popover_peek", expect.anything()),
@@ -949,7 +948,7 @@ describe("PopoverView", () => {
   it("requests a provider preview after the pointer rests on its trigger", async () => {
     render(<PopoverView />)
 
-    const trigger = await screen.findByRole("button", { name: "Codex at 40 percent" })
+    const trigger = await screen.findByRole("img", { name: "Codex at 40 percent" })
     vi.useFakeTimers()
     try {
       fireEvent.mouseEnter(trigger)
@@ -976,29 +975,20 @@ describe("PopoverView", () => {
     }
   })
 
-  it("cancels a pending provider preview when its click opens Usage", async () => {
+  it("does not navigate when a provider dial is clicked", async () => {
     render(<PopoverView />)
 
-    const trigger = await screen.findByRole("button", { name: "Codex at 40 percent" })
-    vi.useFakeTimers()
-    try {
-      fireEvent.mouseEnter(trigger)
-      fireEvent.click(trigger)
+    const trigger = await screen.findByRole("img", { name: "Codex at 40 percent" })
+    fireEvent.click(trigger)
 
-      expect(screen.getByRole("heading", { name: "Usage" })).toBeInTheDocument()
-      expect(invoke).toHaveBeenCalledWith("hide_popover_peek")
-
-      await act(() => vi.advanceTimersByTimeAsync(150))
-      expect(invoke).not.toHaveBeenCalledWith("show_popover_peek", expect.anything())
-    } finally {
-      vi.useRealTimers()
-    }
+    expect(screen.queryByRole("heading", { name: "Usage" })).not.toBeInTheDocument()
+    expect(screen.getByRole("region", { name: "Sessions" })).toBeInTheDocument()
   })
 
   it("conceals an active provider preview before expanding the limits bar", async () => {
     render(<PopoverView />)
 
-    const trigger = await screen.findByRole("button", { name: "Codex at 40 percent" })
+    const trigger = await screen.findByRole("img", { name: "Codex at 40 percent" })
     fireEvent.mouseEnter(trigger)
     fireEvent.click(screen.getByRole("button", { name: "Expand usage limits" }))
 
@@ -1065,18 +1055,6 @@ describe("PopoverView", () => {
     expect(screen.queryByText(/^v\d/)).toBeNull()
   })
 
-  it("opens the full Usage view from a provider preview trigger", async () => {
-    render(<PopoverView />)
-
-    const trigger = await screen.findByRole("button", { name: "Codex at 40 percent" })
-    fireEvent.mouseEnter(trigger)
-    fireEvent.click(trigger)
-
-    expect(await screen.findByRole("heading", { name: "Usage" })).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Back to activity" })).toBeInTheDocument()
-    expect(invoke).toHaveBeenCalledWith("hide_popover_peek")
-  })
-
   it("still shows a live-only pill on a fresh day with zero local spend anywhere", async () => {
     // The bug this fixes: the row used to be driven by local spend, so a
     // fresh day with none — even for a provider that never has any, like
@@ -1087,7 +1065,7 @@ describe("PopoverView", () => {
 
     await screen.findByText("Wire the tray popover")
     expect(screen.getByTestId("usage-limits-bar")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Codex at 40 percent" })).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: "Codex at 40 percent" })).toBeInTheDocument()
     expect(screen.queryByText("No live limits")).not.toBeInTheDocument()
   })
 
@@ -1411,16 +1389,9 @@ describe("PopoverView — window behaviour", () => {
     mockCommands()
   })
 
-  it("asks the shell for each active surface height within the contract ceiling", async () => {
+  it("keeps the session surface at the main popover height", async () => {
     render(<PopoverView />)
     await screen.findByText("Wire the tray popover")
-
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("set_popover_height", {
-        height: 700,
-        animate: true,
-      }),
-    )
 
     fireEvent.click(await screen.findByText("Wire the tray popover"))
     await waitFor(() =>
@@ -1434,39 +1405,7 @@ describe("PopoverView — window behaviour", () => {
       .filter(([command]) => command === "set_popover_height")
       .map(([, args]) => (args as { height: number }).height)
     expect(heights.length).toBeGreaterThan(0)
-    expect(Math.max(...heights)).toBeLessThanOrEqual(780)
-  })
-
-  it("keeps Usage mounted and session rows absent until contraction completes", async () => {
-    let finishContraction: (() => void) | null = null
-    const baseInvoke = invoke.getMockImplementation()!
-    invoke.mockImplementation((command: string, args?: unknown) => {
-      if (
-        command === "set_popover_height" &&
-        (args as { height?: number } | undefined)?.height === 700
-      ) {
-        return new Promise<boolean>((resolve) => {
-          finishContraction = () => resolve(true)
-        })
-      }
-      return baseInvoke(command, args)
-    })
-    render(<PopoverView />)
-    await screen.findByText("Wire the tray popover")
-
-    fireEvent.click(await screen.findByRole("button", { name: "Codex at 40 percent" }))
-    expect(await screen.findByRole("heading", { name: "Usage" })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Back to activity" }))
-
-    expect(screen.getByRole("heading", { name: "Usage" })).toBeInTheDocument()
-    expect(screen.queryByRole("region", { name: "Sessions" })).not.toBeInTheDocument()
-    expect(screen.queryByText("Wire the tray popover")).not.toBeInTheDocument()
-
-    await act(async () => {
-      finishContraction?.()
-      await Promise.resolve()
-    })
-    expect(await screen.findByText("Wire the tray popover")).toBeInTheDocument()
+    expect(new Set(heights)).toEqual(new Set([700]))
   })
 
   it("dismisses the popover on Escape", async () => {
