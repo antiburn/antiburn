@@ -8,9 +8,9 @@ The main popover renderer also stays resident after its first use, so the
 application's primary surface can reopen immediately. Other renderers remain
 bounded by their interaction or handoff.
 
-This document covers the popover, onboarding, and Settings renderers. The HUD
-and nudge windows have separate ownership rules. See [HUD states](hud-states.md)
-for the HUD and its detail window.
+This document covers the popover, its peek companion, onboarding, and Settings
+renderers. The HUD and nudge windows have separate ownership rules. See
+[HUD states](hud-states.md) for the HUD and its detail window.
 
 ## The shared lifecycle
 
@@ -124,6 +124,26 @@ timer therefore cannot destroy a revealed or replaced renderer. After prewarm
 eviction, the next open starts from `Idle` and creates a fresh renderer from
 native and persisted state.
 
+## Peek companion interaction lifetime
+
+The passive peek companion is created on the first provider or checks hover.
+Starting the application and revealing the main popover do not create its
+renderer. A request made while the renderer loads remains attached to its
+target generation and reveals after the matching readiness and presentation
+reports.
+
+Pointer exit starts the existing bridge and outside delays. The renderer first
+clears the current target and hides, then the shell destroys its native window.
+The concealment generation also owns the delayed destruction, so a new hover or
+retarget makes an older destruction callback stale. If native destruction wins
+a race with a new target, the destroyed-window handler rebuilds only while that
+target is still active. Renderer readiness then redelivers the retained request.
+
+Hiding or destroying the main popover starts the same concealment path. The
+companion therefore exists only for an active peek interaction and its bounded
+pointer-exit transition. A renderer that does not acknowledge concealment is
+hidden and destroyed after the configured 80-millisecond fallback.
+
 ## Settings teardown
 
 Settings is created on demand and destroyed on close. It does not use a grace
@@ -236,6 +256,8 @@ Use these principles when adding or changing desktop windows:
 | Tauri readiness, timing, and trace adapters                      | [`window_lifecycle.rs`](../apps/desktop/src-tauri/src/window_lifecycle.rs)      |
 | Popover facade, first-click reuse, and Tauri window effects      | [`popover.rs`](../apps/desktop/src-tauri/src/popover.rs)                        |
 | Popover prewarm leases, eviction tokens, and deadline ownership  | [`retention.rs`](../apps/desktop/src-tauri/src/popover/retention.rs)            |
+| Peek target policy and shell hooks                               | [`popover_peek.rs`](../apps/desktop/src-tauri/src/popover_peek.rs)              |
+| Peek generations, concealment, and renderer destruction          | [`anchored-window`](../apps/desktop/src-tauri/crates/anchored-window/src/lib.rs) |
 | Popover latency milestones and structured timing                 | [`timing.rs`](../apps/desktop/src-tauri/src/popover/timing.rs)                  |
 | Onboarding completion and delayed teardown                       | [`onboarding.rs`](../apps/desktop/src-tauri/src/onboarding.rs)                  |
 | Settings creation, destruction, and native Insights cancellation | [`settings.rs`](../apps/desktop/src-tauri/src/settings.rs)                      |

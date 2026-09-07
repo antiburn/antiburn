@@ -69,7 +69,6 @@ pub fn window_ready(window: tauri::WebviewWindow, generation: u64) {
     match window.label() {
         crate::popover::LABEL => {
             crate::popover::renderer_ready(&window, generation);
-            crate::popover_peek::prewarm(window.app_handle());
         }
         crate::settings::LABEL => crate::settings::renderer_ready(&window, generation),
         crate::onboarding::LABEL => crate::onboarding::renderer_ready(&window, generation),

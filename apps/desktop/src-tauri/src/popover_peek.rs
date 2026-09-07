@@ -360,11 +360,11 @@ pub fn popover_peek_concealed(
     Ok(manager.concealed(window.app_handle(), generation))
 }
 
-pub fn prewarm(app: &tauri::AppHandle) {
+pub fn rebuild_if_targeted(app: &tauri::AppHandle) {
     if let Some(manager) = app.try_state::<PopoverPeekManager>()
-        && let Err(error) = manager.prewarm(app)
+        && let Err(error) = manager.rebuild_if_targeted(app)
     {
-        ::tracing::warn!(event = "popover_peek_prewarm_failed", companion_label = LABEL, error = %error);
+        ::tracing::warn!(event = "popover_peek_rebuild_failed", companion_label = LABEL, error = %error);
     }
 }
 
