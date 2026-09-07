@@ -474,13 +474,13 @@ pub fn hide(app: &AppHandle) -> tauri::Result<()> {
     set_overlay_visible(false);
     let _ = app.emit(OVERLAY_WORK_EVENT, false);
     hide_detail(app);
-    if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
-        if let Err(error) = window.hide() {
-            RESIZE_STATE.request_open();
-            set_overlay_visible(true);
-            let _ = app.emit(OVERLAY_WORK_EVENT, true);
-            return Err(error);
-        }
+    if let Some(window) = app.get_webview_window(OVERLAY_LABEL)
+        && let Err(error) = window.hide()
+    {
+        RESIZE_STATE.request_open();
+        set_overlay_visible(true);
+        let _ = app.emit(OVERLAY_WORK_EVENT, true);
+        return Err(error);
     }
     let _ = app.emit(OVERLAY_VISIBILITY_EVENT, false);
     Ok(())
