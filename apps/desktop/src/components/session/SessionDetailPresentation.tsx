@@ -1,7 +1,6 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import {
   ChevronLeft,
-  ChevronRight,
   FolderOpen,
   GitBranchPlus,
   GitFork,
@@ -15,13 +14,10 @@ import { cn } from "../../lib/cn"
 import { agentDisplayName } from "../../lib/presentation/agents"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
 import { sessionIdentityKey } from "../../lib/presentation/localIdentity"
-import {
-  sessionHygieneChecks,
-  sessionHygieneStateLabel,
-} from "../../lib/presentation/sessionHygiene"
+import { sessionHygieneChecks } from "../../lib/presentation/sessionHygiene"
 import {
   modelRunNames,
-  modelRunShortNames,
+  modelRunShortPairs,
   type PresentableModelRun,
 } from "../../lib/presentation/models"
 import { relativeTime } from "../../lib/presentation/relativeTime"
@@ -42,12 +38,14 @@ import type {
   LocalSessionRelations,
 } from "../../lib/types/session"
 import { useGlobalKeydown } from "../../lib/useGlobalKeydown"
+import "../../styles/session-detail.css"
 import { Tooltip } from "../presentation/Tooltip"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
+import { SegmentedControl } from "../ui/SegmentedControl"
 import { Skeleton } from "../ui/Skeleton"
 import { CostBreakdown } from "./analysis/CostBreakdown"
-import { ContextTokensChart } from "./analysis/ContextTokensChart"
+import { ContextTokensChart, type ChartSeries } from "./analysis/ContextTokensChart"
 import { EfficiencyBreakdown } from "./analysis/EfficiencyBreakdown"
 import { HygieneBreakdown } from "./analysis/HygieneBreakdown"
 import { SkillsMcpChart } from "./analysis/SkillsMcpChart"
@@ -164,7 +162,7 @@ function RelationControl({
           <button
             type="button"
             onClick={() => onOpen(parent, titleFor(parent))}
-            className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+            className="rounded-control p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
             aria-label="Open fork parent"
           >
             <GitFork size={14} aria-hidden="true" />
@@ -187,7 +185,7 @@ function RelationControl({
           <button
             type="button"
             onClick={() => onOpen(soleChild, titleFor(soleChild))}
-            className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+            className="rounded-control p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
             aria-label="Open forked child"
           >
             <GitBranchPlus size={14} aria-hidden="true" />
@@ -200,7 +198,7 @@ function RelationControl({
           <DropdownMenu.Trigger asChild>
             <button
               type="button"
-              className="inline-flex items-center gap-0.5 rounded-md px-1 py-0.5 type-caption text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+              className="inline-flex items-center gap-0.5 rounded-control px-1 py-0.5 type-caption text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
               aria-label={`Show ${children.length} direct forks`}
             >
               <GitBranchPlus size={14} aria-hidden="true" />
@@ -240,36 +238,118 @@ function RelationControl({
   )
 }
 
-function Card({
-  title,
-  subtitle,
-  hint,
-  children,
+/** The three views of one session's analysis. */
+type SessionDetailTab = "overview" | "cost" | "tools"
+
+const DETAIL_TABS: ReadonlyArray<{ value: SessionDetailTab; label: string }> = [
+  { value: "overview", label: "Context" },
+  { value: "cost", label: "Cost" },
+  { value: "tools", label: "Tools" },
+]
+
+/** The name of one block inside a tab that holds more than one block. */
+function TabSectionHeading({ children }: { children: string }) {
+  return (
+    <h3 className="mb-2 type-caption font-medium! text-label-tertiary uppercase">{children}</h3>
+  )
+}
+
+/**
+ * The swatch each key entry carries. Each series repeats the color its own
+ * chart layer takes when it lights, so the grid reads as the chart's key.
+ */
+const SERIES_SWATCH_CLASS: Record<ChartSeries, string> = {
+  context: "bg-context-stroke",
+  in: "bg-token-in",
+  out: "bg-token-out",
+  rehydration: "bg-mark-rehydration",
+  routingMiss: "bg-mark-routing-miss",
+  compaction: "bg-mark-compaction",
+}
+
+/** A shorter caption for a stat whose full name does not fit one cell. */
+const KEY_CAPTIONS: Record<string, string> = {
+  "Provider cache misses": "Cache misses",
+}
+
+/**
+ * The chart's key, drawn under the plot it explains.
+ *
+ * Each figure is a stat cell: a swatch in the color its chart layer takes
+ * when it lights, the value in the label ink, and a caption under them.
+ * The cells sit in a grid of three equal columns, so the key reads as one
+ * table and not as six badges. The swatch alone carries the color, so the
+ * text keeps its contrast on both surfaces.
+ *
+ * Pointing at a cell lights its layer in the plot above, and the cell takes
+ * the hover wash. Clicking a cell pins that layer, so it stays lit when the
+ * pointer leaves; clicking it again unpins it. An entry whose `series` is
+ * absent counts something the chart draws no mark for, so it neither lights
+ * nor pins.
+ */
+function ChartKey({
+  stats,
+  pinned,
+  onHighlight,
+  onPin,
 }: {
-  title: string
-  subtitle?: string
-  hint?: string
-  children: ReactNode
+  stats: ReadonlyArray<{
+    label: string
+    value: string
+    series?: ChartSeries
+  }>
+  /** The layer held lit by a click, or null. */
+  pinned: ChartSeries | null
+  /** Names the layer under the pointer, or null when the pointer leaves. */
+  onHighlight: (series: ChartSeries | null) => void
+  /** Toggles the pinned layer. */
+  onPin: (series: ChartSeries) => void
 }) {
   return (
-    <div className="flex flex-col gap-y-2 mx-3 mb-3 rounded-xl bg-surface-secondary/40 p-3">
-      <div className="flex items-baseline justify-between">
-        <h3 className="type-headline text-label">{title}</h3>
-
-        {hint && <span className="type-caption text-label-tertiary">{hint}</span>}
-      </div>
-
-      {subtitle && <span className="-mt-1 type-caption text-label-tertiary">{subtitle}</span>}
-
-      {children}
+    <div className="-mx-1.5 grid grid-cols-3 gap-x-1 gap-y-1">
+      {stats.map((stat) => {
+        const series = stat.series ?? null
+        const isPinned = series != null && series === pinned
+        return (
+          <Tooltip key={stat.label} label={stat.label}>
+            <button
+              type="button"
+              aria-pressed={series != null ? isPinned : undefined}
+              disabled={series == null}
+              data-series={series ?? undefined}
+              className={cn(
+                "chart-key-stat flex min-w-0 flex-col items-start rounded-control px-1.5 py-1 text-left disabled:opacity-100",
+                isPinned && "bg-surface-secondary",
+              )}
+              onMouseEnter={() => onHighlight(series)}
+              onMouseLeave={() => onHighlight(null)}
+              onClick={() => series != null && onPin(series)}
+            >
+              <span className="flex items-center gap-x-1.5 type-body font-medium text-label tabular-nums">
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "size-2 shrink-0 rounded-full",
+                    series != null ? SERIES_SWATCH_CLASS[series] : "bg-surface-tertiary",
+                  )}
+                />
+                {stat.value}
+              </span>
+              <span className="max-w-full truncate type-caption text-label-secondary">
+                {KEY_CAPTIONS[stat.label] ?? stat.label}
+              </span>
+            </button>
+          </Tooltip>
+        )
+      })}
     </div>
   )
 }
 
-/** Card shell matching {@link Card}, with a placeholder in place of the heading. */
+/** Placeholder block matching a tab panel's content spacing. */
 function SkeletonCardShell({ children }: { children: ReactNode }) {
   return (
-    <div className="mx-3 mb-3 rounded-xl bg-surface-secondary/40 p-3">
+    <div className="mx-4 mb-4">
       <Skeleton className="mb-3 h-3.5 w-24" />
       {children}
     </div>
@@ -294,10 +374,10 @@ function SessionDetailSkeleton() {
       </div>
 
       <SkeletonCardShell>
-        <Skeleton className="h-28 w-full rounded-lg" />
+        <Skeleton className="h-28 w-full rounded-control" />
       </SkeletonCardShell>
       <SkeletonCardShell>
-        <Skeleton className="h-28 w-full rounded-lg" />
+        <Skeleton className="h-28 w-full rounded-control" />
       </SkeletonCardShell>
 
       <SkeletonCardShell>
@@ -431,13 +511,22 @@ export function SessionDetailPresentation({
   renderAgentIcon,
 }: SessionDetailPresentationProps) {
   const subagent = session.subagent
-  const modelNames = modelRunShortNames(modelRuns)
+  const [tab, setTab] = useState<SessionDetailTab>("overview")
+  // Which chart layer the key points at. The pointer sets it and the pointer
+  // clears it; a click pins a layer, which holds when the pointer leaves.
+  const [hovered, setHovered] = useState<ChartSeries | null>(null)
+  const [pinned, setPinned] = useState<ChartSeries | null>(null)
+  const highlight = hovered ?? pinned
+  const togglePin = useCallback(
+    (series: ChartSeries) => setPinned((current) => (current === series ? null : series)),
+    [],
+  )
+  const modelPairs = modelRunShortPairs(modelRuns)
   const hygieneChecks = sessionHygieneChecks(hygiene)
   const hasAssessedHygieneChecks = hygieneChecks.some((check) => check.status !== "notAssessed")
-  const hygieneStateLabel = sessionHygieneStateLabel(hygiene.evidenceState)
 
-  // Left and right arrows traverse adjacent sessions, mirroring the header
-  // chevrons. A missing handler is a no-op, matching the chevrons' own state.
+  // Left and right arrows traverse adjacent sessions. A missing handler is a
+  // no-op.
   useGlobalKeydown(true, (event) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return
     const target = event.target as HTMLElement | null
@@ -479,6 +568,9 @@ export function SessionDetailPresentation({
   const efficiencyCard = efficiency ? efficiencyMetrics(efficiency, session.agent) : null
 
   const firstSession = summary?.sessions[0]
+  const toolsUsage = firstSession?.initialContext
+    ? skillMcpUsage(firstSession.initialContext)
+    : null
 
   const tokensCard = summary
     ? tokensCardModel({
@@ -501,11 +593,25 @@ export function SessionDetailPresentation({
         cacheRoutingMissCount: firstSession?.cacheRoutingMissCount ?? 0,
       })
     : null
+  // The context area is the chart's main shape, so the key names it first.
+  // Its figure is the peak in tokens.
+  const chartKeyStats =
+    summary && tokensCard
+      ? [
+          {
+            label: "Context",
+            value: formatCompact(summary.peakContextTokens),
+            series: "context" as const,
+          },
+          ...tokensCard.stats,
+        ]
+      : []
+
   const hasRelations = !!relations && (!!relations.parent || relations.children.length > 0)
 
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-popover bg-surface text-label select-none">
-      <div className="flex items-center justify-between gap-2 border-b border-separator px-4 py-3">
+      <div className="flex items-center justify-between gap-2 border-b border-separator px-3 py-3">
         {/* The control and the title are two things, not one. Wrapping the
             heading text inside the back button made a screen reader announce
             "Session Detail, button" for the control that leaves this view,
@@ -556,7 +662,7 @@ export function SessionDetailPresentation({
                 type="button"
                 onClick={onRevealSource}
                 aria-label="Reveal in file manager"
-                className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+                className="rounded-control p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
               >
                 <FolderOpen size={14} aria-hidden="true" />
               </button>
@@ -567,7 +673,7 @@ export function SessionDetailPresentation({
               type="button"
               onClick={onDeleteSession}
               aria-label="Delete this session"
-              className="rounded-md p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-system-red-text"
+              className="rounded-control p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-system-red-text"
             >
               <Trash2 size={14} aria-hidden="true" />
             </button>
@@ -575,41 +681,46 @@ export function SessionDetailPresentation({
         </div>
       </div>
 
-      <div key={sessionIdentityKey(session)} className="min-h-0 flex-1 overflow-y-auto py-3">
-        {showSkeleton && <SessionDetailSkeleton />}
-
-        {ready && error && (
-          <p className="px-4 type-callout text-system-orange">Couldn't read this session.</p>
-        )}
-
-        {showEmptyState && (
-          <div className="flex flex-col items-center justify-center px-8 py-12 text-center">
-            <Moon size={28} aria-hidden="true" className="mb-3 text-label-tertiary" />
-            {analysisPending ? (
-              <>
-                <p className="type-body text-label">Analyzing this session…</p>
-                <p className="mt-1 type-callout text-label-tertiary">
-                  Indexing is in progress. This view updates on its own once it finishes.
-                </p>
-              </>
-            ) : !supportsAnalysis ? (
-              <p className="type-body text-label">
-                Session analysis for {agentDisplayName(session.agent)} sessions isn&apos;t
-                available yet
+      <div key={sessionIdentityKey(session)} className="flex min-h-0 flex-1 flex-col">
+        {(showSkeleton || (ready && (error || empty))) && (
+          <div className="min-h-0 flex-1 overflow-y-auto py-3">
+            {showSkeleton && <SessionDetailSkeleton />}
+            {ready && error && (
+              <p className="px-4 type-callout text-system-orange">
+                Couldn't read this session.
               </p>
-            ) : (
-              <>
-                <p className="type-body text-label">No session analysis available</p>
-                <p className="mt-1 type-callout text-label-tertiary">
-                  {relations?.parent
-                    ? "This fork has no analyzable child activity yet."
-                    : "This session has no analyzable messages in its local transcript."}
-                </p>
-              </>
             )}
-            {costBadge && (
-              <div className="mt-3">
-                <SessionCostBadge {...costBadge} />
+
+            {showEmptyState && (
+              <div className="flex flex-col items-center justify-center px-8 py-12 text-center">
+                <Moon size={28} aria-hidden="true" className="mb-3 text-label-tertiary" />
+                {analysisPending ? (
+                  <>
+                    <p className="type-body text-label">Analyzing this session…</p>
+                    <p className="mt-1 type-callout text-label-tertiary">
+                      Indexing is in progress. This view updates on its own once it finishes.
+                    </p>
+                  </>
+                ) : !supportsAnalysis ? (
+                  <p className="type-body text-label">
+                    Session analysis for {agentDisplayName(session.agent)} sessions isn&apos;t
+                    available yet
+                  </p>
+                ) : (
+                  <>
+                    <p className="type-body text-label">No session analysis available</p>
+                    <p className="mt-1 type-callout text-label-tertiary">
+                      {relations?.parent
+                        ? "This fork has no analyzable child activity yet."
+                        : "This session has no analyzable messages in its local transcript."}
+                    </p>
+                  </>
+                )}
+                {costBadge && (
+                  <div className="mt-3">
+                    <SessionCostBadge {...costBadge} />
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -617,114 +728,64 @@ export function SessionDetailPresentation({
 
         {ready && !error && !empty && summary && (
           <>
-            <div className="w-full flex flex-col gap-y-2 px-4 pb-3">
-              <div className="flex items-center gap-x-2" aria-label="Session summary">
-                <span className="shrink-0">{renderAgentIcon(session.agent, 20)}</span>
-
-                <div className="w-full flex flex-col gap-y-0.5">
-                  <div className="flex items-center gap-x-2">
-                    {session.repo && (
-                      <Tooltip label={session.repo}>
-                        <span className="truncate text-label-secondary">{session.repo}</span>
-                      </Tooltip>
-                    )}
-
-                    {costBadge && <SessionCostBadge {...costBadge} />}
-
-                    <div className="ml-auto flex shrink-0 items-center">
-                      <Tooltip
-                        label={
-                          <span className="inline-flex items-center gap-1.5">
-                            Newer session
-                            <kbd className="rounded bg-surface-tertiary px-1 text-label-tertiary">
-                              ←
-                            </kbd>
-                          </span>
-                        }
-                      >
-                        <button
-                          type="button"
-                          onClick={onPrev}
-                          disabled={!onPrev}
-                          aria-label="Newer session"
-                          className={cn(
-                            "shrink-0 rounded-md p-1 transition-colors duration-[var(--duration-fast)] ease-out",
-                            onPrev
-                              ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
-                              : "cursor-default text-label-tertiary opacity-40",
-                          )}
-                        >
-                          <ChevronLeft size={16} aria-hidden="true" />
-                        </button>
-                      </Tooltip>
-                      <Tooltip
-                        label={
-                          <span className="inline-flex items-center gap-1.5">
-                            Older session
-                            <kbd className="rounded bg-surface-tertiary px-1 text-label-tertiary">
-                              →
-                            </kbd>
-                          </span>
-                        }
-                      >
-                        <button
-                          type="button"
-                          onClick={onNext}
-                          disabled={!onNext}
-                          aria-label="Older session"
-                          className={cn(
-                            "shrink-0 rounded-md p-1 transition-colors duration-[var(--duration-fast)] ease-out",
-                            onNext
-                              ? "text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
-                              : "cursor-default text-label-tertiary opacity-40",
-                          )}
-                        >
-                          <ChevronRight size={16} aria-hidden="true" />
-                        </button>
-                      </Tooltip>
-                    </div>
-                  </div>
-
-                  <div
-                    className="flex items-center justify-between gap-1 type-footnote text-label-tertiary"
-                    aria-label="Session timing and models"
-                  >
-                    {modelNames.length > 0 && (
-                      <div className="min-w-0" title={modelRunNames(modelRuns).join("\n")}>
-                        <TruncatedText text={modelNames.join(" · ")} />
-                      </div>
-                    )}
-
-                    <span
-                      className="shrink-0"
-                      title={`${formatDuration(summary.avgDurationSecs)} overall`}
-                    >
-                      {formatDuration(summary.avgActiveSecs)} active
-                      {session.timestamp && (
-                        <>
-                          {" · "}
-                          <time
-                            dateTime={session.timestamp}
-                            aria-label={`Last activity ${relativeTime(session.timestamp)}`}
-                            className="shrink-0 type-footnote text-label-tertiary"
-                          >
-                            last {relativeTime(session.timestamp)}
-                          </time>
-                        </>
-                      )}
-                    </span>
-
-                    <WslOriginBadge distro={session.wslDistro} />
-                  </div>
+            <div className="flex flex-col gap-y-1 px-4 pt-3 pb-3" aria-label="Session summary">
+              {/* The repo comes first because it is the container: you are
+                  inside a repo, and the session is the work you do in it. */}
+              {(session.repo || session.wslDistro) && (
+                <div className="flex min-w-0 items-center gap-1.5 type-caption text-label-tertiary">
+                  {session.repo && (
+                    <Tooltip label={session.repo}>
+                      <span className="truncate">{session.repo}</span>
+                    </Tooltip>
+                  )}
+                  <WslOriginBadge distro={session.wslDistro} />
                 </div>
-              </div>
+              )}
 
-              <div className="flex items-center gap-1 bg-(--color-bg-secondary) border-dashed border-1 border-(--color-border) px-3 py-2 rounded-md">
-                <TruncatedText
-                  className="min-w-0 flex-1 text-sm break-all"
-                  text={relations?.title?.trim() || session.title?.trim() || "Session"}
-                  lines={3}
-                />
+              <TruncatedText
+                className="min-w-0 type-body-large font-semibold text-label break-words"
+                text={relations?.title?.trim() || session.title?.trim() || "Session"}
+                lines={2}
+              />
+
+              {/* Active time, last activity, and the models on one quiet
+                  line. The figures that carry a reading live in the meter nav
+                  below; these three are context for the title. */}
+              <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 type-caption text-label-secondary">
+                <Tooltip
+                  label={`Active time (${formatDuration(summary.avgDurationSecs)} overall)`}
+                >
+                  <span className="tabular-nums">
+                    {formatDuration(summary.avgActiveSecs)} active
+                  </span>
+                </Tooltip>
+                {session.timestamp && (
+                  <>
+                    <span aria-hidden="true" className="text-label-tertiary">
+                      ·
+                    </span>
+                    <time dateTime={session.timestamp}>{relativeTime(session.timestamp)}</time>
+                  </>
+                )}
+                {modelPairs.length > 0 && (
+                  <>
+                    <span aria-hidden="true" className="text-label-tertiary">
+                      ·
+                    </span>
+                    <span
+                      className="min-w-0 truncate"
+                      title={modelRunNames(modelRuns).join("\n")}
+                    >
+                      {modelPairs.map((pair, index) => (
+                        <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
+                          {index > 0 && " · "}
+                          <span>{pair.model}</span>
+                          {pair.thinkingMode && <span> {pair.thinkingMode}</span>}
+                        </span>
+                      ))}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
 
@@ -737,55 +798,119 @@ export function SessionDetailPresentation({
               />
             )}
 
-            {efficiencyCard && (
-              <Card
-                title="Efficiency"
-                subtitle="Cost for real work: context growth and output tokens."
-              >
-                <EfficiencyBreakdown metrics={efficiencyCard} />
-              </Card>
-            )}
+            <div className="border-b border-separator px-4 pb-3">
+              <SegmentedControl
+                options={DETAIL_TABS}
+                value={tab}
+                onChange={setTab}
+                ariaLabel="Session detail sections"
+                semantics="tabs"
+                variant="native-tabs"
+                idPrefix="session-detail-tabs"
+              />
+            </div>
 
-            {(hasAssessedHygieneChecks || hygieneStateLabel) && (
-              <Card
-                title="Burn Checks"
-                {...(hygieneStateLabel ? { hint: hygieneStateLabel } : {})}
-              >
-                <HygieneBreakdown checks={hygieneChecks} />
-              </Card>
-            )}
+            <div
+              id="session-detail-tabs-panel"
+              role="tabpanel"
+              aria-labelledby={`session-detail-tabs-${tab}`}
+              className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
+            >
+              {/* The chart takes every pixel the key leaves, so the tab
+                  never ends in empty space. */}
+              {tab === "overview" && tokensCard && (
+                <div className="flex h-full flex-col gap-y-3">
+                  <div className="min-h-0 flex-1">
+                    <ContextTokensChart
+                      buckets={summary.buckets}
+                      contextWindow={summary.contextAvailable ? summary.contextWindow : null}
+                      activeSecs={summary.avgActiveSecs}
+                      highlight={highlight}
+                    />
+                  </div>
+                  <ChartKey
+                    stats={chartKeyStats}
+                    pinned={pinned}
+                    onHighlight={setHovered}
+                    onPin={togglePin}
+                  />
+                  {/* The composition says what the context above cost. */}
+                  {efficiencyCard && (
+                    <div className="border-t border-separator pt-3">
+                      <EfficiencyBreakdown metrics={efficiencyCard} section="composition" />
+                    </div>
+                  )}
+                </div>
+              )}
 
-            {tokensCard && (
-              <Card title="Context" subtitle={tokensCard.hint}>
-                <ContextTokensChart
-                  buckets={summary.buckets}
-                  contextWindow={summary.contextAvailable ? summary.contextWindow : null}
-                  activeSecs={summary.avgActiveSecs}
-                />
-              </Card>
-            )}
+              {/* The checks lead: a failing check is more use than the cost
+                  rows most of the time. */}
+              {tab === "cost" && (
+                <div className="flex min-h-full flex-col">
+                  {hasAssessedHygieneChecks && (
+                    <section>
+                      <TabSectionHeading>Checks</TabSectionHeading>
+                      <HygieneBreakdown checks={hygieneChecks} collapsePassing={false} />
+                    </section>
+                  )}
+                  <section
+                    className={cn(
+                      hasAssessedHygieneChecks && "mt-4 border-t border-separator pt-4",
+                      efficiencyCard && "pb-4",
+                    )}
+                  >
+                    <TabSectionHeading>Cost</TabSectionHeading>
+                    {cost && tokensCard ? (
+                      <CostBreakdown
+                        cost={cost}
+                        split={tokensCard.split}
+                        onOpenSubagent={onOpenSubagent}
+                      />
+                    ) : (
+                      <p className="type-callout text-label-tertiary">
+                        No cost has been recorded for this session.
+                      </p>
+                    )}
+                  </section>
+                  {/* The $/MTok scale closes the money story. It sits at the
+                      foot of the tab, so a short tab keeps its slack between
+                      the cost rows and the scale, not after the scale. */}
+                  {efficiencyCard && (
+                    <section className="mt-auto border-t border-separator pt-4">
+                      <TabSectionHeading>Efficiency</TabSectionHeading>
+                      <EfficiencyBreakdown metrics={efficiencyCard} section="cost" />
+                    </section>
+                  )}
+                </div>
+              )}
 
-            {cost && tokensCard && (
-              <Card
-                title="Cost"
-                subtitle="On subscription this is estimated cost at API prices."
-              >
-                <CostBreakdown
-                  cost={cost}
-                  split={tokensCard.split}
-                  onOpenSubagent={onOpenSubagent}
-                />
-              </Card>
-            )}
-
-            {firstSession?.initialContext && (
-              <Card
-                title="Skills, MCPs and tools"
-                subtitle={`The unused items here burned ${formatCompact(skillMcpUsage(firstSession.initialContext).wastedTokens)} tokens.`}
-              >
-                <SkillsMcpChart breakdown={firstSession.initialContext} />
-              </Card>
-            )}
+              {tab === "tools" &&
+                (firstSession?.initialContext ? (
+                  <div className="flex flex-col gap-y-2">
+                    {/* The wasted tokens are the finding of this tab, so they
+                        head the table they summarize. The figure has no
+                        ceiling, so it is a headline and not a meter. */}
+                    {toolsUsage != null && toolsUsage.wastedTokens > 0 && (
+                      <p className="my-1 flex items-center gap-x-3">
+                        <span className="type-large-title font-semibold! text-brand tabular-nums">
+                          {formatCompact(toolsUsage.wastedTokens)}
+                        </span>
+                        <span className="flex flex-col type-callout leading-tight">
+                          <span className="font-semibold text-label">tokens burned</span>
+                          <span className="text-label-secondary">
+                            by items loaded but never called in this session
+                          </span>
+                        </span>
+                      </p>
+                    )}
+                    <SkillsMcpChart breakdown={firstSession.initialContext} />
+                  </div>
+                ) : (
+                  <p className="type-callout text-label-tertiary">
+                    No startup context has been recorded for this session.
+                  </p>
+                ))}
+            </div>
           </>
         )}
       </div>

@@ -138,7 +138,7 @@ describe("SegmentedControl", () => {
 
     const selected = screen.getByRole("tab", { name: "B" })
     expect(selected.className).toContain("font-medium")
-    expect(selected.className).toContain("text-label")
+    expect(selected.className).toContain("text-accent")
     expect(selected.querySelector(".segmented-control-text-indicator")?.className).toContain(
       "opacity-100",
     )

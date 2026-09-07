@@ -92,7 +92,9 @@ function SpendColumn({
   first?: boolean
 }) {
   return (
-    <div className="min-w-0">
+    // The column holds its text off its own left edge, so the three readings
+    // sit nearer the middle of their columns. The text stays left-aligned.
+    <div className="min-w-0 pl-2">
       <dt className="type-caption text-label-secondary">{label}</dt>
       {/* The important modifiers are necessary because the type-* classes
           are unlayered CSS. The 17 px line is tighter than the type scale,

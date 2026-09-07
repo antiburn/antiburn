@@ -1,3 +1,4 @@
+import type { ChartSeries } from "./analysis/ContextTokensChart"
 import { formatCompact } from "../../lib/presentation/sessionAnalysis"
 import type { LocalCostSubject, LocalSessionCost } from "../../lib/presentation/sessionCosts"
 import type { SubagentMember } from "../../lib/types/session"
@@ -33,14 +34,21 @@ export interface TokensCardModel {
    * the headline. Mixing subjects would produce rows that do not add up.
    */
   split: TokensCostSplit | null
-  /** Right-hand hint: token counts, then compactions and cache events when any. */
-  hint: string
-}
-
-/** "3 compactions", "1 compaction", "2 provider cache misses". */
-function countLabel(count: number, noun: string): string {
-  if (count === 1) return `${count} ${noun}`
-  return `${count} ${noun}${noun.endsWith("s") ? "es" : "s"}`
+  /**
+   * The Context section's stat cells: token counts, then compactions and
+   * rehydrations when any. Each cell carries a category label and its value,
+   * so the section reads in the same label-over-value grid as the hero.
+   *
+   * `series` names the layer of the plot the cell counts, and the color the
+   * cell takes, so the strip doubles as the chart's key. The key lights that
+   * layer while the pointer rests on the cell. A cell with no series counts
+   * something the chart draws no mark for, so it never lights.
+   */
+  stats: Array<{
+    label: string
+    value: string
+    series?: ChartSeries
+  }>
 }
 
 /** Decide what the Tokens card says, given the already-selected cost figures. */
@@ -102,12 +110,28 @@ export function tokensCardModel(input: {
         }
       : null
 
-  const parts = [`${formatCompact(tokensInTotal)} in`, `${formatCompact(tokensOutTotal)} out`]
-  if (compactionCount > 0) parts.push(countLabel(compactionCount, "compaction"))
-  if (cacheRehydrationCount > 0) parts.push(countLabel(cacheRehydrationCount, "rehydration"))
+  // A label names the category, so it stays plural whatever the count is.
+  const stats: TokensCardModel["stats"] = [
+    { label: "In", value: formatCompact(tokensInTotal), series: "in" },
+    { label: "Out", value: formatCompact(tokensOutTotal), series: "out" },
+  ]
+  if (compactionCount > 0) {
+    stats.push({ label: "Compactions", value: String(compactionCount), series: "compaction" })
+  }
+  if (cacheRehydrationCount > 0) {
+    stats.push({
+      label: "Rehydrations",
+      value: String(cacheRehydrationCount),
+      series: "rehydration",
+    })
+  }
   if (cacheRoutingMissCount > 0) {
-    parts.push(countLabel(cacheRoutingMissCount, "provider cache miss"))
+    stats.push({
+      label: "Provider cache misses",
+      value: String(cacheRoutingMissCount),
+      series: "routingMiss",
+    })
   }
 
-  return { costTotal, split, hint: parts.join(" · ") }
+  return { costTotal, split, stats }
 }

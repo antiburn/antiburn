@@ -38,12 +38,16 @@ export interface SessionStatusBarProps {
 /**
  * Return the ink for the assessed finding share. A clean result is green.
  * Findings mix orange with red in proportion to their share.
+ *
+ * The mix runs between the vivid fill tones, not the darkened text ones. The
+ * text tones are tuned for contrast on a light surface, and a mostly-orange
+ * mix of them reads as brown, which states nothing.
  */
 function verdictInk(failedShare: number, assessedCount: number): string {
   if (assessedCount === 0) return "var(--color-label-tertiary)"
   if (failedShare === 0) return "var(--color-system-green)"
   const pct = Math.round(failedShare * 100)
-  return `color-mix(in oklch, var(--color-system-red-text) ${pct}%, var(--color-system-orange))`
+  return `color-mix(in oklch, var(--color-system-red-tint) ${pct}%, var(--color-system-orange-tint))`
 }
 
 function formatLimitPercent(percent: number): string {

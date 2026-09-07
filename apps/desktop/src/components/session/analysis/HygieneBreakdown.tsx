@@ -1,22 +1,30 @@
-import { Check, ChevronRight, X, type LucideIcon } from "lucide-react"
+import { ChevronRight, CircleCheck, CircleX, type LucideIcon } from "lucide-react"
 import { useId, useState } from "react"
 
 import { cn } from "../../../lib/cn"
 import {
   sessionHygieneDocumentation,
+  sessionHygieneExplainers,
   type SessionHygieneCheck,
 } from "../../../lib/presentation/sessionHygiene"
+import { RowInfo } from "./RowInfo"
 
 export interface HygieneBreakdownProps {
   checks: SessionHygieneCheck[]
+  /**
+   * Roll the passing checks up behind their count, so only findings show. Set
+   * it false where the surface has room for every check, such as a tab of its
+   * own.
+   */
+  collapsePassing?: boolean
 }
 
 interface HygieneStatusPresentation {
   Icon: LucideIcon
-  iconSize: number
   label: string
-  strokeWidth: number
   textClass: string
+  /** The ink of the status word. A passing word stays neutral. */
+  wordClass: string
 }
 
 type AssessedHygieneCheck = SessionHygieneCheck & { status: "finding" | "clean" }
@@ -25,20 +33,21 @@ function isAssessed(check: SessionHygieneCheck): check is AssessedHygieneCheck {
   return check.status !== "notAssessed"
 }
 
+/* One icon size for every status, so the trailing icon column lines up. */
+const STATUS_ICON_SIZE = 14
+
 const STATUS_PRESENTATION: Record<AssessedHygieneCheck["status"], HygieneStatusPresentation> = {
   finding: {
-    Icon: X,
-    iconSize: 12,
-    label: "failing",
-    strokeWidth: 2.5,
-    textClass: "text-system-red-text",
+    Icon: CircleX,
+    label: "Failed",
+    textClass: "text-share-waste-text",
+    wordClass: "text-share-waste-text",
   },
   clean: {
-    Icon: Check,
-    iconSize: 12,
-    label: "passed",
-    strokeWidth: 2.5,
-    textClass: "text-system-green",
+    Icon: CircleCheck,
+    label: "Passed",
+    textClass: "text-share-work-text",
+    wordClass: "text-label-secondary",
   },
 }
 
@@ -46,15 +55,15 @@ function HygieneGuidance({ check }: { check: AssessedHygieneCheck }) {
   const documentation = sessionHygieneDocumentation(check)
 
   return (
-    <div className="mt-1 flex flex-col gap-2 rounded-control border border-separator p-3 text-pretty type-footnote text-label-secondary">
+    <div className="mt-1 flex flex-col gap-2 rounded-control border border-separator p-3 text-pretty type-callout text-label-secondary">
       {documentation.findingDetails.length > 0 && (
-        <div className="flex flex-col gap-1 text-system-red-text">
+        <div className="flex flex-col gap-1 text-share-waste-text">
           {documentation.findingDetails.map((sentence) => (
             <p key={sentence}>{sentence}</p>
           ))}
         </div>
       )}
-      <p className="type-footnote font-semibold! text-label-secondary">
+      <p className="type-callout font-semibold! text-label-secondary">
         {documentation.summary}
       </p>
       {documentation.guidance.length > 0 && (
@@ -70,10 +79,13 @@ function HygieneGuidance({ check }: { check: AssessedHygieneCheck }) {
 
 function HygieneRow({
   check,
+  explainer,
   open,
   onToggle,
 }: {
   check: AssessedHygieneCheck
+  /** One sentence on what the check tests, for the row's info button. */
+  explainer?: string | undefined
   open: boolean
   onToggle: () => void
 }) {
@@ -82,24 +94,33 @@ function HygieneRow({
 
   return (
     <>
-      <button
-        type="button"
-        aria-label={`${check.name} details`}
-        aria-expanded={open}
-        aria-controls={bodyId}
-        onClick={onToggle}
-        className="-mx-1 grid grid-cols-[minmax(0,1fr)_max-content] items-center gap-x-3 rounded-control px-1 py-1 text-left type-caption transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
-      >
-        <span className="truncate text-label-tertiary">{check.name}</span>
-        <span className={cn("inline-flex items-center gap-1", status.textClass)}>
-          <status.Icon
-            size={status.iconSize}
-            strokeWidth={status.strokeWidth}
-            aria-hidden="true"
-          />
-          <span>{status.label}</span>
+      {/* The info button cannot sit inside the row button, so the row button
+          is an invisible layer under the text, and the info button sits
+          beside the name the way the cost rows place it. The verdict then
+          reaches the same right edge as the cost figures below. */}
+      <div className="group relative -mx-1 grid grid-cols-[minmax(0,1fr)_max-content_max-content] items-center gap-x-2 rounded-control px-1 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
+        <button
+          type="button"
+          aria-label={`${check.name} details`}
+          aria-expanded={open}
+          aria-controls={bodyId}
+          onClick={onToggle}
+          className="absolute inset-0 rounded-control active:transform-none active:opacity-100"
+        />
+        <span className="pointer-events-none flex min-w-0 items-center gap-1 text-label-tertiary">
+          <span className="truncate">{check.name}</span>
+          {explainer && (
+            <RowInfo label={check.name} body={explainer} className="pointer-events-auto" />
+          )}
         </span>
-      </button>
+        <span className={cn("pointer-events-none", status.wordClass)}>{status.label}</span>
+        <status.Icon
+          size={STATUS_ICON_SIZE}
+          strokeWidth={2}
+          aria-hidden="true"
+          className={cn("pointer-events-none shrink-0", status.textClass)}
+        />
+      </div>
 
       {open && (
         <div
@@ -115,7 +136,7 @@ function HygieneRow({
   )
 }
 
-export function HygieneBreakdown({ checks }: HygieneBreakdownProps) {
+export function HygieneBreakdown({ checks, collapsePassing = true }: HygieneBreakdownProps) {
   const [rollupOpen, setRollupOpen] = useState(false)
   const [openCheck, setOpenCheck] = useState<SessionHygieneCheck["id"] | null>(null)
   const assessedChecks = checks.filter(isAssessed)
@@ -129,6 +150,10 @@ export function HygieneBreakdown({ checks }: HygieneBreakdownProps) {
       ? "All assessed checks passed"
       : `${passing.length}/${assessedCount} passed`
 
+  const explainers = sessionHygieneExplainers()
+  const explainerFor = (checkId: SessionHygieneCheck["id"]) =>
+    explainers.find((entry) => entry.id === checkId)?.explainer
+
   const toggleCheck = (checkId: SessionHygieneCheck["id"]) => {
     setOpenCheck((current) => (current === checkId ? null : checkId))
   }
@@ -140,41 +165,53 @@ export function HygieneBreakdown({ checks }: HygieneBreakdownProps) {
     setRollupOpen((current) => !current)
   }
 
+  // Findings lead when every check shows, so a problem is the first thing
+  // read. The rolled-up layout puts them last, below the count they sit
+  // behind.
+  const shownChecks = collapsePassing ? findings : [...findings, ...rolledChecks]
+
   if (assessedCount === 0) return null
 
   return (
-    <div className="grid gap-y-1" aria-label="Session hygiene checks">
-      <button
-        type="button"
-        aria-expanded={rollupOpen}
-        onClick={toggleRollup}
-        className="-mx-1 flex items-center justify-between gap-x-3 rounded-control px-1 py-1 text-left type-caption text-label-tertiary cursor-pointer! transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
-      >
-        <span>{rollupLabel}</span>
-        <ChevronRight
-          size={14}
-          aria-hidden="true"
-          className={cn(
-            "shrink-0 transition-transform duration-[var(--duration-fast)] ease-out",
-            rollupOpen && "rotate-90",
-          )}
-        />
-      </button>
+    <div className="grid gap-y-0.5" aria-label="Session hygiene checks">
+      {/* The full layout skips the rollup words: every row carries its own
+          verdict mark, so a count above them restates the list. */}
+      {collapsePassing && (
+        <button
+          type="button"
+          aria-expanded={rollupOpen}
+          onClick={toggleRollup}
+          className="-mx-1 flex items-center justify-between gap-x-3 rounded-control px-1 py-1 text-left type-body text-label-tertiary cursor-pointer! transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:transform-none active:opacity-100"
+        >
+          <span>{rollupLabel}</span>
+          <ChevronRight
+            size={14}
+            aria-hidden="true"
+            className={cn(
+              "shrink-0 transition-transform duration-[var(--duration-fast)] ease-out",
+              rollupOpen && "rotate-90",
+            )}
+          />
+        </button>
+      )}
 
-      {rollupOpen &&
+      {collapsePassing &&
+        rollupOpen &&
         rolledChecks.map((check) => (
           <HygieneRow
             key={check.id}
             check={check}
+            explainer={explainerFor(check.id)}
             open={openCheck === check.id}
             onToggle={() => toggleCheck(check.id)}
           />
         ))}
 
-      {findings.map((check) => (
+      {shownChecks.map((check) => (
         <HygieneRow
           key={check.id}
           check={check}
+          explainer={explainerFor(check.id)}
           open={openCheck === check.id}
           onToggle={() => toggleCheck(check.id)}
         />

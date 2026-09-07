@@ -95,11 +95,17 @@ function bar(over: Partial<Parameters<typeof UsageLimitsBar>[0]> = {}) {
   )
 }
 
-/** The filled segments of the one meter on screen. */
+/** The lit segments of the one meter on screen. */
 function filledSegments(): number {
   const meter = screen.getByRole("region", { name: "Usage limits" })
   const segments = meter.querySelectorAll("span.rounded-full")
-  return Array.from(segments).filter((node) => node.className.includes("bg-brand-tint")).length
+  // A lit segment carries its zone's full-strength fill. An unlit one
+  // carries the same hue at /25, which is a different class.
+  return Array.from(segments).filter((node) =>
+    ["bg-brand-tint", "bg-system-yellow-tint", "bg-system-red-tint"].some((cls) =>
+      node.classList.contains(cls),
+    ),
+  ).length
 }
 
 describe("UsageLimitsBar — the ring row", () => {
@@ -122,7 +128,7 @@ describe("UsageLimitsBar — the ring row", () => {
 
     const trigger = screen.getByRole("button", { name: "Claude at 42 percent" })
     expect(trigger).toHaveAttribute("data-state", "hovered")
-    expect(trigger).toHaveClass("data-[state=hovered]:bg-brand-tint/[0.08]")
+    expect(trigger).toHaveClass("data-[state=hovered]:bg-surface-secondary/50")
   })
 
   it("says so rather than claiming zero when a provider states no figure", () => {

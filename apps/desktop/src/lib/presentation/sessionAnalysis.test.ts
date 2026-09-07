@@ -296,31 +296,38 @@ describe("modeChangeMarkers", () => {
 })
 
 describe("axisScale", () => {
-  it("scales the ceiling to the peak with headroom, not to the cap", () => {
+  it("scales the ceiling to the peak, not to the cap", () => {
     expect(axisScale(130_000, 1_000_000, 5)).toEqual({
       ceiling: 150_000,
-      ticks: [50_000, 100_000],
+      ticks: [50_000, 100_000, 150_000],
+    })
+  })
+
+  it("tops out at the next step above the peak, taking no headroom", () => {
+    expect(axisScale(380_000, 1_000_000, 5)).toEqual({
+      ceiling: 400_000,
+      ticks: [100_000, 200_000, 300_000, 400_000],
     })
   })
 
   it("never exceeds the cap", () => {
     expect(axisScale(195_000, 200_000, 5)).toEqual({
       ceiling: 200_000,
-      ticks: [50_000, 100_000, 150_000],
+      ticks: [50_000, 100_000, 150_000, 200_000],
     })
   })
 
   it("uses coarse steps for a deep session", () => {
     expect(axisScale(900_000, 1_000_000, 5)).toEqual({
       ceiling: 1_000_000,
-      ticks: [200_000, 400_000, 600_000, 800_000],
+      ticks: [200_000, 400_000, 600_000, 800_000, 1_000_000],
     })
   })
 
   it("uses fine steps for a shallow session", () => {
     expect(axisScale(18_000, 1_000_000, 5)).toEqual({
       ceiling: 20_000,
-      ticks: [5_000, 10_000, 15_000],
+      ticks: [5_000, 10_000, 15_000, 20_000],
     })
   })
 })

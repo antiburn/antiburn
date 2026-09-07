@@ -7,8 +7,13 @@ function segments(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>("span.rounded-full"))
 }
 
+// The full-strength zone fills; an unlit segment carries a /25 tint instead.
+const FILL_CLASSES = ["bg-brand-tint", "bg-system-red-tint"]
+
 function filled(container: HTMLElement): number {
-  return segments(container).filter((node) => node.className.includes("bg-brand-tint")).length
+  return segments(container).filter((node) =>
+    FILL_CLASSES.some((cls) => node.classList.contains(cls)),
+  ).length
 }
 
 describe("SegmentedMeter", () => {
@@ -43,6 +48,32 @@ describe("SegmentedMeter", () => {
     expect(segments(container).some((node) => node.className.includes("opacity-50"))).toBe(
       false,
     )
+  })
+
+  it("colors each segment by its zone, like a VU meter", () => {
+    const { container } = render(<SegmentedMeter percent={95} />)
+    const all = segments(container)
+    // At 95% the fill crosses into the red zone: the orange zone (0–90%) is
+    // fully lit and the red zone has one lit segment before its tinted tail.
+    // No segment is yellow, because the scale holds no warning step.
+    expect(all.filter((node) => node.classList.contains("bg-brand-tint"))).toHaveLength(29)
+    expect(all.filter((node) => node.classList.contains("bg-system-yellow-tint"))).toHaveLength(
+      0,
+    )
+    expect(all.filter((node) => node.classList.contains("bg-system-red-tint"))).toHaveLength(1)
+    expect(
+      all.filter((node) => node.classList.contains("bg-system-red-unlit/12")),
+    ).toHaveLength(2)
+  })
+
+  it("lights the track from the right down to the mark when it fills from the right", () => {
+    const { container } = render(<SegmentedMeter percent={95} fillFrom="end" />)
+    const all = segments(container)
+    // The reading keeps its place on the track: 95% is two segments from the
+    // right end, so only those two light, and they light in the red zone.
+    expect(all.filter((node) => node.classList.contains("bg-system-red-tint"))).toHaveLength(2)
+    expect(all[0]?.classList.contains("bg-brand-unlit/12")).toBe(true)
+    expect(all[31]?.classList.contains("bg-system-red-tint")).toBe(true)
   })
 
   it("puts the notch at the elapsed fraction of the row", () => {
