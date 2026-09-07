@@ -151,7 +151,7 @@ function sessionLimitBadge(
 } {
   if (!allocation || !Number.isFinite(allocation.percent)) {
     return {
-      label: `No ${metric === "weeklyPercent" ? "weekly" : "5h"} limit for this session.`,
+      label: `${metric === "weeklyPercent" ? "Weekly" : "5-hour"} limit estimate unavailable for this session.`,
       percent: null,
     }
   }
