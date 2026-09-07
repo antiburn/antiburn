@@ -290,19 +290,22 @@ mod enabled {
 
     /// Record a discovery pass, if it says anything the previous one did not.
     ///
-    /// `Some(count)` is a completed pass; `None` is a failed one.
+    /// `Some(count)` is a completed pass; `None` is a failed one. Call this
+    /// only for a full pass. [`crate::scan::scan_report`] keeps a scoped
+    /// pass — a watcher-burst retry of a handful of agents — from reaching
+    /// this function at all: a scoped pass counts only its named agents, not
+    /// the whole install, so its count is not comparable to a full pass's
+    /// count and would flap the reported bucket on every burst.
     ///
-    /// The scheduler runs a full pass every [`crate::scan::TICK`], plus a
-    /// scoped pass on every watcher burst — as often as every few seconds
-    /// while a session is active — so reporting each one would put far more
-    /// events into a channel whose other events are counted in ones,
-    /// swamping the queue's own bound and every other event with it. It
-    /// would also be the wrong measurement twice over: what is worth knowing
-    /// is roughly how large an install's history is and whether scanning
-    /// works at all, and a repetition answers neither better than the first
-    /// report did. A machine stuck failing every pass would additionally
-    /// report that same failure over and over, which is not more information
-    /// about one broken install.
+    /// The scheduler runs a full pass every [`crate::scan::TICK`]. Reporting
+    /// each one would put far more events into a channel whose other events
+    /// are counted in ones, swamping the queue's own bound and every other
+    /// event with it. It would also be the wrong measurement: what is worth
+    /// knowing is roughly how large an install's history is and whether
+    /// scanning works at all, and a repetition answers neither better than
+    /// the first report did. A machine stuck failing every pass would
+    /// additionally report that same failure over and over, which is not
+    /// more information about one broken install.
     ///
     /// So the bucket, or the failure category, is compared against the last one
     /// reported and an unchanged outcome is dropped. What survives is the first

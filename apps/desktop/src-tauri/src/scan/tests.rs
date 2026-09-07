@@ -1451,6 +1451,22 @@ fn a_pass_with_nothing_discovered_reports_no_agents() {
     assert!(per_agent_totals(&[]).is_empty());
 }
 
+/// A scoped pass counts only its named agents, not the whole install, so its
+/// count is not comparable to a full pass's count. Only a full pass may
+/// report to analytics, on success or on failure.
+#[test]
+fn only_a_full_pass_reports_a_scan_outcome() {
+    let scoped = PassScope::Agents(std::collections::BTreeSet::from([AgentKind::Claude]));
+
+    assert_eq!(
+        scan_report(&PassScope::Full, Some(1_000)),
+        Some(Some(1_000))
+    );
+    assert_eq!(scan_report(&PassScope::Full, None), Some(None));
+    assert_eq!(scan_report(&scoped, Some(3)), None, "a scoped success");
+    assert_eq!(scan_report(&scoped, None), None, "a scoped failure");
+}
+
 #[test]
 fn source_kinds_are_stable_wire_strings() {
     assert_eq!(
