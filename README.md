@@ -4,7 +4,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/3369144d-61b0-4b94-8373-41f2541cba95" />
-  <img width="2680" height="1640" alt="antiburn: the popover with live limit meters and today's sessions, a session's context chart with a compaction, and its cost and tools breakdowns" src="https://github.com/user-attachments/assets/d1c1404e-4e6e-4ef3-8dbd-726150888e3d" />
+  <img width="100%" alt="antiburn: the popover with live limit meters and today's sessions, a session's context chart with a compaction, and its cost and tools breakdowns" src="https://github.com/user-attachments/assets/d1c1404e-4e6e-4ef3-8dbd-726150888e3d" />
 </picture>
 
 [![License](https://img.shields.io/github/license/antiburn/antiburn)](LICENSE)
