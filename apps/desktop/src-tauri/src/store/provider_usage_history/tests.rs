@@ -6,6 +6,7 @@ mod history_tests {
 
     use super::super::*;
     use crate::provider_usage::live::model::{UsageSource, WindowRole};
+    use crate::store::{SessionKey, SessionRecord};
 
     const NOW: i64 = 1_800_000_000;
     const ACCOUNT_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -55,6 +56,25 @@ mod history_tests {
         }
     }
 
+    fn session() -> SessionRecord {
+        SessionRecord {
+            key: SessionKey::new("native", "claude-code", "session"),
+            source_kind: "inline".to_string(),
+            source_label: "test".to_string(),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: None,
+            surface: "unknown".to_string(),
+            updated_at_epoch: Some(NOW),
+            activity_cursor: "test".to_string(),
+            activity_source: "event".to_string(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: Some("test".to_string()),
+        }
+    }
+
     #[test]
     fn a_repeated_reading_is_idempotent_and_returns_no_changed_period() {
         let store = store();
@@ -83,6 +103,61 @@ mod history_tests {
             .unwrap()
             .unwrap();
         assert_eq!(history.observations.len(), 1);
+    }
+
+    #[test]
+    fn retention_freezes_a_materialized_period_before_a_pricing_requeue() {
+        let store = store();
+        store.upsert_sessions(&[session()], &[]).unwrap();
+        let reset = NOW - 90 * 86_400 - 1;
+        let period_id = store
+            .record_provider_usage_snapshots(&[snapshot(
+                ACCOUNT_A,
+                reset - 1,
+                "five-hour",
+                Some(reset - 18_000),
+                Some(reset),
+                Some(40.0),
+            )])
+            .unwrap()[0];
+        store
+            .replace_provider_usage_period_allocations(
+                period_id,
+                &[
+                    crate::store::provider_usage_ledger::SessionPeriodAllocation {
+                        key: SessionKey::new("native", "claude-code", "session"),
+                        metric: "fiveHour".to_string(),
+                        percent: 40.0,
+                        basis: "tokens".to_string(),
+                        partial: false,
+                    },
+                ],
+                NOW,
+            )
+            .unwrap();
+        {
+            let connection = store.lock();
+            Store::apply_provider_usage_retention_in(&connection, 90, NOW).unwrap();
+        }
+        assert!(
+            store
+                .provider_usage_period_allocation_frozen(period_id)
+                .unwrap()
+        );
+        store
+            .enqueue_all_provider_usage_allocation_periods(NOW)
+            .unwrap();
+        crate::provider_usage::ledger::reconcile(&store, NOW);
+        let connection = store.lock();
+        let (percent, partial): (f64, i64) = connection
+            .query_row(
+                "SELECT percent, partial FROM provider_usage_session_allocation WHERE period_id = ?1",
+                [period_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(percent, 40.0);
+        assert_eq!(partial, 1);
     }
 
     #[test]
