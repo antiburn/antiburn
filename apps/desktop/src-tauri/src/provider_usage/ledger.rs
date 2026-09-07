@@ -38,6 +38,10 @@ fn reconcile_period(
     now_epoch: i64,
 ) -> anyhow::Result<()> {
     let period_id = dirty.period_id;
+    if store.provider_usage_period_allocation_frozen(period_id)? {
+        return store
+            .retain_partial_provider_usage_period_allocations_and_ack(period_id, dirty.generation);
+    }
     let Some(history) =
         store.provider_usage_period_history_for_allocation(period_id, MAX_OBSERVATION_INTERVALS)?
     else {
@@ -70,13 +74,9 @@ fn reconcile_period(
         .period
         .starts_at_epoch
         .unwrap_or_else(|| reset.saturating_sub(duration));
-    let Some(observed_at_epoch) = history
-        .observations
-        .iter()
-        .rev()
-        .find(|entry| entry.is_fresh && entry.is_authoritative)
-        .and_then(|entry| entry.used_percent.map(|_| entry.observed_at_epoch))
-    else {
+    let interval_ends =
+        allocation::period_observation_interval_ends(&history, MAX_OBSERVATION_INTERVALS);
+    let Some(observed_at_ms) = interval_ends.last().copied() else {
         return store.replace_provider_usage_period_allocations_and_ack(
             period_id,
             dirty.generation,
@@ -84,9 +84,7 @@ fn reconcile_period(
             now_epoch,
         );
     };
-    let interval_ends =
-        allocation::period_observation_interval_ends(&history, MAX_OBSERVATION_INTERVALS);
-    let end_ms = observed_at_epoch.saturating_mul(1_000).saturating_add(1);
+    let end_ms = observed_at_ms.saturating_add(1);
     let Some(turns) = store.session_usage_turns_grouped_between(
         start.saturating_mul(1_000),
         end_ms,

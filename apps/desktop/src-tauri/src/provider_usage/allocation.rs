@@ -537,7 +537,7 @@ pub fn estimate_period(
     let period = &history.period;
     let metric = metric_of_period(period)?;
     let reset = period.resets_at_epoch?;
-    let duration = period.duration_seconds.or_else(|| match metric {
+    let duration = period.duration_seconds.or(match metric {
         SessionLimitMetric::Weekly => Some(7 * 86_400),
         SessionLimitMetric::FiveHour => Some(5 * 3_600),
     })?;
@@ -551,7 +551,12 @@ pub fn estimate_period(
         .observations
         .iter()
         .rev()
-        .find(|entry| entry.is_fresh && entry.is_authoritative)
+        .find(|entry| {
+            entry.is_fresh
+                && entry.is_authoritative
+                && entry.observed_at_epoch >= start
+                && entry.observed_at_epoch < reset
+        })
         .and_then(|entry| {
             entry
                 .used_percent
@@ -581,7 +586,11 @@ pub fn estimate_period(
     let samples = history
         .observations
         .iter()
-        .filter(|entry| entry.is_authoritative)
+        .filter(|entry| {
+            entry.is_authoritative
+                && entry.observed_at_epoch >= start
+                && entry.observed_at_epoch < reset
+        })
         .map(|entry| crate::provider_usage::live::metrics::UsageSample {
             observed_at: OffsetDateTime::from_unix_timestamp(entry.observed_at_epoch)
                 .unwrap_or(OffsetDateTime::UNIX_EPOCH),
@@ -632,10 +641,14 @@ pub fn period_observation_interval_ends(
     history: &ProviderUsagePeriodHistory,
     maximum: usize,
 ) -> Vec<i64> {
+    let Some((start, reset)) = period_bounds(history) else {
+        return Vec::new();
+    };
     let mut ends: Vec<_> = history
         .observations
         .iter()
         .filter(|entry| entry.is_fresh && entry.is_authoritative)
+        .filter(|entry| entry.observed_at_epoch >= start && entry.observed_at_epoch < reset)
         .filter(|entry| {
             entry
                 .used_percent
@@ -655,6 +668,22 @@ pub fn period_observation_interval_ends(
             ends[offset]
         })
         .collect()
+}
+
+fn period_bounds(history: &ProviderUsagePeriodHistory) -> Option<(i64, i64)> {
+    let reset = history.period.resets_at_epoch?;
+    let duration = history.period.duration_seconds.unwrap_or_else(|| {
+        if history.period.window_kind == "weekly" {
+            7 * 86_400
+        } else {
+            5 * 3_600
+        }
+    });
+    let start = history
+        .period
+        .starts_at_epoch
+        .unwrap_or_else(|| reset.saturating_sub(duration));
+    (start < reset).then_some((start, reset))
 }
 
 fn metric_of_period(

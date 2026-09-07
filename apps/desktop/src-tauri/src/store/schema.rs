@@ -692,6 +692,10 @@ CREATE INDEX provider_usage_observation_time
 /// The queue separates ingestion from allocation. A provider refresh writes a
 /// small set of period ids, while the worker drains a bounded number later.
 const V37: &str = r#"
+ALTER TABLE provider_usage_period
+    ADD COLUMN allocation_frozen INTEGER NOT NULL DEFAULT 0
+    CHECK (allocation_frozen IN (0, 1));
+
 CREATE TABLE provider_usage_allocation_dirty (
     period_id          INTEGER PRIMARY KEY REFERENCES provider_usage_period(id),
     requested_at_epoch INTEGER NOT NULL,
