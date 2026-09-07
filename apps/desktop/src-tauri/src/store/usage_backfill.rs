@@ -20,6 +20,16 @@ pub(crate) struct ProviderUsageBackfillCandidate {
     pub complete: bool,
 }
 
+/// The metadata needed to resume one rollout source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderUsageBackfillCheckpoint {
+    pub cursor_bytes: u64,
+    pub source_bytes: u64,
+    pub source_modified_epoch: Option<i64>,
+    pub source_identity: String,
+    pub complete: bool,
+}
+
 impl Store {
     /// Persist a backfill checkpoint and report an unavailable local store.
     pub(crate) fn write_provider_usage_backfill_state(&self, state: &str) -> Result<()> {
@@ -135,14 +145,10 @@ impl Store {
     pub(crate) fn update_provider_usage_backfill_checkpoint(
         &self,
         candidate: &ProviderUsageBackfillCandidate,
-        cursor_bytes: u64,
-        source_bytes: u64,
-        source_modified_epoch: Option<i64>,
-        source_identity: &str,
+        checkpoint: &ProviderUsageBackfillCheckpoint,
         now_epoch: i64,
-        complete: bool,
     ) -> Result<()> {
-        let cursor_bytes = i64::try_from(cursor_bytes).unwrap_or(i64::MAX);
+        let cursor_bytes = i64::try_from(checkpoint.cursor_bytes).unwrap_or(i64::MAX);
         let connection = self.lock();
         connection.execute(
             "INSERT INTO provider_usage_backfill_checkpoint (
@@ -169,12 +175,12 @@ impl Store {
                 candidate.account_key,
                 candidate.source_label,
                 cursor_bytes,
-                i64::try_from(source_bytes).unwrap_or(i64::MAX),
-                source_modified_epoch,
-                source_identity,
-                if complete { "complete" } else { "pending" },
+                i64::try_from(checkpoint.source_bytes).unwrap_or(i64::MAX),
+                checkpoint.source_modified_epoch,
+                checkpoint.source_identity,
+                if checkpoint.complete { "complete" } else { "pending" },
                 now_epoch,
-                complete.then_some(now_epoch),
+                checkpoint.complete.then_some(now_epoch),
             ],
         )?;
         Ok(())

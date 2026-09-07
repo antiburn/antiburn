@@ -188,15 +188,23 @@ pub(crate) fn import_backfill_batch(store: &Store, now_epoch: i64) -> Result<Bac
             .sum::<usize>();
         result.scanned_bytes += batch.next_offset.saturating_sub(offset);
 
-        store.update_provider_usage_backfill_checkpoint(
-            candidate,
-            batch.next_offset,
-            fingerprint.bytes,
-            fingerprint.modified_epoch,
-            &fingerprint.identity,
-            now_epoch,
-            batch.complete,
-        )?;
+        let checkpoint = crate::store::usage_backfill::ProviderUsageBackfillCheckpoint {
+            cursor_bytes: batch.next_offset,
+            source_bytes: fingerprint.bytes,
+            source_modified_epoch: fingerprint.modified_epoch,
+            source_identity: fingerprint.identity,
+            complete: batch.complete,
+        };
+        store.update_provider_usage_backfill_checkpoint(candidate, &checkpoint, now_epoch)?;
+        if needs_retry(&batch, offset) {
+            let mut deferred = candidate.clone();
+            deferred.cursor_bytes = batch.next_offset;
+            let retry = store.defer_provider_usage_backfill_candidate(&deferred, now_epoch)?;
+            result.deferred_sources += 1;
+            result.pending = true;
+            result.next_retry_epoch = earliest(result.next_retry_epoch, retry);
+            continue;
+        }
         if batch.complete {
             result.completed_sources += 1;
         } else {
@@ -228,6 +236,10 @@ fn has_more_ready(
     candidates
         .get(MAX_CANDIDATES_PER_BATCH)
         .is_some_and(|candidate| !candidate.complete)
+}
+
+fn needs_retry(batch: &RolloutBatch, offset: u64) -> bool {
+    !batch.complete && batch.next_offset == offset
 }
 
 fn source_fingerprint(path: &Path) -> Result<SourceFingerprint> {
@@ -595,6 +607,27 @@ mod tests {
         assert_eq!(batch.readings.len(), 1);
         assert!(!batch.complete);
         assert_eq!(batch.next_offset, complete.len() as u64 + 1);
+    }
+
+    #[test]
+    fn waits_for_an_incomplete_first_record_until_the_source_grows() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("rollout.jsonl");
+        let record = line(
+            at(1_800_000_000),
+            json!({"primary": window(3.0, 300, Some(1_800_017_000))}),
+        );
+        let split = record.len() / 2;
+        fs::write(&path, &record[..split]).expect("partial rollout");
+
+        let incomplete = read_rollout_batch(&path, 0, MAX_BATCH_BYTES).expect("batch");
+        assert!(needs_retry(&incomplete, 0));
+
+        fs::write(&path, format!("{record}\n")).expect("completed rollout");
+        let complete = read_rollout_batch(&path, 0, MAX_BATCH_BYTES).expect("batch");
+        assert!(!needs_retry(&complete, 0));
+        assert!(complete.complete);
+        assert_eq!(complete.readings.len(), 1);
     }
 
     #[test]
