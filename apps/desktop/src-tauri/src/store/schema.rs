@@ -626,7 +626,7 @@ DELETE FROM analytics_event WHERE name = 'antiburn.usage_viewed';
 /// guessed allowance period.
 const V36: &str = r#"
 CREATE TABLE provider_usage_period (
-    id                    INTEGER PRIMARY KEY,
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
     provider              TEXT NOT NULL,
     account_key           TEXT NOT NULL,
     window_id             TEXT NOT NULL,

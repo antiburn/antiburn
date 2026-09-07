@@ -438,4 +438,94 @@ mod history_tests {
             .unwrap();
         assert_eq!(count, 0);
     }
+
+    #[test]
+    fn complementary_same_time_boundaries_keep_one_period_and_duration() {
+        let store = store();
+        let first = snapshot(
+            ACCOUNT_A,
+            NOW,
+            "five-hour",
+            Some(NOW - 100),
+            None,
+            Some(20.0),
+        );
+        let id = store.record_provider_usage_snapshots(&[first]).unwrap()[0];
+        let second = snapshot(ACCOUNT_A, NOW, "five-hour", None, Some(NOW + 100), None);
+        assert_eq!(
+            store.record_provider_usage_snapshots(&[second]).unwrap(),
+            [id]
+        );
+        let history = store.provider_usage_period_history(id).unwrap().unwrap();
+        assert_eq!(history.period.duration_seconds, Some(200));
+        assert_eq!(history.observations[0].period_id, Some(id));
+    }
+
+    #[test]
+    fn contradictory_merged_bounds_detach_the_old_period() {
+        let store = store();
+        let first = snapshot(ACCOUNT_A, NOW, "five-hour", Some(NOW), None, Some(20.0));
+        let id = store.record_provider_usage_snapshots(&[first]).unwrap()[0];
+        let second = snapshot(ACCOUNT_A, NOW, "five-hour", None, Some(NOW - 1), None);
+        assert_eq!(
+            store.record_provider_usage_snapshots(&[second]).unwrap(),
+            [id]
+        );
+        assert!(
+            store
+                .provider_usage_period_history(id)
+                .unwrap()
+                .unwrap()
+                .observations
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn same_time_readings_with_different_scope_or_role_stay_distinct() {
+        let store = store();
+        let first = snapshot(
+            ACCOUNT_A,
+            NOW,
+            "limit",
+            Some(NOW - 100),
+            Some(NOW),
+            Some(20.0),
+        );
+        let mut other = first.clone();
+        other.windows[0].scope = UsageScope::Model("gpt-test".into());
+        other.windows[0].role = WindowRole::Supplemental;
+        assert_eq!(
+            store
+                .record_provider_usage_snapshots(&[first, other])
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn pruned_period_ids_do_not_reuse_an_old_id() {
+        let store = store();
+        let old = snapshot(
+            ACCOUNT_A,
+            NOW - 91 * 86_400,
+            "five-hour",
+            Some(NOW - 91 * 86_400 - 100),
+            Some(NOW - 91 * 86_400),
+            Some(20.0),
+        );
+        let old_id = store.record_provider_usage_snapshots(&[old]).unwrap()[0];
+        store.apply_session_retention(NOW).unwrap();
+        let new = snapshot(
+            ACCOUNT_A,
+            NOW,
+            "five-hour",
+            Some(NOW - 100),
+            Some(NOW),
+            Some(20.0),
+        );
+        let new_id = store.record_provider_usage_snapshots(&[new]).unwrap()[0];
+        assert!(new_id > old_id);
+    }
 }
