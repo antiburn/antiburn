@@ -266,8 +266,13 @@ fn source_identity(metadata: &std::fs::Metadata) -> String {
 }
 
 #[cfg(not(unix))]
-fn source_identity(_metadata: &std::fs::Metadata) -> String {
-    String::new()
+fn source_identity(metadata: &std::fs::Metadata) -> String {
+    metadata
+        .created()
+        .ok()
+        .and_then(|created| created.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos().to_string())
+        .unwrap_or_default()
 }
 
 fn resume_offset(
