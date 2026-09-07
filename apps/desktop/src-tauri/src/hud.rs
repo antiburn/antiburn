@@ -68,17 +68,27 @@ pub fn record_position(app: &AppHandle) {
 /// A poll rather than an event: it is the pattern the hover watcher in the HUD
 /// crate already uses, and it needs no platform notification of its own. The
 /// poll costs nothing while the HUD is closed.
+#[cfg(target_os = "macos")]
 pub fn spawn_display_watcher(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        let mut visibility = antiburn_hud::visibility_receiver();
         let mut connected: Vec<String> = Vec::new();
         loop {
-            tokio::time::sleep(DISPLAY_POLL).await;
-            if app
-                .get_webview_window(antiburn_hud::OVERLAY_LABEL)
-                .is_none()
-            {
+            if !visibility.borrow_and_update().is_visible() {
+                if visibility.changed().await.is_err() {
+                    break;
+                }
                 continue;
+            }
+            tokio::select! {
+                () = tokio::time::sleep(DISPLAY_POLL) => {}
+                changed = visibility.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    continue;
+                }
             }
             let now = antiburn_hud::monitor_keys(&app);
             if now == connected {
@@ -92,6 +102,10 @@ pub fn spawn_display_watcher(app: &AppHandle) {
         }
     });
 }
+
+/// Keep the display watcher absent where the HUD is unavailable.
+#[cfg(not(target_os = "macos"))]
+pub fn spawn_display_watcher(_app: &AppHandle) {}
 
 /// Read the stored value. Anything unreadable means "no memory yet": a bad row
 /// must never stop the HUD from appearing.

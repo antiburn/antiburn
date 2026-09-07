@@ -8,6 +8,8 @@
 //! that memory — [`Placement`], [`current_placement`], and [`apply_placement`]
 //! — and the shell supplies the storage.
 
+#[cfg(target_os = "macos")]
+use std::sync::LazyLock;
 use std::sync::Mutex;
 #[cfg(target_os = "macos")]
 use std::sync::MutexGuard;
@@ -47,6 +49,70 @@ const RESIZE_DURATION: Duration = Duration::from_millis(140);
 const RESIZE_STEPS: u32 = 12;
 #[cfg(target_os = "macos")]
 const OVERLAY_VISIBILITY_EVENT: &str = "overlay_visibility_changed";
+#[cfg(target_os = "macos")]
+const OVERLAY_WORK_EVENT: &str = "overlay_work_changed";
+
+#[cfg(target_os = "macos")]
+static OVERLAY_VISIBILITY: LazyLock<tokio::sync::watch::Sender<VisibilityState>> =
+    LazyLock::new(|| tokio::sync::watch::channel(VisibilityState::hidden()).0);
+
+/// Native HUD visibility and hover watcher ownership.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy)]
+pub struct VisibilityState {
+    visible: bool,
+    hover_generation: u64,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl VisibilityState {
+    const fn hidden() -> Self {
+        Self {
+            visible: false,
+            hover_generation: 0,
+        }
+    }
+
+    /// Return whether the native HUD is on screen.
+    pub fn is_visible(self) -> bool {
+        self.visible
+    }
+
+    fn start_hover_watcher(&mut self) -> u64 {
+        self.hover_generation = self.hover_generation.wrapping_add(1);
+        self.hover_generation
+    }
+
+    fn destroy_hover_watcher(&mut self, generation: u64) {
+        if self.hover_generation == generation {
+            self.hover_generation = self.hover_generation.wrapping_add(1);
+            self.visible = false;
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_overlay_visible(visible: bool) {
+    OVERLAY_VISIBILITY.send_modify(|state| state.visible = visible);
+}
+
+/// Return whether the HUD is requested to run, including its first render.
+#[cfg(target_os = "macos")]
+pub fn work_is_active() -> bool {
+    RESIZE_STATE.wants_visible()
+}
+
+/// Keep HUD work inactive where the HUD is unavailable.
+#[cfg(not(target_os = "macos"))]
+pub fn work_is_active() -> bool {
+    false
+}
+
+/// Subscribe to the HUD's actual native visibility.
+#[cfg(target_os = "macos")]
+pub fn visibility_receiver() -> tokio::sync::watch::Receiver<VisibilityState> {
+    OVERLAY_VISIBILITY.subscribe()
+}
 
 #[cfg(any(target_os = "macos", test))]
 struct ResizeState {
@@ -351,6 +417,7 @@ pub fn open(app: &AppHandle, entries: &[Placement]) -> tauri::Result<()> {
             RESIZE_STATE.request_open();
             RESIZE_STATE.is_measured()
         };
+        let _ = app.emit(OVERLAY_WORK_EVENT, true);
         // Displays can connect or disconnect while the HUD is off, so the
         // reopen resolves the remembered position again before it shows.
         place(&window, entries)?;
@@ -364,6 +431,7 @@ pub fn open(app: &AppHandle, entries: &[Placement]) -> tauri::Result<()> {
         let _guard = resize_apply_guard();
         RESIZE_STATE.reset(OVERLAY_SEED_HEIGHT);
     }
+    set_overlay_visible(false);
     let window = WebviewWindowBuilder::new(
         app,
         OVERLAY_LABEL,
@@ -386,6 +454,7 @@ pub fn open(app: &AppHandle, entries: &[Placement]) -> tauri::Result<()> {
     float_over_all_spaces(&window)?;
     spawn_hover_watcher(window.clone());
     place(&window, entries)?;
+    let _ = app.emit(OVERLAY_WORK_EVENT, true);
 
     // The renderer reveals the window after it reports the first content height.
     Ok(())
@@ -402,9 +471,16 @@ pub fn open(_app: &AppHandle, _entries: &[Placement]) -> tauri::Result<()> {
 pub fn hide(app: &AppHandle) -> tauri::Result<()> {
     let _guard = resize_apply_guard();
     RESIZE_STATE.request_hide();
+    set_overlay_visible(false);
+    let _ = app.emit(OVERLAY_WORK_EVENT, false);
     hide_detail(app);
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
-        window.hide()?;
+        if let Err(error) = window.hide() {
+            RESIZE_STATE.request_open();
+            set_overlay_visible(true);
+            let _ = app.emit(OVERLAY_WORK_EVENT, true);
+            return Err(error);
+        }
     }
     let _ = app.emit(OVERLAY_VISIBILITY_EVENT, false);
     Ok(())
@@ -545,6 +621,7 @@ fn show_without_activation(window: &WebviewWindow) -> tauri::Result<()> {
             // reset them when it shows a window.
             apply_float_over_all_spaces(ns_window);
             ns_window.orderFrontRegardless();
+            set_overlay_visible(true);
             let _ = app.emit(OVERLAY_VISIBILITY_EVENT, true);
         }
     })
@@ -624,19 +701,48 @@ fn apply_height(
 
 #[cfg(target_os = "macos")]
 fn spawn_hover_watcher(window: WebviewWindow) {
+    let mut generation = 0;
+    OVERLAY_VISIBILITY.send_modify(|state| {
+        generation = state.start_hover_watcher();
+    });
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            OVERLAY_VISIBILITY.send_modify(|state| state.destroy_hover_watcher(generation));
+        }
+    });
     tauri::async_runtime::spawn(async move {
+        let mut visibility = visibility_receiver();
         let mut inside_last = false;
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let state = *visibility.borrow_and_update();
+            if state.hover_generation != generation {
+                break;
+            }
+            if !state.visible {
+                inside_last = false;
+                if visibility.changed().await.is_err() {
+                    break;
+                }
+                continue;
+            }
+            tokio::select! {
+                () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+                changed = visibility.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+            }
+            if visibility.borrow().hover_generation != generation {
+                break;
+            }
             if window
                 .app_handle()
                 .get_webview_window(OVERLAY_LABEL)
                 .is_none()
             {
                 break;
-            }
-            if !window.is_visible().unwrap_or(false) {
-                continue;
             }
             let inside = cursor_inside(&window).unwrap_or(false);
             if inside != inside_last {
@@ -731,10 +837,16 @@ pub fn detail_state() -> serde_json::Value {
 /// through [`apply_detail_size`].
 #[cfg(target_os = "macos")]
 pub fn show_detail(app: &AppHandle, state: serde_json::Value) {
-    if let Ok(mut slot) = DETAIL_STATE.lock() {
-        *slot = Some(state.clone());
+    {
+        let _guard = resize_apply_guard();
+        if !RESIZE_STATE.wants_visible() {
+            return;
+        }
+        if let Ok(mut slot) = DETAIL_STATE.lock() {
+            *slot = Some(state.clone());
+        }
+        DETAIL_SHOULD_SHOW.store(true, Ordering::Relaxed);
     }
-    DETAIL_SHOULD_SHOW.store(true, Ordering::Relaxed);
     if app.get_webview_window(DETAIL_LABEL).is_none() && build_detail(app).is_err() {
         return;
     }
@@ -751,6 +863,7 @@ pub fn show_detail(_app: &AppHandle, _state: serde_json::Value) {}
 /// window appears at its final size, so it never resizes on screen.
 #[cfg(target_os = "macos")]
 pub fn apply_detail_size(app: &AppHandle, height: f64) {
+    let _guard = resize_apply_guard();
     let height = clamp_detail_height(height);
     let Some(detail) = app.get_webview_window(DETAIL_LABEL) else {
         return;
@@ -767,7 +880,7 @@ pub fn apply_detail_size(app: &AppHandle, height: f64) {
     if position_detail_window(&detail, &hud, height).is_none() {
         return;
     }
-    if DETAIL_SHOULD_SHOW.load(Ordering::Relaxed) {
+    if RESIZE_STATE.wants_visible() && DETAIL_SHOULD_SHOW.load(Ordering::Relaxed) {
         let _ = detail.show();
     }
 }
@@ -1022,6 +1135,27 @@ mod tests {
         assert!(!state.wants_visible());
         state.request_open();
         assert!(state.wants_visible());
+    }
+
+    #[test]
+    fn destroying_a_hidden_window_cancels_its_hover_watcher() {
+        let mut state = VisibilityState::hidden();
+        state.visible = true;
+        let generation = state.start_hover_watcher();
+        state.destroy_hover_watcher(generation);
+        assert!(!state.visible);
+        assert_ne!(state.hover_generation, generation);
+    }
+
+    #[test]
+    fn destroying_an_old_window_does_not_cancel_its_replacement() {
+        let mut state = VisibilityState::hidden();
+        let old = state.start_hover_watcher();
+        let current = state.start_hover_watcher();
+        state.visible = true;
+        state.destroy_hover_watcher(old);
+        assert!(state.visible);
+        assert_eq!(state.hover_generation, current);
     }
 
     #[test]

@@ -38,6 +38,7 @@ macro_rules! with_app_commands {
             commands::hide_overlay_window => "hide_overlay_window",
             commands::hide_popover => "hide_popover",
             commands::install_update => "install_update",
+            commands::is_overlay_work_active => "is_overlay_work_active",
             commands::list_recent_sessions => "list_recent_sessions",
             commands::list_repositories => "list_repositories",
             commands::list_scan_roots => "list_scan_roots",

@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window"
 
 const OVERLAY_WINDOW_LABEL = "antiburn-overlay"
 const OVERLAY_VISIBILITY_EVENT = "overlay_visibility_changed"
+const OVERLAY_WORK_EVENT = "overlay_work_changed"
 
 export function openOverlayWindow(): Promise<void> {
   return invoke("open_overlay_window")
@@ -12,6 +13,13 @@ export function openOverlayWindow(): Promise<void> {
 
 export async function hideOverlayWindow(): Promise<void> {
   await invoke("hide_overlay_window")
+}
+
+/** Subscribe to native HUD work transitions. */
+export async function onOverlayWorkChanged(
+  handler: (active: boolean) => void,
+): Promise<() => void> {
+  return listen<boolean>(OVERLAY_WORK_EVENT, (event) => handler(Boolean(event.payload)))
 }
 
 /**

@@ -932,6 +932,12 @@ export async function getLatestSessionActivity(): Promise<number | null> {
   return invoke<number | null>("get_latest_session_activity")
 }
 
+/** Return whether the retained HUD renderer should run background work. */
+export async function isOverlayWorkActive(): Promise<boolean> {
+  if (!hasShell()) return false
+  return invoke<boolean>("is_overlay_work_active")
+}
+
 /** One usage bar as the hover detail window renders it. */
 export interface HudDetailBar {
   key: string

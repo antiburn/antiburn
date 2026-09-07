@@ -5,8 +5,11 @@ import type * as Ipc from "../lib/ipc"
 import type { LiveUsageSummaryPayload } from "../lib/ipc"
 import { OverlayWindow } from "./OverlayWindow"
 
+const REFRESH_TEST_MS = 60_000
+
 const getLiveUsage = vi.hoisted(() => vi.fn())
 const getLatestSessionActivity = vi.hoisted(() => vi.fn())
+const isOverlayWorkActive = vi.hoisted(() => vi.fn())
 const showHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 const hideHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 const resizeOverlayWindow = vi.hoisted(() => vi.fn(async () => {}))
@@ -27,6 +30,7 @@ vi.mock("../lib/ipc", async () => {
     ...actual,
     getLiveUsage,
     getLatestSessionActivity,
+    isOverlayWorkActive,
     showHudDetail,
     hideHudDetail,
     resizeOverlayWindow,
@@ -37,13 +41,22 @@ vi.mock("../lib/ipc", async () => {
 const invoke = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}))
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
 
-const hover = vi.hoisted(() => ({ emit: null as ((next: boolean) => void) | null }))
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async (_event: string, handler: (event: { payload: boolean }) => void) => {
-    hover.emit = (next: boolean) => handler({ payload: next })
-    return () => {}
-  }),
+const nativeEvents = vi.hoisted(
+  () => new Map<string, Set<(event: { payload: unknown }) => void>>(),
+)
+const listenNative = vi.hoisted(() => vi.fn())
+const hover = vi.hoisted(() => ({
+  emit: (next: boolean) => {
+    for (const handler of nativeEvents.get("overlay_hover") ?? []) {
+      handler({ payload: next })
+    }
+  },
 }))
+vi.mock("@tauri-apps/api/event", () => ({ listen: listenNative }))
+
+function emitNative(event: string, payload: unknown): void {
+  for (const handler of nativeEvents.get(event) ?? []) handler({ payload })
+}
 
 const setPosition = vi.hoisted(() => vi.fn(async () => {}))
 const outerPosition = vi.hoisted(() => vi.fn(async () => ({ x: 600, y: 40 })))
@@ -183,11 +196,25 @@ describe("OverlayWindow", () => {
     getLiveUsage.mockResolvedValue(summary())
     getLatestSessionActivity.mockReset()
     getLatestSessionActivity.mockResolvedValue(null)
+    isOverlayWorkActive.mockReset()
+    isOverlayWorkActive.mockResolvedValue(true)
     showHudDetail.mockClear()
     hideHudDetail.mockClear()
     resizeOverlayWindow.mockClear()
     invoke.mockClear()
     livePush.emit = null
+    nativeEvents.clear()
+    listenNative.mockReset()
+    listenNative.mockImplementation(
+      async (event: string, handler: (event: { payload: unknown }) => void) => {
+        const listeners = nativeEvents.get(event) ?? new Set()
+        listeners.add(handler)
+        nativeEvents.set(event, listeners)
+        return () => {
+          listeners.delete(handler)
+        }
+      },
+    )
     onLiveUsageChanged.mockClear()
     outerPosition.mockReset()
     outerPosition.mockResolvedValue({ x: 600, y: 40 })
@@ -208,6 +235,178 @@ describe("OverlayWindow", () => {
     expect(document.body.dataset.transparentWindow).toBe("true")
     unmount()
     expect(document.body.dataset.transparentWindow).toBeUndefined()
+  })
+
+  it("does no polling or subscription work while native policy keeps it hidden", async () => {
+    isOverlayWorkActive.mockResolvedValue(false)
+    vi.useFakeTimers()
+    try {
+      const { unmount } = render(<OverlayWindow />)
+      await advance(0)
+
+      expect(getLiveUsage).not.toHaveBeenCalled()
+      expect(getLatestSessionActivity).not.toHaveBeenCalled()
+      expect(nativeEvents.get("overlay_hover")?.size ?? 0).toBe(0)
+      await advance(5 * 60_000)
+      expect(getLiveUsage).not.toHaveBeenCalled()
+      unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("parks on hide and starts one fresh work set on every reshow", async () => {
+    isOverlayWorkActive.mockResolvedValue(false)
+    vi.useFakeTimers()
+    try {
+      render(<OverlayWindow />)
+      await advance(0)
+
+      act(() => emitNative("overlay_work_changed", true))
+      await advance(0)
+      expect(getLiveUsage).toHaveBeenCalledTimes(1)
+      expect(getLatestSessionActivity).toHaveBeenCalledTimes(1)
+
+      act(() => emitNative("overlay_work_changed", false))
+      expect(nativeEvents.get("overlay_hover")?.size ?? 0).toBe(0)
+      await advance(2 * REFRESH_TEST_MS)
+      expect(getLiveUsage).toHaveBeenCalledTimes(1)
+
+      act(() => emitNative("overlay_work_changed", true))
+      await advance(0)
+      expect(getLiveUsage).toHaveBeenCalledTimes(2)
+      expect(getLatestSessionActivity).toHaveBeenCalledTimes(2)
+
+      act(() => emitNative("overlay_work_changed", false))
+      act(() => emitNative("overlay_work_changed", true))
+      await advance(0)
+      expect(getLiveUsage).toHaveBeenCalledTimes(3)
+      expect(nativeEvents.get("overlay_hover")?.size).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("reports layout readiness again when a reshow returns identical bars", async () => {
+    vi.useFakeTimers()
+    try {
+      render(<OverlayWindow />)
+      await advance(0)
+      const initialResizeCount = resizeOverlayWindow.mock.calls.length
+      expect(initialResizeCount).toBeGreaterThan(0)
+
+      act(() => emitNative("overlay_work_changed", false))
+      act(() => emitNative("overlay_work_changed", true))
+      await advance(0)
+
+      expect(resizeOverlayWindow.mock.calls.length).toBeGreaterThan(initialResizeCount)
+      expect(getLiveUsage).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("ignores a delayed initial load after native hide", async () => {
+    let resolveUsage!: (usage: LiveUsageSummaryPayload) => void
+    getLiveUsage.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveUsage = resolve
+        }),
+    )
+    render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalledTimes(1))
+    const resizeCount = resizeOverlayWindow.mock.calls.length
+
+    act(() => emitNative("overlay_work_changed", false))
+    await act(async () => resolveUsage(withSecondBar()))
+
+    expect(resizeOverlayWindow).toHaveBeenCalledTimes(resizeCount)
+    expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
+  })
+
+  it("does not let a stale active-state read restart hidden work", async () => {
+    let resolveActive!: (active: boolean) => void
+    isOverlayWorkActive.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveActive = resolve
+        }),
+    )
+    render(<OverlayWindow />)
+    await waitFor(() => expect(isOverlayWorkActive).toHaveBeenCalledTimes(1))
+
+    act(() => emitNative("overlay_work_changed", false))
+    await act(async () => resolveActive(true))
+
+    expect(getLiveUsage).not.toHaveBeenCalled()
+    expect(getLatestSessionActivity).not.toHaveBeenCalled()
+  })
+
+  it("retries a transient native work-listener failure", async () => {
+    listenNative.mockRejectedValueOnce(new Error("listener unavailable"))
+    render(<OverlayWindow />)
+
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
+    expect(listenNative.mock.calls[0]?.[0]).toBe("overlay_work_changed")
+    expect(listenNative.mock.calls[1]?.[0]).toBe("overlay_work_changed")
+    expect(nativeEvents.get("overlay_work_changed")?.size).toBe(1)
+  })
+
+  it("expires live activity once without polling", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
+    getLatestSessionActivity.mockResolvedValue(Date.now() / 1000)
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      expect(container.querySelector(".led-blink")).not.toBeNull()
+
+      await advance(90_001)
+      expect(container.querySelector(".led-blink")).toBeNull()
+      expect(getLatestSessionActivity).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("keeps a far-future activity expiry inside the browser timer bound", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
+    const day = 24 * 60 * 60 * 1000
+    getLatestSessionActivity.mockResolvedValue((Date.now() + 40 * day) / 1000)
+    const timeout = vi.spyOn(window, "setTimeout")
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      expect(container.querySelector(".led-blink")).not.toBeNull()
+      expect(timeout).toHaveBeenCalledWith(expect.any(Function), 2_147_483_647)
+      expect(getLatestSessionActivity).toHaveBeenCalledTimes(1)
+    } finally {
+      timeout.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it("uses pushed session activity and cleans its subscriptions on hide", async () => {
+    const { container, unmount } = render(<OverlayWindow />)
+    await waitFor(() => expect(nativeEvents.get("sessions:entry-changed")?.size).toBe(1))
+
+    act(() =>
+      emitNative("sessions:entry-changed", {
+        timestamp: new Date().toISOString(),
+      }),
+    )
+    expect(container.querySelector(".led-blink")).not.toBeNull()
+
+    act(() => emitNative("overlay_work_changed", false))
+    expect(nativeEvents.get("sessions:entry-changed")?.size ?? 0).toBe(0)
+    expect(nativeEvents.get("scan:finished")?.size ?? 0).toBe(0)
+    expect(nativeEvents.get("sessions:invalidated")?.size ?? 0).toBe(0)
+    expect(nativeEvents.get("overlay_work_changed")?.size).toBe(1)
+
+    unmount()
+    expect(nativeEvents.get("overlay_work_changed")?.size ?? 0).toBe(0)
   })
 
   it("rests with bars only and a hidden close control", async () => {
@@ -241,6 +440,18 @@ describe("OverlayWindow", () => {
     expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
     // The window shrinks with it, rather than keeping the old bars' height.
     await waitFor(() => expect(resizeOverlayWindow).toHaveBeenCalledWith(28, false, true))
+  })
+
+  it("does not publish or resize for an equal pushed usage snapshot", async () => {
+    const payload = summary()
+    getLiveUsage.mockResolvedValue(payload)
+    render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
+    const resizeCount = resizeOverlayWindow.mock.calls.length
+
+    await act(async () => livePush.emit!(payload))
+
+    expect(resizeOverlayWindow).toHaveBeenCalledTimes(resizeCount)
   })
 
   it("reveals at the measured collapsed height", async () => {
@@ -332,10 +543,10 @@ describe("OverlayWindow", () => {
     try {
       render(<OverlayWindow />)
       await advance(0)
-      act(() => hover.emit!(true))
+      act(() => hover.emit(true))
       await advance(400)
       expect(showHudDetail).toHaveBeenCalledTimes(1)
-      act(() => hover.emit!(false))
+      act(() => hover.emit(false))
       expect(hideHudDetail).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
@@ -344,8 +555,8 @@ describe("OverlayWindow", () => {
 
   it("keeps hover active inside the transparent frame margin", async () => {
     const { container } = render(<OverlayWindow />)
-    await waitFor(() => expect(hover.emit).not.toBeNull())
-    act(() => hover.emit!(true))
+    await waitFor(() => expect(nativeEvents.get("overlay_hover")?.size).toBe(1))
+    act(() => hover.emit(true))
     await waitFor(() => expect(closeButton()).toHaveClass("opacity-100"))
     fireEvent.mouseLeave(panel(container), { relatedTarget: frame(container) })
     expect(closeButton()).toHaveClass("opacity-100")
@@ -380,6 +591,7 @@ describe("OverlayWindow", () => {
         }),
     )
     const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
     fireEvent.mouseEnter(frame(container))
     fireEvent.mouseDown(panel(container), { screenX: 700, screenY: 100 })
     await waitFor(() => expect(outerPosition).toHaveBeenCalledTimes(1))
@@ -391,8 +603,38 @@ describe("OverlayWindow", () => {
     fireEvent.mouseUp(window)
   })
 
+  it("ignores an old drag position after hide and reshow", async () => {
+    let resolveOldPosition!: (position: { x: number; y: number }) => void
+    outerPosition
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveOldPosition = resolve
+          }),
+      )
+      .mockResolvedValueOnce({ x: 600, y: 40 })
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
+
+    fireEvent.mouseDown(panel(container), { screenX: 700, screenY: 100 })
+    await waitFor(() => expect(outerPosition).toHaveBeenCalledTimes(1))
+    act(() => emitNative("overlay_work_changed", false))
+    act(() => emitNative("overlay_work_changed", true))
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalledTimes(2))
+
+    fireEvent.mouseDown(panel(container), { screenX: 700, screenY: 100 })
+    await waitFor(() => expect(outerPosition).toHaveBeenCalledTimes(2))
+    await act(async () => resolveOldPosition({ x: 100, y: 10 }))
+    fireEvent.mouseMove(window, { screenX: 710, screenY: 110 })
+
+    await waitFor(() => expect(setPosition).toHaveBeenCalled())
+    expect(setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: 610, y: 50 }))
+    fireEvent.mouseUp(window)
+  })
+
   it("remembers where a settled drag left the HUD", async () => {
     const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
     fireEvent.mouseDown(panel(container), { screenX: 700, screenY: 100 })
     await waitFor(() => expect(outerPosition).toHaveBeenCalledTimes(1))
     fireEvent.mouseUp(window)
@@ -412,6 +654,7 @@ describe("OverlayWindow", () => {
   it("survives a rejected position record", async () => {
     invoke.mockRejectedValueOnce(new Error("no window"))
     const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
     fireEvent.mouseDown(panel(container), { screenX: 700, screenY: 100 })
     await waitFor(() => expect(outerPosition).toHaveBeenCalledTimes(1))
     fireEvent.mouseUp(window)
@@ -425,6 +668,7 @@ describe("OverlayWindow", () => {
     const removeListener = vi.spyOn(window, "removeEventListener")
     outerPosition.mockRejectedValueOnce(new Error("position unavailable"))
     const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
 
     fireEvent.mouseDown(panel(container), { screenX: 700, screenY: 100 })
 
