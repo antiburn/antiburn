@@ -2,21 +2,31 @@
 
 Audited on 2026-09-08 at `3ce2b1da`. This is a source audit, not an analysis of
 production event volumes. The collector, warehouse, release secrets, and live
-dashboards were not inspected. Proposed events below do not ship yet;
-[analytics.md](analytics.md) remains the catalog of implemented events.
+dashboards were not inspected. The findings below preserve the state at that
+revision. [analytics.md](analytics.md) is the catalog of implemented events.
 
-The current events establish that some installations run, complete setup, and
-open sessions. They cannot establish how often people deliberately use the app,
-which surfaces provide value, or whether a feature is unused because its data
-never loads. Add coverage around visible product outcomes before adding more
-background diagnostics.
+At the audited revision, events established that some installations ran,
+completed setup, and opened sessions. They could not establish how often people
+deliberately used the app, which surfaces provided value, or whether a feature
+was unused because its data never loaded.
 
-## Current coverage
+## Implementation status
 
-The closed catalog has nine events. Envelope fields provide event IDs, rotating
+Phase 1 is implemented in the current source. The closed catalog now records
+successful surface and Settings-pane visibility, visible surface outcomes,
+deliberately viewed provider states, and classified setup starts and
+completions. `no_credentials` is an accepted provider-state value but remains
+dormant because the current product boundary cannot prove it. The queue now
+wakes at a bounded depth and uses protected drain and retry delays. Phase 2 and
+Phase 3 remain proposals. Collector verification, production reports, and
+cohort review remain operational work.
+
+## Coverage at the audited revision
+
+The closed catalog had nine events. Envelope fields provided event IDs, rotating
 installation IDs, application analytics session IDs, capture and send times,
-app version, OS, and architecture. Properties are fixed labels and coarse
-buckets; the Claude diagnostic has nine additional optional fields.
+app version, OS, and architecture. Properties were fixed labels and coarse
+buckets; the Claude diagnostic had nine additional optional fields.
 
 | Current event                            | Actual trigger and dimensions                                                                                                                                      | What it answers and misses                                                                                                              |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
@@ -88,8 +98,8 @@ Documentation discrepancies found at the audit revision:
   includes the ID on disk. Public descriptions of inactivity also need to say
   analytics-event inactivity, not imply user inactivity.
 
-This documentation change corrects those disclosures. It does not describe the
-future engagement semantics below as current behavior.
+The foundation documentation change corrected those disclosures. The Phase 1
+implementation status is separate from these historical findings.
 
 ## Measurement definitions
 
@@ -99,7 +109,7 @@ user-agent, or device information to join rotations.
 
 | Question                                           | Definition after the first implementation phase                                                                                                                                                     | Decision supported                                               |
 | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| Are people deliberately returning?                 | Daily/weekly distinct `anonymousId` with a user-initiated core `surface_viewed` event. Exclude setup, Settings-only visits, automatic restores, nudges merely appearing, and all background events. | Whether the core utility earns repeat attention.                 |
+| Are people deliberately returning?                 | Daily/weekly distinct `anonymousId` with a user-initiated core `surface_viewed` event or `settings_pane_viewed` for `insights`. Exclude setup, other Settings-only visits, automatic restores, nudges merely appearing, and all background events. | Whether the core utility earns repeat attention.                 |
 | Does setup lead to visible value?                  | Among distinct IDs completing a new setup flow, fraction that see a core surface with `ready` data within 24 hours of completion. Also report empty, error, and timeout outcomes.                   | Whether to improve setup or the first data experience.           |
 | Which features get used?                           | Distinct IDs viewing each core surface divided by engaged reporting IDs in the same interval and supporting versions/platforms. Separate ready-data reach from view reach.                          | Which surfaces merit investment or improved discovery.           |
 | Do users return after value?                       | Among IDs first reaching ready data after new setup, observed return on day 1 and day 7 using deliberate core views. Include only cohorts whose full observation window has elapsed.                | Whether activation translates into observed repeat use.          |
@@ -124,34 +134,36 @@ when constructing visits. Keep the existing wire `sessionId` unchanged initially
 and document its actual meaning. Do not infer attention duration from gaps.
 Neither tray visibility nor a persistent HUD proves that someone looked at it.
 
-## Proposed event additions
+## Event additions and proposals
 
-All names below use the `antiburn.` prefix. The listed dimensions are proposed
-closed vocabularies, not arbitrary strings or permission to upload payloads.
-Use event-specific Rust types even when serializing into existing `label`,
-`detail`, and `bucket` fields. Update disclosures for new meanings even when the
-wire field count stays unchanged.
+All names below use the `antiburn.` prefix. The Phase 1 dimensions are
+implemented closed vocabularies, not arbitrary strings or permission to upload
+payloads. Use event-specific Rust types even when serializing into existing
+`label`, `detail`, and `bucket` fields. Update disclosures for new meanings even
+when the wire field count stays unchanged.
 
-### Phase 1: visible use and value
+### Phase 1: visible use and value (implemented)
 
-| Proposed event/change                              | Trigger and safe dimensions                                                                                                                                                                                                              | Owner and volume rule                                                                                                                                                                                                                                                          |
+| Event/change                                       | Trigger and safe dimensions                                                                                                                                                                                                              | Owner and volume rule                                                                                                                                                                                                                                                          |
 | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `surface_viewed`                                   | Successful reveal or visible navigation. `label`: `activity`, `session_detail`, `provider_preview`, `checks_preview`, `hud`, `hud_detail`, or `settings`. `detail`: `user` or `automatic`.                                               | Shell visibility transition plus surface controllers. One per actual transition; no event for prewarm, repeated show requests, data refresh, or hidden navigation. Only deliberate transitions qualify as engagement.                                                          |
 | `settings_pane_viewed`                             | Requested pane is selected and visible. `label`: the eight existing Settings pane IDs.                                                                                                                                                   | `SettingsWindowSession`, including first opening and external pane requests. One per visible pane transition, with duplicate requests suppressed.                                                                                                                              |
 | `surface_state_observed`                           | Data state presented on a visible surface. Same surface vocabulary, plus `insights`; `detail`: `ready`, `empty`, `error`, or `loading_timeout`. Ready means a usable payload, not merely a mounted component or successful IPC response. | Surface controllers after both visibility and data readiness. At most once per distinct state per surface exposure; ignore stale asynchronous results. Use a documented 10-second visible initial-load timeout, canceled when hidden; later ready data can still emit `ready`. |
-| `live_usage_state_observed`                        | An enabled provider's state is presented on a visible usage surface. `label`: fixed supported provider category; `detail`: `fresh`, `stale`, `authentication`, `rate_limited`, `unavailable`, or `no_credentials`.                       | Map existing presentation states, without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. No account, plan name, balance, quota value, or raw response.                                                                         |
-| `onboarding_started`, extend `onboarding_finished` | Start and committed completion of a setup flow. `label`: `new` or `restart`.                                                                                                                                                             | Explicit onboarding lifecycle and finish command. One start/completion per flow. Preserve the four existing step events; do not call closing the window an abandonment event.                                                                                                  |
+| `live_usage_state_observed`                        | A provider state is presented on Activity, a provider preview, or a user-opened HUD. `label`: `anthropic`, `openai`, or `google`; `detail`: `fresh`, `stale`, `authentication`, `rate_limited`, `unavailable`, or `no_credentials`. | Map existing presentation states, without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. `no_credentials` remains dormant. No account, plan name, balance, quota value, or raw response.                                       |
+| `onboarding_started`, extend `onboarding_finished` | Visible start or resume and committed completion of a setup flow. `label`: `new` or `restart`.                                                                                                                                           | Emit a start on the first visible start or resume in each app process. A quit and later resume emits another start with the persisted classification. Emit completion once per pending-to-complete transition. Preserve the four existing step events.                           |
 
 `surface_state_observed` also needs a closed `properties.origin` value of `user`
-or `automatic`, inherited from its exposure. This proposed optional wire field
-lets reports separate deliberate value from passive display without guessing
-from neighboring timestamps. Update the field-count tests and all affected
-disclosures when adding it. Keep the field absent on unrelated events.
+or `automatic`, inherited from its exposure. This optional wire field lets
+reports separate deliberate value from passive display without guessing from
+neighboring timestamps. It stays absent on unrelated events.
 
 Define the start classification from the explicit restart path and existing
 onboarding state, not from whether the analytics identifier has been seen.
 Analyze setup progress by distinct installation and ordered times; repeated
-flows in one observation window are not independent new installations.
+flows in one observation window are not independent new installations. Earlier
+`onboarding_finished` events have no classification label. Exclude those legacy
+events from new-versus-restart cohorts instead of treating a missing label as
+`new`.
 
 Keep `session_opened` as the existing activity-card intent event. Pair it with
 visible session detail and data state for the activation funnel. Record visible
@@ -200,13 +212,13 @@ or events per poll, transcript record, chart hover, scroll tick, or token update
 Give temporary diagnostics, including the Claude reset probe, an owner and
 review date so experiments do not become permanent noise or provider traffic.
 
-Before expanding volume, simulate normal repeated visits, preview use, and an
-offline backlog against the 50-event drain and 500-row queue. If that workload
-exceeds capacity, implement bounded queue-depth-triggered draining with retry
-backoff and a request budget. Preserve the opt-out recheck before each request
-and silent failure. Do not merely increase queue size or add a blocking exit
-flush. Monitor delivery lag, duplicate message IDs, rejection counts, and event
-mix in the collector separately from product engagement.
+Phase 1 adds bounded queue-depth-triggered draining, protected retry backoff, and
+a request budget. Before expanding volume further, simulate normal repeated
+visits, preview use, and an offline backlog against the 50-event drain and
+500-row queue. Preserve the opt-out recheck before each request and silent
+failure. Do not merely increase queue size or add a blocking exit flush. Monitor
+delivery lag, duplicate message IDs, rejection counts, and event mix in the
+collector separately from product engagement.
 
 ## Event review contract
 
@@ -243,12 +255,13 @@ merely requires an analytics file to change in every feature PR.
 
 ## Delivery sequence and acceptance
 
-1. Establish baseline collector queries for the nine current events, by version.
+1. The source now contains the disclosure corrections, Phase 1 events, and
+   bounded delivery changes. Establish baseline collector queries by app version.
    Verify configured release ingestion, retry deduplication, and delivery delay.
    Do not claim production behavior from source alone.
-2. Ship Phase 1 with a loopback recording of setup → activity → preview → session
-   detail → Settings Insights → return visit. Also exercise empty/error data,
-   hidden prewarm, renderer recreation, automatic HUD restore, and opt-out.
+2. Verify Phase 1 with a loopback recording of setup → activity → preview →
+   session detail → Settings Insights → return visit. Also exercise empty/error
+   data, hidden prewarm, renderer recreation, automatic HUD restore, and opt-out.
    Assert the expected sequence and absence of duplicate use events.
 3. Build engagement, activation, feature reach, observed day-1/day-7 return, and
    visible reliability reports using the definitions above. Show reporting
@@ -257,6 +270,7 @@ merely requires an analytics file to change in every feature PR.
    Phase 2 actions based on observed gaps. Assign each report and diagnostic a
    maintainer; review whether its events still support an actual decision.
 
-This audit changes documentation, current public disclosures, and contributor
-expectations only. Runtime instrumentation, collector configuration, dashboards,
-and disclosures for proposed events remain implementation work described above.
+The historical audit changed documentation, current public disclosures, and
+contributor expectations. Phase 1 now adds runtime instrumentation and bounded
+delivery behavior. Collector configuration, dashboards, and Phase 2 and Phase 3
+implementation remain work described above.

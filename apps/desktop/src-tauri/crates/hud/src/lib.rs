@@ -672,6 +672,10 @@ fn cursor_inside(window: &WebviewWindow) -> Option<bool> {
 #[cfg(target_os = "macos")]
 const DETAIL_STATE_EVENT: &str = "hud-detail:state";
 
+/// Event emitted after the detail window reaches the screen.
+#[cfg(target_os = "macos")]
+const DETAIL_SHOWN_EVENT: &str = "hud-detail:shown";
+
 /// Event that asks the detail webview to clear its card before a hide.
 #[cfg(target_os = "macos")]
 const DETAIL_CONCEAL_EVENT: &str = "hud-detail:conceal";
@@ -768,8 +772,17 @@ pub fn apply_detail_size(app: &AppHandle, height: f64) {
         return;
     }
     if DETAIL_SHOULD_SHOW.load(Ordering::Relaxed) {
-        let _ = detail.show();
+        let was_visible = detail.is_visible().unwrap_or(false);
+        let show_succeeded = detail.show().is_ok();
+        if should_emit_detail_shown(was_visible, show_succeeded) {
+            let _ = app.emit_to(OVERLAY_LABEL, DETAIL_SHOWN_EVENT, ());
+        }
     }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn should_emit_detail_shown(was_visible: bool, show_succeeded: bool) -> bool {
+    !was_visible && show_succeeded
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1114,6 +1127,13 @@ mod tests {
     #[test]
     fn before_the_first_show_the_detail_state_is_null() {
         assert_eq!(detail_state(), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn detail_visibility_reports_only_a_successful_hidden_to_visible_transition() {
+        assert!(should_emit_detail_shown(false, true));
+        assert!(!should_emit_detail_shown(true, true));
+        assert!(!should_emit_detail_shown(false, false));
     }
 
     fn placement(monitor: &str, x: f64, y: f64) -> Placement {

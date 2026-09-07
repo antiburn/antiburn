@@ -7,6 +7,9 @@ import {
   type PopoverPeekRequest,
   type PopoverPeekTarget,
 } from "../../lib/popoverPeekIpc"
+import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
+import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
+import { providerWindow, windowHasEvidence } from "../../lib/presentation/providerUsage"
 
 export interface PopoverPeekSnapshot {
   requested: PopoverPeekRequest
@@ -62,6 +65,39 @@ function sameTarget(left: PopoverPeekTarget | null, right: PopoverPeekTarget | n
   return left.provider === right.provider && left.utcOffsetMinutes === right.utcOffsetMinutes
 }
 
+function presentationState(
+  request: PopoverPeekActiveRequest,
+  data: PopoverPeekData | null,
+): "ready" | "empty" | "error" {
+  if (!data) return "error"
+  if (data.kind === "checks") {
+    const report = data.presentation
+    if (
+      report.failures.length > 0 ||
+      report.wins.length > 0 ||
+      report.estimate.tokenBurnBasisPoints !== null
+    ) {
+      return "ready"
+    }
+    return report.refreshUnavailable ? "error" : "empty"
+  }
+  const provider = request.target.kind === "provider" ? request.target.provider : null
+  if (!provider) return "error"
+  const localReady = data.summary.providers
+    .filter((entry) => entry.provider === provider)
+    .some((entry) =>
+      (["today", "week", "monthToDate", "last30Days"] as const).some((window) =>
+        windowHasEvidence(providerWindow(entry, window)),
+      ),
+    )
+  const liveReady = liveDisplayableProviders(data.live)
+    .filter((entry) => entry.provider === provider)
+    .some((entry) => liveWindows(entry).length > 0)
+  if (localReady || liveReady) return "ready"
+  if (data.live.errors.some((entry) => entry.provider === provider)) return "error"
+  return "empty"
+}
+
 /** Owns one renderer's request listener and rejects stale async results. */
 export class PopoverPeekController {
   private snapshot: PopoverPeekSnapshot = {
@@ -79,9 +115,12 @@ export class PopoverPeekController {
   private readyRetryTimer: ReturnType<typeof setTimeout> | null = null
   private rendererGeneration: number | null = null
   private readyGeneration: number | null = null
+  private rendererReady = false
   private readyRevision = 0
   private activeLoad: PopoverPeekActiveRequest | null = null
   private pendingLoad: PopoverPeekActiveRequest | null = null
+  private readonly exposure = new SurfaceExposureTracker()
+  private confirmedGeneration: number | null = null
 
   constructor(bridge: PopoverPeekBridge = DEFAULT_BRIDGE) {
     this.bridge = bridge
@@ -110,8 +149,10 @@ export class PopoverPeekController {
         this.readyRetryTimer = null
         this.readyRevision += 1
         this.readyGeneration = null
+        this.rendererReady = false
         this.stopListening?.()
         this.stopListening = null
+        this.exposure.suspend()
       }
     }
   }
@@ -126,6 +167,8 @@ export class PopoverPeekController {
     }
     if (!request.target) {
       this.pendingLoad = null
+      this.confirmedGeneration = null
+      this.exposure.conceal()
       this.snapshot = {
         requested: request,
         presented: null,
@@ -138,6 +181,9 @@ export class PopoverPeekController {
     }
 
     const activeRequest: PopoverPeekActiveRequest = { ...request, target: request.target }
+    if (request.generation !== this.snapshot.requested.generation) {
+      this.confirmedGeneration = null
+    }
     if (request.initialPresentation) {
       this.pendingLoad = null
       this.snapshot = {
@@ -163,6 +209,9 @@ export class PopoverPeekController {
       failed: null,
     }
     this.publish()
+    if (this.rendererReady && this.snapshot.coldLoading) {
+      this.exposeLoadingRequest(activeRequest)
+    }
     if (this.activeLoad == null) this.startLoad(activeRequest)
     else this.pendingLoad = activeRequest
   }
@@ -178,6 +227,7 @@ export class PopoverPeekController {
         coldLoading: false,
       }
       this.publish()
+      this.exposePresentation(generation)
       return
     }
     const failed = this.snapshot.failed
@@ -189,6 +239,15 @@ export class PopoverPeekController {
       failed: null,
     }
     this.publish()
+    this.exposePresentation(generation)
+  }
+
+  confirmPresented = (generation: number): void => {
+    if (generation !== this.snapshot.requested.generation || !this.snapshot.requested.target) {
+      return
+    }
+    this.confirmedGeneration = generation
+    this.exposePresentation(generation)
   }
 
   discard = (generation: number): void => {
@@ -242,7 +301,14 @@ export class PopoverPeekController {
     const readyRevision = ++this.readyRevision
     this.readyGeneration = generation
     try {
-      await this.bridge.ready(generation)
+      const ready = await this.bridge.ready(generation)
+      if (ready && readyRevision === this.readyRevision) {
+        this.rendererReady = true
+        const requested = this.snapshot.requested
+        if (requested.target && this.snapshot.coldLoading) {
+          this.exposeLoadingRequest({ ...requested, target: requested.target })
+        }
+      }
     } catch {
       if (readyRevision !== this.readyRevision || this.readyGeneration !== generation) return
       this.readyGeneration = null
@@ -316,6 +382,32 @@ export class PopoverPeekController {
       request.generation === this.snapshot.requested.generation &&
       sameTarget(request.target, this.snapshot.requested.target)
     )
+  }
+
+  private exposePresentation(generation: number): void {
+    if (this.confirmedGeneration !== generation) return
+    const presented = this.snapshot.presented
+    if (!presented || presented.request.generation !== generation) return
+    const target = presented.request.target
+    const surface = target.kind === "checks" ? "checks_preview" : "provider_preview"
+    const exposureGeneration = this.exposure.expose({
+      surface,
+      origin: "user",
+      identity: generation,
+      state: presentationState(presented.request, presented.data),
+    })
+    if (target.kind === "provider" && presented.data?.kind === "provider") {
+      this.exposure.observeLiveUsage(presented.data.live, target.provider, exposureGeneration)
+    }
+  }
+
+  private exposeLoadingRequest(request: PopoverPeekActiveRequest): void {
+    const surface = request.target.kind === "checks" ? "checks_preview" : "provider_preview"
+    this.exposure.expose({
+      surface,
+      origin: "user",
+      identity: request.generation,
+    })
   }
 
   private publish(): void {

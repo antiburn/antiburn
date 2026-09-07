@@ -241,6 +241,8 @@ pub fn renderer_ready(window: &tauri::WebviewWindow, generation: u64) {
 }
 
 fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    let was_exposed =
+        window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
     center_on_active_monitor(window, WIDTH, HEIGHT);
     window.show()?;
     window.unminimize()?;
@@ -248,6 +250,9 @@ fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     // macOS application and keeps the flow reachable from the Dock.
     window.set_focus()?;
     ::tracing::info!(event = "window_revealed", window = LABEL);
+    if !was_exposed {
+        crate::analytics::record_onboarding_started(window.app_handle());
+    }
     Ok(())
 }
 

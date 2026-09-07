@@ -147,18 +147,21 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   and require the next package to be installed manually.
 - **Anonymised product analytics** are the one thing antiburn reports to us.
   Official release builds start with it on, including during onboarding. The Ready
-  screen explains it, and the switch is in Settings → Privacy. The event schema has twenty-two fields and
+  screen explains it, and the switch is in Settings → Privacy. The event schema has twenty-three fields and
   no others: the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier replaced every 30 days;
   a random analytics-session identifier; the event name; the time it happened and the time it was delivered; the
   processor architecture; a count rounded into a range where the event has one;
-  a short label naming which setting changed or which kind of failure occurred,
-  never the value; a second fixed label where needed; a coarse five-hour usage
+  a short label naming a surface, Settings pane, provider, setting, agent
+  category, or failure category, never work content or an entered value; a
+  second fixed label where needed; whether a visible state followed a user or
+  automatic exposure; a coarse five-hour usage
   band; the reset response shape; eligibility, experiment membership, experiment
   arm, and availability states; an allowlisted ineligibility reason; a reset-count
   bucket; whether a next-reset date was present; the app version; and the operating system. The payload has no
   field able to carry anything else. The analytics-session identifier changes
-  after 30 minutes without a captured analytics event or when the app restarts.
+  after 30 minutes without a captured analytics event, when the app restarts,
+  or when the installation identifier rotates.
   Its generator is memory-only, but each queued event stores the value on disk
   until that event is sent or removed. Background events can keep it active, so
   it does not measure a user visit or time spent. Because each event is

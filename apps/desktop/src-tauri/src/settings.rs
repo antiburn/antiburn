@@ -26,6 +26,9 @@ pub const LABEL: &str = "settings";
 /// Event the shell emits to move an *already open* settings window to a pane.
 pub const EVENT_PANE: &str = "settings:pane";
 
+/// Event the shell emits after Settings reaches the screen.
+pub const EVENT_SHOWN: &str = "settings:shown";
+
 /// The pane a caller asked the window to open on, until the window takes it.
 ///
 /// Two paths need this and only one of them can use an event. A window being
@@ -219,11 +222,23 @@ pub fn renderer_ready(window: &tauri::WebviewWindow, generation: u64) {
 }
 
 fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    let was_exposed =
+        window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
     center_on_active_monitor(window, WIDTH, HEIGHT);
     window.show()?;
     window.unminimize()?;
     window.set_focus()?;
     ::tracing::info!(event = "window_revealed", window = LABEL);
+    if !was_exposed {
+        crate::analytics::record_interaction(
+            window.app_handle(),
+            crate::analytics::event::Interaction::SurfaceViewed {
+                surface: crate::analytics::event::Surface::Settings,
+                origin: crate::analytics::event::Origin::User,
+            },
+        );
+        let _ = window.emit(EVENT_SHOWN, ());
+    }
     Ok(())
 }
 

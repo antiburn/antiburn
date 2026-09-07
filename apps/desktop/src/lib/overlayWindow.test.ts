@@ -72,6 +72,14 @@ describe("HudVisibilitySession", () => {
     unsubscribe()
   })
 
+  it("marks a HUD opened from the settings control as user initiated", () => {
+    const session = new HudVisibilitySession()
+
+    session.set(true)
+
+    expect(invoke).toHaveBeenCalledWith("open_overlay_window", { origin: "user" })
+  })
+
   it("does not let a stale visibility read overwrite a newer native event", async () => {
     let resolveVisibility!: (visible: boolean) => void
     isVisible.mockImplementationOnce(

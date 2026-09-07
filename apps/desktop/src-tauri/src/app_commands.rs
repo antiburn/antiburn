@@ -69,6 +69,7 @@ macro_rules! with_app_commands {
             commands::set_settings => "set_settings",
             commands::show_hud_detail => "show_hud_detail",
             commands::start_update_simulation => "start_update_simulation",
+            commands::take_hud_analytics_origin => "take_hud_analytics_origin",
             commands::take_settings_pane => "take_settings_pane",
             commands::window_ready => "window_ready",
             popover_peek::get_popover_peek_data => "get_popover_peek_data",
