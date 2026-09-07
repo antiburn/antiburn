@@ -1664,24 +1664,43 @@ fn a_cancel_request_only_applies_while_a_pass_is_running() {
 
 #[test]
 fn the_scheduler_ticks_at_the_fallback_rate_when_the_watcher_is_not_healthy() {
+    assert_eq!(tick_for_health(false), watch::FALLBACK_TICK);
+    assert_eq!(tick_for_health(true), TICK);
+}
+
+#[tokio::test(start_paused = true)]
+async fn watcher_health_transitions_update_the_deadline_without_postponing_it() {
+    let last_full_pass = tokio::time::Instant::now();
+    let healthy_deadline = last_full_pass + TICK;
+
+    let degraded = deadline_after_health_change(healthy_deadline, last_full_pass, true, false);
+    assert_eq!(degraded, last_full_pass + watch::FALLBACK_TICK);
     assert_eq!(
-        tick_for(&watch::WatcherStatus::default()),
-        watch::FALLBACK_TICK
+        deadline_after_health_change(degraded, last_full_pass, false, false),
+        degraded,
+        "identical degraded updates cannot postpone reconciliation"
     );
     assert_eq!(
-        tick_for(&watch::WatcherStatus {
-            active: true,
-            failed_roots: vec![std::path::PathBuf::from("/home/avery/.codex/sessions")],
-        }),
-        watch::FALLBACK_TICK
+        deadline_after_health_change(degraded, last_full_pass, false, true),
+        healthy_deadline,
+        "recovery restores the cadence from the last full pass"
     );
-    assert_eq!(
-        tick_for(&watch::WatcherStatus {
-            active: true,
-            failed_roots: Vec::new(),
-        }),
-        TICK
-    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn alternating_health_cannot_move_reconciliation_past_five_minutes() {
+    let last_full_pass = tokio::time::Instant::now();
+    let hard_deadline = last_full_pass + TICK;
+    let mut deadline = hard_deadline;
+    let mut healthy = true;
+
+    for _ in 0..100 {
+        let next_health = !healthy;
+        deadline = deadline_after_health_change(deadline, last_full_pass, healthy, next_health);
+        assert!(deadline <= hard_deadline);
+        healthy = next_health;
+        tokio::time::advance(Duration::from_secs(10)).await;
+    }
 }
 
 #[tokio::test]
