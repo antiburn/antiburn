@@ -269,6 +269,7 @@ pub(crate) fn refresh_publish_and_evaluate(
         collected,
         provider_usage::live::roster(&live.sources, &hidden),
         store.as_deref(),
+        Some(app),
         now,
         live.utc_offset_minutes(),
     );

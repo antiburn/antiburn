@@ -84,8 +84,10 @@ content recorded in a transcript, session identity and locations, counts, durati
 token totals, phase distributions, cost estimates, skill details, derived session
 evidence — bounded facts about which models, tools, skills, and MCP servers a
 session used, and any quota limits it recorded hitting, never the transcript's
-text — session relations, and the last successful plan-limit reading. This data stays on the
-device and is never uploaded.
+text — session relations, the last successful plan-limit reading, and timestamped
+provider usage readings for an opaque account key. Provider usage readings stay
+for up to 90 days, or a shorter selected session-data retention period. Clearing
+local data removes them. This data stays on the device and is never uploaded.
 
 The coding agents' source transcripts remain their files. antiburn may copy data from
 them into its own local store, but it never modifies or deletes the source files.

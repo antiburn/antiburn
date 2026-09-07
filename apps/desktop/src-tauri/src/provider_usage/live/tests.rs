@@ -497,7 +497,7 @@ fn a_completed_background_collection_records_history_and_shapes_the_view() {
         errors: Vec::new(),
     };
 
-    let summary = summarize_collected(collected, Vec::new(), Some(&store), NOW, 0);
+    let summary = summarize_collected(collected, Vec::new(), Some(&store), None, NOW, 0);
     reading.account = summary.providers[0].account_key.clone();
     let key = super::history::window_key(&reading, "five-hour");
 
