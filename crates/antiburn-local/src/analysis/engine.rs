@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::analysis::efficiency::EfficiencyTotals;
 use crate::analysis::initial_context::InitialContextBreakdown;
+use crate::analysis::interface::ContextWindowSource;
 use crate::analysis::model::{CompactionTrigger, ModelRun, NormalizedSession};
 
 /// Number of progress buckets each session is resampled onto (0% → 100%).
@@ -166,13 +167,18 @@ pub struct SessionMetrics {
     /// Cache rebuilds after meaningful user inactivity.
     #[serde(default)]
     pub cache_rehydration_count: u64,
-    /// Whether the model context window is known well enough to present
-    /// occupancy. Unknown Claude model ids deliberately leave this unavailable.
+    /// Always true from metrics schema 8. Kept for stored analyses and the
+    /// current presentation; `context_window_source` says how the window
+    /// was found.
     pub context_available: bool,
     /// The model's context-window size used to normalize occupancy for this
     /// session (Codex's reported window, else the reference `CONTEXT_WINDOW`).
     /// Aggregation rescales each session's occupancy into the shared reference.
     pub context_window: u64,
+    /// How `context_window` was found: a real figure (reported or tagged),
+    /// a catalogue match, or an inferred fallback.
+    #[serde(default)]
+    pub context_window_source: ContextWindowSource,
     pub buckets: Vec<Bucket>,
     /// Where this session's initial context went. `None` means unavailable.
     /// `analyze_sources` populates this field because it needs the raw payload.
@@ -294,9 +300,15 @@ impl ActiveSessionsSummary {
 /// occupancy, compaction, and cache-rehydration detection read parent-tagged
 /// events only (a sub-agent has its own context window).
 pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
+    let context_window_source = if session.context_window.is_some() {
+        ContextWindowSource::Reported
+    } else {
+        ContextWindowSource::Inferred
+    };
     let summary = crate::analysis::interface::SessionSummary {
         cache_write_tokens_available: session.cache_write_tokens_available,
         context_window: session.context_window,
+        context_window_source,
         model: session.model.clone(),
         provider_hints: Vec::new(),
         started_at_ms: None,

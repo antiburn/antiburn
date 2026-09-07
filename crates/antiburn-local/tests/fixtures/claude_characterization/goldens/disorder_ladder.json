@@ -5370,6 +5370,7 @@
       "compactionCount": 0,
       "contextAvailable": true,
       "contextWindow": 1000000,
+      "contextWindowSource": "reported",
       "cost": {
         "cacheReadUsd": 0.0,
         "cacheWriteUsd": 0.0,

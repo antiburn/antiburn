@@ -52,9 +52,9 @@ use super::read_source;
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::initial_context::CodexContextAccumulator;
 use crate::analysis::interface::{
-    ContentKind, ContentPart, EvidenceObservation, NormalizedRecord, RawSource, RecordSink,
-    RelationProvenance, ResumedVisit, SessionInput, SessionSummary, TurnContent, VendorAdapter,
-    VisitOutcome,
+    ContentKind, ContentPart, ContextWindowSource, EvidenceObservation, NormalizedRecord,
+    RawSource, RecordSink, RelationProvenance, ResumedVisit, SessionInput, SessionSummary,
+    TurnContent, VendorAdapter, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, ToolCall, Usage};
 use crate::analysis::records::{
@@ -684,9 +684,15 @@ impl CodexStreamState {
                 Vec::new()
             };
         let (initial_context, skill_descriptions) = self.context.finish();
+        let context_window_source = if self.context_window.is_some() {
+            ContextWindowSource::Reported
+        } else {
+            ContextWindowSource::Inferred
+        };
         SessionSummary {
             cache_write_tokens_available: self.cache_write_tokens_available,
             context_window: self.context_window,
+            context_window_source,
             model: self.model,
             provider_hints: Vec::new(),
             started_at_ms: self.started_at_ms,
@@ -2048,7 +2054,7 @@ mod tests {
 
     #[test]
     fn record_to_event_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 15_392_126_338_475_589_352;
+        const EXPECTED_FINGERPRINT: u64 = 13_546_544_228_035_879_293;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();

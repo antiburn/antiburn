@@ -151,7 +151,7 @@
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 27,
+      "parserRevision": 28,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
@@ -4167,6 +4167,7 @@
     "compactionCount": 1,
     "contextAvailable": true,
     "contextWindow": 200000,
+    "contextWindowSource": "reported",
     "cost": null,
     "durationSecs": 7,
     "efficiency": {

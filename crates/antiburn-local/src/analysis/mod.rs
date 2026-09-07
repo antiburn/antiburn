@@ -80,10 +80,10 @@ pub use framing::{
 };
 pub use initial_context::{InitialContextBreakdown, InitialContextSourceCount, SourceOrigin};
 pub use interface::{
-    ContentKind, ContentPart, ContextSourceKind, EvidenceObservation, MAX_CONTENT_PART_BYTES,
-    MAX_PROVIDER_HINTS, NormalizedRecord, ProviderHint, RawSource, RecordCoverage, RecordSink,
-    RelationProvenance, ResumedVisit, SessionCollector, SessionInput, SessionSummary,
-    SourceChangedReason, TurnContent, VendorAdapter, VisitOutcome,
+    ContentKind, ContentPart, ContextSourceKind, ContextWindowSource, EvidenceObservation,
+    MAX_CONTENT_PART_BYTES, MAX_PROVIDER_HINTS, NormalizedRecord, ProviderHint, RawSource,
+    RecordCoverage, RecordSink, RelationProvenance, ResumedVisit, SessionCollector, SessionInput,
+    SessionSummary, SourceChangedReason, TurnContent, VendorAdapter, VisitOutcome,
 };
 pub use merge::merge_subagent_events;
 pub use metrics_sink::{RETAINED_METRICS_BYTES_BOUND, SessionMetricsAccumulator, merge_metrics};
@@ -159,7 +159,12 @@ pub use vendors::{adapter_for, has_dedicated_adapter};
 // instead of double-counting it (`vendors::claude::visit_reader`).
 // Codex `token_usage_record` support requires a parser revision bump.
 // Stored sessions must re-ingest to restore complete coverage and deduplicate paired usage rows.
-pub const PARSER_REVISION: i64 = 27;
+// +1 for the Claude context-window rule: the catalogue now covers `opus-5`
+// and `mythos-5`, splits `opus-4` so 4.0 and 4.1 resolve to 200k while 4.6
+// to 4.9 stay 1M, and an explicit `[1m]`/`[200k]` tag beats the catalogue
+// (`vendors::claude::model_context_window`). The summary now also carries
+// `context_window_source`, so a stored Claude session must reparse.
+pub const PARSER_REVISION: i64 = 28;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
@@ -212,7 +217,10 @@ pub const ANALYZER_REVISION: i64 = 18;
 // +1 for provider-specific rehydration thresholds and exact user inactivity.
 // Stored analyses must rerun for the corrected cache-event classification.
 // This revision adds the separate speed-aware pricing breakdown.
-pub const METRICS_SCHEMA_REVISION: i64 = 7;
+// +1 for `context_window_source`: `context_available` is now always true,
+// and the new field says whether the window is reported, tagged,
+// catalogued, or inferred. Stored analyses must rerun to populate it.
+pub const METRICS_SCHEMA_REVISION: i64 = 8;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
 // +1 more for `RepeatedContext::paid_tokens` (part F).
 // +1 more for `SourceCapabilities::linear_record_order`.
@@ -240,7 +248,8 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 1;
 /// before it restores a snapshot; this constant and the rule are
 /// documented here so a future revision bump remembers to bump this one
 /// too, when the change touches resumable state.
-pub const RESUME_SNAPSHOT_REVISION: i64 = 4;
+// +1 because `ClaudeStreamState` gained a `context_window_source` field.
+pub const RESUME_SNAPSHOT_REVISION: i64 = 5;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

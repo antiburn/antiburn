@@ -929,7 +929,6 @@ pub(crate) fn finalize_metrics(
         }
     }
 
-    let context_available = identity.agent != "claude" || summary.context_window.is_some();
     let context_window = resolve_context_window(
         summary.context_window.unwrap_or(CONTEXT_WINDOW),
         tallies.peak_context_tokens,
@@ -963,8 +962,9 @@ pub(crate) fn finalize_metrics(
         compaction_count: tallies.compaction_count,
         cache_routing_miss_count: provider_cache_miss_count,
         cache_rehydration_count,
-        context_available,
+        context_available: true,
         context_window,
+        context_window_source: summary.context_window_source,
         buckets,
         initial_context: None,
         model: summary.model.clone(),

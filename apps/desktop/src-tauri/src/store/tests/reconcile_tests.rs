@@ -28,9 +28,9 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
     assert_eq!(
         crate::analysis::projection_revisions(),
         ProjectionRevisions {
-            parser_revision: 27,
+            parser_revision: 28,
             analyzer_revision: 18,
-            metrics_schema_revision: 7,
+            metrics_schema_revision: 8,
             evidence_schema_revision: 14,
         }
     );

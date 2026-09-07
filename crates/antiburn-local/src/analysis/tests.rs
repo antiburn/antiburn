@@ -8,10 +8,11 @@ use crate::analysis::model::{
 };
 use crate::analysis::rows::{MemoryTurnRowStore, TurnRowSink, TurnRowStore};
 use crate::analysis::{
-    CompositeSink, EvidenceSource, EvidenceValue, NormalizedRecord, PartialReason, RawSource,
-    RecordCoverage, RecordSink, SessionCollector, SessionCoverageRecord, SessionEvidence,
-    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
-    SourceCapabilities, SourceKind, VisitOutcome, adapter_for, analyze_sources, normalize_source,
+    CompositeSink, ContextWindowSource, EvidenceSource, EvidenceValue, NormalizedRecord,
+    PartialReason, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionCoverageRecord,
+    SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
+    SessionSummary, SourceCapabilities, SourceKind, VisitOutcome, adapter_for, analyze_sources,
+    normalize_source,
 };
 
 /// Runs `jsonl` through the Claude adapter into a [`CompositeSink`], the
@@ -2036,14 +2037,16 @@ fn claude_sonnet_5_has_1m_context() {
 }
 
 #[test]
-fn unknown_claude_context_is_unavailable() {
+fn unknown_claude_context_is_inferred() {
     let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-unknown-99","usage":{"input_tokens":1000,"output_tokens":50},"content":[{"type":"text","text":"x"}]}}"#;
     let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
     assert_eq!(session.context_window, None);
     let metrics = analyze_session(&session);
-    assert!(!metrics.context_available);
+    assert!(metrics.context_available);
+    assert_eq!(metrics.context_window, 200_000);
+    assert_eq!(metrics.context_window_source, ContextWindowSource::Inferred);
     let summary = analyze_sources(vec![jsonl_input("claude", fixture)]);
-    assert!(!summary.context_available);
+    assert!(summary.context_available);
 }
 
 /// A session whose model isn't recorded (or isn't in the pricing table) yields no
