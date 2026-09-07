@@ -4192,6 +4192,7 @@
     "agent": "pi",
     "cacheWriteTokensAvailable": true,
     "contextWindow": null,
+    "contextWindowSource": "inferred",
     "events": [
       {
         "compactionPostTokens": null,

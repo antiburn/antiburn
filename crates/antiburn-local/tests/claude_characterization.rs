@@ -4,13 +4,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, CompositeSink, CoverageReason, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage,
-    EvidenceSource, EvidenceValue, MAX_RECORD_BYTES, MemoryTurnRowStore, NormalizedSession,
-    OrderingObservation, PARSER_REVISION, PartialReason, RawSource, RecordCoverage,
-    SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
-    SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnFacts, TurnRowSink,
-    TurnRowStore, TurnScope, adapter_for, analyze_session, analyze_sources_with, merge_metrics,
-    merge_subagent_events, normalize_source,
+    ANALYZER_REVISION, CompositeSink, ContextWindowSource, CoverageReason,
+    EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource, EvidenceValue, MAX_RECORD_BYTES,
+    MemoryTurnRowStore, NormalizedSession, OrderingObservation, PARSER_REVISION, PartialReason,
+    RawSource, RecordCoverage, SessionCollector, SessionEvidence, SessionEvidenceAccumulator,
+    SessionInput, SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnFacts,
+    TurnRowSink, TurnRowStore, TurnScope, adapter_for, analyze_session, analyze_sources_with,
+    merge_metrics, merge_subagent_events, normalize_source,
 };
 use antiburn_local::insights::{
     CoverageCounts, DetectorId, DetectorStatus, EfficiencyReport, EfficiencyReportAccumulator,
@@ -1028,17 +1028,10 @@ fn fixture_provenance_records_the_source_kind_and_ordering() {
 fn streaming_metrics_equal_the_shipped_batch_for_every_fixture() {
     for name in fixture_names() {
         let input = input(name);
-        let mut expected = analyze_sources_with(vec![input.clone()], true)
+        let expected = analyze_sources_with(vec![input.clone()], true)
             .sessions
             .remove(0);
-        let actual = stream_claude(&input).metrics();
-        // `analyze_sources_with` normalizes through `NormalizedSession`,
-        // which has no field for the Claude adapter's real window source
-        // (catalogued or tagged), so it always reports `Reported`/`Inferred`.
-        // The streaming path keeps the adapter's real source; patch it in
-        // here so the rest of the fields still catch a real regression.
-        expected.context_window_source = actual.context_window_source;
-        assert_eq!(actual, expected, "fixture {name}");
+        assert_eq!(stream_claude(&input).metrics(), expected, "fixture {name}");
     }
 }
 
@@ -1051,17 +1044,26 @@ fn streaming_metrics_match_every_golden() {
             .expect("metrics must serialize");
         let actual: Value =
             serde_json::from_str(&rendered).expect("rendered metrics must be valid JSON");
-        let mut expected_session = expected["sessions"][0].clone();
-        // The golden's `sessions[0]` comes from the batch path
-        // (`analyze_sources_with`), which normalizes through
-        // `NormalizedSession` and so always reports `contextWindowSource` as
-        // `reported`/`inferred`. The streaming path keeps the adapter's real
-        // source; patch the golden's copy so the rest of the fields still
-        // catch a real regression.
-        if let Some(source) = actual.get("contextWindowSource") {
-            expected_session["contextWindowSource"] = source.clone();
-        }
-        assert_eq!(actual, expected_session, "fixture {name}");
+        assert_eq!(actual, expected["sessions"][0], "fixture {name}");
+    }
+}
+
+/// `Reported` names a vendor that states its own context window (Codex's
+/// `model_context_window`). A Claude session's window always comes from a
+/// tag, the built-in catalogue, or the 200k-plus-peak-bump inference, never
+/// a self-reported figure — so `Reported` here would mean the batch path
+/// lost the adapter's real source, the bug this guards against.
+#[test]
+fn no_claude_fixture_reports_a_self_reported_context_window() {
+    for name in fixture_names() {
+        let metrics = analyze_sources_with(vec![input(name)], true)
+            .sessions
+            .remove(0);
+        assert_ne!(
+            metrics.context_window_source,
+            ContextWindowSource::Reported,
+            "fixture {name}"
+        );
     }
 }
 
@@ -1114,11 +1116,6 @@ fn merged_streaming_metrics_equal_the_merged_batch() {
     per_thread_efficiency.add(stream_claude(&child_input).metrics().efficiency);
     assert_eq!(actual.efficiency, per_thread_efficiency);
     expected.efficiency = actual.efficiency;
-    // `analyze_session` builds its summary from a `NormalizedSession`, which
-    // has no field for the Claude adapter's real window source. It always
-    // reports `Reported`/`Inferred`, so patch in the streaming accumulator's
-    // real source (`Catalogued` here) the same way as `efficiency`, above.
-    expected.context_window_source = actual.context_window_source;
 
     assert_eq!(actual.initial_context, None);
     assert_eq!(actual, expected);

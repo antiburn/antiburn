@@ -78,12 +78,18 @@ impl VendorAdapter for CodexAdapter {
         let content = read_source(&input.source)
             .with_context(|| format!("reading codex session {}", input.session_id))?;
         let (events, context_window, model, cache_write_tokens_available) = parse_codex(&content);
+        let context_window_source = if context_window.is_some() {
+            ContextWindowSource::Reported
+        } else {
+            ContextWindowSource::Inferred
+        };
         Ok(NormalizedSession {
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             events,
             cache_write_tokens_available,
             context_window,
+            context_window_source,
             model,
         })
     }

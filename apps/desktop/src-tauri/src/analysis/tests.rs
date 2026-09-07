@@ -790,7 +790,7 @@ fn an_unreadable_child_is_skipped_and_the_session_still_publishes() {
 #[test]
 fn streaming_inline_metrics_equal_the_shipped_batch() {
     let input = inline_input(claude_record("inline-equality", 1_760_000_000), "inline");
-    let mut expected = analyze_sources_with(vec![input.clone()], true)
+    let expected = analyze_sources_with(vec![input.clone()], true)
         .sessions
         .into_iter()
         .next()
@@ -800,12 +800,6 @@ fn streaming_inline_metrics_equal_the_shipped_batch() {
     else {
         panic!("inline source must publish");
     };
-    // The batch path normalizes through `NormalizedSession`, which has no
-    // field for the Claude adapter's real window source (catalogued or
-    // tagged), so it always reports `Reported`/`Inferred`. The streaming
-    // path keeps the adapter's real source; patch it in here so the rest of
-    // the fields still catch a real regression.
-    expected.context_window_source = session.parent.context_window_source;
     assert_eq!(session.parent, expected);
 }
 

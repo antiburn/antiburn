@@ -5,7 +5,7 @@ use serde_json::Value;
 use time::{Date, Month, PrimitiveDateTime, Time, UtcOffset};
 
 use super::read_source;
-use crate::analysis::interface::{SessionInput, VendorAdapter};
+use crate::analysis::interface::{ContextWindowSource, SessionInput, VendorAdapter};
 use crate::analysis::model::{NormalizedEvent, NormalizedSession};
 use crate::analysis::records::{RecordShape, parse_record, parse_ts};
 
@@ -26,6 +26,7 @@ impl VendorAdapter for CursorAdapter {
             events,
             cache_write_tokens_available: true,
             context_window: None,
+            context_window_source: ContextWindowSource::Inferred,
             model,
         })
     }

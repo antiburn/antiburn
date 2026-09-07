@@ -300,15 +300,10 @@ impl ActiveSessionsSummary {
 /// occupancy, compaction, and cache-rehydration detection read parent-tagged
 /// events only (a sub-agent has its own context window).
 pub fn analyze_session(session: &NormalizedSession) -> SessionMetrics {
-    let context_window_source = if session.context_window.is_some() {
-        ContextWindowSource::Reported
-    } else {
-        ContextWindowSource::Inferred
-    };
     let summary = crate::analysis::interface::SessionSummary {
         cache_write_tokens_available: session.cache_write_tokens_available,
         context_window: session.context_window,
-        context_window_source,
+        context_window_source: session.context_window_source,
         model: session.model.clone(),
         provider_hints: Vec::new(),
         started_at_ms: None,

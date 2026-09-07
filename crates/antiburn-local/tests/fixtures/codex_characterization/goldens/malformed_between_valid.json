@@ -4236,6 +4236,7 @@
     "agent": "codex",
     "cacheWriteTokensAvailable": false,
     "contextWindow": 200000,
+    "contextWindowSource": "reported",
     "events": [
       {
         "compactionPostTokens": null,

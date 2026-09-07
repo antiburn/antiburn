@@ -9,7 +9,7 @@
 use anyhow::Context;
 
 use super::read_source;
-use crate::analysis::interface::{SessionInput, VendorAdapter};
+use crate::analysis::interface::{ContextWindowSource, SessionInput, VendorAdapter};
 use crate::analysis::model::NormalizedSession;
 use crate::analysis::records::parse_jsonl;
 
@@ -33,6 +33,7 @@ impl VendorAdapter for GenericJsonlAdapter {
             // vendor's transcript contract; this fallback knows no vendor.
             cache_write_tokens_available: false,
             context_window: None,
+            context_window_source: ContextWindowSource::Inferred,
             model: None,
         })
     }

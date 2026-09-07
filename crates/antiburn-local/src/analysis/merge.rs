@@ -14,9 +14,10 @@ use crate::analysis::model::{EventSource, NormalizedEvent, NormalizedSession};
 /// Merge a parent session with every sub-agent it launched into one session.
 ///
 /// The merged session keeps the parent's identity (`agent`, `session_id`,
-/// `context_window`, `model`): a sub-agent's own context window does not
-/// describe the parent, so it is dropped here. Every event keeps a
-/// [`EventSource`] tag so the engine can tell which stream it came from.
+/// `context_window`, `context_window_source`, `model`): a sub-agent's own
+/// context window does not describe the parent, so it is dropped here.
+/// Every event keeps a [`EventSource`] tag so the engine can tell which
+/// stream it came from.
 ///
 /// Ordering: events sort by an effective timestamp. An event that carries its
 /// own `ts_ms` sorts on it. An event with no timestamp takes the timestamp of
@@ -45,6 +46,7 @@ pub fn merge_subagent_events(
         events: parent_events,
         cache_write_tokens_available,
         context_window,
+        context_window_source,
         model,
     } = parent;
 
@@ -62,6 +64,7 @@ pub fn merge_subagent_events(
         events: combined.into_iter().map(|(_, event)| event).collect(),
         cache_write_tokens_available,
         context_window,
+        context_window_source,
         model,
     }
 }
@@ -97,6 +100,7 @@ mod tests {
             events,
             cache_write_tokens_available: true,
             context_window: None,
+            context_window_source: crate::analysis::interface::ContextWindowSource::Inferred,
             model: None,
         }
     }

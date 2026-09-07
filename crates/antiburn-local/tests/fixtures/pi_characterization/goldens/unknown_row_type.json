@@ -4183,6 +4183,7 @@
     "agent": "pi",
     "cacheWriteTokensAvailable": true,
     "contextWindow": null,
+    "contextWindowSource": "inferred",
     "events": [],
     "model": null,
     "sessionId": "unknown_row_type"

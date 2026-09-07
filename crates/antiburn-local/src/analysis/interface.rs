@@ -327,6 +327,7 @@ impl SessionCollector {
             events: self.events,
             cache_write_tokens_available: summary.cache_write_tokens_available,
             context_window: summary.context_window,
+            context_window_source: summary.context_window_source,
             model: summary.model,
         })
     }
@@ -430,17 +431,13 @@ pub trait VendorAdapter: Sync {
             events,
             cache_write_tokens_available,
             context_window,
+            context_window_source,
             model,
             ..
         } = session;
         for event in events {
             sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
         }
-        let context_window_source = if context_window.is_some() {
-            ContextWindowSource::Reported
-        } else {
-            ContextWindowSource::Inferred
-        };
         sink.finish(SessionSummary {
             cache_write_tokens_available,
             context_window,

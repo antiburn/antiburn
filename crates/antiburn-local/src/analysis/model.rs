@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::interface::ContextWindowSource;
+
 /// Token accounting for a single turn, as reported by the agent's API usage.
 ///
 /// Fields default to zero so adapters can populate only what a given vendor
@@ -426,10 +428,16 @@ pub struct NormalizedSession {
     #[serde(default)]
     pub cache_write_tokens_available: bool,
     /// The model's context-window size for this session, when the vendor reports
-    /// it (e.g. Codex `model_context_window`). Claude leaves this as `None` for
-    /// unknown model ids so context occupancy can be presented as unavailable.
+    /// it (e.g. Codex `model_context_window`), matches an id in Claude's
+    /// built-in catalogue, or carries an explicit window tag. `None` when no
+    /// source gave a window; `context_window_source` then reads `Inferred`
+    /// and the engine falls back to a 200k-plus-peak-bump estimate.
     #[serde(default)]
     pub context_window: Option<u64>,
+    /// How `context_window` was found. Mirrors the adapter's own
+    /// `SessionSummary::context_window_source`.
+    #[serde(default)]
+    pub context_window_source: ContextWindowSource,
     /// The model id used for this session (e.g. `claude-opus-4-6`), when an
     /// adapter can extract it. For sessions that mix models, the most expensive
     /// priceable one seen. `None` when unknown — pricing then yields no estimate.
