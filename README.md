@@ -2,6 +2,9 @@
 
 > Tiny, fast, local burn checks for all your coding sessions.
 
+<img width="2680" height="1640" alt="antiburnreadmeherodarkart" src="https://github.com/user-attachments/assets/03168883-e3eb-4eb7-97b2-7533ecffec09" />
+<img width="2680" height="1640" alt="antiburnreadmeherolightart" src="https://github.com/user-attachments/assets/3443b4b0-623e-4f38-a9d4-c4add06aa00f" />
+
 [![License](https://img.shields.io/github/license/antiburn/antiburn)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-informational)](docs/support.md)
 [![Release](https://img.shields.io/github/v/release/antiburn/antiburn?filter=antiburn-v*)](https://github.com/antiburn/antiburn/releases/latest)
