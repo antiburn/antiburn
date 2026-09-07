@@ -1693,6 +1693,11 @@ impl Store {
         // so on a resumed pass this finds nothing left to delete.
         delete_turn_rows_except_fence(&transaction, &key, target_fence)?;
         replace_relations_in(&transaction, &record.key, RelationKind::Subagent, relations)?;
+        crate::store::provider_usage_ledger::enqueue_session_periods_in(
+            &transaction,
+            &record.key,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        )?;
         transaction.commit()?;
         Ok(true)
     }

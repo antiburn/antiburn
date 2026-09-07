@@ -84,17 +84,6 @@ impl super::Store {
     ) -> Result<()> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
-        let current = tx
-            .query_row(
-                "SELECT generation FROM provider_usage_allocation_dirty WHERE period_id = ?1",
-                [period_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?;
-        if current != Some(generation) {
-            tx.commit()?;
-            return Ok(());
-        }
         replace_in(&tx, period_id, allocations, computed_at_epoch)?;
         tx.commit()?;
         Ok(())
@@ -110,6 +99,17 @@ impl super::Store {
     ) -> Result<()> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
+        let current = tx
+            .query_row(
+                "SELECT generation FROM provider_usage_allocation_dirty WHERE period_id = ?1",
+                [period_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if current != Some(generation) {
+            tx.commit()?;
+            return Ok(());
+        }
         replace_in(&tx, period_id, allocations, computed_at_epoch)?;
         tx.execute(
             "DELETE FROM provider_usage_allocation_dirty
@@ -210,17 +210,69 @@ pub(crate) fn enqueue_in(
     period_ids: &[i64],
     requested_at_epoch: i64,
 ) -> Result<()> {
+    if period_ids.is_empty() {
+        return Ok(());
+    }
+    connection.execute(
+        "UPDATE provider_usage_allocation_revision SET value = value + 1 WHERE id = 1",
+        [],
+    )?;
+    let generation = connection.query_row(
+        "SELECT value FROM provider_usage_allocation_revision WHERE id = 1",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
     for period_id in period_ids {
         connection.execute(
-            "INSERT INTO provider_usage_allocation_dirty (period_id, requested_at_epoch)
-             VALUES (?1, ?2)
+            "INSERT INTO provider_usage_allocation_dirty (period_id, requested_at_epoch, generation)
+             VALUES (?1, ?2, ?3)
              ON CONFLICT(period_id) DO UPDATE SET
                  requested_at_epoch = excluded.requested_at_epoch,
-                 generation = provider_usage_allocation_dirty.generation + 1",
-            params![period_id, requested_at_epoch],
+                 generation = excluded.generation",
+            params![period_id, requested_at_epoch, generation],
         )?;
     }
     Ok(())
+}
+
+/// Queue only provider periods that published turns in `key` can affect.
+pub(crate) fn enqueue_session_periods_in(
+    connection: &Transaction<'_>,
+    key: &SessionKey,
+    requested_at_epoch: i64,
+) -> Result<()> {
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT p.id
+           FROM provider_usage_period p
+           JOIN session_provider_account spa
+             ON spa.environment_key = ?1 AND spa.agent = ?2 AND spa.session_id = ?3
+            AND spa.provider = p.provider AND spa.account_key = p.account_key
+          WHERE p.resets_at_epoch IS NOT NULL
+            AND EXISTS (
+                SELECT 1
+                  FROM turn t
+                  JOIN session_evidence e
+                    ON e.environment_key = t.environment_key
+                   AND e.agent = t.agent AND e.session_id = t.session_id
+                   AND e.published_fence = t.claim_fence
+                 WHERE t.environment_key = ?1 AND t.agent = ?2 AND t.session_id = ?3
+                   AND t.ts_ms >= (
+                       COALESCE(
+                           p.starts_at_epoch,
+                           p.resets_at_epoch - CASE p.window_kind
+                               WHEN 'weekly' THEN 604800 ELSE 18000 END
+                       ) * 1000
+                   )
+                   AND t.ts_ms < p.resets_at_epoch * 1000
+            )",
+    )?;
+    let period_ids = statement
+        .query_map(
+            params![key.environment_key, key.agent, key.session_id],
+            |row| row.get::<_, i64>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    enqueue_in(connection, &period_ids, requested_at_epoch)
 }
 
 fn replace_in(

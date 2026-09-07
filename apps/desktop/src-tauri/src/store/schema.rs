@@ -698,6 +698,12 @@ CREATE TABLE provider_usage_allocation_dirty (
     generation         INTEGER NOT NULL DEFAULT 1
 ) STRICT;
 
+CREATE TABLE provider_usage_allocation_revision (
+    id    INTEGER PRIMARY KEY CHECK (id = 1),
+    value INTEGER NOT NULL
+) STRICT;
+INSERT INTO provider_usage_allocation_revision (id, value) VALUES (1, 0);
+
 CREATE TABLE provider_usage_session_allocation (
     period_id        INTEGER NOT NULL REFERENCES provider_usage_period(id),
     environment_key  TEXT NOT NULL,
