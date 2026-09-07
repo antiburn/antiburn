@@ -11,10 +11,10 @@ use super::*;
 #[test]
 fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pin the count so each new migration requires an explicit test update.
-    assert_eq!(super::schema::MIGRATIONS.len(), 35);
+    assert_eq!(super::schema::MIGRATIONS.len(), 36);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 35);
+    assert_eq!(store.schema_version().unwrap(), 36);
     let index_exists = store
         .lock()
         .query_row(
