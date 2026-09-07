@@ -801,15 +801,34 @@ mod tests {
         assert_eq!(first.imported_observations, 2);
         assert_eq!(observation_count(&store), 2);
         crate::provider_usage::ledger::reconcile(&store, 1_800_000_001);
-        let allocations: i64 = store
-            .test_lock()
-            .query_row(
-                "SELECT COUNT(*) FROM provider_usage_session_allocation",
-                [],
-                |row| row.get(0),
+        let connection = store.test_lock();
+        let mut statement = connection
+            .prepare(
+                "SELECT metric, percent, partial
+                   FROM provider_usage_session_allocation
+                  ORDER BY metric",
             )
             .expect("allocations");
-        assert_eq!(allocations, 1);
+        let allocations = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .expect("allocation rows")
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .expect("allocation values");
+        assert_eq!(
+            allocations,
+            vec![
+                ("fiveHour".to_owned(), 20.0, 1),
+                ("weekly".to_owned(), 30.0, 1),
+            ]
+        );
+        drop(statement);
+        drop(connection);
 
         drop(store);
         let reopened = Store::open(&store_dir).expect("reopen");
