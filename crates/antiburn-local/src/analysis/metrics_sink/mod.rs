@@ -31,7 +31,9 @@ use crate::analysis::engine::{
 use crate::analysis::initial_context::{
     InitialContextBreakdown, InitialContextSourceCount, InitialContextTokenSource, SourceOrigin,
 };
-use crate::analysis::interface::{NormalizedRecord, RecordSink, SessionSummary};
+use crate::analysis::interface::{
+    ContextWindowSource, NormalizedRecord, RecordSink, SessionSummary,
+};
 use crate::analysis::model::{
     EventSource, ModelRun, NormalizedEvent, Role, Usage, is_subagent_launch_tool,
 };
@@ -96,6 +98,7 @@ impl OnlineTallies {
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 struct StoredSummary {
     context_window: Option<u64>,
+    context_window_source: ContextWindowSource,
     model: Option<String>,
     started_at_ms: Option<i64>,
     initial_context: Option<InitialContextBreakdown>,
@@ -868,6 +871,7 @@ impl SessionMetricsAccumulator {
         let observed_tool_names = string_count_map(&self.tool_match_counts);
         self.summary = Some(StoredSummary {
             context_window: summary.context_window,
+            context_window_source: summary.context_window_source,
             model: summary.model.map(|model| tally::truncate_name(&model)),
             started_at_ms: summary.started_at_ms,
             initial_context: summary.initial_context.map(|breakdown| {
@@ -1043,8 +1047,9 @@ impl SessionMetricsAccumulator {
             compaction_count: self.tallies.compaction_count,
             cache_routing_miss_count,
             cache_rehydration_count,
-            context_available: self.identity.agent != "claude" || summary.context_window.is_some(),
+            context_available: true,
             context_window,
+            context_window_source: summary.context_window_source,
             buckets,
             initial_context: summary.initial_context.clone(),
             model: summary.model.clone(),

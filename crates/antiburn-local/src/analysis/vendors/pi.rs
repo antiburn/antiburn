@@ -23,9 +23,9 @@ use serde_json::Value;
 
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::interface::{
-    ContentPart, EvidenceObservation, NormalizedRecord, ProviderHint, RawSource, RecordSink,
-    ResumedVisit, SessionCollector, SessionInput, SessionSummary, TurnContent, VendorAdapter,
-    VisitOutcome, bounded_provider_hint_value, push_provider_hint,
+    ContentPart, ContextWindowSource, EvidenceObservation, NormalizedRecord, ProviderHint,
+    RawSource, RecordSink, ResumedVisit, SessionCollector, SessionInput, SessionSummary,
+    TurnContent, VendorAdapter, VisitOutcome, bounded_provider_hint_value, push_provider_hint,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role};
 use crate::analysis::records::{
@@ -585,6 +585,7 @@ impl PiStreamState {
         SessionSummary {
             cache_write_tokens_available: self.cache_write_tokens_available.unwrap_or(true),
             context_window: None,
+            context_window_source: ContextWindowSource::Inferred,
             model: self.model.or(self.current_model),
             provider_hints: self.provider_hints,
             started_at_ms: self.started_at_ms,

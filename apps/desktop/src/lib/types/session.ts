@@ -187,9 +187,12 @@ export interface SessionMetrics {
   cacheRehydrationCount?: number
   /** Provider cache misses. The transport name stays compatible with stored analysis. */
   cacheRoutingMissCount?: number
-  /** False when the model's context window is unknown. */
+  /** Always true from metrics schema 8. `contextWindowSource` says whether
+   * `contextWindow` is a real figure or an inferred one. */
   contextAvailable?: boolean
   contextWindow: number
+  /** How the context window was found. Mirrors engine `ContextWindowSource`. */
+  contextWindowSource?: "reported" | "tagged" | "catalogued" | "inferred"
   buckets: SessionBucket[]
   initialContext?: InitialContextBreakdown | null
   model?: string | null

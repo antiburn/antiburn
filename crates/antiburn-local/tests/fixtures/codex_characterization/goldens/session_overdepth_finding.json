@@ -144,7 +144,7 @@
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 27,
+      "parserRevision": 28,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
@@ -4151,6 +4151,7 @@
     "compactionCount": 0,
     "contextAvailable": true,
     "contextWindow": 600000,
+    "contextWindowSource": "reported",
     "cost": null,
     "durationSecs": 0,
     "efficiency": {
@@ -4201,6 +4202,7 @@
     "agent": "codex",
     "cacheWriteTokensAvailable": false,
     "contextWindow": 600000,
+    "contextWindowSource": "reported",
     "events": [
       {
         "compactionPostTokens": null,

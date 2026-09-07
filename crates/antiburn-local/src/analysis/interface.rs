@@ -224,6 +224,22 @@ pub(crate) fn bounded_provider_hint_value(value: &str) -> Option<String> {
     Some(value[..end].to_owned())
 }
 
+/// How a session's context-window figure was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextWindowSource {
+    /// The transcript states the window (Codex `model_context_window`).
+    Reported,
+    /// The model id carries an explicit window tag such as `[1m]`.
+    Tagged,
+    /// The model id matched the built-in Claude window catalogue.
+    Catalogued,
+    /// No source gave a window. The metrics use the 200k tier bumped
+    /// by the observed peak.
+    #[default]
+    Inferred,
+}
+
 /// Session facts that an adapter can state only after the last record.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -231,6 +247,9 @@ pub struct SessionSummary {
     /// True when this adapter can observe cache-write tokens.
     pub cache_write_tokens_available: bool,
     pub context_window: Option<u64>,
+    /// How `context_window` was found. Defaults to `Inferred` for an adapter
+    /// that never sets it.
+    pub context_window_source: ContextWindowSource,
     pub model: Option<String>,
     /// Unique, bounded raw provider and model observations.
     pub provider_hints: Vec<ProviderHint>,
@@ -308,6 +327,7 @@ impl SessionCollector {
             events: self.events,
             cache_write_tokens_available: summary.cache_write_tokens_available,
             context_window: summary.context_window,
+            context_window_source: summary.context_window_source,
             model: summary.model,
         })
     }
@@ -411,6 +431,7 @@ pub trait VendorAdapter: Sync {
             events,
             cache_write_tokens_available,
             context_window,
+            context_window_source,
             model,
             ..
         } = session;
@@ -420,6 +441,7 @@ pub trait VendorAdapter: Sync {
         sink.finish(SessionSummary {
             cache_write_tokens_available,
             context_window,
+            context_window_source,
             model,
             provider_hints: Vec::new(),
             started_at_ms: None,

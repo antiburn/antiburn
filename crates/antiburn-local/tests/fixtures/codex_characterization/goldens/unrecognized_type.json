@@ -123,7 +123,7 @@
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 27,
+      "parserRevision": 28,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
@@ -4130,6 +4130,7 @@
     "compactionCount": 0,
     "contextAvailable": true,
     "contextWindow": 200000,
+    "contextWindowSource": "inferred",
     "cost": null,
     "durationSecs": 0,
     "efficiency": {
@@ -4159,6 +4160,7 @@
     "agent": "codex",
     "cacheWriteTokensAvailable": false,
     "contextWindow": null,
+    "contextWindowSource": "inferred",
     "events": [],
     "model": null,
     "sessionId": "unrecognized_type"

@@ -1,17 +1,18 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use crate::analysis::engine::analyze_session;
+use crate::analysis::engine::{SessionMetrics, analyze_session};
 use crate::analysis::merge::merge_subagent_events;
 use crate::analysis::model::{
     CompactionTrigger, EventSource, ModelRun, NormalizedEvent, Role, ToolCategory,
 };
 use crate::analysis::rows::{MemoryTurnRowStore, TurnRowSink, TurnRowStore};
 use crate::analysis::{
-    CompositeSink, EvidenceSource, EvidenceValue, NormalizedRecord, PartialReason, RawSource,
-    RecordCoverage, RecordSink, SessionCollector, SessionCoverageRecord, SessionEvidence,
-    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
-    SourceCapabilities, SourceKind, VisitOutcome, adapter_for, analyze_sources, normalize_source,
+    CompositeSink, ContextWindowSource, EvidenceSource, EvidenceValue, NormalizedRecord,
+    PartialReason, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionCoverageRecord,
+    SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
+    SessionSummary, SourceCapabilities, SourceKind, VisitOutcome, adapter_for, analyze_sources,
+    normalize_source,
 };
 
 /// Runs `jsonl` through the Claude adapter into a [`CompositeSink`], the
@@ -749,6 +750,7 @@ fn codex_rollout_envelope_is_normalized() {
     assert_eq!(m.peak_context_tokens, 1000);
     // The model's real context window is captured from model_context_window.
     assert_eq!(m.context_window, 258400);
+    assert_eq!(m.context_window_source, ContextWindowSource::Reported);
     assert!(m.buckets.iter().any(|b| b.tokens_in > 0));
     assert!(m.buckets.iter().any(|b| b.tokens_out > 0));
     assert!(m.buckets.iter().any(|b| b.context_tokens > 0));
@@ -2036,14 +2038,82 @@ fn claude_sonnet_5_has_1m_context() {
 }
 
 #[test]
-fn unknown_claude_context_is_unavailable() {
+fn unknown_claude_context_is_inferred() {
     let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-unknown-99","usage":{"input_tokens":1000,"output_tokens":50},"content":[{"type":"text","text":"x"}]}}"#;
     let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
     assert_eq!(session.context_window, None);
     let metrics = analyze_session(&session);
-    assert!(!metrics.context_available);
+    assert!(metrics.context_available);
+    assert_eq!(metrics.context_window, 200_000);
+    assert_eq!(metrics.context_window_source, ContextWindowSource::Inferred);
     let summary = analyze_sources(vec![jsonl_input("claude", fixture)]);
-    assert!(!summary.context_available);
+    assert!(summary.context_available);
+}
+
+/// An unrecognized model gives no catalogue window, so the engine falls back to
+/// the 200k tier. A peak above that tier still bumps the window up (to 1M here),
+/// and the source stays `Inferred` because no tag or catalogue entry set it.
+#[test]
+fn unknown_claude_context_infers_a_bumped_tier_from_peak_usage() {
+    let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-unknown-99","usage":{"input_tokens":300000,"output_tokens":50},"content":[{"type":"text","text":"x"}]}}"#;
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    assert_eq!(session.context_window, None);
+    let metrics = analyze_session(&session);
+    assert!(metrics.context_available);
+    assert_eq!(metrics.context_window, 1_000_000);
+    assert_eq!(metrics.context_window_source, ContextWindowSource::Inferred);
+}
+
+/// `claude-opus-5` sits in the built-in catalogue's 1M set, so the window comes
+/// from the catalogue rather than a tag or the peak-bump fallback.
+#[test]
+fn claude_opus_5_context_window_is_catalogued() {
+    let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1000,"output_tokens":50},"content":[{"type":"text","text":"x"}]}}"#;
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    assert_eq!(session.context_window, Some(1_000_000));
+    let metrics = analyze_session(&session);
+    assert_eq!(metrics.context_window, 1_000_000);
+    assert_eq!(
+        metrics.context_window_source,
+        ContextWindowSource::Catalogued
+    );
+}
+
+/// An explicit `[1m]` window tag beats the catalogue: `claude-sonnet-4` would
+/// otherwise resolve to 200k, but the tag on the id overrides that.
+#[test]
+fn claude_window_tag_beats_the_catalogue() {
+    let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-sonnet-4-20250514[1m]","usage":{"input_tokens":1000,"output_tokens":50},"content":[{"type":"text","text":"x"}]}}"#;
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    assert_eq!(session.context_window, Some(1_000_000));
+    let metrics = analyze_session(&session);
+    assert_eq!(metrics.context_window, 1_000_000);
+    assert_eq!(metrics.context_window_source, ContextWindowSource::Tagged);
+}
+
+/// A stored analysis written before metrics schema 8 has no `contextWindowSource`
+/// field. Deserializing it must default the field to `Inferred`, not fail.
+#[test]
+fn session_metrics_without_a_context_window_source_field_defaults_to_inferred() {
+    let fixture = r#"{"type":"assistant","timestamp":"2024-06-01T12:00:00Z","message":{"role":"assistant","model":"claude-opus-5","usage":{"input_tokens":1000,"output_tokens":50},"content":[{"type":"text","text":"x"}]}}"#;
+    let session = normalize_source(&jsonl_input("claude", fixture)).unwrap();
+    let metrics = analyze_session(&session);
+    assert_eq!(
+        metrics.context_window_source,
+        ContextWindowSource::Catalogued
+    );
+
+    let mut value = serde_json::to_value(&metrics).expect("serialize metrics");
+    value
+        .as_object_mut()
+        .expect("metrics serializes to an object")
+        .remove("contextWindowSource");
+    let restored: SessionMetrics =
+        serde_json::from_value(value).expect("deserialize metrics missing the field");
+    assert_eq!(
+        restored.context_window_source,
+        ContextWindowSource::Inferred
+    );
 }
 
 /// A session whose model isn't recorded (or isn't in the pricing table) yields no

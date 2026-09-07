@@ -4,13 +4,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, CompositeSink, CoverageReason, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage,
-    EvidenceSource, EvidenceValue, MAX_RECORD_BYTES, MemoryTurnRowStore, NormalizedSession,
-    OrderingObservation, PARSER_REVISION, PartialReason, RawSource, RecordCoverage,
-    SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
-    SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnFacts, TurnRowSink,
-    TurnRowStore, TurnScope, adapter_for, analyze_session, analyze_sources_with, merge_metrics,
-    merge_subagent_events, normalize_source,
+    ANALYZER_REVISION, CompositeSink, ContextWindowSource, CoverageReason,
+    EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource, EvidenceValue, MAX_RECORD_BYTES,
+    MemoryTurnRowStore, NormalizedSession, OrderingObservation, PARSER_REVISION, PartialReason,
+    RawSource, RecordCoverage, SessionCollector, SessionEvidence, SessionEvidenceAccumulator,
+    SessionInput, SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnFacts,
+    TurnRowSink, TurnRowStore, TurnScope, adapter_for, analyze_session, analyze_sources_with,
+    merge_metrics, merge_subagent_events, normalize_source,
 };
 use antiburn_local::insights::{
     CoverageCounts, DetectorId, DetectorStatus, EfficiencyReport, EfficiencyReportAccumulator,
@@ -1045,6 +1045,25 @@ fn streaming_metrics_match_every_golden() {
         let actual: Value =
             serde_json::from_str(&rendered).expect("rendered metrics must be valid JSON");
         assert_eq!(actual, expected["sessions"][0], "fixture {name}");
+    }
+}
+
+/// `Reported` names a vendor that states its own context window (Codex's
+/// `model_context_window`). A Claude session's window always comes from a
+/// tag, the built-in catalogue, or the 200k-plus-peak-bump inference, never
+/// a self-reported figure — so `Reported` here would mean the batch path
+/// lost the adapter's real source, the bug this guards against.
+#[test]
+fn no_claude_fixture_reports_a_self_reported_context_window() {
+    for name in fixture_names() {
+        let metrics = analyze_sources_with(vec![input(name)], true)
+            .sessions
+            .remove(0);
+        assert_ne!(
+            metrics.context_window_source,
+            ContextWindowSource::Reported,
+            "fixture {name}"
+        );
     }
 }
 

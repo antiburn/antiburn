@@ -20,9 +20,9 @@ use crate::analysis::framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
 };
 use crate::analysis::interface::{
-    ContentKind, ContentPart, EvidenceObservation, NormalizedRecord, ProviderHint, RawSource,
-    RecordSink, RelationProvenance, SessionCollector, SessionInput, SessionSummary, TurnContent,
-    VendorAdapter, VisitOutcome, push_provider_hint,
+    ContentKind, ContentPart, ContextWindowSource, EvidenceObservation, NormalizedRecord,
+    ProviderHint, RawSource, RecordSink, RelationProvenance, SessionCollector, SessionInput,
+    SessionSummary, TurnContent, VendorAdapter, VisitOutcome, push_provider_hint,
 };
 use crate::analysis::model::{
     CompactionTrigger, EventSource, NormalizedEvent, NormalizedSession, Role, ToolCall,
@@ -608,6 +608,7 @@ impl OpenCodeStreamState {
         SessionSummary {
             cache_write_tokens_available: true,
             context_window: None,
+            context_window_source: ContextWindowSource::Inferred,
             model: self.model.clone(),
             provider_hints: self.provider_hints.clone(),
             started_at_ms: None,

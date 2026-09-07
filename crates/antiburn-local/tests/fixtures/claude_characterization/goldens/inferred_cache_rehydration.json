@@ -3,6 +3,7 @@
     "agent": "claude",
     "cacheWriteTokensAvailable": true,
     "contextWindow": 200000,
+    "contextWindowSource": "catalogued",
     "events": [
       {
         "compactionPostTokens": null,
@@ -4054,6 +4055,7 @@
       "compactionCount": 0,
       "contextAvailable": true,
       "contextWindow": 200000,
+      "contextWindowSource": "catalogued",
       "cost": {
         "cacheReadUsd": 0.00536,
         "cacheWriteUsd": 0.0,

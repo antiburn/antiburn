@@ -18,8 +18,9 @@ use serde_json::Value;
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::initial_context::ClaudeContextAccumulator;
 use crate::analysis::interface::{
-    ContextSourceKind, EvidenceObservation, NormalizedRecord, RawSource, RecordSink, ResumedVisit,
-    SessionCollector, SessionInput, SessionSummary, TurnContent, VendorAdapter, VisitOutcome,
+    ContextSourceKind, ContextWindowSource, EvidenceObservation, NormalizedRecord, RawSource,
+    RecordSink, ResumedVisit, SessionCollector, SessionInput, SessionSummary, TurnContent,
+    VendorAdapter, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall, Usage};
 use crate::analysis::records::{
@@ -728,6 +729,7 @@ impl ClaudeAdapter {
 struct ClaudeStreamState {
     max_usage_by_message_id: HashMap<String, Usage>,
     context_window: Option<u64>,
+    context_window_source: Option<ContextWindowSource>,
     first_model: Option<String>,
     best_priceable: Option<(String, f64)>,
     last_seen_model: Option<String>,
@@ -786,11 +788,11 @@ impl ClaudeStreamState {
             return;
         }
         self.last_seen_model = Some(model.to_string());
-        if let Some(window) = model_context_window(model) {
-            self.context_window = Some(
-                self.context_window
-                    .map_or(window, |current| current.max(window)),
-            );
+        if let Some((window, source)) = model_context_window(model)
+            && self.context_window.is_none_or(|current| window > current)
+        {
+            self.context_window = Some(window);
+            self.context_window_source = Some(source);
         }
         if self.first_model.is_none() {
             self.first_model = Some(model.to_string());
@@ -835,6 +837,9 @@ impl ClaudeStreamState {
         SessionSummary {
             cache_write_tokens_available: true,
             context_window: self.context_window,
+            context_window_source: self
+                .context_window_source
+                .unwrap_or(ContextWindowSource::Inferred),
             model,
             provider_hints: Vec::new(),
             started_at_ms: None,
@@ -885,29 +890,86 @@ fn is_builtin_command(command: &str) -> bool {
         .any(|builtin| command.eq_ignore_ascii_case(builtin))
 }
 
-/// The context window for a recognized Claude model family. Unknown model ids
-/// stay unavailable rather than inheriting a misleading 200k guess.
-fn model_context_window(model: &str) -> Option<u64> {
-    let m = model.to_ascii_lowercase();
-    let is_1m = m.contains("opus-4")
-        || m.contains("fable-5")
-        || m.contains("sonnet-5")
-        || m.contains("sonnet-4-5")
-        || m.contains("sonnet-4-6")
-        || m.contains("sonnet-4-7")
-        || m.contains("sonnet-4-8")
-        || m.contains("sonnet-4-9");
-    if is_1m {
-        Some(1_000_000)
-    } else if m.contains("haiku")
-        || m.contains("claude-3")
-        || m.contains("sonnet-4-0")
-        || m.contains("sonnet-4-202")
-    {
-        Some(200_000)
-    } else {
-        None
+/// The context window and its source for a Claude model id. Resolution order:
+/// an explicit window tag (`[1m]`, `[200k]`) beats the built-in catalogue.
+/// An unrecognized id (no tag, no catalogue match) returns `None`; the
+/// caller then infers the window from the 200k-plus-peak-bump fallback.
+fn model_context_window(model: &str) -> Option<(u64, ContextWindowSource)> {
+    let lower = model.to_ascii_lowercase();
+    if let Some(open) = lower.find('[') {
+        let tag = lower[open + 1..].trim_end_matches(']');
+        match tag {
+            "1m" => return Some((1_000_000, ContextWindowSource::Tagged)),
+            "200k" => return Some((200_000, ContextWindowSource::Tagged)),
+            // An unrecognized tag falls through to the catalogue on the
+            // stripped id, below.
+            _ => {}
+        }
     }
+    let stripped = crate::analysis::pricing::strip_window_tag(&lower);
+    catalogued_context_window(stripped).map(|window| (window, ContextWindowSource::Catalogued))
+}
+
+/// True when `segments` contains `pattern` as a contiguous run. Segment
+/// equality (not substring) keeps `opus-4-1` from matching `opus-4-10`.
+fn has_segment_run(segments: &[&str], pattern: &[&str]) -> bool {
+    !pattern.is_empty()
+        && segments.len() >= pattern.len()
+        && segments
+            .windows(pattern.len())
+            .any(|window| window == pattern)
+}
+
+/// True when `segments` holds `prefix` immediately followed by one 8-digit
+/// segment, such as `["opus", "4", "20250514"]` — the date suffix on an
+/// undated model family like Opus 4.0.
+fn has_prefix_then_date(segments: &[&str], prefix: &[&str]) -> bool {
+    segments.windows(prefix.len() + 1).any(|window| {
+        window[..prefix.len()] == *prefix
+            && window[prefix.len()].len() == 8
+            && window[prefix.len()]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+    })
+}
+
+/// The context window for a recognized Claude model family, matched on the
+/// lower-cased, tag-stripped model id's dash-delimited segments. Unknown
+/// model ids return `None` rather than inheriting a misleading guess.
+fn catalogued_context_window(model: &str) -> Option<u64> {
+    let segments: Vec<&str> = model.split('-').collect();
+    let has = |pattern: &[&str]| has_segment_run(&segments, pattern);
+
+    const ONE_MILLION: &[&[&str]] = &[
+        &["opus", "5"],
+        &["mythos", "5"],
+        &["fable", "5"],
+        &["sonnet", "5"],
+        &["opus", "4", "6"],
+        &["opus", "4", "7"],
+        &["opus", "4", "8"],
+        &["opus", "4", "9"],
+        &["sonnet", "4", "5"],
+        &["sonnet", "4", "6"],
+        &["sonnet", "4", "7"],
+        &["sonnet", "4", "8"],
+        &["sonnet", "4", "9"],
+    ];
+    if ONE_MILLION.iter().any(|pattern| has(pattern)) {
+        return Some(1_000_000);
+    }
+
+    const TWO_HUNDRED_K: &[&[&str]] = &[
+        &["opus", "4", "0"],
+        &["opus", "4", "1"],
+        &["sonnet", "4", "0"],
+    ];
+    let is_200k = TWO_HUNDRED_K.iter().any(|pattern| has(pattern))
+        || has_prefix_then_date(&segments, &["opus", "4"])
+        || has_prefix_then_date(&segments, &["sonnet", "4"])
+        || segments.contains(&"haiku")
+        || has(&["claude", "3"]);
+    is_200k.then_some(200_000)
 }
 
 #[cfg(test)]
@@ -2139,5 +2201,91 @@ mod tests {
 
         let session = collector.into_session().expect("session must build");
         assert!(session.events.is_empty());
+    }
+
+    #[test]
+    fn model_context_window_resolves_every_catalogued_and_tagged_id() {
+        const ONE_MILLION_CATALOGUED: &[&str] = &[
+            "claude-opus-5",
+            "claude-mythos-5-1",
+            "claude-fable-5",
+            "claude-fable-5-1",
+            "claude-sonnet-5",
+            "claude-opus-4-6",
+            "claude-opus-4-7-20260115",
+            "claude-opus-4-8",
+            "claude-sonnet-4-6",
+        ];
+        for id in ONE_MILLION_CATALOGUED {
+            assert_eq!(
+                model_context_window(id),
+                Some((1_000_000, ContextWindowSource::Catalogued)),
+                "id {id}"
+            );
+            let upper = id.to_ascii_uppercase();
+            assert_eq!(
+                model_context_window(&upper),
+                Some((1_000_000, ContextWindowSource::Catalogued)),
+                "upper-case id {upper}"
+            );
+        }
+
+        const TWO_HUNDRED_K_CATALOGUED: &[&str] = &[
+            "claude-opus-4-20250514",
+            "claude-opus-4-1-20250805",
+            "claude-sonnet-4-20250514",
+            "claude-haiku-4-5-20251001",
+            "claude-3-5-haiku-20241022",
+        ];
+        for id in TWO_HUNDRED_K_CATALOGUED {
+            assert_eq!(
+                model_context_window(id),
+                Some((200_000, ContextWindowSource::Catalogued)),
+                "id {id}"
+            );
+            let upper = id.to_ascii_uppercase();
+            assert_eq!(
+                model_context_window(&upper),
+                Some((200_000, ContextWindowSource::Catalogued)),
+                "upper-case id {upper}"
+            );
+        }
+
+        assert_eq!(
+            model_context_window("claude-sonnet-4-20250514[1m]"),
+            Some((1_000_000, ContextWindowSource::Tagged))
+        );
+        assert_eq!(
+            model_context_window("claude-fictional[1m]"),
+            Some((1_000_000, ContextWindowSource::Tagged))
+        );
+        assert_eq!(
+            model_context_window("claude-fictional[200k]"),
+            Some((200_000, ContextWindowSource::Tagged))
+        );
+        assert_eq!(model_context_window("claude-fictional"), None);
+        assert_eq!(model_context_window("claude-fictional[weird]"), None);
+    }
+
+    #[test]
+    fn claude_stream_state_takes_the_larger_window_and_its_source() {
+        let mut state = ClaudeStreamState::default();
+        state.observe_model(Some("claude-haiku-4-5-20251001"));
+        state.observe_model(Some("claude-opus-5"));
+        let summary = state.into_summary();
+        assert_eq!(summary.context_window, Some(1_000_000));
+        assert_eq!(
+            summary.context_window_source,
+            ContextWindowSource::Catalogued
+        );
+    }
+
+    #[test]
+    fn claude_stream_state_infers_an_unrecognized_model() {
+        let mut state = ClaudeStreamState::default();
+        state.observe_model(Some("claude-fictional"));
+        let summary = state.into_summary();
+        assert_eq!(summary.context_window, None);
+        assert_eq!(summary.context_window_source, ContextWindowSource::Inferred);
     }
 }
