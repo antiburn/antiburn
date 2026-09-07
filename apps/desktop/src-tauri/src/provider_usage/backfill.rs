@@ -536,6 +536,7 @@ fn parse_window(value: &Value, observed_at: OffsetDateTime) -> Option<UsageWindo
 mod tests {
     use std::fs;
 
+    use rusqlite::params;
     use serde_json::json;
 
     use super::*;
@@ -555,6 +556,89 @@ mod tests {
 
     fn window(percent: f64, minutes: i64, reset: Option<i64>) -> Value {
         json!({"used_percent": percent, "window_minutes": minutes, "resets_at": reset})
+    }
+
+    fn candidate_store(directory: &Path, source: &Path, session_id: &str, account: &str) -> Store {
+        let store = Store::open(directory).expect("store");
+        let now = 1_800_000_000;
+        let record = crate::store::SessionRecord {
+            key: crate::store::SessionKey::new("native", "codex", session_id),
+            source_kind: "file".to_owned(),
+            source_label: source.display().to_string(),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: None,
+            surface: "cli".to_owned(),
+            updated_at_epoch: Some(now),
+            activity_cursor: "synthetic".to_owned(),
+            activity_source: "event".to_owned(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: Some(format!("synthetic:{session_id}")),
+        };
+        store
+            .upsert_sessions(
+                std::slice::from_ref(&record),
+                &crate::agents::evidence_cohort(),
+            )
+            .expect("session");
+        let connection = store.test_lock();
+        connection
+            .execute(
+                "UPDATE session_evidence SET published_fence = 1
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![
+                    record.key.environment_key,
+                    record.key.agent,
+                    record.key.session_id
+                ],
+            )
+            .expect("published evidence");
+        connection
+            .execute(
+                "INSERT INTO session_provider_account (
+                        environment_key, agent, session_id, provider, account_key,
+                        provenance, confidence, first_seen_at
+                    ) VALUES (?1, ?2, ?3, 'openai', ?4, 'provider_live', 'direct', 'synthetic')",
+                params![
+                    record.key.environment_key,
+                    record.key.agent,
+                    record.key.session_id,
+                    account,
+                ],
+            )
+            .expect("account");
+        connection
+            .execute(
+                "INSERT INTO turn (
+                        environment_key, agent, session_id, claim_fence,
+                        source_key, thread_id, turn_index, scope, role, ts_ms,
+                        model, input_tokens, cache_read_tokens, cache_write_tokens,
+                        output_tokens, is_compaction_boundary
+                    ) VALUES (?1, ?2, ?3, 1, 'synthetic', 'synthetic', 0, 'main',
+                              'assistant', ?4, 'gpt-6-astra', 100, 0, 0, 20, 0)",
+                params![
+                    record.key.environment_key,
+                    record.key.agent,
+                    record.key.session_id,
+                    now * 1_000,
+                ],
+            )
+            .expect("turn");
+        drop(connection);
+        store
+    }
+
+    fn observation_count(store: &Store) -> i64 {
+        store
+            .test_lock()
+            .query_row(
+                "SELECT COUNT(*) FROM provider_usage_observation",
+                [],
+                |row| row.get(0),
+            )
+            .expect("observation count")
     }
 
     #[test]
@@ -665,6 +749,158 @@ mod tests {
         assert_eq!(second.imported_observations, 0);
         assert!(!first.pending);
         assert!(!second.pending);
+    }
+
+    #[test]
+    fn imports_direct_rollouts_idempotently_and_skips_ambiguous_sessions() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store_dir = directory.path().join("store");
+        let source = directory.path().join("direct.jsonl");
+        let ambiguous = directory.path().join("ambiguous.jsonl");
+        let account = "a".repeat(64);
+        let other_account = "b".repeat(64);
+        let observed = at(1_800_000_000);
+        fs::write(
+            &source,
+            format!(
+                "{}\n",
+                line(
+                    observed,
+                    json!({"primary": window(20.0, 300, Some(1_800_017_000)),
+                           "secondary": window(30.0, 10_080, Some(1_800_604_800))}),
+                )
+            ),
+        )
+        .expect("direct rollout");
+        fs::write(
+            &ambiguous,
+            format!(
+                "{}\n",
+                line(
+                    observed,
+                    json!({"primary": window(40.0, 300, Some(1_800_017_000))}),
+                )
+            ),
+        )
+        .expect("ambiguous rollout");
+        let store = candidate_store(&store_dir, &source, "direct", &account);
+        let ambiguous_store = candidate_store(&store_dir, &ambiguous, "ambiguous", &account);
+        ambiguous_store
+            .test_lock()
+            .execute(
+                "INSERT INTO session_provider_account (
+                        environment_key, agent, session_id, provider, account_key,
+                        provenance, confidence, first_seen_at
+                    ) VALUES ('native', 'codex', 'ambiguous', 'openai', ?1,
+                              'provider_live', 'direct', 'synthetic')",
+                params![other_account],
+            )
+            .expect("second account");
+
+        let first = import_backfill_batch(&store, 1_800_000_001).expect("first import");
+        assert_eq!(first.imported_observations, 2);
+        assert_eq!(observation_count(&store), 2);
+        crate::provider_usage::ledger::reconcile(&store, 1_800_000_001);
+        let allocations: i64 = store
+            .test_lock()
+            .query_row(
+                "SELECT COUNT(*) FROM provider_usage_session_allocation",
+                [],
+                |row| row.get(0),
+            )
+            .expect("allocations");
+        assert_eq!(allocations, 1);
+
+        drop(store);
+        let reopened = Store::open(&store_dir).expect("reopen");
+        let repeated = import_backfill_batch(&reopened, 1_800_000_001).expect("repeat import");
+        assert_eq!(repeated.imported_observations, 0);
+        assert_eq!(observation_count(&reopened), 2);
+    }
+
+    #[test]
+    fn resumes_a_large_rollout_without_losing_the_tail_observation() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let source = directory.path().join("large.jsonl");
+        let account = "a".repeat(64);
+        let observed = at(1_800_000_000);
+        let first = line(
+            observed,
+            json!({"primary": window(10.0, 300, Some(1_800_017_000))}),
+        );
+        let tail = line(
+            at(1_800_000_001),
+            json!({"primary": window(40.0, 300, Some(1_800_017_000))}),
+        );
+        let mut rollout = format!("{first}\n");
+        while rollout.len() <= MAX_BATCH_BYTES + 64 {
+            rollout.push_str(
+                "{\"type\":\"ignored\",\"padding\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}\n",
+            );
+        }
+        rollout.push_str(&tail);
+        rollout.push('\n');
+        fs::write(&source, rollout).expect("large rollout");
+        let store = candidate_store(directory.path(), &source, "large", &account);
+
+        let first_batch = import_backfill_batch(&store, 1_800_000_001).expect("first batch");
+        assert!(first_batch.pending);
+        assert!(first_batch.continue_soon);
+        assert!(first_batch.scanned_bytes <= MAX_BATCH_BYTES as u64);
+        let second_batch = import_backfill_batch(&store, 1_800_000_001).expect("second batch");
+        assert_eq!(second_batch.imported_observations, 1);
+        assert_eq!(observation_count(&store), 2);
+    }
+
+    #[test]
+    fn defers_unavailable_and_incomplete_sources_while_importing_other_sources() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let missing = directory.path().join("missing.jsonl");
+        let partial = directory.path().join("partial.jsonl");
+        let ready = directory.path().join("ready.jsonl");
+        let account = "a".repeat(64);
+        let partial_record = line(
+            at(1_800_000_001),
+            json!({"primary": window(20.0, 300, Some(1_800_017_000))}),
+        );
+        fs::write(&partial, &partial_record[..partial_record.len() / 2]).expect("partial rollout");
+        fs::write(
+            &ready,
+            format!(
+                "{}\n",
+                line(
+                    at(1_800_000_002),
+                    json!({"primary": window(30.0, 300, Some(1_800_017_000))}),
+                )
+            ),
+        )
+        .expect("ready rollout");
+        let store = candidate_store(directory.path(), &missing, "missing", &account);
+        let partial_store = candidate_store(directory.path(), &partial, "partial", &account);
+        let ready_store = candidate_store(directory.path(), &ready, "ready", &account);
+
+        let first = import_backfill_batch(&store, 1_800_000_001).expect("first import");
+        assert_eq!(first.deferred_sources, 2);
+        assert!(first.pending);
+        assert!(!first.continue_soon);
+        assert_eq!(first.imported_observations, 1);
+
+        fs::write(
+            &missing,
+            format!(
+                "{}\n",
+                line(
+                    at(1_800_000_003),
+                    json!({"primary": window(40.0, 300, Some(1_800_017_000))}),
+                )
+            ),
+        )
+        .expect("missing recovery");
+        fs::write(&partial, format!("{partial_record}\n")).expect("partial recovery");
+        let recovered = import_backfill_batch(&store, 1_800_000_061).expect("recovery import");
+        assert_eq!(recovered.imported_observations, 2);
+        assert_eq!(observation_count(&store), 3);
+        drop((partial_store, ready_store));
     }
 
     #[test]

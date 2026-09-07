@@ -347,6 +347,11 @@ impl Store {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.lock()
+    }
+
     /* --------------------------------------------------------------------
      * Settings
      * ----------------------------------------------------------------- */

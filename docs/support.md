@@ -82,6 +82,13 @@ percentage over matching local session work, so this is an estimate and can exce
 account or provider-history evidence. This session estimate remains after a provider
 reset. The provider meter still shows only the current allowance period.
 
+For Codex, antiburn can also import retained local rollout rate-limit metadata for
+a directly associated opaque account. This bounded, resumable local read makes an
+older recorded period available without a provider request. It reads no transcript
+content into the allowance history, skips ambiguous accounts and defers incomplete records,
+and marks imported-period session estimates as partial. Missing or expired local
+records mean antiburn cannot reconstruct a complete allowance period.
+
 ## What antiburn stores
 
 antiburn keeps its own local data under the application's data directory. Settings →
