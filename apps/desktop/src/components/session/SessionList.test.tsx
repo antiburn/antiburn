@@ -134,6 +134,8 @@ describe("SessionList — rows", () => {
             windowId: "weekly-main",
             resetsAt: new Date(NOW.getTime() + 7 * 86_400_000).toISOString(),
             percent: 12.345,
+            coverage: "complete",
+            periodCount: 1,
           },
         ],
       },
@@ -143,6 +145,37 @@ describe("SessionList — rows", () => {
     expect(badge.dataset.sessionLimitProvider).toBe("anthropic")
     expect(badge.dataset.sessionLimitWindow).toBe("weekly-main")
     expect(badge.dataset.sessionLimitPercent).toBe("12.3450")
+    expect(badge).toHaveAttribute(
+      "aria-label",
+      "Estimated share of your Claude weekly limit. This session uses 5% or more of your limit.",
+    )
+  })
+
+  it("shows a partial cumulative estimate above one allowance period", () => {
+    list({
+      badgeMetric: "weeklyPercent",
+      sessionLimitAllocations: {
+        generatedAt: NOW.toISOString(),
+        allocations: [
+          {
+            agent: "claude-code",
+            sessionId: "session-1",
+            wslDistro: null,
+            provider: "anthropic",
+            displayName: "Claude",
+            accountKey: "work",
+            metric: "weekly",
+            windowId: "weekly-main",
+            resetsAt: null,
+            percent: 102.5,
+            coverage: "partial",
+            periodCount: 2,
+          },
+        ],
+      },
+    })
+
+    const badge = screen.getByText("102.5%")
     expect(badge).toHaveAttribute(
       "aria-label",
       "Estimated share of your Claude weekly limit. This session uses 5% or more of your limit.",
@@ -286,7 +319,7 @@ describe("SessionList — rows", () => {
     expect(screen.getByRole("radio", { name: "% 5h" })).toBeInTheDocument()
   })
 
-  it("shows a five-hour allocation when the provider exposes that window", () => {
+  it("keeps a historical five-hour allocation after its latest reset", () => {
     const props: SessionListProps = {
       entries: [entry()],
       days: 7,
@@ -305,8 +338,10 @@ describe("SessionList — rows", () => {
             accountKey: null,
             metric: "fiveHour",
             windowId: "five-hour",
-            resetsAt: new Date(NOW.getTime() + 3_600_000).toISOString(),
+            resetsAt: new Date(NOW.getTime() - 1).toISOString(),
             percent: 6.25,
+            coverage: "complete",
+            periodCount: 1,
           },
         ],
       },
@@ -319,7 +354,7 @@ describe("SessionList — rows", () => {
     rerender(<SessionList {...props} now={new Date(NOW.getTime() + 3_600_001)} />)
     expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
     expect(screen.getByRole("radio", { name: "$" })).toHaveAttribute("aria-checked", "false")
-    expect(screen.queryByText("6.25%")).toBeNull()
+    expect(screen.getByText("6.3%")).toBeInTheDocument()
   })
 
   it("names a session by its title, then a short id, then its agent", () => {
@@ -649,6 +684,8 @@ describe("SessionList — virtualization", () => {
             windowId: "weekly-main",
             resetsAt: new Date(NOW.getTime() + 7 * 86_400_000).toISOString(),
             percent: 7.25,
+            coverage: "complete",
+            periodCount: 1,
           },
         ],
       },

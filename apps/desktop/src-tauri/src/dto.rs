@@ -434,7 +434,7 @@ pub enum SessionLimitMetric {
     FiveHour,
 }
 
-/// One session's estimated share of a provider-reported allowance.
+/// One session's cumulative estimated share of provider allowance periods.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionLimitAllocation {
@@ -446,11 +446,20 @@ pub struct SessionLimitAllocation {
     pub display_name: String,
     pub account_key: Option<String>,
     pub window_id: String,
-    pub resets_at: String,
+    /// The active period reset when this is a live-only estimate.
+    ///
+    /// Durable cumulative values deliberately leave this empty. They do not
+    /// expire when a provider starts another period.
+    pub resets_at: Option<String>,
     pub percent: f64,
+    /// `partial` means the retained provider history cannot cover every
+    /// relevant period. The percentage remains an estimate, never a bill.
+    pub coverage: String,
+    /// Provider periods included in this cumulative estimate.
+    pub period_count: u32,
 }
 
-/// Current per-session estimates, computed from local turns and live limits.
+/// Materialized per-session allowance estimates.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionLimitAllocationSummary {

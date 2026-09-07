@@ -259,7 +259,6 @@ export class PopoverSession {
   private liveUsageRevision = 0
   private sessionLimitAllocationRequested = 0
   private sessionLimitAllocationRefresh: Promise<void> | null = null
-  private sessionLimitAllocationExpiryTimer: ReturnType<typeof setTimeout> | null = null
   private initialContentReady = false
   private contentReadyReportedGeneration: number | null = null
   private contentReadyReportInFlightGeneration: number | null = null
@@ -475,7 +474,6 @@ export class PopoverSession {
     this.stopLiveUsageListening = null
     this.stopNowTicking()
     this.stopUsagePolling()
-    this.stopSessionLimitAllocationExpiryTimer()
     this.checksRefreshQueued = false
     const checksConsumerId = this.checksConsumerId
     this.checksConsumerId = null
@@ -938,35 +936,9 @@ export class PopoverSession {
       const sessionLimitAllocations = await getSessionLimitAllocations().catch(() => null)
       if (sessionLimitAllocations && generation === this.generation) {
         this.update({ sessionLimitAllocations })
-        this.scheduleSessionLimitAllocationExpiry()
       }
       completed = target
     }
-  }
-
-  private scheduleSessionLimitAllocationExpiry(): void {
-    this.stopSessionLimitAllocationExpiryTimer()
-    const now = Date.now()
-    let nextReset = Number.POSITIVE_INFINITY
-    for (const allocation of this.snapshot.sessionLimitAllocations.allocations) {
-      const reset = Date.parse(allocation.resetsAt)
-      if (reset > now && reset < nextReset) nextReset = reset
-    }
-    if (!Number.isFinite(nextReset)) return
-    this.sessionLimitAllocationExpiryTimer = setTimeout(
-      () => {
-        this.sessionLimitAllocationExpiryTimer = null
-        this.update({ now: Date.now() })
-        this.scheduleSessionLimitAllocationExpiry()
-      },
-      Math.min(nextReset - now + 1, 2_147_483_647),
-    )
-  }
-
-  private stopSessionLimitAllocationExpiryTimer(): void {
-    if (this.sessionLimitAllocationExpiryTimer === null) return
-    clearTimeout(this.sessionLimitAllocationExpiryTimer)
-    this.sessionLimitAllocationExpiryTimer = null
   }
 
   private refreshRepositoryList = async (): Promise<void> => {

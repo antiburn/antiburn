@@ -75,6 +75,13 @@ not ours:
 - the limits appear above the spend estimates and never replace them. See
   [Network](#network) for the connections and the switch that controls them.
 
+Session cards can also show an estimated cumulative share of a provider allowance
+across recorded five-hour or weekly periods. antiburn distributes each provider
+percentage over matching local session work, so this is an estimate and can exceed
+100%. A partial coverage label means the estimate can omit usage or use incomplete
+account or provider-history evidence. This session estimate remains after a provider
+reset. The provider meter still shows only the current allowance period.
+
 ## What antiburn stores
 
 antiburn keeps its own local data under the application's data directory. Settings →
@@ -87,7 +94,9 @@ session used, and any quota limits it recorded hitting, never the transcript's
 text — session relations, the last successful plan-limit reading, and timestamped
 provider usage readings for an opaque account key. Provider usage readings stay
 for up to 90 days, or a shorter selected session-data retention period. Clearing
-local data removes them. This data stays on the device and is never uploaded.
+local data removes them. antiburn retains compact per-session allowance estimates
+while their sessions remain, even after the raw provider readings expire. This data
+stays on the device and is never uploaded.
 
 The coding agents' source transcripts remain their files. antiburn may copy data from
 them into its own local store, but it never modifies or deletes the source files.

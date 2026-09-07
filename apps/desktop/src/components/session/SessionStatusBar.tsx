@@ -24,7 +24,6 @@ export interface SessionStatusBarProps {
         windowId?: string
       }
     | undefined
-  onLimitBadgeHover?: (badge: NonNullable<SessionStatusBarProps["limitBadge"]> | null) => void
 }
 
 /**
@@ -119,7 +118,6 @@ export function SessionStatusBar({
   evidenceState = "ready",
   cost,
   limitBadge,
-  onLimitBadgeHover,
 }: SessionStatusBarProps) {
   const assessedChecks = checks.filter(isAssessed)
   const failed = assessedChecks.filter((check) => check.status === "finding")
@@ -190,10 +188,6 @@ export function SessionStatusBar({
                   : limitBadge.label
               }
               tabIndex={0}
-              onMouseEnter={() => onLimitBadgeHover?.(limitBadge)}
-              onMouseLeave={() => onLimitBadgeHover?.(null)}
-              onFocus={() => onLimitBadgeHover?.(limitBadge)}
-              onBlur={() => onLimitBadgeHover?.(null)}
             >
               {isHighLimitShare && <Flame size={11} className="shrink-0" aria-hidden="true" />}
               {formatLimitPercent(limitBadge.percent)}

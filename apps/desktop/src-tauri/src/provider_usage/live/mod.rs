@@ -316,11 +316,19 @@ pub fn summarize_collected(
     if let Some(store) = store {
         let result = store.record_provider_usage_snapshots(&collected.snapshots);
         if let Some(app) = storage_app {
-            if crate::storage_health::checked(app, "provider usage history", result).is_err() {
-                ::tracing::warn!(event = "provider_usage_history_write_failed");
+            match crate::storage_health::checked(app, "provider usage history", result) {
+                Ok(_) => crate::provider_usage::ledger::reconcile(store, now),
+                Err(_) => {
+                    ::tracing::warn!(event = "provider_usage_history_write_failed");
+                }
             }
-        } else if let Err(error) = result {
-            ::tracing::warn!(event = "provider_usage_history_write_failed", error = %error);
+        } else {
+            match result {
+                Ok(_) => crate::provider_usage::ledger::reconcile(store, now),
+                Err(error) => {
+                    ::tracing::warn!(event = "provider_usage_history_write_failed", error = %error);
+                }
+            }
         }
     }
     let history = store

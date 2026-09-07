@@ -13,6 +13,7 @@ use crate::provider_usage::live::model::{
 };
 
 use super::Store;
+use super::provider_usage_ledger::enqueue_in;
 
 const RESET_JITTER_SECS: i64 = 5;
 const RETENTION_DAYS: i64 = 90;
@@ -137,9 +138,15 @@ impl Store {
             }
         }
 
-        tx.commit()?;
         changed_periods.sort_unstable();
         changed_periods.dedup();
+        let requested_at_epoch = snapshots
+            .iter()
+            .map(|snapshot| snapshot.observed_at.unix_timestamp())
+            .max()
+            .unwrap_or(0);
+        enqueue_in(&tx, &changed_periods, requested_at_epoch)?;
+        tx.commit()?;
         Ok(changed_periods)
     }
 
@@ -154,6 +161,71 @@ impl Store {
             return Ok(None);
         };
         let observations = query_observations(&connection, period_id)?;
+        Ok(Some(ProviderUsagePeriodHistory {
+            period,
+            observations,
+        }))
+    }
+
+    /// Load a bounded, evenly spaced authoritative series for allocation.
+    ///
+    /// The allocator must use this exact series for both SQL turn buckets and
+    /// percentage deltas. It keeps the initial and final readings.
+    pub fn provider_usage_period_history_for_allocation(
+        &self,
+        period_id: i64,
+        maximum_samples: usize,
+    ) -> Result<Option<ProviderUsagePeriodHistory>> {
+        let maximum_samples =
+            i64::try_from(maximum_samples.clamp(2, 256)).expect("bounded sample limit fits i64");
+        let connection = self.lock();
+        let Some(period) = query_period(&connection, period_id)? else {
+            return Ok(None);
+        };
+        let (start, reset) = period_bounds(&period);
+        let total = connection.query_row(
+            "SELECT COUNT(*)
+               FROM provider_usage_observation
+              WHERE period_id = ?1 AND is_fresh = 1 AND is_authoritative = 1
+                AND used_percent IS NOT NULL
+                AND (?2 IS NULL OR observed_at_epoch >= ?2)
+                AND (?3 IS NULL OR observed_at_epoch < ?3)",
+            params![period_id, start, reset],
+            |row| row.get::<_, i64>(0),
+        )?;
+        if total == 0 {
+            return Ok(Some(ProviderUsagePeriodHistory {
+                period,
+                observations: Vec::new(),
+            }));
+        }
+        let stride = ((total - 1 + maximum_samples - 2) / (maximum_samples - 1)).max(1);
+        let mut statement = connection.prepare(
+            "WITH numbered AS (
+                SELECT id, period_id, provider, account_key, window_id, window_kind,
+                       window_role, scope_key, scope_label, observed_at_epoch, used_percent,
+                       is_fresh, is_authoritative, confidence, source_id,
+                       reported_starts_at_epoch, reported_resets_at_epoch,
+                       ROW_NUMBER() OVER (ORDER BY observed_at_epoch, id) AS row_number,
+                       COUNT(*) OVER () AS total_rows
+                 FROM provider_usage_observation
+                 WHERE period_id = ?1 AND is_fresh = 1 AND is_authoritative = 1
+                   AND used_percent IS NOT NULL
+                   AND (?2 IS NULL OR observed_at_epoch >= ?2)
+                   AND (?3 IS NULL OR observed_at_epoch < ?3)
+             )
+             SELECT id, period_id, provider, account_key, window_id, window_kind,
+                    window_role, scope_key, scope_label, observed_at_epoch, used_percent,
+                    is_fresh, is_authoritative, confidence, source_id,
+                    reported_starts_at_epoch, reported_resets_at_epoch
+               FROM numbered
+              WHERE row_number = 1 OR row_number = total_rows
+                 OR (row_number - 1) % ?4 = 0
+              ORDER BY observed_at_epoch, id",
+        )?;
+        let observations = statement
+            .query_map(params![period_id, start, reset, stride], row_to_observation)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(Some(ProviderUsagePeriodHistory {
             period,
             observations,
@@ -198,8 +270,7 @@ impl Store {
 
     /// Remove expired readings and orphaned periods.
     ///
-    /// The current schema removes periods after their last reading expires.
-    /// A future allocation migration must add its reference guard here.
+    /// Retain period metadata while a compact allocation still references it.
     pub(crate) fn apply_provider_usage_retention_in(
         connection: &Connection,
         retention_days: i32,
@@ -210,6 +281,21 @@ impl Store {
             _ => RETENTION_DAYS,
         };
         let cutoff = now_epoch.saturating_sub(bounded_days.saturating_mul(86_400));
+        connection.execute(
+            "UPDATE provider_usage_period
+                SET allocation_frozen = 1
+              WHERE allocation_frozen = 0
+                AND EXISTS (
+                    SELECT 1 FROM provider_usage_session_allocation
+                     WHERE provider_usage_session_allocation.period_id = provider_usage_period.id
+                )
+                AND EXISTS (
+                    SELECT 1 FROM provider_usage_observation
+                     WHERE provider_usage_observation.period_id = provider_usage_period.id
+                       AND provider_usage_observation.observed_at_epoch < ?1
+                )",
+            [cutoff],
+        )?;
         let removed = connection.execute(
             "DELETE FROM provider_usage_observation WHERE observed_at_epoch < ?1",
             [cutoff],
@@ -219,11 +305,49 @@ impl Store {
               WHERE NOT EXISTS (
                     SELECT 1 FROM provider_usage_observation
                      WHERE provider_usage_observation.period_id = provider_usage_period.id
-              )",
+              )
+                AND NOT EXISTS (
+                    SELECT 1 FROM provider_usage_session_allocation
+                     WHERE provider_usage_session_allocation.period_id = provider_usage_period.id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM provider_usage_allocation_dirty
+                     WHERE provider_usage_allocation_dirty.period_id = provider_usage_period.id
+                )",
             [],
         )?;
         Ok(removed)
     }
+
+    /// Report whether retention froze a materialized period before evidence removal.
+    pub(crate) fn provider_usage_period_allocation_frozen(&self, period_id: i64) -> Result<bool> {
+        let connection = self.lock();
+        Ok(connection
+            .query_row(
+                "SELECT allocation_frozen FROM provider_usage_period WHERE id = ?1",
+                [period_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .is_some_and(|value| value != 0))
+    }
+}
+
+fn period_bounds(period: &ProviderUsagePeriod) -> (Option<i64>, Option<i64>) {
+    let Some(reset) = period.resets_at_epoch else {
+        return (None, None);
+    };
+    let duration = period.duration_seconds.unwrap_or_else(|| {
+        if period.window_kind == "weekly" {
+            7 * 86_400
+        } else {
+            5 * 3_600
+        }
+    });
+    let start = period
+        .starts_at_epoch
+        .unwrap_or_else(|| reset.saturating_sub(duration));
+    (Some(start), Some(reset))
 }
 
 impl<'a> Reading<'a> {

@@ -26,6 +26,7 @@
 //!    touched. The views say so.
 
 pub(crate) mod allocation;
+pub(crate) mod ledger;
 pub mod live;
 pub mod providers;
 

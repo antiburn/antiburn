@@ -2,6 +2,9 @@ use super::*;
 use crate::dto::{LiveUsageForecast, LiveUsageSupport, LiveUsageWindow, SessionLimitMetric};
 use crate::provider_usage::live::metrics::UsageSample;
 use crate::store::SessionUsageTurnRecord;
+use crate::store::provider_usage_history::{
+    ProviderUsageObservation, ProviderUsagePeriod, ProviderUsagePeriodHistory,
+};
 
 const NOW: i64 = 1_800_000_000;
 const MODEL: &str = "claude-opus-4-6";
@@ -108,6 +111,80 @@ fn weekly(rows: &[SessionUsageRecord], live: &LiveUsageSummary) -> Vec<SessionLi
 
 fn account(character: char) -> String {
     character.to_string().repeat(64)
+}
+
+#[test]
+fn reduced_observation_series_keeps_the_full_reported_delta() {
+    let account = account('a');
+    let observations = (1..=97)
+        .map(|at| ProviderUsageObservation {
+            id: at,
+            period_id: Some(1),
+            provider: "anthropic".to_string(),
+            account_key: account.clone(),
+            window_id: "seven-day".to_string(),
+            window_kind: "weekly".to_string(),
+            window_role: "primaryLong".to_string(),
+            scope_key: "account".to_string(),
+            scope_label: "account".to_string(),
+            observed_at_epoch: at,
+            used_percent: Some(at as f64),
+            is_fresh: true,
+            is_authoritative: true,
+            confidence: "high".to_string(),
+            source_id: "test".to_string(),
+            reported_starts_at_epoch: Some(0),
+            reported_resets_at_epoch: Some(100),
+        })
+        .collect::<Vec<_>>();
+    let history = ProviderUsagePeriodHistory {
+        period: ProviderUsagePeriod {
+            id: 1,
+            provider: "anthropic".to_string(),
+            account_key: account.clone(),
+            window_id: "seven-day".to_string(),
+            window_kind: "weekly".to_string(),
+            window_role: "primaryLong".to_string(),
+            scope_key: "account".to_string(),
+            scope_label: "account".to_string(),
+            duration_seconds: Some(100),
+            starts_at_epoch: Some(0),
+            resets_at_epoch: Some(100),
+            first_observed_epoch: 1,
+            last_observed_epoch: 97,
+        },
+        observations,
+    };
+    let ends = period_observation_interval_ends(&history, 96);
+    assert!(ends.len() <= 96);
+    assert_eq!(ends.first(), Some(&1_000));
+    assert_eq!(ends.last(), Some(&97_000));
+    let mut rows = turn("one", 1, 1, &[&account]);
+    rows.turns = ends
+        .iter()
+        .map(|end| SessionUsageTurnRecord {
+            ts_ms: Some(*end),
+            model: Some(MODEL.to_string()),
+            speed: None,
+            input_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 0,
+        })
+        .collect();
+    let observations = history
+        .observations
+        .iter()
+        .filter(|observation| ends.contains(&observation.observed_at_epoch.saturating_mul(1_000)))
+        .cloned()
+        .collect();
+    let reduced = ProviderUsagePeriodHistory {
+        period: history.period,
+        observations,
+    };
+    let (_, allocations) = estimate_period(vec![rows], &reduced).expect("weekly allocation");
+    assert_eq!(allocations.len(), 1);
+    assert!((allocations[0].percent - 97.0).abs() < 1e-9);
 }
 
 #[test]
