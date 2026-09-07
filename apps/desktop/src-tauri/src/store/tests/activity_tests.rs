@@ -79,31 +79,128 @@ fn latest_session_activity_ignores_null_epochs() {
 }
 
 #[test]
-fn session_record_by_source_label_round_trips() {
+fn native_file_session_activity_keys_keep_full_identity() {
     let store = store();
     let record = session("by-label", 4_000);
+    let mut wsl = record.clone();
+    wsl.key.environment_key = "wsl:Ubuntu".into();
+    wsl.key.session_id = "by-label-wsl".into();
+    wsl.wsl_distro = Some("Ubuntu".into());
+    let mut codex = record.clone();
+    codex.key.agent = "codex".into();
+    codex.key.session_id = "by-label-codex".into();
+    let mut inline = record.clone();
+    inline.key.session_id = "by-label-inline".into();
+    inline.source_kind = "inline".into();
     store
         .upsert_sessions(
-            std::slice::from_ref(&record),
+            &[record.clone(), wsl, codex, inline],
             &crate::agents::evidence_cohort(),
         )
         .unwrap();
 
-    let (key, found) = store
-        .session_record_by_source_label(&record.source_label)
+    let labels = BTreeSet::from([record.source_label.clone(), "/nowhere/unknown.jsonl".into()]);
+    let found = store
+        .native_file_session_activity_keys(&labels)
         .unwrap()
-        .expect("a stored session is found by its source label");
-    assert_eq!(key.environment_key, "native");
-    assert_eq!(key.agent, "claude-code");
-    assert_eq!(key.source_label, record.source_label);
-    assert_eq!(found.key.session_id, "by-label");
+        .remove(&record.source_label)
+        .expect("native file sessions are found by source label");
+    assert_eq!(
+        found,
+        BTreeSet::from([
+            SessionActivityKey::new("native", "claude-code", &record.source_label),
+            SessionActivityKey::new("native", "codex", &record.source_label),
+        ])
+    );
 
     assert!(
         store
-            .session_record_by_source_label("/nowhere/unknown.jsonl")
+            .native_file_session_activity_keys(&BTreeSet::from(["/nowhere/unknown.jsonl".into()]))
             .unwrap()
-            .is_none(),
+            .is_empty(),
         "an unknown source label finds nothing"
+    );
+}
+
+#[test]
+fn native_file_session_activity_keys_cross_the_query_chunk_boundary() {
+    let store = store();
+    let mut first = session("chunk-first", 4_000);
+    first.source_label = "/lookup/000.jsonl".into();
+    let mut last = session("chunk-last", 4_001);
+    last.source_label = format!("/lookup/{SOURCE_LABEL_LOOKUP_CHUNK_SIZE:03}.jsonl");
+    store
+        .upsert_sessions(
+            &[first.clone(), last.clone()],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let labels = (0..=SOURCE_LABEL_LOOKUP_CHUNK_SIZE)
+        .map(|index| format!("/lookup/{index:03}.jsonl"))
+        .collect::<BTreeSet<_>>();
+
+    let found = store.native_file_session_activity_keys(&labels).unwrap();
+
+    assert_eq!(found.len(), 2);
+    assert!(found.contains_key(&first.source_label));
+    assert!(found.contains_key(&last.source_label));
+}
+
+#[test]
+fn session_record_by_activity_key_keeps_environment_and_agent_identity() {
+    let store = store();
+    let native = session("native-label", 4_000);
+    let mut wsl = native.clone();
+    wsl.key.environment_key = "wsl:Ubuntu".into();
+    wsl.key.session_id = "wsl-label".into();
+    wsl.wsl_distro = Some("Ubuntu".into());
+    let mut codex = native.clone();
+    codex.key.agent = "codex".into();
+    codex.key.session_id = "codex-label".into();
+    store
+        .upsert_sessions(
+            &[native.clone(), wsl, codex],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+
+    let key = SessionActivityKey::new("native", "claude-code", &native.source_label);
+    let found = store
+        .session_record_by_activity_key(&key)
+        .unwrap()
+        .expect("the exact native agent row is found");
+    assert_eq!(found.key, native.key);
+}
+
+#[test]
+fn migrated_source_lookup_query_plan_uses_the_source_index() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..37] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection.pragma_update(None, "user_version", 37).unwrap();
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-source-lookup-migration-test").to_path_buf(),
+    )
+    .expect("the real prior schema migrates to the source lookup index");
+
+    let connection = store.lock();
+    let sql = native_file_session_activity_keys_sql(2);
+    let mut statement = connection
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .unwrap();
+    let plan = statement
+        .query_map(params!["/one.jsonl", "/two.jsonl"], |row| {
+            row.get::<_, String>(3)
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+        .join("\n");
+    assert!(
+        plan.contains("session_source_lookup") && !plan.contains("SCAN session"),
+        "query plan did not search the source lookup index: {plan}"
     );
 }
 
