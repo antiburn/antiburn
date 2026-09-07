@@ -814,25 +814,23 @@ async fn pass(
         PassScope::Agents(agents) => discover_scoped_agents(app, agents, now, since_secs).await,
     };
 
-    let previous_records = store.session_records()?;
-    let scoped_previous_records;
-    let previous_records_for_pass = match scope {
-        PassScope::Full => &previous_records,
-        PassScope::Agents(agents) => {
-            scoped_previous_records = previous_records
-                .iter()
-                .filter(|(key, _)| agents.iter().any(|agent| agent.slug() == key.agent))
-                .map(|(key, record)| (key.clone(), record.clone()))
-                .collect();
-            &scoped_previous_records
-        }
-    };
+    let activity_keys = logs
+        .iter()
+        .map(|log| {
+            SessionActivityKey::new(
+                log.environment.key(),
+                log.agent_type.slug(),
+                log.source_label(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let previous_records = store.session_records_for_activity_keys(&activity_keys)?;
     let Described {
         records,
         rejected,
         changed,
         list_changed,
-    } = describe_with_states(logs, &home, &ignored, previous_records_for_pass).await;
+    } = describe_with_states(logs, &home, &ignored, &previous_records).await;
     let evidence_agents: Vec<&str> = match scope {
         PassScope::Full => agents::evidence_cohort(),
         PassScope::Agents(agents) => agents.iter().map(|agent| agent.slug()).collect(),
@@ -844,7 +842,11 @@ async fn pass(
     // may also be unchanged, but its evidence last failed on a missing
     // source, and only a write re-runs `upsert_sessions`'s own
     // `source_returned` check to re-queue it.
-    let returned = store.sessions_with_missing_source()?;
+    let record_keys = records
+        .iter()
+        .map(|record| record.key.clone())
+        .collect::<Vec<_>>();
+    let returned = store.sessions_with_missing_source_for(&record_keys)?;
     // Every write below is routed through the storage-health check, so a
     // database that has stopped accepting writes becomes a banner in the
     // popover rather than a list that silently stops changing.
@@ -861,7 +863,7 @@ async fn pass(
     // or moved one's deadline later; either way its sleep needs recomputing.
     idle::wake(app);
 
-    announce_changed_rows(&store, &changed, previous_records_for_pass, now, announce);
+    announce_changed_rows(&store, &changed, &previous_records, now, announce);
 
     // A transcript the gate rejected may have been indexed by an earlier
     // version of the app that did not gate; the row is removed rather than

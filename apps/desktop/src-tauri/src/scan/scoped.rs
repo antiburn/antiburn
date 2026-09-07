@@ -21,7 +21,7 @@ use tokio::time::Instant;
 use crate::agents;
 use crate::dto::{ActivityEntry, ScanStatus};
 use crate::storage_health::checked;
-use crate::store::{SessionActivityKey, SessionRecord, Store};
+use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
 use super::{PassScope, ScanController, ScanTrigger};
 
@@ -38,6 +38,9 @@ pub const DB_AGENT_REDISCOVER_MIN_INTERVAL: Duration = Duration::from_secs(30);
 
 /// An indexed-title refresh runs at most this often for each agent.
 pub const TITLE_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Stored sessions loaded at once during an indexed-title refresh.
+const TITLE_REFRESH_PAGE_SIZE: usize = 256;
 
 /// T7: how long the scheduler waits before retrying admitted work that found
 /// a command's pass already holding the running flag.
@@ -453,57 +456,77 @@ async fn refresh_indexed_titles_locked(
     agents: &BTreeSet<AgentKind>,
 ) -> anyhow::Result<ScopedSummary> {
     let store = app.state::<Store>();
-    let previous_map: HashMap<SessionActivityKey, SessionRecord> = store
-        .session_records()?
-        .into_iter()
-        .filter(|(_, record)| {
-            record.key.environment_key == "native"
-                && agents.iter().any(|agent| record.key.agent == agent.slug())
-        })
-        .collect();
-    let mut records: Vec<SessionRecord> = previous_map.values().cloned().collect();
-    let mut changed = Vec::new();
-
-    for agent in agents {
-        let session_ids: Vec<String> = records
-            .iter()
-            .filter(|record| record.key.agent == agent.slug())
-            .map(|record| record.key.session_id.clone())
-            .collect();
-        let mut titles = Explorers::DISK
-            .indexed_session_titles_for(agent, &session_ids)
-            .await;
-        for record in records
-            .iter_mut()
-            .filter(|record| record.key.agent == agent.slug())
-        {
-            let Some(resolved) = titles.remove(&record.key.session_id) else {
-                continue;
-            };
-            if super::apply_indexed_title(record, agent, resolved) {
-                changed.push(record.key.clone());
-            }
-        }
-    }
-
-    let changed_records = super::records_to_persist(&records, &changed, &[]);
-    if !changed_records.is_empty() {
-        checked(
-            app,
-            "The session index",
-            store.upsert_sessions(&changed_records, &agents::evidence_cohort()),
-        )?;
-    }
     let now = super::unix_now();
     let announce_app = app.clone();
     let announce = move |entry: ActivityEntry| {
         let _ = announce_app.emit(crate::commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
     };
-    super::announce_changed_rows(&store, &changed, &previous_map, now, &announce);
+    let mut session_count = 0;
+    let mut changed_count = 0;
+
+    for agent in agents {
+        // Keep only IDs while the external index resolves once. Full cached
+        // records remain bounded to each page of titles that the index found.
+        let session_ids = store.native_session_ids_for_agent(agent.slug())?;
+        session_count += session_ids.len();
+        let titles = Explorers::DISK
+            .indexed_session_titles_for(agent, &session_ids)
+            .await;
+        drop(session_ids);
+
+        let mut title_entries = titles.into_iter();
+        loop {
+            let mut page_titles = title_entries
+                .by_ref()
+                .take(TITLE_REFRESH_PAGE_SIZE)
+                .collect::<HashMap<_, _>>();
+            if page_titles.is_empty() {
+                break;
+            }
+            let page_keys = page_titles
+                .keys()
+                .map(|session_id| SessionKey::new("native", agent.slug(), session_id))
+                .collect::<Vec<_>>();
+            let mut records = store.session_records_for_session_keys(&page_keys)?;
+            let previous_map = records
+                .iter()
+                .map(|record| {
+                    (
+                        SessionActivityKey::new(
+                            record.key.environment_key.clone(),
+                            record.key.agent.clone(),
+                            record.source_label.clone(),
+                        ),
+                        record.clone(),
+                    )
+                })
+                .collect::<HashMap<_, _>>();
+            let mut changed = Vec::new();
+            for record in &mut records {
+                let Some(resolved) = page_titles.remove(&record.key.session_id) else {
+                    continue;
+                };
+                if super::apply_indexed_title(record, agent, resolved) {
+                    changed.push(record.key.clone());
+                }
+            }
+
+            let changed_records = super::records_to_persist(&records, &changed, &[]);
+            if !changed_records.is_empty() {
+                checked(
+                    app,
+                    "The session index",
+                    store.upsert_sessions(&changed_records, &agents::evidence_cohort()),
+                )?;
+            }
+            super::announce_changed_rows(&store, &changed, &previous_map, now, &announce);
+            changed_count += changed.len();
+        }
+    }
 
     Ok(ScopedSummary {
-        sessions: records.len(),
-        re_described: changed.len(),
+        sessions: session_count,
+        re_described: changed_count,
     })
 }
 
