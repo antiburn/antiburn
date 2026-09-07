@@ -17,6 +17,55 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-07
+
+### Added
+
+- Aggregate Insights reports now expose finding, clean, unavailable, and
+  not-applicable counts, plus bounded per-check and combined token-burn
+  estimates. `SessionTokenBurnEvidence`, `TokenBurnTurnAccumulator`, and the
+  related source and turn evidence types let an embedding supply the local
+  inputs without transcript content.
+- Context-source evidence can include built-in tool definitions, their token
+  cost, invocation state, and deferred state. The unused built-in-tools check
+  now produces findings for supported Claude sessions.
+- `ContextWindowSource` records whether a context limit was reported, tagged,
+  catalogued, or inferred. Pricing breakdown queries expose token use by the
+  effective model and speed tier.
+- `AgentExplorer::indexed_title_watch_files` and
+  `Explorers::indexed_title_watch_files_for` expose vendor title stores to
+  filesystem watchers.
+
+### Changed
+
+- **Breaking:** `SessionInput` includes `fork_parent_session_id`, and session
+  summaries and metrics include `context_window_source`. Report and evidence
+  structures include the new aggregate, tool-definition, and pricing fields.
+- Claude resume-as-fork sessions can link to their parent and exclude inherited
+  records from the child's analysis. Replayed records with an earlier UUID are
+  also excluded from work, usage, and evidence.
+- Codex `token_usage` records contribute usage without double counting the
+  matching event record. Agent tool calls count as sub-agent launches, and
+  zero-usage synthetic turns no longer receive attributed work.
+- Token-burn estimates use local session evidence for context overdepth,
+  repeated context, model policy, speed, and unused context sources. The
+  combined result avoids adding checks that can describe the same work.
+- Model pricing distinguishes speed tiers, including GPT-6 Astra Fast.
+
+### Fixed
+
+- Claude context remains available for unknown model identifiers through an
+  inferred 200k tier that expands to the observed peak. Tagged one-million-token
+  models and Opus 5 use their correct context limits.
+- Claude housekeeping and in-file resume records no longer make evidence
+  incomplete or inflate usage. Thread links use `parentUuid` rather than an
+  unrelated UUID field.
+- Copilot CLI discovery accepts only `events.jsonl`, so unrelated JSONL files
+  are not treated as sessions.
+- A Claude skill keeps a known `SourceOrigin` after the session invokes it.
+  Origin evidence that cannot be classified no longer suppresses the
+  filesystem probe, and user skills still resolve when a worktree is removed.
+
 ## [0.5.0] - 2026-09-03
 
 ### Added
@@ -33,9 +82,6 @@ version and refuses the release if there is none.
 - `WatchRoot`, `AgentExplorer::watch_roots`, and `Explorers::watch_roots_for`
   expose the directories each agent's discovery reads, for a filesystem
   watcher.
-- `AgentExplorer::indexed_title_watch_files` and
-  `Explorers::indexed_title_watch_files_for` expose vendor title stores to
-  filesystem watchers.
 
 ### Changed
 
@@ -54,19 +100,6 @@ version and refuses the release if there is none.
   `agent-transcripts` and `chats` walks are now bounded by depth to the
   documented layout, rather than mtime-gated, so a rediscovery no longer
   reads a project's other subdirectories.
-
-### Fixed
-
-- A Claude skill keeps a known `SourceOrigin` after the session invokes it.
-  The `invoked_skills` path is a scheme string, such as
-  `userSettings:<name>`, so only the `bundled:` form resolved before and
-  the rest reported `Unknown`.
-- Origin evidence that cannot be classified no longer suppresses the
-  filesystem probe for that skill name.
-- The user-directory probe runs when the session's working directory no
-  longer exists, so a user skill still resolves for a deleted worktree. The
-  project probe and the bare-name `Bundled` inference still need that
-  directory.
 
 ### Removed
 
