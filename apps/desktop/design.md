@@ -467,18 +467,34 @@ Notes for what isn't expressible as a token:
   where it means a category: blue for context, the token series colors for in/out, yellow and
   pink for cache marks, brand orange for a compaction, teal for real work, red for waste.
   Everything else stays greyscale until the pointer names a layer.
-- **Main window** — the retained main window opens at 900 × 600 logical pixels with a normal
-  minimum of 800 × 560. The initial outer frame uses at most 85% of each usable display dimension,
+- **Main window** — the retained main window opens at 1100 × 600 logical pixels with a normal
+  minimum of 1000 × 560. The initial outer frame uses at most 85% of each usable display dimension,
   including native chrome. A smaller work area takes precedence over the normal minimum. Saved
   user sizes can exceed the initial cap and remain constrained to the usable work area. It paints the opaque
-  `surface-window` canvas. On macOS its 40px overlay titlebar remains a drag region and leaves the
-  native traffic lights visible. Double-clicking this strip toggles maximize and restore through
+  `surface-window` canvas. On macOS its 40px overlay drag region spans only the sidebar and leaves the
+  native traffic lights visible. The collection and detail panes start at the top of the window,
+  without titlebar clearance or an overlaid drag region. Double-clicking this strip toggles maximize and restore through
   Tauri's drag-region handler. Windows and Linux retain their native bars, so this surface adds no
   top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
   Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
   These local geometry rules use the spacing tokens in `main-window.css`; other source lists
-  retain their current density. Activity is the only main sidebar item. Settings remains available through the tray and native menus.
-  The first main row starts at 48px on macOS, clear of the drag strip. The content region scrolls
+  retain their current density. Activity is the main sidebar section. A Settings action at the bottom opens the existing Settings window. Command+, (Control+, on Windows and Linux) also opens Settings without changing the selected section.
+  The first sidebar row starts at 48px on macOS, clear of the drag strip. The content region scrolls
   independently of the title strip. A view switch is immediate: the window does not animate navigation. Use the
   documented type scale and keyboard-only focus treatment. Hidden or minimized main windows suspend
   presentation work; blur alone does not suspend it. Native close hides this renderer for reuse.
+
+### Main window collection and detail architecture
+
+The 220px navigation sidebar, 340px collection pane, and flexible detail pane remain visible
+at every supported window size. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
+features can supply their own toolbar and scroll area. At the 1000px minimum window width,
+the detail retains 440px; at the 1100px default width, it receives 540px.
+Selection is immediate, with no navigation animation. The generic collection does not auto-select.
+The default collection uses 40px minimum rows, semantic selected fills, and the shared
+keyboard-only focus treatment. Arrow keys, Home, and End select rows; Enter focuses the detail
+region. Visited sections retain their state and scroll position while hidden.
+
+`MainWindowLayout` owns chrome and columns. `CollectionDetailPane` owns selection and detail
+slots; a custom collection slot owns its own viewport, including any virtualization. These
+components do not load data or subscribe to events.
