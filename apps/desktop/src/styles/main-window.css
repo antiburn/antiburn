@@ -10,11 +10,12 @@
   background-color: var(--color-bg-window);
 }
 
-/* This matches the macOS overlay clearance used by the window chrome. */
+/* Keep the drag region above the sidebar and clear of feature controls. */
 .main-window-titlebar {
   position: absolute;
   z-index: 20;
-  inset: 0 0 auto;
+  inset: 0 auto auto 0;
+  inline-size: var(--sidebar-width);
   block-size: var(--main-window-titlebar-height);
 }
 
@@ -48,33 +49,60 @@
   block-size: 14px;
 }
 
-.main-window-content {
+.main-window-workspace,
+.main-window-section {
   display: flex;
   min-inline-size: 0;
   min-block-size: 0;
   flex: 1;
-  flex-direction: column;
 }
 
-.main-window-scroll-viewport {
+.main-window-section[hidden] {
+  display: none;
+}
+
+.main-window-collection,
+.main-window-detail {
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
   min-inline-size: 0;
 }
 
+.main-window-collection {
+  flex: 0 0 340px;
+  border-inline-end: 1px solid var(--color-border);
+}
+
+.main-window-detail {
+  flex: 1;
+}
+
 .main-window-pane {
-  min-block-size: 100%;
   padding: var(--space-2xl);
 }
 
-.main-window-content-macos .main-window-pane {
-  padding-block-start: calc(var(--main-window-titlebar-height) + var(--space-2xl));
+.main-window-list-empty {
+  padding: var(--space-lg);
 }
 
-.main-window-placeholder {
-  display: grid;
-  max-inline-size: 480px;
-  gap: var(--space-sm);
+.main-window-collection-list {
+  padding: var(--space-sm);
 }
 
-.main-window-placeholder p {
-  max-inline-size: 52ch;
+.main-window-collection-row {
+  min-block-size: calc(var(--space-2xl) + var(--space-lg));
+  padding: var(--space-sm);
+}
+
+.main-window-collection-row:hover {
+  background-color: var(--color-bg-row-hover);
+}
+
+.main-window-collection-row[aria-selected="true"] {
+  background-color: var(--color-bg-selected);
+}
+
+.main-window-collection-row:active {
+  background-color: var(--color-bg-selected);
 }

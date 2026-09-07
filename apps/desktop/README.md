@@ -131,11 +131,12 @@ Settings teardown, and the memory rules behind those policies.
   window that was closed or minimized earlier. Restoration uses the native
   unminimize operation. Tray interactions and login startup stay quiet.
   The initial content size is
-  900×600 logical pixels with a normal minimum of 800×560. The initial outer
+  1100×600 logical pixels with a normal minimum of 1000×560. The initial outer
   frame is capped at 85% of each usable display dimension. Saved user sizes
   retain their dimensions within the available work area. The navigation shell
   uses a persistent 220px sidebar with dense desktop rows. Activity is the only main sidebar item and contains
-  placeholders until product views migrate; see the
+  placeholders until product views migrate. The sidebar Settings action and Command+,
+  (Control+, on Windows and Linux) open the existing Settings window; see the
   [main-window validation runbook](../../docs/runbooks/main-window.md).
 - **Tray item.** Primary click toggles the popover. Secondary click opens a
   menu with Open antiburn, Pin Window, Settings, and Quit. Native application
@@ -247,3 +248,16 @@ These build-level limits affect desktop development:
   agents with a recorded vendor logo, a letter tile for known agents without
   one, and a neutral surface glyph only for `generic-agent`. Original
   per-agent artwork beyond vendor marks is a later stream.
+
+### Main window feature boundary
+
+`MainWindowView` registers sections with a renderer that receives an `active` flag. Unvisited
+sections do not mount; visited sections stay mounted while hidden. Future feature adapters
+must combine this flag with window visibility before doing presentation work.
+
+`MainWindowLayout` supplies the persistent sidebar and workspace. `CollectionDetailPane`
+supplies independent collection/detail viewports and selection by stable item ID. Features
+provide `items` and `renderDetail`; an optional `renderCollection` slot receives `selectedId`,
+`select`, and `openDetail` and owns its viewport. The default list supports keyboard selection
+and Enter-to-detail-region focus. Controlled `selection` and `onSelectionChange` let a feature
+own navigation history. `detailOwnsViewport` embeds a view with an existing scroll container.

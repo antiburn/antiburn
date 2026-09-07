@@ -1,7 +1,17 @@
 import { fireEvent, render, screen } from "@testing-library/react"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { Activity } from "lucide-react"
+import { CollectionDetailPane } from "./main-window/CollectionDetailPane"
+import type * as IpcModule from "../lib/ipc"
+import capability from "../../src-tauri/capabilities/main.json"
+import { openSettingsWindow } from "../lib/ipc"
 import { MainWindowView } from "./MainWindowView"
+
+vi.mock("../lib/ipc", async (importOriginal) => ({
+  ...(await importOriginal<typeof IpcModule>()),
+  openSettingsWindow: vi.fn().mockResolvedValue(undefined),
+}))
 
 const userAgent = Object.getOwnPropertyDescriptor(window.navigator, "userAgent")
 const innerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth")
@@ -15,6 +25,7 @@ function setWindowWidth(value: number): void {
 }
 
 afterEach(() => {
+  vi.clearAllMocks()
   if (userAgent) Object.defineProperty(window.navigator, "userAgent", userAgent)
   if (innerWidth) Object.defineProperty(window, "innerWidth", innerWidth)
 })
@@ -44,7 +55,7 @@ describe("MainWindowView", () => {
   })
 
   it("shows only Activity in the persistent sidebar", () => {
-    setWindowWidth(800)
+    setWindowWidth(1000)
     render(<MainWindowView />)
     expect(screen.getAllByRole("tab")).toHaveLength(1)
     expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute(
@@ -52,10 +63,76 @@ describe("MainWindowView", () => {
       "true",
     )
     expect(screen.getByRole("tabpanel", { name: "Activity" })).toBeVisible()
-    expect(screen.queryByRole("button", { name: "Settings" })).toBeNull()
+    expect(screen.getByRole("button", { name: "Settings" })).toBeVisible()
     setWindowWidth(900)
     fireEvent(window, new Event("resize"))
     expect(screen.getByRole("tablist", { name: "Main sections" })).toBeVisible()
     expect(screen.queryByRole("button", { name: "Open navigation" })).toBeNull()
+  })
+  it("opens the existing Settings window without changing the selected section", () => {
+    render(<MainWindowView />)
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+    expect(openSettingsWindow).toHaveBeenCalledExactlyOnceWith()
+    expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    )
+    expect(capability.permissions).toContain("allow-open-settings-window")
+  })
+
+  it("shows a recoverable Settings error", async () => {
+    vi.mocked(openSettingsWindow).mockRejectedValueOnce(new Error("Unavailable"))
+    render(<MainWindowView />)
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not open Settings")
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }))
+    expect(screen.queryByRole("alert")).toBeNull()
+  })
+
+  it.each(["metaKey", "ctrlKey"])(
+    "opens Settings with %s+comma from the detail pane",
+    (modifier) => {
+      render(<MainWindowView />)
+      fireEvent.keyDown(screen.getByRole("tabpanel", { name: "Activity" }), {
+        key: ",",
+        [modifier]: true,
+      })
+      expect(openSettingsWindow).toHaveBeenCalledExactlyOnceWith()
+      fireEvent.keyDown(document, { key: ",", [modifier]: true, repeat: true })
+      fireEvent.keyDown(document, { key: "," })
+      fireEvent.keyDown(document, { key: ",", [modifier]: true, shiftKey: true })
+      expect(openSettingsWindow).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it("opens a section's collection and detail without mounting unvisited sections", () => {
+    const other = vi.fn(() => <p>Other workspace</p>)
+    const sections = [
+      {
+        id: "activity",
+        label: "Activity",
+        icon: Activity,
+        render: () => (
+          <CollectionDetailPane
+            title="Items"
+            items={[{ id: "test", label: "Example" }]}
+            emptyMessage="Empty"
+            detailEmptyMessage="Choose an item"
+            renderDetail={() => <p>Example detail</p>}
+          />
+        ),
+      },
+      { id: "other", label: "Other", icon: Activity, render: other },
+    ]
+    render(<MainWindowView sections={sections} />)
+    expect(other).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("option", { name: "Example" }))
+    expect(screen.getByText("Example detail")).toBeVisible()
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }))
+    expect(screen.getByText("Example detail")).toBeVisible()
+    fireEvent.click(screen.getByRole("tab", { name: "Other" }))
+    expect(screen.getByText("Other workspace")).toBeVisible()
+    fireEvent.click(screen.getByRole("tab", { name: "Activity" }))
+    expect(screen.getByText("Example detail")).toBeVisible()
   })
 })
