@@ -22,6 +22,7 @@
 //! come here only to write the result.
 
 pub mod model;
+pub(crate) mod provider_usage_history;
 mod schema;
 
 #[cfg(test)]
@@ -1386,6 +1387,8 @@ impl Store {
         tx.execute("DELETE FROM turn", [])?;
         let sessions = tx.execute("DELETE FROM session", [])?;
         tx.execute("DELETE FROM provider_account_seen", [])?;
+        tx.execute("DELETE FROM provider_usage_observation", [])?;
+        tx.execute("DELETE FROM provider_usage_period", [])?;
         tx.execute(
             "DELETE FROM setting
               WHERE key IN (?1, 'internal:liveUsageHistoryV2', 'internal:liveUsageSnapshotV2')",
@@ -2968,6 +2971,7 @@ pub(crate) fn apply_session_retention_in(
     now_epoch: i64,
 ) -> Result<usize> {
     if retention_days == RETAIN_SESSION_DATA_FOREVER {
+        Store::apply_provider_usage_retention_in(connection, retention_days, now_epoch)?;
         return Ok(0);
     }
 
@@ -2997,6 +3001,7 @@ pub(crate) fn apply_session_retention_in(
             removed += 1;
         }
     }
+    Store::apply_provider_usage_retention_in(connection, retention_days, now_epoch)?;
     Ok(removed)
 }
 
