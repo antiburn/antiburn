@@ -189,6 +189,23 @@ fn zero_usage_is_a_valid_zero_estimate() {
 }
 
 #[test]
+fn zero_usage_does_not_allocate_a_nonmatching_scoped_session() {
+    let mut scoped = window(SessionLimitMetric::Weekly, 0.0);
+    scoped.scope_model = Some("Claude Opus 4.6".to_string());
+    let mut other = turn("other", NOW - 60, 1_000_000, &[]);
+    other.turns[0].model = Some("claude-sonnet-4-6".to_string());
+
+    let allocations = weekly(
+        &[turn("match", NOW - 60, 1_000_000, &[]), other],
+        &live(None, vec![scoped]),
+    );
+
+    assert_eq!(allocations.len(), 1);
+    assert_eq!(allocations[0].session_id, "match");
+    assert_eq!(allocations[0].percent, 0.0);
+}
+
+#[test]
 fn turns_use_the_provider_window_boundaries() {
     let mut weekly_window = window(SessionLimitMetric::Weekly, 30.0);
     weekly_window.starts_at = Some(iso(NOW - 100));
@@ -522,21 +539,21 @@ fn evidence_without_a_timestamp_or_provider_is_too_weak_to_allocate() {
 }
 
 #[test]
-fn stale_and_invalid_live_windows_do_not_allocate() {
+fn stale_and_invalid_live_windows_do_not_allocate_zero_estimates() {
     let rows = [turn("one", NOW - 60, 1_000_000, &[])];
-    let mut stale = live(None, vec![window(SessionLimitMetric::Weekly, 20.0)]);
+    let mut stale = live(None, vec![window(SessionLimitMetric::Weekly, 0.0)]);
     stale.providers[0].freshness = LiveUsageFreshness::Stale;
     assert!(weekly(&rows, &stale).is_empty());
 
-    let mut expired = live(None, vec![window(SessionLimitMetric::Weekly, 20.0)]);
+    let mut expired = live(None, vec![window(SessionLimitMetric::Weekly, 0.0)]);
     expired.providers[0].windows[0].resets_at = Some(iso(NOW));
     assert!(weekly(&rows, &expired).is_empty());
 
-    let mut missing = live(None, vec![window(SessionLimitMetric::Weekly, 20.0)]);
+    let mut missing = live(None, vec![window(SessionLimitMetric::Weekly, 0.0)]);
     missing.providers[0].windows[0].resets_at = None;
     assert!(weekly(&rows, &missing).is_empty());
 
-    let current = live(None, vec![window(SessionLimitMetric::Weekly, 20.0)]);
+    let current = live(None, vec![window(SessionLimitMetric::Weekly, 0.0)]);
     assert!(
         estimate(
             rows.to_vec(),
@@ -635,6 +652,137 @@ fn an_unchanged_percentage_keeps_the_start_of_the_plateau() {
 }
 
 #[test]
+fn a_nonzero_plateau_returns_zero_for_eligible_sessions() {
+    let turns = weighted_turns(vec![
+        turn("first", NOW - 50, 1_000_000, &[]),
+        turn("second", NOW - 10, 1_000_000, &[]),
+    ]);
+    let refs: Vec<_> = turns.iter().collect();
+    let samples = vec![
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 60).unwrap(),
+            used_percent: Some(24.0),
+            freshness: Freshness::Fresh,
+        },
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 30).unwrap(),
+            used_percent: Some(24.0),
+            freshness: Freshness::Fresh,
+        },
+    ];
+
+    let (shares, uses_history) = distribute_window(
+        &refs,
+        24.0,
+        (NOW - 100) * 1_000,
+        NOW * 1_000,
+        &samples,
+        WeightBasis::Price,
+    );
+
+    assert!(uses_history);
+    assert_eq!(
+        shares[&SessionKey::new("native", "claude-code", "first")],
+        0.0
+    );
+    assert_eq!(
+        shares[&SessionKey::new("native", "claude-code", "second")],
+        0.0
+    );
+}
+
+#[test]
+fn a_plateau_leaves_invalid_weights_unavailable() {
+    let turns = [WeightedTurn {
+        key: SessionKey::new("native", "claude-code", "invalid"),
+        wsl_distro: None,
+        provider: "anthropic",
+        account: AccountEvidence::None,
+        at_ms: (NOW - 10) * 1_000,
+        model: MODEL.to_string(),
+        price_weight: Some(f64::NAN),
+        token_weight: 1_000_000.0,
+    }];
+    let refs: Vec<_> = turns.iter().collect();
+    let samples = vec![UsageSample {
+        observed_at: OffsetDateTime::from_unix_timestamp(NOW - 60).unwrap(),
+        used_percent: Some(24.0),
+        freshness: Freshness::Fresh,
+    }];
+
+    let (shares, uses_history) = distribute_window(
+        &refs,
+        24.0,
+        (NOW - 100) * 1_000,
+        NOW * 1_000,
+        &samples,
+        WeightBasis::Price,
+    );
+
+    assert!(uses_history);
+    assert!(shares.is_empty());
+}
+
+#[test]
+fn repeated_zero_samples_return_zero_before_a_later_increment() {
+    let turns = weighted_turns(vec![
+        turn("zero", NOW - 50, 1_000_000, &[]),
+        turn("increment", NOW - 10, 1_000_000, &[]),
+    ]);
+    let refs: Vec<_> = turns.iter().collect();
+    let samples = vec![
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 60).unwrap(),
+            used_percent: Some(0.0),
+            freshness: Freshness::Fresh,
+        },
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 30).unwrap(),
+            used_percent: Some(0.0),
+            freshness: Freshness::Fresh,
+        },
+    ];
+
+    let (zero_shares, zero_uses_history) = distribute_window(
+        &refs,
+        0.0,
+        (NOW - 100) * 1_000,
+        NOW * 1_000,
+        &samples,
+        WeightBasis::Price,
+    );
+
+    assert!(zero_uses_history);
+    assert_eq!(
+        zero_shares[&SessionKey::new("native", "claude-code", "zero")],
+        0.0,
+    );
+    assert_eq!(
+        zero_shares[&SessionKey::new("native", "claude-code", "increment")],
+        0.0,
+    );
+
+    let (shares, uses_history) = distribute_window(
+        &refs,
+        1.0,
+        (NOW - 100) * 1_000,
+        NOW * 1_000,
+        &samples,
+        WeightBasis::Price,
+    );
+
+    assert!(uses_history);
+    assert_eq!(
+        shares[&SessionKey::new("native", "claude-code", "zero")],
+        0.5,
+    );
+    assert_eq!(
+        shares[&SessionKey::new("native", "claude-code", "increment")],
+        0.5,
+    );
+}
+
+#[test]
 fn an_initial_zero_starts_the_first_plateau() {
     let turns = weighted_turns(vec![
         turn("before-zero", NOW - 70, 1_000_000, &[]),
@@ -669,7 +817,10 @@ fn an_initial_zero_starts_the_first_plateau() {
     );
 
     assert!(uses_history);
-    assert!(!shares.contains_key(&SessionKey::new("native", "claude-code", "before-zero",)));
+    assert_eq!(
+        shares[&SessionKey::new("native", "claude-code", "before-zero")],
+        0.0,
+    );
     assert_eq!(
         shares[&SessionKey::new("native", "claude-code", "after-zero")],
         1.0,
