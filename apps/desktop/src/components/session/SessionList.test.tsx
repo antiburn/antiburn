@@ -147,7 +147,7 @@ describe("SessionList — rows", () => {
     expect(badge.dataset.sessionLimitPercent).toBe("12.3450")
     expect(badge).toHaveAttribute(
       "aria-label",
-      "Estimated cumulative share of your Claude weekly allowance, summed across 1 provider period. Based on retained usage history. Displayed estimate: 12.3%. This cumulative estimate is 5% or more.",
+      "Estimated share of your Claude weekly limit. This session uses 5% or more of your limit.",
     )
   })
 
@@ -178,11 +178,11 @@ describe("SessionList — rows", () => {
     const badge = screen.getByText("102.5%")
     expect(badge).toHaveAttribute(
       "aria-label",
-      "Estimated cumulative share of your Claude weekly allowance, summed across 2 provider periods. Some usage may be missing. Displayed estimate: 102.5%. This cumulative estimate is 5% or more.",
+      "Estimated share of your Claude weekly limit. This session uses 5% or more of your limit.",
     )
   })
 
-  it("shows an unavailable weekly estimate when the selected limit has no allocation", async () => {
+  it("names the weekly limit when the selected limit has no allocation", async () => {
     list({
       entries: [
         entry({
@@ -193,13 +193,11 @@ describe("SessionList — rows", () => {
     })
 
     expect(screen.queryByLabelText("Estimated cost $1.00")).toBeNull()
-    const badge = screen.getByLabelText("Weekly limit estimate unavailable for this session.")
-    expect(badge).toHaveTextContent("unavailable")
+    const badge = screen.getByLabelText("No weekly limit for this session.")
+    expect(badge).toHaveTextContent("no limit")
     fireEvent.focus(badge)
     await waitFor(() => {
-      expect(screen.getByRole("tooltip")).toHaveTextContent(
-        "Weekly limit estimate unavailable for this session.",
-      )
+      expect(screen.getByRole("tooltip")).toHaveTextContent("No weekly limit for this session.")
     })
   })
 
@@ -217,9 +215,7 @@ describe("SessionList — rows", () => {
     expect(screen.getByRole("radio", { name: "$" })).toHaveAttribute("aria-checked", "false")
     expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
     expect(screen.queryByLabelText("Estimated cost $1.00")).toBeNull()
-    expect(
-      screen.getByLabelText("5-hour limit estimate unavailable for this session."),
-    ).toHaveTextContent("unavailable")
+    expect(screen.getByLabelText("No 5h limit for this session.")).toHaveTextContent("no limit")
   })
 
   it("does not offer five-hour mode for another short rolling window", () => {

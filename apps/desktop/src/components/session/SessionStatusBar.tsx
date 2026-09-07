@@ -15,7 +15,7 @@ export interface SessionStatusBarProps {
   evidenceState?: SessionHygieneEvidenceState
   /** Display values for the cost figure; omit when nothing priced the session. */
   cost?: SessionCostBadgeProps | null | undefined
-  /** A null percent shows an unavailable estimate. An omitted badge uses the cost. */
+  /** A null percent shows the missing limit label. An omitted badge uses the cost. */
   limitBadge?:
     | {
         label: string
@@ -182,7 +182,11 @@ export function SessionStatusBar({
               data-session-limit-provider={limitBadge.provider}
               data-session-limit-window={limitBadge.windowId}
               data-session-limit-percent={limitBadge.percent.toFixed(4)}
-              aria-label={`${limitBadge.label} Displayed estimate: ${formatLimitPercent(limitBadge.percent)}.${isHighLimitShare ? " This cumulative estimate is 5% or more." : ""}`}
+              aria-label={
+                isHighLimitShare
+                  ? `${limitBadge.label} This session uses 5% or more of your limit.`
+                  : limitBadge.label
+              }
               tabIndex={0}
             >
               {isHighLimitShare && <Flame size={11} className="shrink-0" aria-hidden="true" />}
@@ -196,7 +200,7 @@ export function SessionStatusBar({
               aria-label={limitBadge.label}
               tabIndex={0}
             >
-              unavailable
+              no limit
             </span>
           </Tooltip>
         ) : (
