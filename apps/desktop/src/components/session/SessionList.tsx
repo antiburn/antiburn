@@ -143,16 +143,17 @@ function hasDisplayedFiveHourWindow(live: LiveUsageSummaryPayload | undefined): 
 function sessionLimitBadge(
   metric: Exclude<BadgeMetric, "cost">,
   allocation?: SessionLimitAllocationPayload,
-):
-  | {
-      label: string
-      percent: number
-      provider?: string
-      windowId?: string
-    }
-  | undefined {
+): {
+  label: string
+  percent: number | null
+  provider?: string
+  windowId?: string
+} {
   if (!allocation || !Number.isFinite(allocation.percent)) {
-    return undefined
+    return {
+      label: `No ${metric === "weeklyPercent" ? "weekly" : "5h"} limit for this session.`,
+      percent: null,
+    }
   }
   return {
     label: `Estimated share of your ${allocation.displayName} ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit.`,
@@ -216,7 +217,7 @@ interface SessionRowProps {
   limitBadge?:
     | {
         label: string
-        percent: number
+        percent: number | null
         provider?: string
         windowId?: string
       }
