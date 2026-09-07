@@ -500,6 +500,12 @@ export async function windowReady(generation: number): Promise<void> {
   await invoke("window_ready", { generation })
 }
 
+/** Tell the shell that the retained main window committed this renderer generation. */
+export async function mainWindowReady(generation: number): Promise<void> {
+  if (!hasShell()) return
+  await invoke("main_window_ready", { generation })
+}
+
 /** Tell the shell that the popover's initial activity and usage state settled. */
 export async function popoverContentReady(generation: number): Promise<void> {
   if (!hasShell()) return

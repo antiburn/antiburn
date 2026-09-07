@@ -78,6 +78,16 @@ pub fn window_ready(window: tauri::WebviewWindow, generation: u64) {
     }
 }
 
+/// Reveal the main window after its renderer commits its shell.
+#[tauri::command]
+pub fn main_window_ready(window: tauri::WebviewWindow, generation: u64) {
+    if window.label() == crate::main_window::LABEL {
+        crate::main_window::renderer_ready(&window, generation);
+    } else {
+        ::tracing::debug!(event = "main_window_ready_ignored", window = window.label());
+    }
+}
+
 /// Record when the popover's first activity and cached usage state settle.
 #[tauri::command]
 pub fn popover_content_ready(window: tauri::WebviewWindow, generation: u64) {
@@ -110,6 +120,7 @@ pub fn take_settings_pane(app: tauri::AppHandle) -> Option<String> {
 /// background tasks are aborted on the way out.
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
+    crate::main_window::flush_placement(&app);
     app.exit(0);
 }
 
