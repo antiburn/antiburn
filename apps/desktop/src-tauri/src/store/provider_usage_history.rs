@@ -94,7 +94,7 @@ struct Reading<'a> {
 #[derive(Debug, Clone, Copy)]
 struct PeriodAssignment {
     id: Option<i64>,
-    metadata_changed: bool,
+    detaches_existing: bool,
 }
 
 impl Store {
@@ -122,14 +122,16 @@ impl Store {
                     continue;
                 }
                 let assignment = period_for(&tx, &reading)?;
-                let period_id = assignment
-                    .id
-                    .or(existing.as_ref().and_then(|row| row.period_id));
-                write_observation(&tx, &reading, assignment.id)?;
-                if assignment.metadata_changed || period_id.is_some() {
-                    if let Some(period_id) = period_id {
-                        changed_periods.push(period_id);
-                    }
+                let old_period_id = existing.as_ref().and_then(|row| row.period_id);
+                let period_id = assignment.id.or(old_period_id);
+                write_observation(&tx, &reading, assignment.id, assignment.detaches_existing)?;
+                if let Some(period_id) = period_id {
+                    changed_periods.push(period_id);
+                }
+                if let Some(old_period_id) = old_period_id
+                    && Some(old_period_id) != assignment.id
+                {
+                    changed_periods.push(old_period_id);
                 }
             }
         }
@@ -157,7 +159,11 @@ impl Store {
         }))
     }
 
-    /// List period metadata changed since a cursor in a bounded, stable page.
+    /// List period metadata with an observation at or after a cursor.
+    ///
+    /// This is an observation-time cursor, not a mutation log. A correction to
+    /// an old observation does not appear here unless its period also has a
+    /// newer observation.
     pub fn provider_usage_periods_changed_since(
         &self,
         since_epoch: i64,
@@ -255,7 +261,7 @@ fn period_for(connection: &Transaction<'_>, reading: &Reading<'_>) -> Result<Per
     if !has_valid_period_boundary(reading) {
         return Ok(PeriodAssignment {
             id: None,
-            metadata_changed: false,
+            detaches_existing: has_invalid_period_boundary(reading),
         });
     }
 
@@ -311,28 +317,22 @@ fn period_for(connection: &Transaction<'_>, reading: &Reading<'_>) -> Result<Per
     drop(statement);
 
     if let Some(period) = candidates.iter().find(|period| compatible(period, reading)) {
-        let metadata_changed = period.duration_seconds.is_none()
-            && reading.duration_seconds.is_some()
-            || period.starts_at_epoch.is_none() && reading.starts_at_epoch.is_some()
-            || period.resets_at_epoch.is_none() && reading.resets_at_epoch.is_some();
-        if metadata_changed {
-            connection.execute(
-                "UPDATE provider_usage_period
-                    SET duration_seconds = COALESCE(duration_seconds, ?1),
-                        starts_at_epoch = COALESCE(starts_at_epoch, ?2),
-                        resets_at_epoch = COALESCE(resets_at_epoch, ?3)
-                  WHERE id = ?4",
-                params![
-                    reading.duration_seconds,
-                    reading.starts_at_epoch,
-                    reading.resets_at_epoch,
-                    period.id,
-                ],
-            )?;
-        }
+        connection.execute(
+            "UPDATE provider_usage_period
+                SET duration_seconds = COALESCE(duration_seconds, ?1),
+                    starts_at_epoch = COALESCE(starts_at_epoch, ?2),
+                    resets_at_epoch = COALESCE(resets_at_epoch, ?3)
+              WHERE id = ?4",
+            params![
+                reading.duration_seconds,
+                reading.starts_at_epoch,
+                reading.resets_at_epoch,
+                period.id,
+            ],
+        )?;
         return Ok(PeriodAssignment {
             id: Some(period.id),
-            metadata_changed,
+            detaches_existing: false,
         });
     }
 
@@ -358,7 +358,7 @@ fn period_for(connection: &Transaction<'_>, reading: &Reading<'_>) -> Result<Per
     )?;
     Ok(PeriodAssignment {
         id: Some(connection.last_insert_rowid()),
-        metadata_changed: true,
+        detaches_existing: false,
     })
 }
 
@@ -385,10 +385,14 @@ fn compatible_boundary(previous: Option<i64>, incoming: Option<i64>) -> bool {
 
 fn has_valid_period_boundary(reading: &Reading<'_>) -> bool {
     (reading.starts_at_epoch.is_some() || reading.resets_at_epoch.is_some())
-        && !matches!(
-            (reading.starts_at_epoch, reading.resets_at_epoch),
-            (Some(start), Some(reset)) if start >= reset
-        )
+        && !has_invalid_period_boundary(reading)
+}
+
+fn has_invalid_period_boundary(reading: &Reading<'_>) -> bool {
+    matches!(
+        (reading.starts_at_epoch, reading.resets_at_epoch),
+        (Some(start), Some(reset)) if start >= reset
+    )
 }
 
 fn existing_observation(
@@ -403,7 +407,6 @@ fn existing_observation(
                     reported_resets_at_epoch
                FROM provider_usage_observation
               WHERE provider = ?1 AND account_key = ?2 AND window_id = ?3
-                AND window_kind = ?4 AND window_role = ?5 AND scope_key = ?6
                 AND observed_at_epoch = ?7",
             params![
                 reading.provider,
@@ -432,12 +435,19 @@ fn is_more_complete(reading: &Reading<'_>, existing: &ProviderUsageObservation) 
     existing.used_percent.is_none() && reading.used_percent.is_some()
         || existing.reported_starts_at_epoch.is_none() && reading.starts_at_epoch.is_some()
         || existing.reported_resets_at_epoch.is_none() && reading.resets_at_epoch.is_some()
+        || existing.reported_starts_at_epoch.is_some()
+            && reading.starts_at_epoch.is_some()
+            && existing.reported_starts_at_epoch != reading.starts_at_epoch
+        || existing.reported_resets_at_epoch.is_some()
+            && reading.resets_at_epoch.is_some()
+            && existing.reported_resets_at_epoch != reading.resets_at_epoch
 }
 
 fn write_observation(
     connection: &Transaction<'_>,
     reading: &Reading<'_>,
     period_id: Option<i64>,
+    detaches_existing: bool,
 ) -> Result<()> {
     connection.execute(
         "INSERT INTO provider_usage_observation (
@@ -450,15 +460,25 @@ fn write_observation(
                 provider, account_key, window_id, window_kind, window_role, scope_key,
                 observed_at_epoch
             ) DO UPDATE SET
-                period_id = COALESCE(excluded.period_id, provider_usage_observation.period_id),
+                period_id = CASE WHEN ?17 THEN excluded.period_id
+                    ELSE COALESCE(excluded.period_id, provider_usage_observation.period_id)
+                END,
                 scope_label = excluded.scope_label,
-                used_percent = excluded.used_percent,
+                used_percent = COALESCE(excluded.used_percent, provider_usage_observation.used_percent),
                 is_fresh = excluded.is_fresh,
                 is_authoritative = excluded.is_authoritative,
                 confidence = excluded.confidence,
                 source_id = excluded.source_id,
-                reported_starts_at_epoch = excluded.reported_starts_at_epoch,
-                reported_resets_at_epoch = excluded.reported_resets_at_epoch",
+                reported_starts_at_epoch = CASE
+                    WHEN excluded.reported_starts_at_epoch IS NULL
+                        THEN provider_usage_observation.reported_starts_at_epoch
+                    ELSE excluded.reported_starts_at_epoch
+                END,
+                reported_resets_at_epoch = CASE
+                    WHEN excluded.reported_resets_at_epoch IS NULL
+                        THEN provider_usage_observation.reported_resets_at_epoch
+                    ELSE excluded.reported_resets_at_epoch
+                END",
         params![
             period_id,
             reading.provider,
@@ -476,6 +496,7 @@ fn write_observation(
             reading.source_id,
             reading.starts_at_epoch,
             reading.resets_at_epoch,
+            i64::from(detaches_existing),
         ],
     )?;
     if let Some(period_id) = period_id {
@@ -613,4 +634,446 @@ fn scope_label(value: &UsageScope) -> String {
 
 fn is_opaque_account_key(value: &&str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use time::OffsetDateTime;
+
+    use super::*;
+    use crate::provider_usage::live::model::{UsageSource, WindowRole};
+
+    const NOW: i64 = 1_800_000_000;
+    const ACCOUNT_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const ACCOUNT_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    fn store() -> Store {
+        Store::open_in_memory(Path::new("/tmp/antiburn-provider-usage-history-test"))
+            .expect("opens migrated in-memory store")
+    }
+
+    fn snapshot(
+        account: &str,
+        observed_at: i64,
+        window_id: &str,
+        starts_at: Option<i64>,
+        resets_at: Option<i64>,
+        used_percent: Option<f64>,
+    ) -> ProviderUsageSnapshot {
+        ProviderUsageSnapshot {
+            provider: "anthropic",
+            account: Some(account.into()),
+            account_uuid: None,
+            account_email: None,
+            plan: None,
+            plan_tier: None,
+            observed_at: OffsetDateTime::from_unix_timestamp(observed_at).expect("valid time"),
+            source: UsageSource {
+                id: "synthetic",
+                label: "Synthetic source".into(),
+                confidence: Confidence::High,
+                freshness: Freshness::Fresh,
+            },
+            windows: vec![UsageWindow {
+                id: window_id.into(),
+                role: WindowRole::PrimaryShort,
+                kind: UsageWindowKind::Rolling,
+                scope: UsageScope::Account,
+                used_percent,
+                starts_at: starts_at
+                    .map(|value| OffsetDateTime::from_unix_timestamp(value).expect("valid time")),
+                resets_at: resets_at
+                    .map(|value| OffsetDateTime::from_unix_timestamp(value).expect("valid time")),
+                authoritative: true,
+            }],
+            supplemental: None,
+            reset_credits: None,
+        }
+    }
+
+    #[test]
+    fn a_repeated_reading_is_idempotent_and_returns_no_changed_period() {
+        let store = store();
+        let reading = snapshot(
+            ACCOUNT_A,
+            NOW,
+            "five-hour",
+            Some(NOW - 18_000),
+            Some(NOW),
+            Some(40.0),
+        );
+
+        let changed = store
+            .record_provider_usage_snapshots(std::slice::from_ref(&reading))
+            .unwrap();
+        assert_eq!(changed.len(), 1);
+        assert!(
+            store
+                .record_provider_usage_snapshots(&[reading])
+                .unwrap()
+                .is_empty()
+        );
+
+        let history = store
+            .provider_usage_period_history(changed[0])
+            .unwrap()
+            .unwrap();
+        assert_eq!(history.observations.len(), 1);
+    }
+
+    #[test]
+    fn reset_jitter_keeps_one_period_and_raw_observations() {
+        let store = store();
+        let first = snapshot(
+            ACCOUNT_A,
+            NOW - 60,
+            "five-hour",
+            Some(NOW - 18_060),
+            Some(NOW),
+            Some(20.0),
+        );
+        let second = snapshot(
+            ACCOUNT_A,
+            NOW,
+            "five-hour",
+            Some(NOW - 18_059),
+            Some(NOW + 1),
+            Some(30.0),
+        );
+
+        let first_id = store.record_provider_usage_snapshots(&[first]).unwrap()[0];
+        assert_eq!(
+            store.record_provider_usage_snapshots(&[second]).unwrap(),
+            [first_id]
+        );
+        let history = store
+            .provider_usage_period_history(first_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(history.period.resets_at_epoch, Some(NOW));
+        assert_eq!(history.observations.len(), 2);
+        assert_eq!(
+            history.observations[1].reported_resets_at_epoch,
+            Some(NOW + 1)
+        );
+    }
+
+    #[test]
+    fn a_new_reset_creates_a_new_period_without_merging_a_drop() {
+        let store = store();
+        let first = snapshot(
+            ACCOUNT_A,
+            NOW - 20_000,
+            "five-hour",
+            Some(NOW - 38_000),
+            Some(NOW - 20_000),
+            Some(95.0),
+        );
+        let second = snapshot(
+            ACCOUNT_A,
+            NOW,
+            "five-hour",
+            Some(NOW - 18_000),
+            Some(NOW),
+            Some(5.0),
+        );
+
+        let first_id = store.record_provider_usage_snapshots(&[first]).unwrap()[0];
+        let second_id = store.record_provider_usage_snapshots(&[second]).unwrap()[0];
+        assert_ne!(first_id, second_id);
+        assert_eq!(
+            store
+                .provider_usage_period_history(first_id)
+                .unwrap()
+                .unwrap()
+                .observations
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .provider_usage_period_history(second_id)
+                .unwrap()
+                .unwrap()
+                .observations
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn provider_account_and_window_lanes_stay_isolated() {
+        let store = store();
+        let a_short = snapshot(
+            ACCOUNT_A,
+            NOW,
+            "five-hour",
+            Some(NOW - 18_000),
+            Some(NOW),
+            Some(10.0),
+        );
+        let a_week = snapshot(
+            ACCOUNT_A,
+            NOW,
+            "weekly",
+            Some(NOW - 604_800),
+            Some(NOW),
+            Some(20.0),
+        );
+        let b_short = snapshot(
+            ACCOUNT_B,
+            NOW,
+            "five-hour",
+            Some(NOW - 18_000),
+            Some(NOW),
+            Some(30.0),
+        );
+
+        let ids = store
+            .record_provider_usage_snapshots(&[a_short, a_week, b_short])
+            .unwrap();
+        assert_eq!(ids.len(), 3);
+        let page = store
+            .provider_usage_periods_changed_since(NOW, None, 10)
+            .unwrap();
+        assert_eq!(page.periods.len(), 3);
+        assert_eq!(
+            page.periods
+                .iter()
+                .filter(|period| period.account_key == ACCOUNT_A)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn unbounded_readings_persist_without_a_period() {
+        let store = store();
+        let reading = snapshot(ACCOUNT_A, NOW, "unknown", None, None, Some(50.0));
+
+        assert!(
+            store
+                .record_provider_usage_snapshots(&[reading])
+                .unwrap()
+                .is_empty()
+        );
+        let connection = store.lock();
+        let period: Option<i64> = connection
+            .query_row(
+                "SELECT period_id FROM provider_usage_observation",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(period, None);
+    }
+
+    #[test]
+    fn lower_quality_duplicate_cannot_replace_provider_evidence() {
+        let store = store();
+        let first = snapshot(
+            ACCOUNT_A,
+            NOW,
+            "five-hour",
+            Some(NOW - 18_000),
+            Some(NOW),
+            Some(40.0),
+        );
+        let mut weaker = first.clone();
+        weaker.source.freshness = Freshness::Stale;
+        weaker.windows[0].authoritative = false;
+        weaker.windows[0].used_percent = Some(2.0);
+
+        let id = store.record_provider_usage_snapshots(&[first]).unwrap()[0];
+        assert!(
+            store
+                .record_provider_usage_snapshots(&[weaker])
+                .unwrap()
+                .is_empty()
+        );
+        let history = store.provider_usage_period_history(id).unwrap().unwrap();
+        assert_eq!(history.observations[0].used_percent, Some(40.0));
+        assert!(history.observations[0].is_fresh);
+        assert!(history.observations[0].is_authoritative);
+    }
+
+    #[test]
+    fn equal_quality_enrichment_keeps_the_known_percent() {
+        let store = store();
+        let mut first = snapshot(ACCOUNT_A, NOW, "five-hour", None, None, Some(40.0));
+        first.windows[0].authoritative = false;
+        let mut enriched = first.clone();
+        enriched.windows[0].used_percent = None;
+        enriched.windows[0].starts_at =
+            Some(OffsetDateTime::from_unix_timestamp(NOW - 18_000).expect("valid time"));
+        enriched.windows[0].resets_at =
+            Some(OffsetDateTime::from_unix_timestamp(NOW).expect("valid time"));
+
+        assert!(
+            store
+                .record_provider_usage_snapshots(&[first])
+                .unwrap()
+                .is_empty()
+        );
+        let changed = store.record_provider_usage_snapshots(&[enriched]).unwrap();
+        assert_eq!(changed.len(), 1);
+        let history = store
+            .provider_usage_period_history(changed[0])
+            .unwrap()
+            .unwrap();
+        assert_eq!(history.observations[0].used_percent, Some(40.0));
+        assert_eq!(
+            history.observations[0].reported_starts_at_epoch,
+            Some(NOW - 18_000)
+        );
+        assert_eq!(history.observations[0].reported_resets_at_epoch, Some(NOW));
+    }
+
+    #[test]
+    fn history_survives_a_store_reopen_after_the_migration() {
+        let directory = tempfile::tempdir().expect("creates data directory");
+        let reading = snapshot(
+            ACCOUNT_A,
+            NOW,
+            "five-hour",
+            Some(NOW - 18_000),
+            Some(NOW),
+            Some(40.0),
+        );
+        let period_id = Store::open(directory.path())
+            .expect("opens migrated store")
+            .record_provider_usage_snapshots(&[reading])
+            .expect("records reading")[0];
+
+        let reopened = Store::open(directory.path()).expect("reopens migrated store");
+        assert_eq!(
+            reopened
+                .provider_usage_period_history(period_id)
+                .unwrap()
+                .unwrap()
+                .observations
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn corrected_boundary_invalidates_both_the_old_and_new_periods() {
+        let store = store();
+        let first = snapshot(
+            ACCOUNT_A,
+            NOW,
+            "five-hour",
+            Some(NOW - 18_000),
+            Some(NOW),
+            Some(40.0),
+        );
+        let old_period = store
+            .record_provider_usage_snapshots(std::slice::from_ref(&first))
+            .unwrap()[0];
+        let mut corrected = first;
+        corrected.windows[0].resets_at =
+            Some(OffsetDateTime::from_unix_timestamp(NOW + 600).expect("valid time"));
+        corrected.windows[0].starts_at =
+            Some(OffsetDateTime::from_unix_timestamp(NOW - 17_400).expect("valid time"));
+        corrected.windows[0].used_percent = None;
+
+        let changed = store.record_provider_usage_snapshots(&[corrected]).unwrap();
+        assert_eq!(changed.len(), 2);
+        assert!(changed.contains(&old_period));
+        let new_period = *changed.iter().find(|id| **id != old_period).unwrap();
+        assert!(
+            store
+                .provider_usage_period_history(old_period)
+                .unwrap()
+                .unwrap()
+                .observations
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .provider_usage_period_history(new_period)
+                .unwrap()
+                .unwrap()
+                .observations
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn retention_bounds_readings_and_clear_removes_provider_history() {
+        let store = store();
+        let old = snapshot(
+            ACCOUNT_A,
+            NOW - 91 * 86_400,
+            "five-hour",
+            Some(NOW - 91 * 86_400 - 18_000),
+            Some(NOW - 91 * 86_400),
+            Some(10.0),
+        );
+        let current = snapshot(
+            ACCOUNT_A,
+            NOW,
+            "weekly",
+            Some(NOW - 604_800),
+            Some(NOW),
+            Some(20.0),
+        );
+        store
+            .record_provider_usage_snapshots(&[old, current])
+            .unwrap();
+
+        store.apply_session_retention(NOW).unwrap();
+        let connection = store.lock();
+        let observations: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM provider_usage_observation",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(observations, 1);
+        drop(connection);
+        store.clear_local_session_data().unwrap();
+        let connection = store.lock();
+        let remaining: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM provider_usage_observation",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn a_raw_account_key_is_not_persisted() {
+        let store = store();
+        let reading = snapshot(
+            "reader@example.test",
+            NOW,
+            "five-hour",
+            Some(NOW - 18_000),
+            Some(NOW),
+            Some(10.0),
+        );
+        assert!(
+            store
+                .record_provider_usage_snapshots(&[reading])
+                .unwrap()
+                .is_empty()
+        );
+        let connection = store.lock();
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM provider_usage_observation",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
 }
