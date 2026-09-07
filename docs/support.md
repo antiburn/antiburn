@@ -78,9 +78,9 @@ not ours:
 Session cards can also show an estimated cumulative share of a provider allowance
 across recorded five-hour or weekly periods. antiburn distributes each provider
 percentage over matching local session work, so this is an estimate and can exceed
-100%. A partial coverage label means the recorded provider history does not cover
-the full period. This session estimate remains after a provider reset. The provider
-meter still shows only the current allowance period.
+100%. A partial coverage label means the estimate can omit usage or use incomplete
+account or provider-history evidence. This session estimate remains after a provider
+reset. The provider meter still shows only the current allowance period.
 
 ## What antiburn stores
 

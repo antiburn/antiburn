@@ -12,12 +12,6 @@ const PERIOD_BATCH: usize = 8;
 const MAX_OBSERVATION_INTERVALS: usize = 96;
 const MAX_TURN_GROUPS: usize = 50_000;
 
-/// Materialize one bounded batch after durable ingestion already queued it.
-pub fn enqueue_and_reconcile(store: &Store, period_ids: &[i64], now_epoch: i64) {
-    let _ = (period_ids, now_epoch);
-    reconcile(store, now_epoch);
-}
-
 /// Materialize a small durable queue batch outside the popover read path.
 pub fn reconcile(store: &Store, now_epoch: i64) {
     let Ok(periods) = store.provider_usage_allocation_dirty_periods(PERIOD_BATCH) else {

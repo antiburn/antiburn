@@ -337,12 +337,24 @@ fn cumulative_lane_allocation(
         .filter(|entry| is_account_primary(entry))
         .map(|entry| entry.allocation.window_id.as_str())
         .min_by_key(|window_id| lane_rank(window_id));
-    let lane = primary_lane.or_else(|| {
-        contributions
-            .iter()
-            .map(|entry| entry.allocation.window_id.as_str())
-            .min_by_key(|window_id| lane_rank(window_id))
-    })?;
+    let fallback_lane = contributions
+        .iter()
+        .filter(|entry| !is_account_primary(entry))
+        .min_by_key(|entry| {
+            (
+                lane_rank(&entry.allocation.window_id),
+                entry.scope_key.as_str(),
+                entry.window_role.as_str(),
+            )
+        })
+        .map(|entry| {
+            (
+                entry.allocation.window_id.as_str(),
+                entry.scope_key.as_str(),
+                entry.window_role.as_str(),
+            )
+        });
+    let lane = primary_lane.or_else(|| fallback_lane.map(|lane| lane.0))?;
 
     let primary_intervals: Vec<_> = contributions
         .iter()
@@ -356,16 +368,20 @@ fn cumulative_lane_allocation(
             if is_account_primary(entry) {
                 return entry.allocation.window_id == lane;
             }
-            if !uses_primary {
-                return entry.allocation.window_id == lane;
-            }
-            period_interval(entry)
-                .map(|interval| {
-                    !primary_intervals
-                        .iter()
-                        .any(|primary| overlaps(*primary, interval))
-                })
-                .unwrap_or(false)
+            let matches_fallback = fallback_lane.is_some_and(|fallback| {
+                entry.allocation.window_id == fallback.0
+                    && entry.scope_key == fallback.1
+                    && entry.window_role == fallback.2
+            });
+            matches_fallback
+                && (!uses_primary
+                    || period_interval(entry)
+                        .map(|interval| {
+                            !primary_intervals
+                                .iter()
+                                .any(|primary| overlaps(*primary, interval))
+                        })
+                        .unwrap_or(false))
         })
         .collect();
     let first = selected.first()?.allocation.clone();
@@ -485,7 +501,11 @@ pub(crate) fn enqueue_session_periods_in(
                        ) * 1000
                    )
                    AND t.ts_ms < p.resets_at_epoch * 1000
-            )",
+            )
+         UNION
+         SELECT DISTINCT a.period_id
+           FROM provider_usage_session_allocation a
+          WHERE a.environment_key = ?1 AND a.agent = ?2 AND a.session_id = ?3",
     )?;
     let period_ids = statement
         .query_map(
@@ -530,7 +550,10 @@ fn replace_in(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
+    use crate::store::{SessionRecord, Store};
 
     fn contribution(
         period_id: i64,
@@ -616,5 +639,72 @@ mod tests {
         assert_eq!(first.percent, 12.5);
         assert_eq!(first.period_count, 1);
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn changed_session_requeues_a_period_it_previously_contributed_to() {
+        let store = Store::open_in_memory(Path::new("/tmp/antiburn-ledger-test")).unwrap();
+        let key = SessionKey::new("native", "claude-code", "session");
+        store
+            .upsert_sessions(
+                &[SessionRecord {
+                    key: key.clone(),
+                    source_kind: "inline".to_string(),
+                    source_label: "test".to_string(),
+                    wsl_distro: None,
+                    title: None,
+                    title_source: None,
+                    cwd: None,
+                    surface: "unknown".to_string(),
+                    updated_at_epoch: Some(100),
+                    activity_cursor: "test".to_string(),
+                    activity_source: "event".to_string(),
+                    subagent_count: 0,
+                    fork_parent_session_id: None,
+                    source_fingerprint: Some("test".to_string()),
+                }],
+                &[],
+            )
+            .unwrap();
+        {
+            let connection = store.lock();
+            connection
+                .execute(
+                    "INSERT INTO provider_usage_period (
+                         provider, account_key, window_id, window_kind, window_role,
+                         scope_key, scope_label, duration_seconds, starts_at_epoch,
+                         resets_at_epoch, first_observed_epoch, last_observed_epoch
+                     ) VALUES ('anthropic', 'account', 'five-hour', 'rolling', 'primaryShort',
+                               'account', 'account', 18000, 0, 18000, 1, 1)",
+                    [],
+                )
+                .unwrap();
+        }
+        store
+            .replace_provider_usage_period_allocations(
+                1,
+                &[SessionPeriodAllocation {
+                    key: key.clone(),
+                    metric: "fiveHour".to_string(),
+                    percent: 10.0,
+                    basis: "tokens".to_string(),
+                    partial: false,
+                }],
+                100,
+            )
+            .unwrap();
+        {
+            let mut connection = store.lock();
+            let tx = connection.transaction().unwrap();
+            enqueue_session_periods_in(&tx, &key, 101).unwrap();
+            tx.commit().unwrap();
+        }
+        assert_eq!(
+            store
+                .provider_usage_allocation_dirty_periods(8)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }
