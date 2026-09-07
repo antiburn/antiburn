@@ -150,16 +150,21 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   screen explains it, and the switch is in Settings → Privacy. The event schema has twenty-two fields and
   no others: the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier replaced every 30 days;
-  a random application-run identifier; the event name; the time it happened and the time it was delivered; the
+  a random analytics-session identifier; the event name; the time it happened and the time it was delivered; the
   processor architecture; a count rounded into a range where the event has one;
   a short label naming which setting changed or which kind of failure occurred,
   never the value; a second fixed label where needed; a coarse five-hour usage
   band; the reset response shape; eligibility, experiment membership, experiment
   arm, and availability states; an allowlisted ineligibility reason; a reset-count
   bucket; whether a next-reset date was present; the app version; and the operating system. The payload has no
-  field able to carry anything else. Because each event is timestamped and the
-  identifier lasts up to 30 days, the events do show roughly when the
-  application is used within that window; they do not show what it was used on.
+  field able to carry anything else. The analytics-session identifier changes
+  after 30 minutes without a captured analytics event or when the app restarts.
+  Its generator is memory-only, but each queued event stores the value on disk
+  until that event is sent or removed. Background events can keep it active, so
+  it does not measure a user visit or time spent. Because each event is
+  timestamped and the installation identifier lasts up to 30 days, the events
+  do show roughly when events were captured within that window; they do not show
+  what the app was used on.
   [analytics.md](analytics.md) is the complete account: every field,
   the full event catalog, and how to verify all of it yourself.
   Never sent: sessions, transcripts, prompts, titles, file paths, repository or

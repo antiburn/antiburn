@@ -816,7 +816,7 @@ describe("SettingsView", () => {
       /the word .desktop./i,
       /a random id for the message, so a retry/i,
       /a random installation id/i,
-      /a random id for this run of the app/i,
+      /a random id for a window of captured analytics events/i,
       /the event name/i,
       /when it happened/i,
       /when it was delivered/i,
@@ -855,8 +855,12 @@ describe("SettingsView", () => {
     // all three are asserted from it.
     open("The two identifiers")
     expect(screen.getByText(/replaced every 30 days/i)).toBeInTheDocument()
-    expect(screen.getByText(/roughly when antiburn is used/i)).toBeInTheDocument()
-    expect(screen.getByText(/quitting antiburn ends it/i)).toBeInTheDocument()
+    expect(screen.getByText(/roughly when analytics events were captured/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/each event waiting to be sent keeps a copy on disk/i),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/after 30 minutes without an analytics event/i)).toBeInTheDocument()
+    expect(screen.getByText(/does not measure a visit or time spent/i)).toBeInTheDocument()
     open("How the starting default works")
     expect(
       screen.getByText(/official release builds start with analytics on/i),

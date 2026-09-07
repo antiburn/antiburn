@@ -44,10 +44,18 @@ Write code comments in ASD-STE100 Simplified Technical English:
 - Keep identifiers and API names unchanged.
 - Add a comment only when it states important information the code cannot show.
 
+## Product analytics
+
+Cover features well with analytics so we can improve the product further.
+
+Read [docs/analytics.md](docs/analytics.md) before instrumentation work. Follow
+the measurement definitions and event review contract in
+[docs/analytics-measurement.md](docs/analytics-measurement.md).
+
 ## Tests and commits
 
 Run the relevant formatter, linter, type checks, and tests for every change. Use
 the commands in `CONTRIBUTING.md` and `apps/desktop/README.md`.
 
-Every commit must include a Developer Certificate of Origin sign-off. Use
-`git commit -s`. CI rejects a pull request if any authored commit lacks it.
+Every commit must include a DCO sign-off. Use `git commit -s`. CI rejects a pull
+request if any authored commit lacks it.

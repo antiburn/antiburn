@@ -38,7 +38,7 @@ be put.
 | `platform`           | Constant. The surface class the collector partitions on.                                                                                                   | `desktop`                 |
 | `messageId`          | Random per-event id, so a redelivered event is not counted twice.                                                                                          | `9f2c…`                   |
 | `anonymousId`        | The rotating installation identifier.                                                                                                                      | `4b81…`                   |
-| `sessionId`          | Identifies one run of the application. Held in memory only, never written to disk, replaced after 30 minutes of inactivity and whenever antiburn restarts. | `7d10…`                   |
+| `sessionId`          | Groups a window of captured analytics events. Its generator is held in memory, but the value is written into each event queued on disk. Replaced after 30 minutes without a captured analytics event and whenever antiburn restarts. | `7d10…`                   |
 | `event`              | The event name, from the closed catalog below.                                                                                                             | `antiburn.scan_completed` |
 | `originalTimestamp`  | When it happened, UTC.                                                                                                                                     | `2026-08-19T09:14:02Z`    |
 | `sentAt`             | When it was delivered. Added at send, not at capture.                                                                                                      | `2026-08-19T09:15:02Z`    |
@@ -61,19 +61,22 @@ be put.
 ### What the two timestamps make possible
 
 Each event is timestamped and the installation identifier lasts up to 30 days,
-so these events show roughly **when** antiburn is used within that window. The
-`sessionId` additionally groups the events of a single run together, so a run
-can be seen as one visit rather than as scattered events. Neither can show what
-antiburn was used _on_. This is stated because an enumeration that lists fields
-without saying what they enable is not really an enumeration.
+so these events show roughly **when events were captured** within that window.
+The `sessionId` groups captured events separated by less than 30 minutes of
+analytics-event inactivity. Background events can keep it active, and a quiet
+app process can receive more than one, so it does not define a user visit or
+time spent. None of these fields can show what antiburn was used _on_. This is
+stated because an enumeration that lists fields without saying what they enable
+is not really an enumeration.
 
 ### Why there are two identifiers
 
 The receiving server's contract requires both, and they are not equally
-durable. `anonymousId` is stored on disk and lasts up to 30 days. `sessionId`
-exists only in memory: quitting antiburn ends it, and nothing on your machine
-remembers it afterwards. It is the shortest-lived thing in the payload, and it
-cannot connect one run of the application to another.
+durable. `anonymousId` is stored on disk and lasts up to 30 days. The live
+`sessionId` generator exists only in memory. Each serialized event also contains
+its `sessionId`, so a queued event keeps that value on disk until it is sent or
+removed. Restarting antiburn creates a new value for newly captured events;
+events already in the queue keep their original value.
 
 ### Agent and provider categories
 
@@ -113,23 +116,25 @@ Event names are namespaced `antiburn.*`.
 | Event                          | When it fires                                                                                                                                                                                               | Carries                                                                                                                                                                                                     |
 | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `antiburn.app_launched`        | The application starts.                                                                                                                                                                                     | —                                                                                                                                                                                                           |
-| `antiburn.onboarding_finished` | The first run completes.                                                                                                                                                                                    | —                                                                                                                                                                                                           |
+| `antiburn.onboarding_finished` | A setup flow completes, including an explicitly restarted flow.                                                                                                                                             | —                                                                                                                                                                                                           |
 | `antiburn.onboarding_step_viewed` | A fixed first-run step becomes visible. Each step is recorded at most once per onboarding flow. | `label` — one of `welcome`, `agents_detected`, `sources_and_repos`, `ready`. |
-| `antiburn.scan_completed`      | A discovery pass finishes **and finds a different number of sessions than the last one reported**. antiburn rescans about once a minute while the popover is open; a repeat of the same answer is not sent. | `bucket` — how many sessions                                                                                                                                                                                |
+| `antiburn.scan_completed`      | A full discovery pass finishes and its session-count bucket differs from the previous reported outcome. The first full pass in a run is reported. Automatic full reconciliation runs at startup and about every five minutes; file watchers usually cause scoped passes, which emit no scan analytics. | `bucket` — how many sessions                                                                                                                                                                                |
 | `antiburn.setting_toggled`     | A preference changes.                                                                                                                                                                                       | `label` — one of `live_usage`, `notifications`, `launch_at_login`, `discovery_paused`. The key only; never the value.                                                                                       |
 | `antiburn.session_opened`      | You open a session from the activity list.                                                                                                                                                                  | `label` — which agent recorded it, from the fixed list antiburn supports. `detail` — `native` or `wsl`. **Not** the session, its title, its repository, or the name of your WSL distribution.               |
-| `antiburn.error_occurred`      | Something failed, and the previous pass had not already reported the same failure.                                                                                                                          | `label` — a category, currently `scan_failed`. No message, no path, no backtrace.                                                                                                                           |
+| `antiburn.error_occurred`      | A full discovery pass fails, and the previous full pass had not already reported the same failure.                                                                                                          | `label` — a category, currently `scan_failed`. No message, no path, no backtrace.                                                                                                                           |
 | `antiburn.unrecognized_records_observed` | Settings → Insights returns a cohort containing unknown record vocabulary, and its outcome differs from the last one reported during this run. | `bucket` — sessions containing unknown types. `label` — `inert_only`, `inert_capped`, or `evidence_bearing`. No discriminator, payload, session identifier, or second dimension. |
 | `antiburn.claude_limit_reset_observed` | After an ordinary Claude usage refresh, when analytics and Claude live usage are both enabled and the observation differs from the last one queued during this run. The probe uses a separate five-minute cooldown. | `label` — `success`, `authentication`, `rateLimited`, `unavailable`, `credential_absent`, `credential_expired`, or `credential_unavailable`. The nine reset fields listed above. No response body, credential, account identifier, exact usage percentage, or date. |
 
-Four of those are deliberately not sent once per occurrence. A scan result that
-repeats the last one is dropped, so a machine left running does not report the
-same number every minute and a machine stuck failing does not report the same
-failure six hundred times a day. What survives is the first pass of each run,
-every crossing of a bucket boundary, and every move into or out of failure. The
-unrecognized-record event likewise reports only a changed `(label, bucket)`
-outcome. A clean cohort updates that in-memory comparison without sending an
-event, so a later return to unknown vocabulary is visible.
+Four of those are deliberately not sent once per occurrence. A full scan result
+that repeats the last bucket is dropped, so a machine left running does not
+report the same range after every reconciliation and a machine stuck failing
+does not report the same failure after every full pass. What survives is the
+first full pass of each run, every crossing of a bucket boundary, and every move
+into or out of failure. Scoped watcher passes emit neither scan event and do not
+change this comparison. The unrecognized-record event likewise reports only a
+changed `(label, bucket)` outcome. A clean cohort updates that in-memory
+comparison without sending an event, so a later return to unknown vocabulary is
+visible.
 
 The Claude limit-reset event reports the first observation in a run and then
 only a changed observation. It calls the same provider usage endpoint through a
