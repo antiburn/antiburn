@@ -1,7 +1,7 @@
 //! Bounded import of account-wide Codex allowance readings from rollout files.
 //!
-//! The importer reads only `token_count.rate_limits` metadata. It does not
-//! retain, log, or parse a transcript message body.
+//! The importer selects `token_count.rate_limits` metadata. It does not retain
+//! or log transcript message content.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -55,6 +55,7 @@ pub(crate) struct BackfillBatch {
     pub imported_observations: usize,
     pub scanned_bytes: u64,
     pub completed_sources: usize,
+    pub deferred_sources: usize,
     pub pending: bool,
 }
 
@@ -62,17 +63,6 @@ pub(crate) struct BackfillBatch {
 struct BackfillState {
     #[serde(default)]
     legacy_history_imported: bool,
-    #[serde(default)]
-    completed_association_id: i64,
-    #[serde(default)]
-    active_source: Option<ActiveSource>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct ActiveSource {
-    association_id: i64,
-    source_label: String,
-    offset: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -129,37 +119,25 @@ pub(crate) fn import_backfill_batch(store: &Store, now_epoch: i64) -> Result<Bac
         state.legacy_history_imported = true;
     }
 
-    let mut candidates = store.provider_usage_backfill_candidates(
-        state.completed_association_id,
-        MAX_CANDIDATES_PER_BATCH,
-    )?;
-    let mut active = state.active_source.clone();
-
-    while started.elapsed() < MAX_BATCH_DURATION {
-        let candidate = if let Some(active_source) = active.as_ref() {
-            let Some(position) = candidates
-                .iter()
-                .position(|candidate| candidate.association_id == active_source.association_id)
-            else {
-                active = None;
+    let candidates =
+        store.provider_usage_backfill_candidates(cutoff, now_epoch, MAX_CANDIDATES_PER_BATCH)?;
+    for candidate in candidates.iter() {
+        if started.elapsed() >= MAX_BATCH_DURATION {
+            result.pending = true;
+            break;
+        }
+        let batch = match read_rollout_batch(
+            Path::new(&candidate.source_label),
+            candidate.cursor_bytes,
+            MAX_BATCH_BYTES,
+        ) {
+            Ok(batch) => batch,
+            Err(_) => {
+                store.defer_provider_usage_backfill_candidate(candidate, now_epoch)?;
+                result.deferred_sources += 1;
                 continue;
-            };
-            candidates.remove(position)
-        } else {
-            if candidates.is_empty() {
-                break;
             }
-            candidates.remove(0)
         };
-        let offset = active
-            .as_ref()
-            .filter(|active| {
-                active.association_id == candidate.association_id
-                    && active.source_label == candidate.source_label
-            })
-            .map_or(0, |active| active.offset);
-        let batch =
-            read_rollout_batch(Path::new(&candidate.source_label), offset, MAX_BATCH_BYTES)?;
         let snapshots = batch
             .readings
             .iter()
@@ -171,24 +149,21 @@ pub(crate) fn import_backfill_batch(store: &Store, now_epoch: i64) -> Result<Bac
             .iter()
             .map(|snapshot| snapshot.windows.len())
             .sum::<usize>();
-        result.scanned_bytes += batch.next_offset.saturating_sub(offset);
+        result.scanned_bytes += batch.next_offset.saturating_sub(candidate.cursor_bytes);
 
+        store.update_provider_usage_backfill_checkpoint(
+            candidate,
+            batch.next_offset,
+            now_epoch,
+            batch.complete,
+        )?;
         if batch.complete {
-            state.completed_association_id = candidate.association_id;
-            state.active_source = None;
             result.completed_sources += 1;
-            active = None;
         } else {
-            state.active_source = Some(ActiveSource {
-                association_id: candidate.association_id,
-                source_label: candidate.source_label,
-                offset: batch.next_offset,
-            });
             result.pending = true;
-            break;
         }
     }
-    result.pending |= state.active_source.is_some() || !candidates.is_empty();
+    result.pending |= candidates.len() == MAX_CANDIDATES_PER_BATCH;
     store.write_provider_usage_backfill_state(
         &serde_json::to_string(&state).expect("backfill state is serializable"),
     )?;

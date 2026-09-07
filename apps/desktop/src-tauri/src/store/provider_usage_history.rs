@@ -316,6 +316,11 @@ impl Store {
                 )",
             [],
         )?;
+        connection.execute(
+            "DELETE FROM provider_usage_backfill_checkpoint
+              WHERE status = 'complete' AND completed_at_epoch < ?1",
+            [cutoff],
+        )?;
         Ok(removed)
     }
 

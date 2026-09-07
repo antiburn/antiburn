@@ -12,7 +12,7 @@
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
-    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37,
+    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -732,4 +732,28 @@ CREATE TABLE provider_usage_session_allocation (
 CREATE INDEX provider_usage_session_allocation_session_metric
     ON provider_usage_session_allocation
        (environment_key, agent, session_id, metric, period_id);
+"#;
+
+/// v38 stores bounded, resumable metadata-only rollout-import progress.
+const V38: &str = r#"
+CREATE TABLE provider_usage_backfill_checkpoint (
+    environment_key      TEXT NOT NULL,
+    agent                TEXT NOT NULL,
+    session_id           TEXT NOT NULL,
+    provider             TEXT NOT NULL,
+    account_key          TEXT NOT NULL,
+    source_label         TEXT NOT NULL,
+    cursor_bytes         INTEGER NOT NULL DEFAULT 0 CHECK (cursor_bytes >= 0),
+    status               TEXT NOT NULL CHECK (status IN ('pending', 'retry', 'complete')),
+    retry_count          INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+    next_attempt_epoch   INTEGER NOT NULL DEFAULT 0,
+    updated_at_epoch     INTEGER NOT NULL,
+    completed_at_epoch   INTEGER,
+    PRIMARY KEY (environment_key, agent, session_id, provider, account_key),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session(environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX provider_usage_backfill_checkpoint_ready
+    ON provider_usage_backfill_checkpoint (status, next_attempt_epoch, updated_at_epoch);
 "#;
