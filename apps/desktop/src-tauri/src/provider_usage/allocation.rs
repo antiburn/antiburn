@@ -299,6 +299,21 @@ fn distribute<'a>(
     true
 }
 
+fn distribute_zero<'a>(
+    turns: impl Iterator<Item = &'a WeightedTurn>,
+    basis: WeightBasis,
+    output: &mut HashMap<SessionKey, f64>,
+) {
+    for turn in turns {
+        let Some(weight) = turn.weight(basis) else {
+            continue;
+        };
+        if weight.is_finite() && weight > 0.0 {
+            output.entry(turn.key.clone()).or_insert(0.0);
+        }
+    }
+}
+
 fn distribute_window(
     turns: &[&WeightedTurn],
     used_percent: f64,
@@ -339,6 +354,15 @@ fn distribute_window(
                     .copied()
                     .filter(|turn| turn.at_ms > previous_at && turn.at_ms <= at),
                 delta,
+                basis,
+                &mut output,
+            );
+        } else {
+            distribute_zero(
+                turns
+                    .iter()
+                    .copied()
+                    .filter(|turn| turn.at_ms > previous_at && turn.at_ms <= at),
                 basis,
                 &mut output,
             );
