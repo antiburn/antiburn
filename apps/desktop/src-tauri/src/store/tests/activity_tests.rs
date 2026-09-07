@@ -205,6 +205,36 @@ fn migrated_source_lookup_query_plan_uses_the_source_index() {
 }
 
 #[test]
+fn bounded_scan_history_query_plan_uses_the_source_index() {
+    let store = store();
+    let connection = store.lock();
+    let sql = session_records_for_activity_keys_sql(2);
+    let mut statement = connection
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .unwrap();
+    let plan = statement
+        .query_map(
+            params![
+                "native",
+                "claude-code",
+                "/one.jsonl",
+                "wsl:ubuntu",
+                "codex",
+                "/two.jsonl",
+            ],
+            |row| row.get::<_, String>(3),
+        )
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+        .join("\n");
+    assert!(
+        plan.contains("session_source_lookup") && !plan.contains("SCAN s"),
+        "query plan did not search the source lookup index: {plan}"
+    );
+}
+
+#[test]
 fn an_agent_scoped_upsert_leaves_another_agents_rows_intact() {
     let store = store();
     let claude = session("claude-session", 1_000);
@@ -252,6 +282,7 @@ fn sessions_with_missing_source_returns_only_that_failure_reason() {
         .upsert_sessions(
             &[
                 session("returned", 1_000),
+                session("unrequested-returned", 1_500),
                 session("other-failure", 2_000),
                 session("healthy", 3_000),
             ],
@@ -263,7 +294,7 @@ fn sessions_with_missing_source_returns_only_that_failure_reason() {
         connection
             .execute(
                 "UPDATE session_evidence SET status = 'failed', last_error = ?1
-                  WHERE session_id = 'returned'",
+                  WHERE session_id IN ('returned', 'unrequested-returned')",
                 params![crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING],
             )
             .unwrap();
@@ -276,7 +307,12 @@ fn sessions_with_missing_source_returns_only_that_failure_reason() {
             .unwrap();
     }
 
-    let missing = store.sessions_with_missing_source().unwrap();
+    let candidates = [
+        SessionKey::new("native", "claude-code", "returned"),
+        SessionKey::new("native", "claude-code", "other-failure"),
+        SessionKey::new("native", "claude-code", "healthy"),
+    ];
+    let missing = store.sessions_with_missing_source_for(&candidates).unwrap();
     let ids: Vec<_> = missing.iter().map(|key| key.session_id.as_str()).collect();
     assert_eq!(ids, vec!["returned"]);
 }
