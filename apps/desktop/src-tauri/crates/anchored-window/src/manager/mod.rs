@@ -51,13 +51,16 @@ where
         }
     }
 
-    /// Build the hidden renderer if it does not exist yet.
-    pub fn prewarm(&self, app: &tauri::AppHandle) -> tauri::Result<()> {
+    /// Rebuild a destroyed renderer only while a target still owns it.
+    pub fn rebuild_if_targeted(&self, app: &tauri::AppHandle) -> tauri::Result<bool> {
         let _frame_update = self.lock_frame_update();
-        self.ensure_window(app).map(|_| ())
+        if self.lock_lifecycle().target.is_none() {
+            return Ok(false);
+        }
+        self.ensure_window(app).map(|_| true)
     }
 
-    /// Retarget the resident renderer and apply its configured reveal policy.
+    /// Retarget the active renderer and apply its configured reveal policy.
     pub fn request(
         &self,
         app: &tauri::AppHandle,
@@ -67,7 +70,7 @@ where
         self.request_with_presentation(app, target, anchor_region, None)
     }
 
-    /// Retarget the resident renderer with optional instigator-owned content.
+    /// Retarget the active renderer with optional instigator-owned content.
     pub fn request_with_presentation(
         &self,
         app: &tauri::AppHandle,
@@ -342,6 +345,9 @@ where
         if concealed && let Err(error) = self.emit_state(app) {
             tracing::warn!(%error, "failed to emit anchored-window concealed state");
         }
+        if concealed {
+            self.schedule_renderer_retirement(app, generation);
+        }
         concealed
     }
 
@@ -387,6 +393,33 @@ where
         self.lock_lifecycle().renderer_destroyed();
         #[cfg(target_os = "linux")]
         self.inner.pointer_tracker.reset_for_install();
+    }
+
+    fn schedule_renderer_retirement(&self, app: &tauri::AppHandle, generation: u64) {
+        let manager = Arc::downgrade(&self.inner);
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::task::yield_now().await;
+            let Some(inner) = manager.upgrade() else {
+                return;
+            };
+            Self { inner }.retire_renderer_if_current(&app, generation);
+        });
+    }
+
+    fn retire_renderer_if_current(&self, app: &tauri::AppHandle, generation: u64) {
+        let _frame_update = self.lock_frame_update();
+        if !self
+            .lock_lifecycle()
+            .renderer_retirement_is_current(generation)
+        {
+            return;
+        }
+        if let Some(window) = app.get_webview_window(&self.inner.config.label)
+            && let Err(error) = window.destroy()
+        {
+            tracing::warn!(%error, "failed to destroy the concealed anchored window");
+        }
     }
 
     fn lock_lifecycle(&self) -> std::sync::MutexGuard<'_, Lifecycle<T, P>> {
