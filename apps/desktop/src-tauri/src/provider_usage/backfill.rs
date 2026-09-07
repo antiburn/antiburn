@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -50,6 +50,9 @@ pub(crate) struct RolloutReading {
 }
 
 /// The result of one bounded, resumable backfill pass.
+///
+/// A large rollout advances by at most 256 KiB per pass. The background
+/// scheduler requests another yielding pass only while `pending` is true.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct BackfillBatch {
     pub imported_observations: usize,
@@ -73,8 +76,14 @@ struct LegacyHistorySample {
     fresh: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourceFingerprint {
+    bytes: u64,
+    modified_epoch: Option<i64>,
+}
+
 impl RolloutReading {
-    /// Build one stale historical snapshot for a directly attributed account.
+    /// Build one historical snapshot for a directly attributed account.
     pub(crate) fn snapshot(&self, account_key: &str) -> ProviderUsageSnapshot {
         ProviderUsageSnapshot {
             provider: OPENAI,
@@ -126,11 +135,24 @@ pub(crate) fn import_backfill_batch(store: &Store, now_epoch: i64) -> Result<Bac
             result.pending = true;
             break;
         }
-        let batch = match read_rollout_batch(
-            Path::new(&candidate.source_label),
-            candidate.cursor_bytes,
-            MAX_BATCH_BYTES,
-        ) {
+        let path = Path::new(&candidate.source_label);
+        let fingerprint = match source_fingerprint(path) {
+            Ok(fingerprint) => fingerprint,
+            Err(_) => {
+                store.defer_provider_usage_backfill_candidate(candidate, now_epoch)?;
+                result.deferred_sources += 1;
+                continue;
+            }
+        };
+        if candidate.complete
+            && fingerprint.bytes == candidate.source_bytes
+            && fingerprint.modified_epoch == candidate.source_modified_epoch
+        {
+            store.touch_provider_usage_backfill_checkpoint(candidate, now_epoch)?;
+            continue;
+        }
+        let offset = resume_offset(candidate, fingerprint);
+        let batch = match read_rollout_batch(path, offset, MAX_BATCH_BYTES) {
             Ok(batch) => batch,
             Err(_) => {
                 store.defer_provider_usage_backfill_candidate(candidate, now_epoch)?;
@@ -149,11 +171,13 @@ pub(crate) fn import_backfill_batch(store: &Store, now_epoch: i64) -> Result<Bac
             .iter()
             .map(|snapshot| snapshot.windows.len())
             .sum::<usize>();
-        result.scanned_bytes += batch.next_offset.saturating_sub(candidate.cursor_bytes);
+        result.scanned_bytes += batch.next_offset.saturating_sub(offset);
 
         store.update_provider_usage_backfill_checkpoint(
             candidate,
             batch.next_offset,
+            fingerprint.bytes,
+            fingerprint.modified_epoch,
             now_epoch,
             batch.complete,
         )?;
@@ -168,6 +192,35 @@ pub(crate) fn import_backfill_batch(store: &Store, now_epoch: i64) -> Result<Bac
         &serde_json::to_string(&state).expect("backfill state is serializable"),
     )?;
     Ok(result)
+}
+
+fn source_fingerprint(path: &Path) -> Result<SourceFingerprint> {
+    let metadata = path
+        .metadata()
+        .with_context(|| format!("failed to inspect Codex rollout {}", path.display()))?;
+    let modified_epoch = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .and_then(|duration| i64::try_from(duration.as_secs()).ok());
+    Ok(SourceFingerprint {
+        bytes: metadata.len(),
+        modified_epoch,
+    })
+}
+
+fn resume_offset(
+    candidate: &crate::store::usage_backfill::ProviderUsageBackfillCandidate,
+    fingerprint: SourceFingerprint,
+) -> u64 {
+    let replaced = fingerprint.bytes < candidate.cursor_bytes
+        || fingerprint.bytes == candidate.cursor_bytes
+            && fingerprint.modified_epoch != candidate.source_modified_epoch;
+    if replaced {
+        0
+    } else {
+        candidate.cursor_bytes.min(fingerprint.bytes)
+    }
 }
 
 fn load_state(store: &Store) -> BackfillState {
@@ -520,5 +573,49 @@ mod tests {
         assert_eq!(second.imported_observations, 0);
         assert!(!first.pending);
         assert!(!second.pending);
+    }
+
+    #[test]
+    fn resumes_append_only_files_and_restarts_replaced_files() {
+        let candidate = crate::store::usage_backfill::ProviderUsageBackfillCandidate {
+            key: crate::store::SessionKey::new("native", "codex", "synthetic"),
+            source_label: "/synthetic/rollout.jsonl".to_owned(),
+            account_key: "a".repeat(64),
+            cursor_bytes: 400,
+            source_bytes: 400,
+            source_modified_epoch: Some(10),
+            complete: true,
+        };
+
+        assert_eq!(
+            resume_offset(
+                &candidate,
+                SourceFingerprint {
+                    bytes: 480,
+                    modified_epoch: Some(11),
+                }
+            ),
+            400
+        );
+        assert_eq!(
+            resume_offset(
+                &candidate,
+                SourceFingerprint {
+                    bytes: 400,
+                    modified_epoch: Some(11),
+                }
+            ),
+            0
+        );
+        assert_eq!(
+            resume_offset(
+                &candidate,
+                SourceFingerprint {
+                    bytes: 300,
+                    modified_epoch: Some(10),
+                }
+            ),
+            0
+        );
     }
 }

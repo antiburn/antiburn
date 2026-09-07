@@ -1,7 +1,7 @@
 //! Read-only candidate lookup for bounded provider-usage backfill work.
 
 use anyhow::Result;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use super::{SessionKey, Store};
 
@@ -14,6 +14,9 @@ pub(crate) struct ProviderUsageBackfillCandidate {
     pub source_label: String,
     pub account_key: String,
     pub cursor_bytes: u64,
+    pub source_bytes: u64,
+    pub source_modified_epoch: Option<i64>,
+    pub complete: bool,
 }
 
 impl Store {
@@ -39,7 +42,10 @@ impl Store {
         let limit = i64::try_from(limit.clamp(1, 16)).expect("bounded limit fits i64");
         let mut statement = connection.prepare(
             "SELECT s.environment_key, s.agent, s.session_id, s.source_label, spa.account_key,
-                    COALESCE(checkpoint.cursor_bytes, 0)
+                    COALESCE(checkpoint.cursor_bytes, 0),
+                    COALESCE(checkpoint.source_bytes, 0),
+                    checkpoint.source_modified_epoch,
+                    COALESCE(checkpoint.status = 'complete', 0)
                FROM session_provider_account spa
                JOIN session s
                  ON s.environment_key = spa.environment_key
@@ -77,9 +83,10 @@ impl Store {
                        AND peer.session_id = spa.session_id
                       AND peer.provider = spa.provider
                 )
-                AND (checkpoint.status IS NULL OR checkpoint.status <> 'complete')
                 AND COALESCE(checkpoint.next_attempt_epoch, 0) <= ?2
-              ORDER BY COALESCE(checkpoint.updated_at_epoch, 0), spa.rowid
+              ORDER BY CASE checkpoint.status WHEN 'complete' THEN 1 ELSE 0 END,
+                       COALESCE(checkpoint.updated_at_epoch, 0),
+                       COALESCE(s.updated_at_epoch, 0) DESC, spa.rowid
               LIMIT ?3",
         )?;
         let rows = statement.query_map(
@@ -94,6 +101,9 @@ impl Store {
                     source_label: row.get(3)?,
                     account_key: row.get(4)?,
                     cursor_bytes: row.get::<_, i64>(5)?.max(0) as u64,
+                    source_bytes: row.get::<_, i64>(6)?.max(0) as u64,
+                    source_modified_epoch: row.get(7)?,
+                    complete: row.get::<_, i64>(8)? != 0,
                 })
             },
         )?;
@@ -105,6 +115,8 @@ impl Store {
         &self,
         candidate: &ProviderUsageBackfillCandidate,
         cursor_bytes: u64,
+        source_bytes: u64,
+        source_modified_epoch: Option<i64>,
         now_epoch: i64,
         complete: bool,
     ) -> Result<()> {
@@ -113,12 +125,15 @@ impl Store {
         connection.execute(
             "INSERT INTO provider_usage_backfill_checkpoint (
                     environment_key, agent, session_id, provider, account_key,
-                    source_label, cursor_bytes, status, retry_count, next_attempt_epoch,
+                    source_label, cursor_bytes, source_bytes, source_modified_epoch,
+                    status, retry_count, next_attempt_epoch,
                     updated_at_epoch, completed_at_epoch
-                ) VALUES (?1, ?2, ?3, 'openai', ?4, ?5, ?6, ?7, 0, 0, ?8, ?9)
+                ) VALUES (?1, ?2, ?3, 'openai', ?4, ?5, ?6, ?7, ?8, 0, 0, ?9, ?10)
              ON CONFLICT (environment_key, agent, session_id, provider, account_key)
              DO UPDATE SET source_label = excluded.source_label,
                            cursor_bytes = excluded.cursor_bytes,
+                           source_bytes = excluded.source_bytes,
+                           source_modified_epoch = excluded.source_modified_epoch,
                            status = excluded.status,
                            retry_count = 0,
                            next_attempt_epoch = 0,
@@ -131,9 +146,34 @@ impl Store {
                 candidate.account_key,
                 candidate.source_label,
                 cursor_bytes,
+                i64::try_from(source_bytes).unwrap_or(i64::MAX),
+                source_modified_epoch,
                 if complete { "complete" } else { "pending" },
                 now_epoch,
                 complete.then_some(now_epoch),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Record a completed source inspection without reopening its import.
+    pub(crate) fn touch_provider_usage_backfill_checkpoint(
+        &self,
+        candidate: &ProviderUsageBackfillCandidate,
+        now_epoch: i64,
+    ) -> Result<()> {
+        let connection = self.lock();
+        connection.execute(
+            "UPDATE provider_usage_backfill_checkpoint
+                SET updated_at_epoch = ?1, completed_at_epoch = ?1
+              WHERE environment_key = ?2 AND agent = ?3 AND session_id = ?4
+                AND provider = 'openai' AND account_key = ?5 AND status = 'complete'",
+            params![
+                now_epoch,
+                candidate.key.environment_key,
+                candidate.key.agent,
+                candidate.key.session_id,
+                candidate.account_key,
             ],
         )?;
         Ok(())
@@ -146,6 +186,23 @@ impl Store {
         now_epoch: i64,
     ) -> Result<()> {
         let connection = self.lock();
+        let retries = connection
+            .query_row(
+                "SELECT retry_count FROM provider_usage_backfill_checkpoint
+                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                    AND provider = 'openai' AND account_key = ?4",
+                params![
+                    candidate.key.environment_key,
+                    candidate.key.agent,
+                    candidate.key.session_id,
+                    candidate.account_key,
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+            .clamp(0, 6) as u32;
+        let delay = 60_i64.saturating_mul(2_i64.pow(retries)).min(3_600);
         connection.execute(
             "INSERT INTO provider_usage_backfill_checkpoint (
                     environment_key, agent, session_id, provider, account_key,
@@ -166,7 +223,7 @@ impl Store {
                 candidate.account_key,
                 candidate.source_label,
                 i64::try_from(candidate.cursor_bytes).unwrap_or(i64::MAX),
-                now_epoch.saturating_add(60),
+                now_epoch.saturating_add(delay),
                 now_epoch,
             ],
         )?;
