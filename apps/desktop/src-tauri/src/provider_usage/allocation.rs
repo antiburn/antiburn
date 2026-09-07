@@ -18,12 +18,12 @@ use crate::dto::{
     LiveProviderUsage, LiveUsageFreshness, LiveUsageSummary, LiveUsageWindow,
     SessionLimitAllocation,
 };
-use crate::provider_usage::live::model::Freshness;
 #[cfg(test)]
 use crate::provider_usage::live::history::History;
-use crate::store::{SessionKey, SessionUsageRecord};
+use crate::provider_usage::live::model::Freshness;
 use crate::store::provider_usage_history::ProviderUsagePeriodHistory;
 use crate::store::provider_usage_ledger::SessionPeriodAllocation;
+use crate::store::{SessionKey, SessionUsageRecord};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AccountEvidence {
@@ -541,7 +541,9 @@ pub fn estimate_period(
         SessionLimitMetric::Weekly => Some(7 * 86_400),
         SessionLimitMetric::FiveHour => Some(5 * 3_600),
     })?;
-    let start = period.starts_at_epoch.unwrap_or_else(|| reset.saturating_sub(duration));
+    let start = period
+        .starts_at_epoch
+        .unwrap_or_else(|| reset.saturating_sub(duration));
     if start >= reset {
         return None;
     }
@@ -550,7 +552,11 @@ pub fn estimate_period(
         .iter()
         .rev()
         .find(|entry| entry.is_fresh && entry.is_authoritative)
-        .and_then(|entry| entry.used_percent.map(|percent| (entry.observed_at_epoch, percent)))?;
+        .and_then(|entry| {
+            entry
+                .used_percent
+                .map(|percent| (entry.observed_at_epoch, percent))
+        })?;
     if !observation.1.is_finite() || !(0.0..=100.0).contains(&observation.1) {
         return None;
     }
@@ -580,7 +586,11 @@ pub fn estimate_period(
             observed_at: OffsetDateTime::from_unix_timestamp(entry.observed_at_epoch)
                 .unwrap_or(OffsetDateTime::UNIX_EPOCH),
             used_percent: entry.used_percent,
-            freshness: if entry.is_fresh { Freshness::Fresh } else { Freshness::Stale },
+            freshness: if entry.is_fresh {
+                Freshness::Fresh
+            } else {
+                Freshness::Stale
+            },
         })
         .collect::<Vec<_>>();
     let (shares, _uses_history) = distribute_window(
@@ -613,6 +623,40 @@ pub fn estimate_period(
     Some((metric, allocations))
 }
 
+/// Return bounded authoritative observation ends for SQL turn aggregation.
+///
+/// The caller uses these as aggregation boundaries. It retains the first and
+/// final samples when it reduces a dense provider series, so the estimate has
+/// an explicit leading baseline and a final reported value.
+pub fn period_observation_interval_ends(
+    history: &ProviderUsagePeriodHistory,
+    maximum: usize,
+) -> Vec<i64> {
+    let mut ends: Vec<_> = history
+        .observations
+        .iter()
+        .filter(|entry| entry.is_fresh && entry.is_authoritative)
+        .filter(|entry| {
+            entry
+                .used_percent
+                .is_some_and(|percent| percent.is_finite() && percent >= 0.0)
+        })
+        .map(|entry| entry.observed_at_epoch.saturating_mul(1_000))
+        .collect();
+    ends.sort_unstable();
+    ends.dedup();
+    let maximum = maximum.clamp(2, 256);
+    if ends.len() <= maximum {
+        return ends;
+    }
+    (0..maximum)
+        .map(|index| {
+            let offset = index * (ends.len() - 1) / (maximum - 1);
+            ends[offset]
+        })
+        .collect()
+}
+
 fn metric_of_period(
     period: &crate::store::provider_usage_history::ProviderUsagePeriod,
 ) -> Option<SessionLimitMetric> {
@@ -621,7 +665,9 @@ fn metric_of_period(
     }
     let five_hour = match period.provider.as_str() {
         super::providers::ANTHROPIC => period.window_id == "five-hour",
-        super::providers::OPENAI => period.window_id == "five-hour" || period.window_id.ends_with("-300m"),
+        super::providers::OPENAI => {
+            period.window_id == "five-hour" || period.window_id.ends_with("-300m")
+        }
         super::providers::GOOGLE => matches!(
             period.window_id.as_str(),
             "antigravity-gemini-5h" | "antigravity-claude-gpt-5h"

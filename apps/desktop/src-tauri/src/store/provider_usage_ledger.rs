@@ -42,6 +42,17 @@ pub struct DirtyPeriod {
     pub generation: i64,
 }
 
+#[derive(Debug, Clone)]
+struct PeriodContribution {
+    allocation: CumulativeSessionAllocation,
+    period_id: i64,
+    starts_at_epoch: Option<i64>,
+    resets_at_epoch: Option<i64>,
+    duration_seconds: Option<i64>,
+    window_role: String,
+    scope_key: String,
+}
+
 impl super::Store {
     /// Queue changed periods for a bounded background allocation pass.
     pub fn enqueue_provider_usage_allocation_periods(
@@ -59,17 +70,73 @@ impl super::Store {
         Ok(())
     }
 
+    /// Queue every stated period after a pricing catalog update.
+    ///
+    /// SQLite performs the bounded metadata update in one statement. It does
+    /// not load every period id into the application.
+    pub fn enqueue_all_provider_usage_allocation_periods(
+        &self,
+        requested_at_epoch: i64,
+    ) -> Result<()> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        tx.execute(
+            "UPDATE provider_usage_allocation_revision SET value = value + 1 WHERE id = 1",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO provider_usage_allocation_dirty (period_id, requested_at_epoch, generation)
+             SELECT p.id, ?1, r.value
+               FROM provider_usage_period p
+               JOIN provider_usage_allocation_revision r ON r.id = 1
+              WHERE p.resets_at_epoch IS NOT NULL
+             ON CONFLICT(period_id) DO UPDATE SET
+                 requested_at_epoch = MIN(
+                     provider_usage_allocation_dirty.requested_at_epoch,
+                     excluded.requested_at_epoch
+                 ),
+                 generation = excluded.generation",
+            [requested_at_epoch],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Read at most `limit` dirty periods without removing their durable work.
-    pub fn provider_usage_allocation_dirty_periods(&self, limit: usize) -> Result<Vec<DirtyPeriod>> {
+    pub fn provider_usage_allocation_dirty_periods(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<DirtyPeriod>> {
         let limit = i64::try_from(limit.clamp(1, 32)).expect("bounded limit fits i64");
+        let recent_limit = (limit * 3 + 3) / 4;
+        let older_limit = limit - recent_limit;
         let connection = self.lock();
         let mut statement = connection.prepare(
-            "SELECT period_id, generation FROM provider_usage_allocation_dirty
-              ORDER BY requested_at_epoch, period_id LIMIT ?1",
+            "WITH recent AS (
+                SELECT d.period_id, d.generation
+                  FROM provider_usage_allocation_dirty d
+                  JOIN provider_usage_period p ON p.id = d.period_id
+                 ORDER BY p.resets_at_epoch DESC, d.period_id DESC
+                 LIMIT ?1
+             ), older AS (
+                SELECT d.period_id, d.generation
+                  FROM provider_usage_allocation_dirty d
+                 WHERE NOT EXISTS (
+                    SELECT 1 FROM recent WHERE recent.period_id = d.period_id
+                 )
+                 ORDER BY d.requested_at_epoch, d.period_id
+                 LIMIT ?2
+             )
+             SELECT period_id, generation FROM recent
+             UNION ALL
+             SELECT period_id, generation FROM older",
         )?;
         let ids = statement
-            .query_map([limit], |row| {
-                Ok(DirtyPeriod { period_id: row.get(0)?, generation: row.get(1)? })
+            .query_map(params![recent_limit, older_limit], |row| {
+                Ok(DirtyPeriod {
+                    period_id: row.get(0)?,
+                    generation: row.get(1)?,
+                })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(ids)
@@ -135,6 +202,36 @@ impl super::Store {
         Ok(())
     }
 
+    /// Retain an older estimate but mark it partial when bounded aggregation overflows.
+    pub fn retain_partial_provider_usage_period_allocations_and_ack(
+        &self,
+        period_id: i64,
+        generation: i64,
+    ) -> Result<()> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let current = tx
+            .query_row(
+                "SELECT generation FROM provider_usage_allocation_dirty WHERE period_id = ?1",
+                [period_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if current == Some(generation) {
+            tx.execute(
+                "UPDATE provider_usage_session_allocation SET partial = 1 WHERE period_id = ?1",
+                [period_id],
+            )?;
+            tx.execute(
+                "DELETE FROM provider_usage_allocation_dirty
+                  WHERE period_id = ?1 AND generation = ?2",
+                params![period_id, generation],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Read materialized totals for the sessions currently displayed.
     pub fn cumulative_session_limit_allocations(
         &self,
@@ -154,42 +251,69 @@ impl super::Store {
         }
         let sql = format!(
             "SELECT a.environment_key, a.agent, a.session_id, s.wsl_distro, a.metric,
-                    p.provider, p.account_key, p.window_id,
-                    SUM(a.percent), MAX(a.partial), COUNT(DISTINCT a.period_id)
+                    p.provider, p.account_key, p.window_id, a.percent, a.partial,
+                    a.period_id, p.starts_at_epoch, p.resets_at_epoch, p.duration_seconds,
+                    p.window_role, p.scope_key
                FROM provider_usage_session_allocation a
                JOIN provider_usage_period p ON p.id = a.period_id
                JOIN session s ON s.environment_key = a.environment_key
                  AND s.agent = a.agent AND s.session_id = a.session_id
-              WHERE {}
-              GROUP BY a.environment_key, a.agent, a.session_id, a.metric,
-                       s.wsl_distro, p.provider, p.account_key, p.window_id",
+              WHERE {}",
             clauses.join(" OR ")
         );
         let mut statement = connection.prepare(&sql)?;
         let rows = statement
             .query_map(params_from_iter(values), |row| {
-                Ok(CumulativeSessionAllocation {
-                    key: SessionKey::new(
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ),
-                    wsl_distro: row.get(3)?,
-                    metric: row.get(4)?,
-                    provider: row.get(5)?,
-                    account_key: row.get(6)?,
-                    window_id: row.get(7)?,
-                    percent: row.get(8)?,
-                    partial: row.get::<_, i64>(9)? != 0,
-                    period_count: row.get::<_, i64>(10)?.try_into().unwrap_or(u32::MAX),
+                Ok(PeriodContribution {
+                    allocation: CumulativeSessionAllocation {
+                        key: SessionKey::new(
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ),
+                        wsl_distro: row.get(3)?,
+                        metric: row.get(4)?,
+                        provider: row.get(5)?,
+                        account_key: row.get(6)?,
+                        window_id: row.get(7)?,
+                        percent: row.get(8)?,
+                        partial: row.get::<_, i64>(9)? != 0,
+                        period_count: 1,
+                    },
+                    period_id: row.get(10)?,
+                    starts_at_epoch: row.get(11)?,
+                    resets_at_epoch: row.get(12)?,
+                    duration_seconds: row.get(13)?,
+                    window_role: row.get(14)?,
+                    scope_key: row.get(15)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        let mut by_account: HashMap<_, Vec<_>> = HashMap::new();
+        for contribution in rows {
+            let allocation = &contribution.allocation;
+            by_account
+                .entry((
+                    allocation.key.clone(),
+                    allocation.metric.clone(),
+                    allocation.provider.clone(),
+                    allocation.account_key.clone(),
+                ))
+                .or_default()
+                .push(contribution);
+        }
+
         let mut best: HashMap<(SessionKey, String), CumulativeSessionAllocation> = HashMap::new();
-        for allocation in rows {
+        for (_, contributions) in by_account {
+            let Some(allocation) = cumulative_lane_allocation(contributions) else {
+                continue;
+            };
             let key = (allocation.key.clone(), allocation.metric.clone());
-            if best.get(&key).is_none_or(|current| allocation.percent > current.percent) {
+            if best
+                .get(&key)
+                .is_none_or(|current| allocation.percent > current.percent)
+            {
                 best.insert(key, allocation);
             }
         }
@@ -203,6 +327,100 @@ impl super::Store {
         });
         Ok(allocations)
     }
+}
+
+fn cumulative_lane_allocation(
+    contributions: Vec<PeriodContribution>,
+) -> Option<CumulativeSessionAllocation> {
+    let primary_lane = contributions
+        .iter()
+        .filter(|entry| is_account_primary(entry))
+        .map(|entry| entry.allocation.window_id.as_str())
+        .min_by_key(|window_id| lane_rank(window_id));
+    let lane = primary_lane.or_else(|| {
+        contributions
+            .iter()
+            .map(|entry| entry.allocation.window_id.as_str())
+            .min_by_key(|window_id| lane_rank(window_id))
+    })?;
+
+    let primary_intervals: Vec<_> = contributions
+        .iter()
+        .filter(|entry| is_account_primary(entry))
+        .filter_map(period_interval)
+        .collect();
+    let uses_primary = primary_lane.is_some();
+    let selected: Vec<_> = contributions
+        .iter()
+        .filter(|entry| {
+            if is_account_primary(entry) {
+                return entry.allocation.window_id == lane;
+            }
+            if !uses_primary {
+                return entry.allocation.window_id == lane;
+            }
+            period_interval(entry)
+                .map(|interval| {
+                    !primary_intervals
+                        .iter()
+                        .any(|primary| overlaps(*primary, interval))
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+    let first = selected.first()?.allocation.clone();
+    let mut period_ids = std::collections::HashSet::new();
+    let mut partial = false;
+    let mut percent = 0.0;
+    for entry in selected {
+        period_ids.insert(entry.period_id);
+        partial |= entry.allocation.partial || !is_account_primary(entry);
+        percent += entry.allocation.percent;
+    }
+    percent.is_finite().then_some(CumulativeSessionAllocation {
+        key: first.key,
+        wsl_distro: first.wsl_distro,
+        metric: first.metric,
+        provider: first.provider,
+        account_key: first.account_key,
+        window_id: lane.to_string(),
+        percent,
+        partial,
+        period_count: period_ids.len().try_into().unwrap_or(u32::MAX),
+    })
+}
+
+fn is_account_primary(entry: &PeriodContribution) -> bool {
+    entry.scope_key == "account"
+        && matches!(entry.window_role.as_str(), "primaryShort" | "primaryLong")
+}
+
+fn lane_rank(window_id: &str) -> (u8, &str) {
+    let rank = match window_id {
+        "seven-day" | "five-hour" => 0,
+        id if id.ends_with("-10080m") || id.ends_with("-300m") => 1,
+        _ => 2,
+    };
+    (rank, window_id)
+}
+
+fn period_interval(entry: &PeriodContribution) -> Option<(i64, i64)> {
+    let reset = entry.resets_at_epoch?;
+    let duration = entry.duration_seconds.unwrap_or_else(|| {
+        if entry.allocation.metric == "weekly" {
+            7 * 86_400
+        } else {
+            5 * 3_600
+        }
+    });
+    let start = entry
+        .starts_at_epoch
+        .unwrap_or_else(|| reset.saturating_sub(duration));
+    (start < reset).then_some((start, reset))
+}
+
+fn overlaps(left: (i64, i64), right: (i64, i64)) -> bool {
+    left.0 < right.1 && right.0 < left.1
 }
 
 pub(crate) fn enqueue_in(
@@ -227,7 +445,10 @@ pub(crate) fn enqueue_in(
             "INSERT INTO provider_usage_allocation_dirty (period_id, requested_at_epoch, generation)
              VALUES (?1, ?2, ?3)
              ON CONFLICT(period_id) DO UPDATE SET
-                 requested_at_epoch = excluded.requested_at_epoch,
+                 requested_at_epoch = MIN(
+                     provider_usage_allocation_dirty.requested_at_epoch,
+                     excluded.requested_at_epoch
+                 ),
                  generation = excluded.generation",
             params![period_id, requested_at_epoch, generation],
         )?;
@@ -305,4 +526,95 @@ fn replace_in(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn contribution(
+        period_id: i64,
+        window_id: &str,
+        role: &str,
+        scope: &str,
+        start: i64,
+        reset: i64,
+        percent: f64,
+    ) -> PeriodContribution {
+        PeriodContribution {
+            allocation: CumulativeSessionAllocation {
+                key: SessionKey::new("environment", "codex", "session"),
+                wsl_distro: None,
+                metric: "weekly".to_string(),
+                provider: "openai".to_string(),
+                account_key: "account".to_string(),
+                window_id: window_id.to_string(),
+                percent,
+                partial: false,
+                period_count: 1,
+            },
+            period_id,
+            starts_at_epoch: Some(start),
+            resets_at_epoch: Some(reset),
+            duration_seconds: Some(reset - start),
+            window_role: role.to_string(),
+            scope_key: scope.to_string(),
+        }
+    }
+
+    #[test]
+    fn sums_adjacent_primary_periods_in_one_canonical_lane() {
+        let allocation = cumulative_lane_allocation(vec![
+            contribution(1, "seven-day", "primaryLong", "account", 0, 100, 12.5),
+            contribution(2, "seven-day", "primaryLong", "account", 100, 200, 7.5),
+        ])
+        .expect("primary periods allocate");
+
+        assert_eq!(allocation.percent, 20.0);
+        assert_eq!(allocation.period_count, 2);
+        assert!(!allocation.partial);
+    }
+
+    #[test]
+    fn scoped_period_that_bridges_primary_resets_does_not_add_capacity() {
+        let allocation = cumulative_lane_allocation(vec![
+            contribution(1, "seven-day", "primaryLong", "account", 0, 100, 12.5),
+            contribution(2, "seven-day", "primaryLong", "account", 100, 200, 7.5),
+            contribution(
+                3,
+                "model-weekly",
+                "supplemental",
+                "model:gpt-5",
+                0,
+                200,
+                80.0,
+            ),
+        ])
+        .expect("primary periods allocate");
+
+        assert_eq!(allocation.percent, 20.0);
+        assert_eq!(allocation.period_count, 2);
+    }
+
+    #[test]
+    fn primary_period_replaces_an_overlapping_fallback_idempotently() {
+        let contributions = vec![
+            contribution(
+                1,
+                "model-weekly",
+                "supplemental",
+                "model:gpt-5",
+                0,
+                100,
+                80.0,
+            ),
+            contribution(2, "seven-day", "primaryLong", "account", 0, 100, 12.5),
+        ];
+
+        let first = cumulative_lane_allocation(contributions.clone()).expect("allocation");
+        let second = cumulative_lane_allocation(contributions).expect("allocation");
+        assert_eq!(first.percent, 12.5);
+        assert_eq!(first.period_count, 1);
+        assert_eq!(first, second);
+    }
 }

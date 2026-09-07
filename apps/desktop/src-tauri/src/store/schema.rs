@@ -704,6 +704,12 @@ CREATE TABLE provider_usage_allocation_revision (
 ) STRICT;
 INSERT INTO provider_usage_allocation_revision (id, value) VALUES (1, 0);
 
+UPDATE provider_usage_allocation_revision SET value = 1 WHERE id = 1;
+INSERT INTO provider_usage_allocation_dirty (period_id, requested_at_epoch, generation)
+    SELECT id, last_observed_epoch, 1
+      FROM provider_usage_period
+     WHERE resets_at_epoch IS NOT NULL;
+
 CREATE TABLE provider_usage_session_allocation (
     period_id        INTEGER NOT NULL REFERENCES provider_usage_period(id),
     environment_key  TEXT NOT NULL,

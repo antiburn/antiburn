@@ -49,7 +49,7 @@ use antiburn_local::analysis::{
     query_turn_rows, restamp_source_rows,
 };
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_iter};
 
 use crate::dto::DeferredPermissionDir;
 
@@ -2065,6 +2065,131 @@ impl Store {
             });
         }
         Ok(sessions)
+    }
+
+    /// Read a bounded aggregate of published turns for allowance reconciliation.
+    ///
+    /// Each end value creates one observation interval. SQLite sums turns inside
+    /// that interval before Rust receives them, so a busy period cannot load an
+    /// unbounded turn vector. `None` means the bounded aggregate overflowed.
+    pub fn session_usage_turns_grouped_between(
+        &self,
+        start_ms: i64,
+        end_ms: i64,
+        interval_ends_ms: &[i64],
+        max_groups: usize,
+    ) -> Result<Option<Vec<SessionUsageRecord>>> {
+        if end_ms <= start_ms || interval_ends_ms.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let mut ends: Vec<_> = interval_ends_ms
+            .iter()
+            .copied()
+            .filter(|end| *end > start_ms && *end <= end_ms)
+            .collect();
+        ends.sort_unstable();
+        ends.dedup();
+        if ends.last().copied() != Some(end_ms) {
+            ends.push(end_ms);
+        }
+        let case_parts = ends
+            .iter()
+            .map(|_| "WHEN t.ts_ms <= ? THEN ?")
+            .collect::<Vec<_>>()
+            .join(" ");
+        let sql = format!(
+            "WITH grouped_turn AS (
+                SELECT t.environment_key, t.agent, t.session_id,
+                       CASE {case_parts} ELSE ? END AS bucket_end_ms,
+                       t.model, t.speed,
+                       SUM(t.input_tokens) AS input_tokens,
+                       SUM(t.cache_read_tokens) AS cache_read_tokens,
+                       SUM(t.cache_write_tokens) AS cache_write_tokens,
+                       SUM(t.output_tokens) AS output_tokens
+                  FROM turn t
+                  JOIN session_evidence e
+                    ON e.environment_key = t.environment_key
+                   AND e.agent = t.agent AND e.session_id = t.session_id
+                   AND e.published_fence = t.claim_fence
+                 WHERE t.ts_ms >= ? AND t.ts_ms < ?
+                 GROUP BY t.environment_key, t.agent, t.session_id, bucket_end_ms,
+                          t.model, t.speed
+                 ORDER BY bucket_end_ms
+                 LIMIT ?
+             )
+             SELECT g.environment_key, g.agent, g.session_id, s.wsl_distro,
+                    a.provider_hints_json,
+                    COALESCE((
+                        SELECT json_group_array(json_object(
+                            'provider', spa.provider,
+                            'accountKey', spa.account_key
+                        ))
+                          FROM session_provider_account spa
+                         WHERE spa.environment_key = s.environment_key
+                           AND spa.agent = s.agent AND spa.session_id = s.session_id
+                    ), '[]'),
+                    g.bucket_end_ms, g.model, g.speed, g.input_tokens,
+                    g.cache_read_tokens, g.cache_write_tokens, g.output_tokens
+               FROM grouped_turn g
+               JOIN session s
+                 ON s.environment_key = g.environment_key
+                AND s.agent = g.agent AND s.session_id = g.session_id
+               LEFT JOIN session_analysis a
+                 ON a.environment_key = s.environment_key
+                AND a.agent = s.agent AND a.session_id = s.session_id"
+        );
+        let mut values = Vec::with_capacity(ends.len() * 2 + 3);
+        for end in &ends {
+            values.push(rusqlite::types::Value::from(*end));
+            values.push(rusqlite::types::Value::from(*end));
+        }
+        values.push(rusqlite::types::Value::from(end_ms));
+        values.push(rusqlite::types::Value::from(start_ms));
+        values.push(rusqlite::types::Value::from(end_ms));
+        let limit =
+            i64::try_from(max_groups.clamp(1, 50_000)).expect("bounded group limit fits i64");
+        values.push(rusqlite::types::Value::from(limit + 1));
+        let connection = self.lock();
+        let mut statement = connection.prepare(&sql)?;
+        let mut rows = statement.query(params_from_iter(values))?;
+        let mut sessions = Vec::new();
+        let mut indexes = HashMap::new();
+        let mut group_count = 0usize;
+        while let Some(row) = rows.next()? {
+            group_count += 1;
+            if group_count > max_groups {
+                return Ok(None);
+            }
+            let key = SessionKey::new(
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            );
+            let index = if let Some(index) = indexes.get(&key) {
+                *index
+            } else {
+                let index = sessions.len();
+                sessions.push(SessionUsageRecord {
+                    key: key.clone(),
+                    wsl_distro: row.get(3)?,
+                    provider_hints_json: row.get(4)?,
+                    provider_accounts_json: row.get(5)?,
+                    turns: Vec::new(),
+                });
+                indexes.insert(key, index);
+                index
+            };
+            sessions[index].turns.push(SessionUsageTurnRecord {
+                ts_ms: row.get(6)?,
+                model: row.get(7)?,
+                speed: row.get(8)?,
+                input_tokens: row.get::<_, i64>(9)?.try_into().unwrap_or(u64::MAX),
+                cache_read_tokens: row.get::<_, i64>(10)?.try_into().unwrap_or(u64::MAX),
+                cache_write_tokens: row.get::<_, i64>(11)?.try_into().unwrap_or(u64::MAX),
+                output_tokens: row.get::<_, i64>(12)?.try_into().unwrap_or(u64::MAX),
+            });
+        }
+        Ok(Some(sessions))
     }
 
     /// Bind recent sessions after the account-attribution rollout.

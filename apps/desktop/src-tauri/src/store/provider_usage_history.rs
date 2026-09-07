@@ -167,6 +167,66 @@ impl Store {
         }))
     }
 
+    /// Load a bounded, evenly spaced authoritative series for allocation.
+    ///
+    /// The allocator must use this exact series for both SQL turn buckets and
+    /// percentage deltas. It keeps the initial and final readings.
+    pub fn provider_usage_period_history_for_allocation(
+        &self,
+        period_id: i64,
+        maximum_samples: usize,
+    ) -> Result<Option<ProviderUsagePeriodHistory>> {
+        let maximum_samples =
+            i64::try_from(maximum_samples.clamp(2, 256)).expect("bounded sample limit fits i64");
+        let connection = self.lock();
+        let Some(period) = query_period(&connection, period_id)? else {
+            return Ok(None);
+        };
+        let total = connection.query_row(
+            "SELECT COUNT(*)
+               FROM provider_usage_observation
+              WHERE period_id = ?1 AND is_fresh = 1 AND is_authoritative = 1
+                AND used_percent IS NOT NULL",
+            [period_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        if total == 0 {
+            return Ok(Some(ProviderUsagePeriodHistory {
+                period,
+                observations: Vec::new(),
+            }));
+        }
+        let stride = ((total - 1 + maximum_samples - 2) / (maximum_samples - 1)).max(1);
+        let mut statement = connection.prepare(
+            "WITH numbered AS (
+                SELECT id, period_id, provider, account_key, window_id, window_kind,
+                       window_role, scope_key, scope_label, observed_at_epoch, used_percent,
+                       is_fresh, is_authoritative, confidence, source_id,
+                       reported_starts_at_epoch, reported_resets_at_epoch,
+                       ROW_NUMBER() OVER (ORDER BY observed_at_epoch, id) AS row_number,
+                       COUNT(*) OVER () AS total_rows
+                  FROM provider_usage_observation
+                 WHERE period_id = ?1 AND is_fresh = 1 AND is_authoritative = 1
+                   AND used_percent IS NOT NULL
+             )
+             SELECT id, period_id, provider, account_key, window_id, window_kind,
+                    window_role, scope_key, scope_label, observed_at_epoch, used_percent,
+                    is_fresh, is_authoritative, confidence, source_id,
+                    reported_starts_at_epoch, reported_resets_at_epoch
+               FROM numbered
+              WHERE row_number = 1 OR row_number = total_rows
+                 OR (row_number - 1) % ?2 = 0
+              ORDER BY observed_at_epoch, id",
+        )?;
+        let observations = statement
+            .query_map(params![period_id, stride], row_to_observation)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(Some(ProviderUsagePeriodHistory {
+            period,
+            observations,
+        }))
+    }
+
     /// List period metadata with an observation at or after a cursor.
     ///
     /// This is an observation-time cursor, not a mutation log. A correction to

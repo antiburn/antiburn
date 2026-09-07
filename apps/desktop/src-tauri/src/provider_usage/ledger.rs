@@ -9,6 +9,8 @@ use crate::store::Store;
 /// limit keeps a launch or a delayed provider response from monopolizing the
 /// store lock; unclaimed rows remain in the durable queue for the next pass.
 const PERIOD_BATCH: usize = 8;
+const MAX_OBSERVATION_INTERVALS: usize = 96;
+const MAX_TURN_GROUPS: usize = 50_000;
 
 /// Materialize one bounded batch after durable ingestion already queued it.
 pub fn enqueue_and_reconcile(store: &Store, period_ids: &[i64], now_epoch: i64) {
@@ -36,7 +38,9 @@ fn reconcile_period(
     now_epoch: i64,
 ) -> anyhow::Result<()> {
     let period_id = dirty.period_id;
-    let Some(history) = store.provider_usage_period_history(period_id)? else {
+    let Some(history) =
+        store.provider_usage_period_history_for_allocation(period_id, MAX_OBSERVATION_INTERVALS)?
+    else {
         return store.acknowledge_provider_usage_allocation_period(period_id, dirty.generation);
     };
     if history.observations.is_empty() {
@@ -62,11 +66,42 @@ fn reconcile_period(
             5 * 3_600
         }
     });
-    let start = history.period.starts_at_epoch.unwrap_or_else(|| reset.saturating_sub(duration));
-    let turns = store.session_usage_turns_between(
+    let start = history
+        .period
+        .starts_at_epoch
+        .unwrap_or_else(|| reset.saturating_sub(duration));
+    let Some(observed_at_epoch) = history
+        .observations
+        .iter()
+        .rev()
+        .find(|entry| entry.is_fresh && entry.is_authoritative)
+        .and_then(|entry| entry.used_percent.map(|_| entry.observed_at_epoch))
+    else {
+        return store.replace_provider_usage_period_allocations_and_ack(
+            period_id,
+            dirty.generation,
+            &[],
+            now_epoch,
+        );
+    };
+    let interval_ends =
+        allocation::period_observation_interval_ends(&history, MAX_OBSERVATION_INTERVALS);
+    let end_ms = observed_at_epoch.saturating_mul(1_000).saturating_add(1);
+    let Some(turns) = store.session_usage_turns_grouped_between(
         start.saturating_mul(1_000),
-        reset.saturating_mul(1_000),
-    )?;
+        end_ms,
+        &interval_ends,
+        MAX_TURN_GROUPS,
+    )?
+    else {
+        ::tracing::warn!(
+            event = "provider_usage_allocation_group_limit",
+            period_id,
+            max_groups = MAX_TURN_GROUPS
+        );
+        return store
+            .retain_partial_provider_usage_period_allocations_and_ack(period_id, dirty.generation);
+    };
     let Some((_, mut allocations)) = allocation::estimate_period(turns, &history) else {
         return store.replace_provider_usage_period_allocations_and_ack(
             period_id,

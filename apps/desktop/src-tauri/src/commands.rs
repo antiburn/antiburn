@@ -36,8 +36,7 @@ use crate::dto::{
     HygieneSummaryPayload, InsightsReportPayload, InsightsStatusPayload, LiveUsageSummary,
     OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis,
     SessionHygienePayload, SessionHygieneRequest, SessionIdentity, SessionLimitAllocation,
-    SessionLimitAllocationSummary,
-    SessionRelation, SessionRelations, SubagentMember,
+    SessionLimitAllocationSummary, SessionRelation, SessionRelations, SubagentMember,
 };
 use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
@@ -771,8 +770,13 @@ pub async fn get_session_limit_allocations(
         let sessions = store
             .recent_sessions_excluding(since, MAX_ACTIVITY_ROWS, &settings.disabled_agents)
             .map_err(fail)?;
-        let keys = sessions.iter().map(|session| session.key.clone()).collect::<Vec<_>>();
-        let allocations = store.cumulative_session_limit_allocations(&keys).map_err(fail)?;
+        let keys = sessions
+            .iter()
+            .map(|session| session.key.clone())
+            .collect::<Vec<_>>();
+        let allocations = store
+            .cumulative_session_limit_allocations(&keys)
+            .map_err(fail)?;
         Ok(SessionLimitAllocationSummary {
             allocations: allocations
                 .into_iter()
@@ -791,7 +795,12 @@ pub async fn get_session_limit_allocations(
                     window_id: allocation.window_id,
                     resets_at: None,
                     percent: allocation.percent,
-                    coverage: if allocation.partial { "partial" } else { "complete" }.to_string(),
+                    coverage: if allocation.partial {
+                        "partial"
+                    } else {
+                        "complete"
+                    }
+                    .to_string(),
                     period_count: allocation.period_count,
                 })
                 .collect(),

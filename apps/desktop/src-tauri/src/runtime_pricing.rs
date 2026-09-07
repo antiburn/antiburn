@@ -199,6 +199,22 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 Ok(invalidated) => {
                     if invalidated {
                         let _ = app.emit(crate::commands::SESSIONS_INVALIDATED_EVENT, ());
+                        if let Some(store) = app.try_state::<crate::store::Store>() {
+                            let store = store.inner().clone();
+                            tauri::async_runtime::spawn_blocking(move || {
+                                let now = i64::try_from(epoch_seconds()).unwrap_or(i64::MAX);
+                                if let Err(error) =
+                                    store.enqueue_all_provider_usage_allocation_periods(now)
+                                {
+                                    ::tracing::warn!(
+                                        event = "provider_usage_allocation_pricing_enqueue_failed",
+                                        error = %error
+                                    );
+                                    return;
+                                }
+                                crate::provider_usage::ledger::reconcile(&store, now);
+                            });
+                        }
                     }
                     true
                 }

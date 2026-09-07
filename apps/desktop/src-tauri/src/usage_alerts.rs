@@ -223,6 +223,11 @@ fn run_pass(app: &AppHandle, _blocking: blocking::Thread) {
 }
 
 fn background_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
+    // Reconciliation uses only local durable inputs. It must run even when the
+    // user disabled provider network collection.
+    if let Some(store) = app.try_state::<Store>() {
+        crate::provider_usage::ledger::reconcile(store.inner(), crate::scan::unix_now());
+    }
     if !settings.live_usage_active() {
         return;
     }
