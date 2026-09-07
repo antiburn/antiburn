@@ -138,8 +138,7 @@ pub(crate) fn import_backfill_batch(store: &Store, now_epoch: i64) -> Result<Bac
         now_epoch,
         MAX_CANDIDATES_PER_BATCH + 1,
     )?;
-    let has_more_ready = candidates.len() > MAX_CANDIDATES_PER_BATCH
-        && !candidates[MAX_CANDIDATES_PER_BATCH].complete;
+    let has_more_ready = has_more_ready(&candidates);
     for candidate in candidates.iter().take(MAX_CANDIDATES_PER_BATCH) {
         if started.elapsed() >= MAX_BATCH_DURATION {
             result.pending = true;
@@ -221,6 +220,14 @@ pub(crate) fn import_backfill_batch(store: &Store, now_epoch: i64) -> Result<Bac
 
 fn earliest(current: Option<i64>, candidate: i64) -> Option<i64> {
     Some(current.map_or(candidate, |current| current.min(candidate)))
+}
+
+fn has_more_ready(
+    candidates: &[crate::store::usage_backfill::ProviderUsageBackfillCandidate],
+) -> bool {
+    candidates
+        .get(MAX_CANDIDATES_PER_BATCH)
+        .is_some_and(|candidate| !candidate.complete)
 }
 
 fn source_fingerprint(path: &Path) -> Result<SourceFingerprint> {
@@ -679,5 +686,22 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn completed_candidates_do_not_request_another_immediate_batch() {
+        let candidate = crate::store::usage_backfill::ProviderUsageBackfillCandidate {
+            key: crate::store::SessionKey::new("native", "codex", "synthetic"),
+            source_label: "/synthetic/rollout.jsonl".to_owned(),
+            account_key: "a".repeat(64),
+            cursor_bytes: 0,
+            source_bytes: 0,
+            source_modified_epoch: None,
+            source_identity: String::new(),
+            complete: true,
+        };
+        let candidates = vec![candidate; MAX_CANDIDATES_PER_BATCH + 1];
+
+        assert!(!has_more_ready(&candidates));
     }
 }

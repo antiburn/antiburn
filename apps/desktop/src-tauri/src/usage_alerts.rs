@@ -298,11 +298,6 @@ fn run_backfill_pass(
 }
 
 fn background_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
-    // Reconciliation uses only local durable inputs. It must run even when the
-    // user disabled provider network collection.
-    if let Some(store) = app.try_state::<Store>() {
-        crate::provider_usage::ledger::reconcile(store.inner(), crate::scan::unix_now());
-    }
     if !settings.live_usage_active() {
         return;
     }
@@ -560,6 +555,25 @@ mod tests {
 
     fn at(epoch: i64) -> time::OffsetDateTime {
         time::OffsetDateTime::from_unix_timestamp(epoch).unwrap()
+    }
+
+    #[test]
+    fn deferred_backfill_waits_for_its_retry_time() {
+        let now = crate::scan::unix_now();
+        let mut due = None;
+        schedule_backfill(
+            &mut due,
+            crate::provider_usage::backfill::BackfillBatch {
+                pending: true,
+                next_retry_epoch: Some(now + 60),
+                ..Default::default()
+            },
+        );
+
+        let remaining = due
+            .expect("scheduled retry")
+            .saturating_duration_since(tokio::time::Instant::now());
+        assert!(remaining >= Duration::from_secs(58));
     }
 
     #[cfg(feature = "analytics")]
