@@ -745,6 +745,33 @@ pub fn show_detail(app: &AppHandle, state: serde_json::Value) {
 #[cfg(not(target_os = "macos"))]
 pub fn show_detail(_app: &AppHandle, _state: serde_json::Value) {}
 
+/// Show the detail window without activating the app or taking keyboard focus.
+///
+/// Tauri's `show` orders the window in through activation-respecting AppKit
+/// calls, so a fullscreen space never receives it. Mirror
+/// [`show_without_activation`] instead: re-apply the level and collection
+/// behavior, then order the window front regardless of activation. The
+/// [`DETAIL_SHOULD_SHOW`] re-check keeps a hide that lands before the
+/// main-thread callback runs from being overridden.
+#[cfg(target_os = "macos")]
+fn show_detail_without_activation(window: &WebviewWindow) -> tauri::Result<()> {
+    let native_window = window.clone();
+    window.run_on_main_thread(move || {
+        if !DETAIL_SHOULD_SHOW.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Ok(pointer) = native_window.ns_window() {
+            // SAFETY: The callback runs on the main thread and the pointer is the live NSWindow.
+            let ns_window = unsafe { &*pointer.cast::<NSWindow>() };
+            // The window is built hidden and revealed later. Set the level and
+            // the collection behavior again here, because the toolkit can
+            // reset them when it shows a window.
+            apply_float_over_all_spaces(ns_window);
+            ns_window.orderFrontRegardless();
+        }
+    })
+}
+
 /// Size the detail window, place it against the drawn panel, and show it.
 ///
 /// `height` is the webview's measured content height in logical pixels. The
@@ -768,7 +795,7 @@ pub fn apply_detail_size(app: &AppHandle, height: f64) {
         return;
     }
     if DETAIL_SHOULD_SHOW.load(Ordering::Relaxed) {
-        let _ = detail.show();
+        let _ = show_detail_without_activation(&detail);
     }
 }
 
@@ -833,6 +860,7 @@ fn build_detail(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     .resizable(false)
     .visible(false)
     .focused(false)
+    .focusable(false)
     .shadow(false)
     .skip_taskbar(true)
     .always_on_top(true)
