@@ -1578,6 +1578,38 @@ async fn a_second_request_before_the_scheduler_wakes_is_coalesced() {
     assert!(second.is_err(), "only one notify should have been queued");
 }
 
+#[test]
+fn a_slow_scheduler_retains_one_bounded_merged_watcher_burst() {
+    let controller = ScanController::default();
+    for index in 0..10_000 {
+        controller.push_burst(watch::WatchBurst {
+            paths: vec![std::path::PathBuf::from(format!(
+                "/tmp/{index:05}-{}",
+                "x".repeat(1024)
+            ))],
+            events: 1,
+            overflowed: false,
+        });
+    }
+
+    let pending = controller
+        .pending_burst
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let burst = pending.as_ref().expect("one merged burst stays pending");
+    assert_eq!(burst.events, 10_000);
+    assert!(burst.overflowed);
+    assert!(burst.paths.len() <= watch::MAX_BURST_PATHS);
+    assert!(
+        burst
+            .paths
+            .iter()
+            .map(|path| path.as_os_str().as_encoded_bytes().len())
+            .sum::<usize>()
+            <= watch::MAX_BURST_PATH_BYTES
+    );
+}
+
 /// R4: the tick and the watcher triggers cannot plausibly have introduced a
 /// repository the list has not already seen, so they alone skip the refresh.
 #[test]
