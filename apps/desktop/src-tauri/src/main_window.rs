@@ -5,13 +5,90 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use antiburn_main_window::Placement;
-use tauri::{AppHandle, Manager, WebviewWindow};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 use crate::store::Store;
 use crate::window_lifecycle::{self, ManagedWindowReadiness};
 use crate::window_readiness::{OpenAction, WindowReadiness, renderer_generation_script};
 
 pub use antiburn_main_window::LABEL;
+
+/// Event carrying whether the retained renderer can present work.
+pub const VISIBILITY_CHANGED_EVENT: &str = "main:visibility-changed";
+
+/// Event carrying the latest session requested for the main window.
+pub const SESSION_TARGET_EVENT: &str = "main:session-target";
+
+/// Identity-only target for one local session.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTarget {
+    agent: String,
+    session_id: String,
+    wsl_distro: Option<String>,
+}
+
+/// Revisioned request shared by the event and cold-renderer take paths.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionTargetRequest {
+    revision: u64,
+    target: SessionTarget,
+}
+
+#[cfg(target_os = "macos")]
+static APPLICATION_HIDDEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Observe visibility changes that do not produce Tauri focus events.
+#[cfg(target_os = "macos")]
+pub fn install_visibility_observers(app: &AppHandle) {
+    use block2::RcBlock;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{
+        NSApplication, NSApplicationDidHideNotification, NSApplicationDidUnhideNotification,
+        NSWindowDidDeminiaturizeNotification, NSWindowDidMiniaturizeNotification,
+    };
+    use objc2_foundation::{NSNotification, NSNotificationCenter};
+
+    if let Some(main_thread) = MainThreadMarker::new() {
+        APPLICATION_HIDDEN.store(
+            NSApplication::sharedApplication(main_thread).isHidden(),
+            Ordering::Release,
+        );
+    }
+    let center = NSNotificationCenter::defaultCenter();
+    // SAFETY: AppKit provides these immutable notification names on all supported macOS versions.
+    let notifications = unsafe {
+        [
+            (NSApplicationDidHideNotification, Some(true)),
+            (NSApplicationDidUnhideNotification, Some(false)),
+            (NSWindowDidMiniaturizeNotification, None),
+            (NSWindowDidDeminiaturizeNotification, None),
+        ]
+    };
+    for (name, hidden) in notifications {
+        let app = app.clone();
+        let handler = RcBlock::new(move |_notification: core::ptr::NonNull<NSNotification>| {
+            if let Some(hidden) = hidden {
+                APPLICATION_HIDDEN.store(hidden, Ordering::Release);
+            }
+            if let Some(window) = app.get_webview_window(LABEL) {
+                emit_visibility_changed(&window);
+            }
+        });
+        // SAFETY: AppKit posts these notifications on the main thread. The block matches the Foundation callback signature.
+        let observer = unsafe {
+            center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &handler)
+        };
+        // The observers remain registered for the app's lifetime.
+        std::mem::forget(observer);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn install_visibility_observers(_app: &AppHandle) {}
 
 const PLACEMENT_KEY: &str = "internal:mainWindowPlacementV1";
 const PLACEMENT_WRITE_DELAY: Duration = Duration::from_millis(350);
@@ -52,6 +129,8 @@ pub struct MainWindowState {
     presentation: Mutex<Presentation>,
     placement: Mutex<Option<Placement>>,
     placement_generation: AtomicU64,
+    session_target: Mutex<Option<SessionTargetRequest>>,
+    session_target_revision: AtomicU64,
 }
 
 impl MainWindowState {
@@ -65,6 +144,34 @@ impl MainWindowState {
                     .and_then(|raw| serde_json::from_str(&raw).ok()),
             ),
             placement_generation: AtomicU64::new(0),
+            session_target: Mutex::new(None),
+            session_target_revision: AtomicU64::new(0),
+        }
+    }
+
+    fn request_session_target(&self, target: SessionTarget) -> SessionTargetRequest {
+        let request = SessionTargetRequest {
+            revision: self
+                .session_target_revision
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1),
+            target,
+        };
+        *lock(&self.session_target) = Some(request.clone());
+        request
+    }
+
+    fn take_session_target(&self) -> Option<SessionTargetRequest> {
+        lock(&self.session_target).take()
+    }
+
+    fn clear_session_target(&self, revision: u64) {
+        let mut target = lock(&self.session_target);
+        if target
+            .as_ref()
+            .is_some_and(|request| request.revision == revision)
+        {
+            *target = None;
         }
     }
 
@@ -176,6 +283,30 @@ pub fn open(app: &AppHandle, trigger: OpenTrigger) -> tauri::Result<()> {
     }
 }
 
+/// Open the main window and route its renderer to one exact session.
+#[tauri::command]
+pub fn open_main_window_session(app: AppHandle, target: SessionTarget) -> Result<(), String> {
+    let state = app.state::<MainWindowState>();
+    let request = state.request_session_target(target);
+    if let Err(error) = open(&app, OpenTrigger::Interaction) {
+        state.clear_session_target(request.revision);
+        return Err(error.to_string());
+    }
+    app.emit_to(LABEL, SESSION_TARGET_EVENT, request)
+        .map_err(|error| error.to_string())
+}
+
+/// Take the latest session target after the main renderer installs its listener.
+#[tauri::command]
+pub fn take_main_window_session_target(
+    window: WebviewWindow,
+) -> Result<Option<SessionTargetRequest>, String> {
+    if window.label() != LABEL {
+        return Err("main-window session targets are unavailable to this window".to_owned());
+    }
+    Ok(window.state::<MainWindowState>().take_session_target())
+}
+
 fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
     let state = app.state::<MainWindowState>();
     let placement = state.placement();
@@ -260,6 +391,7 @@ fn reveal(window: Option<&WebviewWindow>) -> tauri::Result<()> {
         open_kind = open_kind.as_str(),
         elapsed_ms = elapsed.as_millis() as u64
     );
+    emit_visibility_changed(window);
     Ok(())
 }
 
@@ -271,6 +403,44 @@ pub fn close(window: &WebviewWindow) {
     state.note_closed();
     flush_placement(window.app_handle());
     let _ = antiburn_main_window::conceal(window);
+    emit_visibility_changed(window);
+}
+
+/// Read whether the main window can present work without treating blur as hidden.
+pub fn is_visible(window: &WebviewWindow) -> bool {
+    #[cfg(target_os = "macos")]
+    let application_hidden = APPLICATION_HIDDEN.load(Ordering::Acquire);
+    #[cfg(not(target_os = "macos"))]
+    let application_hidden = false;
+    visible_from_window_state(
+        window.is_visible().unwrap_or(false),
+        window.is_minimized().unwrap_or(true),
+        application_hidden,
+    )
+}
+
+const fn visible_from_window_state(
+    visible: bool,
+    minimized: bool,
+    application_hidden: bool,
+) -> bool {
+    visible && !minimized && !application_hidden
+}
+
+/// Emit the current presentation visibility to the retained renderer.
+pub fn emit_visibility_changed(window: &WebviewWindow) {
+    if let Err(error) = window.emit(VISIBILITY_CHANGED_EVENT, is_visible(window)) {
+        ::tracing::debug!(event = "main_window_visibility_emit_failed", error = %error);
+    }
+}
+
+/// Return main-window presentation visibility only to the main renderer.
+#[tauri::command]
+pub fn get_main_window_visible(window: WebviewWindow) -> Result<bool, String> {
+    if window.label() != LABEL {
+        return Err("main-window visibility is unavailable to this window".to_owned());
+    }
+    Ok(is_visible(&window))
 }
 
 /// Restore a closed or minimized main window after the app becomes active.
@@ -382,6 +552,8 @@ mod tests {
             presentation: Mutex::new(Presentation::default()),
             placement: Mutex::new(None),
             placement_generation: AtomicU64::new(0),
+            session_target: Mutex::new(None),
+            session_target_revision: AtomicU64::new(0),
         };
         let now = Instant::now();
         assert_eq!(
@@ -402,6 +574,8 @@ mod tests {
             presentation: Mutex::new(Presentation::default()),
             placement: Mutex::new(None),
             placement_generation: AtomicU64::new(0),
+            session_target: Mutex::new(None),
+            session_target_revision: AtomicU64::new(0),
         };
         let first = Instant::now();
         assert_eq!(
@@ -418,12 +592,65 @@ mod tests {
     }
 
     #[test]
+    fn session_target_keeps_only_the_latest_revision_and_wsl_identity() {
+        let state = MainWindowState {
+            readiness: Mutex::new(WindowReadiness::default()),
+            presentation: Mutex::new(Presentation::default()),
+            placement: Mutex::new(None),
+            placement_generation: AtomicU64::new(0),
+            session_target: Mutex::new(None),
+            session_target_revision: AtomicU64::new(0),
+        };
+        state.request_session_target(SessionTarget {
+            agent: "claude".to_owned(),
+            session_id: "old".to_owned(),
+            wsl_distro: None,
+        });
+        let latest = state.request_session_target(SessionTarget {
+            agent: "codex".to_owned(),
+            session_id: "new".to_owned(),
+            wsl_distro: Some("Ubuntu-24.04".to_owned()),
+        });
+
+        assert_eq!(latest.revision, 2);
+        assert_eq!(state.take_session_target(), Some(latest));
+        assert_eq!(state.take_session_target(), None);
+    }
+
+    #[test]
+    fn session_target_clear_does_not_remove_a_newer_request() {
+        let state = MainWindowState {
+            readiness: Mutex::new(WindowReadiness::default()),
+            presentation: Mutex::new(Presentation::default()),
+            placement: Mutex::new(None),
+            placement_generation: AtomicU64::new(0),
+            session_target: Mutex::new(None),
+            session_target_revision: AtomicU64::new(0),
+        };
+        let first = state.request_session_target(SessionTarget {
+            agent: "claude".to_owned(),
+            session_id: "first".to_owned(),
+            wsl_distro: None,
+        });
+        let second = state.request_session_target(SessionTarget {
+            agent: "codex".to_owned(),
+            session_id: "second".to_owned(),
+            wsl_distro: None,
+        });
+
+        state.clear_session_target(first.revision);
+        assert_eq!(state.take_session_target(), Some(second));
+    }
+
+    #[test]
     fn close_during_load_cancels_the_pending_reveal() {
         let state = MainWindowState {
             readiness: Mutex::new(WindowReadiness::default()),
             presentation: Mutex::new(Presentation::default()),
             placement: Mutex::new(None),
             placement_generation: AtomicU64::new(0),
+            session_target: Mutex::new(None),
+            session_target_revision: AtomicU64::new(0),
         };
         let started = Instant::now();
         let OpenAction::StartLoading { generation } = state.readiness().request_open(started)
@@ -443,12 +670,22 @@ mod tests {
     }
 
     #[test]
+    fn presentation_visibility_excludes_minimized_but_not_blurred_windows() {
+        assert!(visible_from_window_state(true, false, false));
+        assert!(!visible_from_window_state(true, true, false));
+        assert!(!visible_from_window_state(false, false, false));
+        assert!(!visible_from_window_state(true, false, true));
+    }
+
+    #[test]
     fn activation_restores_closed_or_minimized_main_without_interrupting_other_surfaces() {
         let state = MainWindowState {
             readiness: Mutex::new(WindowReadiness::default()),
             presentation: Mutex::new(Presentation::default()),
             placement: Mutex::new(None),
             placement_generation: AtomicU64::new(0),
+            session_target: Mutex::new(None),
+            session_target_revision: AtomicU64::new(0),
         };
         let now = Instant::now();
 

@@ -64,6 +64,10 @@ position and focus. Test an installed build for taskbar icon grouping.
 | Light/dark and accessibility preferences     | No white startup flash; readable opaque surface; no opening animation                |
 | Explicit Quit from each menu                 | Process and monitoring stop, including with no visible windows                       |
 | Existing tray primary/secondary clicks       | Popover toggle and existing menu actions retain their behavior                       |
+| Select a popover session                     | Main window opens or focuses on that exact native or WSL session                     |
+| Select while the main window is loading      | The requested session appears after startup without briefly replacing it             |
+| Select while the popover is pinned           | Main window focuses; the pinned popover remains on its activity list                 |
+| Select while the popover is unpinned         | Main window focuses; normal focus-loss policy dismisses the popover                  |
 | Existing settings, HUD, and notifications    | Each supported surface opens and behaves as before                                   |
 
 Windows/Linux login registration now adds `--background`. Existing registrations
@@ -79,13 +83,21 @@ quiet login on an upgraded installation. macOS uses the native login event.
 Check the 1100×600 default and 1000×560 minimum with light and dark themes.
 
 - The sidebar remains visible throughout resizing; no compact navigation mode appears.
-- Activity is the main section with an empty collection and detail workspace. Settings appears at the bottom; no Quit action appears.
+- Sessions is the main section. Settings appears at the bottom; no Quit action appears.
 - The Settings sidebar action and Command+, (Control+, on Windows/Linux) open the existing Settings window.
 - Check readable 28px rows and independent vertical content scrolling without horizontal overflow.
 - Restore an older saved 560×420 window; it expands to at least 1000×560 when the display allows.
 - Close and reopen the main window; the selected section persists.
-- The first macOS sidebar row starts below the 40px drag strip. The collection and detail panes have no top gap. Buttons must not drag the window.
-- The title strip still drags and toggles maximize on double-click.
+- The first macOS sidebar row starts below the 40px drag strip. Session panes have no top gap. Buttons must not drag the window.
+- The sidebar drag strip, session list header, detail toolbar, and empty-detail top area drag and toggle maximize on double-click on macOS.
+
+### Session selection appearance
+
+- In both themes, the selected card is softly distinct from resting and hovered cards.
+- Hover the selected card and open its tooltip; its selected fill remains stable.
+- Move selection with the keyboard; the focus indicator remains visible.
+- Text, badges, and icons keep their normal contrast.
+- Verify the menu-bar session list retains its existing appearance and navigation.
 
 ## Opening measurements
 

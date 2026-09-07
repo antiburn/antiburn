@@ -8,6 +8,8 @@ import capability from "../../src-tauri/capabilities/main.json"
 import { openSettingsWindow } from "../lib/ipc"
 import { MainWindowView } from "./MainWindowView"
 
+vi.mock("./main-window/MainActivityView", () => ({ MainActivityView: () => <p>Sessions</p> }))
+
 vi.mock("../lib/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof IpcModule>()),
   openSettingsWindow: vi.fn().mockResolvedValue(undefined),
@@ -54,15 +56,15 @@ describe("MainWindowView", () => {
     expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
   })
 
-  it("shows only Activity in the persistent sidebar", () => {
+  it("shows only Sessions in the persistent sidebar", () => {
     setWindowWidth(1000)
     render(<MainWindowView />)
     expect(screen.getAllByRole("tab")).toHaveLength(1)
-    expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "Sessions" })).toHaveAttribute(
       "aria-selected",
       "true",
     )
-    expect(screen.getByRole("tabpanel", { name: "Activity" })).toBeVisible()
+    expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
     expect(screen.getByRole("button", { name: "Settings" })).toBeVisible()
     setWindowWidth(900)
     fireEvent(window, new Event("resize"))
@@ -73,7 +75,7 @@ describe("MainWindowView", () => {
     render(<MainWindowView />)
     fireEvent.click(screen.getByRole("button", { name: "Settings" }))
     expect(openSettingsWindow).toHaveBeenCalledExactlyOnceWith()
-    expect(screen.getByRole("tab", { name: "Activity" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "Sessions" })).toHaveAttribute(
       "aria-selected",
       "true",
     )
@@ -93,7 +95,7 @@ describe("MainWindowView", () => {
     "opens Settings with %s+comma from the detail pane",
     (modifier) => {
       render(<MainWindowView />)
-      fireEvent.keyDown(screen.getByRole("tabpanel", { name: "Activity" }), {
+      fireEvent.keyDown(screen.getByRole("tabpanel", { name: "Sessions" }), {
         key: ",",
         [modifier]: true,
       })

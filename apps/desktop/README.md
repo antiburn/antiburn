@@ -134,9 +134,8 @@ Settings teardown, and the memory rules behind those policies.
   1100×600 logical pixels with a normal minimum of 1000×560. The initial outer
   frame is capped at 85% of each usable display dimension. Saved user sizes
   retain their dimensions within the available work area. The navigation shell
-  uses a persistent 220px sidebar with dense desktop rows. Activity is the only main sidebar item and contains
-  placeholders until product views migrate. The sidebar Settings action and Command+,
-  (Control+, on Windows and Linux) open the existing Settings window; see the
+  uses a persistent 220px sidebar with dense desktop rows. Sessions shows the session list and selected detail. The sidebar Settings action and
+  Command+, (Control+, on Windows and Linux) open the existing Settings window; see the
   [main-window validation runbook](../../docs/runbooks/main-window.md).
 - **Tray item.** Primary click toggles the popover. Secondary click opens a
   menu with Open antiburn, Pin Window, Settings, and Quit. Native application
@@ -261,3 +260,16 @@ provide `items` and `renderDetail`; an optional `renderCollection` slot receives
 `select`, and `openDetail` and owns its viewport. The default list supports keyboard selection
 and Enter-to-detail-region focus. Controlled `selection` and `onSelectionChange` let a feature
 own navigation history. `detailOwnsViewport` embeds a view with an existing scroll container.
+
+Sessions uses `MainActivitySession`, an independent external store. It loads the existing
+session index and cached usage through scoped commands, coalesces shell events, and rejects
+stale responses. It loads analysis only for the selected subject. Native `main:visibility-changed`
+events and the initial `get_main_window_visible` snapshot suspend work on hide or minimize;
+blur does not suspend it. Section inactivity also suspends work. Resume reconciles the list,
+cached usage, and selected analysis. This adds no scanner or provider polling.
+
+`SessionList` accepts opt-in `selectedKey`, `onSelect`, `onOpenDetail`, and `active` props.
+`SessionPane` accepts `embedded` and `active`; embedded confirmation does not hold the popover.
+Shared subject identity and analysis loading live in `lib/sessionSubject.ts`. Existing
+menu-bar callers retain their defaults. Session removal broadcasts the existing invalidation
+event so both windows refresh their local views.

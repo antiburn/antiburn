@@ -110,22 +110,6 @@ function activityEntry(overrides: Record<string, unknown> = {}) {
   }
 }
 
-const ANALYTICS = {
-  // A session with nothing analyzable is enough to exercise the flow: the view
-  // still renders its chrome, which is what these tests navigate through.
-  summary: null,
-  supportsAnalysis: true,
-  title: "Wire the tray popover",
-  wslDistro: null,
-  isActive: false,
-  cost: null,
-  models: [],
-  modelRuns: [],
-  orchestration: null,
-  relations: null,
-  sourcePath: "/home/avery/.claude/projects/widgets/session-abc-123.jsonl",
-}
-
 const USAGE_WINDOW = {
   tokensIn: 1_000,
   tokensOut: 200,
@@ -253,8 +237,6 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
         return Promise.resolve(SETTINGS)
       case "list_recent_sessions":
         return Promise.resolve([activityEntry()])
-      case "get_session_analysis":
-        return Promise.resolve(ANALYTICS)
       case "get_provider_usage":
         return Promise.resolve(PROVIDER_USAGE)
       case "get_live_usage":
@@ -524,27 +506,42 @@ describe("PopoverView", () => {
     expect(screen.getByLabelText("Estimated cost $1.25")).toBeInTheDocument()
   })
 
-  it("opens a session, loads its analysis, and comes back to the list", async () => {
+  it("opens the main window at the selected session without loading popover detail", async () => {
     render(<PopoverView />)
 
     fireEvent.click(await screen.findByText("Wire the tray popover"))
 
-    expect(await screen.findByRole("heading", { name: "Session Detail" })).toBeInTheDocument()
     await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("get_session_analysis", {
-        agent: "claude-code",
-        sessionId: "session-abc-123",
-        wslDistro: null,
+      expect(invoke).toHaveBeenCalledWith("open_main_window_session", {
+        target: {
+          agent: "claude-code",
+          sessionId: "session-abc-123",
+          wslDistro: null,
+        },
       }),
     )
-
-    // The session pane is a lazy-loaded chunk. Its own "Session Detail"
-    // heading briefly shares text with the Suspense fallback's, so wait for a
-    // control unique to the loaded pane before treating it as ready.
-    fireEvent.click(await screen.findByRole("button", { name: "Back" }, { timeout: 5_000 }))
-
-    expect(await screen.findByText("Wire the tray popover")).toBeInTheDocument()
+    expect(screen.getByText("Wire the tray popover")).toBeInTheDocument()
     expect(screen.queryByRole("heading", { name: "Session Detail" })).not.toBeInTheDocument()
+    expect(invoke).not.toHaveBeenCalledWith("get_session_analysis", expect.anything())
+  })
+
+  it("preserves WSL identity when opening a session in the main window", async () => {
+    mockCommands({
+      list_recent_sessions: [activityEntry({ wslDistro: "Ubuntu-24.04" })],
+    })
+    render(<PopoverView />)
+
+    fireEvent.click(await screen.findByText("Wire the tray popover"))
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("open_main_window_session", {
+        target: {
+          agent: "claude-code",
+          sessionId: "session-abc-123",
+          wslDistro: "Ubuntu-24.04",
+        },
+      }),
+    )
   })
 
   it("updates the one row a sessions:entry-changed event names, without re-listing", async () => {
@@ -620,54 +617,6 @@ describe("PopoverView", () => {
     expect(screen.getByText("Wire the tray popover")).toBeInTheDocument()
   })
 
-  it("keeps the list at the same offset through repeated session navigation", async () => {
-    const scrollTo = vi.fn(function (
-      this: HTMLElement,
-      options: ScrollToOptions | number,
-      y?: number,
-    ) {
-      this.scrollTop = typeof options === "number" ? (y ?? 0) : (options.top ?? 0)
-      this.dispatchEvent(new Event("scroll"))
-    })
-    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
-      configurable: true,
-      value: scrollTo,
-    })
-    mockCommands({
-      list_recent_sessions: Array.from({ length: 12 }, (_, index) =>
-        activityEntry({
-          sessionId: `session-${index}`,
-          title: index === 0 ? "Wire the tray popover" : `Session fixture ${index}`,
-          timestamp: new Date(Date.now() - index * 1_000).toISOString(),
-        }),
-      ),
-    })
-    render(<PopoverView />)
-    await screen.findByText("Wire the tray popover")
-
-    const viewportOf = () =>
-      screen
-        .getByRole("region", { name: "Sessions" })
-        .querySelector<HTMLElement>(".ui-scroll-viewport")
-    const viewport = viewportOf()
-    expect(viewport).not.toBeNull()
-    viewport!.scrollTop = 240
-    fireEvent.scroll(viewport!)
-
-    for (let cycle = 0; cycle < 3; cycle += 1) {
-      fireEvent.click(screen.getByText("Wire the tray popover"))
-      fireEvent.click(await screen.findByRole("button", { name: "Back" }, { timeout: 5_000 }))
-
-      await screen.findByText("Wire the tray popover")
-      await waitFor(() => expect(viewportOf()?.scrollTop).toBe(240))
-    }
-    expect(
-      scrollTo.mock.calls.some(
-        ([options]) => typeof options !== "number" && (options.top ?? 0) === 240,
-      ),
-    ).toBe(true)
-  })
-
   it("folds Usage and Checks as one measured Activity header", async () => {
     render(<PopoverView />)
 
@@ -704,10 +653,7 @@ describe("PopoverView", () => {
     fireEvent.click(await screen.findByText("Wire the tray popover"))
 
     const notes = invoke.mock.calls.filter(([name]) => name === "note_interaction")
-    // Exactly one. The card is the only thing instrumented: the newer/older
-    // traversal inside a session replaces the top of the stack and is
-    // deliberately silent, because counting it would drown out the question
-    // this event exists to answer — how often the list leads anywhere at all.
+    // The card records exactly one activity-to-session transition.
     expect(notes).toHaveLength(1)
     expect(invoke).toHaveBeenCalledWith("note_interaction", {
       interaction: { kind: "sessionOpened", agent: "claude-code", environment: "native" },
@@ -721,38 +667,6 @@ describe("PopoverView", () => {
       "environment",
       "kind",
     ])
-  })
-
-  it("confirms a removal, deletes only local records, and returns to the list", async () => {
-    confirmDialog.mockResolvedValue(true)
-    render(<PopoverView />)
-
-    fireEvent.click(await screen.findByText("Wire the tray popover"))
-    fireEvent.click(await screen.findByRole("button", { name: "Delete this session" }))
-
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("delete_session_data", {
-        agent: "claude-code",
-        sessionId: "session-abc-123",
-        wslDistro: null,
-      }),
-    )
-    const [message] = confirmDialog.mock.calls[0] as [string]
-    expect(message).toMatch(/transcript file is not touched/i)
-    expect(await screen.findByText("Wire the tray popover")).toBeInTheDocument()
-  })
-
-  it("reveals the provider transcript rather than a copy of it", async () => {
-    render(<PopoverView />)
-
-    fireEvent.click(await screen.findByText("Wire the tray popover"))
-    fireEvent.click(await screen.findByRole("button", { name: "Reveal in file manager" }))
-
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("reveal_source", {
-        path: "/home/avery/.claude/projects/widgets/session-abc-123.jsonl",
-      }),
-    )
   })
 
   it("asks for provider usage with the reader own offset and shows the usage-limits bar", async () => {
@@ -1204,44 +1118,6 @@ describe("PopoverView", () => {
     expect(invoke).not.toHaveBeenCalledWith("scan_now", expect.anything())
   })
 
-  it("re-loads the open session’s analysis on the popover-shown signal and shows a spinner meanwhile", async () => {
-    render(<PopoverView />)
-    fireEvent.click(await screen.findByText("Wire the tray popover"))
-    await screen.findByRole("button", { name: "Back" }, { timeout: 5_000 })
-    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument())
-
-    const loadsBeforeShown = invoke.mock.calls.filter(
-      ([command]) => command === "get_session_analysis",
-    ).length
-
-    let finishLoad: (() => void) | null = null
-    const baseInvoke = invoke.getMockImplementation()!
-    invoke.mockImplementation((command: string, args?: unknown) => {
-      if (command !== "get_session_analysis") return baseInvoke(command, args)
-      return new Promise((resolve) => {
-        finishLoad = () => resolve(ANALYTICS)
-      })
-    })
-
-    emit("popover:shown", undefined)
-
-    await waitFor(() =>
-      expect(
-        invoke.mock.calls.filter(([command]) => command === "get_session_analysis").length,
-      ).toBe(loadsBeforeShown + 1),
-    )
-    // The settled analysis stays on screen; only the header spinner says a
-    // newer one is on its way.
-    expect(screen.getByRole("status")).toBeInTheDocument()
-    expect(screen.queryByTestId("session-analysis-skeleton")).not.toBeInTheDocument()
-
-    await act(async () => {
-      finishLoad?.()
-      await Promise.resolve()
-    })
-    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument())
-  })
-
   it("refetches the session list on the shell's popover-shown signal, as a defence against a missed scan event", async () => {
     render(<PopoverView />)
     await screen.findByText("Wire the tray popover")
@@ -1415,25 +1291,6 @@ describe("PopoverView — window behaviour", () => {
     mockCommands()
   })
 
-  it("keeps the session surface at the main popover height", async () => {
-    render(<PopoverView />)
-    await screen.findByText("Wire the tray popover")
-
-    fireEvent.click(await screen.findByText("Wire the tray popover"))
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("set_popover_height", {
-        height: 700,
-        animate: true,
-      }),
-    )
-
-    const heights = invoke.mock.calls
-      .filter(([command]) => command === "set_popover_height")
-      .map(([, args]) => (args as { height: number }).height)
-    expect(heights.length).toBeGreaterThan(0)
-    expect(new Set(heights)).toEqual(new Set([700]))
-  })
-
   it("dismisses the popover on Escape", async () => {
     render(<PopoverView />)
     await screen.findByText("Wire the tray popover")
@@ -1452,18 +1309,6 @@ describe("PopoverView — window behaviour", () => {
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("open_settings_window", { pane: null }),
     )
-  })
-
-  it("moves focus to the heading of the surface that takes over", async () => {
-    render(<PopoverView />)
-
-    const activity = await screen.findByRole("button", { name: "antiburn v0.1.0 debug" })
-    await waitFor(() => expect(activity).toHaveFocus())
-
-    fireEvent.click(await screen.findByText("Wire the tray popover"))
-
-    const detail = await screen.findByRole("heading", { name: "Session Detail" })
-    await waitFor(() => expect(detail).toHaveFocus())
   })
 })
 

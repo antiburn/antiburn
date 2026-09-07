@@ -106,3 +106,9 @@
 .main-window-collection-row:active {
   background-color: var(--color-bg-selected);
 }
+
+.main-window-empty-titlebar {
+  position: absolute;
+  inset: 0 0 auto;
+  block-size: var(--main-window-titlebar-height);
+}

@@ -473,12 +473,13 @@ Notes for what isn't expressible as a token:
   user sizes can exceed the initial cap and remain constrained to the usable work area. It paints the opaque
   `surface-window` canvas. On macOS its 40px overlay drag region spans only the sidebar and leaves the
   native traffic lights visible. The collection and detail panes start at the top of the window,
-  without titlebar clearance or an overlaid drag region. Double-clicking this strip toggles maximize and restore through
+  without titlebar clearance. On macOS the list header and detail toolbar supply drag regions;
+  their controls remain interactive. The empty detail uses a 40px drag region without layout clearance. Double-clicking this strip toggles maximize and restore through
   Tauri's drag-region handler. Windows and Linux retain their native bars, so this surface adds no
   top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
   Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
   These local geometry rules use the spacing tokens in `main-window.css`; other source lists
-  retain their current density. Activity is the main sidebar section. A Settings action at the bottom opens the existing Settings window. Command+, (Control+, on Windows and Linux) also opens Settings without changing the selected section.
+  retain their current density. Sessions is the main sidebar section. A Settings action at the bottom opens the existing Settings window. Command+, (Control+, on Windows and Linux) also opens Settings without changing the selected section.
   The first sidebar row starts at 48px on macOS, clear of the drag strip. The content region scrolls
   independently of the title strip. A view switch is immediate: the window does not animate navigation. Use the
   documented type scale and keyboard-only focus treatment. Hidden or minimized main windows suspend
@@ -488,13 +489,43 @@ Notes for what isn't expressible as a token:
 
 The 220px navigation sidebar, 340px collection pane, and flexible detail pane remain visible
 at every supported window size. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
-features can supply their own toolbar and scroll area. At the 1000px minimum window width,
+the session detail owns its toolbar and scroll area. At the 1000px minimum window width,
 the detail retains 440px; at the 1100px default width, it receives 540px.
 Selection is immediate, with no navigation animation. The generic collection does not auto-select.
+Sessions initially selects the newest active session, or the newest session from today in the
+local timezone. Older sessions leave the detail empty. Refreshes preserve the user’s selection;
+clearing or deleting a selection does not trigger another automatic selection.
 The default collection uses 40px minimum rows, semantic selected fills, and the shared
 keyboard-only focus treatment. Arrow keys, Home, and End select rows; Enter focuses the detail
 region. Visited sections retain their state and scroll position while hidden.
 
 `MainWindowLayout` owns chrome and columns. `CollectionDetailPane` owns selection and detail
 slots; a custom collection slot owns its own viewport, including any virtualization. These
-components do not load data or subscribe to events.
+components do not load data or subscribe to events. Sessions supplies the existing virtualized
+`SessionList` and shared session detail in embedded mode. Selected session rows use `surface-selected/60` for a softer fill in both themes;
+hover and tooltip states retain that fill. This yields a 5.4% black tint in light mode and
+an 8.4% white tint in dark mode, without reducing text or badge opacity. Sidebar and generic
+collection selections keep their full-strength token;
+row density, grouping, badges, and tooltips match the menu-bar list. The 340px collection uses
+existing title truncation rather than a responsive layout change. The detail toolbar shows the
+session title; Back appears only for related-session history. Embedded shortcuts stay inside
+the detail pane. Hidden panes pause hygiene reads, relative-time clocks, and active-row motion.
+The menu-bar list keeps its existing navigation and presentation defaults.
+
+The unselected Sessions detail uses a centered, quiet empty state: a decorative 24px
+`MessagesSquare` icon on a soft circular surface, a `type-title-2` heading, and a short
+`type-body` description in secondary text. Keep the heading balanced and the description
+pretty-wrapped. Use no entry animation or extra action; selecting a list row is the action.
+The main-window collection slot owns this presentation; menu-bar empty states remain unchanged.
+
+#### Session card state treatment
+
+| State                 | Fill                             | Behavior                                                        |
+| --------------------- | -------------------------------- | --------------------------------------------------------------- |
+| Rest                  | `surface-card/50`                | Quiet background; text and badges retain their normal contrast. |
+| Hover or open tooltip | `surface-secondary/50`           | Applies only to an unselected card.                             |
+| Selected              | `surface-selected/60`            | Persists through hover and open tooltips.                       |
+| Keyboard focus        | Existing focus-visible treatment | Remains independent of the selected fill.                       |
+
+Apply this treatment to main-window session selection. Do not change the shared color
+tokens or the menu-bar list's default appearance to achieve it.
