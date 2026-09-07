@@ -740,11 +740,6 @@ export type Interaction =
       step: "welcome" | "agents_detected" | "sources_and_repos" | "ready"
     }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" }
-  | {
-      kind: "usageViewed"
-      providers: number
-      evidence: "live" | "estimated_only" | "none"
-    }
 
 /**
  * Report one interaction. Fire-and-forget, and silent on failure.

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react"
+import { render, screen, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import type {
@@ -89,7 +89,6 @@ function bar(over: Partial<Parameters<typeof UsageLimitsBar>[0]> = {}) {
       expanded={false}
       onToggleExpanded={vi.fn()}
       refreshing={false}
-      onViewAll={vi.fn()}
       {...over}
     />,
   )
@@ -111,14 +110,16 @@ function filledSegments(): number {
 describe("UsageLimitsBar — the ring row", () => {
   it("states each provider's worst window as an accessible percentage", () => {
     bar()
-    expect(screen.getByRole("button", { name: "Claude at 42 percent" })).toBeInTheDocument()
-  })
-
-  it("opens the usage view from a provider pill", () => {
-    const onViewAll = vi.fn()
-    bar({ onViewAll })
-    fireEvent.click(screen.getByRole("button", { name: "Claude at 42 percent" }))
-    expect(onViewAll).toHaveBeenCalledOnce()
+    const dial = screen.getByRole("img", { name: "Claude at 42 percent" })
+    expect(dial).toBeInTheDocument()
+    expect(dial).toHaveAttribute("tabindex", "0")
+    expect(dial).toHaveClass("transition-[background-color]")
+    expect(dial).not.toHaveClass("transition-colors")
+    dial.focus()
+    expect(dial).toHaveFocus()
+    expect(
+      screen.queryByRole("button", { name: "Claude at 42 percent" }),
+    ).not.toBeInTheDocument()
   })
 
   it("renders a controlled companion activation", () => {
@@ -126,7 +127,7 @@ describe("UsageLimitsBar — the ring row", () => {
       activeProvider: { provider: "anthropic", activation: "hovered" },
     })
 
-    const trigger = screen.getByRole("button", { name: "Claude at 42 percent" })
+    const trigger = screen.getByRole("img", { name: "Claude at 42 percent" })
     expect(trigger).toHaveAttribute("data-state", "hovered")
     expect(trigger).toHaveClass("data-[state=hovered]:bg-surface-secondary/50")
   })
@@ -137,18 +138,18 @@ describe("UsageLimitsBar — the ring row", () => {
         providers: [liveProvider({ windows: [liveWindow({ usedPercent: null })] })],
       }),
     })
-    expect(screen.getByRole("button", { name: "Claude, no stated figure" })).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: "Claude, no stated figure" })).toBeInTheDocument()
   })
 
   it("reports a refresh in flight without hiding the readings it already has", () => {
     bar({ refreshing: true })
     expect(screen.getByRole("status")).toHaveTextContent("Refreshing usage limits")
-    expect(screen.getByRole("button", { name: "Claude at 42 percent" })).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: "Claude at 42 percent" })).toBeInTheDocument()
   })
 
   it("shows the percentage beside the ring", () => {
     bar()
-    const seat = screen.getByRole("button", { name: "Claude at 42 percent" })
+    const seat = screen.getByRole("img", { name: "Claude at 42 percent" })
     expect(within(seat).getByText("42%")).toBeInTheDocument()
     expect(seat).toHaveAttribute("title", "Claude — 42%")
   })
@@ -159,7 +160,7 @@ describe("UsageLimitsBar — the ring row", () => {
         providers: [liveProvider({ windows: [liveWindow({ usedPercent: null })] })],
       }),
     })
-    const seat = screen.getByRole("button", { name: "Claude, no stated figure" })
+    const seat = screen.getByRole("img", { name: "Claude, no stated figure" })
     expect(within(seat).getByText("—")).toBeInTheDocument()
   })
 })
@@ -177,7 +178,6 @@ describe("UsageLimitsBar — the disclosure", () => {
         expanded
         onToggleExpanded={vi.fn()}
         refreshing={false}
-        onViewAll={vi.fn()}
       />,
     )
     const open = screen.getByRole("button", { name: "Collapse usage limits" })
@@ -188,9 +188,7 @@ describe("UsageLimitsBar — the disclosure", () => {
 
   it("drops the ring row and moves the disclosure beside the first provider", () => {
     bar({ expanded: true })
-    expect(
-      screen.queryByRole("button", { name: "Claude at 42 percent" }),
-    ).not.toBeInTheDocument()
+    expect(screen.queryByRole("img", { name: "Claude at 42 percent" })).not.toBeInTheDocument()
     const region = screen.getByRole("region", { name: "Usage limits" })
     const group = within(region).getByRole("group", { name: "Claude" })
     const providerRow = within(group).getByRole("heading").parentElement
@@ -222,7 +220,6 @@ describe("UsageLimitsBar — the disclosure", () => {
         expanded
         onToggleExpanded={vi.fn()}
         refreshing={false}
-        onViewAll={vi.fn()}
       />,
     )
     const open = screen.getByRole("button", { name: "Collapse usage limits" })
@@ -269,7 +266,6 @@ describe("UsageLimitsBar — the disclosure", () => {
         expanded
         onToggleExpanded={vi.fn()}
         refreshing={false}
-        onViewAll={vi.fn()}
       />,
     )
 
@@ -281,7 +277,6 @@ describe("UsageLimitsBar — the disclosure", () => {
         expanded
         onToggleExpanded={vi.fn()}
         refreshing={false}
-        onViewAll={vi.fn()}
       />,
     )
     expect(screen.getByRole("group", { name: "Google" })).toBe(accountA)
@@ -474,7 +469,7 @@ describe("UsageLimitsBar — degraded state", () => {
         ],
       }),
     })
-    expect(screen.getByRole("button", { name: /Claude at 42 percent/ })).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: /Claude at 42 percent/ })).toBeInTheDocument()
     expect(screen.getByTestId("usage-limits-unavailable")).toHaveAccessibleName(
       "Codex, usage unavailable (unreachable)",
     )
@@ -491,7 +486,7 @@ describe("UsageLimitsBar — grace period", () => {
         errors: [sourceError()],
       }),
     })
-    const seat = screen.getByRole("button", { name: `Claude at 42 percent. ${GRACE_NOTE}` })
+    const seat = screen.getByRole("img", { name: `Claude at 42 percent. ${GRACE_NOTE}` })
     expect(seat).toHaveAttribute("title", `Claude — 42% — ${GRACE_NOTE}`)
     const figureWrapper = within(seat).getByText("42%").closest('span[aria-hidden="true"]')
     expect(figureWrapper).toHaveClass("text-label-tertiary")
@@ -504,9 +499,7 @@ describe("UsageLimitsBar — grace period", () => {
         errors: [sourceError()],
       }),
     })
-    expect(
-      screen.queryByRole("button", { name: /Claude at 42 percent/ }),
-    ).not.toBeInTheDocument()
+    expect(screen.queryByRole("img", { name: /Claude at 42 percent/ })).not.toBeInTheDocument()
     const seat = screen.getByTestId("usage-limits-unavailable")
     expect(seat).toHaveAccessibleName("Claude, usage unavailable (rate limited)")
   })
@@ -533,7 +526,7 @@ describe("UsageLimitsBar — grace period", () => {
         errors: [sourceError()],
       }),
     })
-    expect(screen.getByRole("button", { name: /Claude at 42 percent/ })).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: /Claude at 42 percent/ })).toBeInTheDocument()
     expect(screen.queryByTestId("usage-limits-unavailable")).not.toBeInTheDocument()
   })
 })

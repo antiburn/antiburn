@@ -127,20 +127,11 @@ const WIDTH: f64 = 380.0;
 /// numbers differ.
 pub(crate) const CORNER_RADIUS: f64 = 10.0;
 
-/// Tallest the popover may ever get, in logical pixels.
-///
-/// Above the app-shell contract's 700. The Usage surface asks for it because a provider card carries
-/// the provider's own limits above the local estimates, and two vendors no
-/// longer fit in a window sized before that block existed.
-pub const MAX_HEIGHT: f64 = 780.0;
+/// Tallest the main popover may get, in logical pixels.
+pub const MAX_HEIGHT: f64 = 700.0;
 
-/// The height the window is created at, and the one the activity surface uses
-/// — so the resting state of the app is unchanged by the ceiling moving.
-///
-/// Kept at the contract's 700 deliberately. Only the surface that needed more
-/// room takes more room; growing the activity list is a separate decision and
-/// has not been made.
-pub const DEFAULT_HEIGHT: f64 = 700.0;
+/// The height the main popover uses when it opens.
+pub const DEFAULT_HEIGHT: f64 = MAX_HEIGHT;
 
 // This build check prevents the window from opening above its height ceiling.
 const _: () = assert!(MAX_HEIGHT >= DEFAULT_HEIGHT);

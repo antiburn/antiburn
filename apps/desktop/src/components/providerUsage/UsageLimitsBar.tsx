@@ -53,8 +53,6 @@ export interface UsageLimitsBarProps {
   onToggleExpanded: () => void
   /** Whether a refresh is in flight, for the small spinner beside the toggle. */
   refreshing: boolean
-  /** Open the full Usage view, from a provider pill. */
-  onViewAll: () => void
   /** Report provider hover for a passive companion preview. */
   onHoverProvider?: (provider: string | null, anchor: AnchorRegion | null) => void
   /** The provider trigger retained by the active companion lifecycle. */
@@ -86,7 +84,6 @@ export function UsageLimitsBar({
   expanded,
   onToggleExpanded,
   refreshing,
-  onViewAll,
   onHoverProvider,
   activeProvider,
 }: UsageLimitsBarProps) {
@@ -129,7 +126,6 @@ export function UsageLimitsBar({
                 provider={reading}
                 displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
                 status={liveProviderStatus(live, reading)}
-                onOpen={onViewAll}
                 onHover={onHoverProvider}
                 activation={
                   activeProvider?.provider === reading.provider
@@ -316,22 +312,19 @@ function ProviderGroup({
 }
 
 /**
- * One provider's worst-window reading, as a ring and percentage. A click
- * opens the full Usage view. The review removed the separate "Show All…"
- * text button, so the radial and figure form the entry point.
+ * One provider's worst-window reading, as a ring and percentage. The radial
+ * anchors the passive Usage preview while the pointer rests on it.
  */
 function ProviderRadial({
   provider,
   displayName,
   status,
-  onOpen,
   onHover,
   activation,
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
   status: LiveProviderStatus
-  onOpen?: (() => void) | undefined
   onHover?: ((provider: string | null, anchor: AnchorRegion | null) => void) | undefined
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
@@ -349,16 +342,16 @@ function ProviderRadial({
   }`
   const ariaLabel = graceNote ? `${baseLabel}. ${graceNote}` : baseLabel
   return (
-    <button
-      type="button"
-      onClick={onOpen}
+    <div
+      role="img"
+      tabIndex={0}
       onMouseEnter={(event) =>
         onHover?.(provider.provider, measureAnchorRegion(event.currentTarget))
       }
       onMouseLeave={() => onHover?.(null, null)}
       data-state={activation ?? "idle"}
       title={title}
-      className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
+      className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-[background-color] duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
       aria-label={ariaLabel}
     >
       <UsageRing
@@ -377,7 +370,7 @@ function ProviderRadial({
       >
         <SegmentFigure>{percent != null ? `${Math.round(percent)}%` : "—"}</SegmentFigure>
       </span>
-    </button>
+    </div>
   )
 }
 
