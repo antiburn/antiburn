@@ -151,7 +151,10 @@ describe("SessionDetailPresentation — chrome", () => {
     view({ cost: cost() })
     expect(screen.getByText("Fix the flaky test")).toBeTruthy()
     expect(screen.getByText("In")).toBeTruthy()
-    expect(screen.getByRole("tab", { name: /^Cost/ })).toBeTruthy()
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Context",
+      "Cost",
+    ])
   })
 
   it("renders only assessed hygiene checks", () => {
@@ -651,7 +654,7 @@ describe("SessionDetailPresentation — session facts", () => {
     expect(screen.getByText("In")).toBeTruthy()
   })
 
-  it("shows Skills, MCPs and tools on the Tools tab when the session has initial context", () => {
+  it("shows Skills, MCPs and tools on the Cost tab when the session has initial context", () => {
     const withContext = summary({
       sessions: [
         metrics({
@@ -669,12 +672,12 @@ describe("SessionDetailPresentation — session facts", () => {
       ],
     })
     const { unmount } = view({ summary: withContext })
-    fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
     expect(screen.getByText("research")).toBeTruthy()
     unmount()
 
     view({ summary: summary() })
-    fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
     expect(screen.queryByText("research")).toBeNull()
     expect(
       screen.getByText("No startup context has been recorded for this session."),

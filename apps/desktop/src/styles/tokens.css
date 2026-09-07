@@ -101,6 +101,11 @@
   /* Session-analysis chart tokens are theme-adaptive too and live in
    * ./session-analysis-colors.css. */
 
+  /* The container width where a session-detail tab panel lays its blocks in
+     two columns. Tailwind registers `--container-*`, so this becomes the
+     `@session-wide:` container-query variant. */
+  --container-session-wide: 40rem;
+
   /* Corner radii */
   --radius-control: 5px;
   --radius-popover: 10px;

@@ -238,14 +238,17 @@ function RelationControl({
   )
 }
 
-/** The three views of one session's analysis. */
-type SessionDetailTab = "overview" | "cost" | "tools"
+/** The two views of one session's analysis. */
+type SessionDetailTab = "overview" | "cost"
 
 const DETAIL_TABS: ReadonlyArray<{ value: SessionDetailTab; label: string }> = [
   { value: "overview", label: "Context" },
   { value: "cost", label: "Cost" },
-  { value: "tools", label: "Tools" },
 ]
+
+/* A tab panel lays its blocks in two columns when the container is at least
+   the session-wide width. Tailwind reads the size from --container-session-wide
+   in tokens.css, so every rule here is a `@session-wide:` variant. */
 
 /** The name of one block inside a tab that holds more than one block. */
 function TabSectionHeading({ children }: { children: string }) {
@@ -814,29 +817,32 @@ export function SessionDetailPresentation({
               id="session-detail-tabs-panel"
               role="tabpanel"
               aria-labelledby={`session-detail-tabs-${tab}`}
-              className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
+              className="@container min-h-0 flex-1 overflow-y-auto px-4 py-4"
             >
               {/* The chart takes every pixel the key leaves, so the tab
-                  never ends in empty space. */}
+                  never ends in empty space. A wide panel moves the
+                  composition to a side column, so the chart keeps the height. */}
               {tab === "overview" && tokensCard && (
-                <div className="flex h-full flex-col gap-y-3">
-                  <div className="min-h-0 flex-1">
-                    <ContextTokensChart
-                      buckets={summary.buckets}
-                      contextWindow={summary.contextAvailable ? summary.contextWindow : null}
-                      activeSecs={summary.avgActiveSecs}
-                      highlight={highlight}
+                <div className="flex h-full flex-col gap-y-3 @session-wide:flex-row @session-wide:gap-x-6">
+                  <div className="flex min-h-0 flex-1 flex-col gap-y-3">
+                    <div className="min-h-0 flex-1">
+                      <ContextTokensChart
+                        buckets={summary.buckets}
+                        contextWindow={summary.contextAvailable ? summary.contextWindow : null}
+                        activeSecs={summary.avgActiveSecs}
+                        highlight={highlight}
+                      />
+                    </div>
+                    <ChartKey
+                      stats={chartKeyStats}
+                      pinned={pinned}
+                      onHighlight={setHovered}
+                      onPin={togglePin}
                     />
                   </div>
-                  <ChartKey
-                    stats={chartKeyStats}
-                    pinned={pinned}
-                    onHighlight={setHovered}
-                    onPin={togglePin}
-                  />
                   {/* The composition says what the context above cost. */}
                   {efficiencyCard && (
-                    <div className="border-t border-separator pt-3">
+                    <div className="border-t border-separator pt-3 @session-wide:w-90 @session-wide:shrink-0 @session-wide:border-t-0 @session-wide:border-l @session-wide:pt-0 @session-wide:pl-6">
                       <EfficiencyBreakdown metrics={efficiencyCard} section="composition" />
                     </div>
                   )}
@@ -844,72 +850,78 @@ export function SessionDetailPresentation({
               )}
 
               {/* The checks lead: a failing check is more use than the cost
-                  rows most of the time. */}
+                  rows most of the time. A wide panel puts checks and cost in
+                  the left column, tools and efficiency in the right. */}
               {tab === "cost" && (
-                <div className="flex min-h-full flex-col">
-                  {hasAssessedHygieneChecks && (
-                    <section>
-                      <TabSectionHeading>Checks</TabSectionHeading>
-                      <HygieneBreakdown checks={hygieneChecks} collapsePassing={false} />
-                    </section>
-                  )}
-                  <section
-                    className={cn(
-                      hasAssessedHygieneChecks && "mt-4 border-t border-separator pt-4",
-                      efficiencyCard && "pb-4",
+                <div className="flex min-h-full flex-col @session-wide:flex-row @session-wide:gap-x-6">
+                  <div className="flex flex-col @session-wide:flex-1">
+                    {hasAssessedHygieneChecks && (
+                      <section>
+                        <TabSectionHeading>Checks</TabSectionHeading>
+                        <HygieneBreakdown checks={hygieneChecks} collapsePassing={false} />
+                      </section>
                     )}
-                  >
-                    <TabSectionHeading>Cost</TabSectionHeading>
-                    {cost && tokensCard ? (
-                      <CostBreakdown
-                        cost={cost}
-                        split={tokensCard.split}
-                        onOpenSubagent={onOpenSubagent}
-                      />
-                    ) : (
-                      <p className="type-callout text-label-tertiary">
-                        No cost has been recorded for this session.
-                      </p>
-                    )}
-                  </section>
-                  {/* The $/MTok scale closes the money story. It sits at the
-                      foot of the tab, so a short tab keeps its slack between
-                      the cost rows and the scale, not after the scale. */}
-                  {efficiencyCard && (
-                    <section className="mt-auto border-t border-separator pt-4">
-                      <TabSectionHeading>Efficiency</TabSectionHeading>
-                      <EfficiencyBreakdown metrics={efficiencyCard} section="cost" />
+                    <section
+                      className={cn(
+                        hasAssessedHygieneChecks && "mt-4 border-t border-separator pt-4",
+                      )}
+                    >
+                      <TabSectionHeading>Cost</TabSectionHeading>
+                      {cost && tokensCard ? (
+                        <CostBreakdown
+                          cost={cost}
+                          split={tokensCard.split}
+                          onOpenSubagent={onOpenSubagent}
+                        />
+                      ) : (
+                        <p className="type-callout text-label-tertiary">
+                          No cost has been recorded for this session.
+                        </p>
+                      )}
                     </section>
-                  )}
+                  </div>
+                  <div className="flex flex-1 flex-col @session-wide:border-l @session-wide:border-separator @session-wide:pl-6">
+                    <section className="mt-4 border-t border-separator pt-4 pb-4 @session-wide:mt-0 @session-wide:border-t-0 @session-wide:pt-0">
+                      <TabSectionHeading>Tools</TabSectionHeading>
+                      {firstSession?.initialContext ? (
+                        <div className="flex flex-col gap-y-2">
+                          {/* The wasted tokens are the finding of this block,
+                              so they head the table they summarize. The figure
+                              has no ceiling, so it is a headline and not a
+                              meter. */}
+                          {toolsUsage != null && toolsUsage.wastedTokens > 0 && (
+                            <p className="my-1 flex items-center gap-x-3">
+                              <span className="type-large-title font-semibold! text-brand tabular-nums">
+                                {formatCompact(toolsUsage.wastedTokens)}
+                              </span>
+                              <span className="flex flex-col type-callout leading-tight">
+                                <span className="font-semibold text-label">tokens burned</span>
+                                <span className="text-label-secondary">
+                                  by items loaded but never called in this session
+                                </span>
+                              </span>
+                            </p>
+                          )}
+                          <SkillsMcpChart breakdown={firstSession.initialContext} />
+                        </div>
+                      ) : (
+                        <p className="type-callout text-label-tertiary">
+                          No startup context has been recorded for this session.
+                        </p>
+                      )}
+                    </section>
+                    {/* The $/MTok scale closes the money story. It sits at the
+                        foot of the tab, so a short tab keeps its slack between
+                        the tools and the scale, not after the scale. */}
+                    {efficiencyCard && (
+                      <section className="mt-auto border-t border-separator pt-4">
+                        <TabSectionHeading>Efficiency</TabSectionHeading>
+                        <EfficiencyBreakdown metrics={efficiencyCard} section="cost" />
+                      </section>
+                    )}
+                  </div>
                 </div>
               )}
-
-              {tab === "tools" &&
-                (firstSession?.initialContext ? (
-                  <div className="flex flex-col gap-y-2">
-                    {/* The wasted tokens are the finding of this tab, so they
-                        head the table they summarize. The figure has no
-                        ceiling, so it is a headline and not a meter. */}
-                    {toolsUsage != null && toolsUsage.wastedTokens > 0 && (
-                      <p className="my-1 flex items-center gap-x-3">
-                        <span className="type-large-title font-semibold! text-brand tabular-nums">
-                          {formatCompact(toolsUsage.wastedTokens)}
-                        </span>
-                        <span className="flex flex-col type-callout leading-tight">
-                          <span className="font-semibold text-label">tokens burned</span>
-                          <span className="text-label-secondary">
-                            by items loaded but never called in this session
-                          </span>
-                        </span>
-                      </p>
-                    )}
-                    <SkillsMcpChart breakdown={firstSession.initialContext} />
-                  </div>
-                ) : (
-                  <p className="type-callout text-label-tertiary">
-                    No startup context has been recorded for this session.
-                  </p>
-                ))}
             </div>
           </>
         )}

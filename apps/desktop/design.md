@@ -267,6 +267,7 @@ sizes:
   # Raw CSS geometry vars in src/styles/tokens.css :root. Not @theme-registered, so
   # consume them as arbitrary values, e.g. w-[var(--sidebar-width)].
   --sidebar-width: 220px # source-list / sidebar width for multi-pane windows (36px rows)
+  --container-session-wide: 40rem # @theme-registered container size; a session-detail tab panel at least this wide lays out in two columns, via the `@session-wide:` variant
   --control-height-regular: 22px # ui-push-button, dropdown triggers, inputs
   --control-height-small: 17px # compact control variant
   # Spacing rhythm vars (multiples of 4); mirrors `spacing` above.
