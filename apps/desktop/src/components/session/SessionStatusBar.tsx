@@ -15,7 +15,7 @@ export interface SessionStatusBarProps {
   evidenceState?: SessionHygieneEvidenceState
   /** Display values for the cost figure; omit when nothing priced the session. */
   cost?: SessionCostBadgeProps | null | undefined
-  /** A null percent shows an unavailable estimate. An omitted badge uses the cost. */
+  /** A null percent shows the missing limit label. An omitted badge uses the cost. */
   limitBadge?:
     | {
         label: string
@@ -206,7 +206,7 @@ export function SessionStatusBar({
               aria-label={limitBadge.label}
               tabIndex={0}
             >
-              unavailable
+              no limit
             </span>
           </Tooltip>
         ) : (
