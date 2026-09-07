@@ -2,6 +2,11 @@
 
 > Tiny, fast, local burn checks for all your coding sessions.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/3369144d-61b0-4b94-8373-41f2541cba95" />
+  <img width="2680" height="1640" alt="antiburn: the popover with live limit meters and today's sessions, a session's context chart with a compaction, and its cost and tools breakdowns" src="https://github.com/user-attachments/assets/d1c1404e-4e6e-4ef3-8dbd-726150888e3d" />
+</picture>
+
 [![License](https://img.shields.io/github/license/antiburn/antiburn)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-informational)](docs/support.md)
 [![Release](https://img.shields.io/github/v/release/antiburn/antiburn?filter=antiburn-v*)](https://github.com/antiburn/antiburn/releases/latest)
