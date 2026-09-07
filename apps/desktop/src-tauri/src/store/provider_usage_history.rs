@@ -13,6 +13,7 @@ use crate::provider_usage::live::model::{
 };
 
 use super::Store;
+use super::provider_usage_ledger::enqueue_in;
 
 const RESET_JITTER_SECS: i64 = 5;
 const RETENTION_DAYS: i64 = 90;
@@ -137,9 +138,15 @@ impl Store {
             }
         }
 
-        tx.commit()?;
         changed_periods.sort_unstable();
         changed_periods.dedup();
+        let requested_at_epoch = snapshots
+            .iter()
+            .map(|snapshot| snapshot.observed_at.unix_timestamp())
+            .max()
+            .unwrap_or(0);
+        enqueue_in(&tx, &changed_periods, requested_at_epoch)?;
+        tx.commit()?;
         Ok(changed_periods)
     }
 
@@ -198,8 +205,7 @@ impl Store {
 
     /// Remove expired readings and orphaned periods.
     ///
-    /// The current schema removes periods after their last reading expires.
-    /// A future allocation migration must add its reference guard here.
+    /// Retain period metadata while a compact allocation still references it.
     pub(crate) fn apply_provider_usage_retention_in(
         connection: &Connection,
         retention_days: i32,
@@ -219,7 +225,15 @@ impl Store {
               WHERE NOT EXISTS (
                     SELECT 1 FROM provider_usage_observation
                      WHERE provider_usage_observation.period_id = provider_usage_period.id
-              )",
+              )
+                AND NOT EXISTS (
+                    SELECT 1 FROM provider_usage_session_allocation
+                     WHERE provider_usage_session_allocation.period_id = provider_usage_period.id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM provider_usage_allocation_dirty
+                     WHERE provider_usage_allocation_dirty.period_id = provider_usage_period.id
+                )",
             [],
         )?;
         Ok(removed)

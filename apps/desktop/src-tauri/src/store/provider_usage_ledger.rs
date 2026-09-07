@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use rusqlite::{Transaction, params, params_from_iter};
+use rusqlite::{OptionalExtension, Transaction, params, params_from_iter};
 
 use super::SessionKey;
 
@@ -84,6 +84,17 @@ impl super::Store {
     ) -> Result<()> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
+        let current = tx
+            .query_row(
+                "SELECT generation FROM provider_usage_allocation_dirty WHERE period_id = ?1",
+                [period_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if current != Some(generation) {
+            tx.commit()?;
+            return Ok(());
+        }
         replace_in(&tx, period_id, allocations, computed_at_epoch)?;
         tx.commit()?;
         Ok(())
@@ -106,6 +117,21 @@ impl super::Store {
             params![period_id, generation],
         )?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Acknowledge a deleted period without writing a contribution row.
+    pub fn acknowledge_provider_usage_allocation_period(
+        &self,
+        period_id: i64,
+        generation: i64,
+    ) -> Result<()> {
+        let connection = self.lock();
+        connection.execute(
+            "DELETE FROM provider_usage_allocation_dirty
+              WHERE period_id = ?1 AND generation = ?2",
+            params![period_id, generation],
+        )?;
         Ok(())
     }
 

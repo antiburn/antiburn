@@ -1386,6 +1386,10 @@ impl Store {
         tx.execute("DELETE FROM session_coverage", [])?;
         tx.execute("DELETE FROM source_resume", [])?;
         tx.execute("DELETE FROM turn", [])?;
+        tx.execute("DELETE FROM provider_usage_allocation_dirty", [])?;
+        tx.execute("DELETE FROM provider_usage_session_allocation", [])?;
+        tx.execute("DELETE FROM provider_usage_observation", [])?;
+        tx.execute("DELETE FROM provider_usage_period", [])?;
         let sessions = tx.execute("DELETE FROM session", [])?;
         tx.execute("DELETE FROM provider_account_seen", [])?;
         tx.execute("DELETE FROM provider_usage_observation", [])?;

@@ -10,12 +10,9 @@ use crate::store::Store;
 /// store lock; unclaimed rows remain in the durable queue for the next pass.
 const PERIOD_BATCH: usize = 8;
 
-/// Queue changed provider periods and materialize one bounded batch.
+/// Materialize one bounded batch after durable ingestion already queued it.
 pub fn enqueue_and_reconcile(store: &Store, period_ids: &[i64], now_epoch: i64) {
-    if let Err(error) = store.enqueue_provider_usage_allocation_periods(period_ids, now_epoch) {
-        ::tracing::warn!(event = "provider_usage_allocation_enqueue_failed", error = %error);
-        return;
-    }
+    let _ = (period_ids, now_epoch);
     reconcile(store, now_epoch);
 }
 
@@ -40,10 +37,23 @@ fn reconcile_period(
 ) -> anyhow::Result<()> {
     let period_id = dirty.period_id;
     let Some(history) = store.provider_usage_period_history(period_id)? else {
-        return Ok(());
+        return store.acknowledge_provider_usage_allocation_period(period_id, dirty.generation);
     };
+    if history.observations.is_empty() {
+        return store.replace_provider_usage_period_allocations_and_ack(
+            period_id,
+            dirty.generation,
+            &[],
+            now_epoch,
+        );
+    }
     let Some(reset) = history.period.resets_at_epoch else {
-        return Ok(());
+        return store.replace_provider_usage_period_allocations_and_ack(
+            period_id,
+            dirty.generation,
+            &[],
+            now_epoch,
+        );
     };
     let duration = history.period.duration_seconds.unwrap_or_else(|| {
         if history.period.window_kind == "weekly" {
@@ -58,7 +68,12 @@ fn reconcile_period(
         reset.saturating_mul(1_000),
     )?;
     let Some((_, mut allocations)) = allocation::estimate_period(turns, &history) else {
-        return Ok(());
+        return store.replace_provider_usage_period_allocations_and_ack(
+            period_id,
+            dirty.generation,
+            &[],
+            now_epoch,
+        );
     };
     if history
         .observations

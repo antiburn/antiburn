@@ -259,7 +259,6 @@ export class PopoverSession {
   private liveUsageRevision = 0
   private sessionLimitAllocationRequested = 0
   private sessionLimitAllocationRefresh: Promise<void> | null = null
-  private sessionLimitAllocationExpiryTimer: ReturnType<typeof setTimeout> | null = null
   private initialContentReady = false
   private contentReadyReportedGeneration: number | null = null
   private contentReadyReportInFlightGeneration: number | null = null
@@ -475,7 +474,6 @@ export class PopoverSession {
     this.stopLiveUsageListening = null
     this.stopNowTicking()
     this.stopUsagePolling()
-    this.stopSessionLimitAllocationExpiryTimer()
     this.checksRefreshQueued = false
     const checksConsumerId = this.checksConsumerId
     this.checksConsumerId = null
@@ -941,16 +939,6 @@ export class PopoverSession {
       }
       completed = target
     }
-  }
-
-  private scheduleSessionLimitAllocationExpiry(): void {
-    this.stopSessionLimitAllocationExpiryTimer()
-  }
-
-  private stopSessionLimitAllocationExpiryTimer(): void {
-    if (this.sessionLimitAllocationExpiryTimer === null) return
-    clearTimeout(this.sessionLimitAllocationExpiryTimer)
-    this.sessionLimitAllocationExpiryTimer = null
   }
 
   private refreshRepositoryList = async (): Promise<void> => {

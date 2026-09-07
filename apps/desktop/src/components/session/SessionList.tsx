@@ -429,7 +429,6 @@ export function SessionList({
   sessionLimitAllocations,
   onLimitBadgeHover,
 }: SessionListProps) {
-  const currentTime = now?.getTime() ?? Date.now()
   const fiveHourAvailable =
     badgeMetric === "fiveHourPercent" ||
     hasDisplayedFiveHourWindow(liveUsage) ||
