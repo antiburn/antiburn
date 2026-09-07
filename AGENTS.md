@@ -44,6 +44,40 @@ Write code comments in ASD-STE100 Simplified Technical English:
 - Keep identifiers and API names unchanged.
 - Add a comment only when it states important information the code cannot show.
 
+## Product analytics
+
+For each user-facing feature or behavior change, state the product question and
+how analytics answers it. Cover discovery, meaningful use, and the result where
+each matters. Add missing coverage in the same change, or explain why existing
+events suffice or measurement is not useful. Do not add events just to count
+every click.
+
+Read [docs/analytics.md](docs/analytics.md) before instrumentation work. Follow
+the measurement definitions and event review contract in
+[docs/analytics-measurement.md](docs/analytics-measurement.md).
+
+- Use the shell's analytics module and closed Rust event and interaction types.
+  Keep analytics out of the local engine. Do not add generic tracking maps,
+  arbitrary strings, or third-party analytics SDKs.
+- Record user intent in its event handler and results at the boundary that
+  knows the outcome. Record views after actual visibility. Do not add a React
+  effect or count rendering, prewarming, polling, retries, or automatic restores
+  as deliberate use.
+- Define each event's trigger, allowed properties, owner, and duplicate or rate
+  limit rule. Distinguish attempts from success and background work from use.
+- Preserve opt-out, identifier rotation, inert unconfigured builds, bounded
+  queues, and silent failure. Never send work content, local identifiers,
+  paths, credentials, raw errors, or unreviewed setting values.
+- Update the public event catalog and affected privacy disclosures in the same
+  change. Changes to existing event meanings also require documentation and a
+  version boundary for analysis.
+- Test the trigger and outcome, duplicate suppression, rejected properties, and
+  disabled behavior as relevant. Run the analytics-enabled shell checks listed
+  in `CONTRIBUTING.md`; default Cargo checks omit most analytics code.
+
+Include the analytics coverage and validation in the pull request. Documentation,
+styling, and internal refactors can state that measurement is unchanged.
+
 ## Tests and commits
 
 Run the relevant formatter, linter, type checks, and tests for every change. Use
