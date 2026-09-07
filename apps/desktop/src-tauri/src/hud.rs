@@ -5,6 +5,7 @@
 //! owns where the HUD's remembered position is kept, and the watcher that
 //! reacts when a display connects or disconnects.
 
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
 use antiburn_hud::Placement;
@@ -25,6 +26,7 @@ const PLACEMENTS_VERSION: u32 = 1;
 const MAX_PLACEMENTS: usize = 8;
 
 /// How often the watcher looks for a change in the connected displays.
+#[cfg(target_os = "macos")]
 const DISPLAY_POLL: Duration = Duration::from_secs(2);
 
 /// The stored value: remembered placements, newest display first.
