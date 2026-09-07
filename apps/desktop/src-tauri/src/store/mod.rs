@@ -25,6 +25,7 @@ pub mod model;
 pub(crate) mod provider_usage_history;
 pub(crate) mod provider_usage_ledger;
 mod schema;
+pub(crate) mod usage_backfill;
 
 #[cfg(test)]
 mod privacy_tests;
