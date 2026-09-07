@@ -701,13 +701,36 @@ pub(crate) async fn try_run_pass(
     // all is an analytics question, and this scheduler runs a full pass every
     // five minutes plus a scoped pass on every watcher burst. `None` is a
     // failure, which travels as a bare category — an error string can hold a
-    // path.
-    crate::analytics::record_scan(
-        app,
+    // path. Only a full pass counts every session on the install, so only a
+    // full pass may report. See [`scan_report`].
+    if let Some(report) = scan_report(
+        &scope,
         outcome.as_ref().ok().map(|summary| summary.sessions as u64),
-    );
+    ) {
+        crate::analytics::record_scan(app, report);
+    }
     crate::notifications::note_scan_outcome(app, &finished);
     Some(finished)
+}
+
+/// Decide whether a finished pass should reach analytics, and with what count.
+///
+/// A full pass counts every session on the install. A scoped pass (T3/T5, a
+/// watcher-burst retry of a handful of agents) counts only those agents, so
+/// its number is not comparable to a full pass's number. Reporting it made
+/// the bucket flap between the full total and a small scoped count on every
+/// burst, which produced about 90% of all analytics events. A scoped pass
+/// therefore reports nothing, on success or on failure: a scoped failure
+/// must not flip the last-reported outcome to `scan_failed` either.
+///
+/// `outcome` is the pass's session count, or `None` for a failed pass — the
+/// same shape [`crate::analytics::record_scan`] takes. The return value is
+/// `None` when nothing should be reported, or `Some(outcome)` to pass on.
+fn scan_report(scope: &PassScope, outcome: Option<u64>) -> Option<Option<u64>> {
+    match scope {
+        PassScope::Full => Some(outcome),
+        PassScope::Agents(_) => None,
+    }
 }
 
 /// Log `scan_pass_requested`. Every call to [`run_pass`] gets one, whether it
