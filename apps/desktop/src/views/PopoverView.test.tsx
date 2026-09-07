@@ -539,12 +539,10 @@ describe("PopoverView", () => {
     expect(
       invoke.mock.calls.filter(([command]) => command === "list_recent_sessions"),
     ).toHaveLength(listCallsBefore)
-    await waitFor(() =>
-      expect(
-        invoke.mock.calls.filter(([command]) => command === "get_session_limit_allocations")
-          .length,
-      ).toBeGreaterThan(allocationCallsBefore),
-    )
+    await act(async () => Promise.resolve())
+    expect(
+      invoke.mock.calls.filter(([command]) => command === "get_session_limit_allocations"),
+    ).toHaveLength(allocationCallsBefore)
   })
 
   it("keeps a row's high-cost flag after a sessions:entry-changed event replaces it", async () => {

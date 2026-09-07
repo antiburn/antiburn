@@ -201,6 +201,13 @@ const USAGE_REFRESH_MIN_MS = 30_000
  */
 const USAGE_VISIBLE_POLL_MS = 60_000
 
+/** Minimum spacing between cached session-allocation reads. */
+const SESSION_LIMIT_ALLOCATION_REFRESH_MIN_MS = 30_000
+
+function liveUsageActive(settings: AppSettings | null): boolean {
+  return Boolean(settings?.liveUsageEnabled && settings.onboardingCompleted)
+}
+
 /**
  * Order list rows the way the backend does: newest activity first, and a
  * revived session's own id breaking a tie. `listenSessionEntryChanged`
@@ -257,8 +264,11 @@ export class PopoverSession {
    */
   private pendingAnalysisRefresh = false
   private liveUsageRevision = 0
-  private sessionLimitAllocationRequested = 0
   private sessionLimitAllocationRefresh: Promise<void> | null = null
+  private sessionLimitAllocationRefreshPending = false
+  private sessionLimitAllocationRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  private lastSessionLimitAllocationRefreshAt = 0
+  private sessionLimitAllocationResultRevision = 0
   private initialContentReady = false
   private contentReadyReportedGeneration: number | null = null
   private contentReadyReportInFlightGeneration: number | null = null
@@ -474,6 +484,7 @@ export class PopoverSession {
     this.stopLiveUsageListening = null
     this.stopNowTicking()
     this.stopUsagePolling()
+    this.cancelSessionLimitAllocationRefresh()
     this.checksRefreshQueued = false
     const checksConsumerId = this.checksConsumerId
     this.checksConsumerId = null
@@ -525,13 +536,21 @@ export class PopoverSession {
       if (generation !== this.generation) return
       const previousDays = this.windowDays()
       const previousDisabled = (this.snapshot.settings?.disabledAgents ?? []).join(",")
+      const wasLiveUsageActive = liveUsageActive(this.snapshot.settings)
       applyTheme(settings.theme)
       this.update({ settings })
+      if (!liveUsageActive(settings)) {
+        this.cancelSessionLimitAllocationRefresh()
+      } else if (!wasLiveUsageActive && this.visible) {
+        this.requestSessionLimitAllocationRefresh(true)
+      }
       if (
         settings.activityWindowDays !== previousDays ||
         settings.disabledAgents.join(",") !== previousDisabled
       ) {
+        this.sessionLimitAllocationResultRevision += 1
         void this.refreshEntries(settings.activityWindowDays).catch(() => {})
+        this.requestSessionLimitAllocationRefresh(false, true)
       }
     })
     if (generation !== this.generation) {
@@ -550,6 +569,7 @@ export class PopoverSession {
       void this.refreshUsage()
       void this.refreshRepositoryList()
       void this.refreshChecks()
+      this.requestSessionLimitAllocationRefresh(false, true)
     })
     if (generation !== this.generation) {
       unlisten()
@@ -576,7 +596,7 @@ export class PopoverSession {
       if (generation !== this.generation) return
       this.patchOrRefetchEntry(entry)
       this.refreshOpenAnalysisIfMatching(entry)
-      void this.refreshSessionLimitAllocations()
+      this.requestSessionLimitAllocationRefresh(false, true)
       if (this.visible && Date.now() - this.lastUsageRefreshAt >= USAGE_REFRESH_MIN_MS) {
         this.lastUsageRefreshAt = Date.now()
         void this.refreshUsage()
@@ -768,6 +788,7 @@ export class PopoverSession {
       this.update({ now: Date.now() })
       this.syncNowTicking()
       this.startUsagePolling()
+      this.requestSessionLimitAllocationRefresh(true, true)
       if (this.initialContentReady) this.reportContentReady(true)
       void this.restoreFloatingHud(generation)
       void this.refreshEntries(this.windowDays()).catch(() => {})
@@ -788,8 +809,10 @@ export class PopoverSession {
     const unlisten = await onPopoverHidden(() => {
       if (generation !== this.generation) return
       this.visible = false
+      this.sessionLimitAllocationResultRevision += 1
       this.syncNowTicking()
       this.stopUsagePolling()
+      this.cancelSessionLimitAllocationRefresh()
     })
     if (generation !== this.generation) {
       unlisten()
@@ -841,7 +864,7 @@ export class PopoverSession {
       if (generation !== this.generation) return
       this.liveUsageRevision += 1
       this.update({ liveUsage })
-      void this.refreshSessionLimitAllocations()
+      this.requestSessionLimitAllocationRefresh()
     })
     if (generation !== this.generation) {
       unlisten()
@@ -877,7 +900,6 @@ export class PopoverSession {
 
   private loadCachedUsage = async (): Promise<void> => {
     const liveUsageRevision = this.liveUsageRevision
-    void this.refreshSessionLimitAllocations()
     const [usage, liveUsage] = await Promise.all([
       getProviderUsage().catch(() => EMPTY_PROVIDER_USAGE),
       getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
@@ -886,6 +908,7 @@ export class PopoverSession {
     if (liveUsageRevision === this.liveUsageRevision) {
       this.update({ liveUsage })
     }
+    this.requestSessionLimitAllocationRefresh(true, true)
   }
 
   private refreshUsage = async (): Promise<void> => {
@@ -909,36 +932,83 @@ export class PopoverSession {
           })
           .catch(() => undefined),
       ])
-      await this.refreshSessionLimitAllocations()
     } finally {
       this.usageRefreshCount -= 1
       this.update({ usageRefreshing: this.usageRefreshCount > 0 })
     }
   }
 
-  private refreshSessionLimitAllocations = (): Promise<void> => {
-    this.sessionLimitAllocationRequested += 1
-    if (!this.sessionLimitAllocationRefresh) {
-      this.sessionLimitAllocationRefresh = this.runSessionLimitAllocationRefreshes().finally(
-        () => {
-          this.sessionLimitAllocationRefresh = null
-        },
-      )
+  private requestSessionLimitAllocationRefresh(
+    immediate = false,
+    includeDisabledCache = false,
+  ): void {
+    if (
+      !this.started ||
+      !this.visible ||
+      (!includeDisabledCache && !liveUsageActive(this.snapshot.settings))
+    )
+      return
+    this.sessionLimitAllocationRefreshPending = true
+    if (immediate) this.lastSessionLimitAllocationRefreshAt = 0
+    if (immediate && this.sessionLimitAllocationRefreshTimer !== null) {
+      clearTimeout(this.sessionLimitAllocationRefreshTimer)
+      this.sessionLimitAllocationRefreshTimer = null
     }
-    return this.sessionLimitAllocationRefresh
+    if (this.sessionLimitAllocationRefresh || this.sessionLimitAllocationRefreshTimer !== null)
+      return
+    this.scheduleSessionLimitAllocationRefresh(immediate)
   }
 
-  private runSessionLimitAllocationRefreshes = async (): Promise<void> => {
-    let completed = 0
-    while (completed < this.sessionLimitAllocationRequested) {
-      const target = this.sessionLimitAllocationRequested
-      const generation = this.generation
-      const sessionLimitAllocations = await getSessionLimitAllocations().catch(() => null)
-      if (sessionLimitAllocations && generation === this.generation) {
-        this.update({ sessionLimitAllocations })
-      }
-      completed = target
+  private scheduleSessionLimitAllocationRefresh(immediate = false): void {
+    const delay = immediate
+      ? 0
+      : Math.max(
+          0,
+          this.lastSessionLimitAllocationRefreshAt +
+            SESSION_LIMIT_ALLOCATION_REFRESH_MIN_MS -
+            Date.now(),
+        )
+    if (delay > 0) {
+      this.sessionLimitAllocationRefreshTimer = setTimeout(() => {
+        this.sessionLimitAllocationRefreshTimer = null
+        this.runSessionLimitAllocationRefresh()
+      }, delay)
+      return
     }
+    this.runSessionLimitAllocationRefresh()
+  }
+
+  private runSessionLimitAllocationRefresh = (): void => {
+    if (!this.sessionLimitAllocationRefreshPending || !this.visible) return
+    this.sessionLimitAllocationRefreshPending = false
+    this.lastSessionLimitAllocationRefreshAt = Date.now()
+    const generation = this.generation
+    const resultRevision = this.sessionLimitAllocationResultRevision
+    this.sessionLimitAllocationRefresh = getSessionLimitAllocations()
+      .then((sessionLimitAllocations) => {
+        if (
+          generation === this.generation &&
+          this.visible &&
+          resultRevision === this.sessionLimitAllocationResultRevision
+        ) {
+          this.update({ sessionLimitAllocations })
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.sessionLimitAllocationRefresh = null
+        if (this.sessionLimitAllocationRefreshPending) {
+          this.scheduleSessionLimitAllocationRefresh()
+        }
+      })
+  }
+
+  private cancelSessionLimitAllocationRefresh(): void {
+    if (this.sessionLimitAllocationRefreshTimer !== null) {
+      clearTimeout(this.sessionLimitAllocationRefreshTimer)
+      this.sessionLimitAllocationRefreshTimer = null
+    }
+    this.sessionLimitAllocationRefreshPending = false
   }
 
   private refreshRepositoryList = async (): Promise<void> => {

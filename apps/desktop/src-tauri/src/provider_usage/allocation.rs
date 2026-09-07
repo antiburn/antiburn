@@ -341,6 +341,19 @@ fn distribute_window(
     samples: &[crate::provider_usage::live::metrics::UsageSample],
     basis: WeightBasis,
 ) -> (HashMap<SessionKey, f64>, bool) {
+    let (output, uses_history, _) =
+        distribute_window_with_work(turns, used_percent, start_ms, observed_ms, samples, basis);
+    (output, uses_history)
+}
+
+fn distribute_window_with_work(
+    turns: &[&WeightedTurn],
+    used_percent: f64,
+    start_ms: i64,
+    observed_ms: i64,
+    samples: &[crate::provider_usage::live::metrics::UsageSample],
+    basis: WeightBasis,
+) -> (HashMap<SessionKey, f64>, bool, usize) {
     let mut points: BTreeMap<_, _> = samples
         .iter()
         .filter(|sample| sample.freshness == Freshness::Fresh)
@@ -357,43 +370,53 @@ fn distribute_window(
     if points.len() < 2 || points.windows(2).any(|pair| pair[1].1 < pair[0].1) {
         let mut output = HashMap::new();
         distribute(turns.iter().copied(), used_percent, basis, &mut output);
-        return (output, false);
+        return (output, false, turns.len());
     }
 
+    let mut ordered = turns.to_vec();
+    ordered.sort_by_key(|turn| turn.at_ms);
     let mut output = HashMap::new();
-    let mut previous_at = start_ms.saturating_sub(1);
+    let mut interval_start = 0;
+    let mut interval_end = 0;
     let mut previous_percent = 0.0;
     let mut has_observation = false;
+    let mut turn_visits = 0;
     for (at, percent) in points {
+        while interval_end < ordered.len() && ordered[interval_end].at_ms <= at {
+            interval_end += 1;
+        }
         let delta = percent - previous_percent;
         if delta > 0.0 {
+            turn_visits += interval_end - interval_start;
             distribute(
-                turns
-                    .iter()
-                    .copied()
-                    .filter(|turn| turn.at_ms > previous_at && turn.at_ms <= at),
+                ordered[interval_start..interval_end].iter().copied(),
                 delta,
-                basis,
-                &mut output,
-            );
-        } else {
-            distribute_zero(
-                turns
-                    .iter()
-                    .copied()
-                    .filter(|turn| turn.at_ms > previous_at && turn.at_ms <= at),
                 basis,
                 &mut output,
             );
         }
         // Keep the first sample of a plateau. A later increase applies to all turns since that sample.
         if !has_observation || delta > 0.0 {
-            previous_at = at;
+            if delta <= 0.0 {
+                turn_visits += interval_end - interval_start;
+                distribute_zero(
+                    ordered[interval_start..interval_end].iter().copied(),
+                    basis,
+                    &mut output,
+                );
+            }
+            interval_start = interval_end;
             previous_percent = percent;
         }
         has_observation = true;
     }
-    (output, true)
+    turn_visits += interval_end - interval_start;
+    distribute_zero(
+        ordered[interval_start..interval_end].iter().copied(),
+        basis,
+        &mut output,
+    );
+    (output, true, turn_visits)
 }
 
 /// Estimate current weekly and five-hour shares from published local turns.

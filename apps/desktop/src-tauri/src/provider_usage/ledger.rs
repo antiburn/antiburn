@@ -14,12 +14,22 @@ const MAX_TURN_GROUPS: usize = 50_000;
 
 /// Materialize a small durable queue batch outside the popover read path.
 pub fn reconcile(store: &Store, now_epoch: i64) {
+    let Some(_in_flight) = store.try_begin_allocation_reconcile() else {
+        return;
+    };
     let Ok(periods) = store.provider_usage_allocation_dirty_periods(PERIOD_BATCH) else {
         ::tracing::warn!(event = "provider_usage_allocation_claim_failed");
         return;
     };
+    if periods.is_empty() {
+        return;
+    }
+    let Ok(reader) = store.open_allocation_reader() else {
+        ::tracing::warn!(event = "provider_usage_allocation_reader_failed");
+        return;
+    };
     for dirty in periods {
-        let result = reconcile_period(store, dirty, now_epoch);
+        let result = reconcile_period(store, reader.as_ref(), dirty, now_epoch);
         if let Err(error) = result {
             ::tracing::warn!(event = "provider_usage_allocation_reconcile_failed", error = %error);
         }
@@ -28,6 +38,7 @@ pub fn reconcile(store: &Store, now_epoch: i64) {
 
 fn reconcile_period(
     store: &Store,
+    reader: Option<&rusqlite::Connection>,
     dirty: crate::store::provider_usage_ledger::DirtyPeriod,
     now_epoch: i64,
 ) -> anyhow::Result<()> {
@@ -79,7 +90,8 @@ fn reconcile_period(
         );
     };
     let end_ms = observed_at_ms.saturating_add(1);
-    let Some(turns) = store.session_usage_turns_grouped_between(
+    let Some(turns) = store.session_usage_turns_grouped_between_with(
+        reader,
         start.saturating_mul(1_000),
         end_ms,
         &interval_ends,

@@ -905,6 +905,98 @@ fn an_initial_zero_starts_the_first_plateau() {
 }
 
 #[test]
+fn interval_boundaries_and_duplicate_observations_visit_each_turn_once() {
+    let start_ms = (NOW - 100) * 1_000;
+    let first_end_ms = (NOW - 60) * 1_000;
+    let observed_ms = NOW * 1_000;
+    let turns = [
+        WeightedTurn {
+            at_ms: start_ms,
+            ..weighted_turns(vec![turn("at-start", NOW - 100, 1_000_000, &[])]).remove(0)
+        },
+        WeightedTurn {
+            at_ms: first_end_ms,
+            ..weighted_turns(vec![turn("at-first-end", NOW - 60, 1_000_000, &[])]).remove(0)
+        },
+        WeightedTurn {
+            at_ms: first_end_ms + 1,
+            ..weighted_turns(vec![turn("after-first-end", NOW - 59, 1_000_000, &[])]).remove(0)
+        },
+        WeightedTurn {
+            at_ms: observed_ms,
+            ..weighted_turns(vec![turn("at-observed", NOW, 1_000_000, &[])]).remove(0)
+        },
+    ];
+    let refs: Vec<_> = turns.iter().rev().collect();
+    let samples = vec![
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 60).unwrap(),
+            used_percent: Some(7.0),
+            freshness: Freshness::Fresh,
+        },
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 60).unwrap(),
+            used_percent: Some(10.0),
+            freshness: Freshness::Fresh,
+        },
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW).unwrap(),
+            used_percent: Some(20.0),
+            freshness: Freshness::Fresh,
+        },
+    ];
+
+    let (shares, uses_history, turn_visits) = distribute_window_with_work(
+        &refs,
+        20.0,
+        start_ms,
+        observed_ms,
+        &samples,
+        WeightBasis::Price,
+    );
+
+    assert!(uses_history);
+    assert_eq!(turn_visits, turns.len());
+    for session in ["at-start", "at-first-end", "after-first-end", "at-observed"] {
+        assert_eq!(
+            shares[&SessionKey::new("native", "claude-code", session)],
+            5.0
+        );
+    }
+}
+
+#[test]
+fn long_plateaus_keep_turn_visits_linear_with_or_without_a_final_increase() {
+    let rows = (0..128)
+        .map(|index| turn(&format!("plateau-{index}"), NOW - 50, 1_000_000, &[]))
+        .collect();
+    let turns = weighted_turns(rows);
+    let refs: Vec<_> = turns.iter().collect();
+    let samples = (0..96)
+        .map(|index| UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 100 + index).unwrap(),
+            used_percent: Some(10.0),
+            freshness: Freshness::Fresh,
+        })
+        .collect::<Vec<_>>();
+
+    for used_percent in [10.0, 11.0] {
+        let (shares, uses_history, turn_visits) = distribute_window_with_work(
+            &refs,
+            used_percent,
+            (NOW - 200) * 1_000,
+            NOW * 1_000,
+            &samples,
+            WeightBasis::Price,
+        );
+
+        assert!(uses_history);
+        assert_eq!(turn_visits, turns.len());
+        assert!((shares.values().sum::<f64>() - (used_percent - 10.0)).abs() < 1e-9);
+    }
+}
+
+#[test]
 fn decreasing_history_falls_back_to_the_current_window_share() {
     let turns = weighted_turns(vec![
         turn("one", NOW - 90, 1_000_000, &[]),

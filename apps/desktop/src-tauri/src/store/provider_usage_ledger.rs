@@ -260,93 +260,104 @@ impl super::Store {
         if keys.is_empty() {
             return Ok(Vec::new());
         }
+        let reader = self.open_allocation_reader()?;
+        if let Some(reader) = reader.as_ref() {
+            return cumulative_session_limit_allocations_in(reader, keys);
+        }
         let connection = self.lock();
-        let mut clauses = Vec::with_capacity(keys.len());
-        let mut values = Vec::with_capacity(keys.len() * 3);
-        for key in keys.iter().take(500) {
-            clauses.push("(a.environment_key = ? AND a.agent = ? AND a.session_id = ?)");
-            values.push(rusqlite::types::Value::from(key.environment_key.clone()));
-            values.push(rusqlite::types::Value::from(key.agent.clone()));
-            values.push(rusqlite::types::Value::from(key.session_id.clone()));
-        }
-        let sql = format!(
-            "SELECT a.environment_key, a.agent, a.session_id, s.wsl_distro, a.metric,
-                    p.provider, p.account_key, p.window_id, a.percent, a.partial,
-                    a.period_id, p.starts_at_epoch, p.resets_at_epoch, p.duration_seconds,
-                    p.window_role, p.scope_key
-               FROM provider_usage_session_allocation a
-               JOIN provider_usage_period p ON p.id = a.period_id
-               JOIN session s ON s.environment_key = a.environment_key
-                 AND s.agent = a.agent AND s.session_id = a.session_id
-              WHERE {}",
-            clauses.join(" OR ")
-        );
-        let mut statement = connection.prepare(&sql)?;
-        let rows = statement
-            .query_map(params_from_iter(values), |row| {
-                Ok(PeriodContribution {
-                    allocation: CumulativeSessionAllocation {
-                        key: SessionKey::new(
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ),
-                        wsl_distro: row.get(3)?,
-                        metric: row.get(4)?,
-                        provider: row.get(5)?,
-                        account_key: row.get(6)?,
-                        window_id: row.get(7)?,
-                        percent: row.get(8)?,
-                        partial: row.get::<_, i64>(9)? != 0,
-                        period_count: 1,
-                    },
-                    period_id: row.get(10)?,
-                    starts_at_epoch: row.get(11)?,
-                    resets_at_epoch: row.get(12)?,
-                    duration_seconds: row.get(13)?,
-                    window_role: row.get(14)?,
-                    scope_key: row.get(15)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-
-        let mut by_account: HashMap<_, Vec<_>> = HashMap::new();
-        for contribution in rows {
-            let allocation = &contribution.allocation;
-            by_account
-                .entry((
-                    allocation.key.clone(),
-                    allocation.metric.clone(),
-                    allocation.provider.clone(),
-                    allocation.account_key.clone(),
-                ))
-                .or_default()
-                .push(contribution);
-        }
-
-        let mut best: HashMap<(SessionKey, String), CumulativeSessionAllocation> = HashMap::new();
-        for (_, contributions) in by_account {
-            let Some(allocation) = cumulative_lane_allocation(contributions) else {
-                continue;
-            };
-            let key = (allocation.key.clone(), allocation.metric.clone());
-            if best
-                .get(&key)
-                .is_none_or(|current| allocation.percent > current.percent)
-            {
-                best.insert(key, allocation);
-            }
-        }
-        let mut allocations: Vec<_> = best.into_values().collect();
-        allocations.sort_by(|left, right| {
-            left.key
-                .agent
-                .cmp(&right.key.agent)
-                .then_with(|| left.key.session_id.cmp(&right.key.session_id))
-                .then_with(|| left.metric.cmp(&right.metric))
-        });
-        Ok(allocations)
+        cumulative_session_limit_allocations_in(&connection, keys)
     }
+}
+
+fn cumulative_session_limit_allocations_in(
+    connection: &rusqlite::Connection,
+    keys: &[SessionKey],
+) -> Result<Vec<CumulativeSessionAllocation>> {
+    let mut clauses = Vec::with_capacity(keys.len());
+    let mut values = Vec::with_capacity(keys.len() * 3);
+    for key in keys.iter().take(500) {
+        clauses.push("(a.environment_key = ? AND a.agent = ? AND a.session_id = ?)");
+        values.push(rusqlite::types::Value::from(key.environment_key.clone()));
+        values.push(rusqlite::types::Value::from(key.agent.clone()));
+        values.push(rusqlite::types::Value::from(key.session_id.clone()));
+    }
+    let sql = format!(
+        "SELECT a.environment_key, a.agent, a.session_id, s.wsl_distro, a.metric,
+                p.provider, p.account_key, p.window_id, a.percent, a.partial,
+                a.period_id, p.starts_at_epoch, p.resets_at_epoch, p.duration_seconds,
+                p.window_role, p.scope_key
+           FROM provider_usage_session_allocation a
+           JOIN provider_usage_period p ON p.id = a.period_id
+           JOIN session s ON s.environment_key = a.environment_key
+             AND s.agent = a.agent AND s.session_id = a.session_id
+          WHERE {}",
+        clauses.join(" OR ")
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement
+        .query_map(params_from_iter(values), |row| {
+            Ok(PeriodContribution {
+                allocation: CumulativeSessionAllocation {
+                    key: SessionKey::new(
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ),
+                    wsl_distro: row.get(3)?,
+                    metric: row.get(4)?,
+                    provider: row.get(5)?,
+                    account_key: row.get(6)?,
+                    window_id: row.get(7)?,
+                    percent: row.get(8)?,
+                    partial: row.get::<_, i64>(9)? != 0,
+                    period_count: 1,
+                },
+                period_id: row.get(10)?,
+                starts_at_epoch: row.get(11)?,
+                resets_at_epoch: row.get(12)?,
+                duration_seconds: row.get(13)?,
+                window_role: row.get(14)?,
+                scope_key: row.get(15)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut by_account: HashMap<_, Vec<_>> = HashMap::new();
+    for contribution in rows {
+        let allocation = &contribution.allocation;
+        by_account
+            .entry((
+                allocation.key.clone(),
+                allocation.metric.clone(),
+                allocation.provider.clone(),
+                allocation.account_key.clone(),
+            ))
+            .or_default()
+            .push(contribution);
+    }
+
+    let mut best: HashMap<(SessionKey, String), CumulativeSessionAllocation> = HashMap::new();
+    for (_, contributions) in by_account {
+        let Some(allocation) = cumulative_lane_allocation(contributions) else {
+            continue;
+        };
+        let key = (allocation.key.clone(), allocation.metric.clone());
+        if best
+            .get(&key)
+            .is_none_or(|current| allocation.percent > current.percent)
+        {
+            best.insert(key, allocation);
+        }
+    }
+    let mut allocations: Vec<_> = best.into_values().collect();
+    allocations.sort_by(|left, right| {
+        left.key
+            .agent
+            .cmp(&right.key.agent)
+            .then_with(|| left.key.session_id.cmp(&right.key.session_id))
+            .then_with(|| left.metric.cmp(&right.metric))
+    });
+    Ok(allocations)
 }
 
 fn cumulative_lane_allocation(
