@@ -42,6 +42,7 @@ macro_rules! with_app_commands {
             commands::list_repositories => "list_repositories",
             commands::list_scan_roots => "list_scan_roots",
             commands::main_window_ready => "main_window_ready",
+            main_window::get_main_window_visible => "get_main_window_visible",
             commands::note_interaction => "note_interaction",
             commands::open_analytics_documentation => "open_analytics_documentation",
             commands::open_folder_access_settings => "open_folder_access_settings",

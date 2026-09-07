@@ -269,6 +269,7 @@ pub fn run() {
         // menu-bar item to unlight it. The popover itself is lazy, and its
         // dismissal path already treats a missing window as idle.
         global_click::install(app.handle());
+        main_window::install_visibility_observers(app.handle());
 
         // The HUD follows the desk it is on: a display that disconnects
         // sends it to one still connected, and the display coming back
@@ -513,6 +514,12 @@ fn defer_rebuild_after_destroy(app: &tauri::AppHandle, window: ManagedWindow) {
 
 /// Window policy shared by every window the shell creates.
 fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
+    if window.label() == main_window::LABEL
+        && matches!(event, WindowEvent::Focused(_) | WindowEvent::Resized(_))
+        && let Some(main_window) = window.app_handle().get_webview_window(main_window::LABEL)
+    {
+        main_window::emit_visibility_changed(&main_window);
+    }
     if let Some(manager) = window
         .app_handle()
         .try_state::<popover_peek::PopoverPeekManager>()
@@ -651,6 +658,17 @@ mod tests {
             "\"core:window:allow-start-dragging\"",
             "\"core:window:allow-internal-toggle-maximize\"",
             "\"allow-get-settings\"",
+            "\"allow-get-main-window-visible\"",
+            "\"allow-list-recent-sessions\"",
+            "\"allow-get-session-analysis\"",
+            "\"allow-get-subagent-analysis\"",
+            "\"allow-get-live-usage\"",
+            "\"allow-get-session-limit-allocations\"",
+            "\"allow-get-session-hygiene\"",
+            "\"allow-set-settings\"",
+            "\"allow-reveal-source\"",
+            "\"allow-delete-session-data\"",
+            "\"dialog:allow-confirm\"",
             "\"allow-main-window-ready\"",
         ] {
             assert!(capability.contains(expected), "missing {expected}");

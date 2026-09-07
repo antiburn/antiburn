@@ -505,6 +505,12 @@ export async function mainWindowReady(generation: number): Promise<void> {
   await invoke("main_window_ready", { generation })
 }
 
+/** Whether the retained main renderer can present work. */
+export async function getMainWindowVisible(): Promise<boolean> {
+  if (!hasShell()) return true
+  return invoke<boolean>("get_main_window_visible")
+}
+
 /** Tell the shell that the popover's initial activity and usage state settled. */
 export async function popoverContentReady(generation: number): Promise<void> {
   if (!hasShell()) return
@@ -1200,6 +1206,19 @@ export async function setNudgeHovered(hovered: boolean): Promise<void> {
  * ---------------------------------------------------------------------- */
 
 const noShellUnlisten: UnlistenFn = () => undefined
+
+/** Event the shell emits when the main renderer can start or stop presenting work. */
+export const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
+
+/** Subscribe to main-window presentation visibility. */
+export async function onMainWindowVisibilityChanged(
+  handler: (visible: boolean) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<boolean>(MAIN_WINDOW_VISIBILITY_CHANGED_EVENT, (event) =>
+    handler(event.payload),
+  )
+}
 
 /** Event names the scan emits. Mirrors `src-tauri/src/scan.rs`. */
 export const SCAN_EVENTS = {

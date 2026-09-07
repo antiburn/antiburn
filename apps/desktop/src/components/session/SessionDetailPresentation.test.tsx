@@ -721,3 +721,64 @@ describe("SessionDetailPresentation — host actions", () => {
     expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 14)
   })
 })
+
+describe("SessionDetailPresentation — embedded pane", () => {
+  it("omits popover chrome and Back while retaining session content", () => {
+    const { container } = view({ embedded: true, onBack: undefined })
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull()
+    expect(container.firstElementChild).not.toHaveClass("rounded-popover")
+    expect(screen.queryByText("Session Detail")).toBeNull()
+    expect(screen.getByRole("heading", { name: "Fix the flaky test" })).toBeTruthy()
+  })
+
+  it("limits adjacent navigation to the active detail pane", () => {
+    const onNext = vi.fn()
+    const props = presentationProps({ embedded: true, onNext })
+    const { container, rerender } = render(<SessionDetailPresentation {...props} />)
+    fireEvent.keyDown(window, { key: "ArrowRight" })
+    expect(onNext).not.toHaveBeenCalled()
+    fireEvent.keyDown(container.firstElementChild!, { key: "ArrowRight" })
+    expect(onNext).toHaveBeenCalledOnce()
+    rerender(<SessionDetailPresentation {...props} active={false} />)
+    fireEvent.keyDown(container.firstElementChild!, { key: "ArrowRight" })
+    expect(onNext).toHaveBeenCalledOnce()
+  })
+})
+
+describe("SessionDetailPresentation — deferred keyboard entry", () => {
+  it("accepts focus when a lazy detail replaces the focused loading pane", () => {
+    const { container, rerender } = render(<section data-detail-pane tabIndex={-1} />)
+    const pane = container.firstElementChild as HTMLElement
+    pane.focus()
+    rerender(
+      <section data-detail-pane tabIndex={-1}>
+        <SessionDetailPresentation {...presentationProps({ embedded: true })} />
+      </section>,
+    )
+    expect(container.querySelector("[data-detail-focus-target]")).toHaveFocus()
+  })
+})
+
+describe("SessionDetailPresentation — native drag toolbar", () => {
+  it("only enables the embedded macOS toolbar, leaving controls interactive", () => {
+    const agent = vi.spyOn(window.navigator, "userAgent", "get").mockReturnValue("Macintosh")
+    try {
+      const props = presentationProps()
+      const { container, rerender } = render(<SessionDetailPresentation {...props} />)
+      expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
+      rerender(<SessionDetailPresentation {...props} embedded />)
+      const toolbar = screen
+        .getByRole("heading", { name: "Fix the flaky test" })
+        .closest("[data-tauri-drag-region]")
+      expect(toolbar).toHaveAttribute("data-tauri-drag-region", "deep")
+      expect(screen.getByRole("button", { name: "Delete this session" })).not.toHaveAttribute(
+        "data-tauri-drag-region",
+      )
+      agent.mockReturnValue("Windows NT")
+      rerender(<SessionDetailPresentation {...props} embedded />)
+      expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
+    } finally {
+      agent.mockRestore()
+    }
+  })
+})

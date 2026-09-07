@@ -11,10 +11,8 @@ import {
   getLiveUsage,
   getProviderUsage,
   getSessionLimitAllocations,
-  getSessionAnalysis,
   getSettings,
   getStorageHealth,
-  getSubagentAnalysis,
   HEALTHY_STORAGE,
   hidePopover,
   listRecentSessions,
@@ -52,7 +50,7 @@ import {
   prefersReducedMotion,
   type PopoverSurface,
 } from "../../lib/popoverHeight"
-import { localSessionKey } from "../../lib/presentation/localIdentity"
+import { loadSessionAnalysis, sessionKey, type SessionSubject } from "../../lib/sessionSubject"
 import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
 import {
   isCurrentWindowVisible,
@@ -62,7 +60,8 @@ import {
 } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
 import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types/repository"
-import type { SessionSubject } from "./SessionPane"
+
+export { sessionKey } from "../../lib/sessionSubject"
 
 /**
  * The imperative boundary between the popover window and the shell.
@@ -129,40 +128,6 @@ export interface PopoverSnapshot {
    * detail header uses it to update relative-time text without new data.
    */
   now: number
-}
-
-/**
- * Identity key for a subject's analysis load. Stable across re-navigation.
- *
- * Scoped by environment as well as agent and id: the same session id can
- * exist natively and inside a WSL distribution, and without the environment
- * in the key a subject moving between the two would keep showing the other
- * environment's stale (or loading) analysis.
- *
- * A sub-agent id is only unique within its launching session, so its key
- * carries the parent's local identity too.
- */
-export function sessionKey(subject: SessionSubject): string {
-  return subject.subagent
-    ? JSON.stringify([
-        "subagent",
-        localSessionKey(subject.agent, subject.subagent.parentSessionId, subject.wslDistro),
-        subject.subagent.subagentId,
-      ])
-    : localSessionKey(subject.agent, subject.sessionId, subject.wslDistro)
-}
-
-/** Load one subject's analysis. Sub-agents come from their own command. */
-async function loadAnalysis(subject: SessionSubject): Promise<SessionAnalysisPayload | null> {
-  if (subject.subagent) {
-    return getSubagentAnalysis(
-      subject.agent,
-      subject.subagent.parentSessionId,
-      subject.subagent.subagentId,
-      subject.wslDistro,
-    )
-  }
-  return getSessionAnalysis(subject.agent, subject.sessionId, subject.wslDistro)
 }
 
 /**
@@ -1001,7 +966,7 @@ export class PopoverSession {
     const key = sessionKey(subject)
     const generation = this.generation
     const token = ++this.analysisToken
-    return loadAnalysis(subject)
+    return loadSessionAnalysis(subject)
       .then((payload) => {
         if (generation !== this.generation || token !== this.analysisToken) return
         this.update({ analysis: { key, payload, error: false } })

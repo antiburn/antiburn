@@ -1,10 +1,11 @@
-import { Activity, Settings } from "lucide-react"
+import { MessagesSquare, Settings } from "lucide-react"
 import { useState, type ReactNode } from "react"
 
 import { openSettingsWindow } from "../lib/ipc"
 import { useGlobalKeydown } from "../lib/useGlobalKeydown"
 import { SidebarNav, type SidebarNavItem } from "../components/ui/SidebarNav"
-import { CollectionDetailPane } from "./main-window/CollectionDetailPane"
+import { MainActivityView } from "./main-window/MainActivityView"
+import { MainActivitySession } from "./main-window/MainActivitySession"
 import { MainWindowLayout } from "./main-window/MainWindowLayout"
 
 export interface MainWindowSection extends SidebarNavItem {
@@ -33,20 +34,13 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       if (!event.repeat) void openSettings()
     }
   })
+  const [activitySession] = useState(() => new MainActivitySession())
   const availableSections: readonly MainWindowSection[] = sections ?? [
     {
       id: "activity",
-      label: "Activity",
-      icon: Activity,
-      render: () => (
-        <CollectionDetailPane
-          title="Activity"
-          items={[]}
-          emptyMessage="No activity yet"
-          detailEmptyMessage="Select an item to view its details."
-          renderDetail={() => null}
-        />
-      ),
+      label: "Sessions",
+      icon: MessagesSquare,
+      render: ({ active }) => <MainActivityView active={active} session={activitySession} />,
     },
   ]
   const [selectedId, setSelectedId] = useState(() => availableSections[0]?.id ?? "")

@@ -1,3 +1,4 @@
+import { isMacOS } from "../../lib/platform"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import {
   ChevronLeft,
@@ -8,7 +9,13 @@ import {
   Moon,
   Trash2,
 } from "lucide-react"
-import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react"
+import {
+  useCallback,
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react"
 
 import { cn } from "../../lib/cn"
 import { agentDisplayName } from "../../lib/presentation/agents"
@@ -118,7 +125,7 @@ export interface SessionDetailPresentationProps {
   modelRuns: PresentableModelRun[]
   /** Direct fork relations resolved from local transcripts. */
   relations: LocalSessionRelations | null
-  onBack: () => void
+  onBack?: (() => void) | undefined
   /** Navigate to the newer adjacent session; omit when none exists. */
   onPrev?: () => void
   /** Navigate to the older adjacent session; omit when none exists. */
@@ -135,6 +142,9 @@ export interface SessionDetailPresentationProps {
   /** Reveal the session's transcript on disk. Omitted hides the control. */
   onRevealSource?: () => void
   renderAgentIcon: AgentIconRenderer
+  /** Remove the popover surface when a host supplies the surrounding pane. */
+  embedded?: boolean
+  active?: boolean
 }
 
 /* -------------------------------------------------------------------------
@@ -509,6 +519,8 @@ export function SessionDetailPresentation({
   onDeleteSession,
   onRevealSource,
   renderAgentIcon,
+  embedded = false,
+  active = true,
 }: SessionDetailPresentationProps) {
   const subagent = session.subagent
   const [tab, setTab] = useState<SessionDetailTab>("overview")
@@ -525,10 +537,9 @@ export function SessionDetailPresentation({
   const hygieneChecks = sessionHygieneChecks(hygiene)
   const hasAssessedHygieneChecks = hygieneChecks.some((check) => check.status !== "notAssessed")
 
-  // Left and right arrows traverse adjacent sessions. A missing handler is a
-  // no-op.
-  useGlobalKeydown(true, (event) => {
-    if (event.metaKey || event.ctrlKey || event.altKey) return
+  const handleAdjacentKey = (event: KeyboardEvent | ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!active || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey)
+      return
     const target = event.target as HTMLElement | null
     if (
       target &&
@@ -543,9 +554,12 @@ export function SessionDetailPresentation({
       event.preventDefault()
       onNext()
     }
-  })
+  }
 
-  const showSkeleton = useSkeletonVisible(loading && supportsAnalysis)
+  // The popover owns global shortcuts. Embedded hosts scope them to this pane.
+  useGlobalKeydown(!embedded && active, handleAdjacentKey)
+
+  const showSkeleton = useSkeletonVisible(active && loading && supportsAnalysis)
   // The settled gate the real content, error, and empty states all key off:
   // true only once loading is done *and* the skeleton's minimum-visible
   // window, if any, has elapsed.
@@ -610,27 +624,45 @@ export function SessionDetailPresentation({
   const hasRelations = !!relations && (!!relations.parent || relations.children.length > 0)
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-popover bg-surface text-label select-none">
-      <div className="flex items-center justify-between gap-2 border-b border-separator px-3 py-3">
+    <div
+      ref={(node) => {
+        if (embedded && node && document.activeElement === node.closest("[data-detail-pane]"))
+          node.focus()
+      }}
+      data-detail-focus-target={embedded ? "" : undefined}
+      data-session-detail-region
+      tabIndex={embedded ? -1 : undefined}
+      onKeyDown={embedded ? handleAdjacentKey : undefined}
+      className={cn(
+        "flex h-full flex-col overflow-hidden text-label select-none",
+        !embedded && "rounded-popover bg-surface",
+      )}
+    >
+      <div
+        data-tauri-drag-region={embedded && isMacOS() ? "deep" : undefined}
+        className="flex items-center justify-between gap-2 border-b border-separator px-3 py-3"
+      >
         {/* The control and the title are two things, not one. Wrapping the
             heading text inside the back button made a screen reader announce
             "Session Detail, button" for the control that leaves this view,
             and left the view itself with no heading at all. */}
         <div className="flex min-w-0 items-center gap-1.5">
-          <button
-            type="button"
-            onClick={onBack}
-            aria-label="Back"
-            className="-ml-1 inline-flex h-6 shrink-0 items-center rounded-control px-1 text-label hover:bg-surface-hover"
-          >
-            <ChevronLeft size={14} aria-hidden="true" className="shrink-0" />
-          </button>
+          {onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              aria-label="Back"
+              className="-ml-1 inline-flex h-6 shrink-0 items-center rounded-control px-1 text-label hover:bg-surface-hover"
+            >
+              <ChevronLeft size={14} aria-hidden="true" className="shrink-0" />
+            </button>
+          )}
           <h2
             data-view-heading
             tabIndex={-1}
             className="truncate type-headline text-label outline-none"
           >
-            Session Detail
+            {embedded ? session.title || "Session" : "Session Detail"}
           </h2>
           {subagent && (
             <span className="shrink-0 rounded bg-system-indigo/15 px-1.5 py-px type-caption font-medium text-system-indigo-text">

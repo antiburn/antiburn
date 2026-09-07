@@ -1707,7 +1707,11 @@ pub fn delete_session_data(
     wsl_distro: Option<String>,
 ) -> CommandResult<bool> {
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
-    app.state::<Store>().delete_session(&key).map_err(fail)
+    let removed = app.state::<Store>().delete_session(&key).map_err(fail)?;
+    if removed {
+        let _ = app.emit(SESSIONS_INVALIDATED_EVENT, ());
+    }
+    Ok(removed)
 }
 
 /// Forget all session data in antiburn's local store.

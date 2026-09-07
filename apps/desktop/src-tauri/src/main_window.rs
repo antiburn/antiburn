@@ -5,13 +5,69 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use antiburn_main_window::Placement;
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 use crate::store::Store;
 use crate::window_lifecycle::{self, ManagedWindowReadiness};
 use crate::window_readiness::{OpenAction, WindowReadiness, renderer_generation_script};
 
 pub use antiburn_main_window::LABEL;
+
+/// Event carrying whether the retained renderer can present work.
+pub const VISIBILITY_CHANGED_EVENT: &str = "main:visibility-changed";
+
+#[cfg(target_os = "macos")]
+static APPLICATION_HIDDEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Observe visibility changes that do not produce Tauri focus events.
+#[cfg(target_os = "macos")]
+pub fn install_visibility_observers(app: &AppHandle) {
+    use block2::RcBlock;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{
+        NSApplication, NSApplicationDidHideNotification, NSApplicationDidUnhideNotification,
+        NSWindowDidDeminiaturizeNotification, NSWindowDidMiniaturizeNotification,
+    };
+    use objc2_foundation::{NSNotification, NSNotificationCenter};
+
+    if let Some(main_thread) = MainThreadMarker::new() {
+        APPLICATION_HIDDEN.store(
+            NSApplication::sharedApplication(main_thread).isHidden(),
+            Ordering::Release,
+        );
+    }
+    let center = NSNotificationCenter::defaultCenter();
+    // SAFETY: AppKit provides these immutable notification names on all supported macOS versions.
+    let notifications = unsafe {
+        [
+            (NSApplicationDidHideNotification, Some(true)),
+            (NSApplicationDidUnhideNotification, Some(false)),
+            (NSWindowDidMiniaturizeNotification, None),
+            (NSWindowDidDeminiaturizeNotification, None),
+        ]
+    };
+    for (name, hidden) in notifications {
+        let app = app.clone();
+        let handler = RcBlock::new(move |_notification: core::ptr::NonNull<NSNotification>| {
+            if let Some(hidden) = hidden {
+                APPLICATION_HIDDEN.store(hidden, Ordering::Release);
+            }
+            if let Some(window) = app.get_webview_window(LABEL) {
+                emit_visibility_changed(&window);
+            }
+        });
+        // SAFETY: AppKit posts these notifications on the main thread. The block matches the Foundation callback signature.
+        let observer = unsafe {
+            center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &handler)
+        };
+        // The observers remain registered for the app's lifetime.
+        std::mem::forget(observer);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn install_visibility_observers(_app: &AppHandle) {}
 
 const PLACEMENT_KEY: &str = "internal:mainWindowPlacementV1";
 const PLACEMENT_WRITE_DELAY: Duration = Duration::from_millis(350);
@@ -260,6 +316,7 @@ fn reveal(window: Option<&WebviewWindow>) -> tauri::Result<()> {
         open_kind = open_kind.as_str(),
         elapsed_ms = elapsed.as_millis() as u64
     );
+    emit_visibility_changed(window);
     Ok(())
 }
 
@@ -271,6 +328,44 @@ pub fn close(window: &WebviewWindow) {
     state.note_closed();
     flush_placement(window.app_handle());
     let _ = antiburn_main_window::conceal(window);
+    emit_visibility_changed(window);
+}
+
+/// Read whether the main window can present work without treating blur as hidden.
+pub fn is_visible(window: &WebviewWindow) -> bool {
+    #[cfg(target_os = "macos")]
+    let application_hidden = APPLICATION_HIDDEN.load(Ordering::Acquire);
+    #[cfg(not(target_os = "macos"))]
+    let application_hidden = false;
+    visible_from_window_state(
+        window.is_visible().unwrap_or(false),
+        window.is_minimized().unwrap_or(true),
+        application_hidden,
+    )
+}
+
+const fn visible_from_window_state(
+    visible: bool,
+    minimized: bool,
+    application_hidden: bool,
+) -> bool {
+    visible && !minimized && !application_hidden
+}
+
+/// Emit the current presentation visibility to the retained renderer.
+pub fn emit_visibility_changed(window: &WebviewWindow) {
+    if let Err(error) = window.emit(VISIBILITY_CHANGED_EVENT, is_visible(window)) {
+        ::tracing::debug!(event = "main_window_visibility_emit_failed", error = %error);
+    }
+}
+
+/// Return main-window presentation visibility only to the main renderer.
+#[tauri::command]
+pub fn get_main_window_visible(window: WebviewWindow) -> Result<bool, String> {
+    if window.label() != LABEL {
+        return Err("main-window visibility is unavailable to this window".to_owned());
+    }
+    Ok(is_visible(&window))
 }
 
 /// Restore a closed or minimized main window after the app becomes active.
@@ -440,6 +535,14 @@ mod tests {
                 loading_for: Duration::from_secs(1)
             }
         );
+    }
+
+    #[test]
+    fn presentation_visibility_excludes_minimized_but_not_blurred_windows() {
+        assert!(visible_from_window_state(true, false, false));
+        assert!(!visible_from_window_state(true, true, false));
+        assert!(!visible_from_window_state(false, false, false));
+        assert!(!visible_from_window_state(true, false, true));
     }
 
     #[test]
