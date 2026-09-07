@@ -147,7 +147,7 @@ describe("SessionList — rows", () => {
     expect(badge.dataset.sessionLimitPercent).toBe("12.3450")
     expect(badge).toHaveAttribute(
       "aria-label",
-      "Estimated cumulative weekly allowance share, summed across 1 provider period. Coverage is complete for retained provider history. This cumulative estimate is 5% or more.",
+      "Estimated cumulative share of your Claude weekly allowance, summed across 1 provider period. Based on retained usage history. Displayed estimate: 12.3%. This cumulative estimate is 5% or more.",
     )
   })
 
@@ -178,7 +178,7 @@ describe("SessionList — rows", () => {
     const badge = screen.getByText("102.5%")
     expect(badge).toHaveAttribute(
       "aria-label",
-      "Estimated cumulative weekly allowance share, summed across 2 provider periods. Coverage is partial. This cumulative estimate is 5% or more.",
+      "Estimated cumulative share of your Claude weekly allowance, summed across 2 provider periods. Some usage may be missing. Displayed estimate: 102.5%. This cumulative estimate is 5% or more.",
     )
   })
 

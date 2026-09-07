@@ -148,7 +148,7 @@ function sessionLimitBadge(
     }
   }
   return {
-    label: `Estimated cumulative ${metric === "weeklyPercent" ? "weekly" : "5-hour"} allowance share, summed across ${allocation.periodCount} provider ${allocation.periodCount === 1 ? "period" : "periods"}. ${allocation.coverage === "partial" ? "Coverage is partial." : "Coverage is complete for retained provider history."}`,
+    label: `Estimated cumulative share of your ${allocation.displayName} ${metric === "weeklyPercent" ? "weekly" : "5-hour"} allowance, summed across ${allocation.periodCount} provider ${allocation.periodCount === 1 ? "period" : "periods"}. ${allocation.coverage === "partial" ? "Some usage may be missing." : "Based on retained usage history."}`,
     percent: allocation.percent,
     provider: allocation.provider,
     windowId: allocation.windowId,

@@ -182,11 +182,7 @@ export function SessionStatusBar({
               data-session-limit-provider={limitBadge.provider}
               data-session-limit-window={limitBadge.windowId}
               data-session-limit-percent={limitBadge.percent.toFixed(4)}
-              aria-label={
-                isHighLimitShare
-                  ? `${limitBadge.label} This cumulative estimate is 5% or more.`
-                  : limitBadge.label
-              }
+              aria-label={`${limitBadge.label} Displayed estimate: ${formatLimitPercent(limitBadge.percent)}.${isHighLimitShare ? " This cumulative estimate is 5% or more." : ""}`}
               tabIndex={0}
             >
               {isHighLimitShare && <Flame size={11} className="shrink-0" aria-hidden="true" />}

@@ -215,7 +215,9 @@ describe("SessionStatusBar", () => {
       />,
     )
 
-    expect(screen.getByLabelText("Estimated weekly share").parentElement).toHaveClass("ml-auto")
+    expect(
+      screen.getByLabelText("Estimated weekly share Displayed estimate: 2.4%.").parentElement,
+    ).toHaveClass("ml-auto")
   })
 
   it("omits unavailable checks from the tooltip", async () => {
@@ -287,7 +289,7 @@ describe("SessionStatusBar", () => {
     )
 
     const figure = screen.getByLabelText(
-      "Estimated weekly share This cumulative estimate is 5% or more.",
+      "Estimated weekly share Displayed estimate: 5%. This cumulative estimate is 5% or more.",
     )
     expect(figure.className).toContain("rounded-full")
     expect(figure.className).toContain("bg-brand-tint")
@@ -304,7 +306,7 @@ describe("SessionStatusBar", () => {
     )
 
     const figure = screen.getByLabelText(
-      "Estimated weekly share This cumulative estimate is 5% or more.",
+      "Estimated weekly share Displayed estimate: 5%. This cumulative estimate is 5% or more.",
     )
     expect(figure).toHaveTextContent("5%")
     expect(figure.className).toContain("rounded-full")
@@ -320,7 +322,7 @@ describe("SessionStatusBar", () => {
       />,
     )
 
-    const figure = screen.getByLabelText("Estimated weekly share")
+    const figure = screen.getByLabelText("Estimated weekly share Displayed estimate: 4.9%.")
     expect(figure).toHaveTextContent("4.9%")
     expect(figure.className).not.toContain("rounded-full")
     expect(figure.className).not.toContain("bg-brand-tint")
