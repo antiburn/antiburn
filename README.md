@@ -10,10 +10,21 @@
 [![aislop score](https://badges.scanaislop.com/score/antiburn/antiburn.svg)](https://scanaislop.com/antiburn/antiburn)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
 
-A little desktop app to check your sessions for the most common causes of token burn - sessions that go too deep, subagents that go too hard, skills and MCPs that go unused, etc etc etc.
+A little free desktop app to check your sessions for the most common causes of token burn - sessions that go too deep, subagents that go too hard, skills and MCPs that go unused, etc etc etc.
 
 antiburn supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, Kiro, Amp, Antigravity, Windsurf, and Pi. See the [support matrix](docs/support.md) for platform limits, discovery details, and local data storage.
 
+## Checks
+
+- Excess cache rehydration - cache writes are expensive; let's all work out how to avoid too many of them.
+- Fast mode overuse - fast mode is great if you're not close to limit, but be careful if you are.
+- Model overthinking - I know `xhigh` and `ultra` sound cool but they're usually better avoided.
+- Old model usage - worth checking if you're still pinned to old models, especially in subagents.
+- Overpowered subagents - using subagents on premium models is generally a bad idea.
+- Session overdepth - compaction works now, friends don't let friends have 950k context windows.
+- Unused built-in tools - Claude (especially) has a bunch of heavy built-in tools that you should probably disable.
+- Unused MCP servers - MCPs are usually situational, just turn them on when you need them.
+- Unused skills - most of us have skills installed that cost tokens every session, but that we never use any more.
 
 ## Install
 
