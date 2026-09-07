@@ -58,7 +58,8 @@ pub enum Fact {
     EffortSignal,
     SpeedSignal,
     ToolInvocations,
-    SkillMcpAttribution,
+    SkillInventory,
+    McpInventory,
     ToolDefinitions,
     SubagentRelationships,
     DelegatedModels,
@@ -97,10 +98,14 @@ impl Fact {
                 }
             }
             Self::ToolInvocations => state(&evidence.tools),
-            // `evidence.context_sources` already reports `Unsupported`
-            // when `capabilities.skill_mcp_attribution` is unset (the
-            // sink's own gate), so this fact does not test the flag again.
-            Self::SkillMcpAttribution => state(&evidence.context_sources),
+            Self::SkillInventory => resource_state(
+                &evidence.context_sources,
+                evidence.capabilities.skill_inventory,
+            ),
+            Self::McpInventory => resource_state(
+                &evidence.context_sources,
+                evidence.capabilities.mcp_inventory,
+            ),
             // Unlike `SkillMcpAttribution`, the sink never gates
             // `context_sources` on `capabilities.tool_definitions` — that
             // group stays supported (Claude, for example) while its
@@ -158,6 +163,14 @@ fn state<T>(value: &EvidenceValue<T>) -> FactState {
         EvidenceValue::Unsupported => FactState::Unsupported,
         EvidenceValue::Partial { .. } => FactState::Partial,
         EvidenceValue::Complete(_) => FactState::Complete,
+    }
+}
+
+fn resource_state<T>(value: &EvidenceValue<T>, supported: bool) -> FactState {
+    if supported {
+        state(value)
+    } else {
+        FactState::Unsupported
     }
 }
 
@@ -239,12 +252,8 @@ pub fn requirements(detector: DetectorId) -> DetectorRequirements {
             ],
         },
         DetectorId::UnusedMcpServers => DetectorRequirements {
-            finding: &[Fact::SkillMcpAttribution, Fact::ToolInvocations],
-            clean: &[
-                Fact::SkillMcpAttribution,
-                Fact::ToolInvocations,
-                Fact::Eligibility,
-            ],
+            finding: &[Fact::McpInventory, Fact::ToolInvocations],
+            clean: &[Fact::McpInventory, Fact::ToolInvocations, Fact::Eligibility],
         },
         DetectorId::UnusedBuiltInTools => DetectorRequirements {
             finding: &[Fact::ToolDefinitions, Fact::ToolInvocations],
@@ -255,9 +264,9 @@ pub fn requirements(detector: DetectorId) -> DetectorRequirements {
             ],
         },
         DetectorId::UnusedSkills => DetectorRequirements {
-            finding: &[Fact::SkillMcpAttribution, Fact::ToolInvocations],
+            finding: &[Fact::SkillInventory, Fact::ToolInvocations],
             clean: &[
-                Fact::SkillMcpAttribution,
+                Fact::SkillInventory,
                 Fact::ToolInvocations,
                 Fact::Eligibility,
             ],
@@ -2660,11 +2669,13 @@ mod tests {
     fn complete_row(session_id: &str) -> SessionEvidence {
         let mut row = evidence_with_work(session_id);
         row.capabilities = SourceCapabilities {
+            source_format: crate::analysis::SourceFormat::ClaudeJsonl,
             request_context_tokens: true,
             cache_write_tokens: true,
             timestamps_and_order: true,
             tool_invocations: true,
-            skill_mcp_attribution: true,
+            skill_inventory: true,
+            mcp_inventory: true,
             tool_definitions: true,
             model_identity: true,
             token_classes: true,
@@ -2679,6 +2690,7 @@ mod tests {
             linear_record_order: true,
             quota_incidents: true,
             harness_version: true,
+            repeated_context_accounting: Some(RepeatedContextAccounting::CacheWrite),
         };
         // An empty map, not a fabricated invoked definition: Unused
         // Built-In Tools reads clean from zero catalogued definitions
@@ -2715,7 +2727,7 @@ mod tests {
                 to_partial(&mut row.models)
             }
             Fact::ToolInvocations => to_partial(&mut row.tools),
-            Fact::SkillMcpAttribution | Fact::ToolDefinitions => {
+            Fact::SkillInventory | Fact::McpInventory | Fact::ToolDefinitions => {
                 to_partial(&mut row.context_sources)
             }
             Fact::SubagentRelationships | Fact::DelegatedModels => to_partial(&mut row.subagents),
@@ -2740,7 +2752,8 @@ mod tests {
                 row.capabilities.service_tier = false;
             }
             Fact::ToolInvocations => row.tools = EvidenceValue::Unsupported,
-            Fact::SkillMcpAttribution => row.context_sources = EvidenceValue::Unsupported,
+            Fact::SkillInventory => row.capabilities.skill_inventory = false,
+            Fact::McpInventory => row.capabilities.mcp_inventory = false,
             Fact::ToolDefinitions => row.capabilities.tool_definitions = false,
             Fact::SubagentRelationships => row.subagents = EvidenceValue::Unsupported,
             Fact::DelegatedModels => row.capabilities.subagent_models = false,
@@ -2887,7 +2900,11 @@ mod tests {
                     "server-a".to_owned(),
                     LoadedSource {
                         description: None,
+                        configured: true,
+                        available: true,
+                        injected: true,
                         invoked: false,
+                        token_count: None,
                         origin: EvidenceValue::Unsupported,
                     },
                 );
@@ -2900,7 +2917,11 @@ mod tests {
                     "skill-a".to_owned(),
                     LoadedSource {
                         description: None,
+                        configured: true,
+                        available: true,
+                        injected: true,
                         invoked: false,
+                        token_count: None,
                         origin: EvidenceValue::Unsupported,
                     },
                 );
@@ -2928,13 +2949,21 @@ mod tests {
                 let EvidenceValue::Complete(models) = &mut row.models else {
                     unreachable!()
                 };
-                models.fast_modes.insert(
-                    FAST_SPEED_KEY.to_owned(),
-                    TurnCounts {
-                        main_loop: 0,
-                        delegated: 2,
-                    },
-                );
+                let turns = TurnCounts {
+                    main_loop: 0,
+                    delegated: 2,
+                };
+                models
+                    .fast_modes
+                    .insert(FAST_SPEED_KEY.to_owned(), turns.clone());
+                models
+                    .fast_modes_by_model
+                    .entry("claude-sonnet-4-6".to_owned())
+                    .or_default()
+                    .insert(FAST_SPEED_KEY.to_owned(), turns);
+                models
+                    .by_model
+                    .insert("claude-sonnet-4-6".to_owned(), ModelTokens::default());
             }
             DetectorId::CacheChurn => {
                 let EvidenceValue::Complete(models) = &mut row.models else {
@@ -3137,6 +3166,19 @@ mod tests {
                 delegated: 2,
             },
         );
+        models.fast_modes_by_model.insert(
+            "claude-sonnet-4-6".to_owned(),
+            BTreeMap::from([(
+                "fast".to_owned(),
+                TurnCounts {
+                    main_loop: 0,
+                    delegated: 2,
+                },
+            )]),
+        );
+        models
+            .by_model
+            .insert("claude-sonnet-4-6".to_owned(), ModelTokens::default());
         let mut accumulator = EfficiencyReportAccumulator::new();
         accumulator.observe_session(row);
         let report = accumulator.finish(context(CoverageCounts::default()));

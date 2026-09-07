@@ -9,8 +9,8 @@ use antiburn_local::analysis::{
     EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore, NormalizedSession, PartialReason, RawSource,
     RecordCoverage, SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
     SessionMetricsAccumulator, SourceCapabilities, SourceClaim, SourceKind, TurnCounts, TurnFacts,
-    TurnRowSink, TurnRowStore, VisitOutcome, adapter_for, analyze_sources_with,
-    append_only_guarantee, normalize_source,
+    TurnRowSink, TurnRowStore, VisitOutcome, analyze_sources_with, append_only_guarantee,
+    normalize_source, reader_for,
 };
 use antiburn_local::discovery::source_version::{
     FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
@@ -130,7 +130,7 @@ fn input(name: &str) -> SessionInput {
 
 fn collect(input: &SessionInput) -> (RecordCoverage, BTreeSet<PartialReason>, NormalizedSession) {
     let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
-    adapter_for("codex")
+    reader_for("codex")
         .visit(input, &mut collector)
         .expect("Codex fixture must stream");
     let coverage = collector.coverage();
@@ -154,7 +154,7 @@ fn composite(input: &SessionInput) -> (SessionEvidence, SessionMetricsAccumulato
         None,
     );
     let mut sink = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for("codex")
+    let outcome = reader_for("codex")
         .visit(input, &mut sink)
         .expect("Codex fixture must stream");
     sink.observe_source_outcome(outcome);
@@ -281,13 +281,7 @@ fn codex_capabilities_match_published_evidence() {
     let (evidence, _) = composite(&input("records_all_kinds"));
     let capabilities = evidence.capabilities;
 
-    // `cache_write_tokens` is observed per session, not fixed at the
-    // static baseline: `records_all_kinds` carries no cache-write alias
-    // key, so the published capability reads false even though
-    // `SourceCapabilities::codex()` now defaults it true.
-    let mut expected_capabilities = SourceCapabilities::codex();
-    expected_capabilities.cache_write_tokens = false;
-    assert_eq!(capabilities, expected_capabilities);
+    assert_eq!(capabilities, SourceCapabilities::codex());
     assert!(capabilities.request_context_tokens && is_supported(&evidence.context));
     assert!(capabilities.timestamps_and_order && is_supported(&evidence.time_range));
     assert!(capabilities.tool_invocations && is_supported(&evidence.tools));
@@ -297,9 +291,11 @@ fn codex_capabilities_match_published_evidence() {
     assert!(capabilities.compaction_boundaries && is_supported(&evidence.compactions));
 
     assert!(capabilities.fast_tier);
-    assert!(!capabilities.cache_write_tokens);
-    assert!(!capabilities.skill_mcp_attribution);
-    assert!(!capabilities.tool_definitions);
+    assert!(capabilities.cache_write_tokens);
+    assert!(!capabilities.skill_inventory);
+    assert!(!capabilities.mcp_inventory);
+    assert!(capabilities.tool_definitions);
+    assert!(capabilities.harness_version);
     assert!(!capabilities.service_tier);
     assert!(capabilities.subagent_relationships && is_supported(&evidence.subagents));
     assert!(capabilities.subagent_models);
@@ -307,10 +303,10 @@ fn codex_capabilities_match_published_evidence() {
     assert!(!capabilities.record_identity);
     assert!(capabilities.linear_record_order);
     assert!(!capabilities.quota_incidents);
-    assert!(!capabilities.harness_version);
+    assert!(capabilities.harness_version);
     assert!(matches!(
         evidence.context_sources,
-        EvidenceValue::Unsupported
+        EvidenceValue::Complete(_)
     ));
     assert!(matches!(
         evidence.quota_incidents,
@@ -318,7 +314,7 @@ fn codex_capabilities_match_published_evidence() {
     ));
     assert!(matches!(
         evidence.provenance.harness_version,
-        EvidenceValue::Unsupported
+        EvidenceValue::Complete(())
     ));
     let EvidenceValue::Complete(cache) = evidence.cache else {
         panic!("the supported cache fields must remain available");
@@ -361,7 +357,7 @@ fn claude_capabilities_still_match_published_evidence() {
         None,
     );
     let mut sink = CompositeSink::with_turn_rows(metrics, accumulator, turn_rows);
-    let outcome = adapter_for("claude").visit(&input, &mut sink).unwrap();
+    let outcome = reader_for("claude").visit(&input, &mut sink).unwrap();
     sink.observe_source_outcome(outcome);
     let evidence = sink.evidence().unwrap();
 
@@ -415,6 +411,7 @@ fn codex_detector_prerequisites_assess_only_supported_detectors() {
             DetectorId::SessionsOverDepth,
             DetectorId::ModelOverthinking,
             DetectorId::OverpoweredSubagents,
+            DetectorId::UnusedBuiltInTools,
             DetectorId::OldModelUsage,
             DetectorId::OveruseOfFastMode,
             // Codex reports `token_classes` and `request_context_tokens`.
@@ -609,7 +606,7 @@ fn claimed_codex_source_rejects_a_change_instead_of_publishing() {
         fork_parent_session_id: None,
     };
     let mut collector = SessionCollector::new("codex", "changed");
-    let outcome = adapter_for("codex")
+    let outcome = reader_for("codex")
         .visit_claimed(
             &input,
             &claim,

@@ -141,11 +141,13 @@ fn evidence_with(capabilities: SourceCapabilities) -> SessionEvidence {
 
 fn no_capabilities() -> SourceCapabilities {
     SourceCapabilities {
+        source_format: antiburn_local::analysis::SourceFormat::Uncharacterized,
         request_context_tokens: false,
         cache_write_tokens: false,
         timestamps_and_order: false,
         tool_invocations: false,
-        skill_mcp_attribution: false,
+        skill_inventory: false,
+        mcp_inventory: false,
         tool_definitions: false,
         model_identity: false,
         token_classes: false,
@@ -160,6 +162,7 @@ fn no_capabilities() -> SourceCapabilities {
         linear_record_order: false,
         quota_incidents: false,
         harness_version: false,
+        repeated_context_accounting: None,
     }
 }
 
@@ -1277,10 +1280,10 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
     let stored = store.evidence(&pi.key).unwrap().unwrap();
     assert_eq!(stored.status, EvidenceStatus::Ready);
     let evidence_json = stored.evidence_json.as_deref().unwrap();
-    assert!(evidence_json.contains("\"schemaRevision\":14"));
+    assert!(evidence_json.contains("\"schemaRevision\":16"));
     let evidence: SessionEvidence = serde_json::from_str(evidence_json).unwrap();
     assert_eq!(evidence.capabilities, SourceCapabilities::pi());
-    assert_eq!(evidence.schema_revision, 14);
+    assert_eq!(evidence.schema_revision, 16);
 
     let report = crate::insights_report::reduce_report(
         data_dir.path().to_path_buf(),
@@ -1308,6 +1311,10 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
     );
     assert_eq!(
         report.detectors[DetectorId::OldModelUsage.index()].assessed,
+        0
+    );
+    assert_eq!(
+        report.detectors[DetectorId::OldModelUsage.index()].unavailable,
         1
     );
 }

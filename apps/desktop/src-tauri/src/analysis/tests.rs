@@ -431,12 +431,11 @@ fn codex_read_publishes_its_capabilities_and_provider_start() {
         Some(turn_row_store("codex", "codex-inline")),
     );
     assert_eq!(pass.outcome, PassOutcome::Published);
-    // `cache_write_tokens` is observed per session: `codex_record`
-    // carries no cache-write alias key, so it reads false even though
-    // `SourceCapabilities::codex()` now defaults it true.
-    let mut expected_capabilities = SourceCapabilities::codex();
-    expected_capabilities.cache_write_tokens = false;
-    assert_eq!(pass.evidence.unwrap().capabilities, expected_capabilities);
+    // Capabilities describe the source format, not fields present in this session.
+    assert_eq!(
+        pass.evidence.unwrap().capabilities,
+        SourceCapabilities::codex()
+    );
 }
 
 #[test]
@@ -809,7 +808,7 @@ fn an_inline_source_reports_unvalidated_and_publishes() {
     let mut accumulator = SessionMetricsAccumulator::new("claude", "inline");
 
     assert_eq!(
-        ClaudeAdapter
+        ClaudeSessionReader
             .visit(&input, &mut accumulator)
             .expect("inline visit"),
         VisitOutcome::Unvalidated

@@ -22,7 +22,7 @@ use crate::analysis::framing::{
 use crate::analysis::interface::{
     ContentKind, ContentPart, ContextWindowSource, EvidenceObservation, NormalizedRecord,
     ProviderHint, RawSource, RecordSink, RelationProvenance, SessionCollector, SessionInput,
-    SessionSummary, TurnContent, VendorAdapter, VisitOutcome, push_provider_hint,
+    SessionReader, SessionSummary, TurnContent, VisitOutcome, push_provider_hint,
 };
 use crate::analysis::model::{
     CompactionTrigger, EventSource, NormalizedEvent, NormalizedSession, Role, ToolCall,
@@ -41,11 +41,19 @@ const MAX_MESSAGE_PART_BYTES: usize = MAX_RECORD_BYTES;
 /// pathologically wide fan-out of subagents.
 const MAX_TRACKED_CHILD_SESSIONS: usize = 50_000;
 
-pub struct OpenCodeAdapter;
+pub struct OpenCodeSessionReader;
 
-impl VendorAdapter for OpenCodeAdapter {
+impl SessionReader for OpenCodeSessionReader {
     fn agent(&self) -> &'static str {
         "opencode"
+    }
+
+    fn capabilities(&self, source: &RawSource) -> crate::analysis::SourceCapabilities {
+        let mut capabilities = crate::analysis::SourceCapabilities::opencode();
+        if matches!(source, RawSource::Sqlite(_)) {
+            capabilities.source_format = crate::analysis::SourceFormat::OpenCodeSqliteV2;
+        }
+        capabilities
     }
 
     fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession> {
@@ -102,7 +110,7 @@ impl VendorAdapter for OpenCodeAdapter {
     }
 }
 
-impl OpenCodeAdapter {
+impl OpenCodeSessionReader {
     fn visit_reader(
         &self,
         reader: impl BufRead,
@@ -631,6 +639,7 @@ fn message_event(value: &Value, fallback_ts: Option<i64>) -> Option<NormalizedEv
         .or(fallback_ts);
     event.ts_ms?;
     event.model = string_field(object, &["modelID", "modelId", "model"]);
+    event.provider = string_field(object, &["providerID"]);
     event.thinking_mode = string_field(object, &["variant"]);
     event.usage = object
         .get("tokens")

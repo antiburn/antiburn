@@ -32,24 +32,27 @@
       }
     },
     "capabilities": {
-      "cacheWriteTokens": false,
+      "cacheWriteTokens": true,
       "compactionBoundaries": true,
       "fastTier": true,
-      "harnessVersion": false,
+      "harnessVersion": true,
       "linearRecordOrder": true,
+      "mcpInventory": false,
       "modelIdentity": true,
       "quotaIncidents": false,
       "reasoningEffortTier": true,
       "recordIdentity": false,
+      "repeatedContextAccounting": "uncached_input",
       "requestContextTokens": true,
       "serviceTier": false,
-      "skillMcpAttribution": false,
+      "skillInventory": false,
+      "sourceFormat": "codex_rollout_jsonl",
       "subagentModels": true,
       "subagentRelationships": true,
       "threadIdentity": true,
       "timestampsAndOrder": true,
       "tokenClasses": true,
-      "toolDefinitions": false,
+      "toolDefinitions": true,
       "toolInvocations": true
     },
     "compactions": {
@@ -77,7 +80,14 @@
       }
     },
     "contextSources": {
-      "state": "unsupported"
+      "state": "complete",
+      "value": {
+        "mcpServers": {},
+        "skills": {},
+        "toolDefinitions": {
+          "state": "unsupported"
+        }
+      }
     },
     "coverage": "complete",
     "diagnostics": {
@@ -120,6 +130,19 @@
             "turns": 6
           }
         },
+        "controlObservations": [
+          {
+            "api": null,
+            "effort": "medium",
+            "model": "gpt-alpha",
+            "provider": null,
+            "speed": null,
+            "turns": {
+              "delegated": 0,
+              "mainLoop": 6
+            }
+          }
+        ],
         "dominantMainModel": "gpt-alpha",
         "effortSignal": {
           "eligibleTurns": 6,
@@ -131,7 +154,16 @@
             "mainLoop": 7
           }
         },
+        "effortTiersByModel": {
+          "gpt-alpha": {
+            "medium": {
+              "delegated": 0,
+              "mainLoop": 6
+            }
+          }
+        },
         "fastModes": {},
+        "fastModesByModel": {},
         "serviceTiers": {
           "state": "unsupported"
         },
@@ -143,20 +175,21 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 18,
-      "evidenceSchemaRevision": 14,
+      "analyzerRevision": 20,
+      "evidenceSchemaRevision": 16,
       "harnessVersion": {
-        "state": "unsupported"
+        "state": "complete",
+        "value": null
       },
       "ordering": "monotonic",
-      "parserRevision": 28,
+      "parserRevision": 30,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 14,
+    "schemaRevision": 16,
     "subagents": {
       "state": "complete",
       "value": {

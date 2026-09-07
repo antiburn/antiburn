@@ -44,6 +44,19 @@ Write code comments in ASD-STE100 Simplified Technical English:
 - Keep identifiers and API names unchanged.
 - Add a comment only when it states important information the code cannot show.
 
+## Session and check coverage
+
+Keep `docs/session-coverage.md` and `docs/check-coverage.md` current.
+
+Update `docs/session-coverage.md` when agent discovery, source formats,
+framing, parsing, companion inputs, provider routes, or supported versions
+change.
+
+Update `docs/check-coverage.md` when parsed evidence, agent or provider support,
+check requirements, or finding and clean-result eligibility change.
+
+Update both documents when a session parsing change affects check coverage.
+
 ## Tests and commits
 
 Run the relevant formatter, linter, type checks, and tests for every change. Use

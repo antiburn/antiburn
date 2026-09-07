@@ -59,14 +59,17 @@ describe("agentSupportsAnalysis", () => {
     expect(agentSupportsAnalysis("claude-code")).toBe(true)
     expect(agentSupportsAnalysis("codex")).toBe(true)
     expect(agentSupportsAnalysis("cursor")).toBe(true)
+    expect(agentSupportsAnalysis("copilot")).toBe(true)
+    expect(agentSupportsAnalysis("cline")).toBe(true)
     expect(agentSupportsAnalysis("opencode")).toBe(true)
+    expect(agentSupportsAnalysis("kiro")).toBe(true)
+    expect(agentSupportsAnalysis("amp-code")).toBe(true)
     expect(agentSupportsAnalysis("antigravity")).toBe(true)
+    expect(agentSupportsAnalysis("windsurf")).toBe(true)
     expect(agentSupportsAnalysis("pi")).toBe(true)
   })
 
-  it("is false for generic-fallback agents and unknown slugs", () => {
-    expect(agentSupportsAnalysis("copilot")).toBe(false)
-    expect(agentSupportsAnalysis("kiro")).toBe(false)
+  it("is false for unknown slugs", () => {
     expect(agentSupportsAnalysis("totally-made-up")).toBe(false)
   })
 })

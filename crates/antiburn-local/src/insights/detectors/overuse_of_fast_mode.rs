@@ -35,6 +35,9 @@
 //!   missing only when no turn carries a speed value.
 
 use crate::analysis::{FAST_SPEED_KEY, SessionEvidence};
+use crate::model_catalog::{
+    ModelCatalog, ReviewedModelCatalog, Support, fixed_route_target, model_control_target,
+};
 
 use super::{Observation, ReportCatalogs, observed};
 
@@ -48,21 +51,110 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         return Observation::ContractIncomplete;
     }
     if let Some(models) = observed(&evidence.models) {
+        let catalog = ReviewedModelCatalog::new(catalogs.clone());
         let mut contract_incomplete = false;
-        for (label, turns) in &models.fast_modes {
+        if !models.control_observations.is_empty() {
+            for observation in &models.control_observations {
+                let Some(speed) = observation.speed.as_ref() else {
+                    continue;
+                };
+                if observation.turns.main_loop + observation.turns.delegated == 0 {
+                    continue;
+                }
+                let mut target = model_control_target(
+                    &evidence.identity.agent,
+                    observation.provider.as_deref(),
+                    observation.api.as_deref(),
+                    &observation.model,
+                );
+                target.service_tier = Some(speed.clone());
+                match catalog.resolve(&target) {
+                    Support::Supported(definition) => match definition.service_tier {
+                        Support::Supported(Some(speed)) if speed == FAST_SPEED_KEY => {
+                            if observation.turns.delegated
+                                >= catalogs.fast_mode_delegated_turns_threshold
+                            {
+                                return Observation::Finding;
+                            }
+                        }
+                        Support::Supported(Some(_)) | Support::Supported(None) => {}
+                        Support::Unsupported { .. } | Support::Unknown { .. } => {
+                            contract_incomplete = true;
+                        }
+                    },
+                    Support::Unsupported { .. } | Support::Unknown { .. } => {
+                        contract_incomplete = true;
+                    }
+                }
+            }
+            if contract_incomplete {
+                return Observation::ContractIncomplete;
+            }
+            let coverage = models.speed_signal;
+            return if coverage.present_turns == 0
+                || coverage.present_turns < coverage.eligible_turns
+            {
+                Observation::SignalMissing
+            } else {
+                Observation::NoFinding
+            };
+        }
+        let attributed = models
+            .fast_modes_by_model
+            .iter()
+            .flat_map(|(model, speeds)| {
+                speeds
+                    .iter()
+                    .map(move |(label, turns)| (Some(model.as_str()), label, turns))
+            });
+        let legacy = models
+            .fast_modes
+            .iter()
+            .map(|(label, turns)| (None, label, turns));
+        for (model, label, turns) in attributed.chain(
+            models
+                .fast_modes_by_model
+                .is_empty()
+                .then_some(legacy)
+                .into_iter()
+                .flatten(),
+        ) {
             let turns_with_signal = turns.main_loop + turns.delegated;
             if turns_with_signal == 0 {
                 continue;
             }
-            let normalized = label.trim().to_lowercase();
-            if normalized == FAST_SPEED_KEY {
-                if turns.delegated > 0
-                    && turns.delegated >= catalogs.fast_mode_delegated_turns_threshold
-                {
-                    return Observation::Finding;
-                }
-            } else if !is_recognized_speed(&normalized, catalogs) {
+            let model = model.or_else(|| {
+                (models.by_model.len() == 1)
+                    .then(|| models.by_model.keys().next())
+                    .flatten()
+                    .map(String::as_str)
+            });
+            let Some(model) = model else {
                 contract_incomplete = true;
+                continue;
+            };
+            let Some(mut target) = fixed_route_target(&evidence.identity.agent, model) else {
+                contract_incomplete = true;
+                continue;
+            };
+            target.service_tier = Some(label.clone());
+            match catalog.resolve(&target) {
+                Support::Supported(definition) => match definition.service_tier {
+                    Support::Supported(Some(speed)) if speed == FAST_SPEED_KEY => {
+                        if turns.delegated > 0
+                            && turns.delegated >= catalogs.fast_mode_delegated_turns_threshold
+                        {
+                            return Observation::Finding;
+                        }
+                    }
+                    Support::Supported(Some(_)) | Support::Supported(None) => {}
+                    Support::Unsupported { .. } | Support::Unknown { .. } => {
+                        contract_incomplete = true;
+                    }
+                },
+                Support::Unsupported { .. } | Support::Unknown { .. } => {
+                    contract_incomplete = true;
+                }
             }
         }
         if contract_incomplete {
@@ -74,29 +166,18 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         // This rule also covers zero eligible turns, because
         // `present_turns` is then zero too.
         let coverage = models.speed_signal;
-        if coverage.present_turns == 0 {
+        if coverage.present_turns == 0 || coverage.present_turns < coverage.eligible_turns {
             return Observation::SignalMissing;
         }
     }
     Observation::NoFinding
 }
 
-/// Returns whether any family's policy recognizes `label`, which is
-/// already trimmed and lowercased. Both shipped families recognize the
-/// same speed vocabulary, so this does not need per-session family
-/// derivation the way Model Overthinking's effort check does.
-fn is_recognized_speed(label: &str, catalogs: &ReportCatalogs) -> bool {
-    catalogs
-        .families
-        .values()
-        .any(|policy| policy.speed.recognized.contains(label))
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::test_support::claude_evidence;
     use super::*;
-    use crate::analysis::{CoverageReason, EvidenceValue, SignalCoverage, TurnCounts};
+    use crate::analysis::{CoverageReason, EvidenceValue, ModelTokens, SignalCoverage, TurnCounts};
 
     /// Builds evidence with one `FAST_SPEED_KEY` entry and full speed-
     /// signal coverage: every eligible turn carried a speed value.
@@ -114,13 +195,19 @@ mod tests {
         let EvidenceValue::Complete(mut models) = evidence.models else {
             unreachable!()
         };
-        models.fast_modes.insert(
-            label.to_owned(),
-            TurnCounts {
-                main_loop,
-                delegated,
-            },
-        );
+        let turns = TurnCounts {
+            main_loop,
+            delegated,
+        };
+        models.fast_modes.insert(label.to_owned(), turns.clone());
+        models
+            .fast_modes_by_model
+            .entry("claude-sonnet-4-6".to_owned())
+            .or_default()
+            .insert(label.to_owned(), turns);
+        models
+            .by_model
+            .insert("claude-sonnet-4-6".to_owned(), ModelTokens::default());
         let turns = main_loop + delegated;
         models.speed_signal = SignalCoverage {
             eligible_turns: turns,
@@ -197,10 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_speed_signal_coverage_without_a_finding_is_no_finding() {
-        // At least one turn carries a speed value. The rule assesses
-        // that turn instead of reporting the signal as missing. A turn
-        // without the signal is not negative evidence.
+    fn partial_speed_signal_coverage_without_a_finding_is_missing() {
         let catalogs = ReportCatalogs::default();
         let mut evidence = claude_evidence("partial-speed-coverage");
         let EvidenceValue::Complete(mut models) = evidence.models else {
@@ -212,7 +296,7 @@ mod tests {
         };
         evidence.models = EvidenceValue::Complete(models);
 
-        assert_eq!(evaluate(&evidence, &catalogs), Observation::NoFinding);
+        assert_eq!(evaluate(&evidence, &catalogs), Observation::SignalMissing);
     }
 
     #[test]

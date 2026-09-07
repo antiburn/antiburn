@@ -4,7 +4,7 @@ use antiburn_local::analysis::{
     CompositeSink, CoverageReason, EventSource, EvidenceSource, EvidenceValue, MemoryTurnRowStore,
     NormalizedRecord, PartialReason, RawSource, RecordSink, SessionCollector, SessionEvidence,
     SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
-    SourceCapabilities, SourceKind, TurnRowSink, TurnRowStore, VisitOutcome, adapter_for,
+    SourceCapabilities, SourceKind, TurnRowSink, TurnRowStore, VisitOutcome, reader_for,
 };
 use rusqlite::{Connection, params};
 use serde_json::json;
@@ -78,7 +78,7 @@ fn evidence_and_rows(input: &SessionInput) -> (SessionEvidence, Arc<MemoryTurnRo
         None,
     );
     let mut sink = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for("opencode")
+    let outcome = reader_for("opencode")
         .visit(input, &mut sink)
         .expect("stream opencode source");
     sink.observe_source_outcome(outcome);
@@ -149,11 +149,13 @@ fn opencode_capabilities_match_the_observed_contract() {
     assert_eq!(
         SourceCapabilities::opencode(),
         SourceCapabilities {
+            source_format: antiburn_local::analysis::SourceFormat::OpenCodeJsonl,
             request_context_tokens: true,
             cache_write_tokens: true,
             timestamps_and_order: true,
             tool_invocations: true,
-            skill_mcp_attribution: false,
+            skill_inventory: false,
+            mcp_inventory: false,
             tool_definitions: false,
             model_identity: true,
             token_classes: true,
@@ -168,6 +170,7 @@ fn opencode_capabilities_match_the_observed_contract() {
             linear_record_order: false,
             quota_incidents: false,
             harness_version: false,
+            repeated_context_accounting: None,
         }
     );
 }
@@ -237,7 +240,7 @@ fn native_sqlite_streams_root_and_descendant_messages_in_order() {
 
     let input = sqlite_input(&path, "root");
     let mut collector = SessionCollector::new("opencode", "root");
-    adapter_for("opencode")
+    reader_for("opencode")
         .visit(&input, &mut collector)
         .expect("stream database");
     let session = collector.into_session().expect("finished session");
@@ -409,7 +412,7 @@ fn a_fork_is_its_own_root() {
 
     let parent_input = sqlite_input(&path, "parent");
     let mut parent_collector = SessionCollector::new("opencode", "parent");
-    adapter_for("opencode")
+    reader_for("opencode")
         .visit(&parent_input, &mut parent_collector)
         .expect("stream parent");
     let parent_session = parent_collector.into_session().expect("finished parent");
@@ -425,7 +428,7 @@ fn a_fork_is_its_own_root() {
 
     let fork_input = sqlite_input(&path, "fork");
     let mut fork_collector = SessionCollector::new("opencode", "fork");
-    adapter_for("opencode")
+    reader_for("opencode")
         .visit(&fork_input, &mut fork_collector)
         .expect("stream fork");
     let fork_session = fork_collector.into_session().expect("finished fork");
@@ -528,7 +531,7 @@ fn export_stream_marks_a_child_message_as_delegated_with_one_spawn() {
     };
 
     let mut collector = SessionCollector::new("opencode", "root");
-    adapter_for("opencode")
+    reader_for("opencode")
         .visit(&input, &mut collector)
         .expect("stream export");
     let session = collector.into_session().expect("finished session");
@@ -555,7 +558,7 @@ fn native_sqlite_does_not_call_discovery_rendering() {
 
     let input = sqlite_input(&path, "root");
     let mut collector = SessionCollector::new("opencode", "root");
-    adapter_for("opencode")
+    reader_for("opencode")
         .visit(&input, &mut collector)
         .expect("stream database");
     collector.into_session().expect("finished session");
@@ -607,7 +610,7 @@ fn malformed_unknown_and_oversized_rows_report_partial_without_payload() {
 
     let input = sqlite_input(&path, "root");
     let mut collector = SessionCollector::new("opencode", "root");
-    adapter_for("opencode")
+    reader_for("opencode")
         .visit(&input, &mut collector)
         .expect("stream database");
     let reasons = collector.partial_reasons().clone();
@@ -629,7 +632,7 @@ fn database_claim_is_checked_inside_the_snapshot() {
     insert_message(&connection, "message", "root", 120, r#"{"role":"user"}"#);
     drop(connection);
     let input = sqlite_input(&path, "root");
-    let adapter = adapter_for("opencode");
+    let adapter = reader_for("opencode");
 
     let mut mismatch = SessionCollector::new("opencode", "root");
     let outcome = adapter
@@ -680,7 +683,7 @@ fn exported_messages_stream_without_session_wide_collection() {
         records: 0,
         finished: false,
     };
-    adapter_for("opencode")
+    reader_for("opencode")
         .visit(&input, &mut sink)
         .expect("stream synthetic export");
 
@@ -718,7 +721,7 @@ fn metrics_and_evidence_publish_from_the_stream() {
         None,
     );
     let mut sink = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for("opencode")
+    let outcome = reader_for("opencode")
         .visit(&input, &mut sink)
         .expect("stream export");
     sink.observe_source_outcome(outcome);

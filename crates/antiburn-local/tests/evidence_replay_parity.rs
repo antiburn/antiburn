@@ -30,8 +30,8 @@ use antiburn_local::analysis::{
     CompositeSink, EvidenceSource, FenceScope, MemoryTurnRowStore, NormalizedEvent,
     NormalizedRecord, RawSource, Role, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
     SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind, TurnRowSink,
-    TurnRowStore, TurnScope, TurnSessionKey, VisitOutcome, adapter_for, evidence_from_facts,
-    query_coverage_record, query_turn_facts,
+    TurnRowStore, TurnScope, TurnSessionKey, VisitOutcome, evidence_from_facts,
+    query_coverage_record, query_turn_facts, reader_for,
 };
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -216,7 +216,7 @@ fn run_fixture_and_replay(
         None,
     );
     let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for(agent)
+    let outcome = reader_for(agent)
         .visit(input, &mut composite)
         .expect("fixture must stream");
     composite.observe_source_outcome(outcome);

@@ -39,6 +39,8 @@ pub struct TurnFacts {
     pub unattributed_turns: u64,
     pub effort_tiers: BTreeMap<String, TurnCounts>,
     pub fast_modes: BTreeMap<String, TurnCounts>,
+    pub effort_tiers_by_model: BTreeMap<String, BTreeMap<String, TurnCounts>>,
+    pub fast_modes_by_model: BTreeMap<String, BTreeMap<String, TurnCounts>>,
     pub tiers_capped: bool,
     pub effort_signal: SignalCoverage,
     pub speed_signal: SignalCoverage,
@@ -158,6 +160,22 @@ pub fn query_turn_facts(
         "models.fast_modes",
         &mut diagnostics,
     )?;
+    let (effort_tiers_by_model, effort_model_capped) = query_tiers_by_model(
+        conn,
+        key,
+        scope,
+        "effort",
+        "models.effort_tiers_by_model",
+        &mut diagnostics,
+    )?;
+    let (fast_modes_by_model, speed_model_capped) = query_tiers_by_model(
+        conn,
+        key,
+        scope,
+        "speed",
+        "models.fast_modes_by_model",
+        &mut diagnostics,
+    )?;
     let (effort_signal, speed_signal) = query_signal_coverage(conn, key, scope)?;
     let (delegated_models, delegated_models_capped) =
         query_delegated_models(conn, key, scope, &mut diagnostics)?;
@@ -180,7 +198,9 @@ pub fn query_turn_facts(
         unattributed_turns: core.unattributed_turns,
         effort_tiers,
         fast_modes,
-        tiers_capped: effort_capped || fast_capped,
+        effort_tiers_by_model,
+        fast_modes_by_model,
+        tiers_capped: effort_capped || fast_capped || effort_model_capped || speed_model_capped,
         effort_signal,
         speed_signal,
         delegated_turns: core.delegated_turns,
@@ -854,6 +874,59 @@ fn query_tier_map(
         }
     }
     Ok((map, capped))
+}
+
+type TiersByModel = BTreeMap<String, BTreeMap<String, TurnCounts>>;
+
+fn query_tiers_by_model(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    scope: &FenceScope<'_>,
+    column: &str,
+    field: &'static str,
+    diagnostics: &mut ParseDiagnostics,
+) -> rusqlite::Result<(TiersByModel, bool)> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
+    let sql = format!(
+        "SELECT model, {column}, scope FROM turn \
+         WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 \
+         AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6)))) \
+         AND role = 'assistant' AND model IS NOT NULL AND {column} IS NOT NULL ORDER BY rowid"
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let mut rows = statement.query(params![
+        key.environment_key,
+        key.agent,
+        key.session_id,
+        claim_fence,
+        published_fence,
+        source_keys_json
+    ])?;
+    let mut result = TiersByModel::new();
+    let mut capped = false;
+    while let Some(row) = rows.next()? {
+        let raw_model: String = row.get(0)?;
+        let raw_tier: String = row.get(1)?;
+        let scope: String = row.get(2)?;
+        let model = cap_string(field, &raw_model, diagnostics);
+        let tier = cap_string(field, &raw_tier, diagnostics);
+        if model.len() != raw_model.len() || tier.len() != raw_tier.len() {
+            capped = true;
+        }
+        if !result.contains_key(&model) && result.len() == MAX_MODELS {
+            capped = true;
+            note_collection_cap(diagnostics, field);
+            continue;
+        }
+        let tiers = result.entry(model).or_default();
+        if !tiers.contains_key(&tier) && tiers.len() == MAX_TIER_LABELS {
+            capped = true;
+            note_collection_cap(diagnostics, field);
+            continue;
+        }
+        increment_turn_count(tiers.entry(tier).or_default(), scope == "delegated");
+    }
+    Ok((result, capped))
 }
 
 fn increment_turn_count(counts: &mut TurnCounts, delegated: bool) {

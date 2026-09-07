@@ -1397,9 +1397,9 @@ mod tests {
         use std::collections::{BTreeMap, BTreeSet};
 
         use antiburn_local::analysis::{
-            ContextEvidence, EvidenceSource, ModelTokens, RelationConfidence, RelationProvenance,
-            RepeatedContext, SessionEvidenceAccumulator, SourceCapabilities, SourceKind,
-            SubagentChild, TurnCounts, TurnFacts,
+            ContextEvidence, EvidenceSource, ModelControlObservation, ModelTokens,
+            RelationConfidence, RelationProvenance, RepeatedContext, SessionEvidenceAccumulator,
+            SourceCapabilities, SourceKind, SubagentChild, TurnCounts, TurnFacts,
         };
         use antiburn_local::insights::{
             CoverageCounts, DetectorCounts, DetectorFindings, EfficiencyReportAccumulator,
@@ -1755,6 +1755,17 @@ mod tests {
                     delegated: 0,
                 },
             );
+            models.control_observations.push(ModelControlObservation {
+                provider: None,
+                api: None,
+                model: "claude-opus-4-6".to_owned(),
+                effort: Some("max".to_owned()),
+                speed: None,
+                turns: TurnCounts {
+                    main_loop: 2,
+                    delegated: 0,
+                },
+            });
             models.fast_modes.insert(
                 FAST_SPEED_KEY.to_owned(),
                 TurnCounts {
@@ -1762,6 +1773,17 @@ mod tests {
                     delegated: 2,
                 },
             );
+            models.control_observations.push(ModelControlObservation {
+                provider: None,
+                api: None,
+                model: "claude-opus-4-6".to_owned(),
+                effort: None,
+                speed: Some(FAST_SPEED_KEY.to_owned()),
+                turns: TurnCounts {
+                    main_loop: 0,
+                    delegated: 2,
+                },
+            });
 
             let EvidenceValue::Complete(subagents) = &mut evidence.subagents else {
                 panic!("synthetic subagent evidence must be complete");

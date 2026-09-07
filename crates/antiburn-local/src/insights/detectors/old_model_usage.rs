@@ -18,6 +18,7 @@
 //!   in the catalog can prove that no deprecated model ran.
 
 use crate::analysis::SessionEvidence;
+use crate::model_catalog::{ModelState, Support, reviewed_model_state};
 
 use super::{Observation, ReportCatalogs, observed};
 
@@ -26,18 +27,24 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         return Observation::ContractIncomplete;
     }
     let mut missing_timestamp = false;
+    let mut unknown_model = false;
     if let Some(models) = observed(&evidence.models) {
         for (model, tokens) in &models.by_model {
             // The registry keys every source ID and alias by
             // `canonical_model_key`; match observed model strings the
             // same way so a provider prefix, a date suffix, or mixed
             // case does not miss the rule.
-            let Some(replacement) = catalogs.model_replacements.lookup(model) else {
-                continue;
-            };
             if tokens.turns == 0 {
                 continue;
             }
+            let state = reviewed_model_state(&catalogs.model_replacements, model);
+            let Support::Supported(state) = state else {
+                unknown_model = true;
+                continue;
+            };
+            let ModelState::Obsolete(replacement) = state else {
+                continue;
+            };
             if tokens.last_ts_ms == 0 {
                 missing_timestamp = true;
                 continue;
@@ -47,7 +54,7 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
             }
         }
     }
-    if missing_timestamp {
+    if missing_timestamp || unknown_model {
         return Observation::ContractIncomplete;
     }
     Observation::NoFinding
@@ -148,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn uncatalogued_model_is_no_finding() {
+    fn reviewed_replacement_model_is_no_finding() {
         assert_eq!(
             evaluate(&with_model("new-model-2", 200, false), &catalogs()),
             Observation::NoFinding
@@ -164,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn timestampless_uncatalogued_turns_are_no_finding() {
+    fn timestampless_reviewed_replacement_turns_are_no_finding() {
         assert_eq!(
             evaluate(&with_model("new-model-2", 0, false), &catalogs()),
             Observation::NoFinding

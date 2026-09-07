@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::analysis::initial_context::SourceOrigin;
 use crate::analysis::interface::RelationProvenance;
 use crate::analysis::{PartialReason, RawSource, VisitOutcome};
 
@@ -120,8 +121,16 @@ pub struct ToolEvidence {
 #[serde(rename_all = "camelCase")]
 pub struct LoadedSource {
     pub description: Option<String>,
+    #[serde(default)]
+    pub configured: bool,
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default)]
+    pub injected: bool,
     pub invoked: bool,
-    pub origin: EvidenceValue<()>,
+    #[serde(default)]
+    pub token_count: Option<u64>,
+    pub origin: EvidenceValue<SourceOrigin>,
 }
 
 /// One built-in tool definition's context cost, resolved for the session's
@@ -184,11 +193,28 @@ pub struct SignalCoverage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ModelControlObservation {
+    pub provider: Option<String>,
+    pub api: Option<String>,
+    pub model: String,
+    pub effort: Option<String>,
+    pub speed: Option<String>,
+    pub turns: TurnCounts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelEvidence {
     pub by_model: BTreeMap<String, ModelTokens>,
     pub unattributed_turns: u64,
     pub effort_tiers: BTreeMap<String, TurnCounts>,
     pub fast_modes: BTreeMap<String, TurnCounts>,
+    #[serde(default)]
+    pub effort_tiers_by_model: BTreeMap<String, BTreeMap<String, TurnCounts>>,
+    #[serde(default)]
+    pub fast_modes_by_model: BTreeMap<String, BTreeMap<String, TurnCounts>>,
+    #[serde(default)]
+    pub control_observations: Vec<ModelControlObservation>,
     pub service_tiers: EvidenceValue<()>,
     /// Reasoning-effort-tier coverage. Old persisted evidence has no
     /// field here, so it deserializes as `0/0`, which reads as missing.
@@ -268,6 +294,38 @@ pub struct ChurnCounts {
 pub enum RepeatedContextAccounting {
     CacheWrite,
     UncachedInput,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceFormat {
+    ClaudeJsonl,
+    CodexRolloutJsonl,
+    OpenCodeJsonl,
+    OpenCodeSqliteV2,
+    PiV3Jsonl,
+    CursorJsonl,
+    CursorCliAgentJsonl,
+    CursorCliStoreDb,
+    CursorIdeComposer,
+    CursorLegacyChatJson,
+    AntigravityJson,
+    AntigravityBrainJsonl,
+    AntigravityCascadeJson,
+    AntigravityWorkspaceChatJson,
+    AntigravitySqlite,
+    CopilotCliJsonl,
+    CopilotIdeChatJson,
+    ClineSessionJson,
+    KiroSessionJson,
+    KiroChat,
+    AmpThreadJson,
+    AmpFileChanges,
+    WindsurfWorkspaceJson,
+    WindsurfMirrorJson,
+    WindsurfCascadeProtobuf,
+    #[default]
+    Uncharacterized,
 }
 
 /// Per-thread repeated-context accounting: paid context beyond positive
@@ -373,14 +431,17 @@ pub struct CompactionEvidence {
     pub boundaries: Vec<CompactionBoundary>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceCapabilities {
+    pub source_format: SourceFormat,
     pub request_context_tokens: bool,
     pub cache_write_tokens: bool,
     pub timestamps_and_order: bool,
     pub tool_invocations: bool,
-    pub skill_mcp_attribution: bool,
+    pub skill_inventory: bool,
+    pub mcp_inventory: bool,
     pub tool_definitions: bool,
     pub model_identity: bool,
     pub token_classes: bool,
@@ -402,6 +463,7 @@ pub struct SourceCapabilities {
     pub linear_record_order: bool,
     pub quota_incidents: bool,
     pub harness_version: bool,
+    pub repeated_context_accounting: Option<RepeatedContextAccounting>,
 }
 
 impl SourceCapabilities {
@@ -417,11 +479,13 @@ impl SourceCapabilities {
     /// carries the version and model signal the catalogue lookup needs.
     pub fn claude() -> Self {
         Self {
+            source_format: SourceFormat::ClaudeJsonl,
             request_context_tokens: true,
             cache_write_tokens: true,
             timestamps_and_order: true,
             tool_invocations: true,
-            skill_mcp_attribution: true,
+            skill_inventory: true,
+            mcp_inventory: true,
             tool_definitions: true,
             model_identity: true,
             token_classes: true,
@@ -436,10 +500,11 @@ impl SourceCapabilities {
             linear_record_order: false,
             quota_incidents: false,
             harness_version: false,
+            repeated_context_accounting: Some(RepeatedContextAccounting::CacheWrite),
         }
     }
 
-    /// `fast_tier` is set: the adapter now normalizes each thread's
+    /// `fast_tier` is set: the reader normalizes each thread's
     /// `thread_settings_applied.service_tier` into the same `fast`/`standard`
     /// speed vocabulary Claude reports, so the fast-mode detector and the
     /// report's `FAST_OR_SERVICE_TIER` clause read it the same way. The
@@ -447,7 +512,7 @@ impl SourceCapabilities {
     /// stays `EvidenceValue::Unsupported` — this source never populates that
     /// distinct, unread field.
     ///
-    /// `subagent_relationships` and `subagent_models` are set. The adapter
+    /// `subagent_relationships` and `subagent_models` are set. The reader
     /// emits `SubagentSpawn` for each owned `spawn_agent` call. Discovery
     /// relates the spawned child rollout to its parent, the same way it
     /// relates a Claude sidechain. The child's `turn_context.model` reaches
@@ -467,19 +532,21 @@ impl SourceCapabilities {
     /// This lets `previous_turn` attest linkage structurally, from order
     /// alone, in place of the id-based route.
     ///
-    /// `cache_write_tokens` is set: the adapter reads a session's
+    /// `cache_write_tokens` is set: the reader reads a session's
     /// `cache_write_input_tokens` alias key when present. This flag
     /// trusts only the reported token count. `evidence_sink` still pins
     /// Codex to uncached-input accounting for repeated context, as its
-    /// fixed exception documents.
+    /// source capability contract documents.
     pub fn codex() -> Self {
         Self {
+            source_format: SourceFormat::CodexRolloutJsonl,
             request_context_tokens: true,
             cache_write_tokens: true,
             timestamps_and_order: true,
             tool_invocations: true,
-            skill_mcp_attribution: false,
-            tool_definitions: false,
+            skill_inventory: false,
+            mcp_inventory: false,
+            tool_definitions: true,
             model_identity: true,
             token_classes: true,
             reasoning_effort_tier: true,
@@ -492,7 +559,8 @@ impl SourceCapabilities {
             record_identity: false,
             linear_record_order: true,
             quota_incidents: false,
-            harness_version: false,
+            harness_version: true,
+            repeated_context_accounting: Some(RepeatedContextAccounting::UncachedInput),
         }
     }
 
@@ -517,11 +585,13 @@ impl SourceCapabilities {
     /// the same session.
     pub fn opencode() -> Self {
         Self {
+            source_format: SourceFormat::OpenCodeJsonl,
             request_context_tokens: true,
             cache_write_tokens: true,
             timestamps_and_order: true,
             tool_invocations: true,
-            skill_mcp_attribution: false,
+            skill_inventory: false,
+            mcp_inventory: false,
             tool_definitions: false,
             model_identity: true,
             token_classes: true,
@@ -536,25 +606,26 @@ impl SourceCapabilities {
             linear_record_order: false,
             quota_incidents: false,
             harness_version: false,
+            repeated_context_accounting: None,
         }
     }
 
     /// Pi reports request occupancy from its three disjoint input classes.
-    /// Cache-write support degrades when an assistant API lacks that bucket.
+    /// Cache-write support states that the format can carry that bucket.
     /// Top-level timestamps provide ordering for every semantic row.
     /// Content blocks provide tool invocations but no tool catalog or MCP source.
     /// Assistant rows provide model identity and four token classes.
     /// Thinking-level rows provide reasoning effort but no speed or service tier.
     /// Pi files provide no safe subagent relationship or child-model contract.
     /// Compaction rows provide boundaries and pre-compaction token counts.
-    /// The adapter ingests no quota incident or harness-version record.
+    /// The reader ingests no quota incident or harness-version record.
     ///
     /// `thread_identity` is set. Every entry after the session header carries
     /// its own `id`, and names the entry it continues from in `parentId`
     /// (`null` for the one root). The chain covers message and non-message
     /// rows alike, so a Pi file — one root, no in-file branching — is one
     /// thread. A fork file copies its parent's entries verbatim, with the
-    /// same ids, then continues with its own; the adapter still resolves the
+    /// same ids, then continues with its own; the reader still resolves the
     /// copied rows into the chain (so the first owned row's `parentId`
     /// finds a seen id) even though it keeps dropping their events.
     ///
@@ -563,11 +634,13 @@ impl SourceCapabilities {
     /// earlier in the same source.
     pub fn pi() -> Self {
         Self {
+            source_format: SourceFormat::PiV3Jsonl,
             request_context_tokens: true,
             cache_write_tokens: true,
             timestamps_and_order: true,
             tool_invocations: true,
-            skill_mcp_attribution: false,
+            skill_inventory: false,
+            mcp_inventory: false,
             tool_definitions: false,
             model_identity: true,
             token_classes: true,
@@ -582,6 +655,7 @@ impl SourceCapabilities {
             linear_record_order: false,
             quota_incidents: false,
             harness_version: false,
+            repeated_context_accounting: None,
         }
     }
 
@@ -599,18 +673,20 @@ impl SourceCapabilities {
     /// tool-call parsing. `tool_definitions` stays unset — neither shape
     /// carries a tool catalog.
     ///
-    /// The adapter emits no `SubagentSpawn`, `ThreadLink`, or `ContextSource`
+    /// The reader emits no `SubagentSpawn`, `ThreadLink`, or `ContextSource`
     /// observation (those come from `evidence_observations`, which only the
-    /// Claude adapter calls), so `subagent_relationships`, `subagent_models`,
-    /// and `skill_mcp_attribution` stay unset. Cursor writes no compaction,
+    /// Claude reader calls), so `subagent_relationships`, `subagent_models`,
+    /// and resource inventory support stay unset. Cursor writes no compaction,
     /// quota, or harness-version record either.
     pub fn cursor() -> Self {
         Self {
+            source_format: SourceFormat::CursorJsonl,
             request_context_tokens: false,
             cache_write_tokens: false,
             timestamps_and_order: true,
             tool_invocations: true,
-            skill_mcp_attribution: false,
+            skill_inventory: false,
+            mcp_inventory: false,
             tool_definitions: false,
             model_identity: true,
             token_classes: false,
@@ -625,6 +701,7 @@ impl SourceCapabilities {
             linear_record_order: false,
             quota_incidents: false,
             harness_version: false,
+            repeated_context_accounting: None,
         }
     }
 
@@ -638,21 +715,23 @@ impl SourceCapabilities {
     /// `metadata.createdAt`/`metadata.startedAt` fallback) are confirmed
     /// against real captures, not guessed.
     ///
-    /// `tool_invocations` is set: the adapter reads a step's `tool_calls[]`
+    /// `tool_invocations` is set: the reader reads a step's `tool_calls[]`
     /// array by name, a documented, load-bearing shape (`PLANNER_RESPONSE`
     /// steps carry it), plus a same-step fallback for a tool-role step that
     /// names its tool inline. `tool_definitions` stays unset — neither path
     /// carries a tool catalog.
     ///
-    /// Every other field stays unset. The adapter emits no thread identity,
+    /// Every other field stays unset. The reader emits no thread identity,
     /// subagent, compaction, quota, or harness-version signal.
     pub fn antigravity() -> Self {
         Self {
+            source_format: SourceFormat::AntigravityJson,
             request_context_tokens: true,
             cache_write_tokens: false,
             timestamps_and_order: true,
             tool_invocations: true,
-            skill_mcp_attribution: false,
+            skill_inventory: false,
+            mcp_inventory: false,
             tool_definitions: false,
             model_identity: true,
             token_classes: false,
@@ -667,23 +746,26 @@ impl SourceCapabilities {
             linear_record_order: false,
             quota_incidents: false,
             harness_version: false,
+            repeated_context_accounting: None,
         }
     }
 
     /// The generic JSONL fallback's profile: every field unset.
     ///
     /// An unknown vendor's transcript proves no vendor-specific contract —
-    /// the same reasoning `GenericJsonlAdapter::normalize` already applies to
+    /// the same reasoning `GenericJsonlSessionReader::normalize` already applies to
     /// `cache_write_tokens_available` (see `vendors/generic_jsonl.rs`). This
-    /// adapter cannot vouch for any evidence contract, so every detector that
+    /// reader cannot vouch for any evidence contract, so every detector that
     /// needs one reads this source as unsupported rather than guessing.
     pub fn generic() -> Self {
         Self {
+            source_format: SourceFormat::Uncharacterized,
             request_context_tokens: false,
             cache_write_tokens: false,
             timestamps_and_order: false,
             tool_invocations: false,
-            skill_mcp_attribution: false,
+            skill_inventory: false,
+            mcp_inventory: false,
             tool_definitions: false,
             model_identity: false,
             token_classes: false,
@@ -698,6 +780,14 @@ impl SourceCapabilities {
             linear_record_order: false,
             quota_incidents: false,
             harness_version: false,
+            repeated_context_accounting: None,
+        }
+    }
+
+    pub fn uncharacterized(source_format: SourceFormat) -> Self {
+        Self {
+            source_format,
+            ..Self::generic()
         }
     }
 }
@@ -918,6 +1008,8 @@ pub struct SessionCoverageRecord {
     pub skills: BTreeMap<String, LoadedSource>,
     pub mcp_servers: BTreeMap<String, LoadedSource>,
     pub context_sources_cap_exceeded: bool,
+    #[serde(default)]
+    pub model_control_observations: Vec<ModelControlObservation>,
     pub subagent_spawn_count: u64,
     pub subagent_children: Vec<SubagentChild>,
     pub subagent_examples: Vec<SubagentExample>,
@@ -985,15 +1077,17 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 14,
+            "schemaRevision": 16,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
+                "sourceFormat": "claude_jsonl",
                 "requestContextTokens": true,
                 "cacheWriteTokens": true,
                 "timestampsAndOrder": true,
                 "toolInvocations": true,
-                "skillMcpAttribution": true,
+                "skillInventory": true,
+                "mcpInventory": true,
                 "toolDefinitions": true,
                 "modelIdentity": true,
                 "tokenClasses": true,
@@ -1007,13 +1101,14 @@ mod tests {
                 "recordIdentity": true,
                 "linearRecordOrder": false,
                 "quotaIncidents": false,
-                "harnessVersion": false
+                "harnessVersion": false,
+                "repeatedContextAccounting": "cache_write"
             },
             "coverage": coverage,
             "provenance": {
-                "parserRevision": 28,
-                "analyzerRevision": 18,
-                "evidenceSchemaRevision": 14,
+                "parserRevision": 30,
+                "analyzerRevision": 20,
+                "evidenceSchemaRevision": 16,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",
@@ -1036,7 +1131,7 @@ mod tests {
             "eligibility": {"state": "complete", "value": {"turns": 0, "assistantTurns": 0, "toolTurns": 0, "depthEligibleTurns": 0}},
             "tools": {"state": "complete", "value": {"byName": {}}},
             "contextSources": {"state": "complete", "value": {"skills": {}, "mcpServers": {}, "toolDefinitions": {"state": "unsupported"}}},
-            "models": {"state": "complete", "value": {"byModel": {}, "unattributedTurns": 0, "effortTiers": {}, "fastModes": {}, "serviceTiers": {"state": "unsupported"}, "effortSignal": {"eligibleTurns": 0, "presentTurns": 0}, "speedSignal": {"eligibleTurns": 0, "presentTurns": 0}, "dominantMainModel": null}},
+            "models": {"state": "complete", "value": {"byModel": {}, "controlObservations": [], "unattributedTurns": 0, "effortTiers": {}, "fastModes": {}, "effortTiersByModel": {}, "fastModesByModel": {}, "serviceTiers": {"state": "unsupported"}, "effortSignal": {"eligibleTurns": 0, "presentTurns": 0}, "speedSignal": {"eligibleTurns": 0, "presentTurns": 0}, "dominantMainModel": null}},
             "subagents": {"state": "complete", "value": {"spawnCount": 0, "delegatedTurns": 0, "delegatedModels": [], "children": [], "examples": []}},
             "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "complete", "value": null}, "providerEviction": {"state": "unsupported"}, "repeatedContext": {"state": "complete", "value": {"accounting": "cache_write", "repeatedTokens": 0, "pairsConsidered": 0, "pairsSkipped": 0, "paidTokens": 0}}}},
             "compactions": {"state": "complete", "value": {"boundaries": []}},
@@ -1125,15 +1220,15 @@ mod tests {
         );
     }
 
-    /// Pins `SourceCapabilities::cursor()` against what the Cursor adapter
+    /// Pins `SourceCapabilities::cursor()` against what the Cursor reader
     /// actually emits: every claimed-true signal (timestamps, model, tool
     /// invocations) appears, and every claimed-false one (usage-derived
     /// token classes, thread identity) never does.
     #[test]
-    fn cursor_capabilities_match_what_the_adapter_actually_emits() {
+    fn cursor_capabilities_match_what_the_reader_actually_emits() {
         use crate::analysis::interface::SessionInput;
         use crate::analysis::model::Usage;
-        use crate::analysis::vendors::adapter_for;
+        use crate::analysis::vendors::reader_for;
 
         let input = SessionInput {
             agent: "cursor".to_owned(),
@@ -1146,7 +1241,7 @@ mod tests {
             ),
             fork_parent_session_id: None,
         };
-        let session = adapter_for("cursor")
+        let session = reader_for("cursor")
             .normalize(&input)
             .expect("a synthetic Cursor session normalizes");
         let caps = SourceCapabilities::cursor();
@@ -1172,13 +1267,13 @@ mod tests {
         assert!(session.events.iter().all(|event| event.uuid.is_none()));
     }
 
-    /// Pins `SourceCapabilities::antigravity()` against the adapter: the
+    /// Pins `SourceCapabilities::antigravity()` against the reader: the
     /// step timestamp and `tool_calls[]` locations it claims are confirmed
     /// really do populate events, including direct model and usage fields.
     #[test]
-    fn antigravity_capabilities_match_what_the_adapter_actually_emits() {
+    fn antigravity_capabilities_match_what_the_reader_actually_emits() {
         use crate::analysis::interface::SessionInput;
-        use crate::analysis::vendors::adapter_for;
+        use crate::analysis::vendors::reader_for;
 
         let input = SessionInput {
             agent: "antigravity".to_owned(),
@@ -1191,7 +1286,7 @@ mod tests {
             ),
             fork_parent_session_id: None,
         };
-        let session = adapter_for("antigravity")
+        let session = reader_for("antigravity")
             .normalize(&input)
             .expect("a synthetic Antigravity session normalizes");
         let caps = SourceCapabilities::antigravity();
@@ -1220,11 +1315,13 @@ mod tests {
         assert_eq!(
             caps,
             SourceCapabilities {
+                source_format: SourceFormat::Uncharacterized,
                 request_context_tokens: false,
                 cache_write_tokens: false,
                 timestamps_and_order: false,
                 tool_invocations: false,
-                skill_mcp_attribution: false,
+                skill_inventory: false,
+                mcp_inventory: false,
                 tool_definitions: false,
                 model_identity: false,
                 token_classes: false,
@@ -1239,6 +1336,7 @@ mod tests {
                 linear_record_order: false,
                 quota_incidents: false,
                 harness_version: false,
+                repeated_context_accounting: None,
             }
         );
     }

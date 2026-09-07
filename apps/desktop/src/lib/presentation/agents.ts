@@ -26,9 +26,8 @@ interface AgentInfo {
   defaultSurface: AgentSurface
   /**
    * Whether the analysis engine has a dedicated adapter for this agent's
-   * transcript format. Agents on the generic fallback report `false`, and the
-   * UI uses that to explain an empty analysis view instead of implying the
-   * session was uninteresting.
+    * transcript format. A dedicated fail-closed reader can support a source
+    * while leaving checks unavailable when the persisted format lacks evidence.
    */
   supportsAnalysis: boolean
 }
@@ -59,13 +58,13 @@ const AGENTS: Record<string, AgentInfo> = {
     displayName: "GitHub Copilot",
     icon: "copilot",
     defaultSurface: "unknown",
-    supportsAnalysis: false,
+    supportsAnalysis: true,
   },
   cline: {
     displayName: "Cline",
     icon: "cline",
     defaultSurface: "unknown",
-    supportsAnalysis: false,
+    supportsAnalysis: true,
   },
   opencode: {
     displayName: "OpenCode",
@@ -77,13 +76,13 @@ const AGENTS: Record<string, AgentInfo> = {
     displayName: "Kiro",
     icon: "kiro",
     defaultSurface: "ide_desktop",
-    supportsAnalysis: false,
+    supportsAnalysis: true,
   },
   "amp-code": {
     displayName: "Amp",
     icon: "amp",
     defaultSurface: "cli",
-    supportsAnalysis: false,
+    supportsAnalysis: true,
   },
   antigravity: {
     displayName: "Antigravity",
@@ -95,7 +94,7 @@ const AGENTS: Record<string, AgentInfo> = {
     displayName: "Windsurf",
     icon: "windsurf",
     defaultSurface: "ide_desktop",
-    supportsAnalysis: false,
+    supportsAnalysis: true,
   },
   pi: {
     displayName: "Pi",
@@ -136,7 +135,7 @@ export function defaultAgentSurface(slug: string): AgentSurface {
 
 /**
  * Whether the analysis engine has a dedicated adapter for this agent. Agents
- * on the generic fallback (and unknown slugs) return false.
+ * without a dedicated reader return false.
  */
 export function agentSupportsAnalysis(slug: string): boolean {
   return AGENTS[slug]?.supportsAnalysis ?? false

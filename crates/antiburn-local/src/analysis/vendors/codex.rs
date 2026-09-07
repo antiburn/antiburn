@@ -53,8 +53,8 @@ use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, 
 use crate::analysis::initial_context::CodexContextAccumulator;
 use crate::analysis::interface::{
     ContentKind, ContentPart, ContextWindowSource, EvidenceObservation, NormalizedRecord,
-    RawSource, RecordSink, RelationProvenance, ResumedVisit, SessionInput, SessionSummary,
-    TurnContent, VendorAdapter, VisitOutcome,
+    RawSource, RecordSink, RelationProvenance, ResumedVisit, SessionInput, SessionReader,
+    SessionSummary, TurnContent, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, ToolCall, Usage};
 use crate::analysis::records::{
@@ -67,11 +67,15 @@ use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, Source
 const MAX_PENDING_FORK_ROWS: usize = 256;
 const MAX_PENDING_FORK_BYTES: usize = 1024 * 1024;
 
-pub struct CodexAdapter;
+pub struct CodexSessionReader;
 
-impl VendorAdapter for CodexAdapter {
+impl SessionReader for CodexSessionReader {
     fn agent(&self) -> &'static str {
         "codex"
+    }
+
+    fn capabilities(&self, _source: &RawSource) -> crate::analysis::SourceCapabilities {
+        crate::analysis::SourceCapabilities::codex()
     }
 
     fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession> {
@@ -139,7 +143,7 @@ impl VendorAdapter for CodexAdapter {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
-        CodexAdapter::visit_claimed(self, input, claim, guarantee, cancel, sink)
+        CodexSessionReader::visit_claimed(self, input, claim, guarantee, cancel, sink)
     }
 
     fn visit_claimed_resumed(
@@ -150,17 +154,17 @@ impl VendorAdapter for CodexAdapter {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<ResumedVisit> {
-        CodexAdapter::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
+        CodexSessionReader::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
     }
 
     fn empty_resume_state(&self) -> Option<crate::analysis::resume::AdapterSnapshot> {
-        Some(CodexAdapter::empty_adapter_snapshot())
+        Some(CodexSessionReader::empty_adapter_snapshot())
     }
 }
 
-impl CodexAdapter {
+impl CodexSessionReader {
     /// A fresh [`CodexStreamState`], serialized. Mirrors
-    /// [`crate::analysis::vendors::claude::ClaudeAdapter::empty_adapter_snapshot`]:
+    /// [`crate::analysis::vendors::claude::ClaudeSessionReader::empty_adapter_snapshot`]:
     /// pairs with a [`StreamSnapshot`] whose [`ResumePoint`][rp] offset is
     /// zero to start the first resumable pass over a source.
     ///
@@ -223,7 +227,7 @@ impl CodexAdapter {
     /// Streams a file from a verified [`StreamSnapshot`], restoring
     /// [`CodexStreamState`] from `resume.adapter` and reading only the bytes
     /// past `resume.resume.offset`. Mirrors
-    /// [`crate::analysis::vendors::claude::ClaudeAdapter::visit_claimed_resumed`]
+    /// [`crate::analysis::vendors::claude::ClaudeSessionReader::visit_claimed_resumed`]
     /// exactly; see its doc comment for the full read/recheck/snapshot shape.
     ///
     /// "Unsettled" rule: a fork sub-agent rollout's ownership can still be
@@ -370,7 +374,7 @@ struct CodexStreamState {
     agent_path: Option<String>,
     /// See [`json_text_codec`]: `postcard` cannot decode a `serde_json::Value`
     /// directly, so this field's wire form is JSON text. Always empty at the
-    /// point [`CodexAdapter::visit_claimed_resumed`] encodes a snapshot (see
+    /// point [`CodexSessionReader::visit_claimed_resumed`] encodes a snapshot (see
     /// its "unsettled" rule), but the codec must not depend on that: it round
     /// trips a populated buffer too.
     #[serde(with = "json_text_codec")]
@@ -689,6 +693,13 @@ impl CodexStreamState {
             } else {
                 Vec::new()
             };
+        if let Some(version) = self.context.harness_version() {
+            sink.record(NormalizedRecord::Observation(Box::new(
+                EvidenceObservation::HarnessVersion {
+                    version: version.to_owned(),
+                },
+            )));
+        }
         let (initial_context, skill_descriptions) = self.context.finish();
         let context_window_source = if self.context_window.is_some() {
             ContextWindowSource::Reported
@@ -2060,7 +2071,7 @@ mod tests {
 
     #[test]
     fn record_to_event_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 13_546_544_228_035_879_293;
+        const EXPECTED_FINGERPRINT: u64 = 4_958_272_014_037_502_614;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();
@@ -2277,7 +2288,7 @@ mod tests {
             fork_parent_session_id: None,
         };
         let mut sink = SessionCollector::new("codex", "synthetic-token-usage");
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit synthetic token usage session");
         let coverage = sink.coverage();
@@ -2455,7 +2466,7 @@ mod tests {
         };
         let mut sink = ObservationCapturingSink::default();
 
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit old-allowlist-with-signal session");
 
@@ -2486,7 +2497,7 @@ mod tests {
         };
         let mut sink = ObservationCapturingSink::default();
 
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit zero-component-heartbeat session");
 
@@ -2598,7 +2609,7 @@ mod tests {
         };
         let mut sink = ContentCapturingSink::default();
 
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit content session");
 
@@ -2714,7 +2725,7 @@ mod tests {
         };
         let mut sink = SessionCollector::new("codex", "fork-speed");
 
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit fork speed session");
         let session = sink.into_session().expect("fork speed session finishes");
@@ -2779,7 +2790,7 @@ mod tests {
         };
         let mut sink = ObservationCapturingSink::default();
 
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit spawn-owned session");
 
@@ -2827,7 +2838,7 @@ mod tests {
         };
         let mut sink = ObservationCapturingSink::default();
 
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit spawn-replayed-prefix session");
 
@@ -2850,7 +2861,7 @@ mod tests {
         };
         let mut sink = ObservationCapturingSink::default();
 
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit spawn-other-name session");
 
@@ -2944,7 +2955,7 @@ mod tests {
                     tail_hash: head_hash_of(&[]),
                     tail_len: 0,
                 },
-                adapter: CodexAdapter::empty_adapter_snapshot(),
+                adapter: CodexSessionReader::empty_adapter_snapshot(),
             })
         }
 
@@ -2956,7 +2967,7 @@ mod tests {
             let input = file_input(&path);
             let mut collector = SessionCollector::new("codex", "claimed-session");
 
-            let visit = CodexAdapter
+            let visit = CodexSessionReader
                 .visit_claimed_resumed(&input, &claim, &fresh_snapshot(), &|| false, &mut collector)
                 .expect("resumed visit of a fresh file");
 
@@ -2980,7 +2991,7 @@ mod tests {
             let input = file_input(&path);
             let mut first_pass = SessionCollector::new("codex", "claimed-session");
             let first_claim = claim_for_path(&path);
-            let first_visit = CodexAdapter
+            let first_visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &first_claim,
@@ -3001,7 +3012,7 @@ mod tests {
             let second_claim = claim_for_path(&path);
             let mut second_pass = SessionCollector::new("codex", "claimed-session");
 
-            let second_visit = CodexAdapter
+            let second_visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &second_claim,
@@ -3040,7 +3051,7 @@ mod tests {
             let input = file_input(&path);
             let first_claim = claim_for_path(&path);
             let mut first_pass = SessionCollector::new("codex", "claimed-session");
-            let first_visit = CodexAdapter
+            let first_visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &first_claim,
@@ -3061,7 +3072,7 @@ mod tests {
                 .expect("append legacy usage record");
             let second_claim = claim_for_path(&path);
             let mut second_pass = SessionCollector::new("codex", "claimed-session");
-            let second_visit = CodexAdapter
+            let second_visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &second_claim,
@@ -3084,7 +3095,7 @@ mod tests {
             let input = file_input(&path);
             let first_claim = claim_for_path(&path);
             let mut first_pass = SessionCollector::new("codex", "claimed-session");
-            let first_visit = CodexAdapter
+            let first_visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &first_claim,
@@ -3104,7 +3115,7 @@ mod tests {
             let rewritten_claim = claim_for_path(&path);
             let mut second_pass = SessionCollector::new("codex", "claimed-session");
 
-            let visit = CodexAdapter
+            let visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &rewritten_claim,
@@ -3139,7 +3150,7 @@ mod tests {
             let input = file_input(&path);
             let mut collector = SessionCollector::new("codex", "claimed-session");
 
-            let visit = CodexAdapter
+            let visit = CodexSessionReader
                 .visit_claimed_resumed(&input, &claim, &fresh_snapshot(), &|| false, &mut collector)
                 .expect("resumed visit of a pending fork");
 
@@ -3173,7 +3184,7 @@ mod tests {
             let claim = claim_for_path(&path);
             let input = file_input(&path);
             let mut first_pass = SessionCollector::new("codex", "claimed-session");
-            let first_visit = CodexAdapter
+            let first_visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &claim,
@@ -3202,7 +3213,7 @@ mod tests {
             // whenever a resumed pass carries no snapshot forward.
             let bootstrap_claim = claim_for_path(&path);
             let mut second_pass = SessionCollector::new("codex", "claimed-session");
-            let second_visit = CodexAdapter
+            let second_visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &bootstrap_claim,

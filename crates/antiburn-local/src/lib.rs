@@ -16,6 +16,7 @@ pub mod analysis;
 pub mod discovery;
 pub mod insights;
 pub mod model;
+pub mod model_catalog;
 pub mod paths;
 pub mod platform;
 pub mod pricing;

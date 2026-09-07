@@ -24,8 +24,8 @@ use serde_json::Value;
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::interface::{
     ContentPart, ContextWindowSource, EvidenceObservation, NormalizedRecord, ProviderHint,
-    RawSource, RecordSink, ResumedVisit, SessionCollector, SessionInput, SessionSummary,
-    TurnContent, VendorAdapter, VisitOutcome, bounded_provider_hint_value, push_provider_hint,
+    RawSource, RecordSink, ResumedVisit, SessionCollector, SessionInput, SessionReader,
+    SessionSummary, TurnContent, VisitOutcome, bounded_provider_hint_value, push_provider_hint,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role};
 use crate::analysis::records::{
@@ -36,11 +36,15 @@ use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, Source
 use crate::analysis::threads::ThreadResolver;
 
 /// Parses Pi transcript files without retaining transcript content.
-pub struct PiAdapter;
+pub struct PiSessionReader;
 
-impl VendorAdapter for PiAdapter {
+impl SessionReader for PiSessionReader {
     fn agent(&self) -> &'static str {
         "pi"
+    }
+
+    fn capabilities(&self, _source: &RawSource) -> crate::analysis::SourceCapabilities {
+        crate::analysis::SourceCapabilities::pi()
     }
 
     fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession> {
@@ -90,7 +94,7 @@ impl VendorAdapter for PiAdapter {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
-        PiAdapter::visit_claimed(self, input, claim, guarantee, cancel, sink)
+        PiSessionReader::visit_claimed(self, input, claim, guarantee, cancel, sink)
     }
 
     fn visit_claimed_resumed(
@@ -101,17 +105,17 @@ impl VendorAdapter for PiAdapter {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<ResumedVisit> {
-        PiAdapter::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
+        PiSessionReader::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
     }
 
     fn empty_resume_state(&self) -> Option<crate::analysis::resume::AdapterSnapshot> {
-        Some(PiAdapter::empty_adapter_snapshot())
+        Some(PiSessionReader::empty_adapter_snapshot())
     }
 }
 
-impl PiAdapter {
+impl PiSessionReader {
     /// A fresh [`PiStreamState`], serialized. Mirrors
-    /// [`crate::analysis::vendors::claude::ClaudeAdapter::empty_adapter_snapshot`]:
+    /// [`crate::analysis::vendors::claude::ClaudeSessionReader::empty_adapter_snapshot`]:
     /// pairs with a [`StreamSnapshot`] whose [`ResumePoint`][rp] offset is
     /// zero to start the first resumable pass over a source.
     ///
@@ -173,7 +177,7 @@ impl PiAdapter {
     /// Streams a file from a verified [`StreamSnapshot`], restoring
     /// [`PiStreamState`] from `resume.adapter` and reading only the bytes
     /// past `resume.resume.offset`. Mirrors
-    /// [`crate::analysis::vendors::claude::ClaudeAdapter::visit_claimed_resumed`]
+    /// [`crate::analysis::vendors::claude::ClaudeSessionReader::visit_claimed_resumed`]
     /// exactly; see its doc comment for the full read/recheck/snapshot shape.
     ///
     /// "Unsettled" rule: Pi has no case where its end-of-stream state is
@@ -431,6 +435,15 @@ impl PiStreamState {
         if role == "assistant" {
             self.observe_assistant_metadata(value);
             event.model = event.model.or_else(|| self.current_model.clone());
+            event.provider = value
+                .pointer("/message/provider")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| self.current_provider.clone());
+            event.api = value
+                .pointer("/message/api")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             if let Some(provider) = value
                 .pointer("/message/provider")
                 .and_then(Value::as_str)
@@ -814,7 +827,7 @@ mod tests {
                 tail_hash: head_hash_of(&[]),
                 tail_len: 0,
             },
-            adapter: PiAdapter::empty_adapter_snapshot(),
+            adapter: PiSessionReader::empty_adapter_snapshot(),
         })
     }
 
@@ -826,7 +839,7 @@ mod tests {
         let input = file_input(&path);
         let mut collector = SessionCollector::new("pi", "claimed-session");
 
-        let visit = PiAdapter
+        let visit = PiSessionReader
             .visit_claimed_resumed(&input, &claim, &fresh_snapshot(), &|| false, &mut collector)
             .expect("resumed visit of a fresh file");
 
@@ -850,7 +863,7 @@ mod tests {
         let input = file_input(&path);
         let mut first_pass = SessionCollector::new("pi", "claimed-session");
         let first_claim = claim_for_path(&path);
-        let first_visit = PiAdapter
+        let first_visit = PiSessionReader
             .visit_claimed_resumed(
                 &input,
                 &first_claim,
@@ -871,7 +884,7 @@ mod tests {
         let second_claim = claim_for_path(&path);
         let mut second_pass = SessionCollector::new("pi", "claimed-session");
 
-        let second_visit = PiAdapter
+        let second_visit = PiSessionReader
             .visit_claimed_resumed(
                 &input,
                 &second_claim,
@@ -900,7 +913,7 @@ mod tests {
         let input = file_input(&path);
         let first_claim = claim_for_path(&path);
         let mut first_pass = SessionCollector::new("pi", "claimed-session");
-        let first_visit = PiAdapter
+        let first_visit = PiSessionReader
             .visit_claimed_resumed(
                 &input,
                 &first_claim,
@@ -920,7 +933,7 @@ mod tests {
         let rewritten_claim = claim_for_path(&path);
         let mut second_pass = SessionCollector::new("pi", "claimed-session");
 
-        let visit = PiAdapter
+        let visit = PiSessionReader
             .visit_claimed_resumed(
                 &input,
                 &rewritten_claim,
@@ -969,7 +982,7 @@ mod tests {
         };
         let mut sink = SummarySink::default();
 
-        PiAdapter.visit(&input, &mut sink).unwrap();
+        PiSessionReader.visit(&input, &mut sink).unwrap();
 
         assert_eq!(
             sink.summary.unwrap().provider_hints,
@@ -1007,7 +1020,7 @@ mod tests {
         };
         let mut sink = SummarySink::default();
 
-        PiAdapter.visit(&input, &mut sink).unwrap();
+        PiSessionReader.visit(&input, &mut sink).unwrap();
 
         let hints = sink.summary.unwrap().provider_hints;
         assert_eq!(hints.len(), crate::analysis::MAX_PROVIDER_HINTS);
@@ -1110,7 +1123,7 @@ mod tests {
         };
         let mut sink = ContentCapturingSink::default();
 
-        PiAdapter
+        PiSessionReader
             .visit(&input, &mut sink)
             .expect("visit content session");
 

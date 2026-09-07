@@ -6,15 +6,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use antiburn_local::analysis::{
-    BoundedJsonlReader, ClaudeAdapter, CompositeSink, ContextSourceKind, EvidenceObservation,
+    BoundedJsonlReader, ClaudeSessionReader, CompositeSink, ContextSourceKind, EvidenceObservation,
     EvidenceSnapshot, EvidenceSource, MemoryTurnRowStore, NormalizedEvent, NormalizedRecord,
     RESUME_SNAPSHOT_REVISION, RETAINED_EVIDENCE_BYTES_BOUND, RETAINED_METRICS_BYTES_BOUND,
     RawSource, RecordSink, RelationProvenance, ResumePoint, Role, SCAN_QUANTUM_BYTES,
     SessionCoverageRecord, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
     SessionSummary, SourceCapabilities, SourceClaim, SourceKind, StoredResume, StreamSnapshot,
     TURN_ROW_BATCH_SIZE, ToolCall, TurnFacts, TurnRow, TurnRowError, TurnRowSink, TurnRowStore,
-    TurnScope, TurnSessionKey, Usage, adapter_for, count_turn_content_rows, count_turn_rows,
-    merge_metrics,
+    TurnScope, TurnSessionKey, Usage, count_turn_content_rows, count_turn_rows, merge_metrics,
+    reader_for,
 };
 use antiburn_local::discovery::source_version::head_hash_of;
 use antiburn_local::discovery::{FingerprintInputs, SourceStat};
@@ -30,7 +30,7 @@ fn streamed_corpus_keeps_framing_and_metrics_bounded() {
         fork_parent_session_id: None,
     };
     let mut accumulator = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
-    adapter_for("claude")
+    reader_for("claude")
         .visit(&input, &mut accumulator)
         .expect("synthetic source streams");
     assert!(accumulator.retained_bytes() <= RETAINED_METRICS_BYTES_BOUND);
@@ -215,7 +215,7 @@ fn the_turn_row_sink_stays_bounded_over_a_streamed_corpus() {
         None,
     );
     let mut composite = CompositeSink::with_turn_rows(metrics, evidence, sink);
-    adapter_for("claude")
+    reader_for("claude")
         .visit(&input, &mut composite)
         .expect("synthetic source streams");
 
@@ -330,7 +330,7 @@ fn stream_into(
         scope,
     );
     let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for("claude")
+    let outcome = reader_for("claude")
         .visit(input, &mut composite)
         .expect("synthetic source must stream");
     composite.observe_source_outcome(outcome);
@@ -542,7 +542,7 @@ fn disk_bytes_per_row_stay_bounded_with_content_enabled() {
         inner: composite,
         content_bytes: 0,
     };
-    let outcome = adapter_for("claude")
+    let outcome = reader_for("claude")
         .visit(&input, &mut counted)
         .expect("synthetic source streams");
     counted.inner.observe_source_outcome(outcome);
@@ -654,7 +654,7 @@ fn a_serialized_snapshot_for_the_largest_corpus_tier_stays_bounded() {
             tail_hash: head_hash_of(&[]),
             tail_len: 0,
         },
-        adapter: ClaudeAdapter::empty_adapter_snapshot(),
+        adapter: ClaudeSessionReader::empty_adapter_snapshot(),
         metrics: SessionMetricsAccumulator::new("claude", &session.session_id),
         evidence: EvidenceSnapshot {
             record: evidence.coverage_record(),
@@ -678,7 +678,7 @@ fn a_serialized_snapshot_for_the_largest_corpus_tier_stays_bounded() {
             None,
         ),
     );
-    let visit = ClaudeAdapter
+    let visit = ClaudeSessionReader
         .visit_claimed_resumed(&input, &claim, &empty_snapshot, &|| false, &mut composite)
         .expect("full pass over the largest corpus tier must stream");
     assert_eq!(
@@ -749,7 +749,7 @@ fn a_serialized_codex_snapshot_for_the_largest_fixture_stays_bounded() {
             tail_hash: head_hash_of(&[]),
             tail_len: 0,
         },
-        adapter: adapter_for("codex")
+        adapter: reader_for("codex")
             .empty_resume_state()
             .expect("codex adapter must support resume"),
         metrics: SessionMetricsAccumulator::new("codex", "codex-snapshot-bound"),
@@ -775,7 +775,7 @@ fn a_serialized_codex_snapshot_for_the_largest_fixture_stays_bounded() {
             None,
         ),
     );
-    let visit = adapter_for("codex")
+    let visit = reader_for("codex")
         .visit_claimed_resumed(&input, &claim, &empty_snapshot, &|| false, &mut composite)
         .expect("full pass over the largest Codex fixture must stream");
     assert_eq!(

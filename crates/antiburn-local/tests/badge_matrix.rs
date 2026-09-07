@@ -22,7 +22,7 @@ use std::sync::Arc;
 use antiburn_local::analysis::{
     CompositeSink, EvidenceCoverage, EvidenceSource, MemoryTurnRowStore, RawSource,
     SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SourceCapabilities, SourceKind, TurnRowSink, TurnRowStore, adapter_for,
+    SourceCapabilities, SourceKind, TurnRowSink, TurnRowStore, reader_for,
 };
 use antiburn_local::insights::{
     BadgeId, BadgeStatus, DetectorId, NotAssessedReason, ReportCatalogs, clean_facts_complete,
@@ -161,7 +161,7 @@ fn evidence_for(
         None,
     );
     let mut sink = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for(agent)
+    let outcome = reader_for(agent)
         .visit(&input, &mut sink)
         .expect("fixture must stream");
     sink.observe_source_outcome(outcome);
@@ -410,7 +410,7 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
         None,
     );
     let mut sink = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for("opencode")
+    let outcome = reader_for("opencode")
         .visit(&input, &mut sink)
         .expect("stream opencode source");
     sink.observe_source_outcome(outcome);
@@ -472,14 +472,12 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(SignalMissing),
         },
         Row {
-            // One of two eligible turns carries an effort value. It
-            // shows no finding. Partial coverage now reads clean
-            // instead of SignalMissing. A turn without the signal is
-            // not negative evidence.
+            // One of two eligible turns carries an effort value. The missing
+            // signal prevents a clean result for the complete session.
             harness: "claude",
             fixture: "model_overthinking_partial_coverage_clean",
             badge: ModelOverthinking,
-            expected: Clean,
+            expected: NotAssessed(SignalMissing),
         },
         Row {
             harness: "claude",
@@ -494,12 +492,11 @@ fn matrix() -> Vec<Row> {
             expected: Clean,
         },
         Row {
-            // A reviewed, non-empty registry with an uncatalogued
-            // model reads clean: this fixture's model is not deprecated.
+            // An uncatalogued model cannot prove that the model is current.
             harness: "claude",
             fixture: "records_all_kinds",
             badge: ObsoleteModel,
-            expected: Clean,
+            expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
             harness: "claude",
@@ -542,14 +539,12 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(SignalMissing),
         },
         Row {
-            // One of two eligible turns carries a speed value. It
-            // shows no finding. Partial coverage now reads clean
-            // instead of SignalMissing. A turn without the signal is
-            // not negative evidence.
+            // One of two eligible turns carries a speed value. The missing
+            // signal prevents a clean result for the complete session.
             harness: "claude",
             fixture: "fast_mode_overuse_partial_coverage_clean",
             badge: FastModeOveruse,
-            expected: Clean,
+            expected: NotAssessed(SignalMissing),
         },
         Row {
             harness: "claude",
@@ -614,12 +609,11 @@ fn matrix() -> Vec<Row> {
             expected: Clean,
         },
         Row {
-            // A reviewed, non-empty registry with an uncatalogued
-            // model reads clean: this fixture's model is not deprecated.
+            // An uncatalogued model cannot prove that the model is current.
             harness: "codex",
             fixture: "records_all_kinds",
             badge: ObsoleteModel,
-            expected: Clean,
+            expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
             harness: "codex",
@@ -702,12 +696,11 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(CapabilityMissing),
         },
         Row {
-            // A reviewed, non-empty registry with an uncatalogued
-            // model reads clean: this fixture's model is not deprecated.
+            // An uncatalogued model cannot prove that the model is current.
             harness: "pi",
             fixture: "minimal_session",
             badge: ObsoleteModel,
-            expected: Clean,
+            expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
             harness: "pi",
@@ -716,16 +709,18 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(CapabilityMissing),
         },
         Row {
+            // Pi V3 does not identify which persisted input tokens are repeated.
             harness: "pi",
             fixture: "excess_cache_rehydration_finding",
             badge: ExcessCacheRehydration,
-            expected: Finding,
+            expected: NotAssessed(CapabilityMissing),
         },
         Row {
+            // Pi V3 cannot prove that repeated paid context is absent.
             harness: "pi",
             fixture: "minimal_session",
             badge: ExcessCacheRehydration,
-            expected: Clean,
+            expected: NotAssessed(CapabilityMissing),
         },
         // ---------------- OpenCode ----------------
         Row {
@@ -747,16 +742,18 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(IncompleteEvidence),
         },
         Row {
+            // OpenCode saves a provider and variant but no API route. The
+            // variant cannot become an effort finding without that mapping.
             harness: "opencode",
             fixture: "model_overthinking_finding",
             badge: ModelOverthinking,
-            expected: Finding,
+            expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
             harness: "opencode",
             fixture: "model_overthinking_clean",
             badge: ModelOverthinking,
-            expected: Clean,
+            expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
             harness: "opencode",
@@ -791,12 +788,11 @@ fn matrix() -> Vec<Row> {
             expected: Clean,
         },
         Row {
-            // A reviewed, non-empty registry with an uncatalogued
-            // model reads clean: this fixture's model is not deprecated.
+            // An uncatalogued model cannot prove that the model is current.
             harness: "opencode",
             fixture: "obsolete_model",
             badge: ObsoleteModel,
-            expected: Clean,
+            expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
             harness: "opencode",
@@ -805,16 +801,18 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(CapabilityMissing),
         },
         Row {
+            // OpenCode JSONL does not identify which paid tokens are repeated.
             harness: "opencode",
             fixture: "excess_cache_rehydration_finding",
             badge: ExcessCacheRehydration,
-            expected: Finding,
+            expected: NotAssessed(CapabilityMissing),
         },
         Row {
+            // OpenCode JSONL cannot prove that repeated paid context is absent.
             harness: "opencode",
             fixture: "excess_cache_rehydration_clean",
             badge: ExcessCacheRehydration,
-            expected: Clean,
+            expected: NotAssessed(CapabilityMissing),
         },
     ]
 }

@@ -23,10 +23,10 @@ use antiburn_local::analysis::{
     METRICS_SCHEMA_REVISION, ModelRun, PARSER_REVISION, ProviderHint, RESUME_SNAPSHOT_REVISION,
     RawSource, ResumePoint, ResumeRevisions, ResumedVisit, SessionCost, SessionEvidence,
     SessionEvidenceAccumulator, SessionInput, SessionMetrics, SessionMetricsAccumulator,
-    SessionSummary, SourceCapabilities, SourceClaim, SourceKind, StoredResume, StreamSnapshot,
-    TurnRow, TurnRowSink, TurnRowStore, TurnScope, VendorAdapter, VisitOutcome, adapter_for,
-    aggregate_metrics, append_only_guarantee, evidence_from_facts, merge_metrics,
-    metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation,
+    SessionReader, SessionSummary, SourceCapabilities, SourceClaim, SourceKind, StoredResume,
+    StreamSnapshot, TurnRow, TurnRowSink, TurnRowStore, TurnScope, VisitOutcome, aggregate_metrics,
+    append_only_guarantee, evidence_from_facts, merge_metrics, metrics_by_source,
+    metrics_from_rows, price_breakdown, pricing_generation, reader_for,
 };
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
@@ -37,7 +37,7 @@ use antiburn_local::pricing::ModelTokens;
 
 #[cfg(test)]
 use antiburn_local::analysis::{
-    ClaudeAdapter, CoverageReason, EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore,
+    ClaudeSessionReader, CoverageReason, EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore,
     SourceAcceptance, analyze_sources_with,
 };
 #[cfg(test)]
@@ -584,23 +584,6 @@ fn stream_vendor_with_claim_hook(
 /// (insights_worker.rs) is what turns an unset profile into the terminal
 /// `Unsupported` state; this function's job is only to describe the source,
 /// never to decide whether it is good enough.
-fn capabilities_for_source(agent: &str, source: &RawSource) -> SourceCapabilities {
-    let mut capabilities = match agent {
-        "claude" => SourceCapabilities::claude(),
-        "codex" => SourceCapabilities::codex(),
-        "opencode" => SourceCapabilities::opencode(),
-        "pi" => SourceCapabilities::pi(),
-        "cursor" => SourceCapabilities::cursor(),
-        "antigravity" => SourceCapabilities::antigravity(),
-        _ => SourceCapabilities::generic(),
-    };
-    if agent == "antigravity" && matches!(source, RawSource::Sqlite(_)) {
-        capabilities.cache_write_tokens = true;
-        capabilities.token_classes = true;
-    }
-    capabilities
-}
-
 fn adapter_supports_provider_db(agent: &str) -> bool {
     matches!(agent, "opencode" | "antigravity")
 }
@@ -626,9 +609,9 @@ enum ChildFold {
 /// partway): passing a fresh, offset-zero snapshot to
 /// `visit_claimed_resumed` gives the same read as `visit_claimed` while
 /// still producing a real `AdapterResume` for the next pass — see
-/// `VendorAdapter::visit_claimed_resumed`'s doc comment.
+/// `SessionReader::visit_claimed_resumed`'s doc comment.
 fn bootstrap_snapshot(
-    adapter: &dyn VendorAdapter,
+    adapter: &dyn SessionReader,
     agent: &str,
     session_id: &str,
     kind: SourceKind,
@@ -666,7 +649,7 @@ fn bootstrap_snapshot(
 /// exactly as before this change.
 fn stream_snapshot_to_attempt(
     store: &dyn TurnRowStore,
-    adapter: &dyn VendorAdapter,
+    adapter: &dyn SessionReader,
     agent: &str,
     session_id: &str,
     kind: SourceKind,
@@ -750,7 +733,7 @@ struct SourceContext {
 /// back to the plain `visit_claimed` that never produces a resume.
 fn delete_then_full_read(
     store: &Arc<dyn TurnRowStore>,
-    adapter: &dyn VendorAdapter,
+    adapter: &dyn SessionReader,
     input: &SessionInput,
     claim: &SourceClaim,
     context: SourceContext,
@@ -849,9 +832,9 @@ fn stream_vendor_with_hooks(
         // `StreamOutcome::ParentUnsupported` the way an unrecognized vendor
         // used to; a SQLite source from an adapter without database support is the one
         // remaining path that outcome still covers, further down.
-        let capabilities = capabilities_for_source(&input.agent, &input.source);
         let kind = SourceKind::from(&input.source);
-        let adapter = adapter_for(&input.agent);
+        let adapter = reader_for(&input.agent);
+        let capabilities = adapter.capabilities(&input.source);
         // Every input after the parent is a discovered child transcript, so
         // its rows get `Delegated` scope from position. The adapter's own
         // `EventSource` flag is not the only source of scope.

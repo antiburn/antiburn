@@ -51,7 +51,11 @@ mod tests {
             "server-a".to_owned(),
             LoadedSource {
                 description: None,
+                configured: true,
+                available: true,
+                injected: true,
                 invoked,
+                token_count: None,
                 origin: EvidenceValue::Unsupported,
             },
         );

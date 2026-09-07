@@ -29,7 +29,7 @@ use antiburn_local::analysis::{
     CompositeSink, EvidenceSource, EvidenceValue, MemoryTurnRowStore, ModelRun, RawSource,
     SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
     SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnFacts, TurnRowSink,
-    TurnRowStore, adapter_for,
+    TurnRowStore, reader_for,
 };
 use antiburn_local::pricing::ModelTokens;
 use rusqlite::{Connection, params};
@@ -126,7 +126,7 @@ fn run_fixture_with_row_projections(
         None,
     );
     let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for(agent)
+    let outcome = reader_for(agent)
         .visit(input, &mut composite)
         .expect("fixture must stream");
     composite.observe_source_outcome(outcome);

@@ -193,13 +193,19 @@ mod tests {
                 let EvidenceValue::Complete(models) = &mut evidence.models else {
                     unreachable!()
                 };
-                models.fast_modes.insert(
-                    "fast".to_owned(),
-                    TurnCounts {
-                        main_loop: 0,
-                        delegated: 1,
-                    },
-                );
+                let turns = TurnCounts {
+                    main_loop: 0,
+                    delegated: 1,
+                };
+                models.fast_modes.insert("fast".to_owned(), turns.clone());
+                models
+                    .fast_modes_by_model
+                    .entry("claude-sonnet-4-6".to_owned())
+                    .or_default()
+                    .insert("fast".to_owned(), turns);
+                models
+                    .by_model
+                    .insert("claude-sonnet-4-6".to_owned(), ModelTokens::default());
                 if partial {
                     evidence.models = make_partial(evidence.models);
                 }

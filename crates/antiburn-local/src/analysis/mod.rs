@@ -58,13 +58,14 @@ pub use engine::{
 pub use evidence::{
     CacheEvidence, ChurnCounts, CompactionBoundary, CompactionEvidence, ContextEvidence,
     ContextSourceEvidence, CoverageReason, DepthExample, EVIDENCE_STRING_CAP, EligibilityEvidence,
-    EvidenceCoverage, EvidenceSource, EvidenceValue, FAST_SPEED_KEY, LoadedSource, ModelEvidence,
-    ModelTokens, ModelTransition, OrderingObservation, ParseDiagnostics, QuotaConfidence,
-    QuotaHitSeverity, QuotaIncident, QuotaLimitKind, RelationConfidence, RepeatedContext,
-    RepeatedContextAccounting, SessionCoverageRecord, SessionEvidence, SessionEvidenceIdentity,
-    SessionProvenance, SessionQuotaEvidence, SessionTimeRange, SignalCoverage, SourceAcceptance,
-    SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
-    ToolDefinition, ToolEvidence, ToolUse, TurnCounts,
+    EvidenceCoverage, EvidenceSource, EvidenceValue, FAST_SPEED_KEY, LoadedSource,
+    ModelControlObservation, ModelEvidence, ModelTokens, ModelTransition, OrderingObservation,
+    ParseDiagnostics, QuotaConfidence, QuotaHitSeverity, QuotaIncident, QuotaLimitKind,
+    RelationConfidence, RepeatedContext, RepeatedContextAccounting, SessionCoverageRecord,
+    SessionEvidence, SessionEvidenceIdentity, SessionProvenance, SessionQuotaEvidence,
+    SessionTimeRange, SignalCoverage, SourceAcceptance, SourceCapabilities, SourceFormat,
+    SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass, ToolDefinition,
+    ToolEvidence, ToolUse, TurnCounts,
 };
 pub use evidence_query::{
     FenceScope, PublishedScope, TurnFacts, query_model_breakdown, query_model_runs,
@@ -83,7 +84,7 @@ pub use interface::{
     ContentKind, ContentPart, ContextSourceKind, ContextWindowSource, EvidenceObservation,
     MAX_CONTENT_PART_BYTES, MAX_PROVIDER_HINTS, NormalizedRecord, ProviderHint, RawSource,
     RecordCoverage, RecordSink, RelationProvenance, ResumedVisit, SessionCollector, SessionInput,
-    SessionSummary, SourceChangedReason, TurnContent, VendorAdapter, VisitOutcome,
+    SessionReader, SessionSummary, SourceChangedReason, TurnContent, VisitOutcome,
 };
 pub use merge::merge_subagent_events;
 pub use metrics_sink::{RETAINED_METRICS_BYTES_BOUND, SessionMetricsAccumulator, merge_metrics};
@@ -110,9 +111,9 @@ pub use source_validity::{
     AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, RESUME_TAIL_BYTES, ResumePoint,
     SourceClaim, append_only_guarantee,
 };
-pub use vendors::claude::ClaudeAdapter;
-pub use vendors::pi::PiAdapter;
-pub use vendors::{adapter_for, has_dedicated_adapter};
+pub use vendors::claude::ClaudeSessionReader;
+pub use vendors::pi::PiSessionReader;
+pub use vendors::{has_dedicated_reader, reader_for};
 
 // +1 for native Antigravity token classes and paired transcript roles. Stored
 // database sessions must re-ingest for model and cache checks.
@@ -164,7 +165,9 @@ pub use vendors::{adapter_for, has_dedicated_adapter};
 // to 4.9 stay 1M, and an explicit `[1m]`/`[200k]` tag beats the catalogue
 // (`vendors::claude::model_context_window`). The summary now also carries
 // `context_window_source`, so a stored Claude session must reparse.
-pub const PARSER_REVISION: i64 = 28;
+// +1 for source-format contracts and bounded Cursor and generic file visits.
+// +1 for Pi provider/API retention and Cursor native record identities.
+pub const PARSER_REVISION: i64 = 30;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
@@ -202,7 +205,10 @@ pub const PARSER_REVISION: i64 = 28;
 // (`evidence_query::CORE_SQL`), so a session with such a record may now
 // assess `models` and `subagents` clean.
 // This revision adds speed-aware Fast tier cost accounting.
-pub const ANALYZER_REVISION: i64 = 18;
+// +1 for exact resource attribution, model-associated signal coverage, and
+// source-format-specific repeated-context accounting.
+// +1 for reviewed route resolution in effort and speed assessment.
+pub const ANALYZER_REVISION: i64 = 20;
 // +1 for seam R2: the worker path now derives `inclusive_model_breakdown`
 // and `model_runs` from published turn rows instead of the accumulator
 // (`query_model_breakdown`, `query_model_runs`), so every session in the
@@ -229,13 +235,18 @@ pub const METRICS_SCHEMA_REVISION: i64 = 8;
 // `SourceCapabilities::claude().tool_definitions` is now `true`.
 // +1 for `ParseDiagnostics::records_replayed`, a diagnostic-only counter of
 // records skipped as in-file resume replays.
-pub const EVIDENCE_SCHEMA_REVISION: i64 = 14;
+// +1 for split skill and MCP inventories, source format, resource state,
+// harness version, and model-associated speed and effort evidence.
+// +1 for source-surface formats and fail-closed skill alias attribution.
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 16;
 /// Versions [`evidence::SessionCoverageRecord`]'s own shape, separately
 /// from [`EVIDENCE_SCHEMA_REVISION`]: the record is an internal input to
 /// evidence replay, not the published `SessionEvidence` shape itself.
 /// A persisted record from an older revision cannot be trusted to replay
 /// correctly, so a reader must reparse instead of reusing it.
-pub const COVERAGE_SCHEMA_REVISION: i64 = 1;
+// +1 for source format and repeated-context accounting capabilities.
+// +1 for dedicated source-surface capability contracts.
+pub const COVERAGE_SCHEMA_REVISION: i64 = 3;
 /// Versions [`resume::StreamSnapshot`]'s own shape. [`resume::StreamSnapshot::is_current`]
 /// rejects a persisted snapshot stamped with an older revision.
 ///
@@ -278,7 +289,7 @@ pub fn analyze_sources_with(
         .iter()
         .filter_map(|input| {
             match catch_unwind(AssertUnwindSafe(|| {
-                adapter_for(&input.agent).normalize(input)
+                reader_for(&input.agent).normalize(input)
             })) {
                 Ok(Ok(session)) => Some(session),
                 // An unreadable source affects one session only.
@@ -381,7 +392,7 @@ pub fn analyze_sources_with(
 
 /// Normalize a single source without aggregation (handy for tests/tools).
 pub fn normalize_source(input: &SessionInput) -> anyhow::Result<NormalizedSession> {
-    adapter_for(&input.agent).normalize(input)
+    reader_for(&input.agent).normalize(input)
 }
 
 #[cfg(test)]

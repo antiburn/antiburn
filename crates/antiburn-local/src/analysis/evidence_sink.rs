@@ -7,14 +7,15 @@ use crate::analysis::evidence::{
     CacheEvidence, ChurnCounts, CompactionEvidence, ContextEvidence, ContextSourceEvidence,
     CoverageReason, EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource,
     MAX_CONTEXT_SOURCES, MAX_EVIDENCE_EXAMPLES, MAX_SUBAGENT_CHILDREN, MAX_TOOL_NAMES,
-    MAX_UNRECOGNIZED_TYPES, ModelEvidence, OrderingObservation, ParseDiagnostics,
-    RelationConfidence, RepeatedContext, RepeatedContextAccounting, SessionCoverageRecord,
-    SessionEvidence, SessionEvidenceIdentity, SessionProvenance, SourceAcceptance,
-    SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
-    ToolDefinition, ToolEvidence, ToolUse, cap_string, insert_diagnostic_field,
-    record_diagnostic_set_cap,
+    MAX_UNRECOGNIZED_TYPES, ModelControlObservation, ModelEvidence, OrderingObservation,
+    ParseDiagnostics, RelationConfidence, RepeatedContext, RepeatedContextAccounting,
+    SessionCoverageRecord, SessionEvidence, SessionEvidenceIdentity, SessionProvenance,
+    SourceAcceptance, SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence,
+    SubagentExample, ToolClass, ToolDefinition, ToolEvidence, ToolUse, cap_string,
+    insert_diagnostic_field, record_diagnostic_set_cap,
 };
 use crate::analysis::evidence_query::TurnFacts;
+use crate::analysis::initial_context::{InitialContextTokenSource, SourceOrigin};
 use crate::analysis::interface::{
     ContextSourceKind, EvidenceObservation, NormalizedRecord, RecordSink, SessionSummary,
     VisitOutcome,
@@ -28,13 +29,6 @@ use crate::analysis::{
     ANALYZER_REVISION, COVERAGE_SCHEMA_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION,
     RESUME_SNAPSHOT_REVISION, SessionMetrics,
 };
-
-/// The suffix after a skill's last `:` (e.g. `deploy` from
-/// `plugin:deploy`), or the whole name when it carries no `:`. A `Skill`
-/// tool call invokes a loaded skill under either its full name or this suffix.
-fn skill_suffix(name: &str) -> &str {
-    name.rsplit_once(':').map_or(name, |(_, suffix)| suffix)
-}
 
 /// The most frequently observed full model id in `facts.by_model`, by
 /// turn count, or `None` when the transcript never named one. A bare
@@ -53,12 +47,13 @@ fn resolved_model_id(facts: &TurnFacts) -> Option<&str> {
 /// Tests enforce this ceiling for the accumulator's retained heap bytes.
 /// A saturated accumulator (every collection at its cap) measures about
 /// 29,900 bytes; this bound rounds that up generously (over 2x).
-pub const RETAINED_EVIDENCE_BYTES_BOUND: usize = 64 * 1_024;
+pub const RETAINED_EVIDENCE_BYTES_BOUND: usize = 256 * 1_024;
 
 /// A `BTreeMap` or `BTreeSet` has no queryable capacity: each insert grows
 /// exactly one B-tree node. This estimates one entry's node overhead —
 /// pointers and per-node slack — on top of its own key or value bytes.
 const BTREE_ENTRY_OVERHEAD_BYTES: usize = 48;
+const MAX_MODEL_CONTROL_OBSERVATIONS: usize = 128;
 
 /// The two fields [`SessionEvidenceAccumulator::coverage_record`] leaves
 /// out because a closed pass's record already carries their final effect.
@@ -95,6 +90,7 @@ pub struct SessionEvidenceAccumulator {
     skills: BTreeMap<String, LoadedSource>,
     mcp_servers: BTreeMap<String, LoadedSource>,
     context_sources_cap_exceeded: bool,
+    model_control_observations: Vec<ModelControlObservation>,
     subagent_spawn_count: u64,
     subagent_children: Vec<SubagentChild>,
     subagent_examples: Vec<SubagentExample>,
@@ -135,6 +131,7 @@ impl SessionEvidenceAccumulator {
             skills: BTreeMap::new(),
             mcp_servers: BTreeMap::new(),
             context_sources_cap_exceeded: false,
+            model_control_observations: Vec::new(),
             subagent_spawn_count: 0,
             subagent_children: Vec::new(),
             subagent_examples: Vec::new(),
@@ -213,6 +210,92 @@ impl SessionEvidenceAccumulator {
                 );
             }
         }
+        self.observe_model_control(event);
+    }
+
+    fn observe_model_control(&mut self, event: &NormalizedEvent) {
+        if !matches!(event.role, crate::analysis::Role::Assistant)
+            || (event.thinking_mode.is_none() && event.speed.is_none())
+        {
+            return;
+        }
+        let Some(model) = event.model.as_deref() else {
+            return;
+        };
+        let truncated_before = self.diagnostics.truncated_strings.len();
+        let model = cap_string(
+            "models.control_observations.model",
+            model,
+            &mut self.diagnostics,
+        );
+        let provider = event.provider.as_deref().map(|value| {
+            cap_string(
+                "models.control_observations.provider",
+                value,
+                &mut self.diagnostics,
+            )
+        });
+        let api = event.api.as_deref().map(|value| {
+            cap_string(
+                "models.control_observations.api",
+                value,
+                &mut self.diagnostics,
+            )
+        });
+        let effort = event.thinking_mode.as_deref().map(|value| {
+            cap_string(
+                "models.control_observations.effort",
+                value,
+                &mut self.diagnostics,
+            )
+        });
+        let speed = event.speed.as_deref().map(|value| {
+            cap_string(
+                "models.control_observations.speed",
+                value,
+                &mut self.diagnostics,
+            )
+        });
+        if self.diagnostics.truncated_strings.len() > truncated_before {
+            self.session_cap_exceeded = true;
+        }
+        if let Some(observation) = self
+            .model_control_observations
+            .iter_mut()
+            .find(|observation| {
+                observation.provider == provider
+                    && observation.api == api
+                    && observation.model == model
+                    && observation.effort == effort
+                    && observation.speed == speed
+            })
+        {
+            let count = match event.source {
+                crate::analysis::EventSource::Parent => &mut observation.turns.main_loop,
+                crate::analysis::EventSource::Subagent => &mut observation.turns.delegated,
+            };
+            *count = count.saturating_add(1);
+            return;
+        }
+        if self.model_control_observations.len() == MAX_MODEL_CONTROL_OBSERVATIONS {
+            self.session_cap_exceeded = true;
+            self.note_collection_cap("models.control_observations");
+            return;
+        }
+        let mut turns = crate::analysis::TurnCounts::default();
+        match event.source {
+            crate::analysis::EventSource::Parent => turns.main_loop = 1,
+            crate::analysis::EventSource::Subagent => turns.delegated = 1,
+        }
+        self.model_control_observations
+            .push(ModelControlObservation {
+                provider,
+                api,
+                model,
+                effort,
+                speed,
+                turns,
+            });
     }
 
     fn observe_observation(&mut self, observation: &EvidenceObservation) {
@@ -405,7 +488,11 @@ impl SessionEvidenceAccumulator {
                 capped_name,
                 LoadedSource {
                     description: capped_description,
+                    configured: false,
+                    available: true,
+                    injected: true,
                     invoked: false,
+                    token_count: None,
                     origin: EvidenceValue::Unsupported,
                 },
             );
@@ -504,11 +591,43 @@ impl SessionEvidenceAccumulator {
 
     /// Folds the end-of-stream facts without taking them.
     pub fn observe_summary(&mut self, summary: &SessionSummary) {
-        self.capabilities.cache_write_tokens = summary.cache_write_tokens_available;
+        self.observe_initial_context(summary);
         for reason in &summary.coverage_gaps {
             self.set_record_loss_reason(CoverageReason::from(*reason));
         }
         self.summary_observed = true;
+    }
+
+    fn observe_initial_context(&mut self, summary: &SessionSummary) {
+        let Some(context) = &summary.initial_context else {
+            return;
+        };
+        for row in &context.sources {
+            let Some(name) = row.source_name.as_deref() else {
+                continue;
+            };
+            let kind = if row.source == InitialContextTokenSource::Skill.as_str() {
+                ContextSourceKind::Skill
+            } else if row.source == InitialContextTokenSource::Mcp.as_str() {
+                ContextSourceKind::McpServer
+            } else {
+                continue;
+            };
+            self.observe_context_source(kind, name, None);
+            let map = match kind {
+                ContextSourceKind::Skill => &mut self.skills,
+                ContextSourceKind::McpServer => &mut self.mcp_servers,
+            };
+            if let Some(source) = map.get_mut(name) {
+                source.injected = row.token_count > 0;
+                source.invoked = row.use_count > 0;
+                source.token_count = Some(row.token_count);
+                source.origin = match row.origin {
+                    SourceOrigin::Unknown => EvidenceValue::Unsupported,
+                    origin => EvidenceValue::Complete(origin),
+                };
+            }
+        }
     }
 
     /// Attaches the source outcome after the adapter returns.
@@ -543,6 +662,7 @@ impl SessionEvidenceAccumulator {
             skills: self.skills.clone(),
             mcp_servers: self.mcp_servers.clone(),
             context_sources_cap_exceeded: self.context_sources_cap_exceeded,
+            model_control_observations: self.model_control_observations.clone(),
             subagent_spawn_count: self.subagent_spawn_count,
             subagent_children: self.subagent_children.clone(),
             subagent_examples: self.subagent_examples.clone(),
@@ -596,6 +716,7 @@ impl SessionEvidenceAccumulator {
             skills: record.skills,
             mcp_servers: record.mcp_servers,
             context_sources_cap_exceeded: record.context_sources_cap_exceeded,
+            model_control_observations: record.model_control_observations,
             subagent_spawn_count: record.subagent_spawn_count,
             subagent_children: record.subagent_children,
             subagent_examples: record.subagent_examples,
@@ -671,18 +792,30 @@ impl SessionEvidenceAccumulator {
         };
         let eligibility = facts.eligibility.clone();
         let tools = self.classified_tools();
-        let context_sources = self.context_sources(catalog, resolved_model_id(facts));
+        let (context_sources, skill_attribution_incomplete) =
+            self.context_sources(catalog, resolved_model_id(facts));
         let models = ModelEvidence {
             by_model: facts.by_model.clone(),
             unattributed_turns: facts.unattributed_turns,
             effort_tiers: facts.effort_tiers.clone(),
             fast_modes: facts.fast_modes.clone(),
+            effort_tiers_by_model: facts.effort_tiers_by_model.clone(),
+            fast_modes_by_model: facts.fast_modes_by_model.clone(),
+            control_observations: self.model_control_observations.clone(),
             service_tiers: EvidenceValue::Unsupported,
             effort_signal: facts.effort_signal,
             speed_signal: facts.speed_signal,
             dominant_main_model: facts.dominant_main_model.clone(),
         };
-        let models_cap_exceeded = facts.models_capped || facts.tiers_capped;
+        let models_cap_exceeded = facts.models_capped
+            || facts.tiers_capped
+            || diagnostics
+                .capped_collections
+                .contains("models.control_observations")
+            || diagnostics
+                .truncated_strings
+                .iter()
+                .any(|field| field.starts_with("models.control_observations."));
         let subagents = SubagentEvidence {
             spawn_count: self.subagent_spawn_count,
             delegated_turns: facts.delegated_turns,
@@ -757,16 +890,15 @@ impl SessionEvidenceAccumulator {
         // signals exist. `self.identity.agent` identifies the agent. Cache-write
         // tokens still feed `cache.cache_creation_tokens` and turn depth. Only
         // this finding's accounting bucket stays fixed.
-        let repeated_context_accounting = if self.identity.agent == "codex" {
-            (self.capabilities.token_classes && self.capabilities.request_context_tokens)
-                .then_some(RepeatedContextAccounting::UncachedInput)
-        } else if self.capabilities.cache_write_tokens {
-            Some(RepeatedContextAccounting::CacheWrite)
-        } else if self.capabilities.token_classes && self.capabilities.request_context_tokens {
-            Some(RepeatedContextAccounting::UncachedInput)
-        } else {
-            None
-        };
+        let repeated_context_accounting =
+            self.capabilities
+                .repeated_context_accounting
+                .filter(|accounting| match accounting {
+                    RepeatedContextAccounting::CacheWrite => self.capabilities.cache_write_tokens,
+                    RepeatedContextAccounting::UncachedInput => {
+                        self.capabilities.token_classes && self.capabilities.request_context_tokens
+                    }
+                });
         let repeated_context = match repeated_context_accounting {
             None => EvidenceValue::Unsupported,
             Some(accounting) => {
@@ -879,13 +1011,25 @@ impl SessionEvidenceAccumulator {
                 None,
                 self.tools_cap_exceeded,
             ),
-            context_sources: self.supported_value(
-                context_sources,
-                self.capabilities.skill_mcp_attribution,
-                None,
-                self.context_sources_cap_exceeded,
-            ),
-            models: if !self.capabilities.model_identity || !self.capabilities.token_classes {
+            context_sources: if !(self.capabilities.skill_inventory
+                || self.capabilities.mcp_inventory
+                || self.capabilities.tool_definitions)
+            {
+                EvidenceValue::Unsupported
+            } else if self.context_sources_cap_exceeded {
+                EvidenceValue::Partial {
+                    observed: context_sources,
+                    reason: CoverageReason::CapExceeded,
+                }
+            } else if skill_attribution_incomplete {
+                EvidenceValue::Partial {
+                    observed: context_sources,
+                    reason: CoverageReason::AttributionIncomplete,
+                }
+            } else {
+                EvidenceValue::Complete(context_sources)
+            },
+            models: if !self.capabilities.model_identity {
                 EvidenceValue::Unsupported
             } else if let Some(reason) = self.record_loss_reason {
                 EvidenceValue::Partial {
@@ -960,33 +1104,52 @@ impl SessionEvidenceAccumulator {
         }
     }
 
-    /// Returns whether a loaded skill's full name (e.g. `plugin:deploy`)
-    /// was invoked: `invoked_skills` or `tools` names it either by its
-    /// full name or by the suffix after its last `:` (e.g. `deploy`).
-    /// Either spelling identifies an invocation of the loaded skill.
-    fn skill_invoked(&self, full_name: &str) -> bool {
-        let suffix = skill_suffix(full_name);
-        self.invoked_skills.contains(full_name)
-            || self.invoked_skills.contains(suffix)
-            || self.tools.contains_key(full_name)
-            || self.tools.contains_key(suffix)
+    fn resolved_skill_invocations(&self) -> (BTreeSet<String>, bool) {
+        let mut resolved = BTreeSet::new();
+        let mut ambiguous = false;
+        for invocation in &self.invoked_skills {
+            if let Some(exact) = self
+                .skills
+                .keys()
+                .find(|name| name.eq_ignore_ascii_case(invocation))
+            {
+                resolved.insert(exact.clone());
+                continue;
+            }
+            if invocation.contains(':') {
+                continue;
+            }
+            let matches = self
+                .skills
+                .keys()
+                .filter(|name| {
+                    name.rsplit(':')
+                        .next()
+                        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(invocation))
+                })
+                .collect::<Vec<_>>();
+            match matches.as_slice() {
+                [name] => {
+                    resolved.insert((*name).clone());
+                }
+                [_, _, ..] => ambiguous = true,
+                _ => {}
+            }
+        }
+        (resolved, ambiguous)
     }
 
     fn classified_tools(&self) -> BTreeMap<String, ToolUse> {
         self.tools
             .iter()
             .map(|(name, tool)| {
-                let class = if self.invoked_skills.contains(name)
-                    || self
-                        .skills
-                        .keys()
-                        .any(|loaded| loaded == name || skill_suffix(loaded) == name)
+                let class = if self.invoked_skills.contains(name) || self.skills.contains_key(name)
                 {
                     ToolClass::Skill
                 } else if self
                     .mcp_servers
                     .keys()
-                    .any(|server| name == server || name.contains(server))
+                    .any(|server| tool_belongs_to_mcp_server(name, server))
                 {
                     ToolClass::Mcp
                 } else {
@@ -1003,23 +1166,31 @@ impl SessionEvidenceAccumulator {
             .collect()
     }
 
-    fn context_sources(&self, catalog: &ToolCatalog, model: Option<&str>) -> ContextSourceEvidence {
+    fn context_sources(
+        &self,
+        catalog: &ToolCatalog,
+        model: Option<&str>,
+    ) -> (ContextSourceEvidence, bool) {
         let mut skills = self.skills.clone();
         let mut mcp_servers = self.mcp_servers.clone();
+        let (invoked_skills, skill_attribution_incomplete) = self.resolved_skill_invocations();
         for (name, source) in &mut skills {
-            source.invoked = self.skill_invoked(name);
+            source.invoked = invoked_skills.contains(name);
         }
         for (name, source) in &mut mcp_servers {
             source.invoked = self
                 .tools
                 .keys()
-                .any(|tool| tool == name || tool.contains(name));
+                .any(|tool| tool_belongs_to_mcp_server(tool, name));
         }
-        ContextSourceEvidence {
-            skills,
-            mcp_servers,
-            tool_definitions: self.tool_definitions(catalog, model),
-        }
+        (
+            ContextSourceEvidence {
+                skills,
+                mcp_servers,
+                tool_definitions: self.tool_definitions(catalog, model),
+            },
+            skill_attribution_incomplete,
+        )
     }
 
     /// Resolves this session's built-in tool definitions against
@@ -1121,6 +1292,10 @@ impl SessionEvidenceAccumulator {
             .saturating_add(string_set_retained_bytes(&self.invoked_skills))
             .saturating_add(context_sources_retained_bytes(&self.skills))
             .saturating_add(context_sources_retained_bytes(&self.mcp_servers))
+            .saturating_add(model_controls_retained_bytes(
+                &self.model_control_observations,
+                self.model_control_observations.capacity(),
+            ))
             .saturating_add(subagent_children_retained_bytes(
                 &self.subagent_children,
                 self.subagent_children.capacity(),
@@ -1131,6 +1306,30 @@ impl SessionEvidenceAccumulator {
             ))
             .saturating_add(hash_string_set_retained_bytes(&self.seen_thread_uuids))
     }
+}
+
+fn model_controls_retained_bytes(
+    observations: &[ModelControlObservation],
+    capacity: usize,
+) -> usize {
+    capacity
+        .saturating_mul(size_of::<ModelControlObservation>())
+        .saturating_add(observations.iter().fold(0usize, |bytes, observation| {
+            bytes
+                .saturating_add(observation.model.capacity())
+                .saturating_add(observation.provider.as_ref().map_or(0, String::capacity))
+                .saturating_add(observation.api.as_ref().map_or(0, String::capacity))
+                .saturating_add(observation.effort.as_ref().map_or(0, String::capacity))
+                .saturating_add(observation.speed.as_ref().map_or(0, String::capacity))
+        }))
+}
+
+fn tool_belongs_to_mcp_server(tool: &str, server: &str) -> bool {
+    tool == server
+        || tool
+            .strip_prefix("mcp__")
+            .and_then(|name| name.split_once("__"))
+            .is_some_and(|(candidate, _)| candidate == server)
 }
 
 /// One `BTreeSet<String>` entry's retained bytes: its string capacity plus
@@ -1411,7 +1610,7 @@ mod tests {
     use crate::analysis::evidence::ModelTokens;
     use crate::analysis::model::{Role, ToolCall};
     use crate::analysis::rows::{MemoryTurnRowStore, TurnRowStore};
-    use crate::analysis::{EVIDENCE_STRING_CAP, PartialReason, RawSource, VendorAdapter};
+    use crate::analysis::{EVIDENCE_STRING_CAP, PartialReason, RawSource, SessionReader};
 
     fn accumulator(request_context_tokens: bool) -> SessionEvidenceAccumulator {
         let mut capabilities = SourceCapabilities::claude();
@@ -1456,7 +1655,7 @@ mod tests {
             fork_parent_session_id: None,
         };
         let mut composite = composite_with_rows("claude", "attachment");
-        let outcome = crate::analysis::ClaudeAdapter
+        let outcome = crate::analysis::ClaudeSessionReader
             .visit(&input, &mut composite)
             .expect("attachment must parse");
         composite.observe_source_outcome(outcome);
@@ -1475,7 +1674,7 @@ mod tests {
             fork_parent_session_id: None,
         };
         let mut composite = composite_with_rows("claude", "unknown");
-        let outcome = crate::analysis::ClaudeAdapter
+        let outcome = crate::analysis::ClaudeSessionReader
             .visit(&input, &mut composite)
             .expect("unknown record must be skipped");
         composite.observe_source_outcome(outcome);
@@ -1786,7 +1985,7 @@ mod tests {
     }
 
     #[test]
-    fn a_skill_invoked_by_its_suffix_name_is_marked_invoked_and_classified() {
+    fn a_skill_suffix_does_not_match_a_namespaced_identity() {
         let mut accumulator = accumulator(true);
         accumulator.record(NormalizedRecord::Observation(Box::new(
             EvidenceObservation::ContextSource {
@@ -1808,19 +2007,68 @@ mod tests {
             .skills
             .get("plugin:deploy")
             .expect("plugin:deploy must be recorded as a loaded skill");
-        assert!(
-            skill.invoked,
-            "a bare `deploy` tool call must invoke the `plugin:deploy` skill by suffix"
-        );
+        assert!(!skill.invoked);
 
         let EvidenceValue::Complete(tools) = &evidence.tools else {
             panic!("tools must be complete");
         };
         assert_eq!(
             tools.by_name.get("deploy").map(|tool| tool.class),
-            Some(ToolClass::Skill),
-            "a `deploy` tool call must classify as Skill when `plugin:deploy` is loaded"
+            Some(ToolClass::Unclassified)
         );
+    }
+
+    #[test]
+    fn an_explicit_skill_alias_matches_one_namespaced_identity() {
+        let mut accumulator = accumulator(true);
+        accumulator.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::ContextSource {
+                kind: ContextSourceKind::Skill,
+                name: "plugin:deploy".to_owned(),
+                description: None,
+            },
+        )));
+        let mut event = assistant_event(0);
+        let mut skill = crate::analysis::ToolCall::new("Skill");
+        skill.detail = Some("deploy".to_owned());
+        event.tools.push(skill);
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+
+        let evidence = accumulator.evidence(&TurnFacts::default());
+
+        let EvidenceValue::Complete(sources) = &evidence.context_sources else {
+            panic!("context_sources must be complete");
+        };
+        assert!(sources.skills["plugin:deploy"].invoked);
+    }
+
+    #[test]
+    fn an_ambiguous_skill_alias_makes_attribution_partial() {
+        let mut accumulator = accumulator(true);
+        for name in ["a:deploy", "b:deploy"] {
+            accumulator.record(NormalizedRecord::Observation(Box::new(
+                EvidenceObservation::ContextSource {
+                    kind: ContextSourceKind::Skill,
+                    name: name.to_owned(),
+                    description: None,
+                },
+            )));
+        }
+        let mut event = assistant_event(0);
+        let mut skill = crate::analysis::ToolCall::new("Skill");
+        skill.detail = Some("deploy".to_owned());
+        event.tools.push(skill);
+        accumulator.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+
+        let evidence = accumulator.evidence(&TurnFacts::default());
+
+        assert!(matches!(
+            evidence.context_sources,
+            EvidenceValue::Partial {
+                reason: CoverageReason::AttributionIncomplete,
+                ..
+            }
+        ));
     }
 
     fn subagents_overflow() -> SessionEvidence {

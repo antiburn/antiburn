@@ -245,6 +245,12 @@ pub(crate) fn fill_use_counts(
     mcp_tool_calls: &HashMap<String, u32>,
     tool_calls_by_name: &HashMap<String, u32>,
 ) {
+    let skill_names = breakdown
+        .sources
+        .iter()
+        .filter(|row| row.source == InitialContextTokenSource::Skill.as_str())
+        .filter_map(|row| row.source_name.clone())
+        .collect::<Vec<_>>();
     for row in &mut breakdown.sources {
         let Some(name) = row.source_name.as_deref() else {
             continue;
@@ -252,7 +258,7 @@ pub(crate) fn fill_use_counts(
         row.use_count = if row.source == InitialContextTokenSource::Skill.as_str() {
             skill_uses
                 .iter()
-                .filter(|skill_use| skill_use.name.eq_ignore_ascii_case(name))
+                .filter(|skill_use| skill_alias_matches(&skill_use.name, name, &skill_names))
                 .count() as u32
         } else if row.source == InitialContextTokenSource::Mcp.as_str() {
             mcp_tool_calls
@@ -276,6 +282,24 @@ pub(crate) fn fill_use_counts(
             0
         };
     }
+}
+
+fn skill_alias_matches(invocation: &str, loaded_name: &str, loaded_names: &[String]) -> bool {
+    if invocation.eq_ignore_ascii_case(loaded_name) {
+        return true;
+    }
+    if invocation.contains(':') {
+        return false;
+    }
+    let mut matches = loaded_names.iter().filter(|candidate| {
+        candidate
+            .rsplit(':')
+            .next()
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(invocation))
+    });
+    matches.next().is_some_and(|candidate| {
+        matches.next().is_none() && candidate.eq_ignore_ascii_case(loaded_name)
+    })
 }
 
 enum InitialContextTokenParseResult {
@@ -391,6 +415,10 @@ pub(crate) struct CodexContextAccumulator {
 }
 
 impl CodexContextAccumulator {
+    pub(crate) fn harness_version(&self) -> Option<&str> {
+        self.cli_version.as_deref()
+    }
+
     pub(crate) fn observe(&mut self, value: &Value) {
         match value.get("type").and_then(Value::as_str) {
             Some("session_meta") => {
@@ -1121,6 +1149,25 @@ fn estimate_tokens(text: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_aliases_resolve_only_when_unique() {
+        assert!(skill_alias_matches(
+            "deploy",
+            "plugin:deploy",
+            &["plugin:deploy".to_owned()]
+        ));
+        assert!(!skill_alias_matches(
+            "deploy",
+            "a:deploy",
+            &["a:deploy".to_owned(), "b:deploy".to_owned()]
+        ));
+        assert!(skill_alias_matches(
+            "a:deploy",
+            "a:deploy",
+            &["a:deploy".to_owned(), "b:deploy".to_owned()]
+        ));
+    }
 
     /// The committed fixture catalogue, not the embedded production one — so
     /// these tests stay deterministic regardless of what a local build or CI

@@ -19,8 +19,8 @@ use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, 
 use crate::analysis::initial_context::ClaudeContextAccumulator;
 use crate::analysis::interface::{
     ContextSourceKind, ContextWindowSource, EvidenceObservation, NormalizedRecord, RawSource,
-    RecordSink, ResumedVisit, SessionCollector, SessionInput, SessionSummary, TurnContent,
-    VendorAdapter, VisitOutcome,
+    RecordSink, ResumedVisit, SessionCollector, SessionInput, SessionReader, SessionSummary,
+    TurnContent, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall, Usage};
 use crate::analysis::records::{
@@ -329,11 +329,15 @@ fn collect_record_uuids(reader: impl BufRead) -> HashSet<String> {
     uuids
 }
 
-pub struct ClaudeAdapter;
+pub struct ClaudeSessionReader;
 
-impl VendorAdapter for ClaudeAdapter {
+impl SessionReader for ClaudeSessionReader {
     fn agent(&self) -> &'static str {
         "claude"
+    }
+
+    fn capabilities(&self, _source: &RawSource) -> crate::analysis::SourceCapabilities {
+        crate::analysis::SourceCapabilities::claude()
     }
 
     fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession> {
@@ -393,7 +397,7 @@ impl VendorAdapter for ClaudeAdapter {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
-        ClaudeAdapter::visit_claimed(self, input, claim, guarantee, cancel, sink)
+        ClaudeSessionReader::visit_claimed(self, input, claim, guarantee, cancel, sink)
     }
 
     fn visit_claimed_resumed(
@@ -404,20 +408,20 @@ impl VendorAdapter for ClaudeAdapter {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<ResumedVisit> {
-        ClaudeAdapter::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
+        ClaudeSessionReader::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
     }
 
     fn empty_resume_state(&self) -> Option<crate::analysis::resume::AdapterSnapshot> {
-        Some(ClaudeAdapter::empty_adapter_snapshot())
+        Some(ClaudeSessionReader::empty_adapter_snapshot())
     }
 }
 
-impl ClaudeAdapter {
+impl ClaudeSessionReader {
     /// A fresh [`ClaudeStreamState`], serialized. A caller starting the
     /// first resumable pass over a source (no snapshot from a prior pass
     /// exists yet) uses this to build a [`StreamSnapshot`] with
     /// [`ResumePoint::offset`] zero: see
-    /// [`VendorAdapter::visit_claimed_resumed`]'s doc comment for why that
+    /// [`SessionReader::visit_claimed_resumed`]'s doc comment for why that
     /// one method covers both cases.
     pub fn empty_adapter_snapshot() -> crate::analysis::resume::AdapterSnapshot {
         crate::analysis::resume::AdapterSnapshot(
@@ -1039,7 +1043,7 @@ mod tests {
         let input = file_input(&path);
         let mut collector = SessionCollector::new("claude", "claimed-session");
 
-        let outcome = ClaudeAdapter
+        let outcome = ClaudeSessionReader
             .visit_claimed(
                 &input,
                 &claim,
@@ -1079,7 +1083,7 @@ mod tests {
         let input = file_input(&path);
         let mut sink = HeadMutatingSink::new(&path);
 
-        let outcome = ClaudeAdapter
+        let outcome = ClaudeSessionReader
             .visit_claimed(
                 &input,
                 &claim,
@@ -1104,7 +1108,7 @@ mod tests {
         let input = file_input(&path);
         let mut collector = SessionCollector::new("claude", "claimed-session");
 
-        let result = ClaudeAdapter.visit_claimed(
+        let result = ClaudeSessionReader.visit_claimed(
             &input,
             &claim,
             AppendOnlyGuarantee::Absent,
@@ -1124,7 +1128,7 @@ mod tests {
         let input = file_input(&path);
         let mut collector = SessionCollector::new("claude", "claimed-session");
 
-        let outcome = ClaudeAdapter
+        let outcome = ClaudeSessionReader
             .visit_claimed(
                 &input,
                 &claim,
@@ -1186,7 +1190,7 @@ mod tests {
                 tail_hash: head_hash_of(&[]),
                 tail_len: 0,
             },
-            adapter: ClaudeAdapter::empty_adapter_snapshot(),
+            adapter: ClaudeSessionReader::empty_adapter_snapshot(),
         })
     }
 
@@ -1198,7 +1202,7 @@ mod tests {
         let input = file_input(&path);
         let mut collector = SessionCollector::new("claude", "claimed-session");
 
-        let visit = ClaudeAdapter
+        let visit = ClaudeSessionReader
             .visit_claimed_resumed(&input, &claim, &fresh_snapshot(), &|| false, &mut collector)
             .expect("resumed visit of a fresh file");
 
@@ -1222,7 +1226,7 @@ mod tests {
         let input = file_input(&path);
         let mut first_pass = SessionCollector::new("claude", "claimed-session");
         let first_claim = claim_for_path(&path);
-        let first_visit = ClaudeAdapter
+        let first_visit = ClaudeSessionReader
             .visit_claimed_resumed(
                 &input,
                 &first_claim,
@@ -1243,7 +1247,7 @@ mod tests {
         let second_claim = claim_for_path(&path);
         let mut second_pass = SessionCollector::new("claude", "claimed-session");
 
-        let second_visit = ClaudeAdapter
+        let second_visit = ClaudeSessionReader
             .visit_claimed_resumed(
                 &input,
                 &second_claim,
@@ -1272,7 +1276,7 @@ mod tests {
         let input = file_input(&path);
         let first_claim = claim_for_path(&path);
         let mut first_pass = SessionCollector::new("claude", "claimed-session");
-        let first_visit = ClaudeAdapter
+        let first_visit = ClaudeSessionReader
             .visit_claimed_resumed(
                 &input,
                 &first_claim,
@@ -1292,7 +1296,7 @@ mod tests {
         let rewritten_claim = claim_for_path(&path);
         let mut second_pass = SessionCollector::new("claude", "claimed-session");
 
-        let visit = ClaudeAdapter
+        let visit = ClaudeSessionReader
             .visit_claimed_resumed(
                 &input,
                 &rewritten_claim,
@@ -1320,7 +1324,7 @@ mod tests {
         let mut snapshot = fresh_snapshot();
         snapshot.revision = RESUME_SNAPSHOT_REVISION - 1;
 
-        let result = ClaudeAdapter.visit_claimed_resumed(
+        let result = ClaudeSessionReader.visit_claimed_resumed(
             &input,
             &claim,
             &snapshot,
@@ -1341,7 +1345,7 @@ mod tests {
         };
         let mut sink = CountingSink::default();
 
-        let outcome = ClaudeAdapter
+        let outcome = ClaudeSessionReader
             .visit(&input, &mut sink)
             .expect("visit plain source");
 
@@ -1381,7 +1385,7 @@ mod tests {
         };
         let mut sink = ContentCapturingSink::default();
 
-        ClaudeAdapter
+        ClaudeSessionReader
             .visit(&input, &mut sink)
             .expect("visit content session");
 
@@ -1406,7 +1410,7 @@ mod tests {
         let source = b"{\"type\":\"assistant\",\"message\":{\"id\":\"first\",\"role\":\"assistant\",\"content\":[]}}\n";
         let reader = BufReader::new(DataThenError::new(source));
         let mut collector = SessionCollector::new("claude", "read-failure");
-        let result = ClaudeAdapter.visit_reader(
+        let result = ClaudeSessionReader.visit_reader(
             reader,
             &|| false,
             &mut collector,
@@ -1913,7 +1917,7 @@ mod tests {
         let reader = BufReader::new(source.as_bytes());
         let mut collector = SessionCollector::new("claude", "fork-child");
         let replayed = HashSet::from(["replayed-1".to_string()]);
-        let state = ClaudeAdapter
+        let state = ClaudeSessionReader
             .visit_reader(
                 reader,
                 &|| false,
@@ -1952,7 +1956,7 @@ mod tests {
             "\n",
         );
         let mut sink = RecordingSink::default();
-        ClaudeAdapter
+        ClaudeSessionReader
             .visit_reader(
                 BufReader::new(source.as_bytes()),
                 &|| false,
@@ -1980,7 +1984,7 @@ mod tests {
             "\n",
         );
         let mut sink = RecordingSink::default();
-        ClaudeAdapter
+        ClaudeSessionReader
             .visit_reader(
                 BufReader::new(source.as_bytes()),
                 &|| false,
@@ -2007,7 +2011,7 @@ mod tests {
             "\n",
         );
         let mut sink = RecordingSink::default();
-        ClaudeAdapter
+        ClaudeSessionReader
             .visit_reader(
                 BufReader::new(source.as_bytes()),
                 &|| false,
@@ -2029,7 +2033,7 @@ mod tests {
             "\n",
         );
         let mut sink = RecordingSink::default();
-        ClaudeAdapter
+        ClaudeSessionReader
             .visit_reader(
                 BufReader::new(source.as_bytes()),
                 &|| false,
@@ -2195,7 +2199,7 @@ mod tests {
         };
         let mut collector = SessionCollector::new("claude", "agent-x");
 
-        ClaudeAdapter
+        ClaudeSessionReader
             .visit(&input, &mut collector)
             .expect("visit must succeed");
 

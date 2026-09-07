@@ -38,8 +38,8 @@ use serde_json::Value;
 use crate::analysis::SourceChangedReason;
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::interface::{
-    NormalizedRecord, RawSource, RecordSink, SessionCollector, SessionInput, SessionSummary,
-    VendorAdapter, VisitOutcome,
+    NormalizedRecord, RawSource, RecordSink, SessionCollector, SessionInput, SessionReader,
+    SessionSummary, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, Usage};
 use crate::analysis::records::{parse_ts, parse_usage, tool_call_from_input};
@@ -63,11 +63,15 @@ const MAX_MODEL_BYTES: usize = 256;
 const MAX_TRACKED_RESPONSE_IDS: usize = 50_000;
 const MAX_PROTO_FIELDS: usize = 16_384;
 
-pub struct AntigravityAdapter;
+pub struct AntigravitySessionReader;
 
-impl VendorAdapter for AntigravityAdapter {
+impl SessionReader for AntigravitySessionReader {
     fn agent(&self) -> &'static str {
         "antigravity"
+    }
+
+    fn capabilities(&self, source: &RawSource) -> crate::analysis::SourceCapabilities {
+        antigravity_capabilities(source)
     }
 
     fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession> {
@@ -221,7 +225,41 @@ impl VendorAdapter for AntigravityAdapter {
     }
 }
 
-impl AntigravityAdapter {
+fn antigravity_capabilities(source: &RawSource) -> crate::analysis::SourceCapabilities {
+    use crate::analysis::{SourceCapabilities, SourceFormat};
+
+    let format = match source {
+        RawSource::Sqlite(_) => SourceFormat::AntigravitySqlite,
+        RawSource::File(path) if is_jsonl_path(path) => SourceFormat::AntigravityBrainJsonl,
+        RawSource::File(path)
+            if path
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("chatsessions") =>
+        {
+            SourceFormat::AntigravityWorkspaceChatJson
+        }
+        RawSource::File(_) => SourceFormat::AntigravityCascadeJson,
+        RawSource::Jsonl(content) if is_cascade_content(content) => {
+            SourceFormat::AntigravityCascadeJson
+        }
+        RawSource::Jsonl(_) => SourceFormat::AntigravityBrainJsonl,
+    };
+    if matches!(format, SourceFormat::AntigravityWorkspaceChatJson) {
+        return SourceCapabilities::uncharacterized(format);
+    }
+    let mut capabilities = SourceCapabilities {
+        source_format: format,
+        ..SourceCapabilities::antigravity()
+    };
+    if matches!(format, SourceFormat::AntigravitySqlite) {
+        capabilities.cache_write_tokens = true;
+        capabilities.token_classes = true;
+    }
+    capabilities
+}
+
+impl AntigravitySessionReader {
     fn visit_jsonl(
         &self,
         reader: impl BufRead,
@@ -2887,7 +2925,7 @@ mod tests {
             "\n"
         );
 
-        let session = AntigravityAdapter
+        let session = AntigravitySessionReader
             .normalize(&input(RawSource::Jsonl(content.to_owned())))
             .expect("brain transcript normalizes");
 
@@ -2905,7 +2943,7 @@ mod tests {
     fn cascade_stream_extracts_nested_steps_model_and_usage() {
         let content = r#"{"source":"antigravity_api","model":"MODEL_PLACEHOLDER_M26","steps":{"steps":[{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","content":"done","metadata":{"createdAt":"2026-01-01T00:00:01Z"},"usage":{"input_tokens":34,"output_tokens":13}}]}}"#;
 
-        let session = AntigravityAdapter
+        let session = AntigravitySessionReader
             .normalize(&input(RawSource::Jsonl(content.to_owned())))
             .expect("cascade document normalizes");
 
@@ -2925,7 +2963,7 @@ mod tests {
         let after = r#"{"steps":{"steps":[{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","content":"done"}]},"model":"MODEL_PLACEHOLDER_M26"}"#;
 
         for content in [before, after] {
-            let session = AntigravityAdapter
+            let session = AntigravitySessionReader
                 .normalize(&input(RawSource::Jsonl(content.to_owned())))
                 .expect("cascade document normalizes");
 
@@ -2943,7 +2981,7 @@ mod tests {
         let input = input(RawSource::Jsonl(content.to_owned()));
         let mut collector = SessionCollector::new(&input.agent, &input.session_id);
 
-        AntigravityAdapter
+        AntigravitySessionReader
             .visit(&input, &mut collector)
             .expect("malformed cascade returns partial coverage");
 
@@ -2963,7 +3001,7 @@ mod tests {
                 r#"{{"source":"antigravity_api","steps":{{"steps":[{{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","content":"{content}","model":"MODEL_PLACEHOLDER_M35","usage":{{"input_tokens":21,"output_tokens":8}}}}]}}}}"#
             );
             let mut sink = SessionCollector::new("antigravity", "retained-memory");
-            let (summary, retained) = AntigravityAdapter
+            let (summary, retained) = AntigravitySessionReader
                 .visit_cascade_with_retained_high_water(
                     Cursor::new(document.as_bytes()),
                     &|| false,
@@ -2993,7 +3031,7 @@ mod tests {
         );
         let mut collector = SessionCollector::new("antigravity", "bounded-fields");
 
-        let (summary, retained) = AntigravityAdapter
+        let (summary, retained) = AntigravitySessionReader
             .visit_cascade_with_retained_high_water(
                 Cursor::new(document.as_bytes()),
                 &|| false,
@@ -3022,7 +3060,7 @@ mod tests {
             r#"{"type":"CORTEX_STEP_TYPE_PLANNER_RESPONSE","content":"three","usage":{"input_tokens":4,"output_tokens":2},"metadata":{"createdAt":"2026-01-01T00:00:03Z"}}]}}"#
         );
 
-        let session = AntigravityAdapter
+        let session = AntigravitySessionReader
             .normalize(&input(RawSource::Jsonl(content.to_owned())))
             .expect("optional cascade fields do not abort the document");
 
@@ -3042,7 +3080,7 @@ mod tests {
         let input = input(RawSource::Jsonl(content.to_owned()));
         let mut collector = SessionCollector::new(&input.agent, &input.session_id);
 
-        AntigravityAdapter
+        AntigravitySessionReader
             .visit(&input, &mut collector)
             .expect("malformed usage does not abort the cascade");
 
@@ -3066,7 +3104,9 @@ mod tests {
         let input = input(RawSource::Jsonl(content.to_owned()));
         let mut collector = SessionCollector::new(&input.agent, &input.session_id);
 
-        AntigravityAdapter.visit(&input, &mut collector).unwrap();
+        AntigravitySessionReader
+            .visit(&input, &mut collector)
+            .unwrap();
 
         assert_eq!(collector.coverage(), RecordCoverage::Partial);
         let session = collector.into_session().unwrap();
@@ -3087,7 +3127,9 @@ mod tests {
         let input = input(RawSource::Jsonl(content.to_owned()));
         let mut collector = SessionCollector::new(&input.agent, &input.session_id);
 
-        AntigravityAdapter.visit(&input, &mut collector).unwrap();
+        AntigravitySessionReader
+            .visit(&input, &mut collector)
+            .unwrap();
 
         assert_eq!(collector.coverage(), RecordCoverage::Partial);
         let session = collector.into_session().unwrap();
@@ -3130,7 +3172,7 @@ mod tests {
         let input = input(RawSource::Jsonl(content));
         let mut collector = SessionCollector::new(&input.agent, &input.session_id);
 
-        AntigravityAdapter
+        AntigravitySessionReader
             .visit(&input, &mut collector)
             .expect("brain transcript streams");
 
@@ -3161,7 +3203,7 @@ mod tests {
         let input = input(RawSource::File(path));
         let mut collector = SessionCollector::new(&input.agent, &input.session_id);
 
-        let outcome = AntigravityAdapter
+        let outcome = AntigravitySessionReader
             .visit_claimed(
                 &input,
                 &claim,
@@ -3185,7 +3227,7 @@ mod tests {
         let input = input(RawSource::File(path));
         let mut collector = SessionCollector::new(&input.agent, &input.session_id);
 
-        let outcome = AntigravityAdapter
+        let outcome = AntigravitySessionReader
             .visit_claimed(
                 &input,
                 &claim,
@@ -3211,9 +3253,14 @@ mod tests {
         for input in [brain, cascade] {
             let mut sink = SessionCollector::new(&input.agent, &input.session_id);
             let result = match &input.source {
-                RawSource::Jsonl(content) if is_cascade_content(content) => AntigravityAdapter
-                    .visit_cascade(Cursor::new(content.as_bytes()), &|| true, &mut sink),
-                RawSource::Jsonl(content) => AntigravityAdapter.visit_jsonl(
+                RawSource::Jsonl(content) if is_cascade_content(content) => {
+                    AntigravitySessionReader.visit_cascade(
+                        Cursor::new(content.as_bytes()),
+                        &|| true,
+                        &mut sink,
+                    )
+                }
+                RawSource::Jsonl(content) => AntigravitySessionReader.visit_jsonl(
                     BufReader::new(Cursor::new(content.as_bytes())),
                     &|| true,
                     false,
@@ -3239,7 +3286,7 @@ mod tests {
         };
         let mut sink = SessionCollector::new("antigravity", "cancel-ignored-content");
 
-        let result = AntigravityAdapter.visit_cascade_with_model(
+        let result = AntigravitySessionReader.visit_cascade_with_model(
             reader,
             &|| bytes_read.get() >= 64 * 1024,
             &mut sink,
@@ -3263,7 +3310,7 @@ mod tests {
         };
         let mut sink = SessionCollector::new("antigravity", "oversized-whitespace");
 
-        let summary = AntigravityAdapter
+        let summary = AntigravitySessionReader
             .visit_cascade_with_model(reader, &|| false, &mut sink, None)
             .expect("oversized valid JSON returns partial coverage");
         sink.finish(summary);
@@ -3387,7 +3434,9 @@ mod tests {
             false,
         );
         let mut collector = SessionCollector::new(&input.agent, &input.session_id);
-        AntigravityAdapter.visit(&input, &mut collector).unwrap();
+        AntigravitySessionReader
+            .visit(&input, &mut collector)
+            .unwrap();
         assert_eq!(collector.coverage(), RecordCoverage::Partial);
         assert!(
             collector
@@ -3424,7 +3473,9 @@ mod tests {
             sqlite_session("antigravity-cli", &generations, &steps, true, true);
         let mut collector = SessionCollector::new(&input.agent, &input.session_id);
 
-        AntigravityAdapter.visit(&input, &mut collector).unwrap();
+        AntigravitySessionReader
+            .visit(&input, &mut collector)
+            .unwrap();
 
         assert_eq!(collector.coverage(), RecordCoverage::Partial);
         assert!(
@@ -3494,7 +3545,7 @@ mod tests {
         let fingerprint = provider_db_fingerprint(latest, rows);
         let mut collector = SessionCollector::new(&input.agent, &input.session_id);
 
-        let outcome = AntigravityAdapter
+        let outcome = AntigravitySessionReader
             .visit_db_claimed(&input, &fingerprint, &|| false, &mut collector)
             .unwrap();
 
@@ -3522,7 +3573,7 @@ mod tests {
             mutated: false,
         };
 
-        let outcome = AntigravityAdapter
+        let outcome = AntigravitySessionReader
             .visit_db_claimed(&input, &fingerprint, &|| false, &mut sink)
             .unwrap();
 
@@ -3585,7 +3636,7 @@ mod tests {
                 .execute_batch(&format!("DROP TABLE {missing}"))
                 .unwrap();
 
-            let session = AntigravityAdapter.normalize(&input).unwrap();
+            let session = AntigravitySessionReader.normalize(&input).unwrap();
 
             assert_eq!(
                 session
@@ -3611,7 +3662,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(AntigravityAdapter.normalize(&input).is_err());
+        assert!(AntigravitySessionReader.normalize(&input).is_err());
     }
 
     #[test]
@@ -3634,7 +3685,7 @@ mod tests {
             cancelled: Rc::clone(&cancelled),
         };
 
-        let result = AntigravityAdapter.visit_database_rows(
+        let result = AntigravitySessionReader.visit_database_rows(
             &connection,
             SessionSummary::default(),
             &|| cancelled.get(),

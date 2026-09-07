@@ -1,19 +1,33 @@
 //! Cursor adapter for CLI transcripts and synthesized IDE/store sessions.
 
+use std::io::BufReader;
+
 use anyhow::Context;
 use serde_json::Value;
 use time::{Date, Month, PrimitiveDateTime, Time, UtcOffset};
 
 use super::read_source;
-use crate::analysis::interface::{ContextWindowSource, SessionInput, VendorAdapter};
+use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, RecordSkip};
+use crate::analysis::interface::{
+    ContextWindowSource, NormalizedRecord, RawSource, RecordSink, SessionInput, SessionReader,
+    SessionSummary, VisitOutcome,
+};
 use crate::analysis::model::{NormalizedEvent, NormalizedSession};
 use crate::analysis::records::{RecordShape, parse_record, parse_ts};
+use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 
-pub struct CursorAdapter;
+pub struct CursorSessionReader;
 
-impl VendorAdapter for CursorAdapter {
+impl SessionReader for CursorSessionReader {
     fn agent(&self) -> &'static str {
         "cursor"
+    }
+
+    fn capabilities(
+        &self,
+        source: &crate::analysis::RawSource,
+    ) -> crate::analysis::SourceCapabilities {
+        cursor_capabilities(source)
     }
 
     fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession> {
@@ -24,12 +38,137 @@ impl VendorAdapter for CursorAdapter {
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             events,
-            cache_write_tokens_available: true,
+            cache_write_tokens_available: false,
             context_window: None,
             context_window_source: ContextWindowSource::Inferred,
             model,
         })
     }
+
+    fn visit_claimed(
+        &self,
+        input: &SessionInput,
+        claim: &SourceClaim,
+        guarantee: AppendOnlyGuarantee,
+        cancel: &dyn Fn() -> bool,
+        sink: &mut dyn RecordSink,
+    ) -> anyhow::Result<VisitOutcome> {
+        let RawSource::File(path) = &input.source else {
+            anyhow::bail!("a claimed Cursor source must be a file");
+        };
+        let mut pinned = match PinnedSource::open(path, claim.clone())? {
+            Ok(pinned) => pinned,
+            Err(reason) => return Ok(VisitOutcome::SourceChanged(reason)),
+        };
+        let limit = match guarantee {
+            AppendOnlyGuarantee::Evidenced => claim.boundary,
+            AppendOnlyGuarantee::Absent => u64::MAX,
+        };
+        let model = visit_cursor_reader(BufReader::new(pinned.reader(limit)), cancel, sink)?;
+        let outcome = match guarantee {
+            AppendOnlyGuarantee::Evidenced => pinned.recheck_prefix()?.map_or(
+                VisitOutcome::AcceptedPrefix {
+                    boundary: claim.boundary,
+                },
+                VisitOutcome::SourceChanged,
+            ),
+            AppendOnlyGuarantee::Absent => pinned
+                .recheck_full()?
+                .map_or(VisitOutcome::AcceptedFull, VisitOutcome::SourceChanged),
+        };
+        if !matches!(outcome, VisitOutcome::SourceChanged(_)) {
+            sink.finish(SessionSummary {
+                model,
+                ..SessionSummary::default()
+            });
+        }
+        Ok(outcome)
+    }
+}
+
+fn cursor_capabilities(source: &RawSource) -> crate::analysis::SourceCapabilities {
+    use crate::analysis::{SourceCapabilities, SourceFormat};
+
+    let format = match source {
+        RawSource::Sqlite(_) => SourceFormat::CursorCliStoreDb,
+        RawSource::File(path)
+            if path.extension().and_then(|value| value.to_str()) == Some("json") =>
+        {
+            SourceFormat::CursorLegacyChatJson
+        }
+        RawSource::File(_) => SourceFormat::CursorCliAgentJsonl,
+        RawSource::Jsonl(content)
+            if content.contains("\"cursor_source\":\"desktop_state_vscdb\"") =>
+        {
+            SourceFormat::CursorIdeComposer
+        }
+        RawSource::Jsonl(content) if content.contains("\"cursor_source\":\"store_db\"") => {
+            SourceFormat::CursorCliStoreDb
+        }
+        RawSource::Jsonl(content) if content.contains("\"cursor_source\":\"agent_transcript\"") => {
+            SourceFormat::CursorCliAgentJsonl
+        }
+        RawSource::Jsonl(_) => SourceFormat::CursorJsonl,
+    };
+    if matches!(format, SourceFormat::CursorLegacyChatJson) {
+        SourceCapabilities::uncharacterized(format)
+    } else {
+        SourceCapabilities {
+            source_format: format,
+            ..SourceCapabilities::cursor()
+        }
+    }
+}
+
+fn visit_cursor_reader(
+    reader: impl std::io::BufRead,
+    cancel: &dyn Fn() -> bool,
+    sink: &mut dyn RecordSink,
+) -> anyhow::Result<Option<String>> {
+    let mut reader = BoundedJsonlReader::new(reader);
+    let mut session_model = None;
+    while let Some(record) = reader.next_record(cancel) {
+        match record {
+            FramedRecord::Complete { bytes, .. } => {
+                let record = std::str::from_utf8(bytes).context("Cursor record is not UTF-8")?;
+                let Ok(value) = serde_json::from_str::<Value>(record) else {
+                    sink.record(NormalizedRecord::Unusable(
+                        crate::analysis::PartialReason::MalformedRecord,
+                    ));
+                    continue;
+                };
+                if session_model.is_none() {
+                    session_model = model_from(&value).map(str::to_owned);
+                }
+                let Some(mut event) = parse_record(&value, RecordShape::Cursor) else {
+                    sink.record(NormalizedRecord::Unusable(
+                        crate::analysis::PartialReason::UnrecognizedRecordType,
+                    ));
+                    continue;
+                };
+                if event.ts_ms.is_none() {
+                    event.ts_ms = embedded_timestamp(&value);
+                }
+                if event.model.is_none() {
+                    event.model = session_model.clone();
+                }
+                if event.uuid.is_none() {
+                    event.uuid = cursor_record_id(&value).map(str::to_owned);
+                }
+                sink.record(NormalizedRecord::MetricsEvent(Box::new(event)));
+            }
+            FramedRecord::Skipped(RecordSkip::ReadFailed { index, kind }) => {
+                anyhow::bail!("Cursor record {index} read failed: {kind:?}");
+            }
+            FramedRecord::Skipped(RecordSkip::Cancelled { index }) => {
+                anyhow::bail!("Cursor record {index} read was cancelled");
+            }
+            FramedRecord::Skipped(skip) => {
+                sink.record(NormalizedRecord::Unusable(skip.partial_reason()));
+            }
+        }
+    }
+    Ok(session_model)
 }
 
 fn parse_cursor(content: &str) -> (Vec<NormalizedEvent>, Option<String>) {
@@ -55,9 +194,20 @@ fn parse_cursor(content: &str) -> (Vec<NormalizedEvent>, Option<String>) {
         if event.model.is_none() {
             event.model = session_model.clone();
         }
+        if event.uuid.is_none() {
+            event.uuid = cursor_record_id(&value).map(str::to_owned);
+        }
         events.push(event);
     }
     (events, session_model)
+}
+
+fn cursor_record_id(value: &Value) -> Option<&str> {
+    ["bubbleId", "messageId", "id"]
+        .into_iter()
+        .find_map(|key| value.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn model_from(value: &Value) -> Option<&str> {
