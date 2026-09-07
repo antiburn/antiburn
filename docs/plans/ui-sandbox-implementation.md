@@ -8,8 +8,8 @@ Builds what [ui-sandbox.md](ui-sandbox.md) decided: personal tool, popover first
 
 | Step                                              | State       |
 | ------------------------------------------------- | ----------- |
-| 0. Prep: install deps in this worktree            | not started |
-| 1. Sandbox mode in the repo (fixture IPC, page)   | not started |
+| 0. Prep: install deps in this worktree            | done        |
+| 1. Sandbox mode in the repo (fixture IPC, page)   | done, in PR |
 | 2. `/sandbox` skill: overlay with Draw + Ask, Send | not started |
 | 3. Arrange mode                                   | not started |
 | 4. Later: multi-view page, real-data snapshot     | parked      |

@@ -58,6 +58,7 @@ Run from the repository root:
 pnpm install
 pnpm --filter @antiburn/desktop dev          # Tauri dev build (tray + popover)
 pnpm --filter @antiburn/desktop dev:web      # frontend only, in a browser
+pnpm --filter @antiburn/desktop dev:sandbox  # popover on fixture data, in a browser
 pnpm --filter @antiburn/desktop dev:bundle   # bundled debug .app / installer
 pnpm --filter @antiburn/desktop lint
 pnpm --filter @antiburn/desktop type-check
@@ -65,6 +66,13 @@ pnpm --filter @antiburn/desktop test
 pnpm --filter @antiburn/desktop build        # frontend bundle only
 pnpm --filter @antiburn/desktop icons        # regenerate app and tray icons
 ```
+
+`dev:sandbox` is a development aid for popover styling. It serves
+`sandbox.html`, which frames the real popover at its window size and feeds it
+fixture data instead of a shell: Vite aliases the Tauri packages to the shims in
+`src/sandbox/`, so no product file changes and no other build sees the shims.
+Open `http://127.0.0.1:1420/sandbox.html?scenario=busy` (or `default`) in a
+browser. The scenarios live in `src/sandbox/scenarios.ts`.
 
 The `dev`, `dev:bundle`, and `tauri` scripts load `apps/desktop/.env` when it
 exists. The shell environment takes precedence. `.env.example` lists the Google

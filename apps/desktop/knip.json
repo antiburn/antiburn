@@ -1,6 +1,11 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["src/settings.tsx", "src/onboarding.tsx", "src/styles.css"],
+  "entry": [
+    "src/settings.tsx",
+    "src/onboarding.tsx",
+    "src/styles.css",
+    "src/sandbox/tauri-*.ts"
+  ],
   "project": ["src/**/*.{ts,tsx,css}"],
   "ignoreDependencies": ["@tauri-apps/cli"]
 }

@@ -9,6 +9,7 @@
     "dev": "node scripts/run-tauri.mjs dev --config src-tauri/tauri.debug.conf.json",
     "dev:bundle": "node scripts/run-tauri.mjs build --debug --config src-tauri/tauri.debug.conf.json",
     "dev:web": "vite",
+    "dev:sandbox": "vite --mode sandbox",
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint .",

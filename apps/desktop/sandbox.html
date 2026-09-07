@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>antiburn sandbox</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <style>
+      /* Development aid only. Frame the popover at its native window size. */
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: start center;
+        padding-top: 24px;
+        background: #d9d9d9;
+      }
+      #root {
+        width: 380px;
+        height: 700px;
+        max-height: 700px;
+        overflow: hidden;
+        border-radius: 12px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.32);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Append the overlay toolbar when the local receiver answers. Stay silent when it does not.
+      const overlayUrl = "http://127.0.0.1:4680/overlay.js"
+      fetch(overlayUrl, { method: "HEAD" })
+        .then((response) => {
+          if (!response.ok) return
+          const script = document.createElement("script")
+          script.src = overlayUrl
+          document.body.append(script)
+        })
+        .catch(() => {})
+    </script>
+  </body>
+</html>

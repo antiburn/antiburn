@@ -9,7 +9,28 @@ import { defineConfig } from "vitest/config"
 /** Port the Tauri shell expects for the dev server (see `tauri.conf.json`). */
 const DEV_SERVER_PORT = 1420
 
+/**
+ * `vite --mode sandbox` serves the popover in a plain browser on fixture data.
+ * The Tauri packages resolve to the shims in `src/sandbox/`, so product code
+ * stays untouched and no other mode sees the shims.
+ */
+const SANDBOX_ALIASES = {
+  "@tauri-apps/api/core": fileURLToPath(
+    new URL("./src/sandbox/tauri-core.ts", import.meta.url),
+  ),
+  "@tauri-apps/api/event": fileURLToPath(
+    new URL("./src/sandbox/tauri-event.ts", import.meta.url),
+  ),
+  "@tauri-apps/plugin-dialog": fileURLToPath(
+    new URL("./src/sandbox/tauri-dialog.ts", import.meta.url),
+  ),
+}
+
 export default defineConfig(({ command, mode }) => ({
+  resolve: {
+    alias: mode === "sandbox" ? SANDBOX_ALIASES : {},
+  },
+
   plugins: [
     {
       name: "tauri-webview-module-cache",
