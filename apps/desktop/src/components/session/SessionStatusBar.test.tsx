@@ -121,7 +121,7 @@ describe("SessionStatusBar", () => {
     )
     render(<SessionStatusBar checks={checks} />)
     const verdict = screen.getByLabelText("All assessed checks passed")
-    expect(verdict.textContent).toBe("5/5 assessed burn checks")
+    expect(verdict.textContent).toBe("5/5 burn checks")
     expect(screen.queryByLabelText("All checks passed")).toBeNull()
   })
 
@@ -204,7 +204,7 @@ describe("SessionStatusBar", () => {
       <SessionStatusBar checks={[]} cost={{ totalUsd: 2.4, figureLabel: "Estimated cost" }} />,
     )
 
-    expect(screen.getByLabelText("Estimated cost $2.40")).toHaveClass("ml-auto")
+    expect(screen.getByLabelText("Estimated cost $2.40").parentElement).toHaveClass("ml-auto")
   })
 
   it("keeps a limit share at the right edge when no checks were assessed", () => {
@@ -215,7 +215,7 @@ describe("SessionStatusBar", () => {
       />,
     )
 
-    expect(screen.getByLabelText("Estimated weekly share")).toHaveClass("ml-auto")
+    expect(screen.getByLabelText("Estimated weekly share").parentElement).toHaveClass("ml-auto")
   })
 
   it("omits unavailable checks from the tooltip", async () => {

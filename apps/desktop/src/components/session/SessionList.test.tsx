@@ -149,7 +149,7 @@ describe("SessionList — rows", () => {
     )
   })
 
-  it("leaves the badge blank when the selected limit has no allocation", () => {
+  it("names the weekly limit when the selected limit has no allocation", async () => {
     list({
       entries: [
         entry({
@@ -160,9 +160,12 @@ describe("SessionList — rows", () => {
     })
 
     expect(screen.queryByLabelText("Estimated cost $1.00")).toBeNull()
-    expect(
-      screen.queryByLabelText("A weekly provider estimate is not available for this session."),
-    ).toBeNull()
+    const badge = screen.getByLabelText("No weekly limit for this session.")
+    expect(badge).toHaveTextContent("no limit")
+    fireEvent.focus(badge)
+    await waitFor(() => {
+      expect(screen.getByRole("tooltip")).toHaveTextContent("No weekly limit for this session.")
+    })
   })
 
   it("does not fall back to cost when a controlled five-hour metric is unavailable", () => {
@@ -179,6 +182,7 @@ describe("SessionList — rows", () => {
     expect(screen.getByRole("radio", { name: "$" })).toHaveAttribute("aria-checked", "false")
     expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
     expect(screen.queryByLabelText("Estimated cost $1.00")).toBeNull()
+    expect(screen.getByLabelText("No 5h limit for this session.")).toHaveTextContent("no limit")
   })
 
   it("does not offer five-hour mode for another short rolling window", () => {
