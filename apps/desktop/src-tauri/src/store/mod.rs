@@ -465,7 +465,25 @@ impl Store {
 
     /// Make setup pending without changing the reader's data or choices.
     pub fn restart_onboarding(&self) -> Result<(AppSettings, AppSettings)> {
-        self.update_settings(|settings| settings.onboarding_completed = false)
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let previous = read_settings(&tx)?;
+        let mut saved = previous.clone();
+        saved.onboarding_completed = false;
+        let saved = saved.normalized();
+        write_settings(&tx, &saved)?;
+        tx.execute(
+            "INSERT INTO setting (key, value) VALUES ('internal:onboardingFlow', 'restart')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [],
+        )?;
+        tx.commit()?;
+        Ok((previous, saved))
+    }
+
+    /// Whether the pending setup flow came from the explicit restart action.
+    pub fn onboarding_flow_is_restart(&self) -> bool {
+        self.internal_value("internal:onboardingFlow").as_deref() == Some("restart")
     }
 
     /// Replace every preference, returning what was actually stored (clamped).
@@ -572,6 +590,15 @@ impl Store {
         Ok(())
     }
 
+    /// Return the current delivery backlog depth.
+    pub fn analytics_event_count(&self) -> Result<u32> {
+        Ok(self
+            .lock()
+            .query_row("SELECT COUNT(*) FROM analytics_event", [], |row| {
+                row.get::<_, u32>(0)
+            })?)
+    }
+
     /// The next batch to attempt, oldest first, as `(id, payload)`.
     pub fn pending_analytics_events(&self, limit: u32) -> Result<Vec<(i64, String)>> {
         let connection = self.lock();
@@ -632,13 +659,26 @@ impl Store {
 
     /// Mint or rotate the installation identifier.
     pub fn set_analytics_identity(&self, install_id: &str) -> Result<()> {
+        self.set_analytics_identity_with_time(install_id, &now_rfc3339())
+    }
+
+    fn set_analytics_identity_with_time(&self, install_id: &str, minted_at: &str) -> Result<()> {
         self.lock().execute(
             "INSERT INTO analytics_identity (id, install_id, minted_at) VALUES (1, ?1, ?2)
              ON CONFLICT(id) DO UPDATE SET install_id = excluded.install_id,
                                            minted_at  = excluded.minted_at",
-            params![install_id, now_rfc3339()],
+            params![install_id, minted_at],
         )?;
         Ok(())
+    }
+
+    #[cfg(all(test, feature = "analytics"))]
+    pub(crate) fn set_analytics_identity_at(
+        &self,
+        install_id: &str,
+        minted_at: &str,
+    ) -> Result<()> {
+        self.set_analytics_identity_with_time(install_id, minted_at)
     }
 
     /// Opting out: the queue and the identity go together, in one transaction.

@@ -386,6 +386,23 @@ fn events_are_given_up_on_after_a_bounded_number_of_attempts() {
 }
 
 #[test]
+fn the_analytics_queue_reports_depth_and_keeps_the_newest_five_hundred() {
+    let store = store();
+    for index in 0..510 {
+        store
+            .queue_analytics_event("surface_viewed", &index.to_string())
+            .unwrap();
+        let depth = store.analytics_event_count().unwrap();
+        assert_eq!(depth, (index + 1).min(500));
+    }
+
+    assert_eq!(store.analytics_event_count().unwrap(), 500);
+    let pending = store.pending_analytics_events(500).unwrap();
+    assert_eq!(pending.first().unwrap().1, "10");
+    assert_eq!(pending.last().unwrap().1, "509");
+}
+
+#[test]
 fn consent_grants_round_trip_and_revoke_individually() {
     let store = store();
     assert!(store.granted_dirs().unwrap().is_empty());
@@ -611,10 +628,26 @@ fn restarting_onboarding_preserves_local_state_and_is_idempotent() {
     assert_eq!(store.session_count().unwrap(), 1);
     assert_eq!(store.scan_roots().unwrap(), vec!["/home/avery/work"]);
     assert_eq!(store.pending_analytics_events(10).unwrap().len(), 1);
+    assert!(store.onboarding_flow_is_restart());
 
     let (previous_again, restarted_again) = store.restart_onboarding().unwrap();
     assert_eq!(previous_again, expected);
     assert_eq!(restarted_again, expected);
+}
+
+#[test]
+fn a_restarted_onboarding_flow_keeps_its_classification_after_relaunch() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store
+        .update_settings(|settings| settings.onboarding_completed = true)
+        .unwrap();
+    store.restart_onboarding().unwrap();
+    drop(store);
+
+    let reopened = Store::open(directory.path()).unwrap();
+    assert!(!reopened.settings().unwrap().onboarding_completed);
+    assert!(reopened.onboarding_flow_is_restart());
 }
 
 /// Pin the current session shape so migrations remain deliberate. This is not

@@ -32,6 +32,7 @@ import type {
 } from "./providerUsageIpc"
 
 export * from "./providerUsageIpc"
+export type { SettingsPane } from "./settingsPanes"
 
 /* -------------------------------------------------------------------------
  * Payload shapes — mirrors of `src-tauri/src/dto.rs`
@@ -740,6 +741,36 @@ export type Interaction =
       step: "welcome" | "agents_detected" | "sources_and_repos" | "ready"
     }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" }
+  | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
+  | {
+      kind: "surfaceStateObserved"
+      surface: StateSurface
+      state: SurfaceState
+      origin: SurfaceOrigin
+    }
+  | { kind: "settingsPaneViewed"; pane: SettingsPane }
+  | {
+      kind: "liveUsageStateObserved"
+      provider: LiveUsageProvider
+      state: LiveUsageState
+      origin: SurfaceOrigin
+    }
+
+export type Surface =
+  | "activity"
+  | "session_detail"
+  | "provider_preview"
+  | "checks_preview"
+  | "hud"
+  | "hud_detail"
+  | "settings"
+
+export type StateSurface = Surface | "insights"
+export type SurfaceOrigin = "user" | "automatic"
+export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"
+export type LiveUsageProvider = "anthropic" | "openai" | "google"
+export type LiveUsageState =
+  "fresh" | "stale" | "authentication" | "rate_limited" | "unavailable" | "no_credentials"
 
 /**
  * Report one interaction. Fire-and-forget, and silent on failure.
@@ -1236,6 +1267,15 @@ export async function onSettingsChanged(
 ): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen<AppSettings>(SETTINGS_CHANGED_EVENT, (event) => handler(event.payload))
+}
+
+/** Event emitted after the Settings window reaches the screen. */
+export const SETTINGS_SHOWN_EVENT = "settings:shown"
+
+/** Subscribe to the Settings window reaching the screen. */
+export async function onSettingsShown(handler: () => void): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen(SETTINGS_SHOWN_EVENT, () => handler())
 }
 
 /**

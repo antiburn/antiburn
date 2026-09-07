@@ -20,6 +20,29 @@ const popoverPeekConcealed = vi.hoisted(() => vi.fn(async () => true))
 const popoverPeekPresented = vi.hoisted(() => vi.fn(async () => true))
 const popoverPeekReady = vi.hoisted(() => vi.fn(async () => true))
 const popoverPeekRetargetReady = vi.hoisted(() => vi.fn(async () => true))
+const analytics = vi.hoisted(() => ({
+  conceal: vi.fn(),
+  expose: vi.fn((_options: unknown) => 1),
+  observeLiveUsage: vi.fn(),
+  suspend: vi.fn(),
+}))
+
+vi.mock("../lib/surfaceExposure", () => ({
+  SurfaceExposureTracker: class {
+    expose(options: unknown) {
+      return analytics.expose(options)
+    }
+    observeLiveUsage(summary: unknown, provider: unknown, generation: unknown) {
+      analytics.observeLiveUsage(summary, provider, generation)
+    }
+    conceal() {
+      analytics.conceal()
+    }
+    suspend() {
+      analytics.suspend()
+    }
+  },
+}))
 
 vi.mock("../lib/popoverPeekIpc", () => ({
   getPopoverPeekState,
@@ -415,6 +438,94 @@ describe("PopoverPeekView", () => {
       propertyName: "opacity",
     })
     expect(screen.getByRole("status")).toHaveTextContent(/preview unavailable/i)
+  })
+
+  it("does not record a candidate when native state says it is hidden", async () => {
+    popoverPeekPresented.mockResolvedValue(false)
+    getPopoverPeekState.mockResolvedValue({
+      generation: 1,
+      target: providerTarget("openai"),
+      rendererReady: true,
+      visible: false,
+      awaitingRetargetCommit: false,
+      awaitingPresentation: true,
+      awaitingConcealment: false,
+    })
+    getPopoverPeekData.mockResolvedValue(PROVIDER_DATA)
+
+    render(<PopoverPeekView />)
+
+    await waitFor(() => expect(popoverPeekPresented).toHaveBeenCalledWith(1, 196))
+    act(flushFrames)
+    fireEvent.transitionEnd(document.querySelector('[data-generation="1"]')!, {
+      propertyName: "opacity",
+    })
+
+    expect(analytics.expose).not.toHaveBeenCalledWith(
+      expect.objectContaining({ state: expect.any(String) }),
+    )
+  })
+
+  it("records a candidate when native state confirms it is already visible", async () => {
+    popoverPeekPresented.mockResolvedValue(false)
+    getPopoverPeekState.mockResolvedValue({
+      generation: 1,
+      target: providerTarget("openai"),
+      rendererReady: true,
+      visible: true,
+      awaitingRetargetCommit: false,
+      awaitingPresentation: false,
+      awaitingConcealment: false,
+    })
+    getPopoverPeekData.mockResolvedValue(PROVIDER_DATA)
+
+    render(<PopoverPeekView />)
+
+    await waitFor(() => expect(popoverPeekPresented).toHaveBeenCalledWith(1, 196))
+    act(flushFrames)
+    fireEvent.transitionEnd(document.querySelector('[data-generation="1"]')!, {
+      propertyName: "opacity",
+    })
+
+    expect(analytics.expose).toHaveBeenCalledWith(
+      expect.objectContaining({ surface: "provider_preview", state: "empty" }),
+    )
+  })
+
+  it("does not record a candidate when native state has moved to another generation", async () => {
+    popoverPeekPresented.mockResolvedValue(false)
+    getPopoverPeekState
+      .mockResolvedValueOnce({
+        generation: 1,
+        target: providerTarget("openai"),
+        rendererReady: true,
+        visible: false,
+        awaitingRetargetCommit: false,
+        awaitingPresentation: true,
+        awaitingConcealment: false,
+      })
+      .mockResolvedValue({
+        generation: 2,
+        target: providerTarget("anthropic"),
+        rendererReady: true,
+        visible: true,
+        awaitingRetargetCommit: false,
+        awaitingPresentation: false,
+        awaitingConcealment: false,
+      })
+    getPopoverPeekData.mockResolvedValue(PROVIDER_DATA)
+
+    render(<PopoverPeekView />)
+
+    await waitFor(() => expect(popoverPeekPresented).toHaveBeenCalledWith(1, 196))
+    act(flushFrames)
+    fireEvent.transitionEnd(document.querySelector('[data-generation="1"]')!, {
+      propertyName: "opacity",
+    })
+
+    expect(analytics.expose).not.toHaveBeenCalledWith(
+      expect.objectContaining({ state: expect.any(String) }),
+    )
   })
 
   it("clears a crossfade before acknowledging concealment", async () => {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../../lib/ipc"
 import type * as InsightsIpc from "../../lib/insightsIpc"
+import type * as OverlayWindow from "../../lib/overlayWindow"
 import {
   EMPTY_PROVIDER_USAGE,
   type ActivityEntryPayload,
@@ -23,6 +24,8 @@ const onChecksReportChanged = vi.hoisted(() => vi.fn())
 const getChecksReport = vi.hoisted(() => vi.fn())
 const onPopoverShown = vi.hoisted(() => vi.fn())
 const onPopoverHidden = vi.hoisted(() => vi.fn())
+const noteInteraction = vi.hoisted(() => vi.fn())
+const isCurrentWindowVisible = vi.hoisted(() => vi.fn())
 
 // The analysis, list, and event-subscription commands are overridden. All
 // other wrappers keep their real no-shell fallback because `hasShell()` is
@@ -41,7 +44,13 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     onScanEvent,
     onPopoverShown,
     onPopoverHidden,
+    noteInteraction,
   }
+})
+
+vi.mock("../../lib/overlayWindow", async (importOriginal) => {
+  const actual = await importOriginal<typeof OverlayWindow>()
+  return { ...actual, isCurrentWindowVisible }
 })
 
 vi.mock("../../lib/insightsIpc", async (importOriginal) => {
@@ -56,6 +65,25 @@ let entryChangedHandler: EntryChangedHandler | null = null
 let scanEventHandler: ScanEventHandler | null = null
 let popoverShownHandler: (() => void) | null = null
 let popoverHiddenHandler: (() => void) | null = null
+
+function activityEntry(overrides: Partial<ActivityEntryPayload> = {}): ActivityEntryPayload {
+  return {
+    agent: "claude-code",
+    sessionId: "session-1",
+    repo: "repo",
+    timestamp: "2024-01-01T00:00:00.000Z",
+    isActive: false,
+    surface: "cli",
+    wslDistro: null,
+    title: null,
+    hasForkParent: false,
+    forkChildCount: 0,
+    cost: null,
+    models: [],
+    modelRuns: [],
+    ...overrides,
+  }
+}
 
 beforeEach(() => {
   entryChangedHandler = null
@@ -102,6 +130,9 @@ beforeEach(() => {
       popoverHiddenHandler = null
     }
   })
+  noteInteraction.mockReset()
+  isCurrentWindowVisible.mockReset()
+  isCurrentWindowVisible.mockResolvedValue(false)
   getSessionLimitAllocations.mockReset()
   getSessionLimitAllocations.mockResolvedValue({
     generatedAt: "2027-01-15T08:00:00Z",
@@ -131,6 +162,350 @@ describe("PopoverSession surface presentation", () => {
     await vi.waitFor(() => expect(session.getSnapshot().checksUnavailable).toBe(true))
 
     unsubscribe()
+  })
+
+  it("does not count a hidden prewarmed renderer as a surface view", async () => {
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+
+    await vi.waitFor(() => expect(popoverShownHandler).not.toBeNull())
+    await vi.waitFor(() => expect(session.getSnapshot().entries).not.toBeNull())
+
+    expect(noteInteraction).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it("records the cached activity outcome when the popover reaches the screen", async () => {
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(popoverShownHandler).not.toBeNull())
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+
+    popoverShownHandler?.()
+    popoverShownHandler?.()
+
+    expect(noteInteraction.mock.calls).toEqual([
+      [{ kind: "surfaceViewed", surface: "activity", origin: "user" }],
+      [
+        {
+          kind: "surfaceStateObserved",
+          surface: "activity",
+          state: "empty",
+          origin: "user",
+        },
+      ],
+    ])
+    unsubscribe()
+  })
+
+  it("records useful activity before the secondary usage read settles", async () => {
+    getProviderUsage.mockReturnValue(new Promise(() => undefined))
+    listRecentSessions.mockResolvedValue([activityEntry()])
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(popoverShownHandler).not.toBeNull())
+    popoverShownHandler?.()
+
+    await vi.waitFor(() =>
+      expect(noteInteraction).toHaveBeenCalledWith({
+        kind: "surfaceStateObserved",
+        surface: "activity",
+        state: "ready",
+        origin: "user",
+      }),
+    )
+    unsubscribe()
+  })
+
+  it("records a failed activity read as error without also calling it empty", async () => {
+    listRecentSessions.mockRejectedValue(new Error("list failed"))
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().entriesUnavailable).toBe(true))
+    await vi.waitFor(() => expect(popoverShownHandler).not.toBeNull())
+    popoverShownHandler?.()
+
+    const states = noteInteraction.mock.calls
+      .map(([interaction]) => interaction)
+      .filter((interaction) => interaction.kind === "surfaceStateObserved")
+    expect(states).toEqual([
+      {
+        kind: "surfaceStateObserved",
+        surface: "activity",
+        state: "error",
+        origin: "user",
+      },
+    ])
+    unsubscribe()
+  })
+
+  it("records a visible refresh failure when no cached activity is useful", async () => {
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().entries).toEqual([]))
+    await vi.waitFor(() => expect(entryChangedHandler).not.toBeNull())
+    await vi.waitFor(() => expect(popoverShownHandler).not.toBeNull())
+    popoverShownHandler?.()
+    listRecentSessions.mockRejectedValue(new Error("refresh failed"))
+
+    entryChangedHandler?.(activityEntry({ sessionId: "not-cached" }))
+
+    await vi.waitFor(() => expect(session.getSnapshot().entriesUnavailable).toBe(true))
+    expect(noteInteraction).toHaveBeenCalledWith({
+      kind: "surfaceStateObserved",
+      surface: "activity",
+      state: "error",
+      origin: "user",
+    })
+    unsubscribe()
+  })
+
+  it("records a retained detail surface on reopen and accepts its settled data", async () => {
+    getSessionAnalysis.mockResolvedValue({
+      summary: null,
+      supportsAnalysis: true,
+      title: null,
+      wslDistro: null,
+      isActive: false,
+      cost: null,
+      topLevelCost: null,
+      subagentsCost: null,
+      inclusiveTokens: null,
+      subagentsTokens: null,
+      efficiency: null,
+      models: ["claude-sonnet"],
+      modelRuns: [],
+      orchestration: null,
+      relations: null,
+      sourcePath: null,
+      startedAtEpoch: null,
+      analysisPending: false,
+      analysisStale: false,
+    })
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+    session.openSession(subject)
+    await vi.waitFor(() => expect(session.getSnapshot().analysis).not.toBeNull())
+    await vi.waitFor(() => expect(popoverShownHandler).not.toBeNull())
+
+    popoverShownHandler?.()
+
+    expect(noteInteraction).toHaveBeenNthCalledWith(1, {
+      kind: "surfaceViewed",
+      surface: "session_detail",
+      origin: "user",
+    })
+    expect(noteInteraction).toHaveBeenNthCalledWith(2, {
+      kind: "surfaceStateObserved",
+      surface: "session_detail",
+      state: "ready",
+      origin: "user",
+    })
+    unsubscribe()
+  })
+
+  it("treats a detail payload with only a source path as empty", async () => {
+    getSessionAnalysis.mockResolvedValue({
+      summary: null,
+      supportsAnalysis: true,
+      title: null,
+      wslDistro: null,
+      isActive: false,
+      cost: null,
+      topLevelCost: null,
+      subagentsCost: null,
+      inclusiveTokens: null,
+      subagentsTokens: null,
+      efficiency: null,
+      models: [],
+      modelRuns: [],
+      orchestration: null,
+      relations: { title: null, parent: null, children: [] },
+      sourcePath: "/private/session.jsonl",
+      startedAtEpoch: null,
+      analysisPending: false,
+      analysisStale: false,
+    })
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+    session.openSession(subject)
+    await vi.waitFor(() => expect(session.getSnapshot().analysis).not.toBeNull())
+    await vi.waitFor(() => expect(popoverShownHandler).not.toBeNull())
+    popoverShownHandler?.()
+
+    expect(noteInteraction).toHaveBeenCalledWith({
+      kind: "surfaceStateObserved",
+      surface: "session_detail",
+      state: "empty",
+      origin: "user",
+    })
+    unsubscribe()
+  })
+
+  it("records committed navigation while the popover is visible", async () => {
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(popoverShownHandler).not.toBeNull())
+    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    popoverShownHandler?.()
+    noteInteraction.mockClear()
+
+    session.openSession(subject)
+
+    expect(noteInteraction).toHaveBeenCalledWith({
+      kind: "surfaceViewed",
+      surface: "session_detail",
+      origin: "user",
+    })
+    unsubscribe()
+  })
+
+  it("uses the native visibility read when the shown event was missed", async () => {
+    isCurrentWindowVisible.mockResolvedValue(true)
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+
+    await vi.waitFor(() =>
+      expect(noteInteraction).toHaveBeenCalledWith({
+        kind: "surfaceViewed",
+        surface: "activity",
+        origin: "user",
+      }),
+    )
+    popoverShownHandler?.()
+
+    expect(
+      noteInteraction.mock.calls.filter(
+        ([interaction]) => interaction.kind === "surfaceViewed",
+      ),
+    ).toHaveLength(1)
+    unsubscribe()
+  })
+
+  it("does not invent another view when the controller remounts in a visible window", async () => {
+    isCurrentWindowVisible.mockResolvedValue(true)
+    const session = new PopoverSession()
+    const unsubscribeFirst = session.subscribe(() => undefined)
+    await vi.waitFor(() =>
+      expect(noteInteraction).toHaveBeenCalledWith({
+        kind: "surfaceViewed",
+        surface: "activity",
+        origin: "user",
+      }),
+    )
+    unsubscribeFirst()
+
+    const unsubscribeSecond = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(isCurrentWindowVisible).toHaveBeenCalledTimes(2))
+
+    expect(
+      noteInteraction.mock.calls.filter(
+        ([interaction]) => interaction.kind === "surfaceViewed",
+      ),
+    ).toHaveLength(1)
+    unsubscribeSecond()
+  })
+
+  it("registers visibility listeners before reading the native state", async () => {
+    let finishShownListener!: () => void
+    onPopoverShown.mockImplementation(
+      () =>
+        new Promise<() => void>((resolve) => {
+          finishShownListener = () => {
+            popoverShownHandler = () => undefined
+            resolve(() => {
+              popoverShownHandler = null
+            })
+          }
+        }),
+    )
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(finishShownListener).toBeTypeOf("function"))
+
+    expect(isCurrentWindowVisible).not.toHaveBeenCalled()
+    finishShownListener()
+    await vi.waitFor(() => expect(isCurrentWindowVisible).toHaveBeenCalledOnce())
+    unsubscribe()
+  })
+
+  it("ignores a stale native visibility read after a hidden event", async () => {
+    let resolveVisible!: (visible: boolean) => void
+    isCurrentWindowVisible.mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        resolveVisible = resolve
+      }),
+    )
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(popoverHiddenHandler).not.toBeNull())
+
+    popoverHiddenHandler?.()
+    resolveVisible(true)
+    await Promise.resolve()
+
+    expect(noteInteraction).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it("ignores an activity result from a stopped generation", async () => {
+    let resolveStale!: (entries: ActivityEntryPayload[]) => void
+    listRecentSessions.mockReturnValueOnce(
+      new Promise<ActivityEntryPayload[]>((resolve) => {
+        resolveStale = resolve
+      }),
+    )
+    const session = new PopoverSession()
+    const unsubscribeFirst = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(listRecentSessions).toHaveBeenCalledTimes(1))
+    unsubscribeFirst()
+
+    listRecentSessions.mockResolvedValue([])
+    const unsubscribeSecond = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().entries).toEqual([]))
+    await vi.waitFor(() => expect(popoverShownHandler).not.toBeNull())
+    popoverShownHandler?.()
+    resolveStale([activityEntry()])
+    await Promise.resolve()
+
+    expect(session.getSnapshot().entries).toEqual([])
+    expect(noteInteraction).not.toHaveBeenCalledWith({
+      kind: "surfaceStateObserved",
+      surface: "activity",
+      state: "ready",
+      origin: "user",
+    })
+    unsubscribeSecond()
+  })
+
+  it("ignores an activity error from a stopped generation", async () => {
+    let rejectStale!: (error: Error) => void
+    listRecentSessions.mockReturnValueOnce(
+      new Promise<ActivityEntryPayload[]>((_resolve, reject) => {
+        rejectStale = reject
+      }),
+    )
+    const session = new PopoverSession()
+    const unsubscribeFirst = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(listRecentSessions).toHaveBeenCalledTimes(1))
+    unsubscribeFirst()
+
+    listRecentSessions.mockResolvedValue([])
+    const unsubscribeSecond = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(session.getSnapshot().entries).toEqual([]))
+    await vi.waitFor(() => expect(popoverShownHandler).not.toBeNull())
+    popoverShownHandler?.()
+    rejectStale(new Error("stale failure"))
+    await Promise.resolve()
+
+    expect(session.getSnapshot().entriesUnavailable).toBe(false)
+    expect(noteInteraction).not.toHaveBeenCalledWith({
+      kind: "surfaceStateObserved",
+      surface: "activity",
+      state: "error",
+      origin: "user",
+    })
+    unsubscribeSecond()
   })
 
   it("presents equal-height navigation without waiting for native completion", () => {
@@ -349,24 +724,7 @@ describe("PopoverSession event-driven refresh", () => {
     ...overrides,
   })
 
-  const entryPayload = (
-    overrides: Partial<ActivityEntryPayload> = {},
-  ): ActivityEntryPayload => ({
-    agent: "claude-code",
-    sessionId: "session-1",
-    repo: "repo",
-    timestamp: "2024-01-01T00:00:00.000Z",
-    isActive: false,
-    surface: "cli",
-    wslDistro: null,
-    title: null,
-    hasForkParent: false,
-    forkChildCount: 0,
-    cost: null,
-    models: [],
-    modelRuns: [],
-    ...overrides,
-  })
+  const entryPayload = activityEntry
 
   const scanStatus = (overrides: Partial<ScanStatus> = {}): ScanStatus => ({
     running: false,

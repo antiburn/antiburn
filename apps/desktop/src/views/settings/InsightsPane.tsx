@@ -1,5 +1,5 @@
 import { Check, CircleAlert, RefreshCw } from "lucide-react"
-import { useState, useSyncExternalStore } from "react"
+import { useCallback, useState, useSyncExternalStore } from "react"
 
 import { Card } from "../../components/ui/Card"
 import { PaneHeader } from "../../components/ui/Pane"
@@ -78,12 +78,16 @@ const LIMIT_KIND_LABELS: Record<string, string> = {
   rateLimit: "Rate limit",
 }
 
-export function InsightsPane() {
-  const [session] = useState(() => new InsightsSession())
+export function InsightsPane({ analyticsVisible = true }: { analyticsVisible?: boolean }) {
+  const [session] = useState(() => new InsightsSession(analyticsVisible))
   const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot)
+  const visibilityRef = useCallback(
+    (node: HTMLDivElement | null) => session.setHostVisible(node !== null && analyticsVisible),
+    [analyticsVisible, session],
+  )
 
   return (
-    <>
+    <div ref={visibilityRef}>
       <PaneHeader
         title="Insights"
         trailing={
@@ -112,7 +116,7 @@ export function InsightsPane() {
         <InsightsBody snapshot={snapshot} onRecalculate={() => void session.refresh()} />
         <InsightsFreshnessFooter report={snapshot.report} />
       </div>
-    </>
+    </div>
   )
 }
 
