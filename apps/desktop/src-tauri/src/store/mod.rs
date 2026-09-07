@@ -1395,7 +1395,8 @@ impl Store {
         tx.execute("DELETE FROM provider_account_seen", [])?;
         tx.execute(
             "DELETE FROM setting
-              WHERE key IN (?1, 'internal:liveUsageHistoryV2', 'internal:liveUsageSnapshotV2')",
+              WHERE key IN (?1, 'internal:liveUsageHistoryV2', 'internal:liveUsageSnapshotV2',
+                            'internal:providerUsageBackfillV1')",
             params![PROVIDER_ACCOUNT_SECRET_KEY],
         )?;
         tx.execute("DELETE FROM scan_state", [])?;

@@ -16,6 +16,7 @@
 //! itself defaults on: no credential is read, and no request or subprocess
 //! runs, until the reader has actually seen this app once.
 
+use std::future;
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -39,6 +40,9 @@ const TICK: Duration = Duration::from_secs(300);
 /// Let the first scans land before judging anything.
 const STARTUP_DELAY: Duration = Duration::from_secs(120);
 
+/// Delay a bounded file batch so other local work can run first.
+const BACKFILL_CONTINUATION_DELAY: Duration = Duration::from_millis(250);
+
 /// How fresh a reading the background pass asks each source's cooldown for.
 ///
 /// Match the monitor tick so each pass can fetch when no newer foreground
@@ -54,12 +58,51 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         tokio::time::sleep(STARTUP_DELAY).await;
         let mut interval = tokio::time::interval(TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut backfill_due = None;
         loop {
-            interval.tick().await;
-            let app = app.clone();
-            blocking::run(move |blocking| run_pass(&app, blocking)).await;
+            tokio::select! {
+                _ = interval.tick() => {
+                    backfill_due = None;
+                    let app = app.clone();
+                    if let Some(batch) = blocking::run(move |blocking| run_pass(&app, blocking)).await {
+                        schedule_backfill(&mut backfill_due, batch);
+                    }
+                }
+                _ = wait_for_backfill(backfill_due) => {
+                    backfill_due = None;
+                    let app = app.clone();
+                    if let Some(batch) = blocking::run(move |blocking| run_backfill_pass(&app, blocking)).await {
+                        schedule_backfill(&mut backfill_due, batch);
+                    }
+                }
+            }
         }
     })
+}
+
+async fn wait_for_backfill(due: Option<tokio::time::Instant>) {
+    match due {
+        Some(due) => tokio::time::sleep_until(due).await,
+        None => future::pending::<()>().await,
+    }
+}
+
+fn schedule_backfill(
+    due: &mut Option<tokio::time::Instant>,
+    batch: crate::provider_usage::backfill::BackfillBatch,
+) {
+    let now_epoch = crate::scan::unix_now();
+    let delay = if batch.continue_soon {
+        Some(BACKFILL_CONTINUATION_DELAY)
+    } else {
+        batch.next_retry_epoch.map(|retry_epoch| {
+            Duration::from_secs(retry_epoch.saturating_sub(now_epoch).max(1) as u64)
+        })
+    };
+    let Some(next) = delay.map(|delay| tokio::time::Instant::now() + delay) else {
+        return;
+    };
+    *due = Some(due.map_or(next, |current| current.min(next)));
 }
 
 /// The hop off the async runtime, and the proof that it happened.
@@ -90,9 +133,17 @@ mod blocking {
     /// Awaiting the handle keeps ticks serialized the way calling the pass
     /// inline did, and folding the join error away means a pass that panics
     /// anyway costs one pass rather than every pass after it.
-    pub async fn run<F: FnOnce(Thread) + Send + 'static>(pass: F) {
-        if let Err(error) = tauri::async_runtime::spawn_blocking(move || pass(Thread(()))).await {
-            ::tracing::error!(event = "usage_alert_pass_failed", error = %error);
+    pub async fn run<F, T>(pass: F) -> Option<T>
+    where
+        F: FnOnce(Thread) -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        match tauri::async_runtime::spawn_blocking(move || pass(Thread(()))).await {
+            Ok(value) => Some(value),
+            Err(error) => {
+                ::tracing::error!(event = "usage_alert_pass_failed", error = %error);
+                None
+            }
         }
     }
 }
@@ -210,16 +261,40 @@ impl Default for LiveUsage {
     }
 }
 
-fn run_pass(app: &AppHandle, _blocking: blocking::Thread) {
+fn run_pass(
+    app: &AppHandle,
+    _blocking: blocking::Thread,
+) -> crate::provider_usage::backfill::BackfillBatch {
+    let batch = run_backfill_pass(app, _blocking);
     let Some(store) = app.try_state::<Store>() else {
-        return;
+        return batch;
     };
     // Read fresh each pass, and default to not acting: an unreadable
     // preference is not permission (same rule as every notifier).
     let Ok(settings) = store.settings() else {
-        return;
+        return batch;
     };
     background_pass(app, &settings);
+    batch
+}
+
+fn run_backfill_pass(
+    app: &AppHandle,
+    _blocking: blocking::Thread,
+) -> crate::provider_usage::backfill::BackfillBatch {
+    let Some(store) = app.try_state::<Store>() else {
+        return crate::provider_usage::backfill::BackfillBatch::default();
+    };
+    let now = crate::scan::unix_now();
+    let batch = match crate::provider_usage::backfill::import_backfill_batch(&store, now) {
+        Ok(batch) => batch,
+        Err(_) => {
+            ::tracing::warn!(event = "provider_usage_backfill_failed");
+            crate::provider_usage::backfill::BackfillBatch::default()
+        }
+    };
+    crate::provider_usage::ledger::reconcile(&store, now);
+    batch
 }
 
 fn background_pass(app: &AppHandle, settings: &crate::store::AppSettings) {

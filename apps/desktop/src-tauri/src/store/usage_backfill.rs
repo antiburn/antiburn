@@ -16,6 +16,7 @@ pub(crate) struct ProviderUsageBackfillCandidate {
     pub cursor_bytes: u64,
     pub source_bytes: u64,
     pub source_modified_epoch: Option<i64>,
+    pub source_identity: String,
     pub complete: bool,
 }
 
@@ -31,7 +32,7 @@ impl Store {
         Ok(())
     }
 
-    /// List directly attributed rollout files after a durable association cursor.
+    /// List eligible rollout files with direct account evidence.
     pub(crate) fn provider_usage_backfill_candidates(
         &self,
         cutoff_epoch: i64,
@@ -45,6 +46,7 @@ impl Store {
                     COALESCE(checkpoint.cursor_bytes, 0),
                     COALESCE(checkpoint.source_bytes, 0),
                     checkpoint.source_modified_epoch,
+                    COALESCE(checkpoint.source_identity, ''),
                     COALESCE(checkpoint.status = 'complete', 0)
                FROM session_provider_account spa
                JOIN session s
@@ -103,11 +105,30 @@ impl Store {
                     cursor_bytes: row.get::<_, i64>(5)?.max(0) as u64,
                     source_bytes: row.get::<_, i64>(6)?.max(0) as u64,
                     source_modified_epoch: row.get(7)?,
-                    complete: row.get::<_, i64>(8)? != 0,
+                    source_identity: row.get(8)?,
+                    complete: row.get::<_, i64>(9)? != 0,
                 })
             },
         )?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Return the next due local retry without reading a rollout file.
+    pub(crate) fn provider_usage_backfill_next_retry_epoch(
+        &self,
+        now_epoch: i64,
+    ) -> Result<Option<i64>> {
+        let connection = self.lock();
+        Ok(connection
+            .query_row(
+                "SELECT MIN(next_attempt_epoch)
+                   FROM provider_usage_backfill_checkpoint
+                  WHERE status = 'retry' AND next_attempt_epoch > ?1",
+                params![now_epoch],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten())
     }
 
     /// Save a checked offset after a bounded source read.
@@ -117,6 +138,7 @@ impl Store {
         cursor_bytes: u64,
         source_bytes: u64,
         source_modified_epoch: Option<i64>,
+        source_identity: &str,
         now_epoch: i64,
         complete: bool,
     ) -> Result<()> {
@@ -125,15 +147,16 @@ impl Store {
         connection.execute(
             "INSERT INTO provider_usage_backfill_checkpoint (
                     environment_key, agent, session_id, provider, account_key,
-                    source_label, cursor_bytes, source_bytes, source_modified_epoch,
+                    source_label, cursor_bytes, source_bytes, source_modified_epoch, source_identity,
                     status, retry_count, next_attempt_epoch,
                     updated_at_epoch, completed_at_epoch
-                ) VALUES (?1, ?2, ?3, 'openai', ?4, ?5, ?6, ?7, ?8, 0, 0, ?9, ?10)
+                ) VALUES (?1, ?2, ?3, 'openai', ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 0, ?11, ?12)
              ON CONFLICT (environment_key, agent, session_id, provider, account_key)
              DO UPDATE SET source_label = excluded.source_label,
                            cursor_bytes = excluded.cursor_bytes,
                            source_bytes = excluded.source_bytes,
                            source_modified_epoch = excluded.source_modified_epoch,
+                           source_identity = excluded.source_identity,
                            status = excluded.status,
                            retry_count = 0,
                            next_attempt_epoch = 0,
@@ -148,6 +171,7 @@ impl Store {
                 cursor_bytes,
                 i64::try_from(source_bytes).unwrap_or(i64::MAX),
                 source_modified_epoch,
+                source_identity,
                 if complete { "complete" } else { "pending" },
                 now_epoch,
                 complete.then_some(now_epoch),
@@ -184,7 +208,7 @@ impl Store {
         &self,
         candidate: &ProviderUsageBackfillCandidate,
         now_epoch: i64,
-    ) -> Result<()> {
+    ) -> Result<i64> {
         let connection = self.lock();
         let retries = connection
             .query_row(
@@ -203,6 +227,7 @@ impl Store {
             .unwrap_or(0)
             .clamp(0, 6) as u32;
         let delay = 60_i64.saturating_mul(2_i64.pow(retries)).min(3_600);
+        let next_attempt_epoch = now_epoch.saturating_add(delay);
         connection.execute(
             "INSERT INTO provider_usage_backfill_checkpoint (
                     environment_key, agent, session_id, provider, account_key,
@@ -223,10 +248,10 @@ impl Store {
                 candidate.account_key,
                 candidate.source_label,
                 i64::try_from(candidate.cursor_bytes).unwrap_or(i64::MAX),
-                now_epoch.saturating_add(delay),
+                next_attempt_epoch,
                 now_epoch,
             ],
         )?;
-        Ok(())
+        Ok(next_attempt_epoch)
     }
 }

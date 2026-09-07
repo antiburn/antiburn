@@ -372,6 +372,7 @@ fn delete_session_removes_the_sentinel_from_every_table() {
 #[test]
 fn clear_local_session_data_removes_the_sentinel_from_every_table() {
     let store = store();
+    store.set_internal_value("internal:providerUsageBackfillV1", "{");
     ingest_and_publish(
         &store,
         AgentKind::Claude,
@@ -386,6 +387,10 @@ fn clear_local_session_data_removes_the_sentinel_from_every_table() {
     );
 
     assert_eq!(store.clear_local_session_data().expect("clear"), 2);
+    assert_eq!(
+        store.internal_value("internal:providerUsageBackfillV1"),
+        None
+    );
 
     let connection = store.lock();
     assert_absent_everywhere(&connection, CLAUDE_SENTINEL);

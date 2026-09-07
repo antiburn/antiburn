@@ -746,6 +746,7 @@ CREATE TABLE provider_usage_backfill_checkpoint (
     cursor_bytes         INTEGER NOT NULL DEFAULT 0 CHECK (cursor_bytes >= 0),
     source_bytes         INTEGER NOT NULL DEFAULT 0 CHECK (source_bytes >= 0),
     source_modified_epoch INTEGER,
+    source_identity     TEXT NOT NULL DEFAULT '',
     status               TEXT NOT NULL CHECK (status IN ('pending', 'retry', 'complete')),
     retry_count          INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
     next_attempt_epoch   INTEGER NOT NULL DEFAULT 0,

@@ -59,6 +59,10 @@ pub(crate) struct BackfillBatch {
     pub scanned_bytes: u64,
     pub completed_sources: usize,
     pub deferred_sources: usize,
+    /// The scheduler can resume file work without waiting for its next tick.
+    pub continue_soon: bool,
+    /// The earliest deferred source that needs another local attempt.
+    pub next_retry_epoch: Option<i64>,
     pub pending: bool,
 }
 
@@ -76,10 +80,11 @@ struct LegacyHistorySample {
     fresh: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceFingerprint {
     bytes: u64,
     modified_epoch: Option<i64>,
+    identity: String,
 }
 
 impl RolloutReading {
@@ -128,35 +133,46 @@ pub(crate) fn import_backfill_batch(store: &Store, now_epoch: i64) -> Result<Bac
         state.legacy_history_imported = true;
     }
 
-    let candidates =
-        store.provider_usage_backfill_candidates(cutoff, now_epoch, MAX_CANDIDATES_PER_BATCH)?;
-    for candidate in candidates.iter() {
+    let candidates = store.provider_usage_backfill_candidates(
+        cutoff,
+        now_epoch,
+        MAX_CANDIDATES_PER_BATCH + 1,
+    )?;
+    let has_more_ready = candidates.len() > MAX_CANDIDATES_PER_BATCH
+        && !candidates[MAX_CANDIDATES_PER_BATCH].complete;
+    for candidate in candidates.iter().take(MAX_CANDIDATES_PER_BATCH) {
         if started.elapsed() >= MAX_BATCH_DURATION {
             result.pending = true;
+            result.continue_soon = true;
             break;
         }
         let path = Path::new(&candidate.source_label);
         let fingerprint = match source_fingerprint(path) {
             Ok(fingerprint) => fingerprint,
             Err(_) => {
-                store.defer_provider_usage_backfill_candidate(candidate, now_epoch)?;
+                let retry = store.defer_provider_usage_backfill_candidate(candidate, now_epoch)?;
                 result.deferred_sources += 1;
+                result.pending = true;
+                result.next_retry_epoch = earliest(result.next_retry_epoch, retry);
                 continue;
             }
         };
         if candidate.complete
             && fingerprint.bytes == candidate.source_bytes
             && fingerprint.modified_epoch == candidate.source_modified_epoch
+            && fingerprint.identity == candidate.source_identity
         {
             store.touch_provider_usage_backfill_checkpoint(candidate, now_epoch)?;
             continue;
         }
-        let offset = resume_offset(candidate, fingerprint);
+        let offset = resume_offset(candidate, &fingerprint);
         let batch = match read_rollout_batch(path, offset, MAX_BATCH_BYTES) {
             Ok(batch) => batch,
             Err(_) => {
-                store.defer_provider_usage_backfill_candidate(candidate, now_epoch)?;
+                let retry = store.defer_provider_usage_backfill_candidate(candidate, now_epoch)?;
                 result.deferred_sources += 1;
+                result.pending = true;
+                result.next_retry_epoch = earliest(result.next_retry_epoch, retry);
                 continue;
             }
         };
@@ -178,6 +194,7 @@ pub(crate) fn import_backfill_batch(store: &Store, now_epoch: i64) -> Result<Bac
             batch.next_offset,
             fingerprint.bytes,
             fingerprint.modified_epoch,
+            &fingerprint.identity,
             now_epoch,
             batch.complete,
         )?;
@@ -185,13 +202,25 @@ pub(crate) fn import_backfill_batch(store: &Store, now_epoch: i64) -> Result<Bac
             result.completed_sources += 1;
         } else {
             result.pending = true;
+            result.continue_soon = true;
         }
     }
-    result.pending |= candidates.len() == MAX_CANDIDATES_PER_BATCH;
+    if has_more_ready {
+        result.pending = true;
+        result.continue_soon = true;
+    }
+    if let Some(retry) = store.provider_usage_backfill_next_retry_epoch(now_epoch)? {
+        result.pending = true;
+        result.next_retry_epoch = earliest(result.next_retry_epoch, retry);
+    }
     store.write_provider_usage_backfill_state(
         &serde_json::to_string(&state).expect("backfill state is serializable"),
     )?;
     Ok(result)
+}
+
+fn earliest(current: Option<i64>, candidate: i64) -> Option<i64> {
+    Some(current.map_or(candidate, |current| current.min(candidate)))
 }
 
 fn source_fingerprint(path: &Path) -> Result<SourceFingerprint> {
@@ -206,16 +235,34 @@ fn source_fingerprint(path: &Path) -> Result<SourceFingerprint> {
     Ok(SourceFingerprint {
         bytes: metadata.len(),
         modified_epoch,
+        identity: source_identity(&metadata),
     })
+}
+
+#[cfg(unix)]
+fn source_identity(metadata: &std::fs::Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+
+    format!("{}:{}", metadata.dev(), metadata.ino())
+}
+
+#[cfg(not(unix))]
+fn source_identity(_metadata: &std::fs::Metadata) -> String {
+    String::new()
 }
 
 fn resume_offset(
     candidate: &crate::store::usage_backfill::ProviderUsageBackfillCandidate,
-    fingerprint: SourceFingerprint,
+    fingerprint: &SourceFingerprint,
 ) -> u64 {
-    let replaced = fingerprint.bytes < candidate.cursor_bytes
-        || fingerprint.bytes == candidate.cursor_bytes
-            && fingerprint.modified_epoch != candidate.source_modified_epoch;
+    let replaced = (!candidate.source_identity.is_empty()
+        && !fingerprint.identity.is_empty()
+        && fingerprint.identity != candidate.source_identity)
+        || fingerprint.bytes < candidate.cursor_bytes
+        || (fingerprint.identity.is_empty()
+            && fingerprint.modified_epoch != candidate.source_modified_epoch)
+        || (fingerprint.bytes == candidate.cursor_bytes
+            && fingerprint.modified_epoch != candidate.source_modified_epoch);
     if replaced {
         0
     } else {
@@ -584,15 +631,17 @@ mod tests {
             cursor_bytes: 400,
             source_bytes: 400,
             source_modified_epoch: Some(10),
+            source_identity: "17:23".to_owned(),
             complete: true,
         };
 
         assert_eq!(
             resume_offset(
                 &candidate,
-                SourceFingerprint {
+                &SourceFingerprint {
                     bytes: 480,
                     modified_epoch: Some(11),
+                    identity: "17:23".to_owned(),
                 }
             ),
             400
@@ -600,9 +649,10 @@ mod tests {
         assert_eq!(
             resume_offset(
                 &candidate,
-                SourceFingerprint {
+                &SourceFingerprint {
                     bytes: 400,
                     modified_epoch: Some(11),
+                    identity: "17:23".to_owned(),
                 }
             ),
             0
@@ -610,9 +660,21 @@ mod tests {
         assert_eq!(
             resume_offset(
                 &candidate,
-                SourceFingerprint {
+                &SourceFingerprint {
                     bytes: 300,
                     modified_epoch: Some(10),
+                    identity: "17:23".to_owned(),
+                }
+            ),
+            0
+        );
+        assert_eq!(
+            resume_offset(
+                &candidate,
+                &SourceFingerprint {
+                    bytes: 480,
+                    modified_epoch: Some(11),
+                    identity: "19:29".to_owned(),
                 }
             ),
             0
