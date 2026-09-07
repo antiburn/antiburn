@@ -248,6 +248,91 @@ fn stale_cas_cannot_overwrite_a_later_generation_or_reuse_an_acknowledged_genera
 }
 
 #[test]
+fn a_worker_that_started_before_retention_freezes_preserves_the_old_partial_total() {
+    let store = memory_store();
+    let record = session("frozen");
+    let key = record.key.clone();
+    store
+        .upsert_sessions(&[record], &[])
+        .expect("stores session");
+    let period_id = period(&store, "weekly", 0, 100);
+    store
+        .replace_provider_usage_period_allocations(
+            period_id,
+            &[allocation(&key, "weekly", 40.0)],
+            100,
+        )
+        .expect("stores old allocation");
+    store
+        .enqueue_provider_usage_allocation_periods(&[period_id], 101)
+        .expect("queues worker input");
+    let dirty = queued(&store, period_id);
+    store
+        .lock()
+        .execute(
+            "UPDATE provider_usage_period SET allocation_frozen = 1 WHERE id = ?1",
+            [period_id],
+        )
+        .expect("simulates retention freeze");
+
+    store
+        .replace_provider_usage_period_allocations_and_ack(
+            period_id,
+            dirty.generation,
+            &[allocation(&key, "weekly", 90.0)],
+            102,
+        )
+        .expect("acknowledges frozen worker");
+    let allocation = store
+        .cumulative_session_limit_allocations(&[key])
+        .expect("reads retained allocation")
+        .pop()
+        .expect("retains old allocation");
+    assert_eq!(allocation.percent, 40.0);
+    assert!(allocation.partial);
+    assert!(
+        store
+            .provider_usage_allocation_dirty_periods(32)
+            .expect("reads acknowledged queue")
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_late_account_binding_queues_an_existing_period_without_a_new_provider_observation() {
+    let store = memory_store();
+    let mut record = session("late-account");
+    record.key.agent = "pi".to_string();
+    record.updated_at_epoch = Some(1_000);
+    store.set_internal_value("internal:providerAccountRolloutV1", "0");
+    store
+        .upsert_sessions(&[record.clone()], &[])
+        .expect("stores session");
+    let period_id = period(&store, "weekly", 900, 1_100);
+
+    store
+        .observe_provider_account("pi", "anthropic", ACCOUNT, 1_050, "tool_oauth")
+        .expect("binds late account");
+    assert_eq!(queued(&store, period_id).period_id, period_id);
+    let connection = store.lock();
+    let bindings: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM session_provider_account
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND provider = 'anthropic' AND account_key = ?4",
+            params![
+                record.key.environment_key,
+                record.key.agent,
+                record.key.session_id,
+                ACCOUNT
+            ],
+            |row| row.get(0),
+        )
+        .expect("counts account binding");
+    assert_eq!(bindings, 1);
+}
+
+#[test]
 fn deleting_a_session_requeues_its_period_and_clear_removes_all_queued_history() {
     let store = memory_store();
     let removed = session("removed");
