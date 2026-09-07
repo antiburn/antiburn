@@ -118,11 +118,6 @@ function keepScrollOffset(): false {
   return false
 }
 
-function allocationIsCurrent(allocation: SessionLimitAllocationPayload, now: number): boolean {
-  const resetsAt = Date.parse(allocation.resetsAt)
-  return Number.isFinite(resetsAt) && now < resetsAt
-}
-
 function isFiveHourWindow(provider: string, id: string): boolean {
   if (provider === "anthropic") return id === "five-hour"
   if (provider === "openai") return id === "five-hour" || id.endsWith("-300m")
@@ -156,7 +151,7 @@ function sessionLimitBadge(
     }
   }
   return {
-    label: `Estimated share of your ${allocation.displayName} ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit.`,
+    label: `Estimated ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit share across ${allocation.periodCount} provider ${allocation.periodCount === 1 ? "period" : "periods"}. ${allocation.coverage === "partial" ? "Coverage is partial." : "Coverage uses retained provider history."}`,
     percent: allocation.percent,
     provider: allocation.provider,
     windowId: allocation.windowId,
@@ -438,16 +433,11 @@ export function SessionList({
   const fiveHourAvailable =
     badgeMetric === "fiveHourPercent" ||
     hasDisplayedFiveHourWindow(liveUsage) ||
-    (sessionLimitAllocations?.allocations.some(
-      (allocation) =>
-        allocation.metric === "fiveHour" && allocationIsCurrent(allocation, currentTime),
-    ) ??
+    (sessionLimitAllocations?.allocations.some((allocation) => allocation.metric === "fiveHour") ??
       false)
   const selectedMetric = badgeMetric
   const allocationBySession = new Map(
-    (sessionLimitAllocations?.allocations ?? [])
-      .filter((allocation) => allocationIsCurrent(allocation, currentTime))
-      .map((allocation) => [
+    (sessionLimitAllocations?.allocations ?? []).map((allocation) => [
         `${localSessionKey(allocation.agent, allocation.sessionId, allocation.wslDistro)}:${allocation.metric}`,
         allocation,
       ]),
