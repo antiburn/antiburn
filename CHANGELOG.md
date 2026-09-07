@@ -53,6 +53,8 @@ CI changes, and documentation that no user acts on stay out — see
 
 ### Fixed
 
+- The session-list metric picker for cost, weekly usage, and five-hour usage
+  displays as a segmented control again instead of loose header text.
 - Claude resume-as-fork sessions no longer count inherited or replayed records
   as new work. Parent links, sub-agent attribution, compaction, cache, and token
   totals remain consistent across resumed transcripts.
