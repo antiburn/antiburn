@@ -1392,8 +1392,6 @@ impl Store {
         tx.execute("DELETE FROM provider_usage_period", [])?;
         let sessions = tx.execute("DELETE FROM session", [])?;
         tx.execute("DELETE FROM provider_account_seen", [])?;
-        tx.execute("DELETE FROM provider_usage_observation", [])?;
-        tx.execute("DELETE FROM provider_usage_period", [])?;
         tx.execute(
             "DELETE FROM setting
               WHERE key IN (?1, 'internal:liveUsageHistoryV2', 'internal:liveUsageSnapshotV2')",
@@ -1413,6 +1411,11 @@ impl Store {
     pub fn delete_session(&self, key: &SessionKey) -> Result<bool> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
+        crate::store::provider_usage_ledger::enqueue_session_periods_in(
+            &tx,
+            key,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        )?;
         let removed = delete_session_in(&tx, key)?;
         tx.commit()?;
         Ok(removed)
@@ -2085,7 +2088,7 @@ impl Store {
         let mut ends: Vec<_> = interval_ends_ms
             .iter()
             .copied()
-            .filter(|end| *end > start_ms && *end <= end_ms)
+            .filter(|end| *end >= start_ms && *end <= end_ms)
             .collect();
         ends.sort_unstable();
         ends.dedup();
@@ -2252,7 +2255,7 @@ impl Store {
             )?
             .parse()
             .context("invalid provider account rollout")?;
-        tx.execute(
+        let bound_sessions = tx.execute(
             "INSERT OR IGNORE INTO session_provider_account (
                 environment_key, agent, session_id, provider, account_key,
                 provenance, confidence, first_seen_at
@@ -2285,6 +2288,17 @@ impl Store {
                 provenance
             ],
         )?;
+        if bound_sessions > 0 {
+            let mut statement = tx.prepare(
+                "SELECT id FROM provider_usage_period
+                  WHERE provider = ?1 AND resets_at_epoch IS NOT NULL",
+            )?;
+            let period_ids = statement
+                .query_map([provider], |row| row.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(statement);
+            crate::store::provider_usage_ledger::enqueue_in(&tx, &period_ids, observed_at_epoch)?;
+        }
         tx.commit()?;
         Ok(())
     }

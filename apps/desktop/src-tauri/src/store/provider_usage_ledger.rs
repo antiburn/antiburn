@@ -21,6 +21,10 @@ pub struct SessionPeriodAllocation {
     pub partial: bool,
 }
 
+#[cfg(test)]
+#[path = "provider_usage_ledger/lifecycle_tests.rs"]
+mod lifecycle_tests;
+
 /// The cumulative value for one session and one provider allowance class.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CumulativeSessionAllocation {
@@ -168,12 +172,28 @@ impl super::Store {
         let tx = connection.transaction()?;
         let current = tx
             .query_row(
-                "SELECT generation FROM provider_usage_allocation_dirty WHERE period_id = ?1",
+                "SELECT d.generation, p.allocation_frozen
+                   FROM provider_usage_allocation_dirty d
+                   JOIN provider_usage_period p ON p.id = d.period_id
+                  WHERE d.period_id = ?1",
                 [period_id],
-                |row| row.get::<_, i64>(0),
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? != 0)),
             )
             .optional()?;
-        if current != Some(generation) {
+        if current.as_ref().map(|(value, _)| *value) != Some(generation) {
+            tx.commit()?;
+            return Ok(());
+        }
+        if current.is_some_and(|(_, frozen)| frozen) {
+            tx.execute(
+                "UPDATE provider_usage_session_allocation SET partial = 1 WHERE period_id = ?1",
+                [period_id],
+            )?;
+            tx.execute(
+                "DELETE FROM provider_usage_allocation_dirty
+                  WHERE period_id = ?1 AND generation = ?2",
+                params![period_id, generation],
+            )?;
             tx.commit()?;
             return Ok(());
         }
