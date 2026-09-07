@@ -113,6 +113,8 @@ describe("UsageLimitsBar — the ring row", () => {
     const dial = screen.getByRole("img", { name: "Claude at 42 percent" })
     expect(dial).toBeInTheDocument()
     expect(dial).toHaveAttribute("tabindex", "0")
+    expect(dial).toHaveClass("transition-[background-color]")
+    expect(dial).not.toHaveClass("transition-colors")
     dial.focus()
     expect(dial).toHaveFocus()
     expect(

@@ -351,7 +351,7 @@ function ProviderRadial({
       onMouseLeave={() => onHover?.(null, null)}
       data-state={activation ?? "idle"}
       title={title}
-      className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-colors duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
+      className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-[background-color] duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
       aria-label={ariaLabel}
     >
       <UsageRing
