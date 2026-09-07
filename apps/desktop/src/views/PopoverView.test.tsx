@@ -380,6 +380,34 @@ describe("PopoverView", () => {
     expect(invoke).toHaveBeenCalledWith("get_session_limit_allocations")
   })
 
+  it("refreshes cached allocations after an offline cohort setting changes", async () => {
+    const settings = {
+      ...SETTINGS,
+      liveUsageEnabled: false,
+      disabledAgents: [],
+    }
+    mockCommands({ get_settings: settings })
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_session_limit_allocations"))
+    const allocationCallsBefore = invoke.mock.calls.filter(
+      ([command]) => command === "get_session_limit_allocations",
+    ).length
+    const currentTime = Date.now()
+    const now = vi.spyOn(Date, "now").mockReturnValue(currentTime + 30_001)
+
+    try {
+      emit("settings:changed", { ...settings, activityWindowDays: 30 })
+      await waitFor(() =>
+        expect(
+          invoke.mock.calls.filter(([command]) => command === "get_session_limit_allocations"),
+        ).toHaveLength(allocationCallsBefore + 1),
+      )
+    } finally {
+      now.mockRestore()
+    }
+  })
+
   it("keeps the last allocation when a refresh fails", async () => {
     const allocationSummary = {
       generatedAt: "2027-01-15T08:00:00Z",

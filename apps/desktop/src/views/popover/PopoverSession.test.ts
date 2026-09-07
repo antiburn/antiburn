@@ -3,11 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type * as Ipc from "../../lib/ipc"
 import type * as InsightsIpc from "../../lib/insightsIpc"
 import {
-  DEFAULT_SETTINGS,
   EMPTY_PROVIDER_USAGE,
   type ActivityEntryPayload,
   type ScanStatus,
   type SessionAnalysisPayload,
+  type SessionLimitAllocationSummaryPayload,
 } from "../../lib/ipc"
 import { PopoverSession, sessionKey } from "./PopoverSession"
 import type { SessionSubject } from "./SessionPane"
@@ -16,8 +16,6 @@ const getSessionAnalysis = vi.hoisted(() => vi.fn())
 const getSubagentAnalysis = vi.hoisted(() => vi.fn())
 const getSessionLimitAllocations = vi.hoisted(() => vi.fn())
 const getProviderUsage = vi.hoisted(() => vi.fn())
-const getSettings = vi.hoisted(() => vi.fn())
-const onSettingsChanged = vi.hoisted(() => vi.fn())
 const setPopoverHeight = vi.hoisted(() => vi.fn())
 const listRecentSessions = vi.hoisted(() => vi.fn())
 const onSessionEntryChanged = vi.hoisted(() => vi.fn())
@@ -26,7 +24,6 @@ const onChecksReportChanged = vi.hoisted(() => vi.fn())
 const getChecksReport = vi.hoisted(() => vi.fn())
 const onPopoverShown = vi.hoisted(() => vi.fn())
 const onPopoverHidden = vi.hoisted(() => vi.fn())
-const onLiveUsageChanged = vi.hoisted(() => vi.fn())
 
 // The analysis, list, and event-subscription commands are overridden. All
 // other wrappers keep their real no-shell fallback because `hasShell()` is
@@ -39,15 +36,12 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     getSubagentAnalysis,
     getSessionLimitAllocations,
     getProviderUsage,
-    getSettings,
-    onSettingsChanged,
     setPopoverHeight,
     listRecentSessions,
     onSessionEntryChanged,
     onScanEvent,
     onPopoverShown,
     onPopoverHidden,
-    onLiveUsageChanged,
   }
 })
 
@@ -63,16 +57,30 @@ let entryChangedHandler: EntryChangedHandler | null = null
 let scanEventHandler: ScanEventHandler | null = null
 let popoverShownHandler: (() => void) | null = null
 let popoverHiddenHandler: (() => void) | null = null
-let liveUsageChangedHandler: ((liveUsage: Ipc.LiveUsageSummaryPayload) => void) | null = null
-let settingsChangedHandler: ((settings: Ipc.AppSettings) => void) | null = null
+
+function changedEntry(): ActivityEntryPayload {
+  return {
+    agent: "claude-code",
+    sessionId: "session-1",
+    repo: "repo",
+    timestamp: "2027-01-15T08:00:00Z",
+    isActive: true,
+    surface: "cli",
+    wslDistro: null,
+    title: null,
+    hasForkParent: false,
+    forkChildCount: 0,
+    cost: null,
+    models: [],
+    modelRuns: [],
+  }
+}
 
 beforeEach(() => {
   entryChangedHandler = null
   scanEventHandler = null
   popoverShownHandler = null
   popoverHiddenHandler = null
-  liveUsageChangedHandler = null
-  settingsChangedHandler = null
   getSessionAnalysis.mockReset()
   getSessionAnalysis.mockResolvedValue(null)
   getSubagentAnalysis.mockReset()
@@ -113,22 +121,6 @@ beforeEach(() => {
       popoverHiddenHandler = null
     }
   })
-  onLiveUsageChanged.mockReset()
-  onLiveUsageChanged.mockImplementation(
-    async (handler: (liveUsage: Ipc.LiveUsageSummaryPayload) => void) => {
-      liveUsageChangedHandler = handler
-      return () => {
-        liveUsageChangedHandler = null
-      }
-    },
-  )
-  onSettingsChanged.mockReset()
-  onSettingsChanged.mockImplementation(async (handler: (settings: Ipc.AppSettings) => void) => {
-    settingsChangedHandler = handler
-    return () => {
-      settingsChangedHandler = null
-    }
-  })
   getSessionLimitAllocations.mockReset()
   getSessionLimitAllocations.mockResolvedValue({
     generatedAt: "2027-01-15T08:00:00Z",
@@ -136,11 +128,6 @@ beforeEach(() => {
   })
   getProviderUsage.mockReset()
   getProviderUsage.mockResolvedValue(EMPTY_PROVIDER_USAGE)
-  getSettings.mockReset()
-  getSettings.mockResolvedValue({
-    ...DEFAULT_SETTINGS,
-    onboardingCompleted: true,
-  })
 })
 
 describe("PopoverSession surface presentation", () => {
@@ -195,10 +182,9 @@ describe("PopoverSession surface presentation", () => {
     const unsubscribe = session.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
     expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
-    expect(liveUsageChangedHandler).not.toBeNull()
 
-    liveUsageChangedHandler?.({ providers: [], errors: [], meters: [], generatedAt: "one" })
-    liveUsageChangedHandler?.({ providers: [], errors: [], meters: [], generatedAt: "two" })
+    entryChangedHandler?.(changedEntry())
+    entryChangedHandler?.(changedEntry())
     await vi.advanceTimersByTimeAsync(29_999)
     expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
 
@@ -210,11 +196,11 @@ describe("PopoverSession surface presentation", () => {
   it("publishes a current allocation response during an event storm", async () => {
     vi.useFakeTimers()
     vi.setSystemTime("2027-01-15T08:00:00Z")
-    let resolveFirst!: (value: Ipc.SessionLimitAllocationSummaryPayload) => void
+    let resolveFirst!: (value: SessionLimitAllocationSummaryPayload) => void
     getSessionLimitAllocations
       .mockImplementationOnce(
         () =>
-          new Promise<Ipc.SessionLimitAllocationSummaryPayload>((resolve) => {
+          new Promise<SessionLimitAllocationSummaryPayload>((resolve) => {
             resolveFirst = resolve
           }),
       )
@@ -224,13 +210,8 @@ describe("PopoverSession surface presentation", () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
 
-    for (let index = 0; index < 20; index += 1) {
-      liveUsageChangedHandler?.({
-        providers: [],
-        errors: [],
-        meters: [],
-        generatedAt: String(index),
-      })
+    for (let event = 0; event < 20; event += 1) {
+      entryChangedHandler?.(changedEntry())
     }
     resolveFirst({
       generatedAt: "current",
@@ -292,14 +273,9 @@ describe("PopoverSession surface presentation", () => {
     unsubscribe()
   })
 
-  it("keeps cached history but skips recurring allocation reads while hidden or disabled", async () => {
+  it("keeps cached history but skips recurring allocation reads while hidden", async () => {
     vi.useFakeTimers()
     vi.setSystemTime("2027-01-15T08:00:00Z")
-    getSettings.mockResolvedValue({
-      ...DEFAULT_SETTINGS,
-      onboardingCompleted: true,
-      liveUsageEnabled: false,
-    })
     getSessionLimitAllocations.mockResolvedValue({
       generatedAt: "2027-01-15T08:00:00Z",
       allocations: [
@@ -326,22 +302,13 @@ describe("PopoverSession surface presentation", () => {
     expect(session.getSnapshot().sessionLimitAllocations.allocations).toHaveLength(1)
 
     popoverHiddenHandler?.()
-    liveUsageChangedHandler?.({ providers: [], errors: [], meters: [], generatedAt: "hidden" })
+    entryChangedHandler?.(changedEntry())
     await vi.advanceTimersByTimeAsync(60_000)
     expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
     expect(session.getSnapshot().sessionLimitAllocations.allocations).toHaveLength(1)
 
     popoverShownHandler?.()
     await vi.advanceTimersByTimeAsync(0)
-    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(2)
-
-    liveUsageChangedHandler?.({
-      providers: [],
-      errors: [],
-      meters: [],
-      generatedAt: "disabled",
-    })
-    await vi.advanceTimersByTimeAsync(60_000)
     expect(getSessionLimitAllocations).toHaveBeenCalledTimes(2)
     expect(session.getSnapshot().sessionLimitAllocations.allocations).toHaveLength(1)
     unsubscribe()
@@ -350,16 +317,11 @@ describe("PopoverSession surface presentation", () => {
   it("preserves a disabled cached read queued behind a stale hidden response", async () => {
     vi.useFakeTimers()
     vi.setSystemTime("2027-01-15T08:00:00Z")
-    getSettings.mockResolvedValue({
-      ...DEFAULT_SETTINGS,
-      onboardingCompleted: true,
-      liveUsageEnabled: false,
-    })
-    let resolveFirst!: (value: Ipc.SessionLimitAllocationSummaryPayload) => void
+    let resolveFirst!: (value: SessionLimitAllocationSummaryPayload) => void
     getSessionLimitAllocations
       .mockImplementationOnce(
         () =>
-          new Promise<Ipc.SessionLimitAllocationSummaryPayload>((resolve) => {
+          new Promise<SessionLimitAllocationSummaryPayload>((resolve) => {
             resolveFirst = resolve
           }),
       )
@@ -379,57 +341,19 @@ describe("PopoverSession surface presentation", () => {
     unsubscribe()
   })
 
-  it("refreshes disabled cached history for local entry and cohort changes", async () => {
+  it("refreshes inactive cached history for local entry changes", async () => {
     vi.useFakeTimers()
     vi.setSystemTime("2027-01-15T08:00:00Z")
-    const disabled = {
-      ...DEFAULT_SETTINGS,
-      onboardingCompleted: true,
-      liveUsageEnabled: false,
-    }
-    getSettings.mockResolvedValue(disabled)
     const session = new PopoverSession()
     const unsubscribe = session.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
     expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
 
-    entryChangedHandler?.({
-      agent: "claude-code",
-      sessionId: "session-1",
-      repo: "repo",
-      timestamp: "2027-01-15T08:00:00Z",
-      isActive: true,
-      surface: "cli",
-      wslDistro: null,
-      title: null,
-      hasForkParent: false,
-      forkChildCount: 0,
-      cost: null,
-      models: [],
-      modelRuns: [],
-    })
+    entryChangedHandler?.(changedEntry())
     await vi.advanceTimersByTimeAsync(29_999)
     expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(1)
     expect(getSessionLimitAllocations).toHaveBeenCalledTimes(2)
-
-    settingsChangedHandler?.({
-      ...disabled,
-      activityWindowDays: disabled.activityWindowDays === 7 ? 30 : 7,
-    })
-    await vi.advanceTimersByTimeAsync(29_999)
-    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(2)
-    await vi.advanceTimersByTimeAsync(1)
-    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(3)
-
-    liveUsageChangedHandler?.({
-      providers: [],
-      errors: [],
-      meters: [],
-      generatedAt: "disabled",
-    })
-    await vi.advanceTimersByTimeAsync(60_000)
-    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(3)
     unsubscribe()
   })
 
