@@ -36,6 +36,8 @@
 //!   agent's watch roots (`AgentExplorer::watch_roots`), debounces the events
 //!   it sees, and hands the scheduler's loop one [`watch::WatchBurst`] after
 //!   each quiet period — see the `watch` module doc for the debounce shape.
+//!   Both handoffs are bounded. An overflow requests one full reconciliation
+//!   instead of retaining an event-sized backlog.
 //!   The `scoped` module classifies that burst into four lanes: a known
 //!   session refresh, an indexed-title refresh, a plain agent rediscovery,
 //!   or a database-backed agent rediscovery. Each lane has its own minimum
@@ -237,11 +239,9 @@ pub struct ScanController {
     /// rather than queued, because the waiting request already covers
     /// "scan again soon".
     pending_trigger: Mutex<Option<ScanTrigger>>,
-    /// Watcher bursts waiting for the scheduler loop to classify them. A
-    /// `Vec` rather than a channel: the scheduler drains every burst at once
-    /// per wake, and classification needs the whole batch together to fold
-    /// correctly into one [`scoped::ScopedWork`] (T7).
-    burst_inbox: Mutex<Vec<watch::WatchBurst>>,
+    /// The one watcher burst waiting for the scheduler loop. New bursts merge
+    /// into its fixed path budgets while a pass is running.
+    pending_burst: Mutex<Option<watch::WatchBurst>>,
 }
 
 impl ScanController {
@@ -281,22 +281,28 @@ impl ScanController {
     /// the watcher's own task, not the scheduler's, so this only queues the
     /// burst — classification and admission happen on the scheduler's loop.
     fn push_burst(&self, burst: watch::WatchBurst) {
-        self.burst_inbox
+        let mut pending = self
+            .pending_burst
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(burst);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match pending.as_mut() {
+            Some(existing) => existing.merge(burst),
+            None => {
+                let mut bounded = watch::WatchBurst::default();
+                bounded.merge(burst);
+                *pending = Some(bounded);
+            }
+        }
+        drop(pending);
         self.kick.notify_one();
     }
 
-    /// Take every burst queued since the last drain, for the scheduler to
-    /// classify together.
-    fn take_bursts(&self) -> Vec<watch::WatchBurst> {
-        std::mem::take(
-            &mut self
-                .burst_inbox
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        )
+    /// Take the merged burst queued since the last scheduler drain.
+    fn take_burst(&self) -> Option<watch::WatchBurst> {
+        self.pending_burst
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 
     /// Ask the pass in flight to stop at its next phase boundary.
@@ -390,11 +396,12 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
             // resuming discovery takes effect at the next request or tick
             // instead of needing the app restarted.
             if !scheduled_scanning_allowed(&app) {
-                let dropped = controller.take_bursts();
-                if !dropped.is_empty() {
+                let dropped = controller.take_burst();
+                if let Some(dropped) = dropped {
                     ::tracing::debug!(
                         event = "scan_bursts_dropped_while_paused",
-                        bursts = dropped.len(),
+                        events = dropped.events,
+                        overflowed = dropped.overflowed,
                     );
                 }
                 // `Floors` keeps real last-run timestamps, so admission
@@ -409,23 +416,19 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
             // Fold in any bursts queued since the last wake before deciding
             // what runs: a full pass below covers them for free, and a
             // scoped wake needs them for admission.
-            let bursts = controller.take_bursts();
+            let burst = controller.take_burst();
             let mut overflowed = false;
-            if !bursts.is_empty() {
+            if let Some(burst) = burst {
                 let home = home_dir().unwrap_or_default();
                 let store = app.state::<Store>();
-                for burst in bursts {
-                    // A burst at the path bound may have dropped paths, so a
-                    // scoped pass could miss one. Only a full pass is safe.
-                    if burst.paths.len() >= watch::MAX_BURST_PATHS {
-                        ::tracing::debug!(
-                            event = "scan_burst_overflowed",
-                            events = burst.events,
-                            path_count = burst.paths.len(),
-                        );
-                        overflowed = true;
-                        continue;
-                    }
+                if burst.overflowed {
+                    ::tracing::debug!(
+                        event = "scan_burst_overflowed",
+                        events = burst.events,
+                        path_count = burst.paths.len(),
+                    );
+                    overflowed = true;
+                } else {
                     let work = scoped::classify_burst(&burst.paths, &home, &|label: &str| {
                         store
                             .session_record_by_source_label(label)

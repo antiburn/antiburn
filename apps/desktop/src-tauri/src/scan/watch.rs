@@ -21,6 +21,10 @@
 //! actively-writing session still gets a pass at a bounded interval even
 //! under a steady stream of events.
 //!
+//! The native callback uses a bounded channel and never waits for capacity.
+//! If the channel or a path budget overflows, one sticky wake makes the next
+//! burst request a full reconciliation pass.
+//!
 //! # Noise
 //!
 //! `Access`-only events (a file opened for reading — including antiburn's own
@@ -30,6 +34,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use antiburn_local::discovery::{Explorers, WatchRoot};
@@ -38,7 +43,8 @@ use antiburn_local::paths::home_dir;
 use antiburn_local::platform::environment::environment_from_mounted_path;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::{AppHandle, Manager};
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::sync::Notify;
+use tokio::sync::mpsc::{Receiver, Sender, error::TrySendError};
 use tokio::time::Instant;
 
 /// Quiet period after the last relevant event before a pass is requested.
@@ -55,6 +61,15 @@ pub const FALLBACK_TICK: Duration = Duration::from_secs(15);
 /// How often the watcher re-lists every agent's roots and watches any that
 /// now exist but did not when it started (or at the last re-check).
 const ROOT_RECHECK_INTERVAL: Duration = super::TICK;
+
+/// The most native events waiting for the debounce task.
+const EVENT_CHANNEL_CAPACITY: usize = 128;
+
+/// The most paths retained from one native event.
+const MAX_EVENT_PATHS: usize = 16;
+
+/// The most encoded path bytes retained from one native event.
+const MAX_EVENT_PATH_BYTES: usize = 16 * 1024;
 
 /// What starting the watcher produced. The scheduler reads this once, right
 /// after start, to pick its tick.
@@ -120,14 +135,10 @@ fn spawn_watcher_over(
     on_relevant_change: impl Fn(WatchBurst) + Send + Sync + 'static,
 ) -> WatcherStatus {
     let roots = all_watch_roots(&home);
-    let (tx, rx) = unbounded_channel::<Event>();
+    let (ingress, rx, overflow) = event_ingress_channel();
     let mut watcher = match RecommendedWatcher::new(
         move |result: notify::Result<Event>| {
-            if let Ok(event) = result {
-                // The debounce task may already be gone at shutdown; a send
-                // failure there is not this callback's problem.
-                let _ = tx.send(event);
-            }
+            ingress.submit(result);
         },
         notify::Config::default(),
     ) {
@@ -142,13 +153,89 @@ fn spawn_watcher_over(
     // is called from inside the scheduler's own task, so the ambient runtime
     // is already the app's, and a plain spawn keeps this testable with
     // `#[tokio::test(start_paused = true)]` under its own runtime.
-    tokio::spawn(run_debounce_loop(rx, on_relevant_change));
+    tokio::spawn(run_debounce_loop(rx, overflow, on_relevant_change));
     tokio::spawn(run_root_recheck_loop(watcher, home, watched));
 
     WatcherStatus {
         active: true,
         failed_roots,
     }
+}
+
+/// The nonblocking boundary between the native callback and the async task.
+struct EventIngress {
+    events: Sender<IngressEvent>,
+    /// A retained permit wakes reconciliation after the event queue drains.
+    overflow: Arc<Notify>,
+}
+
+#[derive(Debug)]
+struct IngressEvent {
+    event: Event,
+    overflowed: bool,
+}
+
+impl EventIngress {
+    /// Submit one callback result without waiting for channel capacity.
+    fn submit(&self, result: notify::Result<Event>) {
+        let Ok(mut event) = result else {
+            return;
+        };
+        if matches!(event.kind, EventKind::Access(_)) {
+            return;
+        }
+        let path_overflowed = bound_event_paths(&mut event);
+        if !path_overflowed && !is_relevant(&event) {
+            return;
+        }
+        let event = IngressEvent {
+            event,
+            overflowed: path_overflowed,
+        };
+        match self.events.try_send(event) {
+            Ok(()) | Err(TrySendError::Closed(_)) => {}
+            Err(TrySendError::Full(_)) => self.overflow.notify_one(),
+        }
+    }
+}
+
+fn event_ingress_channel() -> (EventIngress, Receiver<IngressEvent>, Arc<Notify>) {
+    let (events, receiver) = tokio::sync::mpsc::channel(EVENT_CHANNEL_CAPACITY);
+    let overflow = Arc::new(Notify::new());
+    (
+        EventIngress {
+            events,
+            overflow: overflow.clone(),
+        },
+        receiver,
+        overflow,
+    )
+}
+
+/// Bound retained paths before an event enters the channel.
+fn bound_event_paths(event: &mut Event) -> bool {
+    let original = std::mem::take(&mut event.paths);
+    let mut bounded = Vec::with_capacity(original.len().min(MAX_EVENT_PATHS));
+    let mut bytes = 0usize;
+    let mut overflowed = false;
+
+    for path in original {
+        let path_bytes = encoded_path_bytes(&path);
+        if bounded.len() >= MAX_EVENT_PATHS
+            || bytes.saturating_add(path_bytes) > MAX_EVENT_PATH_BYTES
+        {
+            overflowed = true;
+            break;
+        }
+        bytes += path_bytes;
+        bounded.push(path.as_path().to_path_buf());
+    }
+    event.paths = bounded;
+    overflowed
+}
+
+fn encoded_path_bytes(path: &Path) -> usize {
+    path.as_os_str().as_encoded_bytes().len()
 }
 
 /// Watch every root in `roots` that exists and is not already in `watched`.
@@ -198,11 +285,13 @@ async fn run_root_recheck_loop(
     }
 }
 
-/// W2: the most paths one burst stores. Past this bound the burst keeps
-/// counting events but stops storing paths, so a runaway burst cannot grow
-/// the debouncer's memory with the size of the change. A consumer that sees
-/// a full sample must treat the burst as possibly incomplete.
+/// W2: the most paths one burst stores. Past this bound the burst sets
+/// [`WatchBurst::overflowed`] and stops storing paths. Event counting stays
+/// independent of the path sample.
 pub const MAX_BURST_PATHS: usize = 64;
+
+/// W2: the most encoded path bytes retained by one burst.
+pub const MAX_BURST_PATH_BYTES: usize = 64 * 1024;
 
 /// One coalesced run of relevant filesystem events, handed to
 /// `on_relevant_change` after the burst's quiet period ends.
@@ -211,39 +300,85 @@ pub struct WatchBurst {
     /// Relevant paths seen in this burst, deduplicated, in first-seen order,
     /// bounded at [`MAX_BURST_PATHS`].
     pub paths: Vec<PathBuf>,
-    /// Every relevant event coalesced into this burst. Counts past
-    /// [`MAX_BURST_PATHS`] even after the path sample stops growing.
+    /// Every retained relevant event coalesced into this burst. Saturates if
+    /// the count reaches [`usize::MAX`].
     pub events: usize,
+    /// Whether any event or path was omitted before this burst reached the
+    /// scheduler. A full reconciliation pass must cover the omitted work.
+    pub overflowed: bool,
 }
 
 impl WatchBurst {
     /// Fold one relevant event's paths into the burst.
     fn record(&mut self, event: &Event) {
-        self.events += 1;
-        for path in &event.paths {
-            if self.paths.len() >= MAX_BURST_PATHS {
+        self.events = self.events.saturating_add(1);
+        for (index, path) in event.paths.iter().enumerate() {
+            if index >= MAX_BURST_PATHS {
+                self.overflowed = true;
                 break;
             }
-            if !self.paths.contains(path) {
-                self.paths.push(path.clone());
-            }
+            self.record_path(path);
         }
+    }
+
+    /// Merge another pending burst without increasing either path bound.
+    pub(super) fn merge(&mut self, other: Self) {
+        self.events = self.events.saturating_add(other.events);
+        self.overflowed |= other.overflowed;
+        for (index, path) in other.paths.into_iter().enumerate() {
+            if index >= MAX_BURST_PATHS {
+                self.overflowed = true;
+                break;
+            }
+            self.record_path(&path);
+        }
+    }
+
+    fn record_path(&mut self, path: &Path) {
+        if self.paths.iter().any(|retained| retained == path) {
+            return;
+        }
+        let retained_bytes = self
+            .paths
+            .iter()
+            .map(|retained| encoded_path_bytes(retained))
+            .sum::<usize>();
+        if self.paths.len() >= MAX_BURST_PATHS
+            || retained_bytes.saturating_add(encoded_path_bytes(path)) > MAX_BURST_PATH_BYTES
+        {
+            self.overflowed = true;
+            return;
+        }
+        self.paths.push(path.to_path_buf());
     }
 }
 
 /// Consume events until the channel closes, requesting one pass after each
 /// quiet period. See the module doc for the debounce shape.
 async fn run_debounce_loop(
-    mut events: UnboundedReceiver<Event>,
+    mut events: Receiver<IngressEvent>,
+    overflow: Arc<Notify>,
     on_relevant_change: impl Fn(WatchBurst),
 ) {
-    while let Some(first) = events.recv().await {
-        if !is_relevant(&first) {
-            continue;
-        }
+    loop {
         let mut burst = WatchBurst::default();
-        burst.record(&first);
-        wait_for_quiet(&mut events, QUIET_WINDOW, MAX_WAIT, &mut burst).await;
+        let first = tokio::select! {
+            maybe_event = events.recv() => {
+                let Some(event) = maybe_event else {
+                    return;
+                };
+                Some(event)
+            }
+            () = overflow.notified() => {
+                burst.overflowed = true;
+                events.try_recv().ok()
+            }
+        };
+        if let Some(first) = first {
+            burst.record(&first.event);
+            burst.overflowed |= first.overflowed;
+            wait_for_quiet(&mut events, &overflow, QUIET_WINDOW, MAX_WAIT, &mut burst).await;
+        }
         on_relevant_change(burst);
     }
 }
@@ -251,9 +386,11 @@ async fn run_debounce_loop(
 /// After a relevant event, keep consuming events while more relevant ones
 /// keep arriving inside the quiet window, up to the maximum wait. Only a
 /// relevant event resets the quiet window; noise never extends it. Every
-/// relevant event folds its paths into `burst` (W2).
+/// relevant event folds its paths into `burst` (W2). Overflow signals do not
+/// reset either deadline.
 async fn wait_for_quiet(
-    events: &mut UnboundedReceiver<Event>,
+    events: &mut Receiver<IngressEvent>,
+    overflow: &Notify,
     quiet: Duration,
     max_wait: Duration,
     burst: &mut WatchBurst,
@@ -267,10 +404,15 @@ async fn wait_for_quiet(
                 let Some(event) = maybe_event else {
                     return;
                 };
-                if is_relevant(&event) {
-                    burst.record(&event);
-                    quiet_deadline = Instant::now() + quiet;
+                burst.record(&event.event);
+                burst.overflowed |= event.overflowed;
+                quiet_deadline = Instant::now() + quiet;
+                if Instant::now() >= deadline {
+                    return;
                 }
+            }
+            () = overflow.notified() => {
+                burst.overflowed = true;
                 if Instant::now() >= deadline {
                     return;
                 }
@@ -331,16 +473,118 @@ mod tests {
         Event::new(EventKind::Access(AccessKind::Read)).add_path(path.to_path_buf())
     }
 
+    fn spawn_test_debouncer(
+        on_relevant_change: impl Fn(WatchBurst) + Send + 'static,
+    ) -> EventIngress {
+        let (ingress, events, overflow) = event_ingress_channel();
+        tokio::spawn(run_debounce_loop(events, overflow, on_relevant_change));
+        ingress
+    }
+
+    #[test]
+    fn native_ingress_bounds_each_event_by_path_count_and_bytes() {
+        let (ingress, mut events, _overflow) = event_ingress_channel();
+        let mut many_paths = Event::new(EventKind::Modify(ModifyKind::Any));
+        for index in 0..=MAX_EVENT_PATHS {
+            many_paths = many_paths.add_path(PathBuf::from(format!("/tmp/path-{index}")));
+        }
+
+        ingress.submit(Ok(many_paths));
+
+        let bounded = events.try_recv().expect("the bounded event stays queued");
+        assert_eq!(bounded.event.paths.len(), MAX_EVENT_PATHS);
+        assert!(
+            bounded
+                .event
+                .paths
+                .iter()
+                .map(|path| encoded_path_bytes(path))
+                .sum::<usize>()
+                <= MAX_EVENT_PATH_BYTES
+        );
+        assert!(bounded.overflowed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn one_oversized_path_still_wakes_one_overflow_reconciliation() {
+        let bursts: Arc<std::sync::Mutex<Vec<WatchBurst>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let collected = bursts.clone();
+        let ingress = spawn_test_debouncer(move |burst| {
+            collected.lock().unwrap().push(burst);
+        });
+        let oversized = PathBuf::from(format!("/{}", "x".repeat(MAX_EVENT_PATH_BYTES)));
+
+        ingress.submit(Ok(modify_event(&oversized)));
+        tokio::time::sleep(QUIET_WINDOW + Duration::from_millis(1)).await;
+
+        let bursts = bursts.lock().unwrap();
+        assert_eq!(bursts.len(), 1);
+        assert!(bursts[0].paths.is_empty());
+        assert!(bursts[0].overflowed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_ingress_flood_stays_bounded_and_requests_one_reconciliation() {
+        let (ingress, rx, overflow) = event_ingress_channel();
+        for _ in 0..EVENT_CHANNEL_CAPACITY + 10_000 {
+            ingress.submit(Ok(modify_event(Path::new("/tmp/flood"))));
+        }
+        assert_eq!(rx.len(), EVENT_CHANNEL_CAPACITY);
+
+        let bursts: Arc<std::sync::Mutex<Vec<WatchBurst>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let collected = bursts.clone();
+        tokio::spawn(run_debounce_loop(rx, overflow, move |burst| {
+            collected.lock().unwrap().push(burst);
+        }));
+        tokio::time::sleep(QUIET_WINDOW + Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+
+        let bursts = bursts.lock().unwrap();
+        assert_eq!(bursts.len(), 1);
+        assert!(bursts[0].overflowed);
+        assert_eq!(bursts[0].paths, vec![PathBuf::from("/tmp/flood")]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_full_channel_signal_survives_a_concurrent_drain() {
+        let (ingress, mut events, overflow) = event_ingress_channel();
+        for _ in 0..EVENT_CHANNEL_CAPACITY {
+            ingress
+                .events
+                .try_send(IngressEvent {
+                    event: modify_event(Path::new("/tmp/queued")),
+                    overflowed: false,
+                })
+                .unwrap();
+        }
+        ingress.submit(Ok(modify_event(Path::new("/tmp/overflow"))));
+
+        while events.try_recv().is_ok() {}
+        let bursts: Arc<std::sync::Mutex<Vec<WatchBurst>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let collected = bursts.clone();
+        tokio::spawn(run_debounce_loop(events, overflow, move |burst| {
+            collected.lock().unwrap().push(burst);
+        }));
+        tokio::task::yield_now().await;
+
+        let bursts = bursts.lock().unwrap();
+        assert_eq!(bursts.len(), 1);
+        assert!(bursts[0].paths.is_empty());
+        assert!(bursts[0].overflowed);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_relevant_event_resets_the_quiet_window() {
-        let (tx, rx) = unbounded_channel();
         let fires = Arc::new(AtomicUsize::new(0));
         let counter = fires.clone();
-        tokio::spawn(run_debounce_loop(rx, move |_burst: WatchBurst| {
+        let ingress = spawn_test_debouncer(move |_burst: WatchBurst| {
             counter.fetch_add(1, Ordering::SeqCst);
-        }));
+        });
 
-        tx.send(modify_event(Path::new("/tmp/a"))).unwrap();
+        ingress.submit(Ok(modify_event(Path::new("/tmp/a"))));
         tokio::time::sleep(Duration::from_millis(1000)).await;
         assert_eq!(
             fires.load(Ordering::SeqCst),
@@ -350,7 +594,7 @@ mod tests {
 
         // A second relevant event at t=1000ms pushes the quiet deadline to
         // t=2500ms; without the reset it would have fired at t=1500ms.
-        tx.send(modify_event(Path::new("/tmp/a"))).unwrap();
+        ingress.submit(Ok(modify_event(Path::new("/tmp/a"))));
         tokio::time::sleep(Duration::from_millis(1000)).await;
         assert_eq!(
             fires.load(Ordering::SeqCst),
@@ -364,17 +608,16 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_unbroken_stream_of_events_still_fires_at_the_maximum_wait() {
-        let (tx, rx) = unbounded_channel();
         let fires = Arc::new(AtomicUsize::new(0));
         let counter = fires.clone();
-        tokio::spawn(run_debounce_loop(rx, move |_burst: WatchBurst| {
+        let ingress = spawn_test_debouncer(move |_burst: WatchBurst| {
             counter.fetch_add(1, Ordering::SeqCst);
-        }));
+        });
 
         // Events every 400ms never let the 1500ms quiet window elapse, so
         // only the 5s maximum wait can end this burst.
         for _ in 0..14 {
-            tx.send(modify_event(Path::new("/tmp/a"))).unwrap();
+            ingress.submit(Ok(modify_event(Path::new("/tmp/a"))));
             tokio::time::sleep(Duration::from_millis(400)).await;
         }
         assert_eq!(
@@ -385,31 +628,66 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn access_only_events_never_reach_the_debouncer() {
-        let (tx, rx) = unbounded_channel();
+    async fn repeated_overflow_signals_do_not_starve_the_maximum_wait() {
+        let (_ingress, mut events, overflow) = event_ingress_channel();
         let fires = Arc::new(AtomicUsize::new(0));
         let counter = fires.clone();
-        tokio::spawn(run_debounce_loop(rx, move |_burst: WatchBurst| {
+        let producer = overflow.clone();
+        tokio::spawn(async move {
+            let mut burst = WatchBurst::default();
+            wait_for_quiet(&mut events, &overflow, QUIET_WINDOW, MAX_WAIT, &mut burst).await;
+            assert!(burst.overflowed);
             counter.fetch_add(1, Ordering::SeqCst);
-        }));
+        });
+        tokio::task::yield_now().await;
 
-        tx.send(access_event(Path::new("/tmp/a"))).unwrap();
+        for _ in 0..14 {
+            producer.notify_one();
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+
+        assert_eq!(fires.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn merged_event_counts_saturate() {
+        let mut burst = WatchBurst {
+            events: usize::MAX,
+            ..WatchBurst::default()
+        };
+
+        burst.merge(WatchBurst {
+            events: 1,
+            ..WatchBurst::default()
+        });
+
+        assert_eq!(burst.events, usize::MAX);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn access_only_events_never_reach_the_debouncer() {
+        let fires = Arc::new(AtomicUsize::new(0));
+        let counter = fires.clone();
+        let ingress = spawn_test_debouncer(move |_burst: WatchBurst| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        ingress.submit(Ok(access_event(Path::new("/tmp/a"))));
         tokio::time::sleep(MAX_WAIT + Duration::from_secs(1)).await;
         assert_eq!(fires.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test(start_paused = true)]
     async fn two_events_for_the_same_path_yield_one_path_and_two_events() {
-        let (tx, rx) = unbounded_channel();
         let bursts: Arc<std::sync::Mutex<Vec<WatchBurst>>> =
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let collected = bursts.clone();
-        tokio::spawn(run_debounce_loop(rx, move |burst: WatchBurst| {
+        let ingress = spawn_test_debouncer(move |burst: WatchBurst| {
             collected.lock().unwrap().push(burst);
-        }));
+        });
 
-        tx.send(modify_event(Path::new("/tmp/a"))).unwrap();
-        tx.send(modify_event(Path::new("/tmp/a"))).unwrap();
+        ingress.submit(Ok(modify_event(Path::new("/tmp/a"))));
+        ingress.submit(Ok(modify_event(Path::new("/tmp/a"))));
         tokio::time::sleep(QUIET_WINDOW + Duration::from_millis(100)).await;
 
         let bursts = bursts.lock().unwrap();
@@ -483,10 +761,10 @@ mod tests {
     #[test]
     fn a_root_that_does_not_exist_yet_is_skipped_rather_than_failed() {
         let home = tempfile::TempDir::new().unwrap();
-        let (tx, _rx) = unbounded_channel::<Event>();
+        let (tx, _rx) = std::sync::mpsc::sync_channel::<Event>(EVENT_CHANNEL_CAPACITY);
         let mut watcher = RecommendedWatcher::new(
             move |result: notify::Result<Event>| {
-                let _ = tx.send(result.unwrap_or_else(|error| {
+                let _ = tx.try_send(result.unwrap_or_else(|error| {
                     Event::new(EventKind::Other).add_path(PathBuf::from(error.to_string()))
                 }));
             },
@@ -540,7 +818,7 @@ mod tests {
         let codex = home.path().join(".codex");
         std::fs::create_dir_all(&codex).unwrap();
 
-        let (tx, mut rx) = unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let status = spawn_watcher_over(home.path().to_path_buf(), move |burst| {
             let _ = tx.send(burst);
         });
