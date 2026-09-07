@@ -157,7 +157,9 @@ pub use vendors::{adapter_for, has_dedicated_adapter};
 // already seen earlier in the same stream is a replay of a resumed
 // session's post-compaction segment, so the parser now skips it entirely
 // instead of double-counting it (`vendors::claude::visit_reader`).
-pub const PARSER_REVISION: i64 = 26;
+// Codex `token_usage_record` support requires a parser revision bump.
+// Stored sessions must re-ingest to restore complete coverage and deduplicate paired usage rows.
+pub const PARSER_REVISION: i64 = 27;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
@@ -172,7 +174,7 @@ pub const PARSER_REVISION: i64 = 26;
 // +1 for the Codex `token_count` fix: a heartbeat with zero-component usage
 // beside a nonzero derived `total_tokens` is now inert, and
 // `cache_write_input_tokens` is now a known usage key
-// (`vendors::codex::is_usage_free_token_count`).
+// (`vendors::codex::is_usage_free_record`).
 // +1 for parts A-E of the model-tier-policy updates: dropped `ultrathink`,
 // canonical model-key namespacing, the replacement registry and premium-policy
 // rewrites, and dominant-main-model-by-output-tokens
@@ -238,7 +240,7 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 1;
 /// before it restores a snapshot; this constant and the rule are
 /// documented here so a future revision bump remembers to bump this one
 /// too, when the change touches resumable state.
-pub const RESUME_SNAPSHOT_REVISION: i64 = 3;
+pub const RESUME_SNAPSHOT_REVISION: i64 = 4;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///
