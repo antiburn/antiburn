@@ -204,7 +204,7 @@ eventemitter3@5.0.4 | MIT | https://github.com/primus/eventemitter3#readme
 get-nonce@1.0.1 | MIT | https://github.com/theKashey/get-nonce
 immer@11.1.16 | MIT | https://github.com/immerjs/immer#readme
 internmap@2.0.3 | ISC | https://github.com/mbostock/internmap/
-lucide-react@1.40.0 | ISC | https://lucide.dev
+lucide-react@1.41.0 | ISC | https://lucide.dev
 react-dom@19.2.8 | MIT | https://react.dev/
 react-is@17.0.2 | MIT | https://reactjs.org/
 react-redux@9.3.0 | MIT | https://github.com/reduxjs/react-redux
@@ -5953,7 +5953,7 @@ DEALINGS IN THE SOFTWARE.
 ========================================
 
 Used by:
-  lucide-react@1.40.0
+  lucide-react@1.41.0
 
 ISC License
 
