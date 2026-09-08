@@ -16,12 +16,14 @@
 //! itself defaults on: no credential is read, and no request or subprocess
 //! runs, until the reader has actually seen this app once.
 
+use std::future;
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::dto::{LiveUsageFreshness, LiveUsageSummary};
 use crate::provider_usage;
+use crate::provider_usage::codex_rollout_history::{self, RolloutImportBatch};
 use crate::store::Store;
 
 /// Emitted after a provider refresh replaces the cached live-usage snapshot.
@@ -47,19 +49,71 @@ const STARTUP_DELAY: Duration = Duration::from_secs(120);
 /// `crate::commands::POPOVER_LIVE_USAGE_MAX_AGE` for the visible refresh budget.
 const BACKGROUND_MAX_AGE: Duration = TICK;
 
+/// Delay a continued rollout-history batch so other local work runs first.
+const ROLLOUT_CONTINUATION_DELAY: Duration = Duration::from_millis(250);
+
 /// Spawn the monitor loop; the handle joins the shell's scheduler registry.
+///
+/// Each tick runs one Codex rollout-history import batch ahead of the usual
+/// pass. A large or newly discovered rollout file rarely finishes in one
+/// batch; when it reports more work, the loop wakes again after
+/// [`ROLLOUT_CONTINUATION_DELAY`] (or at its own retry time) instead of
+/// waiting for the next full tick, so a big backlog drains in a handful of
+/// seconds rather than a handful of `TICK`s.
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(STARTUP_DELAY).await;
         let mut interval = tokio::time::interval(TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut rollout_due = None;
         loop {
-            interval.tick().await;
-            let app = app.clone();
-            blocking::run(move |blocking| run_pass(&app, blocking)).await;
+            tokio::select! {
+                _ = interval.tick() => {
+                    rollout_due = None;
+                    let app = app.clone();
+                    if let Some(batch) = blocking::run(move |blocking| run_pass(&app, blocking)).await {
+                        schedule_rollout_continuation(&mut rollout_due, batch);
+                    }
+                }
+                _ = wait_for_rollout_continuation(rollout_due) => {
+                    rollout_due = None;
+                    let app = app.clone();
+                    if let Some(batch) = blocking::run(move |blocking| run_rollout_import(&app, blocking)).await {
+                        schedule_rollout_continuation(&mut rollout_due, batch);
+                    }
+                }
+            }
         }
     })
+}
+
+async fn wait_for_rollout_continuation(due: Option<tokio::time::Instant>) {
+    match due {
+        Some(due) => tokio::time::sleep_until(due).await,
+        None => future::pending::<()>().await,
+    }
+}
+
+/// Note when the scheduler should wake early for another rollout-history
+/// batch: sooner when the last one asked to continue, or at its own next
+/// retry time when it deferred a source. Leaves `due` untouched otherwise.
+fn schedule_rollout_continuation(
+    due: &mut Option<tokio::time::Instant>,
+    batch: RolloutImportBatch,
+) {
+    let now_epoch = crate::scan::unix_now();
+    let delay = if batch.continue_soon {
+        Some(ROLLOUT_CONTINUATION_DELAY)
+    } else {
+        batch.next_retry_epoch.map(|retry_epoch| {
+            Duration::from_secs(retry_epoch.saturating_sub(now_epoch).max(1) as u64)
+        })
+    };
+    let Some(next) = delay.map(|delay| tokio::time::Instant::now() + delay) else {
+        return;
+    };
+    *due = Some(due.map_or(next, |current| current.min(next)));
 }
 
 /// The hop off the async runtime, and the proof that it happened.
@@ -89,10 +143,19 @@ mod blocking {
     ///
     /// Awaiting the handle keeps ticks serialized the way calling the pass
     /// inline did, and folding the join error away means a pass that panics
-    /// anyway costs one pass rather than every pass after it.
-    pub async fn run<F: FnOnce(Thread) + Send + 'static>(pass: F) {
-        if let Err(error) = tauri::async_runtime::spawn_blocking(move || pass(Thread(()))).await {
-            ::tracing::error!(event = "usage_alert_pass_failed", error = %error);
+    /// anyway costs one pass rather than every pass after it — `None` then,
+    /// rather than the pass's own result.
+    pub async fn run<F, T>(pass: F) -> Option<T>
+    where
+        F: FnOnce(Thread) -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        match tauri::async_runtime::spawn_blocking(move || pass(Thread(()))).await {
+            Ok(value) => Some(value),
+            Err(error) => {
+                ::tracing::error!(event = "usage_alert_pass_failed", error = %error);
+                None
+            }
         }
     }
 }
@@ -210,26 +273,47 @@ impl Default for LiveUsage {
     }
 }
 
-fn run_pass(app: &AppHandle, _blocking: blocking::Thread) {
+fn run_pass(app: &AppHandle, _blocking: blocking::Thread) -> RolloutImportBatch {
+    let batch = run_rollout_import_inner(app);
     let Some(store) = app.try_state::<Store>() else {
-        return;
+        return batch;
     };
+    // Factor learning uses only local durable inputs. It must run without
+    // provider network collection, and after the rollout import so a
+    // freshly imported reading can seed a sample the same pass it lands.
+    let now = crate::scan::unix_now();
+    let learned = crate::provider_usage::factor::learn(store.inner(), now);
+    crate::analytics::record_limit_factor_observed(app, &learned);
     // Read fresh each pass, and default to not acting: an unreadable
     // preference is not permission (same rule as every notifier).
     let Ok(settings) = store.settings() else {
-        return;
+        return batch;
     };
     background_pass(app, &settings);
+    batch
+}
+
+/// Run one Codex rollout-history import batch on its own, for the
+/// scheduler's continuation wake-up between full ticks.
+fn run_rollout_import(app: &AppHandle, _blocking: blocking::Thread) -> RolloutImportBatch {
+    run_rollout_import_inner(app)
+}
+
+fn run_rollout_import_inner(app: &AppHandle) -> RolloutImportBatch {
+    let Some(store) = app.try_state::<Store>() else {
+        return RolloutImportBatch::default();
+    };
+    let now = crate::scan::unix_now();
+    match codex_rollout_history::import_rollout_batch(store.inner(), now) {
+        Ok(batch) => batch,
+        Err(_) => {
+            ::tracing::warn!(event = "codex_rollout_history_import_failed");
+            RolloutImportBatch::default()
+        }
+    }
 }
 
 fn background_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
-    // Factor learning uses only local durable inputs. It must run without
-    // provider network collection.
-    if let Some(store) = app.try_state::<Store>() {
-        let now = crate::scan::unix_now();
-        let learned = crate::provider_usage::factor::learn(store.inner(), now);
-        crate::analytics::record_limit_factor_observed(app, &learned);
-    }
     if !settings.live_usage_active() {
         return;
     }
@@ -592,6 +676,50 @@ mod tests {
             LiveUsage::from_store(&store).snapshot(),
             LiveUsageSummary::default()
         );
+    }
+
+    #[test]
+    fn a_batch_that_wants_to_continue_soon_wakes_before_the_next_tick() {
+        let mut due = None;
+        schedule_rollout_continuation(
+            &mut due,
+            RolloutImportBatch {
+                continue_soon: true,
+                ..Default::default()
+            },
+        );
+
+        let remaining = due
+            .expect("scheduled continuation")
+            .saturating_duration_since(tokio::time::Instant::now());
+        assert!(remaining <= ROLLOUT_CONTINUATION_DELAY);
+    }
+
+    #[test]
+    fn a_deferred_batch_waits_for_its_own_retry_time() {
+        let now = crate::scan::unix_now();
+        let mut due = None;
+        schedule_rollout_continuation(
+            &mut due,
+            RolloutImportBatch {
+                pending: true,
+                next_retry_epoch: Some(now + 60),
+                ..Default::default()
+            },
+        );
+
+        let remaining = due
+            .expect("scheduled retry")
+            .saturating_duration_since(tokio::time::Instant::now());
+        assert!(remaining >= Duration::from_secs(58));
+    }
+
+    #[test]
+    fn a_batch_with_no_more_work_schedules_nothing() {
+        let mut due = None;
+        schedule_rollout_continuation(&mut due, RolloutImportBatch::default());
+
+        assert!(due.is_none());
     }
 
     /// A pass must land somewhere blocking is allowed.

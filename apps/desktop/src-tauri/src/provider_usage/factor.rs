@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 
+use super::codex_rollout_history::CODEX_ROLLOUT_SOURCE_ID;
 use crate::store::Store;
 use crate::store::provider_limit::{
     AttributedSessionDollars, FactorPoint, FactorSample, lane_duration_seconds,
@@ -266,8 +267,16 @@ fn build_period_samples(
         };
         let totals = sum_dollars(&dollars);
         let attributed_total = totals.0 + totals.1 + totals.2 + totals.3;
+        // Same arithmetic as a live delta; only the provenance differs. A
+        // closing reading read from a Codex rollout file earns the
+        // `rollout` kind so a later chart can tell the two apart, but an
+        // unattributed interval stays `unattributed` regardless of source.
         let kind = if attributed_total > 0.0 {
-            "delta"
+            if observation.source_id == CODEX_ROLLOUT_SOURCE_ID {
+                "rollout"
+            } else {
+                "delta"
+            }
         } else {
             "unattributed"
         };

@@ -318,6 +318,88 @@ fn sample_retention_deletes_old_samples_but_never_points() {
     );
 }
 
+/// One sample of `kind`, spanning `from_epoch..to_epoch`, otherwise
+/// identical to [`sample_retention_deletes_old_samples_but_never_points`]'s
+/// fixture.
+fn kind_sample(kind: &str, from_epoch: i64, to_epoch: i64) -> FactorSample {
+    FactorSample {
+        provider: PROVIDER.to_string(),
+        account_key: account('a'),
+        lane: LANE_FIVE_HOUR.to_string(),
+        kind: kind.to_string(),
+        period_id: None,
+        from_epoch,
+        to_epoch,
+        from_percent: 0.0,
+        to_percent: 5.0,
+        input_usd: 1.0,
+        output_usd: 0.0,
+        cache_read_usd: 0.0,
+        cache_write_usd: 0.0,
+        turn_count: 1,
+        plan: None,
+        plan_tier: None,
+        source_id: "test".to_string(),
+        computed_at_epoch: to_epoch,
+    }
+}
+
+#[test]
+fn a_rollout_sample_counts_the_same_as_a_delta_sample() {
+    let store = memory_store();
+    let lane = LANE_FIVE_HOUR;
+    store
+        .upsert_factor_sample(&kind_sample("delta", 0, 100))
+        .unwrap();
+    store
+        .upsert_factor_sample(&kind_sample("rollout", 100, 200))
+        .unwrap();
+    store
+        .upsert_factor_sample(&kind_sample("unattributed", 200, 300))
+        .unwrap();
+    store
+        .upsert_factor_sample(&kind_sample("window_start", 300, 400))
+        .unwrap();
+
+    let all = store
+        .all_delta_factor_samples(PROVIDER, &account('a'), lane)
+        .unwrap();
+    assert_eq!(
+        all.iter()
+            .map(|sample| sample.kind.as_str())
+            .collect::<Vec<_>>(),
+        vec!["delta", "rollout"],
+        "the median's sample pool takes delta and rollout alike, and nothing else"
+    );
+
+    let recent = store
+        .delta_factor_samples_since(PROVIDER, &account('a'), lane, 0)
+        .unwrap();
+    assert_eq!(recent.len(), 2);
+}
+
+#[test]
+fn a_rollout_only_history_satisfies_has_delta_factor_sample() {
+    let store = memory_store();
+    let lane = LANE_FIVE_HOUR;
+    assert!(
+        !store
+            .has_delta_factor_sample(PROVIDER, &account('a'), lane, None, None)
+            .unwrap()
+    );
+
+    store
+        .upsert_factor_sample(&kind_sample("rollout", 0, 100))
+        .unwrap();
+
+    assert!(
+        store
+            .has_delta_factor_sample(PROVIDER, &account('a'), lane, None, None)
+            .unwrap(),
+        "a rollout sample blocks a window-start sample from forming, the same as a delta sample"
+    );
+}
+
 #[test]
 fn a_sample_s_period_reference_is_nulled_before_its_period_is_deleted() {
     let store = memory_store();

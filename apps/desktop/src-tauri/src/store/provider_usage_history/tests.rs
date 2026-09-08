@@ -143,6 +143,44 @@ mod history_tests {
     }
 
     #[test]
+    fn reset_jitter_merges_two_codex_rollout_readings_into_one_period() {
+        // Same mechanism as `reset_jitter_keeps_one_period_and_raw_observations`,
+        // exercised with a rollout-sourced reading pair: consecutive Codex
+        // rollout events routinely restate a reset a couple of seconds apart
+        // from the server clock, and phase 4's history import must not split
+        // them into separate periods.
+        let store = store();
+        let mut first = snapshot(
+            ACCOUNT_A,
+            NOW - 60,
+            "five-hour",
+            None,
+            Some(NOW),
+            Some(20.0),
+        );
+        first.provider = "openai";
+        first.source.id = "codex-rollout-backfill";
+        let mut second = snapshot(ACCOUNT_A, NOW, "five-hour", None, Some(NOW + 3), Some(30.0));
+        second.provider = "openai";
+        second.source.id = "codex-rollout-backfill";
+
+        let first_id = store.record_provider_usage_snapshots(&[first]).unwrap()[0];
+        assert_eq!(
+            store.record_provider_usage_snapshots(&[second]).unwrap(),
+            [first_id]
+        );
+        let history = store
+            .provider_usage_period_history(first_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            history.observations.len(),
+            2,
+            "both readings join the same period despite the 3-second reset drift"
+        );
+    }
+
+    #[test]
     fn a_new_reset_creates_a_new_period_without_merging_a_drop() {
         let store = store();
         let first = snapshot(

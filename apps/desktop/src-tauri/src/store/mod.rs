@@ -21,6 +21,7 @@
 //! their long work — reading transcripts, analyzing them — outside the lock and
 //! come here only to write the result.
 
+pub(crate) mod codex_rollout_checkpoint;
 pub mod model;
 pub(crate) mod provider_limit;
 pub(crate) mod provider_usage_history;

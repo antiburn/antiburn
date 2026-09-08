@@ -82,6 +82,15 @@ percentage over matching local session work, so this is an estimate and can exce
 account or provider-history evidence. This session estimate remains after a provider
 reset. The provider meter still shows only the current allowance period.
 
+For Codex, antiburn can also read the rate-limit metadata a session's own rollout
+file already recorded, so a directly or singly attributed account has meter history
+from before this app was installed, not only from readings taken while it ran. This
+bounded, resumable local read looks only at each rollout file's `token_count` rate-
+limit events; it does not read or retain transcript message content. A rollout
+reading older than the local data retention setting is never imported. An account
+that resolves to more than one Codex login on this machine is skipped, the same as
+for a live reading.
+
 ## What antiburn stores
 
 antiburn keeps its own local data under the application's data directory. Settings →

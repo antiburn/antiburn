@@ -147,6 +147,40 @@ fn push_observation_with_tier(
         .expect("advances the period's observed range");
 }
 
+/// Push one observation carrying a specific `source_id`, so a test can
+/// close a delta pair with a reading attributed to the Codex rollout
+/// history importer rather than a live poll.
+fn push_observation_with_source(
+    store: &Store,
+    period_id: i64,
+    observed_at: i64,
+    used_percent: f64,
+    source_id: &str,
+) {
+    let connection = store.lock();
+    connection
+        .execute(
+            "INSERT INTO provider_usage_observation (
+                 period_id, provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
+                 is_authoritative, confidence, source_id
+             ) SELECT id, provider, account_key, window_id, window_kind, window_role,
+                      scope_key, scope_label, ?2, ?3, 1, 1, 'high', ?4
+                 FROM provider_usage_period WHERE id = ?1",
+            params![period_id, observed_at, used_percent, source_id],
+        )
+        .expect("stores a synthetic observation");
+    connection
+        .execute(
+            "UPDATE provider_usage_period
+                SET first_observed_epoch = MIN(first_observed_epoch, ?2),
+                    last_observed_epoch = MAX(last_observed_epoch, ?2)
+              WHERE id = ?1",
+            params![period_id, observed_at],
+        )
+        .expect("advances the period's observed range");
+}
+
 fn sample_at(total_usd: f64, percent_delta: f64, to_epoch: i64) -> FactorSample {
     FactorSample {
         provider: PROVIDER.to_string(),
@@ -200,6 +234,43 @@ fn delta_sample_arithmetic_prices_turns_between_two_readings() {
         .expect("a point is learned from the one delta sample");
     assert!((point.usd_per_percent - 0.2).abs() < 1e-9);
     assert_eq!(point.method, "delta");
+    assert_eq!(point.sample_count, 1);
+}
+
+#[test]
+fn two_rollout_observations_produce_a_rollout_sample_and_a_delta_method_point() {
+    let store = memory_store();
+    observe_account(&store);
+    let key = insert_session(&store, "s1");
+    insert_turn(&store, &key, 150_000, 200_000); // 200,000 * 5e-6 = $1.00
+    let period_id = insert_period(&store, 0, 18_000);
+    push_observation_with_source(&store, period_id, 100, 10.0, CODEX_ROLLOUT_SOURCE_ID);
+    push_observation_with_source(&store, period_id, 200, 15.0, CODEX_ROLLOUT_SOURCE_ID);
+
+    learn(&store, 300);
+
+    let samples = store
+        .all_delta_factor_samples(PROVIDER, &account(), LANE_FIVE_HOUR)
+        .unwrap();
+    assert_eq!(samples.len(), 1);
+    let sample = &samples[0];
+    assert_eq!(
+        sample.kind, "rollout",
+        "a delta pair closed by a rollout reading is kind `rollout`, not `delta`"
+    );
+    // Same arithmetic as a live delta: only the kind differs.
+    assert!((sample.total_usd() - 1.0).abs() < 1e-9);
+    assert!((sample.percent_delta() - 5.0).abs() < 1e-9);
+
+    let point = store
+        .latest_factor_point(PROVIDER, &account(), LANE_FIVE_HOUR)
+        .unwrap()
+        .expect("a point is learned from the one rollout sample");
+    assert!((point.usd_per_percent - 0.2).abs() < 1e-9);
+    assert_eq!(
+        point.method, "delta",
+        "method names the estimation approach, not the sample's provenance"
+    );
     assert_eq!(point.sample_count, 1);
 }
 

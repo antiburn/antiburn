@@ -775,6 +775,15 @@ mod tests {
             "delta",
             900_500,
         );
+        // A rollout-history sample is a delta sample from another source
+        // and must count alongside it.
+        insert_factor_sample(
+            &connection,
+            &fixture_account_key('a'),
+            "fiveHour",
+            "rollout",
+            900_550,
+        );
         insert_factor_sample(
             &connection,
             &fixture_account_key('a'),
@@ -818,7 +827,7 @@ mod tests {
         assert_eq!(entry["usdPerPercent"], 0.6);
         assert_eq!(entry["plan"], "max");
         assert_eq!(entry["pointCount"], 2);
-        assert_eq!(entry["deltaSampleCount"], 1);
+        assert_eq!(entry["deltaSampleCount"], 2);
         assert_eq!(entry["unattributedSampleCount"], 1);
         assert_eq!(entry["residual"]["meterPercent"], 42.0);
         assert_eq!(entry["residual"]["estimatedPercent"], 40.0);
