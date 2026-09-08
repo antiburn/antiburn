@@ -2,9 +2,8 @@
 //! turns.
 //!
 //! See `docs/plans/limit-factor-estimation.md` for the full design. This
-//! module writes `store::provider_limit`'s samples and points. Nothing reads
-//! them outside tests yet; the session badge still prices from the durable
-//! allocator until phase 2.
+//! module writes `store::provider_limit`'s samples and points. The
+//! `get_session_limit_allocations` command reads the points back.
 
 use std::collections::BTreeMap;
 

@@ -24,7 +24,6 @@
 pub mod model;
 pub(crate) mod provider_limit;
 pub(crate) mod provider_usage_history;
-pub(crate) mod provider_usage_ledger;
 mod schema;
 
 #[cfg(test)]
@@ -60,8 +59,8 @@ pub use model::{
     MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement,
     OwningSession, ProjectionRevisions, PublishedEvidence, RETAIN_SESSION_DATA_FOREVER,
     RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey, SessionBadgeMetric,
-    SessionKey, SessionRecord, SessionUsageRecord, SessionUsageTurnRecord, SourcePublishMode,
-    SourcePublishOutcome, SourceVersionState, ThemePreference, UsageEvidenceRecord,
+    SessionKey, SessionRecord, SourcePublishMode, SourcePublishOutcome, SourceVersionState,
+    ThemePreference, UsageEvidenceRecord,
 };
 
 /// Evidence rows that still wait for, or sit in, processing.
@@ -75,60 +74,6 @@ pub struct EvidenceBacklogCounts {
 /// to read.
 pub const DEFERRED_PERMISSION_DIRS_KEY: &str = "internal:deferredPermissionDirs";
 const PROVIDER_ACCOUNT_SECRET_KEY: &str = "internal:providerAccountHmacSecretV1";
-const ALLOCATION_READ_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-
-fn allocation_grouped_turn_sql(interval_count: usize) -> String {
-    let interval_values = (0..interval_count)
-        .map(|_| "(?, ?, ?)")
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "WITH interval(interval_start_ms, interval_end_ms, bucket_end_ms) AS (
-            VALUES {interval_values}
-         ), grouped_turn AS (
-            SELECT t.environment_key, t.agent, t.session_id,
-                   i.bucket_end_ms,
-                   t.model, t.speed,
-                   SUM(t.input_tokens) AS input_tokens,
-                   SUM(t.cache_read_tokens) AS cache_read_tokens,
-                   SUM(t.cache_write_tokens) AS cache_write_tokens,
-                   SUM(t.output_tokens) AS output_tokens
-              FROM interval i
-              JOIN turn t INDEXED BY turn_usage_timestamp
-                ON t.ts_ms >= i.interval_start_ms
-               AND t.ts_ms <= i.interval_end_ms
-              JOIN session_evidence e
-                ON e.environment_key = t.environment_key
-               AND e.agent = t.agent AND e.session_id = t.session_id
-               AND e.published_fence = t.claim_fence
-             WHERE t.ts_ms < ?
-             GROUP BY t.environment_key, t.agent, t.session_id, bucket_end_ms,
-                      t.model, t.speed
-             ORDER BY bucket_end_ms
-             LIMIT ?
-         )
-         SELECT g.environment_key, g.agent, g.session_id, s.wsl_distro,
-                a.provider_hints_json,
-                COALESCE((
-                    SELECT json_group_array(json_object(
-                        'provider', spa.provider,
-                        'accountKey', spa.account_key
-                    ))
-                      FROM session_provider_account spa
-                     WHERE spa.environment_key = s.environment_key
-                       AND spa.agent = s.agent AND spa.session_id = s.session_id
-                ), '[]'),
-                g.bucket_end_ms, g.model, g.speed, g.input_tokens,
-                g.cache_read_tokens, g.cache_write_tokens, g.output_tokens
-           FROM grouped_turn g
-           JOIN session s
-             ON s.environment_key = g.environment_key
-            AND s.agent = g.agent AND s.session_id = g.session_id
-           LEFT JOIN session_analysis a
-             ON a.environment_key = s.environment_key
-            AND a.agent = s.agent AND a.session_id = s.session_id"
-    )
-}
 
 fn encode_secret(secret: &[u8; 32]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -235,9 +180,7 @@ pub fn open_read_only(data_dir: &Path, busy_timeout: Duration) -> Result<Connect
 #[derive(Clone)]
 pub struct Store {
     connection: Arc<Mutex<Connection>>,
-    allocation_reconcile: Arc<Mutex<()>>,
     limit_factor_learn: Arc<Mutex<()>>,
-    database_path: Option<PathBuf>,
     /// The directory the engine's own state files (scan roots, ignored paths)
     /// live in. The engine never chooses this; the shell does.
     state_dir: PathBuf,
@@ -363,15 +306,9 @@ impl Store {
         connection.pragma_update(None, "journal_mode", "WAL").ok();
         connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.pragma_update(None, "foreign_keys", true)?;
-        let database_path = connection
-            .path()
-            .filter(|path| !path.is_empty() && *path != ":memory:")
-            .map(PathBuf::from);
         let store = Store {
             connection: Arc::new(Mutex::new(connection)),
-            allocation_reconcile: Arc::new(Mutex::new(())),
             limit_factor_learn: Arc::new(Mutex::new(())),
-            database_path,
             state_dir,
         };
         store.migrate()?;
@@ -452,15 +389,6 @@ impl Store {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Start one shared allocation pass, or skip work another clone already owns.
-    pub(crate) fn try_begin_allocation_reconcile(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
-        match self.allocation_reconcile.try_lock() {
-            Ok(guard) => Some(guard),
-            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
-            Err(TryLockError::WouldBlock) => None,
-        }
-    }
-
     /// Start one shared limit-factor learning pass, or skip work another
     /// clone already owns.
     pub(crate) fn try_begin_limit_factor_learn(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
@@ -469,23 +397,6 @@ impl Store {
             Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
             Err(TryLockError::WouldBlock) => None,
         }
-    }
-
-    /// Open one read-only WAL connection for a bounded allocation pass.
-    pub(crate) fn open_allocation_reader(&self) -> Result<Option<Connection>> {
-        let Some(path) = &self.database_path else {
-            return Ok(None);
-        };
-        let connection = Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY
-                | OpenFlags::SQLITE_OPEN_URI
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .with_context(|| format!("failed to open {} for allocation", path.display()))?;
-        connection.busy_timeout(ALLOCATION_READ_BUSY_TIMEOUT)?;
-        connection.pragma_update(None, "query_only", true)?;
-        Ok(Some(connection))
     }
 
     /* --------------------------------------------------------------------
@@ -1699,8 +1610,12 @@ impl Store {
         tx.execute("DELETE FROM session_coverage", [])?;
         tx.execute("DELETE FROM source_resume", [])?;
         tx.execute("DELETE FROM turn", [])?;
-        tx.execute("DELETE FROM provider_usage_allocation_dirty", [])?;
-        tx.execute("DELETE FROM provider_usage_session_allocation", [])?;
+        // These reference `provider_usage_period` and must go before it, the
+        // same way `provider_usage_observation` already does below.
+        tx.execute("DELETE FROM provider_limit_residual", [])?;
+        tx.execute("DELETE FROM provider_limit_learn_cursor", [])?;
+        tx.execute("DELETE FROM provider_limit_factor_sample", [])?;
+        tx.execute("DELETE FROM provider_limit_factor_point", [])?;
         tx.execute("DELETE FROM provider_usage_observation", [])?;
         tx.execute("DELETE FROM provider_usage_period", [])?;
         let sessions = tx.execute("DELETE FROM session", [])?;
@@ -1724,11 +1639,6 @@ impl Store {
     pub fn delete_session(&self, key: &SessionKey) -> Result<bool> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
-        crate::store::provider_usage_ledger::enqueue_session_periods_in(
-            &tx,
-            key,
-            time::OffsetDateTime::now_utc().unix_timestamp(),
-        )?;
         let removed = delete_session_in(&tx, key)?;
         tx.commit()?;
         Ok(removed)
@@ -2009,11 +1919,6 @@ impl Store {
         // so on a resumed pass this finds nothing left to delete.
         delete_turn_rows_except_fence(&transaction, &key, target_fence)?;
         replace_relations_in(&transaction, &record.key, RelationKind::Subagent, relations)?;
-        crate::store::provider_usage_ledger::enqueue_session_periods_in(
-            &transaction,
-            &record.key,
-            time::OffsetDateTime::now_utc().unix_timestamp(),
-        )?;
         transaction.commit()?;
         Ok(true)
     }
@@ -2275,230 +2180,6 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Published timestamped turns at or after `since_ms`, grouped by session.
-    pub fn session_usage_turns(&self, since_ms: i64) -> Result<Vec<SessionUsageRecord>> {
-        self.session_usage_turns_between(since_ms, i64::MAX)
-    }
-
-    /// Published timestamped turns in one half-open provider allowance period.
-    ///
-    /// The range is explicit so allocation never reads an archive only to
-    /// discard rows that a period cannot contain.
-    pub fn session_usage_turns_between(
-        &self,
-        start_ms: i64,
-        end_ms: i64,
-    ) -> Result<Vec<SessionUsageRecord>> {
-        if end_ms <= start_ms {
-            return Ok(Vec::new());
-        }
-        let connection = self.lock();
-        let mut statement = connection.prepare(
-            "WITH recent_session AS (
-                SELECT DISTINCT t.environment_key, t.agent, t.session_id
-                  FROM turn t
-                  JOIN session_evidence e
-                    ON e.environment_key = t.environment_key
-                   AND e.agent = t.agent
-                   AND e.session_id = t.session_id
-                   AND e.published_fence = t.claim_fence
-                 WHERE t.ts_ms >= ?1 AND t.ts_ms < ?2
-            )
-             SELECT s.environment_key, s.agent, s.session_id, s.wsl_distro,
-                    a.provider_hints_json,
-                    COALESCE((
-                        SELECT json_group_array(json_object(
-                            'provider', spa.provider,
-                            'accountKey', spa.account_key
-                        ))
-                          FROM session_provider_account spa
-                         WHERE spa.environment_key = s.environment_key
-                           AND spa.agent = s.agent
-                           AND spa.session_id = s.session_id
-                    ), '[]')
-               FROM recent_session r
-               JOIN session s
-                 ON s.environment_key = r.environment_key
-                AND s.agent = r.agent
-                AND s.session_id = r.session_id
-               LEFT JOIN session_analysis a
-                 ON a.environment_key = s.environment_key
-                AND a.agent = s.agent
-                AND a.session_id = s.session_id",
-        )?;
-        let rows = statement.query_map(params![start_ms, end_ms], |row| {
-            Ok(SessionUsageRecord {
-                key: SessionKey {
-                    environment_key: row.get(0)?,
-                    agent: row.get(1)?,
-                    session_id: row.get(2)?,
-                },
-                wsl_distro: row.get(3)?,
-                provider_hints_json: row.get(4)?,
-                provider_accounts_json: row.get(5)?,
-                turns: Vec::new(),
-            })
-        })?;
-        let mut sessions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(statement);
-        let indexes: HashMap<_, _> = sessions
-            .iter()
-            .enumerate()
-            .map(|(index, session)| (session.key.clone(), index))
-            .collect();
-        let mut statement = connection.prepare(
-            "SELECT t.environment_key, t.agent, t.session_id,
-                    t.ts_ms, t.model, t.speed, t.input_tokens, t.cache_read_tokens,
-                    t.cache_write_tokens, t.output_tokens
-               FROM turn t
-               JOIN session_evidence e
-                 ON e.environment_key = t.environment_key
-                AND e.agent = t.agent
-                AND e.session_id = t.session_id
-                AND e.published_fence = t.claim_fence
-              WHERE t.ts_ms >= ?1 AND t.ts_ms < ?2
-              ORDER BY t.ts_ms, t.rowid",
-        )?;
-        let mut rows = statement.query(params![start_ms, end_ms])?;
-        while let Some(row) = rows.next()? {
-            let key = SessionKey {
-                environment_key: row.get(0)?,
-                agent: row.get(1)?,
-                session_id: row.get(2)?,
-            };
-            let index = indexes
-                .get(&key)
-                .copied()
-                .context("a recent turn has no session metadata")?;
-            sessions[index].turns.push(SessionUsageTurnRecord {
-                ts_ms: row.get(3)?,
-                model: row.get(4)?,
-                speed: row.get(5)?,
-                input_tokens: row.get(6)?,
-                cache_read_tokens: row.get(7)?,
-                cache_write_tokens: row.get(8)?,
-                output_tokens: row.get(9)?,
-            });
-        }
-        Ok(sessions)
-    }
-
-    /// Read a bounded aggregate of published turns for allowance reconciliation.
-    ///
-    /// Each end value creates one observation interval. SQLite sums turns inside
-    /// that interval before Rust receives them, so a busy period cannot load an
-    /// unbounded turn vector. `None` means the bounded aggregate overflowed.
-    pub fn session_usage_turns_grouped_between(
-        &self,
-        start_ms: i64,
-        end_ms: i64,
-        interval_ends_ms: &[i64],
-        max_groups: usize,
-    ) -> Result<Option<Vec<SessionUsageRecord>>> {
-        let reader = self.open_allocation_reader()?;
-        self.session_usage_turns_grouped_between_with(
-            reader.as_ref(),
-            start_ms,
-            end_ms,
-            interval_ends_ms,
-            max_groups,
-        )
-    }
-
-    pub(crate) fn session_usage_turns_grouped_between_with(
-        &self,
-        reader: Option<&Connection>,
-        start_ms: i64,
-        end_ms: i64,
-        interval_ends_ms: &[i64],
-        max_groups: usize,
-    ) -> Result<Option<Vec<SessionUsageRecord>>> {
-        if end_ms <= start_ms || interval_ends_ms.is_empty() {
-            return Ok(Some(Vec::new()));
-        }
-        let mut ends: Vec<_> = interval_ends_ms
-            .iter()
-            .copied()
-            .filter(|end| *end >= start_ms && *end <= end_ms)
-            .collect();
-        ends.sort_unstable();
-        ends.dedup();
-        if ends.last().copied() != Some(end_ms) {
-            ends.push(end_ms);
-        }
-        let mut interval_start = start_ms;
-        let intervals = ends
-            .iter()
-            .copied()
-            .filter_map(|interval_end| {
-                if interval_end < interval_start {
-                    return None;
-                }
-                let interval = (interval_start, interval_end, interval_end);
-                interval_start = interval_end.saturating_add(1);
-                Some(interval)
-            })
-            .collect::<Vec<_>>();
-        let sql = allocation_grouped_turn_sql(intervals.len());
-        let mut values = Vec::with_capacity(intervals.len() * 3 + 2);
-        for (interval_start, interval_end, bucket_end) in intervals {
-            values.push(rusqlite::types::Value::from(interval_start));
-            values.push(rusqlite::types::Value::from(interval_end));
-            values.push(rusqlite::types::Value::from(bucket_end));
-        }
-        values.push(rusqlite::types::Value::from(end_ms));
-        let limit =
-            i64::try_from(max_groups.clamp(1, 50_000)).expect("bounded group limit fits i64");
-        values.push(rusqlite::types::Value::from(limit + 1));
-        let load = |connection: &Connection| -> Result<Option<Vec<SessionUsageRecord>>> {
-            let mut statement = connection.prepare(&sql)?;
-            let mut rows = statement.query(params_from_iter(values.iter()))?;
-            let mut sessions = Vec::new();
-            let mut indexes = HashMap::new();
-            let mut group_count = 0usize;
-            while let Some(row) = rows.next()? {
-                group_count += 1;
-                if group_count > max_groups {
-                    return Ok(None);
-                }
-                let key = SessionKey::new(
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                );
-                let index = if let Some(index) = indexes.get(&key) {
-                    *index
-                } else {
-                    let index = sessions.len();
-                    sessions.push(SessionUsageRecord {
-                        key: key.clone(),
-                        wsl_distro: row.get(3)?,
-                        provider_hints_json: row.get(4)?,
-                        provider_accounts_json: row.get(5)?,
-                        turns: Vec::new(),
-                    });
-                    indexes.insert(key, index);
-                    index
-                };
-                sessions[index].turns.push(SessionUsageTurnRecord {
-                    ts_ms: row.get(6)?,
-                    model: row.get(7)?,
-                    speed: row.get(8)?,
-                    input_tokens: row.get::<_, i64>(9)?.try_into().unwrap_or(u64::MAX),
-                    cache_read_tokens: row.get::<_, i64>(10)?.try_into().unwrap_or(u64::MAX),
-                    cache_write_tokens: row.get::<_, i64>(11)?.try_into().unwrap_or(u64::MAX),
-                    output_tokens: row.get::<_, i64>(12)?.try_into().unwrap_or(u64::MAX),
-                });
-            }
-            Ok(Some(sessions))
-        };
-        if let Some(reader) = reader {
-            return load(reader);
-        }
-        let connection = self.lock();
-        load(&connection)
-    }
-
     /// Bind recent sessions after the account-attribution rollout.
     pub fn observe_provider_account(
         &self,
@@ -2559,7 +2240,7 @@ impl Store {
             )?
             .parse()
             .context("invalid provider account rollout")?;
-        let bound_sessions = tx.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO session_provider_account (
                 environment_key, agent, session_id, provider, account_key,
                 provenance, confidence, first_seen_at
@@ -2592,17 +2273,6 @@ impl Store {
                 provenance
             ],
         )?;
-        if bound_sessions > 0 {
-            let mut statement = tx.prepare(
-                "SELECT id FROM provider_usage_period
-                  WHERE provider = ?1 AND resets_at_epoch IS NOT NULL",
-            )?;
-            let period_ids = statement
-                .query_map([provider], |row| row.get::<_, i64>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            drop(statement);
-            crate::store::provider_usage_ledger::enqueue_in(&tx, &period_ids, observed_at_epoch)?;
-        }
         tx.commit()?;
         Ok(())
     }
