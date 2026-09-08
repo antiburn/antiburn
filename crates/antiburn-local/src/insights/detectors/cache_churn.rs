@@ -31,6 +31,7 @@
 //!   accounting.
 
 use crate::analysis::{EvidenceValue, SessionEvidence};
+use crate::remediation::FindingCause;
 
 use super::{ModelFamily, Observation, ReportCatalogs, model_family, observed};
 
@@ -69,6 +70,38 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
     } else {
         Observation::NoFinding
     }
+}
+
+pub(super) fn finding_causes(
+    evidence: &SessionEvidence,
+    catalogs: &ReportCatalogs,
+) -> Vec<FindingCause> {
+    let Some(cache) = observed(&evidence.cache) else {
+        return Vec::new();
+    };
+    let Some(repeated) = observed(&cache.repeated_context) else {
+        return Vec::new();
+    };
+    let Some(models) = observed(&evidence.models) else {
+        return Vec::new();
+    };
+    let Some(model) = models
+        .dominant_main_model
+        .as_ref()
+        .or_else(|| models.by_model.keys().next())
+    else {
+        return Vec::new();
+    };
+    let family = model_family(model);
+    let Some(policy) = catalogs.families.get(&family) else {
+        return Vec::new();
+    };
+    vec![FindingCause::CacheChurn {
+        model: model.clone(),
+        repeated_tokens: repeated.repeated_tokens,
+        paid_tokens: repeated.paid_tokens,
+        threshold_basis_points: (policy.cache_overpay_multiple_threshold * 10_000.0).round() as u32,
+    }]
 }
 
 /// Resolves the model family the overpay bound is judged under:

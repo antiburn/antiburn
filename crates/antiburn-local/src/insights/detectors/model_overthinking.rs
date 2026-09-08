@@ -32,6 +32,7 @@ use crate::analysis::SessionEvidence;
 use crate::model_catalog::{
     ModelCatalog, ReviewedModelCatalog, Support, fixed_route_target, model_control_target,
 };
+use crate::remediation::FindingCause;
 
 use super::{Observation, ReportCatalogs, observed};
 
@@ -152,6 +153,106 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         }
     }
     Observation::NoFinding
+}
+
+pub(super) fn finding_causes(
+    evidence: &SessionEvidence,
+    catalogs: &ReportCatalogs,
+) -> Vec<FindingCause> {
+    let Some(models) = observed(&evidence.models) else {
+        return Vec::new();
+    };
+    let catalog = ReviewedModelCatalog::new(catalogs.clone());
+    let mut grouped =
+        std::collections::BTreeMap::<(Option<String>, Option<String>, String, String), u64>::new();
+    if !models.control_observations.is_empty() {
+        for observation in &models.control_observations {
+            let Some(raw_effort) = observation.effort.as_ref() else {
+                continue;
+            };
+            let turns = observation.turns.main_loop + observation.turns.delegated;
+            if turns == 0 {
+                continue;
+            }
+            let mut target = model_control_target(
+                &evidence.identity.agent,
+                observation.provider.as_deref(),
+                observation.api.as_deref(),
+                &observation.model,
+            );
+            target.raw_effort = Some(raw_effort.clone());
+            let Support::Supported(definition) = catalog.resolve(&target) else {
+                continue;
+            };
+            let Support::Supported(Some(effort)) = definition.effort else {
+                continue;
+            };
+            if definition.family_policy.effort.above_cap.contains(&effort) {
+                *grouped
+                    .entry((
+                        observation.provider.clone(),
+                        observation.api.clone(),
+                        observation.model.clone(),
+                        effort,
+                    ))
+                    .or_default() += turns;
+            }
+        }
+    } else {
+        for (model, tiers) in &models.effort_tiers_by_model {
+            for (raw_effort, turns) in tiers {
+                let count = turns.main_loop + turns.delegated;
+                let Some(mut target) = fixed_route_target(&evidence.identity.agent, model) else {
+                    continue;
+                };
+                target.raw_effort = Some(raw_effort.clone());
+                let Support::Supported(definition) = catalog.resolve(&target) else {
+                    continue;
+                };
+                let Support::Supported(Some(effort)) = definition.effort else {
+                    continue;
+                };
+                if count > 0 && definition.family_policy.effort.above_cap.contains(&effort) {
+                    *grouped
+                        .entry((None, None, model.clone(), effort))
+                        .or_default() += count;
+                }
+            }
+        }
+        if models.effort_tiers_by_model.is_empty() && models.by_model.len() == 1 {
+            let model = models.by_model.keys().next().expect("one model");
+            for (raw_effort, turns) in &models.effort_tiers {
+                let count = turns.main_loop + turns.delegated;
+                let Some(mut target) = fixed_route_target(&evidence.identity.agent, model) else {
+                    continue;
+                };
+                target.raw_effort = Some(raw_effort.clone());
+                let Support::Supported(definition) = catalog.resolve(&target) else {
+                    continue;
+                };
+                let Support::Supported(Some(effort)) = definition.effort else {
+                    continue;
+                };
+                if count > 0 && definition.family_policy.effort.above_cap.contains(&effort) {
+                    *grouped
+                        .entry((None, None, model.clone(), effort))
+                        .or_default() += count;
+                }
+            }
+        }
+    }
+    grouped
+        .into_iter()
+        .map(
+            |((provider, api, model, reasoning), turns)| FindingCause::ModelOverthinking {
+                provider,
+                api,
+                model,
+                reasoning,
+                turns,
+            },
+        )
+        .collect()
 }
 
 #[cfg(test)]

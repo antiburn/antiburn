@@ -38,6 +38,7 @@ use crate::analysis::{FAST_SPEED_KEY, SessionEvidence};
 use crate::model_catalog::{
     ModelCatalog, ReviewedModelCatalog, Support, fixed_route_target, model_control_target,
 };
+use crate::remediation::FindingCause;
 
 use super::{Observation, ReportCatalogs, observed};
 
@@ -176,6 +177,104 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         }
     }
     Observation::NoFinding
+}
+
+pub(super) fn finding_causes(
+    evidence: &SessionEvidence,
+    catalogs: &ReportCatalogs,
+) -> Vec<FindingCause> {
+    let Some(models) = observed(&evidence.models) else {
+        return Vec::new();
+    };
+    let catalog = ReviewedModelCatalog::new(catalogs.clone());
+    let mut grouped =
+        std::collections::BTreeMap::<(Option<String>, Option<String>, String), u64>::new();
+    if !models.control_observations.is_empty() {
+        for observation in &models.control_observations {
+            let Some(raw_speed) = observation.speed.as_ref() else {
+                continue;
+            };
+            if observation.turns.delegated == 0 {
+                continue;
+            }
+            let mut target = model_control_target(
+                &evidence.identity.agent,
+                observation.provider.as_deref(),
+                observation.api.as_deref(),
+                &observation.model,
+            );
+            target.service_tier = Some(raw_speed.clone());
+            let Support::Supported(definition) = catalog.resolve(&target) else {
+                continue;
+            };
+            if matches!(definition.service_tier, Support::Supported(Some(ref speed)) if speed == FAST_SPEED_KEY)
+            {
+                *grouped
+                    .entry((
+                        observation.provider.clone(),
+                        observation.api.clone(),
+                        observation.model.clone(),
+                    ))
+                    .or_default() += observation.turns.delegated;
+            }
+        }
+    } else {
+        for (model, speeds) in &models.fast_modes_by_model {
+            for (raw_speed, turns) in speeds {
+                if turns.delegated == 0 {
+                    continue;
+                }
+                let Some(mut target) = fixed_route_target(&evidence.identity.agent, model) else {
+                    continue;
+                };
+                target.service_tier = Some(raw_speed.clone());
+                let Support::Supported(definition) = catalog.resolve(&target) else {
+                    continue;
+                };
+                if matches!(definition.service_tier, Support::Supported(Some(ref speed)) if speed == FAST_SPEED_KEY)
+                {
+                    *grouped.entry((None, None, model.clone())).or_default() += turns.delegated;
+                }
+            }
+        }
+        if models.fast_modes_by_model.is_empty() && models.by_model.len() == 1 {
+            let model = models.by_model.keys().next().expect("one model");
+            for (raw_speed, turns) in &models.fast_modes {
+                if turns.delegated == 0 {
+                    continue;
+                }
+                let Some(mut target) = fixed_route_target(&evidence.identity.agent, model) else {
+                    continue;
+                };
+                target.service_tier = Some(raw_speed.clone());
+                let Support::Supported(definition) = catalog.resolve(&target) else {
+                    continue;
+                };
+                if matches!(definition.service_tier, Support::Supported(Some(ref speed)) if speed == FAST_SPEED_KEY)
+                {
+                    *grouped.entry((None, None, model.clone())).or_default() += turns.delegated;
+                }
+            }
+        }
+    }
+    let total_turns = grouped
+        .values()
+        .fold(0_u64, |total, turns| total.saturating_add(*turns));
+    if total_turns == 0 || total_turns < catalogs.fast_mode_delegated_turns_threshold {
+        return Vec::new();
+    }
+    grouped
+        .into_iter()
+        .filter(|(_, turns)| *turns > 0)
+        .map(
+            |((provider, api, model), delegated_turns)| FindingCause::OveruseOfFastMode {
+                provider,
+                api,
+                model,
+                delegated_turns,
+            },
+        )
+        .collect()
 }
 
 #[cfg(test)]

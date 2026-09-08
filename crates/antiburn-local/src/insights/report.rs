@@ -1229,7 +1229,6 @@ impl EfficiencyReportAccumulator {
                     .any(|name| comparable_tool_name(name) == comparable_tool_name(&source.name))
             });
         }
-        let built_in_sources = token_evidence.built_in_tool_sources.as_ref();
         let built_in_not_applicable =
             complete(&evidence.eligibility).is_some_and(|value| value.assistant_turns == 0);
         let built_in_assessable = has_built_in_sources
@@ -1291,23 +1290,13 @@ impl EfficiencyReportAccumulator {
             }
 
             counts.eligible += 1;
-            let observation = if detector == DetectorId::UnusedBuiltInTools {
-                if built_in_assessable {
-                    if built_in_sources.is_some_and(|sources| {
-                        sources
-                            .iter()
-                            .any(|source| source.replicated_tokens > 0 && !source.invoked)
-                    }) {
-                        detectors::Observation::Finding
-                    } else {
-                        detectors::Observation::NoFinding
-                    }
-                } else {
-                    detectors::evaluate(detector, &evidence, &self.catalogs)
-                }
-            } else {
-                detectors::evaluate(detector, &evidence, &self.catalogs)
-            };
+            let observation = detectors::evaluate_with_source_evidence(
+                detector,
+                &evidence,
+                &self.catalogs,
+                Some(&token_evidence),
+            )
+            .observation;
             match observation {
                 detectors::Observation::Finding => {
                     counts.finding += 1;

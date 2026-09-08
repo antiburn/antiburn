@@ -69,7 +69,7 @@ fn badge_status(
         return BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing);
     }
 
-    match detectors::evaluate(detector, evidence, catalogs) {
+    match detectors::evaluate(detector, evidence, catalogs).observation {
         Observation::Finding => BadgeStatus::Finding,
         Observation::ContractIncomplete => {
             BadgeStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete)

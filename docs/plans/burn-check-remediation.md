@@ -2,8 +2,8 @@
 
 Status (2026-09-08): Phase 1 is accepted for the documented source contracts and
 maintainer-approved limits. Full-suite and merged-worktree validation passed.
-Phase 2 is ready as full backend remediation in four bounded substeps; no
-Phase 2 code is implemented. Phase 3 UI remains deferred.
+Phase 2 foundation implementation is in progress under the refined backend contract below.
+Phase 3 UI remains deferred.
 
 ## Naming and architecture
 
@@ -159,10 +159,10 @@ existing frontend chunk-size warning does not fail the build.
 
 | Phase | Scope | Status |
 | --- | --- | --- |
-| 2.1 | Typed current findings, exact selectors, deterministic bounded prompts | Ready; Phase 1 accepted |
-| 2.2 | Minimal native editors: inspection, preview, explicit apply, readback | Planned; builds on 2.1 |
-| 2.3 | Durable episodes, post-boundary verification, external fixes, recurrence | Planned; builds on 2.1 and 2.2 |
-| 2.4 | Potential savings and stable typed backend IPC | Planned; builds on 2.3 |
+| 2.1 | Typed current findings, exact selectors, deterministic bounded prompts | Foundation implemented; IPC pending |
+| 2.2 | Proven native editors: inspection, preview, explicit apply, readback | Foundation implemented; IPC pending |
+| 2.3 | Durable remediations, post-change verification, external changes, recurrence | Persistence foundation implemented; verifier pending |
+| 2.4 | Conservative savings and stable typed backend IPC | Planned; builds on 2.3 |
 | 3 | Remediation UI/UX after backend acceptance | Deferred |
 
 Phase 2 must not turn partial coverage, a selected resource, or a catalog guess
@@ -172,7 +172,9 @@ them separately; prompts alone do not complete backend remediation.
 
 ## Phase 2: Backend Remediation
 
-The following contracts are planned, not implemented capabilities. Use the five
+The following contracts define Phase 2. The finding, editor, controller, and
+storage foundations are implemented, but verification, savings, and IPC remain
+in progress. Use the five
 Phase 1 targets and their accepted shapes. Do not expand reader coverage, add
 collection, or build UI to make remediation appear complete. Unknown and
 confirmed unsupported checks return a typed unavailable reason, not an action
@@ -197,15 +199,32 @@ policy semantics, and the evidence references needed to revalidate them.
   or an older ready row cannot authorize an action against a newer source.
 - Include contributing companion fingerprints. Claude sidecar additions,
   removals, or changed claims invalidate prior parent-child recommendations.
-- Recheck the binding before preview, apply, and episode-result persistence.
+- Recheck the binding before preview, apply, and remediation-result persistence.
   Stale or unavailable evidence requires reassessment, not a fallback edit.
 
 Use an opaque finding ID and a server-resolved typed target selector. Display
 names and model aliases alone are not selectors. Automatic proposals require
 both a current verified finding and an exact selector; user selection can
 narrow an established finding but cannot supply missing historical proof.
-"Verified finding" means a currently supported detector result, not a fixed
-episode. A historical finding alone does not prove the same setting is active now.
+"Verified finding" means a currently supported detector result, not a verified
+remediation. A historical finding alone does not prove the same setting is active now.
+
+Retain one typed finding per actionable target before `DetectorFold` reduces the
+assessment to counts. A finding can hold bounded request references, but it must
+not retain transcript text. Group repeated requests with the same exact target
+instead of returning one finding per record. Resource checks retain one finding
+per exact resource identity. The built-in-tool report fallback emits the same
+typed finding as the ordinary detector path.
+
+Current findings are derived on demand from one published database snapshot.
+Do not add a durable current-finding table. The desktop keeps only a bounded,
+expiring map from opaque finding IDs to private selectors and freshness stamps.
+An app restart or cache eviction makes the ID stale and requires a new listing.
+
+Add a `List check findings` backend operation. This operation supplies the
+future detailed-breakdown UI and is the only way the UI obtains finding IDs.
+Its response contains sanitized display facts and coverage limits, not paths,
+transcript content, config bodies, or private selectors.
 
 Local configuration inspection establishes only the current edit target,
 precedence, and activation requirements. It cannot backfill historical effort,
@@ -223,10 +242,7 @@ SetModel
 SetReasoning
 SetWorkerModel
 SetWorkerServiceTier
-SetCompactionPolicy
 DisableMcpServer
-SetSkillVisibility
-RestrictToolSurface
 ```
 
 The check selects an intent and target. `ModelCatalog` validates model-related
@@ -303,7 +319,7 @@ global edit merely because the agent lacks a worker-specific setting.
 Resource scope is the complete observed subset plus complete calls and eligible
 activity, not a full historical inventory. Current config absence cannot fill
 that gap. When accepted post-boundary evidence cannot prove targeted absence,
-keep the episode awaiting verification with an unavailable reason. Likewise,
+keep the remediation awaiting verification with an unavailable reason. Likewise,
 positive-only AG D/O and PI S observations can show improvement but do not
 override their clean-result limits to mark a fix verified.
 
@@ -331,6 +347,20 @@ Start with single-file edits. Do not build multi-file transactions or automatic
 undo infrastructure. Retain only non-secret action metadata needed for
 verification. Full configuration snapshots remain in memory.
 
+Support only native environments and existing files in Phase 2. Do not create
+agent config files, edit managed or system files, invoke agent executables, or
+write through WSL. Resolve paths from trusted home and workspace context; IPC
+callers never provide a path. Reject target symlinks, non-regular files, paths
+outside the trusted root, unsupported ownership, oversized files, and unknown
+formats. Preserve permissions. Compare file identity and content immediately
+before an atomic same-directory replacement, then read back the semantic value.
+This detects ordinary concurrent changes without a cross-process transaction service.
+
+Use formatting-preserving TOML edits for Codex. Claude Code and Pi use strict
+JSON semantic edits. OpenCode automatic edits initially support strict JSON
+only; JSONC remains prompt-only until a lossless editor has a pinned fixture
+contract. A changed but semantically equivalent file still invalidates a preview.
+
 For CC/CX/OC/PI, first inspect native current config contracts without writes.
 Record each supported operation's schema/version, precedence, exact target,
 activation boundary, verification evidence, and fixture. Enable one single-file
@@ -339,6 +369,25 @@ managed policy, environment/CLI overrides, ambiguous worker routing, or unknown
 Pi extension settings remain prompt-only with specific reasons. AG is
 prompt-only unless a safe current native edit contract is separately established;
 this does not expand its D/O-only finding support. Other agents remain deferred.
+
+The maintainer selected all safe operations for the initial backend. Implement
+only operations that the current finding and inspected config bind exactly:
+
+| Check | Initial automatic support |
+| --- | --- |
+| D | Prompt-only. Depth does not identify a correct compaction policy. |
+| T | Claude Code saved effort for the actual model, Codex `model_reasoning_effort`, and Pi per-model thinking level. |
+| S | Exact Claude subagent frontmatter, Codex custom-agent TOML, or OpenCode named-agent model only when persisted worker identity maps uniquely to the effective definition. |
+| M | Exact Claude project MCP disablement or Codex `mcp_servers.<id>.enabled = false` after explicit approval of the named server and proven config ownership. |
+| B | Prompt-only. A permission denial is not definition removal. |
+| K | Prompt-only. Current evidence does not prove a narrow visibility setting. |
+| O | Effective model defaults for Claude Code, Codex, OpenCode, and Pi. Antigravity remains prompt-only. |
+| F | Exact Codex custom-agent service-tier change when the worker role and owning file are proven. |
+| C | Prompt-only until evidence proves a specific configurable cause. |
+
+Do not add unused compaction, skill, or tool operation variants. A native key in
+upstream documentation is insufficient: higher overrides, selected-session
+state, ambiguous workers, or an unproved effective source still select a prompt.
 
 Bind previews to the finding revision, opaque target ID, config fingerprint,
 typed change, and expiry. Reinspect effective scope at apply; reject changed
@@ -374,15 +423,14 @@ must give identical output for identical typed inputs.
 State limitations honestly. Asking an agent to use less reasoning does not
 prove that its configured effort changed.
 
-### 2.3: Episodes and verification
+### 2.3: Remediations and verification
 
-Persist fix history separately from cumulative reports:
+Persist remediation history separately from cumulative reports. Recommendations
+are on demand, so a remediation starts only after an automatic edit succeeds or
+an external change is recorded:
 
 ```text
-open -> awaiting_verification -> fixed
-                                  |
-                                  v
-                               recurred
+awaiting_verification -> fixed -> recurred
 ```
 
 Evidence freshness and availability remain separate from lifecycle state.
@@ -392,7 +440,7 @@ Store:
 - Detector and target identity.
 - Full agent/environment identity and applicable scope.
 - Baseline facts and relevant revisions.
-- Source generation/fence and exact selector binding, separate from the episode ID.
+- Source generation/fence and exact selector binding, separate from the remediation ID.
 - Applied action metadata, if any.
 - Effective behavior boundary.
 - Verification time and evidence.
@@ -411,9 +459,9 @@ Define each verifier's minimum eligible post-boundary activity and completeness
 requirements before enabling the operation. Capture the effective boundary
 (next request, next session, or restart), not merely the config write time.
 Unknown timing cannot assign old requests to a fix. Insufficient evidence keeps
-the episode awaiting verification with a reason; positive recurrence requires a
+the remediation awaiting verification with a reason; positive recurrence requires a
 fresh supported finding for the same target. Do not merge sibling workers,
-forks, environments, or distinct resource scopes into one episode.
+forks, environments, or distinct resource scopes into one remediation.
 
 ### Background processing
 
@@ -430,6 +478,13 @@ Use the existing evidence worker and startup reconciliation:
 
 Do not add a separate remediation queue, worker, lease system, scheduler, or
 service. Tracking must work without any report window being open.
+
+Use one `remediation` table. Store bounded versioned JSON for the baseline,
+action, verification, and savings plus indexed lifecycle, target, revision, and
+timestamp columns. Do not add preview, event-log, queue, lease, or contribution
+tables. Dirty and evaluated input revisions provide durable reconciliation. A
+successful evidence publication marks matching remediations dirty in the same
+guarded transaction.
 
 ### 2.4: Savings and backend IPC
 
@@ -462,22 +517,31 @@ Rules:
 - Recompute idempotently so retries and rereads cannot duplicate savings.
 - Permit a verified fix without a numeric estimate.
 
+The initial numeric methods are old-model replacement, exact Codex fast-tier
+removal, and resource-definition removal only when both definition size and
+later absence are proved. Other methods return typed unknown. If two remediations
+could claim the same activity, return `overlapping_remediation` instead of building
+an allocation engine. Recompute and replace aggregates; never increment them.
+
 ### Backend operations
 
 Keep the API small:
 
 ```text
+List check findings
 Get recommendation
 Apply approved preview
-Record externally applied change
-Get fix episodes and savings
+Record external remediation
+List remediations and savings
 ```
 
-Follow repository conventions for IPC names. No operation accepts arbitrary
+Follow repository conventions for IPC names. `List check findings` uses the
+same validated environment and report-window context as the checks report, plus
+a detector and bounded keyset page. No operation accepts arbitrary
 filesystem targets or shell commands. Do not connect these operations to
 existing UI surfaces before the UI phase.
 
-Requests use opaque finding, preview, and episode IDs plus typed operation and
+Requests use opaque finding, preview, and remediation IDs plus typed operation and
 scope enums. The backend resolves targets from trusted discovery/config context;
 reject forged, cross-environment, expired, and stale IDs. Responses distinguish
 automatic, prompt-only, unavailable, stale/conflict, applied-awaiting-verification,
@@ -523,11 +587,11 @@ Use shared contract suites plus implementation-specific synthetic fixtures.
    across CC/CX/OC/PI. Test preview/apply/readback and conflicts per operation.
    Record unsupported combinations rather than inventing generic writers.
 4. Implement 2.3 using existing store migrations and evidence-worker publication
-   and reconciliation paths. Add bounded episode records and per-check pure
+   and reconciliation paths. Add bounded remediation records and per-check pure
    verifiers. Test restart, external changes, missing proof, and recurrence
    before counting any savings.
 5. Implement 2.4 with pinned counterfactual methods, idempotent usage allocation,
-   unknown reasons, and bounded episode queries. Expose typed IPC and mirrors
+   unknown reasons, and bounded remediation queries. Expose typed IPC and mirrors
    only after internal contracts pass; do not wire report or settings UI.
 6. Run `aislop scan --changes` after supported code changes, then the relevant
    formatter, lint, type checks, tests, and builds below. Review the combined
@@ -553,7 +617,7 @@ Phase 2 is accepted only when all of these outcomes are demonstrated:
 - Automatic previews exist only for proven exact current targets. Every enabled
   native operation passes its safety fixtures and requires explicit approval;
   unsupported operations retain a precise prompt-only reason.
-- Durable episodes distinguish applied from behavior-verified, track external
+- Durable remediations distinguish applied from behavior-verified, track external
   improvements and recurrence, survive restart, and reject stale results.
   Unverifiable scopes remain visibly unverified rather than counted as fixes.
 - Savings are evidence-based, pinned, idempotent, and non-overlapping. Unknown,
@@ -565,11 +629,19 @@ Current completion record for this plan revision:
 
 - Documented: scoped Phase 1 implementation baseline, confirmed limits, and
   remaining discovery/source gaps, checked against the living coverage documents.
-- Planned: all four Phase 2 substeps, strategy table, safety gates, and acceptance matrix.
-- Pending: Phase 1 final full-suite and merged-main validation by the integration owner.
-- Pending: all Phase 2 implementation, native operation fixtures, migrations,
-  IPC contracts, and implementation test results. This documentation update
-  does not claim those tests ran or Phase 1 was finally accepted.
+- Documented: all four Phase 2 substeps, refined finding query, safe editor
+  matrix, one-table remediation lifecycle, conservative savings, and acceptance matrix.
+- Completed: Phase 1 full-suite and merged-main validation by the integration owner.
+- Completed: typed per-target findings, bounded prompts, current-snapshot
+  freshness checks, opaque expiring IDs, conservative native editor fixtures,
+  explicit preview application, and the one-table remediation persistence
+  foundation.
+- Validated: engine formatting, strict Clippy, the full engine test suite,
+  coverage contracts, desktop formatting, strict Clippy, the full desktop Rust
+  test suite, changed-code quality checks, and whitespace checks.
+- Pending: worker-driven verification and recurrence, evidence-based savings,
+  stable IPC and TypeScript mirrors, mutation analytics, and final Phase 2
+  acceptance. No remediation UI is implemented.
 
 ## Phase 3: Remediation UI/UX (deferred)
 

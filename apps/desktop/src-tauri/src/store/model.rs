@@ -20,6 +20,166 @@ pub struct SessionKey {
     pub session_id: String,
 }
 
+/// The durable lifecycle state for one remediation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemediationState {
+    AwaitingVerification,
+    Verified,
+    Recurred,
+}
+
+impl RemediationState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AwaitingVerification => "awaitingVerification",
+            Self::Verified => "verified",
+            Self::Recurred => "recurred",
+        }
+    }
+}
+
+impl std::str::FromStr for RemediationState {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "awaitingVerification" => Ok(Self::AwaitingVerification),
+            "verified" => Ok(Self::Verified),
+            "recurred" => Ok(Self::Recurred),
+            _ => Err("unknown remediation state"),
+        }
+    }
+}
+
+/// The actor that made the recorded change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemediationOrigin {
+    Antiburn,
+    External,
+}
+
+impl RemediationOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Antiburn => "antiburn",
+            Self::External => "external",
+        }
+    }
+}
+
+impl std::str::FromStr for RemediationOrigin {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "antiburn" => Ok(Self::Antiburn),
+            "external" => Ok(Self::External),
+            _ => Err("unknown remediation origin"),
+        }
+    }
+}
+
+/// Values needed to create one remediation before verification starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remediation {
+    pub remediation_id: String,
+    pub target_key: String,
+    pub origin: RemediationOrigin,
+    pub environment_key: String,
+    pub agent: String,
+    pub source_format: String,
+    pub workspace_key: String,
+    pub baseline_session_id: String,
+    pub baseline_source_generation: i64,
+    pub baseline_published_fence: i64,
+    pub baseline_source_fingerprint: Option<String>,
+    pub baseline_processed_fingerprint: Option<String>,
+    pub baseline_parser_revision: i64,
+    pub baseline_analyzer_revision: i64,
+    pub baseline_evidence_schema_revision: i64,
+    pub finding_json: String,
+    pub change_json: String,
+    pub boundary_json: String,
+    pub verification_json: String,
+    pub savings_json: String,
+    /// Versioned detector, catalog, policy, and assessment revisions.
+    /// Evidence projection revisions use the separate baseline columns.
+    pub revisions_json: String,
+    pub created_at_epoch: i64,
+    pub applied_at_epoch: Option<i64>,
+}
+
+/// One persisted remediation and its current verification revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemediationRecord {
+    pub remediation_id: String,
+    pub target_key: String,
+    pub state: RemediationState,
+    pub origin: RemediationOrigin,
+    pub environment_key: String,
+    pub agent: String,
+    pub source_format: String,
+    pub workspace_key: String,
+    pub baseline_session_id: String,
+    pub baseline_source_generation: i64,
+    pub baseline_published_fence: i64,
+    pub baseline_source_fingerprint: Option<String>,
+    pub baseline_processed_fingerprint: Option<String>,
+    pub baseline_parser_revision: i64,
+    pub baseline_analyzer_revision: i64,
+    pub baseline_evidence_schema_revision: i64,
+    pub finding_json: String,
+    pub change_json: String,
+    pub boundary_json: String,
+    pub verification_json: String,
+    pub savings_json: String,
+    /// Versioned detector, catalog, policy, and assessment revisions.
+    /// Evidence projection revisions use the separate baseline columns.
+    pub revisions_json: String,
+    pub verification_input_revision: i64,
+    pub evaluated_input_revision: i64,
+    pub created_at_epoch: i64,
+    pub updated_at_epoch: i64,
+    pub applied_at_epoch: Option<i64>,
+    pub verified_at_epoch: Option<i64>,
+    pub recurred_at_epoch: Option<i64>,
+}
+
+/// The exclusive key for the next page of remediations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemediationCursor {
+    pub created_at_epoch: i64,
+    pub remediation_id: String,
+}
+
+/// One bounded page of remediations in newest-first order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemediationPage {
+    pub remediations: Vec<RemediationRecord>,
+    pub next_cursor: Option<RemediationCursor>,
+}
+
+/// The evidence version observed before a remediation verification pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemediationEvidenceVersion {
+    pub source_generation: i64,
+    pub published_fence: i64,
+    pub source_fingerprint: Option<String>,
+    pub processed_fingerprint: Option<String>,
+    pub parser_revision: i64,
+    pub analyzer_revision: i64,
+    pub evidence_schema_revision: i64,
+}
+
+/// A remediation verification result ready for guarded persistence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemediationResult {
+    pub state: RemediationState,
+    pub verification_json: String,
+    pub savings_json: String,
+    pub evaluated_at_epoch: i64,
+}
+
 impl SessionKey {
     pub fn new(
         environment_key: impl Into<String>,

@@ -8,12 +8,13 @@ use antiburn_local::analysis::{
     PARSER_REVISION, SessionEvidence, SourceOrigin,
 };
 use antiburn_local::insights::{
-    CoverageBucket, CoverageCounts, EfficiencyReport, EfficiencyReportAccumulator, ReportCatalogs,
-    ReportContext, ReportWindow, SessionTokenBurnEvidence, TokenBurnSourceEvidence,
+    CoverageBucket, CoverageCounts, DetectorId, EfficiencyReport, EfficiencyReportAccumulator,
+    ReportCatalogs, ReportContext, ReportWindow, SessionTokenBurnEvidence, TokenBurnSourceEvidence,
     TokenBurnTurnAccumulator, TokenBurnTurnEvidence,
 };
+use antiburn_local::remediation::{Finding, FindingAssessment};
 use anyhow::{Context, Result, ensure};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use crate::store::open_read_only;
 
@@ -86,6 +87,61 @@ SELECT scope, model, effort, speed, ts_ms, input_tokens, output_tokens,
    AND claim_fence = ?4
    AND role = 'assistant'";
 
+const CURRENT_FINDINGS_SQL: &str = "
+SELECT e.evidence_json, s.environment_key, s.agent, s.session_id,
+       s.source_generation, e.published_fence, s.source_fingerprint,
+       e.processed_fingerprint, e.parser_revision, e.analyzer_revision,
+       e.evidence_schema_revision, a.metrics_schema_revision,
+       s.started_at_epoch, s.cwd, a.initial_context_json
+  FROM session s
+  JOIN session_evidence e
+    ON e.environment_key = s.environment_key
+   AND e.agent = s.agent
+   AND e.session_id = s.session_id
+  JOIN session_analysis a
+    ON a.environment_key = s.environment_key
+   AND a.agent = s.agent
+   AND a.session_id = s.session_id
+   AND NOT (a.analyzed_generation IS NOT s.source_generation)
+   AND NOT (a.parser_revision IS NOT ?4)
+   AND NOT (a.analyzer_revision IS NOT ?5)
+   AND NOT (a.metrics_schema_revision IS NOT ?7)
+ WHERE s.environment_key = ?1
+   AND s.started_at_epoch >= ?2
+   AND s.started_at_epoch < ?3
+   AND {current}
+   AND (
+       ?8 IS NULL
+       OR s.started_at_epoch < ?8
+       OR (s.started_at_epoch = ?8 AND s.agent < ?9)
+       OR (s.started_at_epoch = ?8 AND s.agent = ?9 AND s.session_id <= ?10)
+   )
+ ORDER BY s.started_at_epoch DESC, s.agent DESC, s.session_id DESC";
+
+const CURRENT_FINDING_BY_KEY_SQL: &str = "
+SELECT e.evidence_json, s.environment_key, s.agent, s.session_id,
+       s.source_generation, e.published_fence, s.source_fingerprint,
+       e.processed_fingerprint, e.parser_revision, e.analyzer_revision,
+       e.evidence_schema_revision, a.metrics_schema_revision,
+       s.started_at_epoch, s.cwd, a.initial_context_json
+  FROM session s
+  JOIN session_evidence e
+    ON e.environment_key = s.environment_key
+   AND e.agent = s.agent
+   AND e.session_id = s.session_id
+  JOIN session_analysis a
+    ON a.environment_key = s.environment_key
+   AND a.agent = s.agent
+   AND a.session_id = s.session_id
+   AND NOT (a.analyzed_generation IS NOT s.source_generation)
+   AND NOT (a.parser_revision IS NOT ?4)
+   AND NOT (a.analyzer_revision IS NOT ?5)
+   AND NOT (a.metrics_schema_revision IS NOT ?7)
+ WHERE s.environment_key = ?1
+   AND s.agent = ?2
+   AND s.session_id = ?3
+   AND {current}";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportRequest {
     pub environment_key: String,
@@ -97,6 +153,78 @@ pub struct ReportRequest {
 pub struct ReducedReport {
     pub report: EfficiencyReport,
     pub evidence_settled: bool,
+}
+
+/// Selects one detector's current findings in a bounded report window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentFindingsRequest {
+    pub environment_key: String,
+    pub window: ReportWindow,
+    pub detector: DetectorId,
+    pub cursor: Option<CurrentFindingsCursor>,
+    pub limit: usize,
+}
+
+/// An opaque keyset position in the current finding order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentFindingsCursor {
+    started_at_epoch: i64,
+    agent: String,
+    session_id: String,
+    cause_index: usize,
+}
+
+/// One trusted finding and the exact projection version that produced it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CurrentFinding {
+    pub finding: Finding,
+    pub environment_key: String,
+    pub agent: String,
+    pub session_id: String,
+    pub source_generation: i64,
+    pub published_fence: i64,
+    pub source_fingerprint: Option<String>,
+    pub processed_fingerprint: Option<String>,
+    pub parser_revision: i64,
+    pub analyzer_revision: i64,
+    pub evidence_schema_revision: i64,
+    pub metrics_schema_revision: i64,
+    pub catalog_revision: i64,
+    pub started_at_epoch: i64,
+    workspace_candidate: Option<PathBuf>,
+    cause_index: usize,
+}
+
+impl CurrentFinding {
+    /// Returns the private path candidate for trusted configuration inspection.
+    pub(crate) fn workspace_candidate(&self) -> Option<&Path> {
+        self.workspace_candidate.as_deref()
+    }
+}
+
+/// One bounded page of current findings in newest-session order.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CurrentFindingsPage {
+    pub findings: Vec<CurrentFinding>,
+    pub next_cursor: Option<CurrentFindingsCursor>,
+}
+
+struct CurrentFindingSession {
+    evidence: SessionEvidence,
+    environment_key: String,
+    agent: String,
+    session_id: String,
+    source_generation: i64,
+    published_fence: i64,
+    source_fingerprint: Option<String>,
+    processed_fingerprint: Option<String>,
+    parser_revision: i64,
+    analyzer_revision: i64,
+    evidence_schema_revision: i64,
+    metrics_schema_revision: i64,
+    started_at_epoch: i64,
+    workspace_candidate: Option<PathBuf>,
+    initial_context: Option<InitialContextBreakdown>,
 }
 
 /// Marks a reduction that stopped because its caller cancelled it.
@@ -141,6 +269,269 @@ pub async fn reduce_report(
     })
     .await
     .context("report reduction task failed")?
+}
+
+/// Lists one detector's current findings from one read transaction.
+pub fn list_current_findings(
+    data_dir: &Path,
+    request: CurrentFindingsRequest,
+) -> Result<CurrentFindingsPage> {
+    list_current_findings_on_snapshot(data_dir, request, &mut || {})
+}
+
+fn list_current_findings_on_snapshot(
+    data_dir: &Path,
+    request: CurrentFindingsRequest,
+    after_session_read: &mut dyn FnMut(),
+) -> Result<CurrentFindingsPage> {
+    let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
+    let transaction = connection.unchecked_transaction()?;
+    let catalogs = ReportCatalogs::default();
+    let report_context = TokenBurnReportContext {
+        depth_cap: u128::from(catalogs.depth_cap_tokens),
+        catalogs: &catalogs,
+    };
+    let sql = CURRENT_FINDINGS_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
+    let cursor_started_at = request
+        .cursor
+        .as_ref()
+        .map(|cursor| cursor.started_at_epoch);
+    let cursor_agent = request.cursor.as_ref().map(|cursor| cursor.agent.as_str());
+    let cursor_session_id = request
+        .cursor
+        .as_ref()
+        .map(|cursor| cursor.session_id.as_str());
+    let limit = request.limit.clamp(1, 100);
+    let mut findings = Vec::with_capacity(limit + 1);
+    let cancel = AtomicBool::new(false);
+    {
+        let mut statement = transaction.prepare(&sql)?;
+        let mut rows = statement.query(params![
+            request.environment_key,
+            request.window.start_epoch,
+            request.window.end_epoch,
+            PARSER_REVISION,
+            ANALYZER_REVISION,
+            EVIDENCE_SCHEMA_REVISION,
+            METRICS_SCHEMA_REVISION,
+            cursor_started_at,
+            cursor_agent,
+            cursor_session_id,
+        ])?;
+        while let Some(row) = rows.next()? {
+            let session = current_finding_session(row)?;
+            after_session_read();
+            let token_evidence = token_burn_evidence(
+                &transaction,
+                TokenBurnSessionKey {
+                    environment_key: &session.environment_key,
+                    agent: &session.agent,
+                    session_id: &session.session_id,
+                    published_fence: session.published_fence,
+                    cwd: session
+                        .workspace_candidate
+                        .as_deref()
+                        .and_then(Path::to_str),
+                },
+                session.initial_context.as_ref(),
+                &session.evidence,
+                &report_context,
+                &cancel,
+                &mut || {},
+            )?;
+            let assessment = antiburn_local::remediation::assess_session_with_source_evidence(
+                &session.evidence,
+                &catalogs,
+                Some(&token_evidence),
+            );
+            let FindingAssessment::Findings(session_findings) =
+                &assessment.detectors[request.detector.index()]
+            else {
+                continue;
+            };
+            for (cause_index, finding) in session_findings.iter().enumerate() {
+                if request.cursor.as_ref().is_some_and(|cursor| {
+                    cursor.started_at_epoch == session.started_at_epoch
+                        && cursor.agent == session.agent
+                        && cursor.session_id == session.session_id
+                        && cause_index <= cursor.cause_index
+                }) {
+                    continue;
+                }
+                findings.push(current_finding(
+                    &session,
+                    finding.clone(),
+                    catalogs.revision,
+                    cause_index,
+                ));
+                if findings.len() > limit {
+                    break;
+                }
+            }
+            if findings.len() > limit {
+                break;
+            }
+        }
+    }
+
+    let has_more = findings.len() > limit;
+    findings.truncate(limit);
+    let next_cursor = has_more.then(|| {
+        let last = findings.last().expect("a full finding page is not empty");
+        CurrentFindingsCursor {
+            started_at_epoch: last.started_at_epoch,
+            agent: last.agent.clone(),
+            session_id: last.session_id.clone(),
+            cause_index: last.cause_index,
+        }
+    });
+    Ok(CurrentFindingsPage {
+        findings,
+        next_cursor,
+    })
+}
+
+/// Recomputes one cached finding and accepts only its exact cause and freshness.
+pub fn revalidate_current_finding(data_dir: &Path, cached: &CurrentFinding) -> Result<bool> {
+    let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
+    let transaction = connection.unchecked_transaction()?;
+    let catalogs = ReportCatalogs::default();
+    if cached.catalog_revision != catalogs.revision {
+        return Ok(false);
+    }
+    let sql = CURRENT_FINDING_BY_KEY_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
+    let session = transaction
+        .query_row(
+            &sql,
+            params![
+                cached.environment_key,
+                cached.agent,
+                cached.session_id,
+                PARSER_REVISION,
+                ANALYZER_REVISION,
+                EVIDENCE_SCHEMA_REVISION,
+                METRICS_SCHEMA_REVISION,
+            ],
+            current_finding_session,
+        )
+        .optional()?;
+    let Some(session) = session.filter(|session| freshness_matches(cached, session)) else {
+        return Ok(false);
+    };
+    let report_context = TokenBurnReportContext {
+        depth_cap: u128::from(catalogs.depth_cap_tokens),
+        catalogs: &catalogs,
+    };
+    let cancel = AtomicBool::new(false);
+    let token_evidence = token_burn_evidence(
+        &transaction,
+        TokenBurnSessionKey {
+            environment_key: &session.environment_key,
+            agent: &session.agent,
+            session_id: &session.session_id,
+            published_fence: session.published_fence,
+            cwd: session
+                .workspace_candidate
+                .as_deref()
+                .and_then(Path::to_str),
+        },
+        session.initial_context.as_ref(),
+        &session.evidence,
+        &report_context,
+        &cancel,
+        &mut || {},
+    )?;
+    let assessment = antiburn_local::remediation::assess_session_with_source_evidence(
+        &session.evidence,
+        &catalogs,
+        Some(&token_evidence),
+    );
+    let FindingAssessment::Findings(findings) =
+        &assessment.detectors[cached.finding.detector.index()]
+    else {
+        return Ok(false);
+    };
+    Ok(findings.iter().any(|finding| {
+        finding.detector == cached.finding.detector && finding.cause() == cached.finding.cause()
+    }))
+}
+
+fn current_finding_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<CurrentFindingSession> {
+    let evidence_json: String = row.get(0)?;
+    let initial_context_json: Option<String> = row.get(14)?;
+    let evidence = serde_json::from_str(&evidence_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    let initial_context = initial_context_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                14,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
+    Ok(CurrentFindingSession {
+        evidence,
+        environment_key: row.get(1)?,
+        agent: row.get(2)?,
+        session_id: row.get(3)?,
+        source_generation: row.get(4)?,
+        published_fence: row.get(5)?,
+        source_fingerprint: row.get(6)?,
+        processed_fingerprint: row.get(7)?,
+        parser_revision: row.get(8)?,
+        analyzer_revision: row.get(9)?,
+        evidence_schema_revision: row.get(10)?,
+        metrics_schema_revision: row.get(11)?,
+        started_at_epoch: row.get(12)?,
+        workspace_candidate: row.get::<_, Option<String>>(13)?.map(PathBuf::from),
+        initial_context,
+    })
+}
+
+fn current_finding(
+    session: &CurrentFindingSession,
+    finding: Finding,
+    catalog_revision: i64,
+    cause_index: usize,
+) -> CurrentFinding {
+    CurrentFinding {
+        finding,
+        environment_key: session.environment_key.clone(),
+        agent: session.agent.clone(),
+        session_id: session.session_id.clone(),
+        source_generation: session.source_generation,
+        published_fence: session.published_fence,
+        source_fingerprint: session.source_fingerprint.clone(),
+        processed_fingerprint: session.processed_fingerprint.clone(),
+        parser_revision: session.parser_revision,
+        analyzer_revision: session.analyzer_revision,
+        evidence_schema_revision: session.evidence_schema_revision,
+        metrics_schema_revision: session.metrics_schema_revision,
+        catalog_revision,
+        started_at_epoch: session.started_at_epoch,
+        workspace_candidate: session.workspace_candidate.clone(),
+        cause_index,
+    }
+}
+
+fn freshness_matches(cached: &CurrentFinding, session: &CurrentFindingSession) -> bool {
+    cached.environment_key == session.environment_key
+        && cached.agent == session.agent
+        && cached.session_id == session.session_id
+        && cached.source_generation == session.source_generation
+        && cached.published_fence == session.published_fence
+        && cached.source_fingerprint == session.source_fingerprint
+        && cached.processed_fingerprint == session.processed_fingerprint
+        && cached.parser_revision == session.parser_revision
+        && cached.analyzer_revision == session.analyzer_revision
+        && cached.evidence_schema_revision == session.evidence_schema_revision
+        && cached.metrics_schema_revision == session.metrics_schema_revision
+        && cached.started_at_epoch == session.started_at_epoch
+        && cached.workspace_candidate == session.workspace_candidate
 }
 
 #[cfg(test)]
@@ -544,9 +935,9 @@ mod tests {
     use std::thread;
 
     use antiburn_local::analysis::{
-        EVIDENCE_SCHEMA_REVISION, EvidenceSource, METRICS_SCHEMA_REVISION,
-        SessionEvidenceAccumulator, SourceCapabilities, SourceKind, TurnFacts, TurnRow,
-        TurnRowStore, TurnScope,
+        EVIDENCE_SCHEMA_REVISION, EvidenceSource, EvidenceValue, LoadedSource,
+        METRICS_SCHEMA_REVISION, SessionEvidenceAccumulator, SourceCapabilities, SourceKind,
+        TurnFacts, TurnRow, TurnRowStore, TurnScope,
     };
     use tempfile::TempDir;
 
@@ -721,6 +1112,24 @@ mod tests {
         status: PublishedEvidence,
         turn_count: usize,
     ) {
+        publish_evidence_with_mutator(
+            store,
+            session_id,
+            started_at_epoch,
+            status,
+            turn_count,
+            |_| {},
+        );
+    }
+
+    fn publish_evidence_with_mutator(
+        store: &Store,
+        session_id: &str,
+        started_at_epoch: i64,
+        status: PublishedEvidence,
+        turn_count: usize,
+        mutate: impl FnOnce(&mut SessionEvidence),
+    ) {
         let fingerprint = format!("sv1:{session_id}");
         let session = session(session_id, started_at_epoch, &fingerprint);
         store
@@ -767,13 +1176,14 @@ mod tests {
                 .collect::<Vec<_>>();
             writer.write_turn_rows(&turns).unwrap();
         }
-        let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+        let mut evidence = SessionEvidenceAccumulator::new(EvidenceSource {
             agent: "claude-code".to_owned(),
             session_id: session_id.to_owned(),
             kind: SourceKind::File,
             capabilities: SourceCapabilities::claude(),
         })
         .evidence(&TurnFacts::default());
+        mutate(&mut evidence);
         let analysis = AnalysisRecord {
             key: session.key,
             model_breakdown_json: "{}".to_owned(),
@@ -809,6 +1219,189 @@ mod tests {
             started_at_epoch,
             PublishedEvidence::Ready,
         );
+    }
+
+    fn publish_mcp_findings(
+        store: &Store,
+        session_id: &str,
+        started_at_epoch: i64,
+        servers: &[&str],
+    ) {
+        publish_evidence_with_mutator(
+            store,
+            session_id,
+            started_at_epoch,
+            PublishedEvidence::Ready,
+            1,
+            |evidence| {
+                let EvidenceValue::Complete(eligibility) = &mut evidence.eligibility else {
+                    panic!("the Claude fixture must have complete eligibility");
+                };
+                eligibility.assistant_turns = 1;
+                let EvidenceValue::Complete(sources) = &mut evidence.context_sources else {
+                    panic!("the Claude fixture must have complete context sources");
+                };
+                sources.mcp_coverage = EvidenceValue::Complete(());
+                for server in servers {
+                    sources.mcp_servers.insert(
+                        (*server).to_owned(),
+                        LoadedSource {
+                            description: None,
+                            configured: true,
+                            available: true,
+                            injected: true,
+                            invoked: false,
+                            token_count: None,
+                            origin: EvidenceValue::Unsupported,
+                        },
+                    );
+                }
+            },
+        );
+    }
+
+    fn finding_request(
+        limit: usize,
+        cursor: Option<CurrentFindingsCursor>,
+    ) -> CurrentFindingsRequest {
+        CurrentFindingsRequest {
+            environment_key: "native".to_owned(),
+            window: request().window,
+            detector: DetectorId::UnusedMcpServers,
+            cursor,
+            limit,
+        }
+    }
+
+    #[test]
+    fn current_finding_reads_evidence_analysis_and_turns_from_one_snapshot() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_mcp_findings(&store, "snapshot", 120, &["server-a"]);
+        let writer = Store::open(data_dir.path()).unwrap();
+        let mut changed = false;
+
+        let page = list_current_findings_on_snapshot(
+            data_dir.path(),
+            finding_request(10, None),
+            &mut || {
+                if !changed {
+                    change_source(&writer, "snapshot", &[]);
+                    publish_mcp_findings(&writer, "snapshot", 120, &["server-b"]);
+                    changed = true;
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(page.findings.len(), 1);
+        assert_eq!(page.findings[0].source_generation, 1);
+        assert_eq!(
+            page.findings[0].source_fingerprint.as_deref(),
+            Some("sv1:snapshot")
+        );
+        assert_eq!(
+            page.findings[0].processed_fingerprint.as_deref(),
+            Some("sv1:snapshot")
+        );
+        assert_eq!(page.findings[0].parser_revision, PARSER_REVISION);
+        assert_eq!(page.findings[0].analyzer_revision, ANALYZER_REVISION);
+        assert_eq!(
+            page.findings[0].evidence_schema_revision,
+            EVIDENCE_SCHEMA_REVISION
+        );
+        assert_eq!(
+            page.findings[0].metrics_schema_revision,
+            METRICS_SCHEMA_REVISION
+        );
+        assert_eq!(
+            page.findings[0].catalog_revision,
+            ReportCatalogs::default().revision
+        );
+        assert_eq!(page.findings[0].started_at_epoch, 120);
+        assert!(page.findings[0].workspace_candidate().is_none());
+        let next = list_current_findings(data_dir.path(), finding_request(10, None)).unwrap();
+        let antiburn_local::remediation::FindingCause::UnusedMcpServer { server } =
+            next.findings[0].finding.cause()
+        else {
+            panic!("the MCP detector must return an MCP cause");
+        };
+        assert_eq!(server, "server-b");
+        assert!(next.findings[0].source_generation > page.findings[0].source_generation);
+    }
+
+    #[test]
+    fn current_finding_cursor_pages_multiple_causes_in_one_session() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_mcp_findings(
+            &store,
+            "many-causes",
+            120,
+            &["server-a", "server-b", "server-c"],
+        );
+        let mut cursor = None;
+        let mut servers = Vec::new();
+
+        loop {
+            let page = list_current_findings(data_dir.path(), finding_request(0, cursor)).unwrap();
+            let Some(finding) = page.findings.first() else {
+                break;
+            };
+            let antiburn_local::remediation::FindingCause::UnusedMcpServer { server } =
+                finding.finding.cause()
+            else {
+                panic!("the MCP detector must return an MCP cause");
+            };
+            servers.push(server.clone());
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        assert_eq!(servers, ["server-a", "server-b", "server-c"]);
+    }
+
+    #[test]
+    fn current_findings_reject_changed_generations_and_pending_evidence() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_mcp_findings(&store, "current", 120, &["current-server"]);
+        publish_mcp_findings(&store, "changed", 121, &["changed-server"]);
+        change_source(&store, "changed", &[]);
+        publish_mcp_findings(&store, "pending", 122, &["pending-server"]);
+        change_source(&store, "pending", &["claude-code"]);
+
+        let page = list_current_findings(data_dir.path(), finding_request(1000, None)).unwrap();
+
+        assert_eq!(page.findings.len(), 1);
+        assert_eq!(page.findings[0].session_id, "current");
+        assert!(page.next_cursor.is_none());
+    }
+
+    #[test]
+    fn revalidation_requires_the_exact_detector_cause() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_mcp_findings(&store, "target", 120, &["target-server"]);
+        publish_mcp_findings(&store, "other", 121, &["other-server"]);
+        let page = list_current_findings(data_dir.path(), finding_request(10, None)).unwrap();
+        let target = page
+            .findings
+            .iter()
+            .find(|finding| finding.session_id == "target")
+            .unwrap();
+        let other = page
+            .findings
+            .iter()
+            .find(|finding| finding.session_id == "other")
+            .unwrap();
+
+        assert!(revalidate_current_finding(data_dir.path(), target).unwrap());
+        let mut wrong_cause = target.clone();
+        wrong_cause.finding = other.finding.clone();
+        assert!(!revalidate_current_finding(data_dir.path(), &wrong_cause).unwrap());
     }
 
     #[test]

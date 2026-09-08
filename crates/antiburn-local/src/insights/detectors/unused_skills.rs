@@ -10,6 +10,7 @@
 //! Observed skills do not prove a full historical inventory, so the report cannot claim clean.
 
 use crate::analysis::{EvidenceValue, SessionEvidence};
+use crate::remediation::FindingCause;
 
 use super::{Observation, complete};
 
@@ -38,6 +39,20 @@ pub(crate) fn evaluate(evidence: &SessionEvidence) -> Observation {
         return Observation::Finding;
     }
     Observation::NoFinding
+}
+
+pub(super) fn finding_causes(evidence: &SessionEvidence) -> Vec<FindingCause> {
+    let Some(sources) = super::observed(&evidence.context_sources) else {
+        return Vec::new();
+    };
+    sources
+        .skills
+        .iter()
+        .filter(|(_, skill)| skill.injected && !skill.invoked)
+        .map(|(skill, _)| FindingCause::UnusedSkill {
+            skill: skill.clone(),
+        })
+        .collect()
 }
 
 #[cfg(test)]

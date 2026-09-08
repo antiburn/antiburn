@@ -12,7 +12,7 @@
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
-    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39,
+    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -744,3 +744,108 @@ CREATE INDEX session_source_lookup
 
 /// v39 preserves request routes for compatible cache accounting.
 const V39: &str = antiburn_local::analysis::TURN_SCHEMA_V7_SQL;
+
+/// v40 stores the durable remediation lifecycle and verification inputs.
+const V40: &str = r#"
+CREATE TABLE remediation (
+    remediation_id               TEXT PRIMARY KEY NOT NULL
+                                 CHECK (length(remediation_id) BETWEEN 1 AND 256),
+    target_key                   TEXT NOT NULL CHECK (length(target_key) BETWEEN 1 AND 2048),
+    state                        TEXT NOT NULL
+                                 CHECK (state IN ('awaitingVerification', 'verified', 'recurred')),
+    origin                       TEXT NOT NULL CHECK (origin IN ('antiburn', 'external')),
+    environment_key              TEXT NOT NULL CHECK (length(environment_key) BETWEEN 1 AND 256),
+    agent                        TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 256),
+    source_format                TEXT NOT NULL CHECK (length(source_format) BETWEEN 1 AND 256),
+    workspace_key                TEXT NOT NULL CHECK (length(workspace_key) BETWEEN 1 AND 2048),
+    baseline_session_id          TEXT NOT NULL CHECK (length(baseline_session_id) BETWEEN 1 AND 1024),
+    baseline_source_generation   INTEGER NOT NULL CHECK (baseline_source_generation >= 0),
+    baseline_published_fence     INTEGER NOT NULL CHECK (baseline_published_fence > 0),
+    baseline_source_fingerprint  TEXT CHECK (
+                                     baseline_source_fingerprint IS NULL
+                                     OR length(baseline_source_fingerprint) BETWEEN 1 AND 4096),
+    baseline_processed_fingerprint TEXT CHECK (
+                                     baseline_processed_fingerprint IS NULL
+                                     OR length(baseline_processed_fingerprint) BETWEEN 1 AND 4096),
+    baseline_parser_revision     INTEGER NOT NULL CHECK (baseline_parser_revision > 0),
+    baseline_analyzer_revision   INTEGER NOT NULL CHECK (baseline_analyzer_revision > 0),
+    baseline_evidence_schema_revision INTEGER NOT NULL
+                                 CHECK (baseline_evidence_schema_revision > 0),
+    finding_json                 TEXT NOT NULL CHECK (
+                                     length(CAST(finding_json AS BLOB)) BETWEEN 1 AND 65536
+                                     AND json_valid(finding_json)
+                                     AND json_type(finding_json, '$.version') IS 'integer'
+                                     AND json_extract(finding_json, '$.version') > 0),
+    change_json                  TEXT NOT NULL CHECK (
+                                     length(CAST(change_json AS BLOB)) BETWEEN 1 AND 65536
+                                     AND json_valid(change_json)
+                                     AND json_type(change_json, '$.version') IS 'integer'
+                                     AND json_extract(change_json, '$.version') > 0),
+    boundary_json                TEXT NOT NULL CHECK (
+                                     length(CAST(boundary_json AS BLOB)) BETWEEN 1 AND 65536
+                                     AND json_valid(boundary_json)
+                                     AND json_type(boundary_json, '$.version') IS 'integer'
+                                     AND json_extract(boundary_json, '$.version') > 0),
+    verification_json            TEXT NOT NULL CHECK (
+                                     length(CAST(verification_json AS BLOB)) BETWEEN 1 AND 65536
+                                     AND json_valid(verification_json)
+                                     AND json_type(verification_json, '$.version') IS 'integer'
+                                     AND json_extract(verification_json, '$.version') > 0),
+    savings_json                 TEXT NOT NULL CHECK (
+                                     length(CAST(savings_json AS BLOB)) BETWEEN 1 AND 65536
+                                     AND json_valid(savings_json)
+                                     AND json_type(savings_json, '$.version') IS 'integer'
+                                     AND json_extract(savings_json, '$.version') > 0),
+    -- Detector, catalog, policy, and assessment revisions. The baseline
+    -- columns above store evidence projection revisions.
+    revisions_json               TEXT NOT NULL CHECK (
+                                     length(CAST(revisions_json AS BLOB)) BETWEEN 1 AND 65536
+                                     AND json_valid(revisions_json)
+                                     AND json_type(revisions_json, '$.version') IS 'integer'
+                                     AND json_extract(revisions_json, '$.version') > 0),
+    verification_input_revision  INTEGER NOT NULL DEFAULT 1
+                                 CHECK (verification_input_revision >= 1),
+    evaluated_input_revision     INTEGER NOT NULL DEFAULT 0
+                                 CHECK (evaluated_input_revision >= 0
+                                     AND evaluated_input_revision <= verification_input_revision),
+    created_at_epoch             INTEGER NOT NULL CHECK (created_at_epoch >= 0),
+    updated_at_epoch             INTEGER NOT NULL CHECK (updated_at_epoch >= created_at_epoch),
+    applied_at_epoch             INTEGER CHECK (
+                                     applied_at_epoch IS NULL
+                                     OR applied_at_epoch BETWEEN 0 AND created_at_epoch),
+    verified_at_epoch            INTEGER CHECK (
+                                     verified_at_epoch IS NULL
+                                     OR verified_at_epoch BETWEEN created_at_epoch AND updated_at_epoch),
+    recurred_at_epoch            INTEGER CHECK (
+                                     recurred_at_epoch IS NULL
+                                     OR recurred_at_epoch BETWEEN verified_at_epoch AND updated_at_epoch),
+    FOREIGN KEY (environment_key, agent, baseline_session_id)
+      REFERENCES session(environment_key, agent, session_id) ON DELETE CASCADE,
+    CHECK ((state = 'awaitingVerification'
+            AND verified_at_epoch IS NULL AND recurred_at_epoch IS NULL)
+        OR (state = 'verified'
+            AND verified_at_epoch IS NOT NULL AND recurred_at_epoch IS NULL)
+        OR (state = 'recurred'
+            AND verified_at_epoch IS NOT NULL AND recurred_at_epoch IS NOT NULL))
+) STRICT;
+
+CREATE INDEX remediation_dirty
+    ON remediation (updated_at_epoch, remediation_id)
+    WHERE evaluated_input_revision < verification_input_revision
+      AND state != 'recurred';
+CREATE INDEX remediation_page
+    ON remediation (environment_key, created_at_epoch DESC, remediation_id DESC);
+CREATE UNIQUE INDEX remediation_active_target
+    ON remediation (environment_key, agent, target_key)
+    WHERE state != 'recurred';
+CREATE TRIGGER remediation_state_transition
+BEFORE UPDATE OF state ON remediation
+WHEN NOT (
+    (OLD.state = 'awaitingVerification'
+     AND NEW.state IN ('awaitingVerification', 'verified'))
+    OR (OLD.state = 'verified' AND NEW.state IN ('verified', 'recurred'))
+)
+BEGIN
+    SELECT RAISE(ABORT, 'invalid remediation state transition');
+END;
+"#;

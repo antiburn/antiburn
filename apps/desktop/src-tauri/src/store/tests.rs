@@ -13,6 +13,7 @@ use super::*;
 mod activity_tests;
 mod coverage_tests;
 mod reconcile_tests;
+mod remediation_tests;
 mod resume_tests;
 mod turn_row_tests;
 

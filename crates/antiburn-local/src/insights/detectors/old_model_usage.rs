@@ -19,6 +19,7 @@
 
 use crate::analysis::SessionEvidence;
 use crate::model_catalog::{ModelState, Support, reviewed_model_state};
+use crate::remediation::FindingCause;
 
 use super::{Observation, ReportCatalogs, observed};
 
@@ -58,6 +59,36 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         return Observation::ContractIncomplete;
     }
     Observation::NoFinding
+}
+
+pub(super) fn finding_causes(
+    evidence: &SessionEvidence,
+    catalogs: &ReportCatalogs,
+) -> Vec<FindingCause> {
+    let Some(models) = observed(&evidence.models) else {
+        return Vec::new();
+    };
+    models
+        .by_model
+        .iter()
+        .filter_map(|(model, tokens)| {
+            if tokens.turns == 0 || tokens.last_ts_ms == 0 {
+                return None;
+            }
+            let Support::Supported(ModelState::Obsolete(replacement)) =
+                reviewed_model_state(&catalogs.model_replacements, model)
+            else {
+                return None;
+            };
+            (tokens.last_ts_ms >= replacement.available_since_ts_ms).then(|| {
+                FindingCause::OldModelUsage {
+                    model: model.clone(),
+                    replacement: replacement.replacement.clone(),
+                    turns: tokens.turns,
+                }
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

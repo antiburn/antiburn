@@ -49,6 +49,7 @@
 //! request at all — and the app never depends on it. The content security
 //! policy limits the webview to local application and IPC connections.
 
+pub mod agent_config;
 mod agents;
 mod analysis;
 mod analytics;
@@ -72,6 +73,7 @@ mod popover;
 mod popover_peek;
 mod provider_accounts;
 mod provider_usage;
+pub mod remediation;
 mod repositories;
 mod retention;
 mod runtime_pricing;
@@ -187,6 +189,7 @@ pub fn run() {
             // engine's state helpers as an explicit argument.
             let data_dir = app.path().app_data_dir()?;
             app.manage(store::Store::open(&data_dir)?);
+            app.manage(remediation::RemediationController::new(data_dir.clone()));
             app.manage(runtime_pricing::PricingState::load(&data_dir));
             app.manage(insights_worker::WorkerHandle::default());
             app.manage(insights_ipc::InsightsController::default());
@@ -195,6 +198,12 @@ pub fn run() {
                 analysis::projection_revisions(),
             ) {
                 ::tracing::error!(event = "evidence_reconcile_failed", error = %error);
+            }
+            if let Err(error) = app.state::<store::Store>().reconcile_remediation_revisions(
+                &remediation::revisions_json(),
+                time::OffsetDateTime::now_utc().unix_timestamp(),
+            ) {
+                ::tracing::error!(event = "remediation_reconcile_failed", error = %error);
             }
             if let Err(error) = app
                 .state::<store::Store>()

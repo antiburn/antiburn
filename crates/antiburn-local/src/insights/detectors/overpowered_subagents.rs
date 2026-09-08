@@ -3,6 +3,7 @@
 
 use crate::analysis::SessionEvidence;
 use crate::pricing::canonical_model_key;
+use crate::remediation::FindingCause;
 
 use super::{Observation, ReportCatalogs, model_family, observed};
 
@@ -46,6 +47,35 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
     } else {
         Observation::NoFinding
     }
+}
+
+pub(super) fn finding_causes(
+    evidence: &SessionEvidence,
+    catalogs: &ReportCatalogs,
+) -> Vec<FindingCause> {
+    let Some(subagents) = observed(&evidence.subagents) else {
+        return Vec::new();
+    };
+    let mut causes = Vec::new();
+    for child in &subagents.children {
+        let Some(parent_model) = child.parent_model.as_ref() else {
+            continue;
+        };
+        if premium_verdict(parent_model, catalogs) != Some(true) {
+            continue;
+        }
+        for worker_model in &child.observed_child_models {
+            if premium_verdict(worker_model, catalogs) == Some(true) {
+                causes.push(FindingCause::OverpoweredSubagents {
+                    parent_model: parent_model.clone(),
+                    worker_model: worker_model.clone(),
+                    worker_ordinal: child.ordinal,
+                    parent_call_id: child.parent_call_id.clone(),
+                });
+            }
+        }
+    }
+    causes
 }
 
 /// One model's premium verdict under its family's reviewed policy.

@@ -20,4 +20,5 @@ pub mod model_catalog;
 pub mod paths;
 pub mod platform;
 pub mod pricing;
+pub mod remediation;
 pub mod repositories;

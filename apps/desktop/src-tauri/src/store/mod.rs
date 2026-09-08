@@ -24,6 +24,7 @@
 pub mod model;
 pub(crate) mod provider_usage_history;
 pub(crate) mod provider_usage_ledger;
+mod remediation;
 mod schema;
 
 #[cfg(test)]
@@ -58,9 +59,11 @@ pub use model::{
     EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters,
     MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement,
     OwningSession, ProjectionRevisions, PublishedEvidence, RETAIN_SESSION_DATA_FOREVER,
-    RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey, SessionBadgeMetric,
-    SessionKey, SessionRecord, SessionUsageRecord, SessionUsageTurnRecord, SourcePublishMode,
-    SourcePublishOutcome, SourceVersionState, ThemePreference, UsageEvidenceRecord,
+    RelationKind, RelationRecord, Remediation, RemediationCursor, RemediationEvidenceVersion,
+    RemediationOrigin, RemediationPage, RemediationRecord, RemediationResult, RemediationState,
+    RepositoryRecord, SessionActivityKey, SessionBadgeMetric, SessionKey, SessionRecord,
+    SessionUsageRecord, SessionUsageTurnRecord, SourcePublishMode, SourcePublishOutcome,
+    SourceVersionState, ThemePreference, UsageEvidenceRecord,
 };
 
 /// Evidence rows that still wait for, or sit in, processing.
@@ -875,10 +878,17 @@ impl Store {
                 upsert_session_in(&tx, record)?;
             let generation_increased =
                 previous_generation.is_none_or(|previous| source_generation > previous);
-            if evidence_agents.contains(&record.key.agent.as_str())
-                && (generation_increased || activity_cursor_changed || source_returned)
-            {
+            let evidence_marked_pending = evidence_agents.contains(&record.key.agent.as_str())
+                && (generation_increased || activity_cursor_changed || source_returned);
+            if evidence_marked_pending {
                 mark_evidence_pending_in(&tx, &record.key)?;
+            } else if generation_increased {
+                remediation::mark_remediations_dirty_in(
+                    &tx,
+                    &record.key.environment_key,
+                    &record.key.agent,
+                    time::OffsetDateTime::now_utc().unix_timestamp(),
+                )?;
             }
         }
         tx.commit()?;
@@ -1373,9 +1383,9 @@ impl Store {
             .iter()
             .map(|agent| rusqlite::types::Value::Text((*agent).to_string()))
             .collect();
-        let enrolled = transaction.execute(
-            &format!(
-                "INSERT INTO session_evidence (environment_key, agent, session_id)
+        let mut dirty_scopes = HashSet::new();
+        let enroll_sql = format!(
+            "INSERT INTO session_evidence (environment_key, agent, session_id)
                  SELECT session.environment_key, session.agent, session.session_id
                    FROM session
                   WHERE session.agent IN ({agent_placeholders})
@@ -1383,11 +1393,19 @@ impl Store {
                         SELECT 1 FROM session_evidence
                          WHERE session_evidence.environment_key = session.environment_key
                            AND session_evidence.agent = session.agent
-                           AND session_evidence.session_id = session.session_id
-                    )"
-            ),
-            rusqlite::params_from_iter(agent_values.iter()),
-        )?;
+                            AND session_evidence.session_id = session.session_id
+                     )
+                 RETURNING environment_key, agent"
+        );
+        let mut enroll_statement = transaction.prepare(&enroll_sql)?;
+        let enrolled_scopes = enroll_statement
+            .query_map(rusqlite::params_from_iter(agent_values.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let enrolled = enrolled_scopes.len();
+        dirty_scopes.extend(enrolled_scopes);
+        drop(enroll_statement);
 
         let parser_parameter = agents.len() + 1;
         let analyzer_parameter = agents.len() + 2;
@@ -1426,7 +1444,8 @@ impl Store {
                                   AND analysis.metrics_schema_revision = ?{metrics_parameter}
                            ))
                        )
-                )"
+                 )
+             RETURNING environment_key, agent"
         );
         let mut update_values = agent_values;
         update_values.extend([
@@ -1435,10 +1454,24 @@ impl Store {
             rusqlite::types::Value::Integer(revisions.metrics_schema_revision),
             rusqlite::types::Value::Integer(revisions.evidence_schema_revision),
         ]);
-        let requeued = transaction.execute(
-            &update_sql,
-            rusqlite::params_from_iter(update_values.iter()),
-        )?;
+        let mut update_statement = transaction.prepare(&update_sql)?;
+        let requeued_scopes = update_statement
+            .query_map(rusqlite::params_from_iter(update_values.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let requeued = requeued_scopes.len();
+        dirty_scopes.extend(requeued_scopes);
+        drop(update_statement);
+        let now_epoch = time::OffsetDateTime::now_utc().unix_timestamp();
+        for (environment_key, agent) in dirty_scopes {
+            remediation::mark_remediations_dirty_in(
+                &transaction,
+                &environment_key,
+                &agent,
+                now_epoch,
+            )?;
+        }
         transaction.commit()?;
         Ok(enrolled + requeued)
     }
@@ -1589,12 +1622,14 @@ impl Store {
         failure: EvidenceFailure,
         last_error: &str,
     ) -> Result<bool> {
-        let connection = self.lock();
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let marks_remediations_dirty = matches!(failure, EvidenceFailure::Retry { .. });
         let updated = match failure {
             EvidenceFailure::Retry {
                 next_attempt_at_epoch,
                 counts_as_attempt,
-            } => connection.execute(
+            } => transaction.execute(
                 "UPDATE session_evidence AS evidence
                     SET status = 'pending', retry_count = retry_count + ?8,
                         last_error = ?6, claimed_at_epoch = NULL,
@@ -1620,7 +1655,7 @@ impl Store {
                     i64::from(counts_as_attempt),
                 ],
             )?,
-            EvidenceFailure::Failed { revisions } => connection.execute(
+            EvidenceFailure::Failed { revisions } => transaction.execute(
                 "UPDATE session_evidence AS evidence
                     SET status = 'failed', retry_count = retry_count + 1,
                         analyzed_generation = ?5, parser_revision = ?7,
@@ -1651,6 +1686,15 @@ impl Store {
                 ],
             )?,
         };
+        if updated > 0 && marks_remediations_dirty {
+            remediation::mark_remediations_dirty_in(
+                &transaction,
+                &claim.key.environment_key,
+                &claim.key.agent,
+                time::OffsetDateTime::now_utc().unix_timestamp(),
+            )?;
+        }
+        transaction.commit()?;
         Ok(updated > 0)
     }
 
@@ -1675,6 +1719,7 @@ impl Store {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         tx.execute("DELETE FROM session_relation", [])?;
+        tx.execute("DELETE FROM remediation", [])?;
         tx.execute("DELETE FROM session_analysis", [])?;
         tx.execute("DELETE FROM session_evidence", [])?;
         tx.execute("DELETE FROM turn_content", [])?;
@@ -1996,6 +2041,12 @@ impl Store {
             &record.key,
             time::OffsetDateTime::now_utc().unix_timestamp(),
         )?;
+        remediation::mark_remediations_dirty_in(
+            &transaction,
+            &record.key.environment_key,
+            &record.key.agent,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        )?;
         transaction.commit()?;
         Ok(true)
     }
@@ -2009,8 +2060,11 @@ impl Store {
     /// transcript's. Idempotent: requeuing a session already `pending` (or
     /// already claimed) just clears its retry state again.
     pub fn requeue_session_evidence(&self, key: &SessionKey) -> Result<()> {
-        let connection = self.lock();
-        mark_evidence_pending_in(&connection, key)
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        mark_evidence_pending_in(&transaction, key)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Counts one session's turn rows stamped with `claim_fence`.
@@ -3373,11 +3427,22 @@ fn mark_evidence_pending_in(connection: &Connection, key: &SessionKey) -> Result
              next_attempt_at_epoch = NULL, retry_count = 0",
         params![key.environment_key, key.agent, key.session_id],
     )?;
+    remediation::mark_remediations_dirty_in(
+        connection,
+        &key.environment_key,
+        &key.agent,
+        time::OffsetDateTime::now_utc().unix_timestamp(),
+    )?;
     Ok(())
 }
 
 fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<bool> {
     let parameters = params![key.environment_key, key.agent, key.session_id];
+    connection.execute(
+        "DELETE FROM remediation
+          WHERE environment_key = ?1 AND agent = ?2 AND baseline_session_id = ?3",
+        parameters,
+    )?;
     connection.execute(
         "DELETE FROM session_relation
           WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",

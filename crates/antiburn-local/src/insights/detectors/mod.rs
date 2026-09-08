@@ -25,6 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analysis::{EvidenceValue, SessionEvidence};
 use crate::pricing::canonical_model_key;
+use crate::remediation::{BuiltInToolTokens, FindingCause};
 
 use super::report::{DetectorCounts, MAX_EXAMPLES_PER_DETECTOR, SessionExample};
 use super::status::DetectorId;
@@ -85,6 +86,25 @@ pub(crate) enum Observation {
     /// `overuse_of_fast_mode` and `model_overthinking` for the rule
     /// that assesses only the turns that do carry the signal.
     SignalMissing,
+}
+
+/// One detector result before report aggregation removes target details.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DetectorEvaluation {
+    pub observation: Observation,
+    pub causes: Vec<FindingCause>,
+}
+
+impl PartialEq<Observation> for DetectorEvaluation {
+    fn eq(&self, other: &Observation) -> bool {
+        self.observation == *other
+    }
+}
+
+impl PartialEq<DetectorEvaluation> for Observation {
+    fn eq(&self, other: &DetectorEvaluation) -> bool {
+        *self == other.observation
+    }
 }
 
 /// Bounded per-detector fold state across the assessed cohort.
@@ -371,8 +391,8 @@ pub(crate) fn evaluate(
     detector: DetectorId,
     evidence: &SessionEvidence,
     catalogs: &ReportCatalogs,
-) -> Observation {
-    match detector {
+) -> DetectorEvaluation {
+    let observation = match detector {
         DetectorId::SessionsOverDepth => sessions_over_depth::evaluate(evidence, catalogs),
         DetectorId::ModelOverthinking => model_overthinking::evaluate(evidence, catalogs),
         DetectorId::OverpoweredSubagents => overpowered_subagents::evaluate(evidence, catalogs),
@@ -382,6 +402,103 @@ pub(crate) fn evaluate(
         DetectorId::OldModelUsage => old_model_usage::evaluate(evidence, catalogs),
         DetectorId::OveruseOfFastMode => overuse_of_fast_mode::evaluate(evidence, catalogs),
         DetectorId::CacheChurn => cache_churn::evaluate(evidence, catalogs),
+    };
+    let causes = if observation == Observation::Finding {
+        match detector {
+            DetectorId::SessionsOverDepth => {
+                sessions_over_depth::finding_causes(evidence, catalogs)
+            }
+            DetectorId::ModelOverthinking => model_overthinking::finding_causes(evidence, catalogs),
+            DetectorId::OverpoweredSubagents => {
+                overpowered_subagents::finding_causes(evidence, catalogs)
+            }
+            DetectorId::UnusedMcpServers => unused_mcp_servers::finding_causes(evidence),
+            DetectorId::UnusedBuiltInTools => unused_built_in_tools::finding_causes(evidence),
+            DetectorId::UnusedSkills => unused_skills::finding_causes(evidence),
+            DetectorId::OldModelUsage => old_model_usage::finding_causes(evidence, catalogs),
+            DetectorId::OveruseOfFastMode => {
+                overuse_of_fast_mode::finding_causes(evidence, catalogs)
+            }
+            DetectorId::CacheChurn => cache_churn::finding_causes(evidence, catalogs),
+        }
+    } else {
+        Vec::new()
+    };
+    debug_assert_eq!(observation == Observation::Finding, !causes.is_empty());
+    debug_assert!(causes.iter().all(|cause| cause.detector() == detector));
+    DetectorEvaluation {
+        observation,
+        causes,
+    }
+}
+
+pub(crate) fn built_in_source_assessable(
+    detector: DetectorId,
+    evidence: &SessionEvidence,
+    source_evidence: Option<&super::report::SessionTokenBurnEvidence>,
+) -> bool {
+    detector == DetectorId::UnusedBuiltInTools
+        && source_evidence
+            .and_then(|value| value.built_in_tool_sources.as_ref())
+            .is_some()
+        && super::report::Fact::ToolDefinitions.state(evidence)
+            == super::report::FactState::Unsupported
+        && matches!(
+            evidence.coverage,
+            crate::analysis::EvidenceCoverage::Complete
+        )
+        && matches!(&evidence.tools, EvidenceValue::Complete(_))
+        && complete(&evidence.eligibility).is_some_and(|value| value.assistant_turns > 0)
+}
+
+pub(crate) fn evaluate_with_source_evidence(
+    detector: DetectorId,
+    evidence: &SessionEvidence,
+    catalogs: &ReportCatalogs,
+    source_evidence: Option<&super::report::SessionTokenBurnEvidence>,
+) -> DetectorEvaluation {
+    if !built_in_source_assessable(detector, evidence, source_evidence) {
+        return evaluate(detector, evidence, catalogs);
+    }
+    let situational = crate::analysis::tool_catalog::situational_tools(&evidence.identity.agent);
+    let mut causes = source_evidence
+        .and_then(|value| value.built_in_tool_sources.as_ref())
+        .into_iter()
+        .flatten()
+        .filter(|source| {
+            source.replicated_tokens > 0
+                && !source.invoked
+                && !situational.iter().any(|name| {
+                    crate::analysis::tool_catalog::comparable_tool_name(name)
+                        == crate::analysis::tool_catalog::comparable_tool_name(&source.name)
+                })
+        })
+        .map(|source| FindingCause::UnusedBuiltInTool {
+            tool: source.name.clone(),
+            tokens: BuiltInToolTokens::Replicated(source.replicated_tokens),
+        })
+        .collect::<Vec<_>>();
+    causes.sort_by(|left, right| match (left, right) {
+        (
+            FindingCause::UnusedBuiltInTool { tool: left, .. },
+            FindingCause::UnusedBuiltInTool { tool: right, .. },
+        ) => left.cmp(right),
+        _ => core::cmp::Ordering::Equal,
+    });
+    let observation = if causes.is_empty() {
+        Observation::NoFinding
+    } else {
+        Observation::Finding
+    };
+    debug_assert_eq!(observation == Observation::Finding, !causes.is_empty());
+    debug_assert!(
+        causes
+            .iter()
+            .all(|cause| cause.detector() == DetectorId::UnusedBuiltInTools)
+    );
+    DetectorEvaluation {
+        observation,
+        causes,
     }
 }
 
@@ -478,6 +595,8 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::ToolDefinition;
+    use crate::insights::{SessionTokenBurnEvidence, TokenBurnSourceEvidence};
 
     fn counts(eligible: u64, finding: u64, clean: u64, unavailable: u64) -> DetectorCounts {
         DetectorCounts {
@@ -687,5 +806,80 @@ mod tests {
     fn claude_premium_policy_does_not_flag_haiku() {
         let policy = &ReportCatalogs::default().families[&ModelFamily::Claude].premium;
         assert!(!policy.is_premium("claude-haiku-4-5"));
+    }
+
+    #[test]
+    fn detector_derived_causes_match_their_observation_and_detector() {
+        let mut evidence = test_support::claude_evidence("cause-invariant");
+        let EvidenceValue::Complete(eligibility) = &mut evidence.eligibility else {
+            unreachable!()
+        };
+        eligibility.assistant_turns = 1;
+        let mut definitions = BTreeMap::new();
+        definitions.insert(
+            "Read".to_owned(),
+            ToolDefinition {
+                tokens: 73,
+                invoked: false,
+                deferred: false,
+            },
+        );
+        let EvidenceValue::Complete(sources) = &mut evidence.context_sources else {
+            unreachable!()
+        };
+        sources.tool_definitions = EvidenceValue::Complete(definitions);
+
+        for detector in DetectorId::ALL {
+            let evaluation = evaluate(detector, &evidence, &ReportCatalogs::default());
+            assert_eq!(
+                evaluation.observation == Observation::Finding,
+                !evaluation.causes.is_empty()
+            );
+            assert!(
+                evaluation
+                    .causes
+                    .iter()
+                    .all(|cause| cause.detector() == detector)
+            );
+        }
+        let evaluation = evaluate(
+            DetectorId::UnusedBuiltInTools,
+            &evidence,
+            &ReportCatalogs::default(),
+        );
+        assert_eq!(
+            evaluation.causes,
+            vec![FindingCause::UnusedBuiltInTool {
+                tool: "Read".to_owned(),
+                tokens: BuiltInToolTokens::Definition(73),
+            }]
+        );
+
+        let mut fallback_evidence = evidence;
+        let EvidenceValue::Complete(sources) = &mut fallback_evidence.context_sources else {
+            unreachable!()
+        };
+        sources.tool_definitions = EvidenceValue::Unsupported;
+        let mut source_evidence = SessionTokenBurnEvidence::default();
+        source_evidence.built_in_tool_sources = Some(vec![TokenBurnSourceEvidence {
+            scope: "agent:bundled".to_owned(),
+            name: "Write".to_owned(),
+            replicated_tokens: u128::from(u64::MAX) + 9,
+            invoked: false,
+        }]);
+        let fallback = evaluate_with_source_evidence(
+            DetectorId::UnusedBuiltInTools,
+            &fallback_evidence,
+            &ReportCatalogs::default(),
+            Some(&source_evidence),
+        );
+        assert_eq!(fallback.observation, Observation::Finding);
+        assert_eq!(
+            fallback.causes,
+            vec![FindingCause::UnusedBuiltInTool {
+                tool: "Write".to_owned(),
+                tokens: BuiltInToolTokens::Replicated(u128::from(u64::MAX) + 9),
+            }]
+        );
     }
 }

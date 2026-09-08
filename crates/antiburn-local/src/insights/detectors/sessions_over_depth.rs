@@ -8,6 +8,7 @@
 //!   a deeper request, so absence cannot be concluded.
 
 use crate::analysis::SessionEvidence;
+use crate::remediation::{FindingCause, RequestFact};
 
 use super::{Observation, ReportCatalogs, observed};
 
@@ -18,6 +19,31 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         return Observation::Finding;
     }
     Observation::NoFinding
+}
+
+pub(super) fn finding_causes(
+    evidence: &SessionEvidence,
+    catalogs: &ReportCatalogs,
+) -> Vec<FindingCause> {
+    let Some(context) = observed(&evidence.context) else {
+        return Vec::new();
+    };
+    let requests = context
+        .top_depth_examples
+        .iter()
+        .filter(|request| request.depth_tokens > catalogs.depth_cap_tokens)
+        .map(|request| RequestFact {
+            model: request.model.clone(),
+            timestamp_ms: (request.ts_ms != 0).then_some(request.ts_ms),
+            value: request.depth_tokens,
+        })
+        .collect();
+    vec![FindingCause::SessionsOverDepth {
+        maximum_tokens: context.max_request_context_tokens,
+        limit_tokens: catalogs.depth_cap_tokens,
+        requests,
+        omitted_requests: 0,
+    }]
 }
 
 #[cfg(test)]

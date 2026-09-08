@@ -31,6 +31,7 @@ use std::collections::BTreeMap;
 
 use crate::analysis::tool_catalog::{comparable_tool_name, situational_tools};
 use crate::analysis::{EvidenceValue, SessionEvidence, ToolDefinition};
+use crate::remediation::{BuiltInToolTokens, FindingCause};
 
 use super::{Observation, complete};
 
@@ -78,6 +79,32 @@ fn has_unused_definition(agent: &str, definitions: &BTreeMap<String, ToolDefinit
             && !definition.invoked
             && !situational.contains(&comparable_tool_name(name))
     })
+}
+
+pub(super) fn finding_causes(evidence: &SessionEvidence) -> Vec<FindingCause> {
+    let Some(sources) = super::observed(&evidence.context_sources) else {
+        return Vec::new();
+    };
+    let Some(definitions) = super::complete(&sources.tool_definitions) else {
+        return Vec::new();
+    };
+    let situational: Vec<String> = situational_tools(&evidence.identity.agent)
+        .iter()
+        .map(|name| comparable_tool_name(name))
+        .collect();
+    definitions
+        .iter()
+        .filter(|(name, definition)| {
+            definition.tokens > 0
+                && !definition.deferred
+                && !definition.invoked
+                && !situational.contains(&comparable_tool_name(name))
+        })
+        .map(|(tool, definition)| FindingCause::UnusedBuiltInTool {
+            tool: tool.clone(),
+            tokens: BuiltInToolTokens::Definition(u64::from(definition.tokens)),
+        })
+        .collect()
 }
 
 #[cfg(test)]
