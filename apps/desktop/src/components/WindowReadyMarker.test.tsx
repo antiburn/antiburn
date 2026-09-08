@@ -65,4 +65,17 @@ describe("WindowReadyMarker", () => {
 
     expect(windowReady).not.toHaveBeenCalled()
   })
+
+  it("uses a window-specific readiness reporter", () => {
+    const reporter = vi.fn(async () => {})
+
+    render(
+      <WindowReadyBoundary reporter={reporter}>
+        <div />
+      </WindowReadyBoundary>,
+    )
+
+    expect(reporter).toHaveBeenCalledWith(7)
+    expect(windowReady).not.toHaveBeenCalled()
+  })
 })

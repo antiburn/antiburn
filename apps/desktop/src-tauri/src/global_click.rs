@@ -30,15 +30,18 @@
 //!
 //! macOS-only; a no-op elsewhere.
 
-/// Install the global mouse-down monitor and the resign-active observer for
-/// the app's lifetime.
+/// Install the global mouse monitor and the activation observers for the app's
+/// lifetime.
 ///
 /// Call once from `setup`, on the main thread, after the tray and the popover
 /// exist.
 #[cfg(target_os = "macos")]
 pub fn install(app: &tauri::AppHandle) {
     use block2::RcBlock;
-    use objc2_app_kit::{NSApplicationDidResignActiveNotification, NSEvent, NSEventMask};
+    use objc2_app_kit::{
+        NSApplicationDidBecomeActiveNotification, NSApplicationDidResignActiveNotification,
+        NSEvent, NSEventMask,
+    };
     use objc2_foundation::{NSNotification, NSNotificationCenter};
 
     let click_app = app.clone();
@@ -77,6 +80,23 @@ pub fn install(app: &tauri::AppHandle) {
     };
     // Kept for the app's lifetime, for the same reason as the monitor token
     // above. The notification center holds its own copy of the block.
+    std::mem::forget(observer);
+
+    let activate_app = app.clone();
+    let activate_handler =
+        RcBlock::new(move |_notification: core::ptr::NonNull<NSNotification>| {
+            crate::main_window::restore_after_activation(&activate_app);
+        });
+    // SAFETY: the notification name and the block's signature match
+    // Foundation's API. AppKit posts this notification on the main thread.
+    let observer = unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(NSApplicationDidBecomeActiveNotification),
+            None,
+            None,
+            &activate_handler,
+        )
+    };
     std::mem::forget(observer);
 }
 

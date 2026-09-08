@@ -11,6 +11,7 @@ sources:
   - src/styles/motion.css
   - src/styles/platform-controls.css
   - src/styles/hud.css
+  - src/styles/main-window.css
   - src/styles/session-analysis-colors.css
   - src/styles/session-rows.css
   - src/styles/session-detail.css
@@ -466,3 +467,18 @@ Notes for what isn't expressible as a token:
   where it means a category: blue for context, the token series colors for in/out, yellow and
   pink for cache marks, brand orange for a compaction, teal for real work, red for waste.
   Everything else stays greyscale until the pointer names a layer.
+- **Main window** — the retained main window opens at 900 × 600 logical pixels with a normal
+  minimum of 800 × 560. The initial outer frame uses at most 85% of each usable display dimension,
+  including native chrome. A smaller work area takes precedence over the normal minimum. Saved
+  user sizes can exceed the initial cap and remain constrained to the usable work area. It paints the opaque
+  `surface-window` canvas. On macOS its 40px overlay titlebar remains a drag region and leaves the
+  native traffic lights visible. Double-clicking this strip toggles maximize and restore through
+  Tauri's drag-region handler. Windows and Linux retain their native bars, so this surface adds no
+  top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
+  Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
+  These local geometry rules use the spacing tokens in `main-window.css`; other source lists
+  retain their current density. Activity is the only main sidebar item. Settings remains available through the tray and native menus.
+  The first main row starts at 48px on macOS, clear of the drag strip. The content region scrolls
+  independently of the title strip. A view switch is immediate: the window does not animate navigation. Use the
+  documented type scale and keyboard-only focus treatment. Hidden or minimized main windows suspend
+  presentation work; blur alone does not suspend it. Native close hides this renderer for reuse.
