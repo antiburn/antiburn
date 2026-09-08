@@ -582,6 +582,13 @@ async fn refresh_sessions_locked(
     )?;
     crate::insights_worker::wake(app);
     super::idle::wake(app);
+    super::report_indexed(
+        app,
+        now,
+        &described.records,
+        &described.changed,
+        &previous_map,
+    );
     super::announce_changed_rows(&store, &described.changed, &previous_map, now, &announce);
     for key in &described.rejected {
         checked(

@@ -19,7 +19,7 @@ status: draft
 | Phase | What | Size | State |
 |---|---|---|---|
 | A | Leftmost LED blinks when nothing is lit | ~60 lines | built 2026-09-08, in review |
-| B | `SessionLifecycle` actor and broadcast bus in the Tauri shell | ~400 lines | not started |
+| B | `SessionLifecycle` actor and broadcast bus in the Tauri shell | ~400 lines | built 2026-09-08, in review |
 | C | HUD and popover meter read the bus; the idle task folds into the actor | ~300 lines | not started |
 | D | Session list and other consumers move onto the bus | follow-up | not planned here |
 
@@ -175,6 +175,21 @@ observations instead of a store re-read on every wake. The store query
 
 Phase B ships with the bus wired and tested but no consumer changed. The
 existing `sessions:entry-changed` emits stay exactly where they are.
+
+Built 2026-09-08, three small departures from the sketch above:
+
+- Events carry a `SessionRef` (`environmentKey`, `agent`, `sessionId`) rather
+  than the store's `SessionKey`. `store/model.rs` keeps storage shapes off the
+  wire, so the wire shape lives in `session_lifecycle.rs`.
+- `Started` is published only when the key is new to the store and not yet
+  in the live map, so a repeated `Indexed` for the same rows says nothing.
+  A pass reports only its changed rows inside the 180 s window, and the
+  actor ignores an epoch older than the one it holds, so a tick's full pass
+  does not replay activity.
+- One subscriber ships now: a debug-level log of every event
+  (`session_lifecycle_event`), which also shows the lag handling. Without a
+  subscriber the repo's no-dead-code rule fails the build, and the log is
+  how the running app can be checked before phase C.
 
 ### Phase C: the HUD reads the bus, the idle task folds in
 
