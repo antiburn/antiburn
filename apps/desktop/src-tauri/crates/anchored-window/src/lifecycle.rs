@@ -1,6 +1,5 @@
 use crate::model::{
     AnchorRegion, AnchoredWindowRenderRequest, AnchoredWindowRequest, AnchoredWindowState,
-    RevealPolicy,
 };
 
 #[derive(Debug, PartialEq)]
@@ -102,7 +101,6 @@ impl<T: Clone + PartialEq, P: Clone> Lifecycle<T, P> {
         &mut self,
         target: T,
         anchor_region: AnchorRegion,
-        reveal: RevealPolicy,
         initial_height: f64,
         initial_presentation: Option<P>,
     ) -> RequestTransition<T> {
@@ -125,7 +123,6 @@ impl<T: Clone + PartialEq, P: Clone> Lifecycle<T, P> {
             target,
             stored_target,
             anchor_region,
-            reveal,
             initial_height,
             initial_presentation,
         )
@@ -136,7 +133,6 @@ impl<T: Clone + PartialEq, P: Clone> Lifecycle<T, P> {
         target: T,
         stored_target: T,
         anchor_region: AnchorRegion,
-        reveal: RevealPolicy,
         initial_height: f64,
         initial_presentation: Option<P>,
     ) -> RequestTransition<T> {
@@ -149,22 +145,14 @@ impl<T: Clone + PartialEq, P: Clone> Lifecycle<T, P> {
         if !was_visible {
             self.height = initial_height;
         }
-        if reveal == RevealPolicy::AfterPresentation {
-            self.visible = false;
-        }
         self.awaiting_presentation = true;
         self.awaiting_concealment = false;
         self.delivery_pending = true;
-        self.placeholder_reveal_pending = reveal == RevealPolicy::ImmediatePlaceholder
-            && !was_visible
-            && self.initial_presentation.is_none();
-        let reveal_now = reveal == RevealPolicy::ImmediatePlaceholder
-            && self.renderer_ready
-            && self.placeholder_reveal_pending;
+        self.placeholder_reveal_pending = !was_visible && self.initial_presentation.is_none();
+        let reveal_now = self.renderer_ready && self.placeholder_reveal_pending;
         self.placeholder_reveal_pending &= !reveal_now;
         self.visible |= reveal_now;
-        self.awaiting_retarget_commit =
-            reveal == RevealPolicy::ImmediatePlaceholder && was_visible && self.visible;
+        self.awaiting_retarget_commit = was_visible && self.visible;
         RequestTransition::Retargeted {
             request: AnchoredWindowRequest {
                 generation,
@@ -175,20 +163,13 @@ impl<T: Clone + PartialEq, P: Clone> Lifecycle<T, P> {
         }
     }
 
-    pub(crate) fn renderer_ready(
-        &mut self,
-        renderer_generation: u64,
-        reveal: RevealPolicy,
-    ) -> Option<bool> {
+    pub(crate) fn renderer_ready(&mut self, renderer_generation: u64) -> Option<bool> {
         if renderer_generation != self.renderer_generation {
             return None;
         }
         self.renderer_ready = true;
         self.delivery_pending = true;
-        let reveal_now = reveal == RevealPolicy::ImmediatePlaceholder
-            && self.placeholder_reveal_pending
-            && self.target.is_some()
-            && !self.visible;
+        let reveal_now = self.placeholder_reveal_pending && self.target.is_some() && !self.visible;
         self.placeholder_reveal_pending &= !reveal_now;
         self.visible |= reveal_now;
         Some(reveal_now)

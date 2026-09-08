@@ -10,7 +10,7 @@ use crate::geometry::Rect;
 use crate::lifecycle::{Lifecycle, RequestTransition};
 use crate::model::{
     AnchorRegion, AnchoredWindowConfig, AnchoredWindowLifecycleEvent, AnchoredWindowRenderRequest,
-    AnchoredWindowRequest, AnchoredWindowState, RevealPolicy, initial_height,
+    AnchoredWindowRequest, AnchoredWindowState, normalized_heights,
 };
 use crate::{REQUEST_EVENT, STATE_EVENT, platform};
 
@@ -37,7 +37,8 @@ where
 {
     /// Create one manager for a host-owned anchor and companion configuration.
     pub fn new(config: AnchoredWindowConfig) -> Self {
-        let initial_height = initial_height(config.height);
+        let (initial_height, _, _) =
+            normalized_heights(config.initial_height, config.min_height, config.max_height);
         Self {
             inner: Arc::new(Inner {
                 config,
@@ -51,6 +52,14 @@ where
         }
     }
 
+    fn normalized_heights(&self) -> (f64, f64, f64) {
+        normalized_heights(
+            self.inner.config.initial_height,
+            self.inner.config.min_height,
+            self.inner.config.max_height,
+        )
+    }
+
     /// Rebuild a destroyed renderer only while a target still owns it.
     pub fn rebuild_if_targeted(&self, app: &tauri::AppHandle) -> tauri::Result<bool> {
         let _frame_update = self.lock_frame_update();
@@ -58,16 +67,6 @@ where
             return Ok(false);
         }
         self.ensure_window(app).map(|_| true)
-    }
-
-    /// Retarget the active renderer and apply its configured reveal policy.
-    pub fn request(
-        &self,
-        app: &tauri::AppHandle,
-        target: T,
-        anchor_region: AnchorRegion,
-    ) -> tauri::Result<AnchoredWindowRequest<T>> {
-        self.request_with_presentation(app, target, anchor_region, None)
     }
 
     /// Retarget the active renderer with optional instigator-owned content.
@@ -101,8 +100,7 @@ where
         let transition = self.lock_lifecycle().request(
             target,
             anchor_region,
-            self.inner.config.reveal,
-            initial_height(self.inner.config.height),
+            self.normalized_heights().0,
             initial_presentation,
         );
         let render_request = self.lock_lifecycle().pending_render_request();
@@ -132,9 +130,7 @@ where
                 request,
                 reveal_now,
             } => {
-                if self.inner.config.reveal == RevealPolicy::AfterPresentation {
-                    platform::hide(window)
-                } else if reveal_now {
+                if reveal_now {
                     self.reveal_placeholder(app, window)
                 } else {
                     Ok(())
@@ -149,9 +145,6 @@ where
         app: &tauri::AppHandle,
         window: &WebviewWindow,
     ) -> tauri::Result<()> {
-        if self.inner.config.reveal == RevealPolicy::AfterPresentation {
-            return platform::hide(window);
-        }
         let should_reveal = {
             let lifecycle = self.lock_lifecycle();
             lifecycle.renderer_ready
@@ -176,15 +169,6 @@ where
         let delivered = self.lock_lifecycle().mark_delivered(request.generation);
         debug_assert!(delivered, "the frame update serializes renderer delivery");
         Ok(())
-    }
-
-    /// Apply the retained native frame after the renderer commits the new target shell.
-    pub fn retarget_committed(
-        &self,
-        app: &tauri::AppHandle,
-        generation: u64,
-    ) -> tauri::Result<bool> {
-        self.retarget_committed_with_height(app, generation, None)
     }
 
     /// Apply the retained frame after the renderer commits the new target.
@@ -269,7 +253,7 @@ where
         let _frame_update = self.lock_frame_update();
         let Some(reveal_now) = ({
             let mut lifecycle = self.lock_lifecycle();
-            lifecycle.renderer_ready(renderer_generation, self.inner.config.reveal)
+            lifecycle.renderer_ready(renderer_generation)
         }) else {
             return Ok(false);
         };
@@ -320,7 +304,7 @@ where
             }
             #[cfg(target_os = "linux")]
             self.inner.pointer_tracker.reset_for_show();
-            platform::show(&window, self.inner.config.interaction)?;
+            platform::show(&window)?;
         }
         let should_reveal = presentation_pending && self.lock_lifecycle().presented(generation);
         if should_reveal && let Err(error) = self.emit_state(app) {

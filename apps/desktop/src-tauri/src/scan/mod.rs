@@ -881,18 +881,16 @@ async fn pass(
     // Every write below is routed through the storage-health check, so a
     // database that has stopped accepting writes becomes a banner in the
     // popover rather than a list that silently stops changing.
-    checked(
+    let persisted = checked(
         app,
         "The session index",
-        store.upsert_sessions(
-            &records_to_persist(&records, &changed, &returned),
-            &evidence_agents,
-        ),
+        persist_changed_records(&records, &changed, &returned, |records| {
+            store.upsert_sessions(records, &evidence_agents)
+        }),
     )?;
-    crate::insights_worker::wake(app);
-    // A write may have added a session the idle task was not yet watching,
-    // or moved one's deadline later; either way its sleep needs recomputing.
-    idle::wake(app);
+    if persisted {
+        wake_session_workers(app);
+    }
 
     announce_changed_rows(&store, &changed, &previous_records, now, announce);
 
@@ -900,11 +898,10 @@ async fn pass(
     // version of the app that did not gate; the row is removed rather than
     // left to mislead indefinitely.
     for key in &rejected {
-        checked(
-            app,
-            "The session index",
-            store.delete_session(key).map(|_| ()),
-        )?;
+        let removed = checked(app, "The session index", store.delete_session(key))?;
+        if removed {
+            wake_session_workers(app);
+        }
     }
 
     // `records` already holds only the scoped agents' sessions when `scope`
@@ -964,6 +961,26 @@ fn records_to_persist(
         .filter(|record| worth_writing.contains(&record.key))
         .cloned()
         .collect()
+}
+
+fn persist_changed_records(
+    records: &[SessionRecord],
+    changed: &[SessionKey],
+    returned: &[SessionKey],
+    persist: impl FnOnce(&[SessionRecord]) -> anyhow::Result<()>,
+) -> anyhow::Result<bool> {
+    let records = records_to_persist(records, changed, returned);
+    let persisted = !records.is_empty();
+    if persisted {
+        persist(&records)?;
+    }
+    Ok(persisted)
+}
+
+fn wake_session_workers(app: &AppHandle) {
+    crate::insights_worker::wake(app);
+    // A changed session can add, remove, or move an idle deadline.
+    idle::wake(app);
 }
 
 /// [`PassScope::Agents`]'s discovery: only the named agents, concurrently,

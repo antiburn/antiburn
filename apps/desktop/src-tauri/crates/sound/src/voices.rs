@@ -9,8 +9,7 @@
 
 use crate::synth::{UNISON, Voice};
 
-/// Warm and low, opening rather than striking. Used for ActorUpdate, Own-update ready and
-/// Tune up — the three that are informational rather than a problem.
+/// Warm and low, opening rather than striking. Used for the notification sound.
 ///
 /// The long 239 ms attack is what keeps it from reading as an alert: it arrives
 /// gradually instead of hitting, so it registers without demanding that you stop.

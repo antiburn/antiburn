@@ -575,20 +575,31 @@ async fn refresh_sessions_locked(
     };
 
     let described = super::describe_with_states(logs, &home, &ignored, &previous_map).await;
-    checked(
+    let record_keys = described
+        .records
+        .iter()
+        .map(|record| record.key.clone())
+        .collect::<Vec<_>>();
+    let returned = store.sessions_with_missing_source_for(&record_keys)?;
+    let persisted = checked(
         app,
         "The session index",
-        store.upsert_sessions(&described.records, &agents::evidence_cohort()),
+        super::persist_changed_records(
+            &described.records,
+            &described.changed,
+            &returned,
+            |records| store.upsert_sessions(records, &agents::evidence_cohort()),
+        ),
     )?;
-    crate::insights_worker::wake(app);
-    super::idle::wake(app);
+    if persisted {
+        super::wake_session_workers(app);
+    }
     super::announce_changed_rows(&store, &described.changed, &previous_map, now, &announce);
     for key in &described.rejected {
-        checked(
-            app,
-            "The session index",
-            store.delete_session(key).map(|_| ()),
-        )?;
+        let removed = checked(app, "The session index", store.delete_session(key))?;
+        if removed {
+            super::wake_session_workers(app);
+        }
     }
 
     Ok(ScopedSummary {

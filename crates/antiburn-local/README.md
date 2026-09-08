@@ -15,7 +15,9 @@ Consumers pin the full commit SHA for an `antiburn-local-v*` release tag. See
 the [release guide](../../docs/runbooks/release.md#how-consumers-pin-the-engine).
 
 Public modules and compatibility changes are documented in the
-[crate changelog](CHANGELOG.md). Run the standalone checks with:
+[crate changelog](CHANGELOG.md). The [API support notes](API-SUPPORT.md)
+classify public surfaces that the desktop application does not call directly.
+Run the standalone checks with:
 
 ```bash
 cargo fmt --check

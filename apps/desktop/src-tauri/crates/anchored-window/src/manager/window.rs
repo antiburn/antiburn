@@ -9,7 +9,6 @@ use tauri::{PhysicalPosition, PhysicalSize};
 use crate::geometry::CursorProximity;
 #[cfg(not(target_os = "macos"))]
 use crate::geometry::{Point, Rect, classify_cursor, place_left_preferred};
-use crate::model::{HeightPolicy, PlacementPolicy, normalized_height_policy};
 use crate::platform;
 
 use super::AnchoredWindowManager;
@@ -54,9 +53,9 @@ where
         .skip_taskbar(true)
         .visible(false)
         .focused(false)
-        .transparent(platform::is_transparent(self.inner.config.material))
-        .focusable(self.inner.config.interaction == crate::model::InteractionPolicy::Interactive);
-        let window = platform::configure(builder, self.inner.config.material).build()?;
+        .transparent(cfg!(target_os = "macos"))
+        .focusable(false);
+        let window = platform::configure(builder, self.inner.config.corner_radius).build()?;
         #[cfg(target_os = "linux")]
         crate::linux::install_pointer_tracking(&window, Arc::clone(&self.inner.pointer_tracker))?;
         Ok(window)
@@ -70,8 +69,12 @@ where
         let Some(anchor) = app.get_webview_window(&self.inner.config.anchor_label) else {
             return Ok(());
         };
-        let PlacementPolicy::LeftPreferred { gap, screen_margin } = self.inner.config.placement;
-        self.apply_platform_frame(&anchor, companion, gap, screen_margin)
+        self.apply_platform_frame(
+            &anchor,
+            companion,
+            self.inner.config.gap,
+            self.inner.config.screen_margin,
+        )
     }
 
     #[cfg(target_os = "macos")]
@@ -84,10 +87,7 @@ where
     ) -> tauri::Result<()> {
         let (height, anchor_region) = {
             let lifecycle = self.lock_lifecycle();
-            let height = match self.inner.config.height {
-                HeightPolicy::Content { .. } => Some(lifecycle.height),
-                HeightPolicy::MatchAnchor => None,
-            };
+            let height = lifecycle.height;
             (height, lifecycle.anchor_region)
         };
         crate::macos::apply_frame(
@@ -121,10 +121,7 @@ where
         let area = monitor.work_area();
         let (height, anchor_region) = {
             let lifecycle = self.lock_lifecycle();
-            let height = match self.inner.config.height {
-                HeightPolicy::Content { .. } => lifecycle.height,
-                HeightPolicy::MatchAnchor => f64::from(size.height) / scale,
-            };
+            let height = lifecycle.height;
             (height, lifecycle.anchor_region)
         };
         companion.set_size(PhysicalSize::new(
@@ -223,15 +220,11 @@ where
     }
 
     pub(super) fn clamp_height(&self, requested: f64) -> f64 {
-        match normalized_height_policy(self.inner.config.height) {
-            HeightPolicy::Content { initial, min, max } => {
-                if requested.is_finite() {
-                    requested.clamp(min, max)
-                } else {
-                    initial
-                }
-            }
-            HeightPolicy::MatchAnchor => requested,
+        let (initial, min, max) = self.normalized_heights();
+        if requested.is_finite() {
+            requested.clamp(min, max)
+        } else {
+            initial
         }
     }
 
@@ -250,7 +243,7 @@ where
         }
         #[cfg(target_os = "linux")]
         self.inner.pointer_tracker.reset_for_show();
-        if let Err(error) = platform::show(window, self.inner.config.interaction) {
+        if let Err(error) = platform::show(window) {
             self.lock_lifecycle().force_hidden();
             return Err(error);
         }
