@@ -183,11 +183,9 @@ describe("SessionList — rows", () => {
             displayName: "Claude",
             accountKey: "work",
             metric: "weekly",
-            windowId: "weekly-main",
-            resetsAt: new Date(NOW.getTime() + 7 * 86_400_000).toISOString(),
+            windowId: "weekly",
             percent: 12.345,
-            coverage: "complete",
-            periodCount: 1,
+            confidence: "learned",
           },
         ],
       },
@@ -195,7 +193,7 @@ describe("SessionList — rows", () => {
 
     const badge = screen.getByText("12.3%")
     expect(badge.dataset.sessionLimitProvider).toBe("anthropic")
-    expect(badge.dataset.sessionLimitWindow).toBe("weekly-main")
+    expect(badge.dataset.sessionLimitWindow).toBe("weekly")
     expect(badge.dataset.sessionLimitPercent).toBe("12.3450")
     expect(badge).toHaveAttribute(
       "aria-label",
@@ -203,7 +201,7 @@ describe("SessionList — rows", () => {
     )
   })
 
-  it("shows a partial cumulative estimate above one allowance period", () => {
+  it("shows a percent above 100 for a long session as is", () => {
     list({
       badgeMetric: "weeklyPercent",
       sessionLimitAllocations: {
@@ -217,11 +215,9 @@ describe("SessionList — rows", () => {
             displayName: "Claude",
             accountKey: "work",
             metric: "weekly",
-            windowId: "weekly-main",
-            resetsAt: null,
+            windowId: "weekly",
             percent: 102.5,
-            coverage: "partial",
-            periodCount: 2,
+            confidence: "seeded",
           },
         ],
       },
@@ -409,7 +405,7 @@ describe("SessionList — rows", () => {
     expect(screen.getByRole("radio", { name: "% 5h" })).toBeInTheDocument()
   })
 
-  it("keeps a historical five-hour allocation after its latest reset", () => {
+  it("keeps a five-hour allocation badge as time passes, since the factor never expires", () => {
     const props: SessionListProps = {
       entries: [entry()],
       days: 7,
@@ -427,11 +423,9 @@ describe("SessionList — rows", () => {
             displayName: "Codex",
             accountKey: null,
             metric: "fiveHour",
-            windowId: "five-hour",
-            resetsAt: new Date(NOW.getTime() - 1).toISOString(),
+            windowId: "fiveHour",
             percent: 6.25,
-            coverage: "complete",
-            periodCount: 1,
+            confidence: "learned",
           },
         ],
       },
@@ -771,11 +765,9 @@ describe("SessionList — virtualization", () => {
             displayName: "Claude",
             accountKey: null,
             metric: "weekly",
-            windowId: "weekly-main",
-            resetsAt: new Date(NOW.getTime() + 7 * 86_400_000).toISOString(),
+            windowId: "weekly",
             percent: 7.25,
-            coverage: "complete",
-            periodCount: 1,
+            confidence: "learned",
           },
         ],
       },

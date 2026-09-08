@@ -585,11 +585,9 @@ describe("PopoverSession surface presentation", () => {
           displayName: "Claude",
           accountKey: null,
           metric: "weekly",
-          windowId: "weekly-main",
-          resetsAt: null,
+          windowId: "weekly",
           percent: 10,
-          coverage: "complete",
-          periodCount: 1,
+          confidence: "learned",
         },
       ],
     })
@@ -602,7 +600,7 @@ describe("PopoverSession surface presentation", () => {
     unsubscribe()
   })
 
-  it("keeps a cumulative allocation after its latest reset", async () => {
+  it("keeps a learned allocation cached as time passes", async () => {
     vi.useFakeTimers()
     vi.setSystemTime("2027-01-15T08:00:00Z")
     getSessionLimitAllocations.mockResolvedValue({
@@ -616,11 +614,9 @@ describe("PopoverSession surface presentation", () => {
           displayName: "Claude",
           accountKey: null,
           metric: "weekly",
-          windowId: "weekly-main",
-          resetsAt: "2027-01-15T08:00:01Z",
+          windowId: "weekly",
           percent: 10,
-          coverage: "complete",
-          periodCount: 1,
+          confidence: "learned",
         },
       ],
     })
@@ -648,11 +644,9 @@ describe("PopoverSession surface presentation", () => {
           displayName: "Claude",
           accountKey: null,
           metric: "weekly",
-          windowId: "weekly-main",
-          resetsAt: null,
+          windowId: "weekly",
           percent: 10,
-          coverage: "complete",
-          periodCount: 2,
+          confidence: "learned",
         },
       ],
     })
