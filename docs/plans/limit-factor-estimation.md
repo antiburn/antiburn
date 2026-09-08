@@ -387,6 +387,64 @@ build and kept for phase 2 to build on.
   point for older sessions; missing factor gives no row; subagent rows priced
   on their own cost; frontend badge tests from the cherry-pick still pass.
 
+#### Decisions (implementation, 2026-09-08)
+
+The document above did not settle these; they were decided during the phase 2
+build.
+
+- **Attribution and pricing use `model_breakdown_json`, not
+  `pricing_breakdown_json`.** `session_analysis` stores two breakdowns:
+  `model_breakdown_json` keys by the literal model name;
+  `pricing_breakdown_json` keys by the normalized `turn_pricing_key`, which
+  folds a "-fast" speed suffix into the model name. `provider_usage::attribute`
+  routes by-model for bring-your-own agents and needs the literal model name to
+  match its routing table, so `session_limit_allocations` calls `attribute`
+  with `model_breakdown_json` and prices the result with `price_breakdown`.
+  This loses the "-fast" tier's separate price for a mixed-speed session; the
+  badge accepts that imprecision rather than routing on a key `attribute`
+  cannot read.
+- **Subagent cost needs no separate handling.** The plan's phase 2 test list
+  asks for "subagent rows priced on their own cost," which assumes a subagent
+  appears as its own row to price. It does not: `assemble_session_analysis`
+  merges every subagent's tokens into the parent session's own
+  `inclusive_model_breakdown` before it is stored as `model_breakdown_json`.
+  `recent_sessions_excluding` returns one row per top-level session, so
+  `session_limit_allocations` already prices each session's subagent work
+  through that single inclusive breakdown. No separate subagent `SessionRecord`
+  exists to test in isolation.
+- **`window_id` on `SessionLimitAllocation` now carries the lane string**
+  (`"weekly"` or `"fiveHour"`), not a period or window identifier. Periods no
+  longer drive the badge, so no per-period id exists to report; the lane is the
+  only "which window" fact the frontend needs to pick an icon and label.
+- **`coverage`, `period_count`, and `resets_at` are dropped from
+  `SessionLimitAllocation`**, not renamed or kept alongside `confidence`. The
+  frontend badge (`PopoverSession`, `SessionList`) reads only `metric`,
+  `percent`, and now `confidence`; nothing consumes a reset time or a period
+  count once the estimate comes from a factor point instead of a durable
+  per-period ledger row.
+- **`clear_local_session_data` also deletes `provider_limit_residual`,
+  `provider_limit_learn_cursor`, `provider_limit_factor_sample`, and
+  `provider_limit_factor_point`, ahead of `provider_usage_period`.** These
+  phase 1 tables foreign-key onto `provider_usage_period`, and every
+  connection runs with `PRAGMA foreign_keys = true`. The plan did not call this
+  out because the tables did not exist when this method was last touched;
+  leaving them out would raise a foreign key violation the first time a user
+  clears local data.
+- **Dead code removed beyond the plan's explicit list**, found by following
+  compiler and clippy errors after deleting `allocation.rs` and `ledger.rs`:
+  `Store::session_usage_turns` and `session_usage_turns_between` (and their
+  `SessionUsageRecord`/`SessionUsageTurnRecord` types), `database_path` on
+  `Store` (only ever written, its one reader was `open_allocation_reader`),
+  and `ALLOCATION_READ_BUSY_TIMEOUT`. None had a use outside the allocator.
+- **V40 drops the three allocator tables before dropping the
+  `allocation_frozen` column.** The dirty queue and its generation counter, and
+  the materialized per-session rows, all foreign-key onto
+  `provider_usage_period`; dropping the whole table they reference is safe
+  regardless of order, but dropping them before touching
+  `provider_usage_period` itself keeps the migration's intent obvious to a
+  reader. `ALTER TABLE ... DROP COLUMN` needs SQLite 3.35+, available through
+  the bundled `libsqlite3-sys` 0.30.1.
+
 ### Phase 3: residual, diagnostics, analytics
 
 - Residual row per period on each learning pass.
