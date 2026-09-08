@@ -146,6 +146,11 @@ getrandom = "0.4"
 # backend each OS needs, with no extra channel crate (`crossbeam-channel`,
 # `flume`) — the watcher forwards events over a `std::sync::mpsc` channel.
 notify = "8"
+# A cross-platform PTY for the Claude credential-refresh touch
+# (`provider_usage/live/sources/claude_touch.rs`). Nothing already in the tree
+# can allocate a PTY, and the Claude CLI refreshes its token only when it runs
+# interactively — see that module's doc for the crate choice.
+portable-pty = "0.9.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Reads clock-tick and page-size units for the bounded analytics process sample.
