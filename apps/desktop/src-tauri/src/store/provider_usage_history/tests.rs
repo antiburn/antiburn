@@ -603,4 +603,33 @@ mod history_tests {
         let new_id = store.record_provider_usage_snapshots(&[new]).unwrap()[0];
         assert!(new_id > old_id);
     }
+
+    #[test]
+    fn the_plan_and_plan_tier_a_snapshot_states_are_stored_on_its_observation() {
+        let store = store();
+        store.upsert_sessions(&[session()], &[]).unwrap();
+        let mut reading = snapshot(
+            ACCOUNT_A,
+            NOW,
+            "five-hour",
+            Some(NOW - 18_000),
+            Some(NOW),
+            Some(40.0),
+        );
+        reading.plan = Some("pro".to_string());
+        reading.plan_tier = Some("standard".to_string());
+
+        let period_id = store.record_provider_usage_snapshots(&[reading]).unwrap()[0];
+
+        let history = store
+            .provider_usage_period_history(period_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(history.observations.len(), 1);
+        assert_eq!(history.observations[0].plan.as_deref(), Some("pro"));
+        assert_eq!(
+            history.observations[0].plan_tier.as_deref(),
+            Some("standard")
+        );
+    }
 }

@@ -56,6 +56,8 @@ pub struct ProviderUsageObservation {
     pub source_id: String,
     pub reported_starts_at_epoch: Option<i64>,
     pub reported_resets_at_epoch: Option<i64>,
+    pub plan: Option<String>,
+    pub plan_tier: Option<String>,
 }
 
 /// A complete period and its ordered readings.
@@ -90,6 +92,8 @@ struct Reading<'a> {
     source_id: &'a str,
     starts_at_epoch: Option<i64>,
     resets_at_epoch: Option<i64>,
+    plan: Option<&'a str>,
+    plan_tier: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -205,7 +209,7 @@ impl Store {
                 SELECT id, period_id, provider, account_key, window_id, window_kind,
                        window_role, scope_key, scope_label, observed_at_epoch, used_percent,
                        is_fresh, is_authoritative, confidence, source_id,
-                       reported_starts_at_epoch, reported_resets_at_epoch,
+                       reported_starts_at_epoch, reported_resets_at_epoch, plan, plan_tier,
                        ROW_NUMBER() OVER (ORDER BY observed_at_epoch, id) AS row_number,
                        COUNT(*) OVER () AS total_rows
                  FROM provider_usage_observation
@@ -217,7 +221,7 @@ impl Store {
              SELECT id, period_id, provider, account_key, window_id, window_kind,
                     window_role, scope_key, scope_label, observed_at_epoch, used_percent,
                     is_fresh, is_authoritative, confidence, source_id,
-                    reported_starts_at_epoch, reported_resets_at_epoch
+                    reported_starts_at_epoch, reported_resets_at_epoch, plan, plan_tier
                FROM numbered
               WHERE row_number = 1 OR row_number = total_rows
                  OR (row_number - 1) % ?4 = 0
@@ -300,6 +304,10 @@ impl Store {
             "DELETE FROM provider_usage_observation WHERE observed_at_epoch < ?1",
             [cutoff],
         )?;
+        // A sample references its period only for provenance. Null the
+        // reference before the period disappears, so the deletion below stays
+        // exactly the query it was before samples existed.
+        super::provider_limit::detach_samples_pending_period_deletion_in(connection)?;
         connection.execute(
             "DELETE FROM provider_usage_period
               WHERE NOT EXISTS (
@@ -316,6 +324,7 @@ impl Store {
                 )",
             [],
         )?;
+        super::provider_limit::apply_sample_retention_in(connection, retention_days, now_epoch)?;
         Ok(removed)
     }
 
@@ -378,6 +387,8 @@ impl<'a> Reading<'a> {
             source_id: snapshot.source.id,
             starts_at_epoch,
             resets_at_epoch,
+            plan: snapshot.plan.as_deref(),
+            plan_tier: snapshot.plan_tier.as_deref(),
         }
     }
 }
@@ -529,7 +540,7 @@ fn existing_observation(
             "SELECT id, period_id, provider, account_key, window_id, window_kind, window_role,
                     scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
                     is_authoritative, confidence, source_id, reported_starts_at_epoch,
-                    reported_resets_at_epoch
+                    reported_resets_at_epoch, plan, plan_tier
                FROM provider_usage_observation
               WHERE provider = ?1 AND account_key = ?2 AND window_id = ?3
                 AND window_kind = ?4 AND window_role = ?5 AND scope_key = ?6
@@ -600,8 +611,8 @@ fn write_observation(
                 period_id, provider, account_key, window_id, window_kind, window_role,
                 scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
                 is_authoritative, confidence, source_id, reported_starts_at_epoch,
-                reported_resets_at_epoch
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                reported_resets_at_epoch, plan, plan_tier
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?18, ?19)
             ON CONFLICT (
                 provider, account_key, window_id, window_kind, window_role, scope_key,
                 observed_at_epoch
@@ -624,7 +635,9 @@ fn write_observation(
                     WHEN excluded.reported_resets_at_epoch IS NULL
                         THEN provider_usage_observation.reported_resets_at_epoch
                     ELSE excluded.reported_resets_at_epoch
-                END",
+                END,
+                plan = excluded.plan,
+                plan_tier = excluded.plan_tier",
         params![
             period_id,
             reading.provider,
@@ -643,6 +656,8 @@ fn write_observation(
             reading.starts_at_epoch,
             reading.resets_at_epoch,
             i64::from(detaches_existing),
+            reading.plan,
+            reading.plan_tier,
         ],
     )?;
     if let Some(period_id) = period_id {
@@ -690,7 +705,7 @@ fn query_observations(
         "SELECT id, period_id, provider, account_key, window_id, window_kind, window_role,
                 scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
                 is_authoritative, confidence, source_id, reported_starts_at_epoch,
-                reported_resets_at_epoch
+                reported_resets_at_epoch, plan, plan_tier
            FROM provider_usage_observation
           WHERE period_id = ?1
           ORDER BY observed_at_epoch, id",
@@ -737,6 +752,8 @@ fn row_to_observation(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProviderUsage
         source_id: row.get(14)?,
         reported_starts_at_epoch: row.get(15)?,
         reported_resets_at_epoch: row.get(16)?,
+        plan: row.get(17)?,
+        plan_tier: row.get(18)?,
     })
 }
 
