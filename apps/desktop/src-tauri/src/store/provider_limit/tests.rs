@@ -95,6 +95,35 @@ fn bind_account(store: &Store, key: &SessionKey, account_key: &str) {
         .expect("binds session account");
 }
 
+fn insert_period(
+    store: &Store,
+    account_key: &str,
+    start: i64,
+    reset: i64,
+    last_observed: i64,
+) -> i64 {
+    let connection = store.lock();
+    connection
+        .execute(
+            "INSERT INTO provider_usage_period (
+                 provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch
+             ) VALUES (?1, ?2, 'five-hour', 'rolling', 'primaryShort',
+                       'account', 'account', ?3, ?4, ?5, ?6, ?6)",
+            params![
+                PROVIDER,
+                account_key,
+                reset - start,
+                start,
+                reset,
+                last_observed
+            ],
+        )
+        .expect("inserts a synthetic period");
+    connection.last_insert_rowid()
+}
+
 fn observe_account(store: &Store, account_key: &str) {
     store
         .lock()
@@ -356,5 +385,99 @@ fn a_sample_s_period_reference_is_nulled_before_its_period_is_deleted() {
     assert_eq!(
         samples[0].period_id, None,
         "the deleted period's id is nulled, not left dangling"
+    );
+}
+
+#[test]
+fn a_period_with_no_learn_cursor_is_a_candidate_however_old_its_last_reading() {
+    let store = memory_store();
+    // Last observed two days ago: a "recently observed" rule alone would
+    // never pick this up. Bootstrap on upgrade relies on it being a
+    // candidate anyway, since it has no cursor row yet.
+    let period_id = insert_period(&store, &account('a'), 0, 18_000, 2 * 86_400);
+
+    let now = 3 * 86_400;
+    let periods = store
+        .provider_limit_candidate_periods(now - 900)
+        .expect("query succeeds");
+    assert_eq!(periods.len(), 1);
+    assert_eq!(periods[0].id, period_id);
+}
+
+#[test]
+fn a_period_whose_cursor_has_caught_up_and_gone_stale_is_not_a_candidate() {
+    let store = memory_store();
+    let last_observed = 2 * 86_400;
+    let period_id = insert_period(&store, &account('a'), 0, 18_000, last_observed);
+    store
+        .advance_learn_cursor(period_id, last_observed)
+        .expect("advances the cursor");
+
+    let now = 3 * 86_400;
+    let periods = store
+        .provider_limit_candidate_periods(now - 900)
+        .expect("query succeeds");
+    assert!(
+        periods.is_empty(),
+        "a cursor already at the period's last reading, outside the recompute window, is not re-read"
+    );
+}
+
+#[test]
+fn a_period_with_a_cursor_behind_its_last_reading_is_a_candidate() {
+    let store = memory_store();
+    let last_observed = 2 * 86_400;
+    let period_id = insert_period(&store, &account('a'), 0, 18_000, last_observed);
+    // A backfill (or an earlier partial pass) left the cursor behind the
+    // period's newest reading.
+    store
+        .advance_learn_cursor(period_id, last_observed - 1)
+        .expect("advances the cursor");
+
+    let now = 3 * 86_400;
+    let periods = store
+        .provider_limit_candidate_periods(now - 900)
+        .expect("query succeeds");
+    assert_eq!(periods.len(), 1);
+    assert_eq!(periods[0].id, period_id);
+}
+
+#[test]
+fn a_period_s_learn_cursor_is_deleted_before_its_period_is_deleted() {
+    let store = memory_store();
+    let account_key = account('a');
+    let period_id = {
+        let connection = store.lock();
+        connection
+            .execute(
+                "INSERT INTO provider_usage_period (
+                     provider, account_key, window_id, window_kind, window_role,
+                     scope_key, scope_label, duration_seconds, starts_at_epoch,
+                     resets_at_epoch, first_observed_epoch, last_observed_epoch
+                 ) VALUES (?1, ?2, 'five-hour', 'rolling', 'primaryShort',
+                           'account', 'account', 18000, 0, 18000, 10, 10)",
+                params![PROVIDER, account_key],
+            )
+            .unwrap();
+        connection.last_insert_rowid()
+    };
+    store
+        .advance_learn_cursor(period_id, 10)
+        .expect("advances the cursor");
+
+    let now = 200 * 86_400;
+    Store::apply_provider_usage_retention_in(&store.lock(), 400, now).unwrap();
+
+    let remaining: i64 = store
+        .lock()
+        .query_row(
+            "SELECT COUNT(*) FROM provider_limit_learn_cursor WHERE period_id = ?1",
+            [period_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        remaining, 0,
+        "the cursor is deleted, not left pointing at a removed period"
     );
 }

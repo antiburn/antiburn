@@ -261,24 +261,30 @@ impl Store {
 
     /// Active provider periods a factor-learning pass should examine.
     ///
-    /// A period qualifies when it carries a primary lane and received an
-    /// observation at or after `since_epoch`. Bootstrapping a new period and
-    /// recomputing a recent one are the same query: both leave a fresh
-    /// `last_observed_epoch`.
+    /// A period qualifies when it carries a primary lane and either: has no
+    /// learn cursor yet, has a reading newer than its cursor, or was
+    /// observed at or after `since_epoch`. The first two admit a period
+    /// whose readings are old — from bootstrap on upgrade or from a
+    /// backfill — that a "recently observed" rule alone would never pick up;
+    /// the third keeps a just-updated period in the recompute window even
+    /// once its cursor catches up to it.
     pub(crate) fn provider_limit_candidate_periods(
         &self,
         since_epoch: i64,
     ) -> Result<Vec<ProviderUsagePeriod>> {
         let connection = self.lock();
         let mut statement = connection.prepare(
-            "SELECT id, provider, account_key, window_id, window_kind, window_role,
-                    scope_key, scope_label, duration_seconds, starts_at_epoch,
-                    resets_at_epoch, first_observed_epoch, last_observed_epoch
-               FROM provider_usage_period
-              WHERE scope_key = 'account'
-                AND window_role IN ('primaryShort', 'primaryLong')
-                AND last_observed_epoch >= ?1
-              ORDER BY last_observed_epoch DESC
+            "SELECT p.id, p.provider, p.account_key, p.window_id, p.window_kind, p.window_role,
+                    p.scope_key, p.scope_label, p.duration_seconds, p.starts_at_epoch,
+                    p.resets_at_epoch, p.first_observed_epoch, p.last_observed_epoch
+               FROM provider_usage_period p
+               LEFT JOIN provider_limit_learn_cursor c ON c.period_id = p.id
+              WHERE p.scope_key = 'account'
+                AND p.window_role IN ('primaryShort', 'primaryLong')
+                AND (c.period_id IS NULL
+                     OR p.last_observed_epoch > c.learned_through_epoch
+                     OR p.last_observed_epoch >= ?1)
+              ORDER BY p.last_observed_epoch DESC
               LIMIT ?2",
         )?;
         let periods = statement
@@ -288,6 +294,27 @@ impl Store {
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(periods)
+    }
+
+    /// Record how far one period's observations have been read into samples.
+    ///
+    /// Call this only after a pass considers every sample the period could
+    /// yet produce; a pass that stops mid-period on its budget must leave
+    /// the cursor where it was, so the period stays a candidate next time.
+    pub(crate) fn advance_learn_cursor(
+        &self,
+        period_id: i64,
+        learned_through_epoch: i64,
+    ) -> Result<()> {
+        let connection = self.lock();
+        connection.execute(
+            "INSERT INTO provider_limit_learn_cursor (period_id, learned_through_epoch)
+                 VALUES (?1, ?2)
+                 ON CONFLICT (period_id) DO UPDATE SET
+                     learned_through_epoch = excluded.learned_through_epoch",
+            params![period_id, learned_through_epoch],
+        )?;
+        Ok(())
     }
 
     /// Insert or replace one factor sample, keyed by its interval.
@@ -354,22 +381,28 @@ impl Store {
             .collect())
     }
 
-    /// Whether a delta sample exists at all for one account and lane.
+    /// Whether a delta sample exists for one account and lane under the
+    /// given plan and plan tier.
     ///
-    /// A window-start sample is only ever taken while this is false.
+    /// A window-start sample is only ever taken while this is false. Scoping
+    /// to the plan pair lets a fresh plan or tier form its own window-start
+    /// sample rather than being blocked by an older plan's delta history.
     pub(crate) fn has_delta_factor_sample(
         &self,
         provider: &str,
         account_key: &str,
         lane: &str,
+        plan: Option<&str>,
+        plan_tier: Option<&str>,
     ) -> Result<bool> {
         let connection = self.lock();
         Ok(connection.query_row(
             "SELECT EXISTS(
                  SELECT 1 FROM provider_limit_factor_sample
                   WHERE provider = ?1 AND account_key = ?2 AND lane = ?3 AND kind = 'delta'
+                    AND plan IS ?4 AND plan_tier IS ?5
              )",
-            params![provider, account_key, lane],
+            params![provider, account_key, lane, plan, plan_tier],
             |row| row.get::<_, i64>(0),
         )? != 0)
     }
@@ -579,16 +612,14 @@ impl Store {
     }
 }
 
-/// Null a sample's `period_id` before its period is deleted by retention.
+/// Null a sample's `period_id`, and delete its learn cursor, before its
+/// period is deleted by retention.
 ///
 /// The period-deletion query in [`super::provider_usage_history`] stays
 /// exactly as it was before samples existed: this runs first, in the same
 /// transaction, against the identical set of about-to-be-removed periods.
 pub(crate) fn detach_samples_pending_period_deletion_in(connection: &Connection) -> Result<()> {
-    connection.execute(
-        "UPDATE provider_limit_factor_sample
-            SET period_id = NULL
-          WHERE period_id IN (
+    const PENDING_DELETION: &str = "
               SELECT id FROM provider_usage_period p
                WHERE NOT EXISTS (
                        SELECT 1 FROM provider_usage_observation o WHERE o.period_id = p.id
@@ -598,8 +629,17 @@ pub(crate) fn detach_samples_pending_period_deletion_in(connection: &Connection)
                    )
                  AND NOT EXISTS (
                        SELECT 1 FROM provider_usage_allocation_dirty d WHERE d.period_id = p.id
-                   )
-          )",
+                   )";
+    connection.execute(
+        &format!(
+            "UPDATE provider_limit_factor_sample
+                SET period_id = NULL
+              WHERE period_id IN ({PENDING_DELETION})"
+        ),
+        [],
+    )?;
+    connection.execute(
+        &format!("DELETE FROM provider_limit_learn_cursor WHERE period_id IN ({PENDING_DELETION})"),
         [],
     )?;
     Ok(())
