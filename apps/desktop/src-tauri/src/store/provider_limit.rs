@@ -444,12 +444,14 @@ impl Store {
             .collect())
     }
 
-    /// Whether a delta sample exists for one account and lane under the
-    /// given plan and plan tier.
+    /// Whether a delta or rollout sample exists for one account and lane
+    /// under the given plan and plan tier.
     ///
     /// A window-start sample is only ever taken while this is false. Scoping
     /// to the plan pair lets a fresh plan or tier form its own window-start
-    /// sample rather than being blocked by an older plan's delta history.
+    /// sample rather than being blocked by an older plan's history. A
+    /// rollout sample counts the same as a delta sample: both are a real
+    /// meter delta, priced the same way, differing only in provenance.
     pub(crate) fn has_delta_factor_sample(
         &self,
         provider: &str,
@@ -462,7 +464,8 @@ impl Store {
         Ok(connection.query_row(
             "SELECT EXISTS(
                  SELECT 1 FROM provider_limit_factor_sample
-                  WHERE provider = ?1 AND account_key = ?2 AND lane = ?3 AND kind = 'delta'
+                  WHERE provider = ?1 AND account_key = ?2 AND lane = ?3
+                    AND kind IN ('delta', 'rollout')
                     AND plan IS ?4 AND plan_tier IS ?5
              )",
             params![provider, account_key, lane, plan, plan_tier],
@@ -470,8 +473,8 @@ impl Store {
         )? != 0)
     }
 
-    /// Delta samples for one account and lane, at or after `since_epoch`,
-    /// ordered oldest first.
+    /// Delta and rollout samples for one account and lane, at or after
+    /// `since_epoch`, ordered oldest first.
     pub(crate) fn delta_factor_samples_since(
         &self,
         provider: &str,
@@ -482,7 +485,7 @@ impl Store {
         let connection = self.lock();
         let mut statement = connection.prepare(&format!(
             "{FACTOR_SAMPLE_SELECT} WHERE provider = ?1 AND account_key = ?2 AND lane = ?3
-               AND kind = 'delta' AND to_epoch >= ?4
+               AND kind IN ('delta', 'rollout') AND to_epoch >= ?4
               ORDER BY to_epoch"
         ))?;
         let samples = statement
@@ -494,7 +497,8 @@ impl Store {
         Ok(samples)
     }
 
-    /// Every delta sample for one account and lane, ordered oldest first.
+    /// Every delta and rollout sample for one account and lane, ordered
+    /// oldest first.
     ///
     /// Used only when fewer than three fall inside the recent window.
     pub(crate) fn all_delta_factor_samples(
@@ -506,7 +510,7 @@ impl Store {
         let connection = self.lock();
         let mut statement = connection.prepare(&format!(
             "{FACTOR_SAMPLE_SELECT} WHERE provider = ?1 AND account_key = ?2 AND lane = ?3
-               AND kind = 'delta'
+               AND kind IN ('delta', 'rollout')
               ORDER BY to_epoch"
         ))?;
         let samples = statement
