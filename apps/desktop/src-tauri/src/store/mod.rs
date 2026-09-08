@@ -33,7 +33,7 @@ mod publish_tests;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Duration;
@@ -167,6 +167,27 @@ const EVIDENCE_BY_KEY_SQL: &str = "SELECT environment_key, agent, session_id, st
 /// unbounded table on a reader's disk.
 const ANALYTICS_QUEUE_LIMIT: u32 = 500;
 
+/// Maximum activity or session keys bound by one scan-history query.
+///
+/// Three values per key keep each statement below SQLite's legacy 999-value
+/// limit. A scan can issue more batches, but it never loads unrelated rows.
+const SCAN_HISTORY_KEY_BATCH_SIZE: usize = 256;
+
+fn session_records_for_activity_keys_sql(key_count: usize) -> String {
+    let predicates = (0..key_count)
+        .map(|index| {
+            let first = index * 3 + 1;
+            format!(
+                "(s.source_label = ?{} AND s.environment_key = ?{first} AND s.agent = ?{})",
+                first + 2,
+                first + 1
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!("{SESSION_SELECT_SQL}\n WHERE {predicates}")
+}
+
 /// File name of the database inside the app data directory.
 ///
 /// Debug builds use their own file so a half-finished migration cannot damage
@@ -250,6 +271,21 @@ const SESSIONS_ACTIVE_SINCE_SQL: &str = "SELECT environment_key, agent, session_
 /// Ceiling on how many uuids [`Store::sessions_owning_turn_uuids`] matches
 /// in one call, applied to the `IN (...)` list it builds.
 const FORK_LINEAGE_UUID_CAP: usize = 8;
+
+/// Keep each watcher lookup below SQLite's host-parameter limit.
+const SOURCE_LABEL_LOOKUP_CHUNK_SIZE: usize = 500;
+
+/// Build the indexed query for one chunk of native file source labels.
+fn native_file_session_activity_keys_sql(source_label_count: usize) -> String {
+    let placeholders = vec!["?"; source_label_count].join(", ");
+    format!(
+        "SELECT agent, source_label
+           FROM session
+          WHERE source_label IN ({placeholders})
+            AND environment_key = 'native'
+            AND source_kind = 'file'"
+    )
+}
 
 /// A scalar subquery counting one session's published turn rows, correlated
 /// to an outer `session s` row. Shared by [`sessions_owning_turn_uuids_sql`]
@@ -553,7 +589,25 @@ impl Store {
 
     /// Make setup pending without changing the reader's data or choices.
     pub fn restart_onboarding(&self) -> Result<(AppSettings, AppSettings)> {
-        self.update_settings(|settings| settings.onboarding_completed = false)
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let previous = read_settings(&tx)?;
+        let mut saved = previous.clone();
+        saved.onboarding_completed = false;
+        let saved = saved.normalized();
+        write_settings(&tx, &saved)?;
+        tx.execute(
+            "INSERT INTO setting (key, value) VALUES ('internal:onboardingFlow', 'restart')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [],
+        )?;
+        tx.commit()?;
+        Ok((previous, saved))
+    }
+
+    /// Whether the pending setup flow came from the explicit restart action.
+    pub fn onboarding_flow_is_restart(&self) -> bool {
+        self.internal_value("internal:onboardingFlow").as_deref() == Some("restart")
     }
 
     /// Replace every preference, returning what was actually stored (clamped).
@@ -660,6 +714,15 @@ impl Store {
         Ok(())
     }
 
+    /// Return the current delivery backlog depth.
+    pub fn analytics_event_count(&self) -> Result<u32> {
+        Ok(self
+            .lock()
+            .query_row("SELECT COUNT(*) FROM analytics_event", [], |row| {
+                row.get::<_, u32>(0)
+            })?)
+    }
+
     /// The next batch to attempt, oldest first, as `(id, payload)`.
     pub fn pending_analytics_events(&self, limit: u32) -> Result<Vec<(i64, String)>> {
         let connection = self.lock();
@@ -720,13 +783,26 @@ impl Store {
 
     /// Mint or rotate the installation identifier.
     pub fn set_analytics_identity(&self, install_id: &str) -> Result<()> {
+        self.set_analytics_identity_with_time(install_id, &now_rfc3339())
+    }
+
+    fn set_analytics_identity_with_time(&self, install_id: &str, minted_at: &str) -> Result<()> {
         self.lock().execute(
             "INSERT INTO analytics_identity (id, install_id, minted_at) VALUES (1, ?1, ?2)
              ON CONFLICT(id) DO UPDATE SET install_id = excluded.install_id,
                                            minted_at  = excluded.minted_at",
-            params![install_id, now_rfc3339()],
+            params![install_id, minted_at],
         )?;
         Ok(())
+    }
+
+    #[cfg(all(test, feature = "analytics"))]
+    pub(crate) fn set_analytics_identity_at(
+        &self,
+        install_id: &str,
+        minted_at: &str,
+    ) -> Result<()> {
+        self.set_analytics_identity_with_time(install_id, minted_at)
     }
 
     /// Opting out: the queue and the identity go together, in one transaction.
@@ -955,11 +1031,8 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Return every session's full cached record keyed by environment, agent,
-    /// and source label. A single map keeps the scan's cheap unchanged-source
-    /// gate outside the SQLite lock without allowing native/WSL rows to
-    /// collide, and lets the scan reuse a whole previous record instead of
-    /// re-describing a source that has not changed.
+    /// Return every session's full cached record.
+    #[cfg(test)]
     pub fn session_records(&self) -> Result<HashMap<SessionActivityKey, SessionRecord>> {
         let connection = self.lock();
         let mut statement = connection.prepare(SESSION_SELECT_SQL)?;
@@ -973,6 +1046,85 @@ impl Store {
                 record.source_label.clone(),
             );
             records.insert(key, record);
+        }
+        Ok(records)
+    }
+
+    /// Return cached records for the activity sources in one discovery pass.
+    ///
+    /// Each predicate includes the environment and agent. Native and WSL rows
+    /// can therefore share a source label without sharing cached state.
+    pub fn session_records_for_activity_keys(
+        &self,
+        keys: &[SessionActivityKey],
+    ) -> Result<HashMap<SessionActivityKey, SessionRecord>> {
+        let connection = self.lock();
+        let mut records = HashMap::with_capacity(keys.len());
+        for keys in keys.chunks(SCAN_HISTORY_KEY_BATCH_SIZE) {
+            let mut values = Vec::with_capacity(keys.len() * 3);
+            for key in keys {
+                values.push(rusqlite::types::Value::Text(key.environment_key.clone()));
+                values.push(rusqlite::types::Value::Text(key.agent.clone()));
+                values.push(rusqlite::types::Value::Text(key.source_label.clone()));
+            }
+            let mut statement =
+                connection.prepare(&session_records_for_activity_keys_sql(keys.len()))?;
+            let rows = statement.query_map(params_from_iter(values.iter()), session_from_row)?;
+            for row in rows {
+                let record = row?;
+                let key = SessionActivityKey::new(
+                    record.key.environment_key.clone(),
+                    record.key.agent.clone(),
+                    record.source_label.clone(),
+                );
+                records.insert(key, record);
+            }
+        }
+        Ok(records)
+    }
+
+    /// Return native session identities for one agent title index.
+    pub fn native_session_ids_for_agent(&self, agent: &str) -> Result<Vec<String>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT session_id
+               FROM session
+              WHERE environment_key = 'native' AND agent = ?1
+              ORDER BY session_id",
+        )?;
+        let rows = statement.query_map(params![agent], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Return cached records for exact session identities.
+    pub fn session_records_for_session_keys(
+        &self,
+        keys: &[SessionKey],
+    ) -> Result<Vec<SessionRecord>> {
+        let connection = self.lock();
+        let mut records = Vec::with_capacity(keys.len());
+        for keys in keys.chunks(SCAN_HISTORY_KEY_BATCH_SIZE) {
+            let predicates = (0..keys.len())
+                .map(|index| {
+                    let first = index * 3 + 1;
+                    format!(
+                        "(s.environment_key = ?{first} AND s.agent = ?{} AND s.session_id = ?{})",
+                        first + 1,
+                        first + 2
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let mut values = Vec::with_capacity(keys.len() * 3);
+            for key in keys {
+                values.push(rusqlite::types::Value::Text(key.environment_key.clone()));
+                values.push(rusqlite::types::Value::Text(key.agent.clone()));
+                values.push(rusqlite::types::Value::Text(key.session_id.clone()));
+            }
+            let mut statement =
+                connection.prepare(&format!("{SESSION_SELECT_SQL}\n WHERE {predicates}"))?;
+            let rows = statement.query_map(params_from_iter(values.iter()), session_from_row)?;
+            records.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
         }
         Ok(records)
     }
@@ -992,35 +1144,66 @@ impl Store {
             .optional()?)
     }
 
-    /// One native file session's cached record, addressed by its
-    /// `source_label` (the transcript path) rather than its session id.
+    /// Return native file activity keys grouped by their requested transcript
+    /// paths. One lock and bounded query chunks cover the whole watcher burst.
     ///
-    /// T1: the watcher names a changed path, not a session id, so the scoped
-    /// scan classifies a burst's paths against `source_label` before it can
-    /// build a targeted refresh.
-    pub fn session_record_by_source_label(
+    /// A path can match more than one agent row. Keep every full activity key
+    /// so the classifier does not merge agents or native and WSL identities.
+    pub fn native_file_session_activity_keys(
         &self,
-        source_label: &str,
-    ) -> Result<Option<(SessionActivityKey, SessionRecord)>> {
+        source_labels: &BTreeSet<String>,
+    ) -> Result<HashMap<String, BTreeSet<SessionActivityKey>>> {
+        if source_labels.is_empty() {
+            return Ok(HashMap::new());
+        }
         let connection = self.lock();
-        let mut statement = connection.prepare(&format!(
-            "{SESSION_SELECT_SQL}\n              WHERE source_label = ?1"
-        ))?;
-        let record = statement
-            .query_row(params![source_label], session_from_row)
-            .optional()?;
-        Ok(record.map(|record| {
-            let key = SessionActivityKey::new(
-                record.key.environment_key.clone(),
-                record.key.agent.clone(),
-                record.source_label.clone(),
-            );
-            (key, record)
-        }))
+        let labels = source_labels.iter().collect::<Vec<_>>();
+        let mut matches: HashMap<String, BTreeSet<SessionActivityKey>> = HashMap::new();
+        for chunk in labels.chunks(SOURCE_LABEL_LOOKUP_CHUNK_SIZE) {
+            let mut statement =
+                connection.prepare(&native_file_session_activity_keys_sql(chunk.len()))?;
+            let rows = statement.query_map(
+                params_from_iter(chunk.iter().map(|label| label.as_str())),
+                |row| {
+                    let agent = row.get::<_, String>(0)?;
+                    let source_label = row.get::<_, String>(1)?;
+                    Ok((
+                        source_label.clone(),
+                        SessionActivityKey::new("native", agent, source_label),
+                    ))
+                },
+            )?;
+            for row in rows {
+                let (source_label, key) = row?;
+                matches.entry(source_label).or_default().insert(key);
+            }
+        }
+        Ok(matches)
     }
 
-    /// Keys of every session whose evidence last failed because its source
-    /// was missing.
+    /// Return one file session by its complete activity identity.
+    pub fn session_record_by_activity_key(
+        &self,
+        key: &SessionActivityKey,
+    ) -> Result<Option<SessionRecord>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(&format!(
+            "{SESSION_SELECT_SQL}
+              WHERE source_label = ?3
+                AND environment_key = ?1
+                AND agent = ?2
+                AND source_kind = 'file'"
+        ))?;
+        Ok(statement
+            .query_row(
+                params![key.environment_key, key.agent, key.source_label],
+                session_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Keys in `sessions` whose evidence last failed because its source was
+    /// missing.
     ///
     /// R3: a full pass reuses an unchanged row without rewriting it, which
     /// would otherwise leave a session stuck once its source returns —
@@ -1028,24 +1211,48 @@ impl Store {
     /// persists these rows through `upsert_sessions` even when the row
     /// itself is unchanged, so its own `source_returned` check runs and
     /// clears the failure.
-    pub fn sessions_with_missing_source(&self) -> Result<Vec<SessionKey>> {
+    pub fn sessions_with_missing_source_for(
+        &self,
+        sessions: &[SessionKey],
+    ) -> Result<Vec<SessionKey>> {
         let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT environment_key, agent, session_id
-               FROM session_evidence
-              WHERE status = 'failed' AND last_error = ?1",
-        )?;
-        let rows = statement.query_map(
-            params![crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING],
-            |row| {
+        let mut missing = Vec::new();
+        for sessions in sessions.chunks(SCAN_HISTORY_KEY_BATCH_SIZE) {
+            let predicates = (0..sessions.len())
+                .map(|index| {
+                    let first = index * 3 + 2;
+                    format!(
+                        "(environment_key = ?{first} AND agent = ?{} AND session_id = ?{})",
+                        first + 1,
+                        first + 2
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let mut values = Vec::with_capacity(sessions.len() * 3 + 1);
+            values.push(rusqlite::types::Value::Text(
+                crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING.to_string(),
+            ));
+            for key in sessions {
+                values.push(rusqlite::types::Value::Text(key.environment_key.clone()));
+                values.push(rusqlite::types::Value::Text(key.agent.clone()));
+                values.push(rusqlite::types::Value::Text(key.session_id.clone()));
+            }
+            let mut statement = connection.prepare(&format!(
+                "SELECT environment_key, agent, session_id
+                   FROM session_evidence
+                  WHERE status = 'failed' AND last_error = ?1 AND ({predicates})"
+            ))?;
+            let rows = statement.query_map(params_from_iter(values.iter()), |row| {
                 Ok(SessionKey::new(
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                 ))
-            },
-        )?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            })?;
+            missing.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        Ok(missing)
     }
 
     /// One session's persisted source version and optional start time.
@@ -3308,11 +3515,8 @@ fn evidence_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceRow> {
     })
 }
 
-/// Column list and join shared by every reader of the `session` table:
-/// [`Store::session_records`], [`Store::session`], and
-/// [`Store::session_record_by_source_label`]. One copy means a schema change
-/// updates every reader together, and [`session_from_row`] stays the single
-/// row mapper for all three.
+/// Every full-record session reader uses this column list and join. One copy
+/// keeps schema changes aligned with [`session_from_row`].
 const SESSION_SELECT_SQL: &str =
     "SELECT environment_key, agent, session_id, source_kind, source_label, wsl_distro,
                     title, title_source, cwd, surface, updated_at_epoch,

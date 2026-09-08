@@ -1489,7 +1489,7 @@ describe("PopoverView — floating HUD restore", () => {
     render(<PopoverView />)
 
     await screen.findByText("Wire the tray popover")
-    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window")
+    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window", { origin: "automatic" })
   })
 
   it("reopens the stored HUD when the hidden popover appears", async () => {
@@ -1501,7 +1501,9 @@ describe("PopoverView — floating HUD restore", () => {
     hudPreference.popoverVisible = true
     emit("popover:shown", null)
 
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_overlay_window"))
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("open_overlay_window", { origin: "automatic" }),
+    )
   })
 
   it("restores the stored HUD when the popover opened before its listener attached", async () => {
@@ -1510,7 +1512,9 @@ describe("PopoverView — floating HUD restore", () => {
     hudPreference.popoverVisible = true
     render(<PopoverView />)
 
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_overlay_window"))
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("open_overlay_window", { origin: "automatic" }),
+    )
   })
 
   it("does not show a stored HUD that is already visible", async () => {
@@ -1521,14 +1525,14 @@ describe("PopoverView — floating HUD restore", () => {
     render(<PopoverView />)
 
     await waitFor(() => expect(overlayVisibilityRead).toHaveBeenCalled())
-    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window")
+    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window", { origin: "automatic" })
   })
 
   it("does not restore an off preference", async () => {
     platform.mac = true
     render(<PopoverView />)
     await screen.findByText("Wire the tray popover")
-    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window")
+    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window", { origin: "automatic" })
   })
 
   it("does not restore the HUD outside macOS", async () => {

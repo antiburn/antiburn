@@ -69,7 +69,6 @@ pub fn window_ready(window: tauri::WebviewWindow, generation: u64) {
     match window.label() {
         crate::popover::LABEL => {
             crate::popover::renderer_ready(&window, generation);
-            crate::popover_peek::prewarm(window.app_handle());
         }
         crate::settings::LABEL => crate::settings::renderer_ready(&window, generation),
         crate::onboarding::LABEL => crate::onboarding::renderer_ready(&window, generation),
@@ -198,9 +197,49 @@ pub fn end_popover_hold(app: tauri::AppHandle) {
 
 /// Open or re-show the always-on-top usage HUD.
 #[tauri::command]
-pub async fn open_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
+pub async fn open_overlay_window(
+    app: tauri::AppHandle,
+    origin: crate::analytics::event::Origin,
+) -> CommandResult<()> {
     let entries = crate::hud::load_placements(&app.state::<Store>());
-    antiburn_hud::open(&app, &entries).map_err(fail)
+    let needs_exposure = hud_needs_exposure(&app);
+    if needs_exposure {
+        crate::analytics::prepare_hud_exposure(origin);
+    }
+    if let Err(error) = antiburn_hud::open(&app, &entries) {
+        if needs_exposure {
+            crate::analytics::cancel_hud_exposure();
+        }
+        return Err(fail(error));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn hud_needs_exposure(app: &tauri::AppHandle) -> bool {
+    !hud_is_exposed(app)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn hud_needs_exposure(_app: &tauri::AppHandle) -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn hud_is_exposed(app: &tauri::AppHandle) -> bool {
+    app.get_webview_window(antiburn_hud::OVERLAY_LABEL)
+        .is_some_and(|window| window.is_visible().unwrap_or(false))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn hud_is_exposed(_app: &tauri::AppHandle) -> bool {
+    false
+}
+
+/// Take the origin after the HUD confirms that it reached the screen.
+#[tauri::command]
+pub fn take_hud_analytics_origin(app: tauri::AppHandle) -> Option<crate::analytics::event::Origin> {
+    crate::analytics::take_hud_exposure_origin(hud_is_exposed(&app))
 }
 
 /// Remember where the HUD is, after a drag moved it.
@@ -215,6 +254,7 @@ pub fn record_hud_position(app: tauri::AppHandle) {
 /// Hide the usage HUD and cancel any pending reveal.
 #[tauri::command]
 pub fn hide_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
+    crate::analytics::cancel_hud_exposure();
     antiburn_hud::hide(&app).map_err(fail)
 }
 
@@ -368,6 +408,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResu
 pub fn restart_onboarding(app: tauri::AppHandle) -> CommandResult<()> {
     let store = app.state::<Store>();
     let (previous, saved) = store.restart_onboarding().map_err(fail)?;
+    crate::analytics::prepare_onboarding_restart();
     apply_settings_transition(&app, &previous, &saved);
     restart_onboarding_surfaces(
         || crate::popover::hide_for_onboarding(&app),
@@ -411,12 +452,9 @@ pub fn finish_onboarding(
         })
         .map_err(fail)?;
     apply_settings_transition(&app, &previous, &saved);
-    // An explicit restart records a new completion because it is a new setup run.
-    crate::analytics::record(
-        &app,
-        crate::analytics::event::EventName::OnboardingFinished,
-        crate::analytics::event::Facts::default(),
-    );
+    if !previous.onboarding_completed && saved.onboarding_completed {
+        crate::analytics::record_onboarding_finished(&app);
+    }
     Ok(saved)
 }
 

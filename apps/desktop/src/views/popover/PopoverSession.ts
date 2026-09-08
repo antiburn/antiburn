@@ -54,6 +54,7 @@ import {
 } from "../../lib/popoverHeight"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
+import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
 import {
   isCurrentWindowVisible,
   isFloatingHudEnabled,
@@ -61,6 +62,7 @@ import {
   openOverlayWindow,
 } from "../../lib/overlayWindow"
 import { isMacOS } from "../../lib/platform"
+import { SurfaceExposureTracker, liveUsageObservations } from "../../lib/surfaceExposure"
 import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types/repository"
 import type { SessionSubject } from "./SessionPane"
 
@@ -86,6 +88,8 @@ export interface PopoverSnapshot {
   debugBuild: boolean
   settings: AppSettings | null
   entries: SessionListEntry[] | null
+  /** True when the initial activity-list read failed. */
+  entriesUnavailable: boolean
   repositories: LocalRepositoryItem[]
   /** Provider usage, or null while the first snapshot is in flight. */
   usage: ProviderUsageSummaryPayload | null
@@ -238,6 +242,9 @@ export class PopoverSession {
   private listeners = new Set<() => void>()
   private started = false
   private generation = 0
+  private analyticsVisibilityRevision = 0
+  private analyticsVisible = false
+  private readonly exposure = new SurfaceExposureTracker()
   private analysisToken = 0
   private checksToken = 0
   private checksConsumerId: string | null = null
@@ -323,6 +330,7 @@ export class PopoverSession {
     debugBuild: false,
     settings: null,
     entries: null,
+    entriesUnavailable: false,
     repositories: [],
     usage: null,
     liveUsage: EMPTY_LIVE_USAGE,
@@ -440,8 +448,7 @@ export class PopoverSession {
     void this.startChecks(generation)
     void this.listenStorageHealth(generation)
     void this.listenScanEvent(generation)
-    void this.listenPopoverShown(generation)
-    void this.listenPopoverHidden(generation)
+    void this.startPopoverVisibility(generation)
     void this.listenLiveUsage(generation)
 
     // ⌘, opens Settings — the platform's standard preferences shortcut, which
@@ -464,6 +471,9 @@ export class PopoverSession {
   private stop(): void {
     this.started = false
     this.generation += 1
+    this.analyticsVisibilityRevision += 1
+    this.analyticsVisible = false
+    this.exposure.suspend()
     this.stopSettingsListening?.()
     this.stopSettingsListening = null
     this.stopSessionsInvalidatedListening?.()
@@ -495,7 +505,7 @@ export class PopoverSession {
   // First load: read independent shell state together, then list sessions for
   // the stored time window. The cached limits do not wait for either read.
   private loadInitial = async (generation: number): Promise<void> => {
-    const usage = this.loadCachedUsage()
+    const usage = this.loadCachedUsage(generation)
     const [stored, health, info] = await Promise.all([
       getSettings().catch(() => DEFAULT_SETTINGS),
       getStorageHealth().catch(() => HEALTHY_STORAGE),
@@ -516,10 +526,7 @@ export class PopoverSession {
     // depends on, and the activity list is what a reader opened the popover
     // for.
     void this.refreshRepositoryList()
-    await Promise.all([
-      this.refreshEntries(stored.activityWindowDays).catch(() => this.update({ entries: [] })),
-      usage,
-    ])
+    await Promise.all([this.loadInitialEntries(stored.activityWindowDays, generation), usage])
     if (generation !== this.generation) return
     this.initialContentReady = true
     this.reportContentReady()
@@ -784,6 +791,8 @@ export class PopoverSession {
   private listenPopoverShown = async (generation: number): Promise<void> => {
     const unlisten = await onPopoverShown(() => {
       if (generation !== this.generation) return
+      this.analyticsVisibilityRevision += 1
+      this.analyticsVisible = true
       this.visible = true
       this.update({ now: Date.now() })
       this.syncNowTicking()
@@ -808,6 +817,9 @@ export class PopoverSession {
   private listenPopoverHidden = async (generation: number): Promise<void> => {
     const unlisten = await onPopoverHidden(() => {
       if (generation !== this.generation) return
+      this.analyticsVisibilityRevision += 1
+      this.analyticsVisible = false
+      this.exposure.conceal()
       this.visible = false
       this.sessionLimitAllocationResultRevision += 1
       this.syncNowTicking()
@@ -819,6 +831,26 @@ export class PopoverSession {
       return
     }
     this.stopPopoverHiddenListening = unlisten
+  }
+
+  private startPopoverVisibility = async (generation: number): Promise<void> => {
+    await Promise.allSettled([
+      this.listenPopoverShown(generation),
+      this.listenPopoverHidden(generation),
+    ])
+    if (generation === this.generation) await this.bootstrapAnalyticsVisibility(generation)
+  }
+
+  private bootstrapAnalyticsVisibility = async (generation: number): Promise<void> => {
+    const revision = this.analyticsVisibilityRevision
+    const visible = await isCurrentWindowVisible()
+    if (generation !== this.generation || revision !== this.analyticsVisibilityRevision) return
+    if (!visible) {
+      this.exposure.conceal()
+      return
+    }
+    this.analyticsVisible = true
+    this.syncAnalyticsExposure()
   }
 
   private reportContentReady(retryAfterPendingFailure = false): void {
@@ -856,7 +888,7 @@ export class PopoverSession {
     if (generation !== this.generation || !visible) return
     const overlayVisible = await isOverlayWindowVisible()
     if (generation !== this.generation || overlayVisible) return
-    await openOverlayWindow().catch(() => {})
+    await openOverlayWindow("automatic").catch(() => {})
   }
 
   private listenLiveUsage = async (generation: number): Promise<void> => {
@@ -893,25 +925,51 @@ export class PopoverSession {
    * Refreshers
    * -------------------------------------------------------------------- */
 
-  private refreshEntries = async (days: number): Promise<void> => {
-    const payloads = await listRecentSessions(days)
-    this.update({ entries: toActivityEntries(payloads) })
+  private loadInitialEntries = async (days: number, generation: number): Promise<void> => {
+    try {
+      await this.refreshEntries(days, generation)
+    } catch {
+      if (generation === this.generation && this.snapshot.entries === null) {
+        this.update({ entries: [] })
+      }
+    }
   }
 
-  private loadCachedUsage = async (): Promise<void> => {
+  private refreshEntries = async (
+    days: number,
+    generation = this.generation,
+  ): Promise<void> => {
+    try {
+      const payloads = await listRecentSessions(days)
+      if (generation !== this.generation) return
+      this.update({ entries: toActivityEntries(payloads), entriesUnavailable: false })
+    } catch (error) {
+      if (
+        generation === this.generation &&
+        (this.snapshot.entries === null || this.snapshot.entries.length === 0)
+      ) {
+        this.update({ entriesUnavailable: true })
+      }
+      throw error
+    }
+  }
+
+  private loadCachedUsage = async (generation: number): Promise<void> => {
     const liveUsageRevision = this.liveUsageRevision
     const [usage, liveUsage] = await Promise.all([
       getProviderUsage().catch(() => EMPTY_PROVIDER_USAGE),
       getLiveUsage().catch(() => EMPTY_LIVE_USAGE),
     ])
-    this.update({ usage })
+    if (generation !== this.generation) return
     if (liveUsageRevision === this.liveUsageRevision) {
-      this.update({ liveUsage })
+      this.update({ usage, liveUsage })
+    } else {
+      this.update({ usage })
     }
     this.requestSessionLimitAllocationRefresh(true, true)
   }
 
-  private refreshUsage = async (): Promise<void> => {
+  private refreshUsage = async (generation = this.generation): Promise<void> => {
     // Counted rather than flagged directly, and flushed to the snapshot as
     // `count > 0`: the popover-shown signal and a scan-finished event can
     // each start a refresh close together, and the first call to settle must
@@ -923,10 +981,13 @@ export class PopoverSession {
       // provider refresh, and the cached limit remains visible meanwhile.
       await Promise.all([
         getProviderUsage()
-          .then((usage) => this.update({ usage }))
+          .then((usage) => {
+            if (generation === this.generation) this.update({ usage })
+          })
           .catch(() => undefined),
         refreshLiveUsage()
           .then((liveUsage) => {
+            if (generation !== this.generation) return
             this.liveUsageRevision += 1
             this.update({ liveUsage })
           })
@@ -934,7 +995,9 @@ export class PopoverSession {
       ])
     } finally {
       this.usageRefreshCount -= 1
-      this.update({ usageRefreshing: this.usageRefreshCount > 0 })
+      if (generation === this.generation) {
+        this.update({ usageRefreshing: this.usageRefreshCount > 0 })
+      }
     }
   }
 
@@ -1186,6 +1249,64 @@ export class PopoverSession {
 
   private update(change: Partial<PopoverSnapshot>): void {
     this.snapshot = { ...this.snapshot, ...change }
+    this.syncAnalyticsExposure()
     for (const listener of this.listeners) listener()
+  }
+
+  private syncAnalyticsExposure(): void {
+    if (!this.analyticsVisible) return
+    const subject = this.snapshot.presentedSession
+    if (this.snapshot.presentedSurface === "session" && subject) {
+      const generation = this.exposure.expose({
+        surface: "session_detail",
+        origin: "user",
+        identity: sessionKey(subject),
+      })
+      const state = this.sessionSurfaceState(subject)
+      if (state) this.exposure.observe(state, generation)
+      return
+    }
+
+    const generation = this.exposure.expose({ surface: "activity", origin: "user" })
+    const totals = this.snapshot.usage?.totals
+    const hasLocalUsage =
+      totals !== undefined &&
+      [totals.today, totals.week, totals.monthToDate, totals.last30Days].some(
+        (window) => window.sessionCount > 0,
+      )
+    const hasLiveReading = liveDisplayableProviders(this.snapshot.liveUsage).some(
+      (provider) => liveWindows(provider).length > 0,
+    )
+    const hasLiveError = liveUsageObservations(this.snapshot.liveUsage).some(
+      ({ state }) => state !== "fresh" && state !== "stale",
+    )
+    const hasData = (this.snapshot.entries?.length ?? 0) > 0 || hasLocalUsage || hasLiveReading
+    if (hasData) {
+      this.exposure.observe("ready", generation)
+    } else if (this.snapshot.entriesUnavailable || hasLiveError) {
+      this.exposure.observe("error", generation)
+    } else if (this.snapshot.entries !== null && this.snapshot.usage !== null) {
+      this.exposure.observe("empty", generation)
+    }
+    this.exposure.observeLiveUsage(this.snapshot.liveUsage, undefined, generation)
+  }
+
+  private sessionSurfaceState(subject: SessionSubject): "ready" | "empty" | "error" | null {
+    const analysis = this.snapshot.analysis
+    if (!analysis || analysis.key !== sessionKey(subject)) return null
+    if (analysis.error) return "error"
+    const payload = analysis.payload
+    if (!payload) return "empty"
+    if (payload.analysisPending) return null
+    const hasData =
+      (payload.summary?.sessions.length ?? 0) > 0 ||
+      payload.cost !== null ||
+      payload.topLevelCost !== null ||
+      payload.efficiency !== null ||
+      (payload.orchestration?.members.length ?? 0) > 0 ||
+      (payload.relations?.parent ?? null) !== null ||
+      (payload.relations?.children.length ?? 0) > 0 ||
+      payload.models.length > 0
+    return hasData ? "ready" : "empty"
   }
 }

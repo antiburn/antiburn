@@ -1,6 +1,6 @@
 # Privacy policy
 
-Effective: 6 September 2026
+Effective: 8 September 2026
 
 This policy explains the analytics sent by the antiburn desktop application.
 Antiburn is operated by **Cadence AI (Vic) Pty Ltd** ("we", "us"). Contact us
@@ -22,14 +22,15 @@ Official release builds send limited events about how the application works and
 which features are used. This includes application launch and progress through
 the fixed onboarding steps.
 
-The event schema contains twenty-two fields:
+The event schema contains twenty-three fields:
 
 - the constant product surface `desktop`;
-- random message, installation, and application-run identifiers;
+- random message, installation, and analytics-session identifiers;
 - the event name and capture and delivery times;
 - the processor architecture, operating-system family, and app version;
-- an optional count rounded to a range; and
-- optional labels selected from a fixed list in the application;
+- an optional count rounded to a range;
+- optional labels selected from fixed lists in the application;
+- whether a visible state followed a user or automatic exposure;
 - a range for Claude's current five-hour usage;
 - whether Claude returned reset data, null, or a malformed value;
 - Claude's reset eligibility and experiment-membership states;
@@ -38,10 +39,15 @@ The event schema contains twenty-two fields:
 - the weekly reset count rounded to zero, one, or two-plus; and
 - whether Claude supplied a next-reset date, never the date itself.
 
-The installation identifier is random and changes every 30 days. The run
-identifier exists only in memory and changes when the app restarts or after 30
-minutes of inactivity. Neither identifier comes from your hardware, account,
-name, or email address.
+The installation identifier is random and changes every 30 days. The live
+analytics-session identifier is generated in memory and changes when the app
+restarts, when the installation identifier rotates, or after 30 minutes without
+a captured analytics event. Each queued event contains the identifier, so that
+serialized value remains in the local analytics queue on disk until the event
+is sent or removed. Background events can keep an analytics session active, and
+one app run can contain more than one; it does not measure a user visit or time
+spent. Neither identifier comes from your hardware, account, name, or email
+address.
 
 The complete field list, event catalog, and verification steps are in
 [Anonymised analytics](analytics.md).

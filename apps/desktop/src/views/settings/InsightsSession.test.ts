@@ -10,8 +10,33 @@ import { InsightsSession } from "./InsightsSession"
  */
 
 const invoke = vi.hoisted(() => vi.fn())
+const analytics = vi.hoisted(() => ({
+  conceal: vi.fn(),
+  expose: vi.fn(),
+  nextGeneration: 0,
+  observe: vi.fn(),
+  suspend: vi.fn(),
+}))
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
+vi.mock("../../lib/surfaceExposure", () => ({
+  SurfaceExposureTracker: class {
+    expose(options: unknown) {
+      analytics.expose(options)
+      analytics.nextGeneration += 1
+      return analytics.nextGeneration
+    }
+    observe(state: unknown, generation: unknown) {
+      analytics.observe(state, generation)
+    }
+    conceal(surface: unknown, generation: unknown) {
+      analytics.conceal(surface, generation)
+    }
+    suspend() {
+      analytics.suspend()
+    }
+  },
+}))
 
 /** A synthetic empty report: nothing discovered, nothing assessed. */
 function report(overrides: Partial<InsightsReportPayload> = {}): InsightsReportPayload {
@@ -90,6 +115,7 @@ function setWindowVisibility(state: DocumentVisibilityState) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  analytics.nextGeneration = 0
   mockCommands()
 })
 
@@ -100,6 +126,24 @@ afterEach(() => {
 })
 
 describe("InsightsSession", () => {
+  it("does not load or observe data before its host window is visible", async () => {
+    const session = new InsightsSession(false)
+    const unsubscribe = session.subscribe(() => {})
+    await flush()
+
+    expect(callsTo("get_insights_report")).toBe(0)
+    expect(analytics.expose).not.toHaveBeenCalled()
+
+    session.setHostVisible(true)
+    await flush()
+
+    expect(callsTo("get_insights_report")).toBe(1)
+    expect(analytics.expose).toHaveBeenCalledOnce()
+    session.setHostVisible(false)
+    expect(analytics.conceal).toHaveBeenCalledWith("insights", 1)
+    unsubscribe()
+  })
+
   it("loads the report on first subscribe and moves loading → ready", async () => {
     const session = new InsightsSession()
     const initial = session.getSnapshot()
@@ -114,6 +158,44 @@ describe("InsightsSession", () => {
     expect(ready.status).toEqual(STATUS)
     // Snapshots are immutable: each update is a new object.
     expect(ready).not.toBe(initial)
+    expect(analytics.expose).toHaveBeenCalledWith({
+      surface: "insights",
+      origin: "user",
+      identity: 1,
+    })
+    expect(analytics.observe).toHaveBeenCalledWith("empty", 1)
+    unsubscribe()
+  })
+
+  it("reports ready only when the visible report has processed evidence", async () => {
+    mockCommands({
+      get_insights_report: report({
+        coverage: { ...report().coverage, discovered: 3, ready: 2 },
+        assessedSessions: 2,
+      }),
+    })
+    const session = new InsightsSession()
+    const unsubscribe = session.subscribe(() => {})
+
+    await flush()
+
+    expect(analytics.observe).toHaveBeenCalledWith("ready", 1)
+    unsubscribe()
+  })
+
+  it("keeps an unprocessed visible report in loading state for the timeout", async () => {
+    mockCommands({
+      get_insights_report: report({
+        coverage: { ...report().coverage, discovered: 3, pending: 3 },
+      }),
+    })
+    const session = new InsightsSession()
+    const unsubscribe = session.subscribe(() => {})
+
+    await flush()
+
+    expect(session.getSnapshot().phase).toBe("ready")
+    expect(analytics.observe).not.toHaveBeenCalled()
     unsubscribe()
   })
 
@@ -157,6 +239,7 @@ describe("InsightsSession", () => {
     expect(snapshot.phase).toBe("error")
     expect(snapshot.error).toContain("synthetic failure")
     expect(snapshot.report).toBeNull()
+    expect(analytics.observe).toHaveBeenCalledWith("error", 1)
     unsubscribe()
   })
 
@@ -259,6 +342,7 @@ describe("InsightsSession", () => {
     // A system visibility change can pause work before the renderer unmounts.
     setWindowVisibility("hidden")
     expect(invoke).toHaveBeenCalledWith("cancel_insights_report")
+    expect(analytics.conceal).toHaveBeenCalledWith("insights", 1)
 
     const polls = callsTo("get_insights_status")
     await vi.advanceTimersByTimeAsync(30_000)
@@ -279,6 +363,9 @@ describe("InsightsSession", () => {
     await flush()
     expect(callsTo("get_insights_status")).toBe(polls + 1)
     expect(callsTo("get_insights_report")).toBe(reports + 1)
+    expect(analytics.expose).toHaveBeenLastCalledWith(
+      expect.objectContaining({ surface: "insights", origin: "user", identity: 3 }),
+    )
 
     await vi.advanceTimersByTimeAsync(5_000)
     expect(callsTo("get_insights_status")).toBe(polls + 2)

@@ -47,6 +47,106 @@ fn generation_checks_cover_concealment_and_retargeting() {
 }
 
 #[test]
+fn renderer_retirement_requires_the_current_completed_concealment() {
+    let mut lifecycle = lifecycle();
+    lifecycle.renderer_ready = true;
+    let (first, _) = retargeted(lifecycle.request(
+        "first",
+        region(),
+        RevealPolicy::ImmediatePlaceholder,
+        120.0,
+        None,
+    ));
+    assert!(lifecycle.presented(first.generation));
+
+    let conceal = lifecycle.conceal();
+    assert!(!lifecycle.renderer_retirement_is_current(conceal.generation));
+    assert!(lifecycle.concealed(conceal.generation));
+    assert!(lifecycle.renderer_retirement_is_current(conceal.generation));
+
+    let (second, _) = retargeted(lifecycle.request(
+        "second",
+        region(),
+        RevealPolicy::ImmediatePlaceholder,
+        120.0,
+        None,
+    ));
+    assert!(!lifecycle.renderer_retirement_is_current(conceal.generation));
+    assert!(!lifecycle.renderer_retirement_is_current(second.generation));
+}
+
+#[test]
+fn late_renderer_destruction_preserves_a_new_target_for_rebuild() {
+    let mut lifecycle = lifecycle();
+    lifecycle.renderer_generation = 7;
+    lifecycle.renderer_ready = true;
+    let (first, _) = retargeted(lifecycle.request(
+        "first",
+        region(),
+        RevealPolicy::ImmediatePlaceholder,
+        120.0,
+        None,
+    ));
+    assert!(lifecycle.presented(first.generation));
+    let conceal = lifecycle.conceal();
+    assert!(lifecycle.concealed(conceal.generation));
+
+    let (second, _) = retargeted(lifecycle.request(
+        "second",
+        region(),
+        RevealPolicy::ImmediatePlaceholder,
+        120.0,
+        None,
+    ));
+    assert!(!lifecycle.renderer_retirement_is_current(conceal.generation));
+
+    lifecycle.renderer_destroyed();
+    assert_eq!(lifecycle.state().target, Some("second"));
+    assert!(lifecycle.awaiting_presentation);
+    assert_eq!(
+        lifecycle.renderer_ready(7, RevealPolicy::ImmediatePlaceholder),
+        None
+    );
+    assert_eq!(
+        lifecycle.renderer_ready(8, RevealPolicy::ImmediatePlaceholder),
+        Some(false)
+    );
+    let pending = lifecycle
+        .pending_render_request()
+        .expect("the new target needs the replacement renderer");
+    assert_eq!(pending.generation, second.generation);
+    assert_eq!(pending.target, Some("second"));
+}
+
+#[test]
+fn anchor_teardown_retires_a_renderer_that_is_still_loading() {
+    let mut lifecycle = lifecycle();
+    lifecycle.renderer_generation = 7;
+    let (request, _) = retargeted(lifecycle.request(
+        "target",
+        region(),
+        RevealPolicy::ImmediatePlaceholder,
+        120.0,
+        None,
+    ));
+    assert!(lifecycle.awaiting_presentation);
+
+    let conceal = lifecycle.conceal();
+    lifecycle.force_hidden();
+    assert!(lifecycle.concealed(conceal.generation));
+    assert!(lifecycle.renderer_retirement_is_current(conceal.generation));
+
+    lifecycle.renderer_destroyed();
+    assert_eq!(lifecycle.state().target, None);
+    assert!(!lifecycle.awaiting_presentation);
+    assert_eq!(
+        lifecycle.renderer_ready(7, RevealPolicy::ImmediatePlaceholder),
+        None
+    );
+    assert!(!lifecycle.presented(request.generation));
+}
+
+#[test]
 fn forced_anchor_conceal_makes_the_next_immediate_request_a_cold_reveal() {
     let mut lifecycle = lifecycle();
     lifecycle.renderer_ready = true;

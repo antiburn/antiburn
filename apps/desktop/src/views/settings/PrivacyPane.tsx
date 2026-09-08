@@ -244,7 +244,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   the promise below stops being true.
 
                   The list lets a reader count every field. */}
-              <p>The schema has twenty-two fields, and these are all of them:</p>
+              <p>The schema has twenty-three fields, and these are all of them:</p>
               {/* `pl-7`, not the `pl-4` this started as. Root font-size here
                   is 13px, so `pl-4` is 13px of padding — less than the disc
                   marker's own 17.5px advance, which left the bullets painting
@@ -254,20 +254,21 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 <li>The word &ldquo;desktop&rdquo;.</li>
                 <li>A random id for the message, so a retry is not counted twice.</li>
                 <li>A random installation id.</li>
-                <li>A random id for this run of the app.</li>
+                <li>A random id for a window of captured analytics events.</li>
                 <li>The event name, such as &ldquo;a scan finished&rdquo;.</li>
                 <li>When it happened.</li>
                 <li>When it was delivered.</li>
                 <li>Your processor architecture.</li>
                 <li>A count rounded to a range, when the event has one.</li>
                 <li>
-                  A short label &mdash; which setting you changed, which agent recorded a
-                  session, what kind of thing failed. The name only, never the value.
+                  A short label &mdash; which surface, Settings pane, provider, setting, agent
+                  category, or failure category. Never work content or a value you entered.
                 </li>
                 <li>
                   A second such label when an event has two things to tell apart, such as native
                   versus WSL.
                 </li>
+                <li>Whether a visible state followed a user or automatic exposure.</li>
                 <li>A range for Claude&rsquo;s current five-hour usage.</li>
                 <li>Whether Claude returned reset data, null, or a malformed value.</li>
                 <li>Claude&rsquo;s reset eligibility state.</li>
@@ -291,29 +292,27 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 on its own.
               </p>
             </Disclosure>
-            {/* Both identifiers in one place, with what the timestamps add.
-                They were three rows, but the honest claim only holds when all
-                three facts are read together: a 30-day id plus a time on every
-                event is a coarse picture of when the app gets used, and saying
-                so is cheaper than being caught not having said it. */}
+            {/* Both identifiers stay in one place with the timestamp effect.
+                A 30-day id plus a time shows when analytics events occur. */}
             <Disclosure label="The two identifiers">
               <p>
                 Both are random. Neither is derived from anything about you or your machine.
               </p>
               <p className="mt-2">
                 The <strong className="font-medium text-label">installation id</strong> is
-                replaced every 30 days, so events cannot be joined into a history longer than
-                that. Since every event also carries a time, they do show roughly when antiburn
-                is used within those 30 days &mdash; never what you were working on. Switching
+                replaced every 30 days, limiting how long that id groups events. Since every
+                event also carries a time, they do show roughly when analytics events were
+                captured within those 30 days &mdash; never what you were working on. Switching
                 analytics off deletes the id and anything still queued, so switching back on
-                starts a new id that cannot be linked to the old one.
+                starts a new id.
               </p>
               <p className="mt-2">
-                The <strong className="font-medium text-label">run id</strong> is required by
-                the receiving server. It exists only in memory: quitting antiburn ends it,
-                nothing on your machine remembers it, and it is replaced after 30 minutes of
-                inactivity. It groups one run&rsquo;s events and cannot connect one run to
-                another.
+                The <strong className="font-medium text-label">analytics-session id</strong> is
+                required by the receiving server. Its generator exists only in memory, but each
+                event waiting to be sent keeps a copy on disk. Newly captured events get a new
+                id after 30 minutes without an analytics event, when antiburn restarts, or when
+                the installation id rotates. Background events can keep the id active, and one
+                app run can have more than one, so it does not measure a visit or time spent.
               </p>
             </Disclosure>
             <Disclosure label="How the starting default works">
