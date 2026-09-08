@@ -17,6 +17,13 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-08
+
+### Added
+
+- API support notes now identify the batch-analysis, repository-orchestration,
+  and serialized-metrics interfaces retained for external embeddings.
+
 ## [0.6.0] - 2026-09-07
 
 ### Added
