@@ -10,6 +10,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as InsightsIpc from "../../lib/insightsIpc"
+import type { LiveUsageSummaryPayload, LiveUsageWindowPayload } from "../../lib/ipc"
 import { SessionList, type SessionListEntry, type SessionListProps } from "./SessionList"
 
 const getSessionHygiene = vi.hoisted(() => vi.fn())
@@ -116,6 +117,57 @@ function entries(count: number): SessionListEntry[] {
   )
 }
 
+/** A live usage summary reporting one provider with one window. */
+function liveUsageWithWindow(
+  provider: string,
+  displayName: string,
+  window: Partial<LiveUsageWindowPayload> = {},
+): LiveUsageSummaryPayload {
+  return {
+    generatedAt: NOW.toISOString(),
+    errors: [],
+    meters: [],
+    providers: [
+      {
+        provider,
+        accountKey: null,
+        displayName,
+        support: "live",
+        freshness: "fresh",
+        sourceLabel: "test",
+        observedAt: NOW.toISOString(),
+        windows: [
+          {
+            id: "five-hour",
+            role: "primaryShort",
+            kind: "rolling",
+            scopeModel: null,
+            usedPercent: 0,
+            startsAt: null,
+            resetsAt: null,
+            hasNonzeroUsageInCurrentPeriod: false,
+            forecast: {
+              unavailableReason: "sparseHistory",
+              confidence: null,
+              consumptionRate: null,
+              paceRatio: null,
+              paceTrend: null,
+              runwayAt: null,
+              usedToday: null,
+            },
+            ...window,
+          },
+        ],
+        extraUsage: null,
+        resetCredits: null,
+        plan: null,
+        accountUuid: null,
+        accountEmail: null,
+      },
+    ],
+  }
+}
+
 describe("SessionList — rows", () => {
   it("shows the backend weekly allocation for the exact session identity", () => {
     list({
@@ -182,7 +234,7 @@ describe("SessionList — rows", () => {
     )
   })
 
-  it("names the weekly limit when the selected limit has no allocation", async () => {
+  it("shows the weekly limit as unknown when live usage has not loaded", async () => {
     list({
       entries: [
         entry({
@@ -193,11 +245,15 @@ describe("SessionList — rows", () => {
     })
 
     expect(screen.queryByLabelText("Estimated cost $1.00")).toBeNull()
-    const badge = screen.getByLabelText("No weekly limit for this session.")
-    expect(badge).toHaveTextContent("no limit")
+    const badge = screen.getByLabelText(
+      "Share of your weekly limit is not known for this session.",
+    )
+    expect(badge).toHaveTextContent("unknown")
     fireEvent.focus(badge)
     await waitFor(() => {
-      expect(screen.getByRole("tooltip")).toHaveTextContent("No weekly limit for this session.")
+      expect(screen.getByRole("tooltip")).toHaveTextContent(
+        "Share of your weekly limit is not known for this session.",
+      )
     })
   })
 
@@ -215,7 +271,41 @@ describe("SessionList — rows", () => {
     expect(screen.getByRole("radio", { name: "$" })).toHaveAttribute("aria-checked", "false")
     expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
     expect(screen.queryByLabelText("Estimated cost $1.00")).toBeNull()
-    expect(screen.getByLabelText("No 5h limit for this session.")).toHaveTextContent("no limit")
+    expect(
+      screen.getByLabelText("Share of your 5-hour limit is not known for this session."),
+    ).toHaveTextContent("unknown")
+  })
+
+  it("shows no limit when live usage confirms the provider reports none", () => {
+    list({
+      entries: [entry()],
+      badgeMetric: "weeklyPercent",
+      // The only reported window is a five-hour one, so a weekly badge can
+      // affirmatively say Claude has no weekly limit for this session.
+      liveUsage: liveUsageWithWindow("anthropic", "Claude", {
+        id: "five-hour",
+        kind: "rolling",
+      }),
+    })
+
+    expect(screen.getByLabelText("No weekly limit for this session.")).toHaveTextContent(
+      "no limit",
+    )
+  })
+
+  it("shows the five-hour limit as unknown when a live window exists but this session has no share", () => {
+    list({
+      entries: [entry()],
+      badgeMetric: "fiveHourPercent",
+      liveUsage: liveUsageWithWindow("anthropic", "Claude", {
+        id: "five-hour",
+        kind: "rolling",
+      }),
+    })
+
+    expect(
+      screen.getByLabelText("Share of your 5-hour limit is not known for this session."),
+    ).toHaveTextContent("unknown")
   })
 
   it("does not offer five-hour mode for another short rolling window", () => {

@@ -15,13 +15,19 @@ export interface SessionStatusBarProps {
   evidenceState?: SessionHygieneEvidenceState
   /** Display values for the cost figure; omit when nothing priced the session. */
   cost?: SessionCostBadgeProps | null | undefined
-  /** A null percent shows the missing limit label. An omitted badge uses the cost. */
+  /**
+   * A null percent shows the missing limit label: "unknown" when a live
+   * window exists for the session's provider but did not attribute a share
+   * to it, "no limit" when the provider reports no such window at all. An
+   * omitted badge uses the cost.
+   */
   limitBadge?:
     | {
         label: string
         percent: number | null
         provider?: string
         windowId?: string
+        unknown?: boolean
       }
     | undefined
 }
@@ -200,7 +206,7 @@ export function SessionStatusBar({
               aria-label={limitBadge.label}
               tabIndex={0}
             >
-              no limit
+              {limitBadge.unknown ? "unknown" : "no limit"}
             </span>
           </Tooltip>
         ) : (
