@@ -35,8 +35,8 @@ use crate::dto::{
     ActivityEntry, AgentScanState, AppInfo, ChecksReportPayload, DeferredPermissionDir,
     HygieneSummaryPayload, InsightsReportPayload, InsightsStatusPayload, LiveUsageSummary,
     OrchestrationStatus, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis,
-    SessionHygienePayload, SessionHygieneRequest, SessionIdentity, SessionLimitAllocationSummary,
-    SessionRelation, SessionRelations, SubagentMember,
+    SessionHygienePayload, SessionHygieneRequest, SessionIdentity, SessionLimitAllocation,
+    SessionLimitAllocationSummary, SessionRelation, SessionRelations, SubagentMember,
 };
 use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
@@ -69,7 +69,6 @@ pub fn window_ready(window: tauri::WebviewWindow, generation: u64) {
     match window.label() {
         crate::popover::LABEL => {
             crate::popover::renderer_ready(&window, generation);
-            crate::popover_peek::prewarm(window.app_handle());
         }
         crate::settings::LABEL => crate::settings::renderer_ready(&window, generation),
         crate::onboarding::LABEL => crate::onboarding::renderer_ready(&window, generation),
@@ -198,9 +197,49 @@ pub fn end_popover_hold(app: tauri::AppHandle) {
 
 /// Open or re-show the always-on-top usage HUD.
 #[tauri::command]
-pub async fn open_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
+pub async fn open_overlay_window(
+    app: tauri::AppHandle,
+    origin: crate::analytics::event::Origin,
+) -> CommandResult<()> {
     let entries = crate::hud::load_placements(&app.state::<Store>());
-    antiburn_hud::open(&app, &entries).map_err(fail)
+    let needs_exposure = hud_needs_exposure(&app);
+    if needs_exposure {
+        crate::analytics::prepare_hud_exposure(origin);
+    }
+    if let Err(error) = antiburn_hud::open(&app, &entries) {
+        if needs_exposure {
+            crate::analytics::cancel_hud_exposure();
+        }
+        return Err(fail(error));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn hud_needs_exposure(app: &tauri::AppHandle) -> bool {
+    !hud_is_exposed(app)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn hud_needs_exposure(_app: &tauri::AppHandle) -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn hud_is_exposed(app: &tauri::AppHandle) -> bool {
+    app.get_webview_window(antiburn_hud::OVERLAY_LABEL)
+        .is_some_and(|window| window.is_visible().unwrap_or(false))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn hud_is_exposed(_app: &tauri::AppHandle) -> bool {
+    false
+}
+
+/// Take the origin after the HUD confirms that it reached the screen.
+#[tauri::command]
+pub fn take_hud_analytics_origin(app: tauri::AppHandle) -> Option<crate::analytics::event::Origin> {
+    crate::analytics::take_hud_exposure_origin(hud_is_exposed(&app))
 }
 
 /// Remember where the HUD is, after a drag moved it.
@@ -215,7 +254,14 @@ pub fn record_hud_position(app: tauri::AppHandle) {
 /// Hide the usage HUD and cancel any pending reveal.
 #[tauri::command]
 pub fn hide_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
+    crate::analytics::cancel_hud_exposure();
     antiburn_hud::hide(&app).map_err(fail)
+}
+
+/// Return whether the HUD should run while its retained renderer mounts.
+#[tauri::command]
+pub fn is_overlay_work_active() -> bool {
+    antiburn_hud::work_is_active()
 }
 
 /// Match the native HUD frame to the rendered panel.
@@ -368,6 +414,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResu
 pub fn restart_onboarding(app: tauri::AppHandle) -> CommandResult<()> {
     let store = app.state::<Store>();
     let (previous, saved) = store.restart_onboarding().map_err(fail)?;
+    crate::analytics::prepare_onboarding_restart();
     apply_settings_transition(&app, &previous, &saved);
     restart_onboarding_surfaces(
         || crate::popover::hide_for_onboarding(&app),
@@ -411,12 +458,9 @@ pub fn finish_onboarding(
         })
         .map_err(fail)?;
     apply_settings_transition(&app, &previous, &saved);
-    // An explicit restart records a new completion because it is a new setup run.
-    crate::analytics::record(
-        &app,
-        crate::analytics::event::EventName::OnboardingFinished,
-        crate::analytics::event::Facts::default(),
-    );
+    if !previous.onboarding_completed && saved.onboarding_completed {
+        crate::analytics::record_onboarding_finished(&app);
+    }
     Ok(saved)
 }
 
@@ -763,19 +807,47 @@ pub async fn get_session_limit_allocations(
     app: tauri::AppHandle,
 ) -> CommandResult<SessionLimitAllocationSummary> {
     let now = scan::unix_now();
-    let since_ms = now.saturating_sub(8 * 24 * 60 * 60).saturating_mul(1_000);
     let store = app.state::<Store>().inner().clone();
-    let live = cached_live_usage(&app);
     tauri::async_runtime::spawn_blocking(move || {
-        let turns = store.session_usage_turns(since_ms).map_err(fail)?;
-        let history = provider_usage::live::history::load(&store);
+        let settings = store.settings().map_err(fail)?;
+        let since = now.saturating_sub(i64::from(settings.activity_window_days) * 86_400);
+        let sessions = store
+            .recent_sessions_excluding(since, MAX_ACTIVITY_ROWS, &settings.disabled_agents)
+            .map_err(fail)?;
+        let keys = sessions
+            .iter()
+            .map(|session| session.key.clone())
+            .collect::<Vec<_>>();
+        let allocations = store
+            .cumulative_session_limit_allocations(&keys)
+            .map_err(fail)?;
         Ok(SessionLimitAllocationSummary {
-            allocations: provider_usage::allocation::estimate(
-                turns,
-                &live,
-                &history,
-                now.saturating_mul(1_000),
-            ),
+            allocations: allocations
+                .into_iter()
+                .map(|allocation| SessionLimitAllocation {
+                    agent: allocation.key.agent,
+                    session_id: allocation.key.session_id,
+                    wsl_distro: allocation.wsl_distro,
+                    metric: match allocation.metric.as_str() {
+                        "weekly" => crate::dto::SessionLimitMetric::Weekly,
+                        _ => crate::dto::SessionLimitMetric::FiveHour,
+                    },
+                    provider: allocation.provider.clone(),
+                    display_name: provider_usage::providers::display_name(&allocation.provider)
+                        .to_string(),
+                    account_key: Some(allocation.account_key),
+                    window_id: allocation.window_id,
+                    resets_at: None,
+                    percent: allocation.percent,
+                    coverage: if allocation.partial {
+                        "partial"
+                    } else {
+                        "complete"
+                    }
+                    .to_string(),
+                    period_count: allocation.period_count,
+                })
+                .collect(),
             generated_at: crate::store::iso_from_epoch(Some(now)),
         })
     })

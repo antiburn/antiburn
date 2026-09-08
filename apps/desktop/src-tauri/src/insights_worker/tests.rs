@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use antiburn_local::analysis::{
@@ -234,13 +234,12 @@ async fn a_generic_agent_session_completes_terminally_through_process_next() {
     store
         .upsert_sessions(&[copilot_record], &crate::agents::evidence_cohort())
         .unwrap();
-    let handle = WorkerHandle::default();
     let runner = |record: &SessionRecord, _: PassSignal, _: i64| {
         let pass = generic_published_pass(record);
         Box::pin(async move { pass }) as PassFuture
     };
 
-    let processed = process_next(&store, &handle, &|| 100, &runner, &|_| {})
+    let processed = process_next(&store, &|| 100, &runner, &|_| {})
         .await
         .unwrap();
     assert!(processed);
@@ -507,12 +506,10 @@ async fn progress_renews_the_lease() {
     store
         .upsert_sessions(&[record("progress")], &crate::agents::evidence_cohort())
         .unwrap();
-    let handle = Arc::new(WorkerHandle::default());
     let clock = Arc::new(AtomicI64::new(100));
     let signal = Arc::new(Mutex::new(None::<PassSignal>));
     let release = Arc::new(Notify::new());
     let task_store = Arc::clone(&store);
-    let task_handle = Arc::clone(&handle);
     let task_clock = Arc::clone(&clock);
     let task_signal = Arc::clone(&signal);
     let task_release = Arc::clone(&release);
@@ -527,7 +524,6 @@ async fn progress_renews_the_lease() {
         };
         process_next(
             &task_store,
-            &task_handle,
             &|| task_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
@@ -571,12 +567,10 @@ async fn a_stalled_pass_stops_renewing() {
     store
         .upsert_sessions(&[record("stalled")], &crate::agents::evidence_cohort())
         .unwrap();
-    let handle = Arc::new(WorkerHandle::default());
     let clock = Arc::new(AtomicI64::new(100));
     let entered = Arc::new(AtomicBool::new(false));
     let release = Arc::new(Notify::new());
     let task_store = Arc::clone(&store);
-    let task_handle = Arc::clone(&handle);
     let task_clock = Arc::clone(&clock);
     let task_entered = Arc::clone(&entered);
     let task_release = Arc::clone(&release);
@@ -591,7 +585,6 @@ async fn a_stalled_pass_stops_renewing() {
         };
         process_next(
             &task_store,
-            &task_handle,
             &|| task_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
@@ -630,12 +623,10 @@ async fn a_lost_renewal_cancels_without_a_post_claim_write() {
     store
         .upsert_sessions(&[record("lost")], &crate::agents::evidence_cohort())
         .unwrap();
-    let handle = Arc::new(WorkerHandle::default());
     let clock = Arc::new(AtomicI64::new(100));
     let signal = Arc::new(Mutex::new(None::<PassSignal>));
     let release = Arc::new(Notify::new());
     let task_store = Arc::clone(&store);
-    let task_handle = Arc::clone(&handle);
     let task_clock = Arc::clone(&clock);
     let task_signal = Arc::clone(&signal);
     let task_release = Arc::clone(&release);
@@ -650,7 +641,6 @@ async fn a_lost_renewal_cancels_without_a_post_claim_write() {
         };
         process_next(
             &task_store,
-            &task_handle,
             &|| task_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
@@ -683,12 +673,10 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
     store
         .upsert_sessions(&[record("stale-pass")], &crate::agents::evidence_cohort())
         .unwrap();
-    let handle = Arc::new(WorkerHandle::default());
     let clock = Arc::new(AtomicI64::new(100));
     let first_signal_slot = Arc::new(Mutex::new(None::<PassSignal>));
     let first_release = Arc::new(Notify::new());
     let first_store = Arc::clone(&store);
-    let first_handle = Arc::clone(&handle);
     let first_clock = Arc::clone(&clock);
     let first_task_signal = Arc::clone(&first_signal_slot);
     let first_task_release = Arc::clone(&first_release);
@@ -703,7 +691,6 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
         };
         process_next(
             &first_store,
-            &first_handle,
             &|| first_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
@@ -726,7 +713,6 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
     let second_signal_slot = Arc::new(Mutex::new(None::<PassSignal>));
     let second_release = Arc::new(Notify::new());
     let second_store = Arc::clone(&store);
-    let second_handle = Arc::clone(&handle);
     let second_clock = Arc::clone(&clock);
     let second_task_signal = Arc::clone(&second_signal_slot);
     let second_task_release = Arc::clone(&second_release);
@@ -742,7 +728,6 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
         };
         process_next(
             &second_store,
-            &second_handle,
             &|| second_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
@@ -782,28 +767,51 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
 }
 
 #[tokio::test]
-async fn permits_are_held_before_the_pass_is_scheduled() {
-    let store = store();
+async fn the_worker_loop_runs_one_pass_at_a_time() {
+    let store = Arc::new(store());
     store
-        .upsert_sessions(&[record("permit")], &crate::agents::evidence_cohort())
+        .upsert_sessions(
+            &[record("serial-one"), record("serial-two")],
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
-    let handle = WorkerHandle::default();
-    let permit = handle.permits.cpu.acquire().await.unwrap();
-    let entered = Arc::new(AtomicBool::new(false));
-    let entered_by_pass = entered.clone();
-    let runner = move |_: &SessionRecord, _: PassSignal, _: i64| {
-        entered_by_pass.store(true, Ordering::SeqCst);
-        Box::pin(async { failed_pass(PassOutcome::SourceMissing) }) as PassFuture
-    };
-    let future = process_next(&store, &handle, &|| 100, &runner, &|_| {});
-    tokio::pin!(future);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(10), &mut future)
-            .await
-            .is_err()
-    );
-    assert!(!entered.load(Ordering::SeqCst));
-    drop(permit);
+    let handle = Arc::new(WorkerHandle::default());
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum = Arc::new(AtomicUsize::new(0));
+    let completed = Arc::new(AtomicUsize::new(0));
+    let all_completed = Arc::new(Notify::new());
+
+    let task_store = Arc::clone(&store);
+    let task_handle = Arc::clone(&handle);
+    let task_active = Arc::clone(&active);
+    let task_maximum = Arc::clone(&maximum);
+    let task_completed = Arc::clone(&completed);
+    let task_all_completed = Arc::clone(&all_completed);
+    let task = tokio::spawn(async move {
+        let runner = move |_: &SessionRecord, _: PassSignal, _: i64| {
+            let active = Arc::clone(&task_active);
+            let maximum = Arc::clone(&task_maximum);
+            let completed = Arc::clone(&task_completed);
+            let all_completed = Arc::clone(&task_all_completed);
+            Box::pin(async move {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                maximum.fetch_max(current, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                if completed.fetch_add(1, Ordering::SeqCst) + 1 == 2 {
+                    all_completed.notify_one();
+                }
+                failed_pass(PassOutcome::SourceMissing)
+            }) as PassFuture
+        };
+        worker_loop(&task_store, &task_handle, &|| 100, &runner, &|_| {}, &|| {}).await;
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), all_completed.notified())
+        .await
+        .expect("both passes complete");
+    task.abort();
+    assert_eq!(maximum.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -821,8 +829,7 @@ async fn the_store_is_lockable_while_a_pass_runs() {
             failed_pass(PassOutcome::SourceMissing)
         }) as PassFuture
     };
-    let handle = WorkerHandle::default();
-    let future = process_next(&store, &handle, &|| 100, &runner, &|_| {});
+    let future = process_next(&store, &|| 100, &runner, &|_| {});
     tokio::pin!(future);
     assert!(
         tokio::time::timeout(Duration::from_millis(10), &mut future)
@@ -852,15 +859,9 @@ async fn a_published_completion_announces_one_list_entry() {
     let announced = Mutex::new(Vec::new());
 
     assert!(
-        process_next(
-            &store,
-            &WorkerHandle::default(),
-            &|| 100,
-            &runner,
-            &|entry| {
-                announced.lock().unwrap().push(entry);
-            }
-        )
+        process_next(&store, &|| 100, &runner, &|entry| {
+            announced.lock().unwrap().push(entry);
+        })
         .await
         .unwrap()
     );
@@ -885,15 +886,9 @@ async fn a_backed_off_outcome_announces_nothing() {
     let announced = Mutex::new(Vec::new());
 
     assert!(
-        process_next(
-            &store,
-            &WorkerHandle::default(),
-            &|| 100,
-            &runner,
-            &|entry| {
-                announced.lock().unwrap().push(entry);
-            }
-        )
+        process_next(&store, &|| 100, &runner, &|entry| {
+            announced.lock().unwrap().push(entry);
+        })
         .await
         .unwrap()
     );
@@ -913,7 +908,7 @@ async fn a_changed_source_backs_off_through_the_worker() {
         Box::pin(async { failed_pass(PassOutcome::SourceChanged) }) as PassFuture
     };
 
-    process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+    process_next(&store, &|| 100, &runner, &|_| {})
         .await
         .unwrap();
     let key = SessionKey::new("native", "claude-code", "worker-changed");
@@ -936,7 +931,7 @@ async fn an_unsupported_pass_is_terminal_through_the_worker() {
         Box::pin(async { failed_pass(PassOutcome::Unsupported) }) as PassFuture
     };
 
-    process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+    process_next(&store, &|| 100, &runner, &|_| {})
         .await
         .unwrap();
     let key = SessionKey::new("native", "claude-code", "worker-unsupported");
@@ -958,7 +953,7 @@ async fn a_missing_source_stops_being_claimed_through_the_worker() {
         Box::pin(async { failed_pass(PassOutcome::SourceMissing) }) as PassFuture
     };
 
-    process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+    process_next(&store, &|| 100, &runner, &|_| {})
         .await
         .unwrap();
     let key = SessionKey::new("native", "claude-code", "worker-missing");
@@ -989,15 +984,9 @@ async fn an_unreadable_source_reaches_the_cap_through_the_worker() {
     let key = SessionKey::new("native", "claude-code", "worker-unreadable");
 
     for attempt in 0..=MAX_EVIDENCE_ATTEMPTS {
-        process_next(
-            &store,
-            &WorkerHandle::default(),
-            &|| clock.load(Ordering::SeqCst),
-            &runner,
-            &|_| {},
-        )
-        .await
-        .unwrap();
+        process_next(&store, &|| clock.load(Ordering::SeqCst), &runner, &|_| {})
+            .await
+            .unwrap();
         let row = store.evidence(&key).unwrap().unwrap();
         if attempt == MAX_EVIDENCE_ATTEMPTS {
             assert_eq!(row.status, EvidenceStatus::Failed);
@@ -1068,7 +1057,7 @@ async fn a_published_pass_leaves_the_expected_turn_rows_under_its_claim_fence() 
     };
 
     assert!(
-        process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+        process_next(&store, &|| 100, &runner, &|_| {})
             .await
             .unwrap()
     );
@@ -1169,7 +1158,7 @@ async fn a_linked_forks_pass_publishes_turn_rows_only_for_its_own_turns() {
     };
 
     assert!(
-        process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+        process_next(&store, &|| 100, &runner, &|_| {})
             .await
             .unwrap()
     );
@@ -1267,15 +1256,9 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
     };
 
     assert!(
-        process_next(
-            &store,
-            &WorkerHandle::default(),
-            &|| 1_767_225_610,
-            &runner,
-            &|_| {},
-        )
-        .await
-        .unwrap()
+        process_next(&store, &|| 1_767_225_610, &runner, &|_| {},)
+            .await
+            .unwrap()
     );
     let stored = store.evidence(&pi.key).unwrap().unwrap();
     assert_eq!(stored.status, EvidenceStatus::Ready);
@@ -1355,13 +1338,6 @@ fn errors_carry_no_transcript_content() {
         assert!(allowed.contains(&error.as_str()));
         assert!(!error.contains(SOURCE_CONTENT));
     }
-}
-
-#[test]
-fn a_permit_is_chosen_per_source_kind() {
-    assert_eq!(permit_for_source_kind("file"), PermitKind::Source);
-    assert_eq!(permit_for_source_kind("inline"), PermitKind::Source);
-    assert_eq!(permit_for_source_kind("providerDb"), PermitKind::ProviderDb);
 }
 
 #[tokio::test]

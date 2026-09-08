@@ -39,6 +39,210 @@ fn session(session_id: &str, updated_at: i64) -> SessionRecord {
     }
 }
 
+fn seed_historical_sessions(store: &Store, count: usize) {
+    let mut connection = store.lock();
+    let transaction = connection.transaction().unwrap();
+    {
+        let mut insert = transaction
+            .prepare(
+                "INSERT INTO session (
+                     environment_key, agent, session_id, source_kind, source_label,
+                     updated_at_epoch, first_seen_at, last_seen_at
+                 ) VALUES ('native', 'cursor', ?1, 'file', ?2, 1,
+                           '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
+            )
+            .unwrap();
+        for index in 0..count {
+            let session_id = format!("historical-{index}");
+            let source_label = format!("/history/{index}.jsonl");
+            insert.execute(params![session_id, source_label]).unwrap();
+        }
+    }
+    transaction.commit().unwrap();
+}
+
+fn bounded_activity_history_result(
+    history_count: usize,
+) -> HashMap<SessionActivityKey, SessionRecord> {
+    let store = store();
+    seed_historical_sessions(&store, history_count);
+
+    let mut native = session("current-native", 2_000);
+    native.activity_cursor = "native-cursor".into();
+    native.activity_source = "event".into();
+    native.source_fingerprint = Some("native-fingerprint".into());
+    let mut wsl = session("current-wsl", 2_100);
+    wsl.key.environment_key = "wsl:ubuntu".into();
+    wsl.wsl_distro = Some("Ubuntu".into());
+    wsl.source_label = native.source_label.clone();
+    wsl.activity_cursor = "wsl-cursor".into();
+    store
+        .upsert_sessions(&[native.clone(), wsl.clone()], &[])
+        .unwrap();
+
+    let keys = [
+        SessionActivityKey::new(
+            native.key.environment_key.clone(),
+            native.key.agent.clone(),
+            native.source_label.clone(),
+        ),
+        SessionActivityKey::new(
+            wsl.key.environment_key.clone(),
+            wsl.key.agent.clone(),
+            wsl.source_label.clone(),
+        ),
+        SessionActivityKey::new("native", "claude-code", "/missing/recent.jsonl"),
+    ];
+    store.session_records_for_activity_keys(&keys).unwrap()
+}
+
+#[test]
+fn bounded_activity_history_does_not_load_the_lifetime_corpus() {
+    let small = bounded_activity_history_result(1_000);
+    let large = bounded_activity_history_result(100_000);
+
+    assert_eq!(small.len(), 2);
+    assert_eq!(large.len(), 2);
+    assert_eq!(small, large);
+
+    let native_key = SessionActivityKey::new(
+        "native",
+        "claude-code",
+        "/home/avery/.claude/projects/demo/current-native.jsonl",
+    );
+    let native = large.get(&native_key).expect("native prior state");
+    assert_eq!(native.activity_cursor, "native-cursor");
+    assert_eq!(native.activity_source, "event");
+    assert_eq!(
+        native.source_fingerprint.as_deref(),
+        Some("native-fingerprint")
+    );
+
+    let wsl_key = SessionActivityKey::new(
+        "wsl:ubuntu",
+        "claude-code",
+        "/home/avery/.claude/projects/demo/current-native.jsonl",
+    );
+    assert_eq!(
+        large
+            .get(&wsl_key)
+            .and_then(|record| record.wsl_distro.as_deref()),
+        Some("Ubuntu")
+    );
+}
+
+#[test]
+fn scan_history_queries_cross_the_key_batch_boundary() {
+    let store = store();
+    let records = (0..=SCAN_HISTORY_KEY_BATCH_SIZE)
+        .map(|index| {
+            let mut record = session(
+                &format!("batch-{index:03}"),
+                2_000 + i64::try_from(index).unwrap(),
+            );
+            record.source_label = format!("/batch/{index:03}.jsonl");
+            record.activity_cursor = format!("cursor-{index:03}");
+            record
+        })
+        .collect::<Vec<_>>();
+    store
+        .upsert_sessions(&records, &crate::agents::evidence_cohort())
+        .unwrap();
+
+    let activity_keys = records
+        .iter()
+        .map(|record| {
+            SessionActivityKey::new(
+                &record.key.environment_key,
+                &record.key.agent,
+                &record.source_label,
+            )
+        })
+        .collect::<Vec<_>>();
+    let by_activity = store
+        .session_records_for_activity_keys(&activity_keys)
+        .unwrap();
+    assert_eq!(by_activity.len(), records.len());
+    assert_eq!(
+        by_activity
+            .get(activity_keys.last().unwrap())
+            .map(|record| record.activity_cursor.as_str()),
+        Some("cursor-256")
+    );
+
+    let session_keys = records
+        .iter()
+        .map(|record| record.key.clone())
+        .collect::<Vec<_>>();
+    let by_session = store
+        .session_records_for_session_keys(&session_keys)
+        .unwrap();
+    assert_eq!(by_session.len(), records.len());
+    assert!(
+        by_session
+            .iter()
+            .any(|record| record.key.session_id == "batch-256")
+    );
+
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence
+                SET status = 'failed', last_error = ?1
+              WHERE session_id IN ('batch-000', 'batch-256')",
+            params![crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING],
+        )
+        .unwrap();
+    let missing = store
+        .sessions_with_missing_source_for(&session_keys)
+        .unwrap()
+        .into_iter()
+        .map(|key| key.session_id)
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        missing,
+        HashSet::from(["batch-000".to_string(), "batch-256".to_string()])
+    );
+}
+
+#[test]
+fn title_history_cohort_preserves_all_native_agent_rows() {
+    let store = store();
+    let mut old_codex = session("old-codex", 1_000);
+    old_codex.key.agent = "codex".into();
+    let mut recent_codex = session("recent-codex", 2_000);
+    recent_codex.key.agent = "codex".into();
+    recent_codex.title = Some("Indexed title".into());
+    recent_codex.title_source = Some("aiGenerated".into());
+    let mut wsl_codex = recent_codex.clone();
+    wsl_codex.key.environment_key = "wsl:ubuntu".into();
+    wsl_codex.key.session_id = "wsl-codex".into();
+    let recent_claude = session("recent-claude", 2_000);
+    store
+        .upsert_sessions(
+            &[old_codex, recent_codex.clone(), wsl_codex, recent_claude],
+            &[],
+        )
+        .unwrap();
+
+    let session_ids = store.native_session_ids_for_agent("codex").unwrap();
+    let records = store
+        .session_records_for_session_keys(&[
+            SessionKey::new("native", "codex", "old-codex"),
+            SessionKey::new("native", "codex", "recent-codex"),
+        ])
+        .unwrap();
+
+    assert_eq!(session_ids, ["old-codex", "recent-codex"]);
+    assert_eq!(records.len(), 2);
+    let recent = records
+        .iter()
+        .find(|record| record.key.session_id == "recent-codex")
+        .expect("recent native Codex row");
+    assert_eq!(recent.title.as_deref(), Some("Indexed title"));
+    assert_eq!(recent.title_source.as_deref(), Some("aiGenerated"));
+}
+
 fn projection_revisions() -> ProjectionRevisions {
     ProjectionRevisions {
         parser_revision: 1,
@@ -386,6 +590,23 @@ fn events_are_given_up_on_after_a_bounded_number_of_attempts() {
 }
 
 #[test]
+fn the_analytics_queue_reports_depth_and_keeps_the_newest_five_hundred() {
+    let store = store();
+    for index in 0..510 {
+        store
+            .queue_analytics_event("surface_viewed", &index.to_string())
+            .unwrap();
+        let depth = store.analytics_event_count().unwrap();
+        assert_eq!(depth, (index + 1).min(500));
+    }
+
+    assert_eq!(store.analytics_event_count().unwrap(), 500);
+    let pending = store.pending_analytics_events(500).unwrap();
+    assert_eq!(pending.first().unwrap().1, "10");
+    assert_eq!(pending.last().unwrap().1, "509");
+}
+
+#[test]
 fn consent_grants_round_trip_and_revoke_individually() {
     let store = store();
     assert!(store.granted_dirs().unwrap().is_empty());
@@ -611,10 +832,26 @@ fn restarting_onboarding_preserves_local_state_and_is_idempotent() {
     assert_eq!(store.session_count().unwrap(), 1);
     assert_eq!(store.scan_roots().unwrap(), vec!["/home/avery/work"]);
     assert_eq!(store.pending_analytics_events(10).unwrap().len(), 1);
+    assert!(store.onboarding_flow_is_restart());
 
     let (previous_again, restarted_again) = store.restart_onboarding().unwrap();
     assert_eq!(previous_again, expected);
     assert_eq!(restarted_again, expected);
+}
+
+#[test]
+fn a_restarted_onboarding_flow_keeps_its_classification_after_relaunch() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store
+        .update_settings(|settings| settings.onboarding_completed = true)
+        .unwrap();
+    store.restart_onboarding().unwrap();
+    drop(store);
+
+    let reopened = Store::open(directory.path()).unwrap();
+    assert!(!reopened.settings().unwrap().onboarding_completed);
+    assert!(reopened.onboarding_flow_is_restart());
 }
 
 /// Pin the current session shape so migrations remain deliberate. This is not
@@ -2585,15 +2822,9 @@ async fn analysis_from_rows_serves_a_published_pass_without_reading_a_transcript
         Box::pin(async move { pass }) as crate::insights_worker::PassFuture
     };
     assert!(
-        crate::insights_worker::process_next(
-            &store,
-            &crate::insights_worker::WorkerHandle::default(),
-            &|| 1_100,
-            &runner,
-            &|_| {},
-        )
-        .await
-        .unwrap()
+        crate::insights_worker::process_next(&store, &|| 1_100, &runner, &|_| {},)
+            .await
+            .unwrap()
     );
     assert_eq!(
         store.evidence(&record.key).unwrap().unwrap().status,
@@ -2665,15 +2896,9 @@ async fn analysis_from_rows_still_serves_a_published_pass_after_a_requeue() {
         Box::pin(async move { pass }) as crate::insights_worker::PassFuture
     };
     assert!(
-        crate::insights_worker::process_next(
-            &store,
-            &crate::insights_worker::WorkerHandle::default(),
-            &|| 1_100,
-            &runner,
-            &|_| {},
-        )
-        .await
-        .unwrap()
+        crate::insights_worker::process_next(&store, &|| 1_100, &runner, &|_| {},)
+            .await
+            .unwrap()
     );
 
     // The transcript grew: the drilldown's own nudge requeues the session
@@ -2806,15 +3031,9 @@ async fn reprocessing_a_revision_one_row_leaves_no_placeholder_in_stored_evidenc
         Box::pin(async move { pass }) as crate::insights_worker::PassFuture
     };
     assert!(
-        crate::insights_worker::process_next(
-            &store,
-            &crate::insights_worker::WorkerHandle::default(),
-            &|| 1_100,
-            &runner,
-            &|_| {},
-        )
-        .await
-        .unwrap()
+        crate::insights_worker::process_next(&store, &|| 1_100, &runner, &|_| {},)
+            .await
+            .unwrap()
     );
 
     let ready = store.evidence(&record.key).unwrap().unwrap();
@@ -2848,15 +3067,9 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
         }) as crate::insights_worker::PassFuture
     };
     assert!(
-        crate::insights_worker::process_next(
-            &store,
-            &crate::insights_worker::WorkerHandle::default(),
-            &|| 1_100,
-            &runner,
-            &|_| {},
-        )
-        .await
-        .unwrap()
+        crate::insights_worker::process_next(&store, &|| 1_100, &runner, &|_| {},)
+            .await
+            .unwrap()
     );
 
     let failed = store.evidence(&record.key).unwrap().unwrap();

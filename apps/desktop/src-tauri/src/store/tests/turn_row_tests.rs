@@ -11,10 +11,10 @@ use super::*;
 #[test]
 fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pin the count so each new migration requires an explicit test update.
-    assert_eq!(super::schema::MIGRATIONS.len(), 36);
+    assert_eq!(super::schema::MIGRATIONS.len(), 39);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 36);
+    assert_eq!(store.schema_version().unwrap(), 39);
     let index_exists = store
         .lock()
         .query_row(
@@ -309,6 +309,78 @@ fn session_usage_turns_returns_published_rows_at_the_time_boundary() {
     assert_eq!(rows[0].turns[0].model.as_deref(), Some("claude-opus-4-6"));
     assert_eq!(rows[0].turns[0].input_tokens, 10);
     assert_eq!(rows[0].turns[0].output_tokens, 5);
+}
+
+#[test]
+fn grouped_usage_turns_use_disjoint_inclusive_observation_boundaries() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "grouped-usage-turns", 100, 60);
+    let key = record.key.clone();
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
+    writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
+    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+
+    let rows = store
+        .session_usage_turns_grouped_between(1_000, 1_002, &[1_000, 1_001], 10)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].key, key);
+    assert_eq!(rows[0].turns.len(), 2);
+    assert_eq!(rows[0].turns[0].ts_ms, Some(1_000));
+    assert_eq!(rows[0].turns[1].ts_ms, Some(1_001));
+    assert_eq!(rows[0].turns[0].input_tokens, 10);
+    assert_eq!(rows[0].turns[1].input_tokens, 10);
+}
+
+#[test]
+fn grouped_usage_turns_plan_uses_timestamp_range_lookups() {
+    let store = store();
+    let sql = format!("EXPLAIN QUERY PLAN {}", allocation_grouped_turn_sql(2));
+    let connection = store.lock();
+    let mut statement = connection.prepare(&sql).unwrap();
+    let details = statement
+        .query_map(
+            params![1_000, 1_000, 1_000, 1_001, 1_001, 1_001, 1_002, 11],
+            |row| row.get::<_, String>(3),
+        )
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+
+    assert!(
+        details.iter().any(|detail| {
+            detail.contains("turn_usage_timestamp")
+                && detail.contains("ts_ms>?")
+                && detail.contains("ts_ms<?")
+        }),
+        "{details:?}"
+    );
+}
+
+#[test]
+fn grouped_usage_turns_do_not_wait_for_the_writer_mutex() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    let writer = store.lock();
+    let reader_store = store.clone();
+    let (send, receive) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let result = reader_store.session_usage_turns_grouped_between(1_000, 1_002, &[1_001], 10);
+        send.send(result).unwrap();
+    });
+
+    let result = receive.recv_timeout(std::time::Duration::from_secs(1));
+    drop(writer);
+    thread.join().unwrap();
+
+    assert!(result.unwrap().unwrap().unwrap().is_empty());
 }
 
 #[test]

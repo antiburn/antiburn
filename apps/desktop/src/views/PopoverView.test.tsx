@@ -380,6 +380,34 @@ describe("PopoverView", () => {
     expect(invoke).toHaveBeenCalledWith("get_session_limit_allocations")
   })
 
+  it("refreshes cached allocations after an offline cohort setting changes", async () => {
+    const settings = {
+      ...SETTINGS,
+      liveUsageEnabled: false,
+      disabledAgents: [],
+    }
+    mockCommands({ get_settings: settings })
+    render(<PopoverView />)
+    await screen.findByText("Wire the tray popover")
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_session_limit_allocations"))
+    const allocationCallsBefore = invoke.mock.calls.filter(
+      ([command]) => command === "get_session_limit_allocations",
+    ).length
+    const currentTime = Date.now()
+    const now = vi.spyOn(Date, "now").mockReturnValue(currentTime + 30_001)
+
+    try {
+      emit("settings:changed", { ...settings, activityWindowDays: 30 })
+      await waitFor(() =>
+        expect(
+          invoke.mock.calls.filter(([command]) => command === "get_session_limit_allocations"),
+        ).toHaveLength(allocationCallsBefore + 1),
+      )
+    } finally {
+      now.mockRestore()
+    }
+  })
+
   it("keeps the last allocation when a refresh fails", async () => {
     const allocationSummary = {
       generatedAt: "2027-01-15T08:00:00Z",
@@ -539,12 +567,10 @@ describe("PopoverView", () => {
     expect(
       invoke.mock.calls.filter(([command]) => command === "list_recent_sessions"),
     ).toHaveLength(listCallsBefore)
-    await waitFor(() =>
-      expect(
-        invoke.mock.calls.filter(([command]) => command === "get_session_limit_allocations")
-          .length,
-      ).toBeGreaterThan(allocationCallsBefore),
-    )
+    await act(async () => Promise.resolve())
+    expect(
+      invoke.mock.calls.filter(([command]) => command === "get_session_limit_allocations"),
+    ).toHaveLength(allocationCallsBefore)
   })
 
   it("keeps a row's high-cost flag after a sessions:entry-changed event replaces it", async () => {
@@ -1463,7 +1489,7 @@ describe("PopoverView — floating HUD restore", () => {
     render(<PopoverView />)
 
     await screen.findByText("Wire the tray popover")
-    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window")
+    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window", { origin: "automatic" })
   })
 
   it("reopens the stored HUD when the hidden popover appears", async () => {
@@ -1475,7 +1501,9 @@ describe("PopoverView — floating HUD restore", () => {
     hudPreference.popoverVisible = true
     emit("popover:shown", null)
 
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_overlay_window"))
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("open_overlay_window", { origin: "automatic" }),
+    )
   })
 
   it("restores the stored HUD when the popover opened before its listener attached", async () => {
@@ -1484,7 +1512,9 @@ describe("PopoverView — floating HUD restore", () => {
     hudPreference.popoverVisible = true
     render(<PopoverView />)
 
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("open_overlay_window"))
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("open_overlay_window", { origin: "automatic" }),
+    )
   })
 
   it("does not show a stored HUD that is already visible", async () => {
@@ -1495,14 +1525,14 @@ describe("PopoverView — floating HUD restore", () => {
     render(<PopoverView />)
 
     await waitFor(() => expect(overlayVisibilityRead).toHaveBeenCalled())
-    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window")
+    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window", { origin: "automatic" })
   })
 
   it("does not restore an off preference", async () => {
     platform.mac = true
     render(<PopoverView />)
     await screen.findByText("Wire the tray popover")
-    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window")
+    expect(invoke).not.toHaveBeenCalledWith("open_overlay_window", { origin: "automatic" })
   })
 
   it("does not restore the HUD outside macOS", async () => {

@@ -24,11 +24,12 @@ use serde::Serialize;
 pub enum EventName {
     /// The application started.
     AppLaunched,
-    /// The first run finished. Carries nothing: which step a reader stopped
-    /// on would be worth knowing, but nothing reports abandonment, and a doc
-    /// comment describing an unbuilt capability is how a catalog starts to
-    /// overstate itself.
+    /// A new or explicitly restarted setup flow finished.
+    #[cfg(feature = "analytics")]
     OnboardingFinished,
+    /// A new or explicitly restarted setup flow became visible.
+    #[cfg(feature = "analytics")]
+    OnboardingStarted,
     /// One fixed onboarding step became visible.
     #[cfg(feature = "analytics")]
     OnboardingStepViewed,
@@ -48,6 +49,18 @@ pub enum EventName {
     /// Claude's limit-reset diagnostic changed during this run.
     #[cfg(feature = "analytics")]
     ClaudeLimitResetObserved,
+    /// A product surface became visible.
+    #[cfg(feature = "analytics")]
+    SurfaceViewed,
+    /// A Settings pane became visible.
+    #[cfg(feature = "analytics")]
+    SettingsPaneViewed,
+    /// A visible surface presented a terminal or timed-out data state.
+    #[cfg(feature = "analytics")]
+    SurfaceStateObserved,
+    /// A provider state appeared on a visible usage surface.
+    #[cfg(feature = "analytics")]
+    LiveUsageStateObserved,
 }
 
 /// Every event this application may send.
@@ -62,6 +75,7 @@ pub enum EventName {
 pub const EVERY_EVENT: &[EventName] = &[
     EventName::AppLaunched,
     EventName::OnboardingFinished,
+    EventName::OnboardingStarted,
     EventName::OnboardingStepViewed,
     EventName::ScanCompleted,
     EventName::SettingToggled,
@@ -69,6 +83,10 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::ErrorOccurred,
     EventName::UnrecognizedRecordsObserved,
     EventName::ClaudeLimitResetObserved,
+    EventName::SurfaceViewed,
+    EventName::SettingsPaneViewed,
+    EventName::SurfaceStateObserved,
+    EventName::LiveUsageStateObserved,
 ];
 
 #[cfg(feature = "analytics")]
@@ -77,6 +95,7 @@ impl EventName {
         match self {
             EventName::AppLaunched => "antiburn.app_launched",
             EventName::OnboardingFinished => "antiburn.onboarding_finished",
+            EventName::OnboardingStarted => "antiburn.onboarding_started",
             EventName::OnboardingStepViewed => "antiburn.onboarding_step_viewed",
             EventName::ScanCompleted => "antiburn.scan_completed",
             EventName::SettingToggled => "antiburn.setting_toggled",
@@ -84,6 +103,10 @@ impl EventName {
             EventName::ErrorOccurred => "antiburn.error_occurred",
             EventName::UnrecognizedRecordsObserved => "antiburn.unrecognized_records_observed",
             EventName::ClaudeLimitResetObserved => "antiburn.claude_limit_reset_observed",
+            EventName::SurfaceViewed => "antiburn.surface_viewed",
+            EventName::SettingsPaneViewed => "antiburn.settings_pane_viewed",
+            EventName::SurfaceStateObserved => "antiburn.surface_state_observed",
+            EventName::LiveUsageStateObserved => "antiburn.live_usage_state_observed",
         }
     }
 }
@@ -118,11 +141,12 @@ pub struct Event {
     /// Required by the collector, not optional: a payload without it is
     /// rejected outright, so this is the contract's floor rather than
     /// something antiburn chose to add. It is also the *least* persistent
-    /// thing in the payload — minted in memory, never written to disk, gone
-    /// when the process exits, and replaced after
-    /// [`super::SESSION_TIMEOUT`] of inactivity. It cannot outlive a run, so
-    /// it cannot join one to another; the rotating [`Event::anonymous_id`]
-    /// remains the longest-lived identifier here.
+    /// thing in the payload — its generator state lives in memory, is gone
+    /// when the process exits, and is replaced after
+    /// [`super::SESSION_TIMEOUT`] of inactivity. The generator cannot continue
+    /// into another run. Queued event payloads include the captured value until
+    /// delivery or withdrawal. The rotating [`Event::anonymous_id`] remains the
+    /// longest-lived generator state here.
     pub session_id: String,
     /// Event name, in antiburn's own namespace.
     pub event: String,
@@ -153,6 +177,9 @@ pub struct Properties {
     /// under WSL. Same rules as [`Properties::label`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<&'static str>,
+    /// Whether a surface exposure followed a user action or automatic restore.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<&'static str>,
     /// The short-window usage position returned with a Claude reset probe.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_band: Option<&'static str>,
@@ -196,6 +223,8 @@ pub struct Facts {
     pub label: Option<&'static str>,
     /// The secondary dimension, where the event has one.
     pub detail: Option<&'static str>,
+    /// Whether a surface exposure followed a user action or automatic restore.
+    pub origin: Option<&'static str>,
     pub usage_band: Option<&'static str>,
     pub response_shape: Option<&'static str>,
     pub eligibility: Option<&'static str>,
@@ -248,7 +277,7 @@ pub struct Context {
 /// outside it, and every string that reaches the payload is a `&'static str`
 /// this file wrote. Every doc comment below that says "closed" means this.
 #[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Interaction {
     /// A fixed onboarding step became visible.
     OnboardingStepViewed { step: OnboardingStep },
@@ -259,6 +288,110 @@ pub enum Interaction {
         agent: AgentKind,
         environment: Environment,
     },
+    /// A fixed product surface became visible.
+    SurfaceViewed { surface: Surface, origin: Origin },
+    /// A visible surface presented a data state.
+    SurfaceStateObserved {
+        surface: StateSurface,
+        state: SurfaceState,
+        origin: Origin,
+    },
+    /// A fixed Settings pane became visible.
+    SettingsPaneViewed { pane: SettingsPane },
+    /// A provider state appeared on a visible usage surface.
+    LiveUsageStateObserved {
+        provider: LiveUsageProvider,
+        state: LiveUsageState,
+        origin: Origin,
+    },
+}
+
+/// A product surface whose visibility is measured.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Surface {
+    Activity,
+    SessionDetail,
+    ProviderPreview,
+    ChecksPreview,
+    Hud,
+    HudDetail,
+    Settings,
+}
+
+/// A surface that can present a measured data state.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StateSurface {
+    Activity,
+    SessionDetail,
+    ProviderPreview,
+    ChecksPreview,
+    Hud,
+    HudDetail,
+    Settings,
+    Insights,
+}
+
+/// Why a surface became visible.
+#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    User,
+    Automatic,
+}
+
+/// A visible surface's coarse presentation state.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceState {
+    Ready,
+    Empty,
+    Error,
+    LoadingTimeout,
+}
+
+/// A pane in the fixed Settings window.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsPane {
+    General,
+    Appearance,
+    Sources,
+    Privacy,
+    Notifications,
+    Usage,
+    Insights,
+    About,
+}
+
+/// A provider with a supported live-usage source.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveUsageProvider {
+    Anthropic,
+    Openai,
+    Google,
+}
+
+/// A provider state that a visible usage surface can present.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveUsageState {
+    Fresh,
+    Stale,
+    Authentication,
+    RateLimited,
+    Unavailable,
+    NoCredentials,
+}
+
+/// Which setup lifecycle is active.
+#[cfg(feature = "analytics")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnboardingFlow {
+    New,
+    Restart,
 }
 
 /// A screen in the fixed first-run flow.
@@ -301,9 +434,132 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
+            Interaction::SurfaceViewed { surface, origin } => (
+                EventName::SurfaceViewed,
+                Facts {
+                    label: Some(surface.as_str()),
+                    detail: Some(origin.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::SurfaceStateObserved {
+                surface,
+                state,
+                origin,
+            } => (
+                EventName::SurfaceStateObserved,
+                Facts {
+                    label: Some(surface.as_str()),
+                    detail: Some(state.as_str()),
+                    origin: Some(origin.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::SettingsPaneViewed { pane } => (
+                EventName::SettingsPaneViewed,
+                Facts {
+                    label: Some(pane.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::LiveUsageStateObserved {
+                provider, state, ..
+            } => (
+                EventName::LiveUsageStateObserved,
+                Facts {
+                    label: Some(provider.as_str()),
+                    detail: Some(state.as_str()),
+                    ..Facts::default()
+                },
+            ),
         }
     }
 }
+
+#[cfg(feature = "analytics")]
+macro_rules! wire_values {
+    ($type:ty, { $($variant:path => $value:literal),+ $(,)? }) => {
+        impl $type {
+            pub(crate) fn as_str(self) -> &'static str {
+                match self {
+                    $($variant => $value),+
+                }
+            }
+        }
+    };
+}
+
+#[cfg(feature = "analytics")]
+wire_values!(Surface, {
+    Surface::Activity => "activity",
+    Surface::SessionDetail => "session_detail",
+    Surface::ProviderPreview => "provider_preview",
+    Surface::ChecksPreview => "checks_preview",
+    Surface::Hud => "hud",
+    Surface::HudDetail => "hud_detail",
+    Surface::Settings => "settings",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(StateSurface, {
+    StateSurface::Activity => "activity",
+    StateSurface::SessionDetail => "session_detail",
+    StateSurface::ProviderPreview => "provider_preview",
+    StateSurface::ChecksPreview => "checks_preview",
+    StateSurface::Hud => "hud",
+    StateSurface::HudDetail => "hud_detail",
+    StateSurface::Settings => "settings",
+    StateSurface::Insights => "insights",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(Origin, {
+    Origin::User => "user",
+    Origin::Automatic => "automatic",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(SurfaceState, {
+    SurfaceState::Ready => "ready",
+    SurfaceState::Empty => "empty",
+    SurfaceState::Error => "error",
+    SurfaceState::LoadingTimeout => "loading_timeout",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(SettingsPane, {
+    SettingsPane::General => "general",
+    SettingsPane::Appearance => "appearance",
+    SettingsPane::Sources => "sources",
+    SettingsPane::Privacy => "privacy",
+    SettingsPane::Notifications => "notifications",
+    SettingsPane::Usage => "usage",
+    SettingsPane::Insights => "insights",
+    SettingsPane::About => "about",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(LiveUsageProvider, {
+    LiveUsageProvider::Anthropic => "anthropic",
+    LiveUsageProvider::Openai => "openai",
+    LiveUsageProvider::Google => "google",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(LiveUsageState, {
+    LiveUsageState::Fresh => "fresh",
+    LiveUsageState::Stale => "stale",
+    LiveUsageState::Authentication => "authentication",
+    LiveUsageState::RateLimited => "rate_limited",
+    LiveUsageState::Unavailable => "unavailable",
+    LiveUsageState::NoCredentials => "no_credentials",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(OnboardingFlow, {
+    OnboardingFlow::New => "new",
+    OnboardingFlow::Restart => "restart",
+});
 
 #[cfg(feature = "analytics")]
 impl OnboardingStep {
@@ -374,6 +630,7 @@ mod tests {
                 bucket: Some("10-49"),
                 label: Some("claude-code"),
                 detail: Some("native"),
+                origin: Some("user"),
                 usage_band: Some("80_to_under_100"),
                 response_shape: Some("object"),
                 eligibility: Some("eligible"),
@@ -412,7 +669,7 @@ mod tests {
     /// `apps/desktop/src/views/settings/PrivacyPane.tsx` is the bug this
     /// comment exists to prevent.
     #[test]
-    fn the_wire_payload_is_exactly_these_twenty_two_fields() {
+    fn the_wire_payload_is_exactly_these_twenty_three_fields() {
         let json = serde_json::to_value(sample()).expect("serializes");
         let object = json.as_object().expect("an object");
         let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
@@ -449,6 +706,7 @@ mod tests {
                 "ineligibleReason",
                 "label",
                 "nextResetAvailable",
+                "origin",
                 "resetArm",
                 "resetAvailability",
                 "resetsPerWeek",
@@ -481,8 +739,8 @@ mod tests {
     #[test]
     fn no_user_or_organisation_identity_is_ever_carried() {
         let json = serde_json::to_string(&sample()).expect("serializes");
-        // `sessionId` is deliberately absent from this list: it identifies a
-        // run of the process, not a person, and never reaches disk.
+        // `sessionId` is deliberately absent from this list. It identifies a
+        // run of the process rather than a person.
         for forbidden in ["userId", "orgId", "email", "locale"] {
             assert!(!json.contains(forbidden), "{forbidden} in {json}");
         }
@@ -494,6 +752,7 @@ mod tests {
         event.properties.bucket = None;
         event.properties.label = None;
         event.properties.detail = None;
+        event.properties.origin = None;
         event.properties.usage_band = None;
         event.properties.response_shape = None;
         event.properties.eligibility = None;
@@ -507,6 +766,7 @@ mod tests {
         assert!(!json.contains("bucket"), "{json}");
         assert!(!json.contains("label"), "{json}");
         assert!(!json.contains("detail"), "{json}");
+        assert!(!json.contains("\"origin\""), "{json}");
     }
 
     /// The compiler, not a reviewer, keeps [`EVERY_EVENT`] complete.
@@ -526,12 +786,17 @@ mod tests {
                 | EventName::SessionOpened
                 | EventName::ErrorOccurred
                 | EventName::UnrecognizedRecordsObserved
+                | EventName::OnboardingStarted
+                | EventName::SurfaceViewed
+                | EventName::SettingsPaneViewed
+                | EventName::SurfaceStateObserved
+                | EventName::LiveUsageStateObserved
                 | EventName::ClaudeLimitResetObserved => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            9,
+            14,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -587,6 +852,7 @@ mod tests {
             13 => "thirteen",
             14 => "fourteen",
             22 => "twenty-two",
+            23 => "twenty-three",
             other => panic!("no word for {other} fields; add one and update the documents"),
         };
 
@@ -625,6 +891,28 @@ mod tests {
         assert_eq!(facts.label, Some("claude-code"));
         assert_eq!(facts.detail, Some("wsl"));
         assert_eq!(facts.bucket, None);
+
+        let (name, facts) = Interaction::SurfaceStateObserved {
+            surface: StateSurface::ProviderPreview,
+            state: SurfaceState::LoadingTimeout,
+            origin: Origin::User,
+        }
+        .resolve();
+        assert_eq!(name, EventName::SurfaceStateObserved);
+        assert_eq!(facts.label, Some("provider_preview"));
+        assert_eq!(facts.detail, Some("loading_timeout"));
+        assert_eq!(facts.origin, Some("user"));
+
+        let (name, facts) = Interaction::LiveUsageStateObserved {
+            provider: LiveUsageProvider::Google,
+            state: LiveUsageState::RateLimited,
+            origin: Origin::User,
+        }
+        .resolve();
+        assert_eq!(name, EventName::LiveUsageStateObserved);
+        assert_eq!(facts.label, Some("google"));
+        assert_eq!(facts.detail, Some("rate_limited"));
+        assert_eq!(facts.origin, None);
     }
 
     /// The renderer cannot invent a value. This is the whole reason the IPC
@@ -653,6 +941,21 @@ mod tests {
             "environment": "Ubuntu-24.04",
         });
         assert!(serde_json::from_value::<Interaction>(unknown_environment).is_err());
+
+        let extra_property = serde_json::json!({
+            "kind": "surfaceViewed",
+            "surface": "activity",
+            "origin": "user",
+            "repository": "private-name",
+        });
+        assert!(serde_json::from_value::<Interaction>(extra_property).is_err());
+
+        let unknown_origin = serde_json::json!({
+            "kind": "surfaceViewed",
+            "surface": "activity",
+            "origin": "background_poll",
+        });
+        assert!(serde_json::from_value::<Interaction>(unknown_origin).is_err());
     }
 
     #[test]

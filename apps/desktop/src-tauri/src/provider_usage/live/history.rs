@@ -90,6 +90,7 @@ impl History {
     }
 
     /// Samples for a provider account and window without reconstructing a snapshot.
+    #[cfg(test)]
     pub fn samples_for(
         &self,
         provider: &str,

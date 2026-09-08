@@ -105,10 +105,10 @@ pub fn deliver(app: &AppHandle, mut nudge: Nudge) {
         .as_ref()
         .is_none_or(|settings| settings.notification_sound);
     if sound_allowed
-        && let Some(kind) = sound_for(nudge.kind)
+        && sound_for(nudge.kind)
         && let Some(player) = app.try_state::<antiburn_sound::SoundPlayer>()
     {
-        player.play(kind, nudge.actor.as_deref());
+        player.play();
     }
 
     if let Some(manager) = app.try_state::<NudgeManager>() {
@@ -118,11 +118,8 @@ pub fn deliver(app: &AppHandle, mut nudge: Nudge) {
 
 /// Which kinds carry the chime. The test plays it so the toggle is auditable.
 /// Updates, scans, disk, and milestones stay quiet.
-fn sound_for(kind: NudgeKind) -> Option<antiburn_sound::SoundKind> {
-    match kind {
-        NudgeKind::Test => Some(antiburn_sound::SoundKind::Notification),
-        _ => None,
-    }
+fn sound_for(kind: NudgeKind) -> bool {
+    kind == NudgeKind::Test
 }
 
 /// Where the window appears, read fresh at reveal time so a placement change

@@ -1,43 +1,25 @@
 use crate::lifecycle::{RequestTransition, ScheduledTask};
-use crate::model::{AnchorRegion, AnchoredWindowRequest, RevealPolicy};
+use crate::model::{AnchorRegion, AnchoredWindowRequest};
 
 use super::fixtures::{lifecycle, region, retargeted};
 
 #[test]
 fn generation_checks_cover_concealment_and_retargeting() {
     let mut lifecycle = lifecycle();
-    let (first, _) = retargeted(lifecycle.request(
-        "first",
-        region(),
-        RevealPolicy::AfterPresentation,
-        120.0,
-        None,
-    ));
+    let (first, _) = retargeted(lifecycle.request("first", region(), 120.0, None));
     let conceal = lifecycle.conceal();
 
     assert!(!lifecycle.presented(first.generation));
     assert!(lifecycle.concealed(conceal.generation));
     assert!(!lifecycle.visible);
 
-    let (second, _) = retargeted(lifecycle.request(
-        "second",
-        region(),
-        RevealPolicy::AfterPresentation,
-        120.0,
-        None,
-    ));
+    let (second, _) = retargeted(lifecycle.request("second", region(), 120.0, None));
     let stale_conceal = lifecycle.conceal();
     let latest_region = AnchorRegion {
         top: 180.0,
         height: 64.0,
     };
-    let (third, _) = retargeted(lifecycle.request(
-        "third",
-        latest_region,
-        RevealPolicy::AfterPresentation,
-        120.0,
-        None,
-    ));
+    let (third, _) = retargeted(lifecycle.request("third", latest_region, 120.0, None));
 
     assert!(!lifecycle.fallback_is_current(stale_conceal.generation));
     assert!(!lifecycle.presented(second.generation));
@@ -47,16 +29,71 @@ fn generation_checks_cover_concealment_and_retargeting() {
 }
 
 #[test]
+fn renderer_retirement_requires_the_current_completed_concealment() {
+    let mut lifecycle = lifecycle();
+    lifecycle.renderer_ready = true;
+    let (first, _) = retargeted(lifecycle.request("first", region(), 120.0, None));
+    assert!(lifecycle.presented(first.generation));
+
+    let conceal = lifecycle.conceal();
+    assert!(!lifecycle.renderer_retirement_is_current(conceal.generation));
+    assert!(lifecycle.concealed(conceal.generation));
+    assert!(lifecycle.renderer_retirement_is_current(conceal.generation));
+
+    let (second, _) = retargeted(lifecycle.request("second", region(), 120.0, None));
+    assert!(!lifecycle.renderer_retirement_is_current(conceal.generation));
+    assert!(!lifecycle.renderer_retirement_is_current(second.generation));
+}
+
+#[test]
+fn late_renderer_destruction_preserves_a_new_target_for_rebuild() {
+    let mut lifecycle = lifecycle();
+    lifecycle.renderer_generation = 7;
+    lifecycle.renderer_ready = true;
+    let (first, _) = retargeted(lifecycle.request("first", region(), 120.0, None));
+    assert!(lifecycle.presented(first.generation));
+    let conceal = lifecycle.conceal();
+    assert!(lifecycle.concealed(conceal.generation));
+
+    let (second, _) = retargeted(lifecycle.request("second", region(), 120.0, None));
+    assert!(!lifecycle.renderer_retirement_is_current(conceal.generation));
+
+    lifecycle.renderer_destroyed();
+    assert_eq!(lifecycle.state().target, Some("second"));
+    assert!(lifecycle.awaiting_presentation);
+    assert_eq!(lifecycle.renderer_ready(7), None);
+    assert_eq!(lifecycle.renderer_ready(8), Some(false));
+    let pending = lifecycle
+        .pending_render_request()
+        .expect("the new target needs the replacement renderer");
+    assert_eq!(pending.generation, second.generation);
+    assert_eq!(pending.target, Some("second"));
+}
+
+#[test]
+fn anchor_teardown_retires_a_renderer_that_is_still_loading() {
+    let mut lifecycle = lifecycle();
+    lifecycle.renderer_generation = 7;
+    let (request, _) = retargeted(lifecycle.request("target", region(), 120.0, None));
+    assert!(lifecycle.awaiting_presentation);
+
+    let conceal = lifecycle.conceal();
+    lifecycle.force_hidden();
+    assert!(lifecycle.concealed(conceal.generation));
+    assert!(lifecycle.renderer_retirement_is_current(conceal.generation));
+
+    lifecycle.renderer_destroyed();
+    assert_eq!(lifecycle.state().target, None);
+    assert!(!lifecycle.awaiting_presentation);
+    assert_eq!(lifecycle.renderer_ready(7), None);
+    assert!(!lifecycle.presented(request.generation));
+}
+
+#[test]
 fn forced_anchor_conceal_makes_the_next_immediate_request_a_cold_reveal() {
     let mut lifecycle = lifecycle();
     lifecycle.renderer_ready = true;
-    let (first, reveal_now) = retargeted(lifecycle.request(
-        "first",
-        region(),
-        RevealPolicy::ImmediatePlaceholder,
-        320.0,
-        None,
-    ));
+    let (first, reveal_now) = retargeted(lifecycle.request("first", region(), 320.0, None));
     assert!(reveal_now);
     assert!(lifecycle.presented(first.generation));
     lifecycle.height = 500.0;
@@ -66,13 +103,7 @@ fn forced_anchor_conceal_makes_the_next_immediate_request_a_cold_reveal() {
     assert!(!lifecycle.visible);
     assert!(lifecycle.awaiting_concealment);
 
-    let (second, reveal_now) = retargeted(lifecycle.request(
-        "second",
-        region(),
-        RevealPolicy::ImmediatePlaceholder,
-        320.0,
-        None,
-    ));
+    let (second, reveal_now) = retargeted(lifecycle.request("second", region(), 320.0, None));
 
     assert_eq!(second.generation, conceal.generation + 1);
     assert!(reveal_now);
@@ -85,13 +116,7 @@ fn forced_anchor_conceal_makes_the_next_immediate_request_a_cold_reveal() {
 fn same_target_reentry_cancels_concealment_without_restarting_presentation() {
     let mut lifecycle = lifecycle();
     lifecycle.renderer_ready = true;
-    let (first, _) = retargeted(lifecycle.request(
-        "target",
-        region(),
-        RevealPolicy::ImmediatePlaceholder,
-        120.0,
-        None,
-    ));
+    let (first, _) = retargeted(lifecycle.request("target", region(), 120.0, None));
     assert!(lifecycle.presented(first.generation));
     lifecycle.height = 240.0;
 
@@ -105,13 +130,7 @@ fn same_target_reentry_cancels_concealment_without_restarting_presentation() {
         height: 52.0,
     };
 
-    let retained = lifecycle.request(
-        "target",
-        next_region,
-        RevealPolicy::ImmediatePlaceholder,
-        120.0,
-        None,
-    );
+    let retained = lifecycle.request("target", next_region, 120.0, None);
 
     assert_eq!(
         retained,

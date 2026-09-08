@@ -7,14 +7,22 @@ use antiburn_local::pricing::{
     ModelPricing, ModelTokens, calc::calculate_cache_write_cost, canonical_model_key,
 };
 use serde::Deserialize;
-use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
+use time::OffsetDateTime;
+#[cfg(test)]
+use time::{Duration, format_description::well_known::Rfc3339};
 
 use super::attribute;
+use crate::dto::SessionLimitMetric;
+#[cfg(test)]
 use crate::dto::{
     LiveProviderUsage, LiveUsageFreshness, LiveUsageSummary, LiveUsageWindow,
-    SessionLimitAllocation, SessionLimitMetric,
+    SessionLimitAllocation,
 };
-use crate::provider_usage::live::{history::History, model::Freshness};
+#[cfg(test)]
+use crate::provider_usage::live::history::History;
+use crate::provider_usage::live::model::Freshness;
+use crate::store::provider_usage_history::ProviderUsagePeriodHistory;
+use crate::store::provider_usage_ledger::SessionPeriodAllocation;
 use crate::store::{SessionKey, SessionUsageRecord};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +42,7 @@ struct AccountObservation {
 #[derive(Debug, Clone)]
 struct WeightedTurn {
     key: SessionKey,
+    #[cfg(test)]
     wsl_distro: Option<String>,
     provider: &'static str,
     account: AccountEvidence,
@@ -50,6 +59,7 @@ enum WeightBasis {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg(test)]
 enum EstimateTier {
     TokenCurrent,
     PriceCurrent,
@@ -57,6 +67,7 @@ enum EstimateTier {
     PriceHistory,
 }
 
+#[cfg(test)]
 impl EstimateTier {
     fn new(basis: WeightBasis, uses_history: bool) -> Self {
         match (basis, uses_history) {
@@ -69,6 +80,7 @@ impl EstimateTier {
 }
 
 #[derive(Debug)]
+#[cfg(test)]
 struct Candidate {
     allocation: SessionLimitAllocation,
     tier: EstimateTier,
@@ -106,6 +118,7 @@ fn account_evidence(json: &str) -> HashMap<String, AccountEvidence> {
         .collect()
 }
 
+#[cfg(test)]
 fn normalized_account(
     evidence: &AccountEvidence,
     known: &BTreeSet<String>,
@@ -121,6 +134,7 @@ fn normalized_account(
     }
 }
 
+#[cfg(test)]
 fn normalize_live_account(
     account: Option<&str>,
     known: &BTreeSet<String>,
@@ -186,6 +200,7 @@ fn weighted_turns(rows: Vec<SessionUsageRecord>) -> Vec<WeightedTurn> {
                 + tokens.cache_creation_tokens as f64;
             turns.push(WeightedTurn {
                 key: session.key.clone(),
+                #[cfg(test)]
                 wsl_distro: session.wsl_distro.clone(),
                 provider,
                 account: accounts
@@ -202,10 +217,12 @@ fn weighted_turns(rows: Vec<SessionUsageRecord>) -> Vec<WeightedTurn> {
     turns
 }
 
+#[cfg(test)]
 fn parse_at(value: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(value, &Rfc3339).ok()
 }
 
+#[cfg(test)]
 fn window_bounds(
     live: &LiveProviderUsage,
     window: &LiveUsageWindow,
@@ -239,6 +256,7 @@ fn window_bounds(
     ))
 }
 
+#[cfg(test)]
 fn window_applies(window: &LiveUsageWindow, turn: &WeightedTurn) -> bool {
     let Some(scope) = window.scope_model.as_deref() else {
         return true;
@@ -258,6 +276,7 @@ fn window_applies(window: &LiveUsageWindow, turn: &WeightedTurn) -> bool {
     scope == super::live::normalize::slugify(&model)
 }
 
+#[cfg(test)]
 fn metric_of(provider: &str, window: &LiveUsageWindow) -> Option<SessionLimitMetric> {
     if window.kind == "weekly" {
         Some(SessionLimitMetric::Weekly)
@@ -299,6 +318,21 @@ fn distribute<'a>(
     true
 }
 
+fn distribute_zero<'a>(
+    turns: impl Iterator<Item = &'a WeightedTurn>,
+    basis: WeightBasis,
+    output: &mut HashMap<SessionKey, f64>,
+) {
+    for turn in turns {
+        let Some(weight) = turn.weight(basis) else {
+            continue;
+        };
+        if weight.is_finite() && weight > 0.0 {
+            output.entry(turn.key.clone()).or_insert(0.0);
+        }
+    }
+}
+
 fn distribute_window(
     turns: &[&WeightedTurn],
     used_percent: f64,
@@ -307,6 +341,19 @@ fn distribute_window(
     samples: &[crate::provider_usage::live::metrics::UsageSample],
     basis: WeightBasis,
 ) -> (HashMap<SessionKey, f64>, bool) {
+    let (output, uses_history, _) =
+        distribute_window_with_work(turns, used_percent, start_ms, observed_ms, samples, basis);
+    (output, uses_history)
+}
+
+fn distribute_window_with_work(
+    turns: &[&WeightedTurn],
+    used_percent: f64,
+    start_ms: i64,
+    observed_ms: i64,
+    samples: &[crate::provider_usage::live::metrics::UsageSample],
+    basis: WeightBasis,
+) -> (HashMap<SessionKey, f64>, bool, usize) {
     let mut points: BTreeMap<_, _> = samples
         .iter()
         .filter(|sample| sample.freshness == Freshness::Fresh)
@@ -323,21 +370,26 @@ fn distribute_window(
     if points.len() < 2 || points.windows(2).any(|pair| pair[1].1 < pair[0].1) {
         let mut output = HashMap::new();
         distribute(turns.iter().copied(), used_percent, basis, &mut output);
-        return (output, false);
+        return (output, false, turns.len());
     }
 
+    let mut ordered = turns.to_vec();
+    ordered.sort_by_key(|turn| turn.at_ms);
     let mut output = HashMap::new();
-    let mut previous_at = start_ms.saturating_sub(1);
+    let mut interval_start = 0;
+    let mut interval_end = 0;
     let mut previous_percent = 0.0;
     let mut has_observation = false;
+    let mut turn_visits = 0;
     for (at, percent) in points {
+        while interval_end < ordered.len() && ordered[interval_end].at_ms <= at {
+            interval_end += 1;
+        }
         let delta = percent - previous_percent;
         if delta > 0.0 {
+            turn_visits += interval_end - interval_start;
             distribute(
-                turns
-                    .iter()
-                    .copied()
-                    .filter(|turn| turn.at_ms > previous_at && turn.at_ms <= at),
+                ordered[interval_start..interval_end].iter().copied(),
                 delta,
                 basis,
                 &mut output,
@@ -345,15 +397,30 @@ fn distribute_window(
         }
         // Keep the first sample of a plateau. A later increase applies to all turns since that sample.
         if !has_observation || delta > 0.0 {
-            previous_at = at;
+            if delta <= 0.0 {
+                turn_visits += interval_end - interval_start;
+                distribute_zero(
+                    ordered[interval_start..interval_end].iter().copied(),
+                    basis,
+                    &mut output,
+                );
+            }
+            interval_start = interval_end;
             previous_percent = percent;
         }
         has_observation = true;
     }
-    (output, true)
+    turn_visits += interval_end - interval_start;
+    distribute_zero(
+        ordered[interval_start..interval_end].iter().copied(),
+        basis,
+        &mut output,
+    );
+    (output, true, turn_visits)
 }
 
 /// Estimate current weekly and five-hour shares from published local turns.
+#[cfg(test)]
 pub fn estimate(
     rows: Vec<SessionUsageRecord>,
     live: &LiveUsageSummary,
@@ -455,8 +522,10 @@ pub fn estimate(
                         display_name: provider.display_name.clone(),
                         account_key: account.clone(),
                         window_id: window.id.clone(),
-                        resets_at: resets_at.clone(),
+                        resets_at: Some(resets_at.clone()),
                         percent,
+                        coverage: "partial".to_string(),
+                        period_count: 1,
                     },
                 };
                 let key = (turn.key.clone(), metric);
@@ -478,6 +547,209 @@ pub fn estimate(
             .then_with(|| format!("{:?}", left.metric).cmp(&format!("{:?}", right.metric)))
     });
     allocations
+}
+
+/// Allocate one durable provider allowance period from only its local turns.
+///
+/// This preserves completed period contributions before raw observations age
+/// out. A caller persists the returned rows and never invokes this from IPC.
+pub fn estimate_period(
+    rows: Vec<SessionUsageRecord>,
+    history: &ProviderUsagePeriodHistory,
+) -> Option<(SessionLimitMetric, Vec<SessionPeriodAllocation>)> {
+    let period = &history.period;
+    let metric = metric_of_period(period)?;
+    let reset = period.resets_at_epoch?;
+    let duration = period.duration_seconds.or(match metric {
+        SessionLimitMetric::Weekly => Some(7 * 86_400),
+        SessionLimitMetric::FiveHour => Some(5 * 3_600),
+    })?;
+    let start = period
+        .starts_at_epoch
+        .unwrap_or_else(|| reset.saturating_sub(duration));
+    if start >= reset {
+        return None;
+    }
+    let observation = history
+        .observations
+        .iter()
+        .rev()
+        .find(|entry| {
+            entry.is_fresh
+                && entry.is_authoritative
+                && entry.observed_at_epoch >= start
+                && entry.observed_at_epoch < reset
+        })
+        .and_then(|entry| {
+            entry
+                .used_percent
+                .map(|percent| (entry.observed_at_epoch, percent))
+        })?;
+    if !observation.1.is_finite() || !(0.0..=100.0).contains(&observation.1) {
+        return None;
+    }
+    let turns = weighted_turns(rows);
+    let cohort: Vec<_> = turns
+        .iter()
+        .filter(|turn| turn.provider == period.provider)
+        .filter(|turn| turn.at_ms >= start.saturating_mul(1_000))
+        .filter(|turn| turn.at_ms < reset.saturating_mul(1_000))
+        .filter(|turn| period_scope_applies(&period.scope_key, &period.scope_label, turn))
+        .filter(|turn| matches!(&turn.account, AccountEvidence::One(account) if account == &period.account_key))
+        .filter(|turn| turn.at_ms <= observation.0.saturating_mul(1_000))
+        .collect();
+    if cohort.is_empty() {
+        return Some((metric, Vec::new()));
+    }
+    let basis = if cohort.iter().all(|turn| turn.price_weight.is_some()) {
+        WeightBasis::Price
+    } else {
+        WeightBasis::Tokens
+    };
+    let samples = history
+        .observations
+        .iter()
+        .filter(|entry| {
+            entry.is_authoritative
+                && entry.observed_at_epoch >= start
+                && entry.observed_at_epoch < reset
+        })
+        .map(|entry| crate::provider_usage::live::metrics::UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(entry.observed_at_epoch)
+                .unwrap_or(OffsetDateTime::UNIX_EPOCH),
+            used_percent: entry.used_percent,
+            freshness: if entry.is_fresh {
+                Freshness::Fresh
+            } else {
+                Freshness::Stale
+            },
+        })
+        .collect::<Vec<_>>();
+    let (shares, _uses_history) = distribute_window(
+        &cohort,
+        observation.1,
+        start.saturating_mul(1_000),
+        observation.0.saturating_mul(1_000),
+        &samples,
+        basis,
+    );
+    let basis = match basis {
+        WeightBasis::Price => "price",
+        WeightBasis::Tokens => "tokens",
+    };
+    let allocations = shares
+        .into_iter()
+        .filter_map(|(key, percent)| {
+            percent.is_finite().then_some(SessionPeriodAllocation {
+                key,
+                metric: match metric {
+                    SessionLimitMetric::Weekly => "weekly".to_string(),
+                    SessionLimitMetric::FiveHour => "fiveHour".to_string(),
+                },
+                percent,
+                basis: basis.to_string(),
+                partial: true,
+            })
+        })
+        .collect();
+    Some((metric, allocations))
+}
+
+/// Return bounded authoritative observation ends for SQL turn aggregation.
+///
+/// The caller uses these as aggregation boundaries. It retains the first and
+/// final samples when it reduces a dense provider series, so the estimate has
+/// an explicit leading baseline and a final reported value.
+pub fn period_observation_interval_ends(
+    history: &ProviderUsagePeriodHistory,
+    maximum: usize,
+) -> Vec<i64> {
+    let Some((start, reset)) = period_bounds(history) else {
+        return Vec::new();
+    };
+    let mut ends: Vec<_> = history
+        .observations
+        .iter()
+        .filter(|entry| entry.is_fresh && entry.is_authoritative)
+        .filter(|entry| entry.observed_at_epoch >= start && entry.observed_at_epoch < reset)
+        .filter(|entry| {
+            entry
+                .used_percent
+                .is_some_and(|percent| percent.is_finite() && percent >= 0.0)
+        })
+        .map(|entry| entry.observed_at_epoch.saturating_mul(1_000))
+        .collect();
+    ends.sort_unstable();
+    ends.dedup();
+    let maximum = maximum.clamp(2, 256);
+    if ends.len() <= maximum {
+        return ends;
+    }
+    (0..maximum)
+        .map(|index| {
+            let offset = index * (ends.len() - 1) / (maximum - 1);
+            ends[offset]
+        })
+        .collect()
+}
+
+fn period_bounds(history: &ProviderUsagePeriodHistory) -> Option<(i64, i64)> {
+    let reset = history.period.resets_at_epoch?;
+    let duration = history.period.duration_seconds.unwrap_or_else(|| {
+        if history.period.window_kind == "weekly" {
+            7 * 86_400
+        } else {
+            5 * 3_600
+        }
+    });
+    let start = history
+        .period
+        .starts_at_epoch
+        .unwrap_or_else(|| reset.saturating_sub(duration));
+    (start < reset).then_some((start, reset))
+}
+
+fn metric_of_period(
+    period: &crate::store::provider_usage_history::ProviderUsagePeriod,
+) -> Option<SessionLimitMetric> {
+    if period.window_kind == "weekly" {
+        return Some(SessionLimitMetric::Weekly);
+    }
+    let five_hour = match period.provider.as_str() {
+        super::providers::ANTHROPIC => period.window_id == "five-hour",
+        super::providers::OPENAI => {
+            period.window_id == "five-hour" || period.window_id.ends_with("-300m")
+        }
+        super::providers::GOOGLE => matches!(
+            period.window_id.as_str(),
+            "antigravity-gemini-5h" | "antigravity-claude-gpt-5h"
+        ),
+        _ => false,
+    };
+    five_hour.then_some(SessionLimitMetric::FiveHour)
+}
+
+fn period_scope_applies(scope_key: &str, scope_label: &str, turn: &WeightedTurn) -> bool {
+    if scope_key == "account" {
+        return true;
+    }
+    let Some(scope) = scope_key.strip_prefix("model:") else {
+        return false;
+    };
+    let scope = if scope.is_empty() { scope_label } else { scope };
+    let scope = super::live::normalize::slugify(scope);
+    let model = canonical_model_key(&turn.model);
+    if turn.provider == super::providers::GOOGLE {
+        return match scope.as_str() {
+            "gemini" => super::providers::provider_for_model(&model) == super::providers::GOOGLE,
+            "claude-gpt" => matches!(
+                super::providers::provider_for_model(&model),
+                super::providers::ANTHROPIC | super::providers::OPENAI
+            ),
+            _ => false,
+        };
+    }
+    scope == super::live::normalize::slugify(&model)
 }
 
 #[cfg(test)]

@@ -75,6 +75,13 @@ not ours:
 - the limits appear above the spend estimates and never replace them. See
   [Network](#network) for the connections and the switch that controls them.
 
+Session cards can also show an estimated cumulative share of a provider allowance
+across recorded five-hour or weekly periods. antiburn distributes each provider
+percentage over matching local session work, so this is an estimate and can exceed
+100%. A partial coverage label means the estimate can omit usage or use incomplete
+account or provider-history evidence. This session estimate remains after a provider
+reset. The provider meter still shows only the current allowance period.
+
 ## What antiburn stores
 
 antiburn keeps its own local data under the application's data directory. Settings →
@@ -84,8 +91,12 @@ content recorded in a transcript, session identity and locations, counts, durati
 token totals, phase distributions, cost estimates, skill details, derived session
 evidence — bounded facts about which models, tools, skills, and MCP servers a
 session used, and any quota limits it recorded hitting, never the transcript's
-text — session relations, and the last successful plan-limit reading. This data stays on the
-device and is never uploaded.
+text — session relations, the last successful plan-limit reading, and timestamped
+provider usage readings for an opaque account key. Provider usage readings stay
+for up to 90 days, or a shorter selected session-data retention period. Clearing
+local data removes them. antiburn retains compact per-session allowance estimates
+while their sessions remain, even after the raw provider readings expire. This data
+stays on the device and is never uploaded.
 
 The coding agents' source transcripts remain their files. antiburn may copy data from
 them into its own local store, but it never modifies or deletes the source files.
@@ -136,19 +147,27 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   and require the next package to be installed manually.
 - **Anonymised product analytics** are the one thing antiburn reports to us.
   Official release builds start with it on, including during onboarding. The Ready
-  screen explains it, and the switch is in Settings → Privacy. The event schema has twenty-two fields and
+  screen explains it, and the switch is in Settings → Privacy. The event schema has twenty-three fields and
   no others: the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier replaced every 30 days;
-  a random application-run identifier; the event name; the time it happened and the time it was delivered; the
+  a random analytics-session identifier; the event name; the time it happened and the time it was delivered; the
   processor architecture; a count rounded into a range where the event has one;
-  a short label naming which setting changed or which kind of failure occurred,
-  never the value; a second fixed label where needed; a coarse five-hour usage
+  a short label naming a surface, Settings pane, provider, setting, agent
+  category, or failure category, never work content or an entered value; a
+  second fixed label where needed; whether a visible state followed a user or
+  automatic exposure; a coarse five-hour usage
   band; the reset response shape; eligibility, experiment membership, experiment
   arm, and availability states; an allowlisted ineligibility reason; a reset-count
   bucket; whether a next-reset date was present; the app version; and the operating system. The payload has no
-  field able to carry anything else. Because each event is timestamped and the
-  identifier lasts up to 30 days, the events do show roughly when the
-  application is used within that window; they do not show what it was used on.
+  field able to carry anything else. The analytics-session identifier changes
+  after 30 minutes without a captured analytics event, when the app restarts,
+  or when the installation identifier rotates.
+  Its generator is memory-only, but each queued event stores the value on disk
+  until that event is sent or removed. Background events can keep it active, so
+  it does not measure a user visit or time spent. Because each event is
+  timestamped and the installation identifier lasts up to 30 days, the events
+  do show roughly when events were captured within that window; they do not show
+  what the app was used on.
   [analytics.md](analytics.md) is the complete account: every field,
   the full event catalog, and how to verify all of it yourself.
   Never sent: sessions, transcripts, prompts, titles, file paths, repository or

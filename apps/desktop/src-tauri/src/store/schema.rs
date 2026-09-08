@@ -12,7 +12,7 @@
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
-    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36,
+    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -619,5 +619,128 @@ const V35: &str = r#"
 DELETE FROM analytics_event WHERE name = 'antiburn.usage_viewed';
 "#;
 
-/// v36 preserves request routes for compatible cache accounting.
-const V36: &str = antiburn_local::analysis::TURN_SCHEMA_V7_SQL;
+/// v36 — durable provider-reported usage observations.
+///
+/// Observations without a provider-stated period boundary deliberately have no
+/// period id. They remain useful history, but cannot support attribution to a
+/// guessed allowance period.
+const V36: &str = r#"
+CREATE TABLE provider_usage_period (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider              TEXT NOT NULL,
+    account_key           TEXT NOT NULL,
+    window_id             TEXT NOT NULL,
+    window_kind           TEXT NOT NULL,
+    window_role           TEXT NOT NULL,
+    scope_key             TEXT NOT NULL,
+    scope_label           TEXT NOT NULL,
+    duration_seconds      INTEGER,
+    starts_at_epoch       INTEGER,
+    resets_at_epoch       INTEGER,
+    first_observed_epoch  INTEGER NOT NULL,
+    last_observed_epoch   INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX provider_usage_period_identity
+    ON provider_usage_period (
+        provider, account_key, window_id, window_kind, window_role, scope_key,
+        last_observed_epoch DESC
+    );
+CREATE INDEX provider_usage_period_reset_identity
+    ON provider_usage_period (
+        provider, account_key, window_id, window_kind, window_role, scope_key,
+        resets_at_epoch
+    );
+CREATE INDEX provider_usage_period_start_identity
+    ON provider_usage_period (
+        provider, account_key, window_id, window_kind, window_role, scope_key,
+        starts_at_epoch
+    );
+
+CREATE TABLE provider_usage_observation (
+    id                        INTEGER PRIMARY KEY,
+    period_id                 INTEGER REFERENCES provider_usage_period(id),
+    provider                  TEXT NOT NULL,
+    account_key               TEXT NOT NULL,
+    window_id                 TEXT NOT NULL,
+    window_kind               TEXT NOT NULL,
+    window_role               TEXT NOT NULL,
+    scope_key                 TEXT NOT NULL,
+    scope_label               TEXT NOT NULL,
+    observed_at_epoch         INTEGER NOT NULL,
+    used_percent              REAL,
+    is_fresh                  INTEGER NOT NULL CHECK (is_fresh IN (0, 1)),
+    is_authoritative          INTEGER NOT NULL CHECK (is_authoritative IN (0, 1)),
+    confidence                TEXT NOT NULL,
+    source_id                 TEXT NOT NULL,
+    reported_starts_at_epoch  INTEGER,
+    reported_resets_at_epoch  INTEGER,
+    UNIQUE (
+        provider, account_key, window_id, window_kind, window_role, scope_key,
+        observed_at_epoch
+    )
+) STRICT;
+
+CREATE INDEX provider_usage_observation_period_time
+    ON provider_usage_observation (period_id, observed_at_epoch);
+CREATE INDEX provider_usage_observation_time
+    ON provider_usage_observation (observed_at_epoch);
+"#;
+
+/// v37 keeps compact per-session contributions after raw observations expire.
+///
+/// The queue separates ingestion from allocation. A provider refresh writes a
+/// small set of period ids, while the worker drains a bounded number later.
+const V37: &str = r#"
+ALTER TABLE provider_usage_period
+    ADD COLUMN allocation_frozen INTEGER NOT NULL DEFAULT 0
+    CHECK (allocation_frozen IN (0, 1));
+
+CREATE TABLE provider_usage_allocation_dirty (
+    period_id          INTEGER PRIMARY KEY REFERENCES provider_usage_period(id),
+    requested_at_epoch INTEGER NOT NULL,
+    generation         INTEGER NOT NULL DEFAULT 1
+) STRICT;
+
+CREATE TABLE provider_usage_allocation_revision (
+    id    INTEGER PRIMARY KEY CHECK (id = 1),
+    value INTEGER NOT NULL
+) STRICT;
+INSERT INTO provider_usage_allocation_revision (id, value) VALUES (1, 0);
+
+UPDATE provider_usage_allocation_revision SET value = 1 WHERE id = 1;
+INSERT INTO provider_usage_allocation_dirty (period_id, requested_at_epoch, generation)
+    SELECT id, last_observed_epoch, 1
+      FROM provider_usage_period
+     WHERE resets_at_epoch IS NOT NULL;
+
+CREATE TABLE provider_usage_session_allocation (
+    period_id        INTEGER NOT NULL REFERENCES provider_usage_period(id),
+    environment_key  TEXT NOT NULL,
+    agent            TEXT NOT NULL,
+    session_id       TEXT NOT NULL,
+    metric           TEXT NOT NULL CHECK (metric IN ('weekly', 'fiveHour')),
+    percent          REAL NOT NULL,
+    basis            TEXT NOT NULL CHECK (basis IN ('price', 'tokens')),
+    partial          INTEGER NOT NULL CHECK (partial IN (0, 1)),
+    computed_at_epoch INTEGER NOT NULL,
+    PRIMARY KEY (period_id, environment_key, agent, session_id),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session(environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX provider_usage_session_allocation_session_metric
+    ON provider_usage_session_allocation
+       (environment_key, agent, session_id, metric, period_id);
+"#;
+
+/// v38 indexes the native watcher lookup by transcript path and full activity
+/// identity. The source kind completes the lookup predicate without changing
+/// the session identity contract.
+const V38: &str = r#"
+CREATE INDEX session_source_lookup
+    ON session (source_label, environment_key, agent, source_kind);
+"#;
+
+/// v39 preserves request routes for compatible cache accounting.
+const V39: &str = antiburn_local::analysis::TURN_SCHEMA_V7_SQL;

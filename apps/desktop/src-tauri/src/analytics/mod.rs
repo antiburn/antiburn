@@ -13,8 +13,8 @@
 //! - **The identifier cannot build a longitudinal profile.** It is random and
 //!   rotates on [`IDENTITY_LIFETIME_DAYS`]; opting out destroys it, so opting
 //!   back in is a new identity that cannot be joined to the old one. The
-//!   `sessionId` the contract also requires is weaker still — held in memory,
-//!   never written to disk, and gone when the process exits.
+//!   `sessionId` generator state is weaker still — held in memory and gone
+//!   when the process exits. Queued payloads include that value until delivery.
 //!
 //! What this module cannot enforce is what happens after delivery. Retention
 //! and IP handling belong to whoever operates the endpoint, are stated in the
@@ -23,6 +23,8 @@
 
 #[cfg(feature = "analytics")]
 pub mod config;
+#[cfg(feature = "analytics")]
+mod delivery;
 pub mod event;
 
 #[cfg(not(feature = "analytics"))]
@@ -49,6 +51,7 @@ pub fn record(_app: &tauri::AppHandle, _name: event::EventName, facts: event::Fa
         facts.bucket,
         facts.label,
         facts.detail,
+        facts.origin,
         facts.usage_band,
         facts.response_shape,
         facts.eligibility,
@@ -70,7 +73,47 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::SessionOpened { agent, environment } => {
             let _ = (agent, environment);
         }
+        event::Interaction::SurfaceViewed { surface, origin } => {
+            let _ = (surface, origin);
+        }
+        event::Interaction::SurfaceStateObserved {
+            surface,
+            state,
+            origin,
+        } => {
+            let _ = (surface, state, origin);
+        }
+        event::Interaction::SettingsPaneViewed { pane } => {
+            let _ = pane;
+        }
+        event::Interaction::LiveUsageStateObserved {
+            provider,
+            state,
+            origin,
+        } => {
+            let _ = (provider, state, origin);
+        }
     }
+}
+
+#[cfg(not(feature = "analytics"))]
+pub fn prepare_onboarding_restart() {}
+
+#[cfg(not(feature = "analytics"))]
+pub fn record_onboarding_started(_app: &tauri::AppHandle) {}
+
+#[cfg(not(feature = "analytics"))]
+pub fn record_onboarding_finished(_app: &tauri::AppHandle) {}
+
+#[cfg(not(feature = "analytics"))]
+pub fn prepare_hud_exposure(_origin: event::Origin) {}
+
+#[cfg(not(feature = "analytics"))]
+pub fn cancel_hud_exposure() {}
+
+#[cfg(not(feature = "analytics"))]
+pub fn take_hud_exposure_origin(_exposed: bool) -> Option<event::Origin> {
+    None
 }
 
 #[cfg(not(feature = "analytics"))]
@@ -95,39 +138,41 @@ pub fn handle_settings_transition(
 #[cfg(feature = "analytics")]
 mod enabled {
 
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use antiburn_local::insights::UnrecognizedRecords;
     use tauri::Manager as _;
 
-    use super::event::{Event, EventName, Facts, Interaction};
-    use super::{config, event};
+    use super::delivery::{DeliverySchedule, FlushOutcome};
+    use super::event::{
+        Event, EventName, Facts, Interaction, LiveUsageProvider, LiveUsageState, OnboardingFlow,
+        Origin, SettingsPane, Surface,
+    };
+    use super::{config, delivery, event};
     use crate::store::{AppSettings, Store};
 
     /// How long an installation identifier lives before it is replaced.
     pub const IDENTITY_LIFETIME_DAYS: i64 = 30;
 
-    /// How long a run identifier survives without activity before it is replaced.
+    /// How long a run identifier survives without an analytics event.
     ///
     /// The collector's contract specifies this window, and matching it is the
     /// point — a client that invented its own would make its rows incomparable
     /// with every other surface reporting to the same place.
     pub const SESSION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
-    /// How many events one delivery attempt carries.
-    const BATCH_SIZE: u32 = 50;
-
-    /// How often the flusher wakes.
-    const FLUSH_INTERVAL: Duration = Duration::from_secs(15 * 60);
-
-    /// A short settling delay so launch does not compete with the first scan.
-    const FIRST_FLUSH_DELAY: Duration = Duration::from_secs(60);
-
     /// How many failures a queued event survives before it is given up on.
     const MAX_ATTEMPTS: u32 = 5;
 
     /// How long one delivery may take before it is abandoned.
     const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// Deliberate events separated by this gap belong to different visits.
+    const DELIBERATE_VISIT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+    /// Wakes the bounded delivery scheduler after a queue depth change.
+    #[derive(Default)]
+    struct DeliveryWake(tokio::sync::Notify);
 
     /// Whether this build could report at all, regardless of the reader's choice.
     ///
@@ -175,13 +220,16 @@ mod enabled {
     }
 
     fn record_event(app: &tauri::AppHandle, name: EventName, facts: Facts) -> bool {
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !allowed(app) {
             return false;
         }
         let Some(store) = app.try_state::<Store>() else {
             return false;
         };
-        let Some(install_id) = current_install_id(&store) else {
+        let Some((install_id, session_id)) = current_identity_pair(&store) else {
             return false;
         };
         let payload = Event {
@@ -191,7 +239,7 @@ mod enabled {
             // twice.
             message_id: random_identifier(),
             anonymous_id: install_id,
-            session_id: current_session_id(),
+            session_id,
             event: name.as_str().to_string(),
             original_timestamp: crate::store::now_rfc3339(),
             properties: event::Properties {
@@ -199,6 +247,7 @@ mod enabled {
                 bucket: facts.bucket,
                 label: facts.label,
                 detail: facts.detail,
+                origin: facts.origin,
                 usage_band: facts.usage_band,
                 response_shape: facts.response_shape,
                 eligibility: facts.eligibility,
@@ -214,8 +263,13 @@ mod enabled {
                 os: event::os_family(),
             },
         };
-        if let Ok(json) = serde_json::to_string(&payload) {
-            return store.queue_analytics_event(name.as_str(), &json).is_ok();
+        if let Ok(json) = serde_json::to_string(&payload)
+            && store.queue_analytics_event(name.as_str(), &json).is_ok()
+        {
+            if let Some(wake) = app.try_state::<DeliveryWake>() {
+                wake.0.notify_one();
+            }
+            return true;
         }
         false
     }
@@ -247,8 +301,112 @@ mod enabled {
     ///
     /// The renderer names a shape, not an event. See [`Interaction`] for why.
     pub fn record_interaction(app: &tauri::AppHandle, interaction: Interaction) {
+        if let Some((provider, state)) = deliberate_live_usage_observation(interaction) {
+            record_live_usage_state(app, provider, state);
+            return;
+        }
+        if matches!(interaction, Interaction::LiveUsageStateObserved { .. }) {
+            return;
+        }
         let (name, facts) = interaction.resolve();
-        record(app, name, facts);
+        if !record_event(app, name, facts) {
+            return;
+        }
+        match interaction {
+            Interaction::SurfaceViewed {
+                surface,
+                origin: Origin::User,
+            } if surface != Surface::Settings => note_deliberate_activity(Instant::now()),
+            Interaction::SettingsPaneViewed {
+                pane: SettingsPane::Insights,
+            } => note_deliberate_activity(Instant::now()),
+            _ => {}
+        }
+    }
+
+    fn deliberate_live_usage_observation(
+        interaction: Interaction,
+    ) -> Option<(LiveUsageProvider, LiveUsageState)> {
+        match interaction {
+            Interaction::LiveUsageStateObserved {
+                provider,
+                state,
+                origin: Origin::User,
+            } => Some((provider, state)),
+            _ => None,
+        }
+    }
+
+    #[derive(Default)]
+    struct DeliberateVisit {
+        last_activity: Option<Instant>,
+        live_usage_states: Vec<(LiveUsageProvider, LiveUsageState)>,
+    }
+
+    static DELIBERATE_VISIT: std::sync::Mutex<DeliberateVisit> =
+        std::sync::Mutex::new(DeliberateVisit {
+            last_activity: None,
+            live_usage_states: Vec::new(),
+        });
+
+    fn advance_deliberate_visit(visit: &mut DeliberateVisit, now: Instant) {
+        if visit
+            .last_activity
+            .is_none_or(|last| now.duration_since(last) >= DELIBERATE_VISIT_TIMEOUT)
+        {
+            visit.live_usage_states.clear();
+        }
+        visit.last_activity = Some(now);
+    }
+
+    fn note_deliberate_activity(now: Instant) {
+        let mut visit = DELIBERATE_VISIT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        advance_deliberate_visit(&mut visit, now);
+    }
+
+    fn record_live_usage_state(
+        app: &tauri::AppHandle,
+        provider: LiveUsageProvider,
+        state: LiveUsageState,
+    ) {
+        if !allowed(app) {
+            return;
+        }
+        let now = Instant::now();
+        let mut visit = DELIBERATE_VISIT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !visit_accepts_live_usage_state(&mut visit, provider, state, now) {
+            return;
+        }
+        let (name, facts) = Interaction::LiveUsageStateObserved {
+            provider,
+            state,
+            origin: Origin::User,
+        }
+        .resolve();
+        if record_event(app, name, facts) {
+            visit.live_usage_states.push((provider, state));
+        }
+    }
+
+    fn visit_accepts_live_usage_state(
+        visit: &mut DeliberateVisit,
+        provider: LiveUsageProvider,
+        state: LiveUsageState,
+        now: Instant,
+    ) -> bool {
+        let Some(last_activity) = visit.last_activity else {
+            return false;
+        };
+        if now.duration_since(last_activity) >= DELIBERATE_VISIT_TIMEOUT {
+            visit.live_usage_states.clear();
+            visit.last_activity = None;
+            return false;
+        }
+        !visit.live_usage_states.contains(&(provider, state))
     }
 
     /// The last scan outcome reported in this run.
@@ -265,6 +423,125 @@ mod enabled {
     static LAST_CLAUDE_LIMIT_RESET: std::sync::Mutex<
         Option<crate::provider_usage::live::anthropic::LimitResetDiagnostic>,
     > = std::sync::Mutex::new(None);
+
+    #[derive(Debug, Clone, Copy, Default)]
+    struct OnboardingCapture {
+        flow: Option<OnboardingFlow>,
+        started: bool,
+        finished: bool,
+    }
+
+    static ONBOARDING_CAPTURE: std::sync::Mutex<OnboardingCapture> =
+        std::sync::Mutex::new(OnboardingCapture {
+            flow: None,
+            started: false,
+            finished: false,
+        });
+
+    static HUD_EXPOSURE_ORIGIN: std::sync::Mutex<Option<Origin>> = std::sync::Mutex::new(None);
+
+    /// Begin a distinct restart flow after its pending state persists.
+    pub fn prepare_onboarding_restart() {
+        *ONBOARDING_CAPTURE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = OnboardingCapture {
+            flow: Some(OnboardingFlow::Restart),
+            started: false,
+            finished: false,
+        };
+    }
+
+    fn onboarding_flow(app: &tauri::AppHandle) -> OnboardingFlow {
+        if app
+            .try_state::<Store>()
+            .is_some_and(|store| store.onboarding_flow_is_restart())
+        {
+            OnboardingFlow::Restart
+        } else {
+            OnboardingFlow::New
+        }
+    }
+
+    /// Record the first successful reveal of the active setup flow.
+    pub fn record_onboarding_started(app: &tauri::AppHandle) {
+        let flow = onboarding_flow(app);
+        let mut capture = ONBOARDING_CAPTURE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if capture.flow != Some(flow) {
+            *capture = OnboardingCapture {
+                flow: Some(flow),
+                started: false,
+                finished: false,
+            };
+        }
+        if capture.started {
+            return;
+        }
+        if record_event(
+            app,
+            EventName::OnboardingStarted,
+            Facts {
+                label: Some(flow.as_str()),
+                ..Facts::default()
+            },
+        ) {
+            capture.started = true;
+        }
+    }
+
+    /// Record the committed completion of the active setup flow once.
+    pub fn record_onboarding_finished(app: &tauri::AppHandle) {
+        let flow = onboarding_flow(app);
+        let mut capture = ONBOARDING_CAPTURE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if capture.flow != Some(flow) {
+            *capture = OnboardingCapture {
+                flow: Some(flow),
+                started: false,
+                finished: false,
+            };
+        }
+        if capture.finished {
+            return;
+        }
+        if record_event(
+            app,
+            EventName::OnboardingFinished,
+            Facts {
+                label: Some(flow.as_str()),
+                ..Facts::default()
+            },
+        ) {
+            capture.finished = true;
+        }
+    }
+
+    /// Hold the origin until the HUD confirms an actual reveal.
+    pub fn prepare_hud_exposure(origin: Origin) {
+        *HUD_EXPOSURE_ORIGIN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(origin);
+    }
+
+    /// Cancel a pending HUD exposure when reveal cannot complete.
+    pub fn cancel_hud_exposure() {
+        *HUD_EXPOSURE_ORIGIN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    /// Take the origin for one confirmed HUD reveal.
+    pub fn take_hud_exposure_origin(exposed: bool) -> Option<Origin> {
+        if !exposed {
+            return None;
+        }
+        HUD_EXPOSURE_ORIGIN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum UnrecognizedOutcome {
@@ -290,19 +567,22 @@ mod enabled {
 
     /// Record a discovery pass, if it says anything the previous one did not.
     ///
-    /// `Some(count)` is a completed pass; `None` is a failed one.
+    /// `Some(count)` is a completed pass; `None` is a failed one. Call this
+    /// only for a full pass. [`crate::scan::scan_report`] keeps a scoped
+    /// pass — a watcher-burst retry of a handful of agents — from reaching
+    /// this function at all: a scoped pass counts only its named agents, not
+    /// the whole install, so its count is not comparable to a full pass's
+    /// count and would flap the reported bucket on every burst.
     ///
-    /// The scheduler runs a full pass every [`crate::scan::TICK`], plus a
-    /// scoped pass on every watcher burst — as often as every few seconds
-    /// while a session is active — so reporting each one would put far more
-    /// events into a channel whose other events are counted in ones,
-    /// swamping the queue's own bound and every other event with it. It
-    /// would also be the wrong measurement twice over: what is worth knowing
-    /// is roughly how large an install's history is and whether scanning
-    /// works at all, and a repetition answers neither better than the first
-    /// report did. A machine stuck failing every pass would additionally
-    /// report that same failure over and over, which is not more information
-    /// about one broken install.
+    /// The scheduler runs a full pass every [`crate::scan::TICK`]. Reporting
+    /// each one would put far more events into a channel whose other events
+    /// are counted in ones, swamping the queue's own bound and every other
+    /// event with it. It would also be the wrong measurement: what is worth
+    /// knowing is roughly how large an install's history is and whether
+    /// scanning works at all, and a repetition answers neither better than
+    /// the first report did. A machine stuck failing every pass would
+    /// additionally report that same failure over and over, which is not
+    /// more information about one broken install.
     ///
     /// So the bucket, or the failure category, is compared against the last one
     /// reported and an unchanged outcome is dropped. What survives is the first
@@ -405,6 +685,10 @@ mod enabled {
         *LAST_CLAUDE_LIMIT_RESET
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *DELIBERATE_VISIT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = DeliberateVisit::default();
+        cancel_hud_exposure();
     }
 
     /// The identifier to stamp on an event, minting or rotating it as needed.
@@ -417,7 +701,17 @@ mod enabled {
         }
         let fresh = random_identifier();
         store.set_analytics_identity(&fresh).ok()?;
+        // A session identifier must not join the old and new installation IDs.
+        reset_session();
         Some(fresh)
+    }
+
+    /// Serialize the two identifiers so rotation cannot produce a mixed pair.
+    fn current_identity_pair(store: &Store) -> Option<(String, String)> {
+        let _guard = IDENTITY_SESSION_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Some((current_install_id(store)?, current_session_id()))
     }
 
     /// Whether a mint stamp is old enough that the identifier should roll over.
@@ -436,12 +730,15 @@ mod enabled {
 
     /// The current run identifier, and when it was last touched.
     ///
-    /// Deliberately in memory and nowhere else. A restart mints a new one even
-    /// inside the window, which is the same behaviour the contract describes for
-    /// a desktop client and is the weaker of the two options — a persisted
-    /// session id would be a second durable identifier, and one is enough.
+    /// The generator state stays in memory. A restart mints a new value even
+    /// inside the window. Queued event payloads keep their captured value.
     static SESSION: std::sync::Mutex<Option<(String, std::time::Instant)>> =
         std::sync::Mutex::new(None);
+
+    static IDENTITY_SESSION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Serializes consent checks, capture, and consent withdrawal.
+    static CAPTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// The run identifier to stamp on an event, minting or rolling it as needed.
     fn current_session_id() -> String {
@@ -529,8 +826,13 @@ mod enabled {
         // lives in memory rather than in the store, so it has to be dropped
         // separately or opting out and back in inside the same launch would resume
         // the session that was just withdrawn.
-        let _ = store.clear_analytics();
-        reset_session();
+        {
+            let _capture = CAPTURE_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _ = store.clear_analytics();
+            reset_session();
+        }
         reset_suppression();
     }
 
@@ -560,12 +862,41 @@ mod enabled {
             return;
         }
         ensure_crypto_provider();
+        app.manage(DeliveryWake::default());
         let handle = app.clone();
         tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(FIRST_FLUSH_DELAY).await;
+            let started = Instant::now();
+            let initial_depth = handle
+                .try_state::<Store>()
+                .and_then(|store| store.analytics_event_count().ok())
+                .unwrap_or(0);
+            let mut schedule = DeliverySchedule::new(Duration::ZERO, initial_depth);
             loop {
-                flush_once(&handle).await;
-                tokio::time::sleep(FLUSH_INTERVAL).await;
+                let now = started.elapsed();
+                let Some(delay) = schedule.next_delay(now) else {
+                    let wake = handle.state::<DeliveryWake>();
+                    wake.0.notified().await;
+                    let depth = handle
+                        .try_state::<Store>()
+                        .and_then(|store| store.analytics_event_count().ok())
+                        .unwrap_or(0);
+                    schedule.queued(started.elapsed(), depth);
+                    continue;
+                };
+                let wake = handle.state::<DeliveryWake>();
+                tokio::select! {
+                    () = tokio::time::sleep(delay) => {
+                        let outcome = flush_once(&handle).await;
+                        schedule.flush_completed(started.elapsed(), outcome);
+                    }
+                    () = wake.0.notified() => {
+                        let depth = handle
+                            .try_state::<Store>()
+                            .and_then(|store| store.analytics_event_count().ok())
+                            .unwrap_or(0);
+                        schedule.queued(started.elapsed(), depth);
+                    }
+                }
             }
         });
     }
@@ -576,30 +907,33 @@ mod enabled {
     /// local queue rather than fired at the call site: an event captured while the
     /// machine was offline is still worth sending later, and a call site that
     /// blocks on the network to report on itself has its priorities inverted.
-    async fn flush_once(app: &tauri::AppHandle) {
+    async fn flush_once(app: &tauri::AppHandle) -> FlushOutcome {
         if !allowed(app) {
-            return;
+            return FlushOutcome::Suspended;
         }
         let Some(base) = config::endpoint() else {
-            return;
+            return FlushOutcome::Suspended;
         };
         let Some(store) = app.try_state::<Store>() else {
-            return;
+            return FlushOutcome::Suspended;
         };
-        let Ok(pending) = store.pending_analytics_events(BATCH_SIZE) else {
-            return;
+        let Ok(pending) = store.pending_analytics_events(delivery::REQUEST_BUDGET) else {
+            return FlushOutcome::Suspended;
         };
         if pending.is_empty() {
-            return;
+            return FlushOutcome::Empty;
         }
         ensure_crypto_provider();
         let Ok(client) = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build() else {
-            return;
+            return FlushOutcome::Failed {
+                remaining: store.analytics_event_count().unwrap_or(0),
+            };
         };
 
         let track = format!("{}/v1/track", base.trim_end_matches('/'));
         let mut delivered = Vec::new();
         let mut failed = Vec::new();
+        let mut suspended = false;
         for (id, payload) in pending {
             // Re-checked every iteration, not once before the loop. A drain of 50
             // events with a 10-second timeout each can outlive the reader's
@@ -608,6 +942,7 @@ mod enabled {
             // switch moved would make that promise false in exactly the moment it
             // matters most.
             if !allowed(app) {
+                suspended = true;
                 break;
             }
             match stamp_sent_at(&payload) {
@@ -640,6 +975,16 @@ mod enabled {
         }
         if !failed.is_empty() {
             let _ = store.fail_analytics_events(&failed, MAX_ATTEMPTS);
+        }
+        let remaining = store.analytics_event_count().unwrap_or(0);
+        if remaining == 0 {
+            FlushOutcome::Empty
+        } else if suspended {
+            FlushOutcome::Suspended
+        } else if failed.is_empty() {
+            FlushOutcome::Delivered { remaining }
+        } else {
+            FlushOutcome::Failed { remaining }
         }
     }
 
@@ -712,6 +1057,72 @@ mod enabled {
         }
 
         #[test]
+        fn automatic_live_usage_observations_are_not_reportable() {
+            let automatic = Interaction::LiveUsageStateObserved {
+                provider: LiveUsageProvider::Anthropic,
+                state: LiveUsageState::Fresh,
+                origin: Origin::Automatic,
+            };
+            assert_eq!(deliberate_live_usage_observation(automatic), None);
+
+            let user = Interaction::LiveUsageStateObserved {
+                provider: LiveUsageProvider::Anthropic,
+                state: LiveUsageState::Fresh,
+                origin: Origin::User,
+            };
+            assert_eq!(
+                deliberate_live_usage_observation(user),
+                Some((LiveUsageProvider::Anthropic, LiveUsageState::Fresh))
+            );
+        }
+
+        #[test]
+        fn provider_polling_cannot_extend_a_deliberate_visit() {
+            let started = Instant::now();
+            let mut visit = DeliberateVisit::default();
+            advance_deliberate_visit(&mut visit, started);
+            assert!(visit_accepts_live_usage_state(
+                &mut visit,
+                LiveUsageProvider::Openai,
+                LiveUsageState::Fresh,
+                started + Duration::from_secs(1),
+            ));
+            visit
+                .live_usage_states
+                .push((LiveUsageProvider::Openai, LiveUsageState::Fresh));
+
+            for elapsed in [60, 15 * 60, 29 * 60] {
+                assert!(!visit_accepts_live_usage_state(
+                    &mut visit,
+                    LiveUsageProvider::Openai,
+                    LiveUsageState::Fresh,
+                    started + Duration::from_secs(elapsed),
+                ));
+                assert_eq!(visit.last_activity, Some(started));
+            }
+
+            assert!(!visit_accepts_live_usage_state(
+                &mut visit,
+                LiveUsageProvider::Openai,
+                LiveUsageState::Stale,
+                started + DELIBERATE_VISIT_TIMEOUT,
+            ));
+            assert_eq!(visit.last_activity, None);
+            assert!(visit.live_usage_states.is_empty());
+        }
+
+        #[test]
+        fn a_hidden_hud_cannot_consume_its_pending_origin() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            cancel_hud_exposure();
+            prepare_hud_exposure(Origin::Automatic);
+
+            assert_eq!(take_hud_exposure_origin(false), None);
+            assert_eq!(take_hud_exposure_origin(true), Some(Origin::Automatic));
+            assert_eq!(take_hud_exposure_origin(true), None);
+        }
+
+        #[test]
         fn an_environment_opt_out_clears_local_analytics_state() {
             let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
             let directory = tempfile::tempdir().unwrap();
@@ -761,9 +1172,10 @@ mod enabled {
         /// The first half is what makes the collector's rows coherent; the second
         /// is what stops opting out and straight back in from continuing the
         /// session that was just withdrawn. It is the only identifier here with
-        /// no on-disk representation, so nothing else can assert this.
+        /// no separate persisted generator state, so nothing else can assert this.
         #[test]
         fn a_run_identifier_is_stable_within_a_run_and_dropped_on_opt_out() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
             reset_session();
             let first = current_session_id();
             assert_eq!(first, current_session_id(), "stable inside one run");
@@ -772,6 +1184,49 @@ mod enabled {
 
             reset_session();
             assert_ne!(first, current_session_id(), "withdrawn, not resumed");
+            reset_session();
+        }
+
+        #[test]
+        fn installation_rotation_cannot_reuse_or_mix_the_previous_session() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            let store = std::sync::Arc::new(Store::open_in_memory(directory.path()).unwrap());
+            let old_install = "11111111-1111-4111-8111-111111111111";
+            store
+                .set_analytics_identity_at(old_install, "2000-01-01T00:00:00Z")
+                .unwrap();
+            let old_payload = r#"{"anonymousId":"old","sessionId":"old-run"}"#;
+            store
+                .queue_analytics_event("antiburn.app_launched", old_payload)
+                .unwrap();
+            reset_session();
+            let old_session = current_session_id();
+
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let workers: Vec<_> = (0..2)
+                .map(|_| {
+                    let store = store.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        current_identity_pair(&store).unwrap()
+                    })
+                })
+                .collect();
+            barrier.wait();
+            let pairs: Vec<_> = workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect();
+
+            assert_eq!(pairs[0], pairs[1]);
+            assert_ne!(pairs[0].0, old_install);
+            assert_ne!(pairs[0].1, old_session);
+            assert_eq!(
+                store.pending_analytics_events(10).unwrap()[0].1,
+                old_payload
+            );
             reset_session();
         }
 

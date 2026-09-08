@@ -108,6 +108,11 @@ compatible-request query. Unknown routes, mixed accounting, missing linkage,
 compactions, or incomplete history prevent clean. OpenCode uses validated
 ordered history, not `parentID` as a fabricated predecessor link.
 
+The route columns use engine turn migration 7 and desktop migration 39. Current
+parser/analyzer/evidence/coverage/resume revisions are 31/21/17/4/6. Existing
+revision gates invalidate old projections and snapshots; JSON and binary
+evidence round trips and full/resumed replay are covered by tests.
+
 ## Companion Sources
 
 | Agent | Companion | Current use | Required contract |

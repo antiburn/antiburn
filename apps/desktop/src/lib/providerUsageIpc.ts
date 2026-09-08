@@ -57,7 +57,7 @@ export interface ProviderUsageSummaryPayload {
 
 export type SessionLimitMetricPayload = "weekly" | "fiveHour"
 
-/** One session's estimated share of a provider-reported allowance. */
+/** One session's cumulative estimate summed across retained provider periods. */
 export interface SessionLimitAllocationPayload {
   agent: string
   sessionId: string
@@ -67,8 +67,10 @@ export interface SessionLimitAllocationPayload {
   displayName: string
   accountKey: string | null
   windowId: string
-  resetsAt: string
+  resetsAt: string | null
   percent: number
+  coverage: "complete" | "partial"
+  periodCount: number
 }
 
 export interface SessionLimitAllocationSummaryPayload {

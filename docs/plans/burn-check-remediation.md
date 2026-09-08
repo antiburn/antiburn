@@ -1,9 +1,9 @@
 # Burn check coverage and remediation
 
-Status (2026-09-08): Phase 1 implementation and full-suite validation are complete
-for the scoped baseline. Merged-worktree validation remains pending. Phase 2 is planned as full backend
-remediation in four bounded substeps; no Phase 2 code is implemented. Start it
-after Phase 1 acceptance. Phase 3 UI remains deferred.
+Status (2026-09-08): Phase 1 is accepted for the documented source contracts and
+maintainer-approved limits. Full-suite and merged-worktree validation passed.
+Phase 2 is ready as full backend remediation in four bounded substeps; no
+Phase 2 code is implemented. Phase 3 UI remains deferred.
 
 ## Naming and architecture
 
@@ -139,15 +139,27 @@ Pre-merge validation passed on 2026-09-08:
   and sidecar scan/publication regressions.
 - Changed-code and full-project quality scans, secrets scan, and whitespace checks.
 
-Repeat acceptance against the merged worktree before pushing. Documentation
-inventory tests do not prove all matrix cells or all installed versions. The
+Merged validation against `origin/main` at `5589ff84` passed on 2026-09-08:
+
+- Engine: 1,336 unit tests, all integration suites, and doctests; two ignored tests.
+- Desktop Rust: 1,006 tests, including migration, allocation, scan, and evidence tests.
+- Frontend: lint, type checks, 1,221 tests, and production build.
+- Both Rust format/Clippy checks, coverage contracts, quality scans, secrets,
+  and whitespace checks passed.
+- Main's migrations 36-38 remain unchanged. Request provider/API columns are
+  appended in desktop migration 39 and engine turn migration 7.
+- Parser/analyzer/evidence/coverage/resume revisions are 31/21/17/4/6. Old
+  projections and snapshots are rejected and reparsed through existing revision gates.
+
+Documentation inventory tests do not prove all installed versions. Acceptance
+does not remove the explicit source gaps or approved exceptions above. The
 existing frontend chunk-size warning does not fail the build.
 
 ## Delivery Order
 
 | Phase | Scope | Status |
 | --- | --- | --- |
-| 2.1 | Typed current findings, exact selectors, deterministic bounded prompts | Planned; gated on Phase 1 acceptance |
+| 2.1 | Typed current findings, exact selectors, deterministic bounded prompts | Ready; Phase 1 accepted |
 | 2.2 | Minimal native editors: inspection, preview, explicit apply, readback | Planned; builds on 2.1 |
 | 2.3 | Durable episodes, post-boundary verification, external fixes, recurrence | Planned; builds on 2.1 and 2.2 |
 | 2.4 | Potential savings and stable typed backend IPC | Planned; builds on 2.3 |

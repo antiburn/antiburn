@@ -36,6 +36,8 @@
 //!   agent's watch roots (`AgentExplorer::watch_roots`), debounces the events
 //!   it sees, and hands the scheduler's loop one [`watch::WatchBurst`] after
 //!   each quiet period — see the `watch` module doc for the debounce shape.
+//!   Both handoffs are bounded. An overflow requests one full reconciliation
+//!   instead of retaining an event-sized backlog.
 //!   The `scoped` module classifies that burst into four lanes: a known
 //!   session refresh, an indexed-title refresh, a plain agent rediscovery,
 //!   or a database-backed agent rediscovery. Each lane has its own minimum
@@ -237,11 +239,9 @@ pub struct ScanController {
     /// rather than queued, because the waiting request already covers
     /// "scan again soon".
     pending_trigger: Mutex<Option<ScanTrigger>>,
-    /// Watcher bursts waiting for the scheduler loop to classify them. A
-    /// `Vec` rather than a channel: the scheduler drains every burst at once
-    /// per wake, and classification needs the whole batch together to fold
-    /// correctly into one [`scoped::ScopedWork`] (T7).
-    burst_inbox: Mutex<Vec<watch::WatchBurst>>,
+    /// The one watcher burst waiting for the scheduler loop. New bursts merge
+    /// into its fixed path budgets while a pass is running.
+    pending_burst: Mutex<Option<watch::WatchBurst>>,
 }
 
 impl ScanController {
@@ -281,22 +281,28 @@ impl ScanController {
     /// the watcher's own task, not the scheduler's, so this only queues the
     /// burst — classification and admission happen on the scheduler's loop.
     fn push_burst(&self, burst: watch::WatchBurst) {
-        self.burst_inbox
+        let mut pending = self
+            .pending_burst
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(burst);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match pending.as_mut() {
+            Some(existing) => existing.merge(burst),
+            None => {
+                let mut bounded = watch::WatchBurst::default();
+                bounded.merge(burst);
+                *pending = Some(bounded);
+            }
+        }
+        drop(pending);
         self.kick.notify_one();
     }
 
-    /// Take every burst queued since the last drain, for the scheduler to
-    /// classify together.
-    fn take_bursts(&self) -> Vec<watch::WatchBurst> {
-        std::mem::take(
-            &mut self
-                .burst_inbox
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        )
+    /// Take the merged burst queued since the last scheduler drain.
+    fn take_burst(&self) -> Option<watch::WatchBurst> {
+        self.pending_burst
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 
     /// Ask the pass in flight to stop at its next phase boundary.
@@ -347,6 +353,7 @@ enum Wake {
     Kick,
     Tick,
     Deferred,
+    Health(Option<watch::WatcherStatus>),
 }
 
 /// Start the scheduler. The returned handle is aborted when the app exits.
@@ -356,7 +363,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         crate::runtime_pricing::wait_until_ready(&app).await;
         // The watcher starts here, before the launch pass: a session written
         // between this line and the first tick still reaches the debouncer.
-        let tick = tick_for(&watch::spawn_watcher(&app));
+        let mut watcher_health = watch::spawn_watcher(&app).await;
         // A fresh install has nothing to scan until the reader picks sources.
         if scheduled_scanning_allowed(&app) {
             run_pass(&app, None, ScanTrigger::Launch, PassScope::Full).await;
@@ -371,10 +378,13 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         let mut pending_work = scoped::ScopedWork::default();
         let mut retry_work = scoped::ScopedWork::default();
         let mut deferred_due: Option<tokio::time::Instant> = None;
+        let mut last_full_pass = tokio::time::Instant::now();
         // The tick is a fixed deadline, not a sleep restarted on every
         // wake. A scoped wake every few seconds must not push the
         // reconciliation pass back forever.
-        let mut next_tick = tokio::time::Instant::now() + tick;
+        let mut watcher_is_healthy = watcher_health.borrow_and_update().is_healthy();
+        let mut next_tick = tokio::time::Instant::now() + tick_for_health(watcher_is_healthy);
+        let mut watcher_health_open = true;
 
         loop {
             let controller = app.state::<ScanController>();
@@ -382,19 +392,40 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 () = controller.kick.notified() => Wake::Kick,
                 () = tokio::time::sleep_until(next_tick) => Wake::Tick,
                 () = sleep_until_due(deferred_due) => Wake::Deferred,
+                result = watcher_health.changed(), if watcher_health_open => {
+                    let status = result
+                        .ok()
+                        .map(|()| watcher_health.borrow_and_update().clone());
+                    Wake::Health(status)
+                },
             };
+            if let Wake::Health(status) = &woke {
+                let healthy = status
+                    .as_ref()
+                    .is_some_and(watch::WatcherStatus::is_healthy);
+                next_tick = deadline_after_health_change(
+                    next_tick,
+                    last_full_pass,
+                    watcher_is_healthy,
+                    healthy,
+                );
+                watcher_is_healthy = healthy;
+                watcher_health_open = status.is_some();
+                continue;
+            }
             if matches!(woke, Wake::Tick) {
-                next_tick = tokio::time::Instant::now() + tick;
+                next_tick = tokio::time::Instant::now() + tick_for_health(watcher_is_healthy);
             }
             // Checked after the wake-up rather than before the wait, so
             // resuming discovery takes effect at the next request or tick
             // instead of needing the app restarted.
             if !scheduled_scanning_allowed(&app) {
-                let dropped = controller.take_bursts();
-                if !dropped.is_empty() {
+                let dropped = controller.take_burst();
+                if let Some(dropped) = dropped {
                     ::tracing::debug!(
                         event = "scan_bursts_dropped_while_paused",
-                        bursts = dropped.len(),
+                        events = dropped.events,
+                        overflowed = dropped.overflowed,
                     );
                 }
                 // `Floors` keeps real last-run timestamps, so admission
@@ -409,29 +440,23 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
             // Fold in any bursts queued since the last wake before deciding
             // what runs: a full pass below covers them for free, and a
             // scoped wake needs them for admission.
-            let bursts = controller.take_bursts();
+            let burst = controller.take_burst();
             let mut overflowed = false;
-            if !bursts.is_empty() {
+            if let Some(burst) = burst {
                 let home = home_dir().unwrap_or_default();
                 let store = app.state::<Store>();
-                for burst in bursts {
-                    // A burst at the path bound may have dropped paths, so a
-                    // scoped pass could miss one. Only a full pass is safe.
-                    if burst.paths.len() >= watch::MAX_BURST_PATHS {
-                        ::tracing::debug!(
-                            event = "scan_burst_overflowed",
-                            events = burst.events,
-                            path_count = burst.paths.len(),
-                        );
-                        overflowed = true;
-                        continue;
-                    }
-                    let work = scoped::classify_burst(&burst.paths, &home, &|label: &str| {
+                if burst.overflowed {
+                    ::tracing::debug!(
+                        event = "scan_burst_overflowed",
+                        events = burst.events,
+                        path_count = burst.paths.len(),
+                    );
+                    overflowed = true;
+                } else {
+                    let work = scoped::classify_burst(&burst.paths, &home, &|source_labels| {
                         store
-                            .session_record_by_source_label(label)
-                            .ok()
-                            .flatten()
-                            .map(|(key, _)| key)
+                            .native_file_session_activity_keys(source_labels)
+                            .unwrap_or_default()
                     });
                     pending_work.merge(work);
                 }
@@ -451,6 +476,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 });
                 run_pass(&app, None, trigger, PassScope::Full).await;
                 let now = tokio::time::Instant::now();
+                last_full_pass = now;
                 floors.stamp(&pending_work, now);
                 floors.stamp(&retry_work, now);
                 pending_work = scoped::ScopedWork::default();
@@ -458,7 +484,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 deferred_due = None;
                 // A full pass just ran, so the next tick can wait a whole
                 // interval.
-                next_tick = now + tick;
+                next_tick = now + tick_for_health(watcher_is_healthy);
                 continue;
             }
 
@@ -557,17 +583,23 @@ async fn run_admitted_work(app: &AppHandle, work: scoped::ScopedWork) -> scoped:
     busy
 }
 
-/// The scheduler's fixed poll interval for this run, chosen once from the
-/// watcher's start-up status: [`TICK`] when it started clean, or
-/// [`watch::FALLBACK_TICK`] when it did not start or could not watch every
-/// existing root. The watcher's own periodic re-check (see the `watch`
-/// module doc) keeps covering roots that appear later regardless of which
-/// tick the scheduler picked here.
-fn tick_for(status: &watch::WatcherStatus) -> Duration {
-    if status.is_healthy() {
-        TICK
+fn tick_for_health(healthy: bool) -> Duration {
+    if healthy { TICK } else { watch::FALLBACK_TICK }
+}
+
+/// Update the next full-pass deadline only when watcher health changes.
+fn deadline_after_health_change(
+    current: tokio::time::Instant,
+    last_full_pass: tokio::time::Instant,
+    was_healthy: bool,
+    is_healthy: bool,
+) -> tokio::time::Instant {
+    if was_healthy == is_healthy {
+        current
+    } else if is_healthy {
+        last_full_pass + TICK
     } else {
-        watch::FALLBACK_TICK
+        current.min(last_full_pass + watch::FALLBACK_TICK)
     }
 }
 
@@ -701,13 +733,36 @@ pub(crate) async fn try_run_pass(
     // all is an analytics question, and this scheduler runs a full pass every
     // five minutes plus a scoped pass on every watcher burst. `None` is a
     // failure, which travels as a bare category — an error string can hold a
-    // path.
-    crate::analytics::record_scan(
-        app,
+    // path. Only a full pass counts every session on the install, so only a
+    // full pass may report. See [`scan_report`].
+    if let Some(report) = scan_report(
+        &scope,
         outcome.as_ref().ok().map(|summary| summary.sessions as u64),
-    );
+    ) {
+        crate::analytics::record_scan(app, report);
+    }
     crate::notifications::note_scan_outcome(app, &finished);
     Some(finished)
+}
+
+/// Decide whether a finished pass should reach analytics, and with what count.
+///
+/// A full pass counts every session on the install. A scoped pass (T3/T5, a
+/// watcher-burst retry of a handful of agents) counts only those agents, so
+/// its number is not comparable to a full pass's number. Reporting it made
+/// the bucket flap between the full total and a small scoped count on every
+/// burst, which produced about 90% of all analytics events. A scoped pass
+/// therefore reports nothing, on success or on failure: a scoped failure
+/// must not flip the last-reported outcome to `scan_failed` either.
+///
+/// `outcome` is the pass's session count, or `None` for a failed pass — the
+/// same shape [`crate::analytics::record_scan`] takes. The return value is
+/// `None` when nothing should be reported, or `Some(outcome)` to pass on.
+fn scan_report(scope: &PassScope, outcome: Option<u64>) -> Option<Option<u64>> {
+    match scope {
+        PassScope::Full => Some(outcome),
+        PassScope::Agents(_) => None,
+    }
 }
 
 /// Log `scan_pass_requested`. Every call to [`run_pass`] gets one, whether it
@@ -790,25 +845,23 @@ async fn pass(
         PassScope::Agents(agents) => discover_scoped_agents(app, agents, now, since_secs).await,
     };
 
-    let previous_records = store.session_records()?;
-    let scoped_previous_records;
-    let previous_records_for_pass = match scope {
-        PassScope::Full => &previous_records,
-        PassScope::Agents(agents) => {
-            scoped_previous_records = previous_records
-                .iter()
-                .filter(|(key, _)| agents.iter().any(|agent| agent.slug() == key.agent))
-                .map(|(key, record)| (key.clone(), record.clone()))
-                .collect();
-            &scoped_previous_records
-        }
-    };
+    let activity_keys = logs
+        .iter()
+        .map(|log| {
+            SessionActivityKey::new(
+                log.environment.key(),
+                log.agent_type.slug(),
+                log.source_label(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let previous_records = store.session_records_for_activity_keys(&activity_keys)?;
     let Described {
         records,
         rejected,
         changed,
         list_changed,
-    } = describe_with_states(logs, &home, &ignored, previous_records_for_pass).await;
+    } = describe_with_states(logs, &home, &ignored, &previous_records).await;
     let evidence_agents: Vec<&str> = match scope {
         PassScope::Full => agents::evidence_cohort(),
         PassScope::Agents(agents) => agents.iter().map(|agent| agent.slug()).collect(),
@@ -820,34 +873,35 @@ async fn pass(
     // may also be unchanged, but its evidence last failed on a missing
     // source, and only a write re-runs `upsert_sessions`'s own
     // `source_returned` check to re-queue it.
-    let returned = store.sessions_with_missing_source()?;
+    let record_keys = records
+        .iter()
+        .map(|record| record.key.clone())
+        .collect::<Vec<_>>();
+    let returned = store.sessions_with_missing_source_for(&record_keys)?;
     // Every write below is routed through the storage-health check, so a
     // database that has stopped accepting writes becomes a banner in the
     // popover rather than a list that silently stops changing.
-    checked(
+    let persisted = checked(
         app,
         "The session index",
-        store.upsert_sessions(
-            &records_to_persist(&records, &changed, &returned),
-            &evidence_agents,
-        ),
+        persist_changed_records(&records, &changed, &returned, |records| {
+            store.upsert_sessions(records, &evidence_agents)
+        }),
     )?;
-    crate::insights_worker::wake(app);
-    // A write may have added a session the idle task was not yet watching,
-    // or moved one's deadline later; either way its sleep needs recomputing.
-    idle::wake(app);
+    if persisted {
+        wake_session_workers(app);
+    }
 
-    announce_changed_rows(&store, &changed, previous_records_for_pass, now, announce);
+    announce_changed_rows(&store, &changed, &previous_records, now, announce);
 
     // A transcript the gate rejected may have been indexed by an earlier
     // version of the app that did not gate; the row is removed rather than
     // left to mislead indefinitely.
     for key in &rejected {
-        checked(
-            app,
-            "The session index",
-            store.delete_session(key).map(|_| ()),
-        )?;
+        let removed = checked(app, "The session index", store.delete_session(key))?;
+        if removed {
+            wake_session_workers(app);
+        }
     }
 
     // `records` already holds only the scoped agents' sessions when `scope`
@@ -907,6 +961,26 @@ fn records_to_persist(
         .filter(|record| worth_writing.contains(&record.key))
         .cloned()
         .collect()
+}
+
+fn persist_changed_records(
+    records: &[SessionRecord],
+    changed: &[SessionKey],
+    returned: &[SessionKey],
+    persist: impl FnOnce(&[SessionRecord]) -> anyhow::Result<()>,
+) -> anyhow::Result<bool> {
+    let records = records_to_persist(records, changed, returned);
+    let persisted = !records.is_empty();
+    if persisted {
+        persist(&records)?;
+    }
+    Ok(persisted)
+}
+
+fn wake_session_workers(app: &AppHandle) {
+    crate::insights_worker::wake(app);
+    // A changed session can add, remove, or move an idle deadline.
+    idle::wake(app);
 }
 
 /// [`PassScope::Agents`]'s discovery: only the named agents, concurrently,

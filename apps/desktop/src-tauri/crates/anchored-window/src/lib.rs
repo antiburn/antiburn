@@ -1,7 +1,8 @@
 //! Reusable native infrastructure for a window placed beside another window.
 //!
-//! The manager owns one renderer, one target, and one cancellable task. The
-//! host application owns the target type, IPC authorization, and data policy.
+//! The manager owns one interaction-bound renderer, one target, and one
+//! cancellable task. The host owns the target type, IPC authorization, and
+//! data policy.
 
 mod geometry;
 mod lifecycle;
@@ -18,11 +19,10 @@ mod windows;
 pub use manager::AnchoredWindowManager;
 pub use model::{
     AnchorRegion, AnchoredWindowConfig, AnchoredWindowLifecycleEvent, AnchoredWindowRenderRequest,
-    AnchoredWindowRequest, AnchoredWindowState, HeightPolicy, InteractionPolicy, PlacementPolicy,
-    PointerExitPolicy, RevealPolicy, WindowMaterial,
+    AnchoredWindowRequest, AnchoredWindowState, PointerExitPolicy,
 };
 
-/// The event that carries each target generation to the resident renderer.
+/// The event that carries each target generation to the active renderer.
 pub const REQUEST_EVENT: &str = "anchored-window-request";
 
 /// The event that reports companion lifecycle changes to the anchor window.

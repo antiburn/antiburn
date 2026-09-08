@@ -206,7 +206,9 @@ where
         if !renderer_ready {
             platform::hide(&window)?;
             if self.lock_lifecycle().concealed(request.generation) {
-                self.emit_state(app)?;
+                let emit_result = self.emit_state(app);
+                self.schedule_renderer_retirement(app, request.generation);
+                emit_result?;
             }
             return Ok(());
         }
@@ -235,12 +237,14 @@ where
             tracing::warn!(%error, "failed to hide anchored window after fallback");
             return;
         }
-        if self
+        let concealed = self
             .lock_lifecycle()
-            .fallback_concealed(generation, task_token)
-            && let Err(error) = self.emit_state(app)
-        {
-            tracing::warn!(%error, "failed to emit anchored-window fallback state");
+            .fallback_concealed(generation, task_token);
+        if concealed {
+            if let Err(error) = self.emit_state(app) {
+                tracing::warn!(%error, "failed to emit anchored-window fallback state");
+            }
+            self.schedule_renderer_retirement(app, generation);
         }
     }
 

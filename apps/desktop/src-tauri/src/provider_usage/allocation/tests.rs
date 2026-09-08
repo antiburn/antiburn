@@ -2,6 +2,9 @@ use super::*;
 use crate::dto::{LiveUsageForecast, LiveUsageSupport, LiveUsageWindow, SessionLimitMetric};
 use crate::provider_usage::live::metrics::UsageSample;
 use crate::store::SessionUsageTurnRecord;
+use crate::store::provider_usage_history::{
+    ProviderUsageObservation, ProviderUsagePeriod, ProviderUsagePeriodHistory,
+};
 
 const NOW: i64 = 1_800_000_000;
 const MODEL: &str = "claude-opus-4-6";
@@ -111,6 +114,80 @@ fn account(character: char) -> String {
 }
 
 #[test]
+fn reduced_observation_series_keeps_the_full_reported_delta() {
+    let account = account('a');
+    let observations = (1..=97)
+        .map(|at| ProviderUsageObservation {
+            id: at,
+            period_id: Some(1),
+            provider: "anthropic".to_string(),
+            account_key: account.clone(),
+            window_id: "seven-day".to_string(),
+            window_kind: "weekly".to_string(),
+            window_role: "primaryLong".to_string(),
+            scope_key: "account".to_string(),
+            scope_label: "account".to_string(),
+            observed_at_epoch: at,
+            used_percent: Some(at as f64),
+            is_fresh: true,
+            is_authoritative: true,
+            confidence: "high".to_string(),
+            source_id: "test".to_string(),
+            reported_starts_at_epoch: Some(0),
+            reported_resets_at_epoch: Some(100),
+        })
+        .collect::<Vec<_>>();
+    let history = ProviderUsagePeriodHistory {
+        period: ProviderUsagePeriod {
+            id: 1,
+            provider: "anthropic".to_string(),
+            account_key: account.clone(),
+            window_id: "seven-day".to_string(),
+            window_kind: "weekly".to_string(),
+            window_role: "primaryLong".to_string(),
+            scope_key: "account".to_string(),
+            scope_label: "account".to_string(),
+            duration_seconds: Some(100),
+            starts_at_epoch: Some(0),
+            resets_at_epoch: Some(100),
+            first_observed_epoch: 1,
+            last_observed_epoch: 97,
+        },
+        observations,
+    };
+    let ends = period_observation_interval_ends(&history, 96);
+    assert!(ends.len() <= 96);
+    assert_eq!(ends.first(), Some(&1_000));
+    assert_eq!(ends.last(), Some(&97_000));
+    let mut rows = turn("one", 1, 1, &[&account]);
+    rows.turns = ends
+        .iter()
+        .map(|end| SessionUsageTurnRecord {
+            ts_ms: Some(*end),
+            model: Some(MODEL.to_string()),
+            speed: None,
+            input_tokens: 1,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            output_tokens: 0,
+        })
+        .collect();
+    let observations = history
+        .observations
+        .iter()
+        .filter(|observation| ends.contains(&observation.observed_at_epoch.saturating_mul(1_000)))
+        .cloned()
+        .collect();
+    let reduced = ProviderUsagePeriodHistory {
+        period: history.period,
+        observations,
+    };
+    let (_, allocations) = estimate_period(vec![rows], &reduced).expect("weekly allocation");
+    assert_eq!(allocations.len(), 1);
+    assert!((allocations[0].percent - 97.0).abs() < 1e-9);
+}
+
+#[test]
 fn one_session_receives_the_reported_share() {
     let allocations = weekly(
         &[turn("one", NOW - 60, 1_000_000, &[])],
@@ -185,6 +262,23 @@ fn zero_usage_is_a_valid_zero_estimate() {
         &live(None, vec![window(SessionLimitMetric::Weekly, 0.0)]),
     );
     assert_eq!(allocations.len(), 1);
+    assert_eq!(allocations[0].percent, 0.0);
+}
+
+#[test]
+fn zero_usage_does_not_allocate_a_nonmatching_scoped_session() {
+    let mut scoped = window(SessionLimitMetric::Weekly, 0.0);
+    scoped.scope_model = Some("Claude Opus 4.6".to_string());
+    let mut other = turn("other", NOW - 60, 1_000_000, &[]);
+    other.turns[0].model = Some("claude-sonnet-4-6".to_string());
+
+    let allocations = weekly(
+        &[turn("match", NOW - 60, 1_000_000, &[]), other],
+        &live(None, vec![scoped]),
+    );
+
+    assert_eq!(allocations.len(), 1);
+    assert_eq!(allocations[0].session_id, "match");
     assert_eq!(allocations[0].percent, 0.0);
 }
 
@@ -522,21 +616,21 @@ fn evidence_without_a_timestamp_or_provider_is_too_weak_to_allocate() {
 }
 
 #[test]
-fn stale_and_invalid_live_windows_do_not_allocate() {
+fn stale_and_invalid_live_windows_do_not_allocate_zero_estimates() {
     let rows = [turn("one", NOW - 60, 1_000_000, &[])];
-    let mut stale = live(None, vec![window(SessionLimitMetric::Weekly, 20.0)]);
+    let mut stale = live(None, vec![window(SessionLimitMetric::Weekly, 0.0)]);
     stale.providers[0].freshness = LiveUsageFreshness::Stale;
     assert!(weekly(&rows, &stale).is_empty());
 
-    let mut expired = live(None, vec![window(SessionLimitMetric::Weekly, 20.0)]);
+    let mut expired = live(None, vec![window(SessionLimitMetric::Weekly, 0.0)]);
     expired.providers[0].windows[0].resets_at = Some(iso(NOW));
     assert!(weekly(&rows, &expired).is_empty());
 
-    let mut missing = live(None, vec![window(SessionLimitMetric::Weekly, 20.0)]);
+    let mut missing = live(None, vec![window(SessionLimitMetric::Weekly, 0.0)]);
     missing.providers[0].windows[0].resets_at = None;
     assert!(weekly(&rows, &missing).is_empty());
 
-    let current = live(None, vec![window(SessionLimitMetric::Weekly, 20.0)]);
+    let current = live(None, vec![window(SessionLimitMetric::Weekly, 0.0)]);
     assert!(
         estimate(
             rows.to_vec(),
@@ -635,6 +729,137 @@ fn an_unchanged_percentage_keeps_the_start_of_the_plateau() {
 }
 
 #[test]
+fn a_nonzero_plateau_returns_zero_for_eligible_sessions() {
+    let turns = weighted_turns(vec![
+        turn("first", NOW - 50, 1_000_000, &[]),
+        turn("second", NOW - 10, 1_000_000, &[]),
+    ]);
+    let refs: Vec<_> = turns.iter().collect();
+    let samples = vec![
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 60).unwrap(),
+            used_percent: Some(24.0),
+            freshness: Freshness::Fresh,
+        },
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 30).unwrap(),
+            used_percent: Some(24.0),
+            freshness: Freshness::Fresh,
+        },
+    ];
+
+    let (shares, uses_history) = distribute_window(
+        &refs,
+        24.0,
+        (NOW - 100) * 1_000,
+        NOW * 1_000,
+        &samples,
+        WeightBasis::Price,
+    );
+
+    assert!(uses_history);
+    assert_eq!(
+        shares[&SessionKey::new("native", "claude-code", "first")],
+        0.0
+    );
+    assert_eq!(
+        shares[&SessionKey::new("native", "claude-code", "second")],
+        0.0
+    );
+}
+
+#[test]
+fn a_plateau_leaves_invalid_weights_unavailable() {
+    let turns = [WeightedTurn {
+        key: SessionKey::new("native", "claude-code", "invalid"),
+        wsl_distro: None,
+        provider: "anthropic",
+        account: AccountEvidence::None,
+        at_ms: (NOW - 10) * 1_000,
+        model: MODEL.to_string(),
+        price_weight: Some(f64::NAN),
+        token_weight: 1_000_000.0,
+    }];
+    let refs: Vec<_> = turns.iter().collect();
+    let samples = vec![UsageSample {
+        observed_at: OffsetDateTime::from_unix_timestamp(NOW - 60).unwrap(),
+        used_percent: Some(24.0),
+        freshness: Freshness::Fresh,
+    }];
+
+    let (shares, uses_history) = distribute_window(
+        &refs,
+        24.0,
+        (NOW - 100) * 1_000,
+        NOW * 1_000,
+        &samples,
+        WeightBasis::Price,
+    );
+
+    assert!(uses_history);
+    assert!(shares.is_empty());
+}
+
+#[test]
+fn repeated_zero_samples_return_zero_before_a_later_increment() {
+    let turns = weighted_turns(vec![
+        turn("zero", NOW - 50, 1_000_000, &[]),
+        turn("increment", NOW - 10, 1_000_000, &[]),
+    ]);
+    let refs: Vec<_> = turns.iter().collect();
+    let samples = vec![
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 60).unwrap(),
+            used_percent: Some(0.0),
+            freshness: Freshness::Fresh,
+        },
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 30).unwrap(),
+            used_percent: Some(0.0),
+            freshness: Freshness::Fresh,
+        },
+    ];
+
+    let (zero_shares, zero_uses_history) = distribute_window(
+        &refs,
+        0.0,
+        (NOW - 100) * 1_000,
+        NOW * 1_000,
+        &samples,
+        WeightBasis::Price,
+    );
+
+    assert!(zero_uses_history);
+    assert_eq!(
+        zero_shares[&SessionKey::new("native", "claude-code", "zero")],
+        0.0,
+    );
+    assert_eq!(
+        zero_shares[&SessionKey::new("native", "claude-code", "increment")],
+        0.0,
+    );
+
+    let (shares, uses_history) = distribute_window(
+        &refs,
+        1.0,
+        (NOW - 100) * 1_000,
+        NOW * 1_000,
+        &samples,
+        WeightBasis::Price,
+    );
+
+    assert!(uses_history);
+    assert_eq!(
+        shares[&SessionKey::new("native", "claude-code", "zero")],
+        0.5,
+    );
+    assert_eq!(
+        shares[&SessionKey::new("native", "claude-code", "increment")],
+        0.5,
+    );
+}
+
+#[test]
 fn an_initial_zero_starts_the_first_plateau() {
     let turns = weighted_turns(vec![
         turn("before-zero", NOW - 70, 1_000_000, &[]),
@@ -669,11 +894,106 @@ fn an_initial_zero_starts_the_first_plateau() {
     );
 
     assert!(uses_history);
-    assert!(!shares.contains_key(&SessionKey::new("native", "claude-code", "before-zero",)));
+    assert_eq!(
+        shares[&SessionKey::new("native", "claude-code", "before-zero")],
+        0.0,
+    );
     assert_eq!(
         shares[&SessionKey::new("native", "claude-code", "after-zero")],
         1.0,
     );
+}
+
+#[test]
+fn interval_boundaries_and_duplicate_observations_visit_each_turn_once() {
+    let start_ms = (NOW - 100) * 1_000;
+    let first_end_ms = (NOW - 60) * 1_000;
+    let observed_ms = NOW * 1_000;
+    let turns = [
+        WeightedTurn {
+            at_ms: start_ms,
+            ..weighted_turns(vec![turn("at-start", NOW - 100, 1_000_000, &[])]).remove(0)
+        },
+        WeightedTurn {
+            at_ms: first_end_ms,
+            ..weighted_turns(vec![turn("at-first-end", NOW - 60, 1_000_000, &[])]).remove(0)
+        },
+        WeightedTurn {
+            at_ms: first_end_ms + 1,
+            ..weighted_turns(vec![turn("after-first-end", NOW - 59, 1_000_000, &[])]).remove(0)
+        },
+        WeightedTurn {
+            at_ms: observed_ms,
+            ..weighted_turns(vec![turn("at-observed", NOW, 1_000_000, &[])]).remove(0)
+        },
+    ];
+    let refs: Vec<_> = turns.iter().rev().collect();
+    let samples = vec![
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 60).unwrap(),
+            used_percent: Some(7.0),
+            freshness: Freshness::Fresh,
+        },
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 60).unwrap(),
+            used_percent: Some(10.0),
+            freshness: Freshness::Fresh,
+        },
+        UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW).unwrap(),
+            used_percent: Some(20.0),
+            freshness: Freshness::Fresh,
+        },
+    ];
+
+    let (shares, uses_history, turn_visits) = distribute_window_with_work(
+        &refs,
+        20.0,
+        start_ms,
+        observed_ms,
+        &samples,
+        WeightBasis::Price,
+    );
+
+    assert!(uses_history);
+    assert_eq!(turn_visits, turns.len());
+    for session in ["at-start", "at-first-end", "after-first-end", "at-observed"] {
+        assert_eq!(
+            shares[&SessionKey::new("native", "claude-code", session)],
+            5.0
+        );
+    }
+}
+
+#[test]
+fn long_plateaus_keep_turn_visits_linear_with_or_without_a_final_increase() {
+    let rows = (0..128)
+        .map(|index| turn(&format!("plateau-{index}"), NOW - 50, 1_000_000, &[]))
+        .collect();
+    let turns = weighted_turns(rows);
+    let refs: Vec<_> = turns.iter().collect();
+    let samples = (0..96)
+        .map(|index| UsageSample {
+            observed_at: OffsetDateTime::from_unix_timestamp(NOW - 100 + index).unwrap(),
+            used_percent: Some(10.0),
+            freshness: Freshness::Fresh,
+        })
+        .collect::<Vec<_>>();
+
+    for used_percent in [10.0, 11.0] {
+        let (shares, uses_history, turn_visits) = distribute_window_with_work(
+            &refs,
+            used_percent,
+            (NOW - 200) * 1_000,
+            NOW * 1_000,
+            &samples,
+            WeightBasis::Price,
+        );
+
+        assert!(uses_history);
+        assert_eq!(turn_visits, turns.len());
+        assert!((shares.values().sum::<f64>() - (used_percent - 10.0)).abs() < 1e-9);
+    }
 }
 
 #[test]

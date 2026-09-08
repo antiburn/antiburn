@@ -231,9 +231,6 @@ pub fn run() {
             app.manage(nudges::AnchorOverride::default());
             app.manage(antiburn_nudge::NotificationGate::default());
 
-            // Build the resident placeholder before any hover can request it.
-            popover_peek::prewarm(app.handle());
-
             tray::create(app.handle())?;
             tray::install_usage_meter(app.handle());
             // After the tray, and on the main thread: the monitor reaches the
@@ -502,11 +499,13 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         manager.handle_anchor_event(window, event);
         if window.label() == popover_peek::LABEL && matches!(event, WindowEvent::Destroyed) {
             manager.handle_companion_destroyed();
-            let app = window.app_handle().clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::task::yield_now().await;
-                popover_peek::prewarm(&app);
-            });
+            if manager.state().target.is_some() {
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::task::yield_now().await;
+                    popover_peek::rebuild_if_targeted(&app);
+                });
+            }
         }
     }
     match event {

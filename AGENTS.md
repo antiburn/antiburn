@@ -67,10 +67,18 @@ when a release range is unavailable. Do not claim all historical versions.
 Run `check_coverage_contract` after coverage edits. Its inventory checks do not
 replace characterization and behavior tests or manual review of matrix cells.
 
+## Product analytics
+
+Cover features well with analytics so we can improve the product further.
+
+Read [docs/analytics.md](docs/analytics.md) before instrumentation work. Follow
+the measurement definitions and event review contract in
+[docs/analytics-measurement.md](docs/analytics-measurement.md).
+
 ## Tests and commits
 
 Run the relevant formatter, linter, type checks, and tests for every change. Use
 the commands in `CONTRIBUTING.md` and `apps/desktop/README.md`.
 
-Every commit must include a Developer Certificate of Origin sign-off. Use
-`git commit -s`. CI rejects a pull request if any authored commit lacks it.
+Every commit must include a DCO sign-off. Use `git commit -s`. CI rejects a pull
+request if any authored commit lacks it.

@@ -223,6 +223,11 @@ fn run_pass(app: &AppHandle, _blocking: blocking::Thread) {
 }
 
 fn background_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
+    // Reconciliation uses only local durable inputs.
+    // It must run without provider network collection.
+    if let Some(store) = app.try_state::<Store>() {
+        crate::provider_usage::ledger::reconcile(store.inner(), crate::scan::unix_now());
+    }
     if !settings.live_usage_active() {
         return;
     }
@@ -269,6 +274,7 @@ pub(crate) fn refresh_publish_and_evaluate(
         collected,
         provider_usage::live::roster(&live.sources, &hidden),
         store.as_deref(),
+        Some(app),
         now,
         live.utc_offset_minutes(),
     );
