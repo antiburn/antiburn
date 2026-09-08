@@ -12,7 +12,7 @@
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
-    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38,
+    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -740,4 +740,69 @@ CREATE INDEX provider_usage_session_allocation_session_metric
 const V38: &str = r#"
 CREATE INDEX session_source_lookup
     ON session (source_label, environment_key, agent, source_kind);
+"#;
+
+/// v39 adds plan tracking to observations, and the tables the learned
+/// dollars-per-percent factor lives in.
+///
+/// A sample and a point outlive the observations that produced them. Sample
+/// retention deletes rows older than the session retention setting, capped at
+/// 365 days; points are never deleted. `store::provider_limit` nulls a
+/// sample's `period_id` before period retention removes the period, so that
+/// deletion needs no `ON DELETE` action here.
+const V39: &str = r#"
+ALTER TABLE provider_usage_observation ADD COLUMN plan TEXT;
+ALTER TABLE provider_usage_observation ADD COLUMN plan_tier TEXT;
+
+CREATE TABLE provider_limit_factor_sample (
+    id                  INTEGER PRIMARY KEY,
+    provider            TEXT NOT NULL,
+    account_key         TEXT NOT NULL,
+    lane                TEXT NOT NULL CHECK (lane IN ('weekly', 'fiveHour')),
+    kind                TEXT NOT NULL CHECK (kind IN ('delta', 'window_start', 'unattributed', 'rollout')),
+    period_id           INTEGER REFERENCES provider_usage_period(id),
+    from_epoch          INTEGER NOT NULL,
+    to_epoch            INTEGER NOT NULL,
+    from_percent        REAL NOT NULL,
+    to_percent          REAL NOT NULL,
+    input_usd           REAL NOT NULL,
+    output_usd          REAL NOT NULL,
+    cache_read_usd      REAL NOT NULL,
+    cache_write_usd     REAL NOT NULL,
+    turn_count          INTEGER NOT NULL,
+    plan                TEXT,
+    plan_tier           TEXT,
+    source_id           TEXT NOT NULL,
+    computed_at_epoch   INTEGER NOT NULL,
+    UNIQUE (provider, account_key, lane, from_epoch, to_epoch)
+) STRICT;
+
+CREATE INDEX provider_limit_factor_sample_lane_recent
+    ON provider_limit_factor_sample (provider, account_key, lane, to_epoch DESC);
+CREATE INDEX provider_limit_factor_sample_period
+    ON provider_limit_factor_sample (period_id);
+
+CREATE TABLE provider_limit_factor_point (
+    id                  INTEGER PRIMARY KEY,
+    provider            TEXT NOT NULL,
+    account_key         TEXT NOT NULL,
+    lane                TEXT NOT NULL CHECK (lane IN ('weekly', 'fiveHour')),
+    effective_at_epoch  INTEGER NOT NULL,
+    usd_per_percent     REAL NOT NULL,
+    method              TEXT NOT NULL CHECK (method IN ('delta', 'window_start')),
+    sample_count        INTEGER NOT NULL,
+    plan                TEXT,
+    plan_tier           TEXT,
+    UNIQUE (provider, account_key, lane, effective_at_epoch)
+) STRICT;
+
+CREATE INDEX provider_limit_factor_point_lane_recent
+    ON provider_limit_factor_point (provider, account_key, lane, effective_at_epoch DESC);
+
+CREATE TABLE provider_limit_residual (
+    period_id           INTEGER PRIMARY KEY REFERENCES provider_usage_period(id),
+    computed_at_epoch   INTEGER NOT NULL,
+    meter_percent       REAL NOT NULL,
+    estimated_percent   REAL NOT NULL
+) STRICT;
 "#;
