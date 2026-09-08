@@ -827,6 +827,61 @@ pub async fn get_session_limit_allocations(
     .map_err(fail)?
 }
 
+/// Per-provider token maps ready for [`price_breakdown`], keyed the same way
+/// `pricing_breakdown_json` keys its entries, so a fast-mode turn prices at
+/// its fast rate instead of the base rate the factor was not learned at.
+///
+/// `pricing_breakdown_json` keys are `turn_pricing_key(model, speed)`
+/// (`crates/antiburn-local/src/analysis/pricing.rs`): the model as
+/// `model_breakdown_json` names it, with `-fast` appended when the turn ran
+/// fast and the model's own name does not already end that way. A pricing key
+/// belongs to a provider when it names one of that provider's attributed
+/// models directly, or with a trailing `-fast` removed.
+///
+/// Falls back to pricing `model_breakdown_json`'s own attribution directly
+/// when `pricing_breakdown_json` is empty or does not parse, since that is
+/// the only breakdown available then.
+fn provider_priced_models(
+    attributed: &BTreeMap<&'static str, provider_usage::Attributed>,
+    pricing_breakdown_json: &str,
+) -> HashMap<&'static str, HashMap<String, ModelTokens>> {
+    let pricing: BTreeMap<String, ModelTokens> =
+        serde_json::from_str(pricing_breakdown_json).unwrap_or_default();
+    if pricing.is_empty() {
+        return attributed
+            .iter()
+            .map(|(&provider, attributed)| {
+                let priced: HashMap<String, ModelTokens> = attributed
+                    .models
+                    .iter()
+                    .map(|(model, tokens)| (model.clone(), tokens.clone()))
+                    .collect();
+                (provider, priced)
+            })
+            .collect();
+    }
+    let mut provider_for_model: HashMap<&str, &'static str> = HashMap::new();
+    for (&provider, attributed) in attributed {
+        for model in attributed.models.keys() {
+            provider_for_model.insert(model.as_str(), provider);
+        }
+    }
+    let mut by_provider: HashMap<&'static str, HashMap<String, ModelTokens>> = HashMap::new();
+    for (key, tokens) in &pricing {
+        let provider = provider_for_model.get(key.as_str()).copied().or_else(|| {
+            key.strip_suffix("-fast")
+                .and_then(|base| provider_for_model.get(base).copied())
+        });
+        if let Some(provider) = provider {
+            by_provider
+                .entry(provider)
+                .or_default()
+                .insert(key.clone(), tokens.clone());
+        }
+    }
+    by_provider
+}
+
 /// One row per session, provider, and lane: the session's inclusive dollars
 /// divided by the factor point in effect at its last activity.
 ///
@@ -841,6 +896,7 @@ pub(crate) fn session_limit_allocations(
 ) -> anyhow::Result<Vec<SessionLimitAllocation>> {
     let keys: Vec<SessionKey> = sessions.iter().map(|session| session.key.clone()).collect();
     let bound = store.session_bound_accounts(&keys)?;
+    let analyses = store.analyses(&keys)?;
     let mut known_accounts: HashMap<&'static str, HashMap<String, BTreeSet<String>>> =
         HashMap::new();
 
@@ -849,7 +905,7 @@ pub(crate) fn session_limit_allocations(
         let Some(updated_at_epoch) = session.updated_at_epoch else {
             continue;
         };
-        let Some(analysis) = store.analysis(&session.key)? else {
+        let Some(analysis) = analyses.get(&session.key) else {
             continue;
         };
         let models: BTreeMap<String, ModelTokens> =
@@ -863,13 +919,13 @@ pub(crate) fn session_limit_allocations(
             .and_then(|json| serde_json::from_str(json).ok())
             .unwrap_or_default();
         let attributed = provider_usage::attribute(&session.key.agent, models, &hints);
-        for (&provider, attributed) in &attributed {
-            let priced: HashMap<String, ModelTokens> = attributed
-                .models
-                .iter()
-                .map(|(model, tokens)| (model.clone(), tokens.clone()))
-                .collect();
-            let Some(cost) = price_breakdown(&priced) else {
+        let priced_by_provider =
+            provider_priced_models(&attributed, &analysis.pricing_breakdown_json);
+        for &provider in attributed.keys() {
+            let Some(priced) = priced_by_provider.get(provider) else {
+                continue;
+            };
+            let Some(cost) = price_breakdown(priced) else {
                 continue;
             };
             if !(cost.total_usd.is_finite() && cost.total_usd > 0.0) {
@@ -2606,8 +2662,25 @@ mod tests {
         }
 
         /// Give a session an inclusive breakdown of one model, priced through
-        /// the test pricing fixture.
+        /// the test pricing fixture. `model_breakdown_json` and
+        /// `pricing_breakdown_json` share the same key, as they do for a
+        /// session with no fast-mode turns.
         fn save_breakdown(store: &Store, key: &SessionKey, input_tokens: u64) {
+            save_breakdown_with_pricing_key(store, key, MODEL, MODEL, input_tokens);
+        }
+
+        /// Give a session an inclusive breakdown that routes under
+        /// `routing_model` (`model_breakdown_json`) but prices under
+        /// `pricing_key` (`pricing_breakdown_json`), the way a fast-mode turn
+        /// does: routing sees the plain model name, pricing sees the
+        /// `-fast`-suffixed catalog key.
+        fn save_breakdown_with_pricing_key(
+            store: &Store,
+            key: &SessionKey,
+            routing_model: &str,
+            pricing_key: &str,
+            input_tokens: u64,
+        ) {
             let tokens = ModelTokens {
                 input_tokens,
                 output_tokens: 0,
@@ -2615,14 +2688,18 @@ mod tests {
                 cache_creation_tokens: 0,
                 cache_creation_1h_tokens: 0,
             };
-            let breakdown = std::collections::HashMap::from([(MODEL.to_string(), tokens)]);
-            let json = serde_json::to_string(&breakdown).expect("serializes breakdown");
+            let model_breakdown =
+                std::collections::HashMap::from([(routing_model.to_string(), tokens.clone())]);
+            let pricing_breakdown =
+                std::collections::HashMap::from([(pricing_key.to_string(), tokens)]);
             store
                 .save_analysis(
                     &AnalysisRecord {
                         key: key.clone(),
-                        model_breakdown_json: json.clone(),
-                        pricing_breakdown_json: json,
+                        model_breakdown_json: serde_json::to_string(&model_breakdown)
+                            .expect("serializes the routing breakdown"),
+                        pricing_breakdown_json: serde_json::to_string(&pricing_breakdown)
+                            .expect("serializes the pricing breakdown"),
                         inclusive_models_json: "[]".to_string(),
                         initial_context_json: None,
                         source_summaries_json: None,
@@ -2799,6 +2876,52 @@ mod tests {
                 .find(|allocation| allocation.metric == crate::dto::SessionLimitMetric::FiveHour)
                 .expect("a five-hour row");
             assert_eq!(five_hour.confidence, "seeded");
+        }
+
+        #[test]
+        fn a_fast_mode_session_prices_at_the_fast_rate() {
+            // The fixture catalog prices "gpt-5.6-sol" and its "-fast" tier
+            // differently, so this model shows whether the badge reads the
+            // speed-aware catalog key or the plain routing name.
+            const FAST_MODEL: &str = "gpt-5.6-sol";
+            let store = memory_store();
+            let account_key = account('g');
+            let session = synthetic_session(&store, "session-fast", 1_000);
+            save_breakdown_with_pricing_key(
+                &store,
+                &session.key,
+                FAST_MODEL,
+                "gpt-5.6-sol-fast",
+                1_000_000,
+            );
+            bind_account(&store, &session.key, &account_key);
+            insert_point(&store, &account_key, LANE_WEEKLY, 500, 2.0, "delta");
+
+            let allocations = session_limit_allocations(&store, std::slice::from_ref(&session))
+                .expect("computes rows");
+            let weekly = allocations
+                .iter()
+                .find(|allocation| allocation.metric == crate::dto::SessionLimitMetric::Weekly)
+                .expect("a weekly row for the bound account");
+            let tokens = ModelTokens {
+                input_tokens: 1_000_000,
+                ..Default::default()
+            };
+            let fast_cost = price_breakdown(&std::collections::HashMap::from([(
+                "gpt-5.6-sol-fast".to_string(),
+                tokens.clone(),
+            )]))
+            .expect("the fixture fast tier is priced");
+            let base_cost = price_breakdown(&std::collections::HashMap::from([(
+                FAST_MODEL.to_string(),
+                tokens,
+            )]))
+            .expect("the fixture base tier is priced");
+            assert_ne!(
+                fast_cost.total_usd, base_cost.total_usd,
+                "the fixture must price the fast tier differently for this test to mean anything"
+            );
+            assert_eq!(weekly.percent, fast_cost.total_usd / 2.0);
         }
     }
 }

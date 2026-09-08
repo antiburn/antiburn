@@ -2093,6 +2093,60 @@ impl Store {
         Ok(())
     }
 
+    /// Every listed session's cached analysis, in one query rather than one
+    /// per session. A session with no analysis row is absent from the map.
+    pub fn analyses(&self, keys: &[SessionKey]) -> Result<HashMap<SessionKey, AnalysisRecord>> {
+        let mut analyses = HashMap::new();
+        if keys.is_empty() {
+            return Ok(analyses);
+        }
+        let mut clauses = Vec::with_capacity(keys.len());
+        let mut values = Vec::with_capacity(keys.len() * 3);
+        for key in keys.iter().take(500) {
+            clauses.push("(environment_key = ? AND agent = ? AND session_id = ?)");
+            values.push(rusqlite::types::Value::from(key.environment_key.clone()));
+            values.push(rusqlite::types::Value::from(key.agent.clone()));
+            values.push(rusqlite::types::Value::from(key.session_id.clone()));
+        }
+        let sql = format!(
+            "SELECT environment_key, agent, session_id, model_breakdown_json,
+                    pricing_breakdown_json,
+                    inclusive_models_json, initial_context_json, source_summaries_json,
+                    provider_hints_json,
+                    source_fingerprint, pricing_generation, analyzed_generation,
+                    parser_revision, analyzer_revision, metrics_schema_revision
+               FROM session_analysis
+              WHERE {}",
+            clauses.join(" OR ")
+        );
+        let connection = self.lock();
+        let mut statement = connection.prepare(&sql)?;
+        let mut rows = statement.query(rusqlite::params_from_iter(values))?;
+        while let Some(row) = rows.next()? {
+            let record = AnalysisRecord {
+                key: SessionKey::new(
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ),
+                model_breakdown_json: row.get(3)?,
+                pricing_breakdown_json: row.get(4)?,
+                inclusive_models_json: row.get(5)?,
+                initial_context_json: row.get(6)?,
+                source_summaries_json: row.get(7)?,
+                provider_hints_json: row.get(8)?,
+                source_fingerprint: row.get(9)?,
+                pricing_generation: row.get(10)?,
+                analyzed_generation: row.get(11)?,
+                parser_revision: row.get(12)?,
+                analyzer_revision: row.get(13)?,
+                metrics_schema_revision: row.get(14)?,
+            };
+            analyses.insert(record.key.clone(), record);
+        }
+        Ok(analyses)
+    }
+
     /// One session's cached analysis, when it has been computed.
     pub fn analysis(&self, key: &SessionKey) -> Result<Option<AnalysisRecord>> {
         let connection = self.lock();
