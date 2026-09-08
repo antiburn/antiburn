@@ -68,6 +68,7 @@ permissions = [
   "allow-set-settings",
   "allow-show-hud-detail",
   "allow-start-update-simulation",
+  "allow-take-hud-analytics-origin",
   "allow-take-settings-pane",
   "allow-window-ready",
   "allow-nudge-action",

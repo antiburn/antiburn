@@ -23,8 +23,11 @@ import {
   onOverlayWorkChanged,
   recordHudPosition,
   setFloatingHudEnabled,
+  takeHudAnalyticsOrigin,
 } from "../../lib/overlayWindow"
 import { prefersReducedMotion } from "../../lib/popoverHeight"
+import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
+import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 import { deriveUsageBars, noMeterSelected, type UsageBarItem } from "../../lib/usageBars"
 
 const REFRESH_MS = 60_000
@@ -96,9 +99,21 @@ export class OverlaySession {
   private stopSessionEntryListening: (() => void) | null = null
   private stopScanListening: (() => void) | null = null
   private stopInvalidationListening: (() => void) | null = null
+  private stopVisibilityListening: (() => void) | null = null
+  private stopDetailShownListening: (() => void) | null = null
   private dragOrigin: DragOrigin | null = null
   private pendingMove: MouseEvent | null = null
   private moveFrame = 0
+  private readonly hudExposure = new SurfaceExposureTracker()
+  private readonly detailExposure = new SurfaceExposureTracker()
+  private hudExposureGeneration: number | null = null
+  private hudOrigin: "user" | "automatic" | null = null
+  private hudIdentity: string | null = null
+  private hudVisibilityKnown = false
+  private hudNativeVisible = false
+  private detailRevision = 0
+  private latestUsage: LiveUsageSummaryPayload | null = null
+  private usageFailed = false
 
   getSnapshot = (): OverlaySnapshot => this.snapshot
 
@@ -183,17 +198,24 @@ export class OverlaySession {
   private setActive(active: boolean): void {
     if (active === this.active) return
     if (active) this.startActivity()
-    else this.stopActivity()
+    else {
+      this.concealHudExposure()
+      this.stopActivity()
+    }
   }
 
   private startActivity(): void {
     this.active = true
+    this.hudVisibilityKnown = false
     const generation = ++this.activityGeneration
     this.update({ hovered: false, dragging: false, sessionLive: false })
     this.connectPanel(generation)
+    this.resumeHudExposure()
 
     const applyUsage = (response: LiveUsageSummaryPayload | null) => {
       if (!this.isCurrent(generation)) return
+      this.latestUsage = response
+      this.usageFailed = false
       const changed = this.commitLayout({
         bars: deriveUsageBars(response),
         noMeterSelected: noMeterSelected(response),
@@ -202,12 +224,19 @@ export class OverlaySession {
       if (changed && this.detailShown) {
         void showHudDetail(this.detailState("refresh")).catch(() => {})
       }
+      this.observeHudUsage(response)
     }
 
     const refreshUsage = () => {
       void getLiveUsage()
         .then(applyUsage)
-        .catch(() => {})
+        .catch(() => {
+          if (!this.isCurrent(generation)) return
+          this.usageFailed = true
+          if (this.hudExposureGeneration !== null) {
+            this.hudExposure.observe("error", this.hudExposureGeneration)
+          }
+        })
     }
     refreshUsage()
     this.usagePoll = window.setInterval(refreshUsage, REFRESH_MS)
@@ -232,6 +261,32 @@ export class OverlaySession {
         else dispose()
       })
       .catch(() => {})
+
+    void listen<boolean>("overlay_visibility_changed", (event) => {
+      if (!this.isCurrent(generation)) return
+      this.hudVisibilityKnown = true
+      this.hudNativeVisible = event.payload
+      if (event.payload) void this.captureHudExposure(generation)
+      else this.concealHudExposure()
+    })
+      .then((dispose) => {
+        if (this.isCurrent(generation)) {
+          this.stopVisibilityListening = dispose
+          void this.captureHudExposure(generation)
+        } else dispose()
+      })
+      .catch(() => {
+        if (this.isCurrent(generation)) void this.captureHudExposure(generation)
+      })
+
+    void listen("hud-detail:shown", () => {
+      if (this.isCurrent(generation)) this.recordDetailExposure()
+    })
+      .then((dispose) => {
+        if (this.isCurrent(generation)) this.stopDetailShownListening = dispose
+        else dispose()
+      })
+      .catch(() => {})
   }
 
   private stop(): void {
@@ -240,6 +295,8 @@ export class OverlaySession {
     this.stopActivity()
     this.stopWorkListening?.()
     this.stopWorkListening = null
+    this.hudExposure.suspend()
+    this.detailExposure.suspend()
     this.observer?.disconnect()
     this.observer = null
     delete document.body.dataset.transparentWindow
@@ -264,6 +321,10 @@ export class OverlaySession {
     this.stopScanListening = null
     this.stopInvalidationListening?.()
     this.stopInvalidationListening = null
+    this.stopVisibilityListening?.()
+    this.stopVisibilityListening = null
+    this.stopDetailShownListening?.()
+    this.stopDetailShownListening = null
     this.removeDragListeners()
     this.observer?.disconnect()
     this.observer = null
@@ -371,7 +432,11 @@ export class OverlaySession {
       this.showTimer = null
       if (!this.active || !this.snapshot.hovered || this.snapshot.dragging) return
       this.detailShown = true
-      void showHudDetail(this.detailState("show")).catch(() => {})
+      const revision = ++this.detailRevision
+      const state = this.detailState("show")
+      void showHudDetail(state).catch(() => {
+        if (revision === this.detailRevision) this.detailShown = false
+      })
     }, SHOW_DELAY_MS)
   }
 
@@ -383,6 +448,8 @@ export class OverlaySession {
   private hideDetail(): void {
     if (!this.detailShown) return
     this.detailShown = false
+    this.detailRevision += 1
+    this.detailExposure.conceal("hud_detail")
     void hideHudDetail().catch(() => {})
   }
 
@@ -400,6 +467,76 @@ export class OverlaySession {
         expectedFraction: bar.expectedFraction,
       })),
     }
+  }
+
+  private async captureHudExposure(generation: number): Promise<void> {
+    const origin = await takeHudAnalyticsOrigin().catch(() => null)
+    if (
+      !origin ||
+      !this.isCurrent(generation) ||
+      (this.hudVisibilityKnown && !this.hudNativeVisible)
+    )
+      return
+    this.hudOrigin = origin
+    const state = this.latestUsage
+      ? this.snapshot.bars.length > 0
+        ? "ready"
+        : "empty"
+      : this.usageFailed
+        ? "error"
+        : null
+    const identity = `${generation}:${this.detailRevision}`
+    this.hudIdentity = identity
+    this.hudExposureGeneration = this.hudExposure.expose({
+      surface: "hud",
+      origin,
+      identity,
+      ...(state ? { state } : {}),
+    })
+    if (this.latestUsage) this.observeHudUsage(this.latestUsage)
+  }
+
+  private observeHudUsage(response: LiveUsageSummaryPayload | null): void {
+    const generation = this.hudExposureGeneration
+    if (generation === null) return
+    this.hudExposure.observe(this.snapshot.bars.length > 0 ? "ready" : "empty", generation)
+    if (response && this.hudOrigin === "user") {
+      for (const provider of liveDisplayableProviders(response)) {
+        if (!liveWindows(provider).some((window) => window.usedPercent !== null)) continue
+        this.hudExposure.observeLiveUsage(response, provider.provider, generation)
+      }
+    }
+  }
+
+  private recordDetailExposure(): void {
+    if (!this.detailShown) return
+    this.detailExposure.expose({
+      surface: "hud_detail",
+      origin: "user",
+      identity: this.detailRevision,
+      state: this.snapshot.bars.length > 0 ? "ready" : "empty",
+    })
+  }
+
+  private concealHudExposure(): void {
+    this.hudExposure.conceal("hud", this.hudExposureGeneration ?? undefined)
+    this.hudExposureGeneration = null
+    this.hudOrigin = null
+    this.hudIdentity = null
+    this.detailRevision += 1
+    this.detailExposure.conceal("hud_detail")
+  }
+
+  private resumeHudExposure(): void {
+    if (!this.hudOrigin || !this.hudIdentity || this.hudExposureGeneration === null) return
+    this.hudExposureGeneration = this.hudExposure.expose({
+      surface: "hud",
+      origin: this.hudOrigin,
+      identity: this.hudIdentity,
+      ...(this.latestUsage
+        ? { state: this.snapshot.bars.length > 0 ? ("ready" as const) : ("empty" as const) }
+        : {}),
+    })
   }
 
   private update(change: Partial<OverlaySnapshot>): boolean {

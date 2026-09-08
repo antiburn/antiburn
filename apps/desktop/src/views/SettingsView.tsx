@@ -66,7 +66,7 @@ const PANES: readonly (SidebarNavItem & { id: SettingsPane })[] = [
 
 export function SettingsView() {
   const [session] = useState(() => new SettingsWindowSession())
-  const { info, pane } = useSyncExternalStore(
+  const { info, pane, visible } = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
     session.getSnapshot,
@@ -167,7 +167,7 @@ export function SettingsView() {
             {pane === "privacy" && <PrivacyPane {...controller} info={info} />}
             {pane === "notifications" && <NotificationsPane {...controller} />}
             {pane === "usage" && <UsagePane {...controller} />}
-            {pane === "insights" && <InsightsPane />}
+            {pane === "insights" && <InsightsPane analyticsVisible={visible} />}
             {pane === "about" && (
               <AboutPane {...controller} info={info} onOpenPane={session.setPane} />
             )}

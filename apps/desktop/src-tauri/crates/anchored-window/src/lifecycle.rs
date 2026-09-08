@@ -196,6 +196,7 @@ impl<T: Clone + PartialEq, P: Clone> Lifecycle<T, P> {
 
     pub(crate) fn renderer_destroyed(&mut self) {
         self.cancel_task();
+        self.renderer_generation = self.renderer_generation.wrapping_add(1).max(1);
         self.renderer_ready = false;
         self.delivery_pending = self.target.is_some();
         self.placeholder_reveal_pending = false;
@@ -280,6 +281,13 @@ impl<T: Clone + PartialEq, P: Clone> Lifecycle<T, P> {
 
     pub(crate) fn concealment_is_current(&self, generation: u64) -> bool {
         generation == self.generation && self.awaiting_concealment
+    }
+
+    pub(crate) fn renderer_retirement_is_current(&self, generation: u64) -> bool {
+        generation == self.generation
+            && self.target.is_none()
+            && !self.visible
+            && !self.awaiting_concealment
     }
 
     pub(crate) fn force_hidden(&mut self) {

@@ -3,12 +3,19 @@ import { listen } from "@tauri-apps/api/event"
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 
+import type { SurfaceOrigin } from "./ipc"
+
 const OVERLAY_WINDOW_LABEL = "antiburn-overlay"
 const OVERLAY_VISIBILITY_EVENT = "overlay_visibility_changed"
 const OVERLAY_WORK_EVENT = "overlay_work_changed"
 
-export function openOverlayWindow(): Promise<void> {
-  return invoke("open_overlay_window")
+export function openOverlayWindow(origin: SurfaceOrigin): Promise<void> {
+  return invoke("open_overlay_window", { origin })
+}
+
+/** Take the reason for the latest successful hidden-to-visible HUD transition. */
+export function takeHudAnalyticsOrigin(): Promise<SurfaceOrigin | null> {
+  return invoke<SurfaceOrigin | null>("take_hud_analytics_origin")
 }
 
 export async function hideOverlayWindow(): Promise<void> {
@@ -90,7 +97,7 @@ export class HudVisibilitySession {
     this.revision += 1
     this.setVisible(visible)
     setFloatingHudEnabled(visible)
-    void (visible ? openOverlayWindow() : hideOverlayWindow()).catch(() => {})
+    void (visible ? openOverlayWindow("user") : hideOverlayWindow()).catch(() => {})
   }
 
   toggle = (): void => this.set(!this.visible)

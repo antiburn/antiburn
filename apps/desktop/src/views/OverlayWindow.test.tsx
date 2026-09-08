@@ -41,6 +41,42 @@ vi.mock("../lib/ipc", async () => {
 const invoke = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}))
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
 
+const takeHudAnalyticsOrigin = vi.hoisted(() => vi.fn())
+vi.mock("../lib/overlayWindow", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>()
+  return { ...actual, takeHudAnalyticsOrigin }
+})
+
+const analytics = vi.hoisted(() => ({
+  conceal: vi.fn(),
+  expose: vi.fn(),
+  nextGeneration: 0,
+  observe: vi.fn(),
+  observeLiveUsage: vi.fn(),
+  suspend: vi.fn(),
+}))
+vi.mock("../lib/surfaceExposure", () => ({
+  SurfaceExposureTracker: class {
+    expose(options: unknown) {
+      analytics.nextGeneration += 1
+      analytics.expose(options, analytics.nextGeneration)
+      return analytics.nextGeneration
+    }
+    observe(state: unknown, generation: unknown) {
+      analytics.observe(state, generation)
+    }
+    observeLiveUsage(summary: unknown, provider: unknown, generation: unknown) {
+      analytics.observeLiveUsage(summary, provider, generation)
+    }
+    conceal(surface: unknown, generation: unknown) {
+      analytics.conceal(surface, generation)
+    }
+    suspend() {
+      analytics.suspend()
+    }
+  },
+}))
+
 const nativeEvents = vi.hoisted(
   () => new Map<string, Set<(event: { payload: unknown }) => void>>(),
 )
@@ -202,6 +238,13 @@ describe("OverlayWindow", () => {
     hideHudDetail.mockClear()
     resizeOverlayWindow.mockClear()
     invoke.mockClear()
+    takeHudAnalyticsOrigin.mockReset()
+    takeHudAnalyticsOrigin.mockResolvedValue("automatic")
+    analytics.nextGeneration = 0
+    analytics.conceal.mockClear()
+    analytics.expose.mockClear()
+    analytics.observe.mockClear()
+    analytics.observeLiveUsage.mockClear()
     livePush.emit = null
     nativeEvents.clear()
     listenNative.mockReset()
@@ -216,6 +259,7 @@ describe("OverlayWindow", () => {
       },
     )
     onLiveUsageChanged.mockClear()
+    analytics.suspend.mockClear()
     outerPosition.mockReset()
     outerPosition.mockResolvedValue({ x: 600, y: 40 })
     stored.clear()
@@ -418,6 +462,124 @@ describe("OverlayWindow", () => {
     expect(document.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
   })
 
+  it("records an automatic HUD exposure and its visible data outcome", async () => {
+    render(<OverlayWindow />)
+
+    await waitFor(() =>
+      expect(analytics.expose).toHaveBeenCalledWith(
+        expect.objectContaining({ surface: "hud", origin: "automatic" }),
+        1,
+      ),
+    )
+    await waitFor(() => expect(analytics.observe).toHaveBeenCalledWith("ready", 1))
+    expect(analytics.observeLiveUsage).not.toHaveBeenCalled()
+  })
+
+  it("starts the HUD exposure timeout while its first usage read is pending", async () => {
+    getLiveUsage.mockImplementation(() => new Promise(() => undefined))
+    render(<OverlayWindow />)
+
+    await waitFor(() =>
+      expect(analytics.expose).toHaveBeenCalledWith(
+        expect.objectContaining({ surface: "hud", origin: "automatic" }),
+        1,
+      ),
+    )
+    expect(analytics.expose.mock.calls[0]?.[0]).not.toHaveProperty("state")
+  })
+
+  it("reports an empty HUD when no usage bars can be shown", async () => {
+    getLiveUsage.mockResolvedValue({
+      providers: [],
+      errors: [],
+      meters: [],
+      generatedAt: new Date().toISOString(),
+    })
+    render(<OverlayWindow />)
+
+    await waitFor(() => expect(analytics.observe).toHaveBeenCalledWith("empty", 1))
+  })
+
+  it("reports an error when the first visible HUD read fails", async () => {
+    getLiveUsage.mockRejectedValue(new Error("usage unavailable"))
+    render(<OverlayWindow />)
+
+    await waitFor(() =>
+      expect(analytics.expose).toHaveBeenCalledWith(
+        expect.objectContaining({ surface: "hud", state: "error" }),
+        1,
+      ),
+    )
+  })
+
+  it("records provider states only for a user-opened HUD", async () => {
+    takeHudAnalyticsOrigin.mockResolvedValue("user")
+    getLiveUsage.mockResolvedValue({
+      ...summary(),
+      meters: [{ provider: "anthropic", displayName: "Claude", shown: true }],
+    })
+    render(<OverlayWindow />)
+
+    await waitFor(() => expect(analytics.observeLiveUsage).toHaveBeenCalled())
+
+    expect(analytics.expose).toHaveBeenCalledWith(
+      expect.objectContaining({ surface: "hud", origin: "user" }),
+      1,
+    )
+  })
+
+  it("ends the HUD exposure when the native window hides", async () => {
+    render(<OverlayWindow />)
+    await waitFor(() => expect(nativeEvents.get("overlay_visibility_changed")?.size).toBe(1))
+    await waitFor(() => expect(analytics.expose).toHaveBeenCalled())
+
+    act(() => emitNative("overlay_visibility_changed", false))
+
+    expect(analytics.conceal).toHaveBeenCalledWith("hud", 1)
+  })
+
+  it("ends exposure before parking and captures the next native reveal", async () => {
+    takeHudAnalyticsOrigin.mockResolvedValueOnce("user").mockResolvedValue(null)
+    render(<OverlayWindow />)
+    await waitFor(() => expect(analytics.expose).toHaveBeenCalledTimes(1))
+
+    act(() => emitNative("overlay_work_changed", false))
+    act(() => emitNative("overlay_visibility_changed", false))
+    expect(analytics.conceal).toHaveBeenCalledWith("hud", 1)
+    expect(nativeEvents.get("overlay_visibility_changed")?.size).toBe(0)
+    expect(nativeEvents.get("hud-detail:shown")?.size).toBe(0)
+
+    analytics.expose.mockClear()
+    act(() => emitNative("overlay_work_changed", true))
+    await waitFor(() => expect(takeHudAnalyticsOrigin).toHaveBeenCalledTimes(2))
+    expect(analytics.expose).not.toHaveBeenCalled()
+
+    takeHudAnalyticsOrigin.mockResolvedValueOnce("user")
+    act(() => emitNative("overlay_visibility_changed", true))
+    await waitFor(() => expect(analytics.expose).toHaveBeenCalledTimes(1))
+    expect(analytics.expose).toHaveBeenCalledWith(
+      expect.objectContaining({ surface: "hud", origin: "user" }),
+      2,
+    )
+    expect(nativeEvents.get("overlay_visibility_changed")?.size).toBe(1)
+    expect(nativeEvents.get("hud-detail:shown")?.size).toBe(1)
+  })
+
+  it("ignores a pending exposure response after native visibility ends", async () => {
+    let resolveOrigin!: (origin: "user") => void
+    takeHudAnalyticsOrigin.mockImplementation(
+      () => new Promise<"user">((resolve) => (resolveOrigin = resolve)),
+    )
+    render(<OverlayWindow />)
+    await waitFor(() => expect(takeHudAnalyticsOrigin).toHaveBeenCalledTimes(1))
+
+    act(() => emitNative("overlay_visibility_changed", false))
+    await act(async () => resolveOrigin("user"))
+
+    expect(analytics.expose).not.toHaveBeenCalled()
+    expect(analytics.observeLiveUsage).not.toHaveBeenCalled()
+  })
+
   it("drops a meter the moment settings turns it off, not on the next poll", async () => {
     // The HUD polls once a minute. A switch the reader just moved cannot wait
     // that long, so the shell pushes the new summary and the HUD takes it.
@@ -502,6 +664,50 @@ describe("OverlayWindow", () => {
           bars: [expect.objectContaining({ label: "5-hour limit", percent: 81 })],
         }),
       )
+      expect(
+        analytics.expose.mock.calls.some(([options]) => options.surface === "hud_detail"),
+      ).toBe(false)
+      act(() => emitNative("hud-detail:shown", undefined))
+      expect(analytics.expose).toHaveBeenCalledWith(
+        expect.objectContaining({ surface: "hud_detail", origin: "user", state: "ready" }),
+        expect.any(Number),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not record detail when a pending reveal is canceled", async () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      fireEvent.mouseEnter(frame(container))
+      await advance(400)
+      fireEvent.mouseLeave(frame(container))
+
+      act(() => emitNative("hud-detail:shown", undefined))
+
+      expect(
+        analytics.expose.mock.calls.some(([options]) => options.surface === "hud_detail"),
+      ).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not record detail when its show request fails", async () => {
+    vi.useFakeTimers()
+    showHudDetail.mockRejectedValueOnce(new Error("detail unavailable"))
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      fireEvent.mouseEnter(frame(container))
+      await advance(400)
+
+      expect(
+        analytics.expose.mock.calls.some(([options]) => options.surface === "hud_detail"),
+      ).toBe(false)
     } finally {
       vi.useRealTimers()
     }
