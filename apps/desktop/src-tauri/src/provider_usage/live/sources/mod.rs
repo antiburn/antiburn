@@ -9,10 +9,10 @@
 //! [`anthropic_fetch`] first reads the Claude CLI's own cached reading of its
 //! usage endpoint — see [`claude_config_cache`] — before asking that endpoint
 //! itself with the credential the CLI already keeps on this machine;
-//! [`codex_fetch`] asks the analogous endpoint for Codex directly, retrying
-//! once with a token it refreshes itself before
-//! falling back to [`codex_app_server`] — the Codex CLI's own process, asked
-//! over its own protocol — when neither attempt lands. When both fail,
+//! [`codex_fetch`] asks the analogous endpoint for Codex directly,
+//! delegating an expired token to the Codex CLI's own refresh and retrying
+//! once, before falling back to [`codex_app_server`] — the Codex CLI's own
+//! process, asked over its own protocol — when neither attempt lands. When both fail,
 //! [`codex_fetch`] seeds the failure from the newest reading in the reader's
 //! own Codex CLI session log, via [`codex_rollout`]. [`antigravity_fetch`]
 //! reads Antigravity's provider-owned access token and asks Google Code Assist

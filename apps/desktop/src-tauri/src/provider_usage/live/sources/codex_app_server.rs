@@ -42,6 +42,17 @@
 //! allowance to report, which is [`SourceOutcome::absent`] rather than a
 //! failure — the same distinction every other source in this application
 //! draws between "nothing to say" and "something went wrong".
+//!
+//! # Forcing a refresh
+//!
+//! This module has one more caller-facing job: [`trigger_refresh`]. When
+//! [`super::codex_fetch`] finds its access token expired, it does not redeem
+//! the refresh token itself — the CLI owns that lifecycle, see that module's
+//! doc — and instead asks this module to spawn the app-server with
+//! `"refreshToken": true`, so the CLI refreshes and persists its own
+//! `auth.json`. The returned [`RefreshHint`] is a hint, never proof: whether
+//! the file write actually landed is verified by the caller, against the
+//! file itself.
 
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write as _};
@@ -78,6 +89,160 @@ const OAUTH_ACCOUNT_TYPE: &str = "chatgpt";
 /// Account types with no plan allowance to report — a real answer, not a
 /// failure.
 const NO_RATE_LIMIT_ACCOUNT_TYPES: [&str; 2] = ["apiKey", "amazonBedrock"];
+
+/// The bound on the whole [`trigger_refresh`] exchange. Longer than
+/// [`TIMEOUT`]: a refresh is a real network round trip the CLI makes to the
+/// provider's token endpoint, on top of the cold process start.
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Whether a `codex` executable is anywhere on `PATH`.
+///
+/// [`super::codex_fetch`]'s recovery path probes this before spawning, so a
+/// machine without the CLI surfaces an authentication verdict instead of
+/// burning a spawn failure.
+pub fn binary_present() -> bool {
+    std::env::var_os("PATH").is_some_and(|path| binary_present_in(&path))
+}
+
+/// [`binary_present`] over an explicit `PATH` value, for tests.
+fn binary_present_in(path: &std::ffi::OsStr) -> bool {
+    std::env::split_paths(path).any(|dir| {
+        if dir.as_os_str().is_empty() {
+            return false;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            ["codex.exe", "codex.cmd", "codex.bat", "codex"]
+                .iter()
+                .any(|name| dir.join(name).is_file())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            dir.join("codex").is_file()
+        }
+    })
+}
+
+/// How a [`trigger_refresh`] exchange concluded, as far as the CLI's own
+/// JSON-RPC response says.
+///
+/// A hint, not proof. The CLI may write `auth.json` before, after, or more
+/// than once around its response, so the caller verifies the write against
+/// the file itself — see `codex_fetch`'s quiescence poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshHint {
+    /// `account/read` answered with a result; the refresh most likely ran.
+    Answered,
+    /// The CLI reported an error for the request: its own credential is
+    /// broken, and waiting on the file cannot fix that.
+    Rejected,
+    /// Spawn failure, timeout, or an unreadable exchange — no signal either
+    /// way.
+    Unknown,
+}
+
+/// Spawn the app-server purely so the CLI refreshes and persists its own
+/// `auth.json`, via `account/read` with `"refreshToken": true`.
+///
+/// Never an error: every failure shape folds into [`RefreshHint::Unknown`],
+/// because the caller's real verdict comes from watching the file.
+pub fn trigger_refresh() -> RefreshHint {
+    let deadline = Instant::now() + REFRESH_TIMEOUT;
+    let Ok(mut child) = spawn() else {
+        return RefreshHint::Unknown;
+    };
+    let hint = refresh_exchange(&mut child, deadline);
+    // Always torn down, like `fetch` — never a client of a long-lived server.
+    let _ = child.kill();
+    let _ = child.wait();
+    hint
+}
+
+/// Write the refresh-triggering requests, then read until `account/read`
+/// answers or the deadline passes.
+fn refresh_exchange(child: &mut Child, deadline: Instant) -> RefreshHint {
+    let Some(mut stdin) = child.stdin.take() else {
+        return RefreshHint::Unknown;
+    };
+    let Some(stdout) = child.stdout.take() else {
+        return RefreshHint::Unknown;
+    };
+    for message in refresh_requests() {
+        if writeln!(stdin, "{message}").is_err() {
+            return RefreshHint::Unknown;
+        }
+    }
+    if stdin.flush().is_err() {
+        return RefreshHint::Unknown;
+    }
+    drop(stdin);
+
+    let lines = spawn_line_reader(stdout);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return RefreshHint::Unknown;
+        }
+        let line = match lines.recv_timeout(remaining) {
+            Ok(Ok(line)) => line,
+            Ok(Err(_)) | Err(_) => return RefreshHint::Unknown,
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            return RefreshHint::Unknown;
+        };
+        if value.get("id").and_then(Value::as_i64) == Some(2) {
+            return classify_refresh_response(&value);
+        }
+    }
+}
+
+/// The three newline-delimited JSON-RPC messages [`trigger_refresh`] sends —
+/// the same pipelined prefix as [`requests`], with the flag flipped and no
+/// rate-limit question: the retried usage call belongs to the caller.
+fn refresh_requests() -> [String; 3] {
+    [
+        json!({
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "clientInfo": {
+                    "name": "antiburn",
+                    "title": "antiburn",
+                    "version": env!("CARGO_PKG_VERSION"),
+                },
+                "capabilities": { "experimentalApi": false },
+            },
+        })
+        .to_string(),
+        json!({ "method": "initialized" }).to_string(),
+        json!({
+            "id": 2,
+            "method": "account/read",
+            "params": { "refreshToken": true },
+        })
+        .to_string(),
+    ]
+}
+
+/// Read `account/read`'s response as a [`RefreshHint`]: an error is the CLI
+/// rejecting its own credential, a result is a completed exchange, and
+/// anything else says nothing.
+fn classify_refresh_response(response: &Value) -> RefreshHint {
+    if response.get("error").is_some_and(|error| !error.is_null()) {
+        return RefreshHint::Rejected;
+    }
+    if response
+        .get("result")
+        .is_some_and(|result| !result.is_null())
+    {
+        return RefreshHint::Answered;
+    }
+    RefreshHint::Unknown
+}
 
 /// Ask the local `codex` app-server for the reader's own rate limits.
 ///
@@ -692,5 +857,57 @@ mod tests {
             rpc_result(&response),
             Err(ProviderUsageError::Schema(SchemaReason::MissingEnvelope))
         );
+    }
+
+    /* ---------------------------------------------------------------------
+     * The refresh trigger
+     * ------------------------------------------------------------------- */
+
+    #[test]
+    fn a_refresh_response_with_a_result_hints_answered() {
+        let response = serde_json::json!({"id": 2, "result": {"account": {"type": "chatgpt"}}});
+        assert_eq!(classify_refresh_response(&response), RefreshHint::Answered);
+    }
+
+    #[test]
+    fn a_refresh_response_with_an_error_hints_rejected() {
+        let response = serde_json::json!({"id": 2, "error": {"code": -1, "message": "no"}});
+        assert_eq!(classify_refresh_response(&response), RefreshHint::Rejected);
+    }
+
+    #[test]
+    fn a_refresh_response_with_neither_field_hints_nothing() {
+        let response = serde_json::json!({"id": 2});
+        assert_eq!(classify_refresh_response(&response), RefreshHint::Unknown);
+        let null_result = serde_json::json!({"id": 2, "result": null});
+        assert_eq!(
+            classify_refresh_response(&null_result),
+            RefreshHint::Unknown
+        );
+    }
+
+    #[test]
+    fn the_refresh_request_flips_the_flag_the_fetch_request_keeps_off() {
+        let refresh: Value = serde_json::from_str(&refresh_requests()[2]).unwrap();
+        assert_eq!(refresh["params"]["refreshToken"], Value::Bool(true));
+        let fetch: Value = serde_json::from_str(&requests()[2]).unwrap();
+        assert_eq!(fetch["params"]["refreshToken"], Value::Bool(false));
+    }
+
+    #[test]
+    fn the_binary_probe_finds_a_file_named_codex_and_nothing_else() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = std::env::join_paths([dir.path()]).expect("join");
+        assert!(!binary_present_in(&path));
+
+        std::fs::write(dir.path().join("codex"), b"").expect("write");
+        #[cfg(target_os = "windows")]
+        std::fs::write(dir.path().join("codex.exe"), b"").expect("write");
+        assert!(binary_present_in(&path));
+    }
+
+    #[test]
+    fn the_binary_probe_reads_an_empty_path_as_absent() {
+        assert!(!binary_present_in(std::ffi::OsStr::new("")));
     }
 }
