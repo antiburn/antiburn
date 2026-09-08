@@ -320,7 +320,6 @@ pub fn summarize_collected(
         if let Some(app) = storage_app {
             match crate::storage_health::checked(app, "provider usage history", result) {
                 Ok(_) => {
-                    crate::provider_usage::ledger::reconcile(store, now);
                     crate::provider_usage::factor::learn(store, now);
                 }
                 Err(_) => {
@@ -330,7 +329,6 @@ pub fn summarize_collected(
         } else {
             match result {
                 Ok(_) => {
-                    crate::provider_usage::ledger::reconcile(store, now);
                     crate::provider_usage::factor::learn(store, now);
                 }
                 Err(error) => {

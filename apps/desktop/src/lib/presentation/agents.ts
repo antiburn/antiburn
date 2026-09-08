@@ -141,3 +141,27 @@ export function defaultAgentSurface(slug: string): AgentSurface {
 export function agentSupportsAnalysis(slug: string): boolean {
   return AGENTS[slug]?.supportsAnalysis ?? false
 }
+
+/**
+ * The provider that bills an agent's usage, for an agent this app routes to
+ * one fixed provider. Mirrors the `Route::Fixed` arms of the Rust
+ * `route_for_agent` in `provider_usage::providers`.
+ *
+ * An agent whose provider depends on the model in play (`cline`, `opencode`,
+ * `pi`), or a slug this registry does not know, has no single answer here.
+ * It returns `null`. A caller cannot assert a live limit is absent for it.
+ */
+const AGENT_PROVIDER: Readonly<Record<string, string>> = {
+  "claude-code": "anthropic",
+  codex: "openai",
+  copilot: "github",
+  cursor: "cursor",
+  antigravity: "google",
+  windsurf: "windsurf",
+  "amp-code": "amp",
+  kiro: "kiro",
+}
+
+export function agentProvider(slug: string): string | null {
+  return AGENT_PROVIDER[slug] ?? null
+}

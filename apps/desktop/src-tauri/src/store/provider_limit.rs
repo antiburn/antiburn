@@ -195,17 +195,28 @@ fn resolve_account(bound_accounts_json: &str, known: Option<&BTreeSet<String>>) 
             .map(|observation| observation.account_key)
             .filter(|account| account.len() == 64)
             .collect();
-    if bound.len() == 1 {
-        return bound.into_iter().next();
-    }
-    if !bound.is_empty() {
-        return None;
-    }
-    let known = known?;
-    if known.len() == 1 {
-        known.iter().next().cloned()
-    } else {
-        None
+    resolve_bound_account(Some(&bound), known)
+}
+
+/// Resolve one session's account for one provider under the two-step rule,
+/// from already-loaded account sets rather than a JSON column.
+///
+/// A session with exactly one bound account for the provider uses it. A
+/// session with no bound account falls back to the agent's single known
+/// account for the provider, when it has exactly one. Every other case —
+/// more than one bound account, or more than one known account and none
+/// bound — is unattributed.
+pub(crate) fn resolve_bound_account(
+    bound: Option<&BTreeSet<String>>,
+    known: Option<&BTreeSet<String>>,
+) -> Option<String> {
+    match bound {
+        Some(accounts) if accounts.len() == 1 => accounts.iter().next().cloned(),
+        Some(accounts) if !accounts.is_empty() => None,
+        _ => match known {
+            Some(known) if known.len() == 1 => known.iter().next().cloned(),
+            _ => None,
+        },
     }
 }
 
@@ -231,12 +242,60 @@ impl Store {
         Ok(known)
     }
 
+    /// Every direct account binding for the given sessions, across every
+    /// provider, in one query rather than one per session.
+    ///
+    /// The two-step account rule resolves each `(session key, provider)`
+    /// entry against [`Store::provider_known_accounts`] through
+    /// [`resolve_bound_account`].
+    pub(crate) fn session_bound_accounts(
+        &self,
+        keys: &[SessionKey],
+    ) -> Result<HashMap<(SessionKey, String), BTreeSet<String>>> {
+        let mut bound: HashMap<(SessionKey, String), BTreeSet<String>> = HashMap::new();
+        if keys.is_empty() {
+            return Ok(bound);
+        }
+        let mut clauses = Vec::with_capacity(keys.len());
+        let mut values = Vec::with_capacity(keys.len() * 3);
+        for key in keys.iter().take(500) {
+            clauses.push("(environment_key = ? AND agent = ? AND session_id = ?)");
+            values.push(rusqlite::types::Value::from(key.environment_key.clone()));
+            values.push(rusqlite::types::Value::from(key.agent.clone()));
+            values.push(rusqlite::types::Value::from(key.session_id.clone()));
+        }
+        let sql = format!(
+            "SELECT environment_key, agent, session_id, provider, account_key
+               FROM session_provider_account
+              WHERE {}",
+            clauses.join(" OR ")
+        );
+        let connection = self.lock();
+        let mut statement = connection.prepare(&sql)?;
+        let mut rows = statement.query(rusqlite::params_from_iter(values))?;
+        while let Some(row) = rows.next()? {
+            let key = SessionKey::new(
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            );
+            let provider: String = row.get(3)?;
+            let account_key: String = row.get(4)?;
+            if account_key.len() == 64 {
+                bound
+                    .entry((key, provider))
+                    .or_default()
+                    .insert(account_key);
+            }
+        }
+        Ok(bound)
+    }
+
     /// Priced, attributed turn dollars for one account, grouped by session.
     ///
     /// The range is `(from_epoch, to_epoch]`. Dollars are priced through
-    /// [`antiburn_local::analysis::lookup_turn_pricing`], the same catalog
-    /// [`crate::provider_usage::allocation`] uses. `None` means the bounded
-    /// group limit overflowed; the caller tries again on a later pass.
+    /// [`antiburn_local::analysis::lookup_turn_pricing`]. `None` means the
+    /// bounded group limit overflowed; the caller tries again on a later pass.
     pub(crate) fn attributed_turn_dollars_between(
         &self,
         provider: &str,
@@ -623,12 +682,6 @@ pub(crate) fn detach_samples_pending_period_deletion_in(connection: &Connection)
               SELECT id FROM provider_usage_period p
                WHERE NOT EXISTS (
                        SELECT 1 FROM provider_usage_observation o WHERE o.period_id = p.id
-                   )
-                 AND NOT EXISTS (
-                       SELECT 1 FROM provider_usage_session_allocation a WHERE a.period_id = p.id
-                   )
-                 AND NOT EXISTS (
-                       SELECT 1 FROM provider_usage_allocation_dirty d WHERE d.period_id = p.id
                    )";
     connection.execute(
         &format!(

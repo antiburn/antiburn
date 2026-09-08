@@ -12,7 +12,7 @@
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
-    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39,
+    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -816,4 +816,21 @@ CREATE TABLE provider_limit_learn_cursor (
     period_id            INTEGER PRIMARY KEY REFERENCES provider_usage_period(id),
     learned_through_epoch INTEGER NOT NULL
 ) STRICT;
+"#;
+
+/// v40 removes the durable per-session allocator (phase 2 of the limit-factor
+/// plan). The session limit badge now prices straight from
+/// `provider_limit_factor_point`, computed at read time from the session's
+/// own cost — see `commands::session_limit_allocations`.
+///
+/// The dirty queue and its generation counter, and the materialized
+/// per-session rows, drop first because both reference
+/// `provider_usage_period`. `allocation_frozen` drops last, once nothing
+/// references it.
+const V40: &str = r#"
+DROP TABLE provider_usage_allocation_dirty;
+DROP TABLE provider_usage_allocation_revision;
+DROP TABLE provider_usage_session_allocation;
+
+ALTER TABLE provider_usage_period DROP COLUMN allocation_frozen;
 "#;

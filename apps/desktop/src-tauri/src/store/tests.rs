@@ -2461,6 +2461,101 @@ fn migrating_forward_drops_queued_events_for_the_retired_usage_surface() {
 }
 
 #[test]
+fn migrating_forward_drops_the_allocator_over_a_v39_database_with_allocation_rows() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for &sql in &super::schema::MIGRATIONS[..39] {
+        connection.execute_batch(sql).unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO provider_usage_period (
+                 provider, account_key, window_id, window_kind, window_role,
+                 scope_key, scope_label, duration_seconds, starts_at_epoch,
+                 resets_at_epoch, first_observed_epoch, last_observed_epoch,
+                 allocation_frozen
+             ) VALUES ('anthropic', 'account', 'five-hour', 'rolling', 'primaryShort',
+                       'account', 'account', 18000, 0, 18000, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO session (
+                 environment_key, agent, session_id, source_kind, source_label, surface,
+                 activity_cursor, activity_source, first_seen_at, last_seen_at
+             ) VALUES ('native', 'claude-code', 'session', 'inline', 'test', 'unknown',
+                       'test', 'event', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO provider_usage_session_allocation (
+                 period_id, environment_key, agent, session_id, metric, percent, basis,
+                 partial, computed_at_epoch
+             ) VALUES (1, 'native', 'claude-code', 'session', 'fiveHour', 10.0, 'tokens', 0, 1)",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO provider_usage_allocation_dirty (period_id, requested_at_epoch, generation)
+             VALUES (1, 1, 1)",
+            [],
+        )
+        .unwrap();
+    connection
+        .pragma_update(None, "user_version", 39i64)
+        .unwrap();
+
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-migration-test").to_path_buf(),
+    )
+    .expect("migrates cleanly past a V39 database with allocation rows");
+
+    assert_eq!(
+        store.schema_version().unwrap(),
+        super::schema::MIGRATIONS.len() as i64
+    );
+    let connection = store.lock();
+    for table in [
+        "provider_usage_allocation_dirty",
+        "provider_usage_allocation_revision",
+        "provider_usage_session_allocation",
+    ] {
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!exists, "{table} should be dropped by V40");
+    }
+    let allocation_frozen_column: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('provider_usage_period')
+               WHERE name = 'allocation_frozen'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(allocation_frozen_column, 0);
+    let period_survives: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM provider_usage_period WHERE id = 1)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        period_survives,
+        "V40 drops the allocator, not usage history"
+    );
+}
+
+#[test]
 fn migrating_from_every_prior_schema_version_reaches_the_current_head() {
     for start in 0..super::schema::MIGRATIONS.len() {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
