@@ -165,6 +165,29 @@ describe("UsageLimitsBar — the ring row", () => {
   })
 })
 
+describe("UsageLimitsBar — the live blink", () => {
+  it("blinks one segment of the first meter while a session is live", () => {
+    bar({ sessionLive: true, expanded: true })
+    const region = screen.getByRole("region", { name: "Usage limits" })
+    const blinking = region.querySelectorAll(".led-blink")
+    expect(blinking).toHaveLength(1)
+    // The first provider group holds the blinking segment.
+    const groups = within(region).getAllByRole("group")
+    expect(groups[0]?.contains(blinking[0]!)).toBe(true)
+  })
+
+  it("does not blink the rings of the closed bar", () => {
+    const { container } = bar({ sessionLive: true, expanded: false })
+    expect(container.querySelector(".led-blink")).toBeNull()
+  })
+
+  it("does not blink without a live session", () => {
+    bar({ expanded: true })
+    const region = screen.getByRole("region", { name: "Usage limits" })
+    expect(region.querySelector(".led-blink")).toBeNull()
+  })
+})
+
 describe("UsageLimitsBar — the disclosure", () => {
   it("marks itself pressed only while the meters are open", () => {
     const { rerender } = bar()

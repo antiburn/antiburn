@@ -129,14 +129,6 @@ fn promote(entries: Vec<Placement>, placement: Placement) -> Vec<Placement> {
     promoted
 }
 
-/// Return the newest recent transcript write as epoch seconds.
-///
-/// One indexed query against [`Store`], so the overlay's poll costs no more
-/// than the scan pass's own writes already do — no memo needed.
-pub fn latest_session_activity(store: &Store) -> Option<i64> {
-    store.latest_session_activity().ok().flatten()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

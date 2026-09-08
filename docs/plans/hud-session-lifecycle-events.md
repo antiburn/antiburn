@@ -20,7 +20,7 @@ status: draft
 |---|---|---|---|
 | A | Leftmost LED blinks when nothing is lit | ~60 lines | built 2026-09-08, in review |
 | B | `SessionLifecycle` actor and broadcast bus in the Tauri shell | ~400 lines | built 2026-09-08, in review |
-| C | HUD and popover meter read the bus; the idle task folds into the actor | ~300 lines | not started |
+| C | HUD and popover meter read the bus; the idle task folds into the actor | ~300 lines | built 2026-09-08, in review |
 | D | Session list and other consumers move onto the bus | follow-up | not planned here |
 
 Each phase is one pull request. A stacks on nothing. B stacks on nothing. C
@@ -221,6 +221,21 @@ the brand-on, resting-off rule from phase A.
 - an `Activity` event sets `sessionLive` and starts the blink
 - an `Idle` event clears it
 - activation with a non-empty snapshot starts live
+
+Built 2026-09-08, three small departures:
+
+- A keyless `Activity` (a write under an agent root the store has not
+  indexed yet) has no `Idle` counterpart on the bus, so the renderers keep
+  one local 180 second timer for that case only. A keyed session never runs
+  a renderer timer.
+- The popover meter blinks the *next unlit* segment, not the last lit one: a
+  lit meter segment is already the brand tint, so only the segment past the
+  reading can alternate (brand on, the zone's track tint off). At zero both
+  rules land on the first segment. Only the first meter of the first provider
+  blinks, and only in the expanded view; the closed bar's rings do not.
+- Both renderers re-read `get_live_sessions` on `scan:finished` and
+  `sessions:invalidated` (the popover also on show), so a lagged bus reader
+  recovers within one pass.
 
 ### Phase D: follow-ups, not in this plan
 

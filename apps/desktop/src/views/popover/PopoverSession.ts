@@ -8,6 +8,7 @@ import {
   EMPTY_PROVIDER_USAGE,
   EMPTY_SESSION_LIMIT_ALLOCATIONS,
   appInfo,
+  getLiveSessions,
   getLiveUsage,
   getProviderUsage,
   getSessionLimitAllocations,
@@ -24,6 +25,7 @@ import {
   onLiveUsageChanged,
   onScanEvent,
   onSessionEntryChanged,
+  onSessionLifecycle,
   onSessionsInvalidated,
   onSettingsChanged,
   onStorageHealth,
@@ -54,6 +56,14 @@ import {
 } from "../../lib/popoverHeight"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
+import {
+  applyLifecycleEvent,
+  IDLE_LIVENESS,
+  isLive,
+  livenessExpiry,
+  livenessFromSnapshot,
+  type Liveness,
+} from "../../lib/sessionLiveness"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
 import {
   isCurrentWindowVisible,
@@ -94,6 +104,8 @@ export interface PopoverSnapshot {
   /** Provider usage, or null while the first snapshot is in flight. */
   usage: ProviderUsageSummaryPayload | null
   liveUsage: LiveUsageSummaryPayload
+  /** Whether a session is live, from the shell's lifecycle bus. */
+  sessionLive: boolean
   sessionLimitAllocations: SessionLimitAllocationSummaryPayload
   /** Whether a `refreshUsage` call is in flight, for the limits section's spinner. */
   usageRefreshing: boolean
@@ -204,6 +216,9 @@ const USAGE_REFRESH_MIN_MS = 30_000
  * live reading current.
  */
 const USAGE_VISIBLE_POLL_MS = 60_000
+
+/** The longest delay a browser timer accepts, in milliseconds. */
+const MAX_TIMEOUT_MS = 2_147_483_647
 
 /** Minimum spacing between cached session-allocation reads. */
 const SESSION_LIMIT_ALLOCATION_REFRESH_MIN_MS = 30_000
@@ -324,6 +339,10 @@ export class PopoverSession {
   private stopPopoverShownListening: (() => void) | null = null
   private stopPopoverHiddenListening: (() => void) | null = null
   private stopLiveUsageListening: (() => void) | null = null
+  private stopSessionLifecycleListening: (() => void) | null = null
+  private liveness: Liveness = IDLE_LIVENESS
+  private livenessRevision = 0
+  private livenessExpiry: number | null = null
 
   private snapshot: PopoverSnapshot = {
     appVersion: null,
@@ -334,6 +353,7 @@ export class PopoverSession {
     repositories: [],
     usage: null,
     liveUsage: EMPTY_LIVE_USAGE,
+    sessionLive: false,
     sessionLimitAllocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
     usageRefreshing: false,
     checksReport: null,
@@ -450,6 +470,7 @@ export class PopoverSession {
     void this.listenScanEvent(generation)
     void this.startPopoverVisibility(generation)
     void this.listenLiveUsage(generation)
+    void this.listenSessionLifecycle(generation)
 
     // ⌘, opens Settings — the platform's standard preferences shortcut, which
     // an accessory app with no application menu has to own itself. Bound
@@ -492,6 +513,10 @@ export class PopoverSession {
     this.stopPopoverHiddenListening = null
     this.stopLiveUsageListening?.()
     this.stopLiveUsageListening = null
+    this.stopSessionLifecycleListening?.()
+    this.stopSessionLifecycleListening = null
+    this.clearLivenessExpiry()
+    this.liveness = IDLE_LIVENESS
     this.stopNowTicking()
     this.stopUsagePolling()
     this.cancelSessionLimitAllocationRefresh()
@@ -577,6 +602,7 @@ export class PopoverSession {
       void this.refreshRepositoryList()
       void this.refreshChecks()
       this.requestSessionLimitAllocationRefresh(false, true)
+      this.refreshLiveness(generation)
     })
     if (generation !== this.generation) {
       unlisten()
@@ -803,6 +829,7 @@ export class PopoverSession {
       void this.refreshEntries(this.windowDays()).catch(() => {})
       void this.refreshUsage()
       void this.refreshAnalysis()
+      this.refreshLiveness(generation)
     })
     if (generation !== this.generation) {
       unlisten()
@@ -831,6 +858,59 @@ export class PopoverSession {
       return
     }
     this.stopPopoverHiddenListening = unlisten
+  }
+
+  // The usage meter blinks from the same bus the HUD reads. The shell applies
+  // the active window to a keyed session and publishes `idle`, so only keyless
+  // activity, a write the store has not indexed yet, expires on a timer here.
+  // The snapshot on start, on show, and on invalidation puts the set right
+  // after a missed event.
+  private listenSessionLifecycle = async (generation: number): Promise<void> => {
+    this.refreshLiveness(generation)
+    const unlisten = await onSessionLifecycle((event) => {
+      if (generation !== this.generation) return
+      // A snapshot still in flight predates this event and must not replace it.
+      this.livenessRevision += 1
+      this.applyLiveness(applyLifecycleEvent(this.liveness, event), generation)
+    })
+    if (generation !== this.generation) {
+      unlisten()
+      return
+    }
+    this.stopSessionLifecycleListening = unlisten
+  }
+
+  private refreshLiveness(generation: number): void {
+    const revision = ++this.livenessRevision
+    void getLiveSessions()
+      .then((sessions) => {
+        if (generation !== this.generation || revision !== this.livenessRevision) return
+        this.applyLiveness(livenessFromSnapshot(sessions, this.liveness), generation)
+      })
+      .catch(() => {})
+  }
+
+  private applyLiveness(next: Liveness, generation: number): void {
+    this.liveness = next
+    this.clearLivenessExpiry()
+    const now = Date.now()
+    const sessionLive = isLive(next, now)
+    if (sessionLive !== this.snapshot.sessionLive) this.update({ sessionLive })
+    const expiresAt = livenessExpiry(next, now)
+    if (expiresAt == null) return
+    this.livenessExpiry = window.setTimeout(
+      () => {
+        this.livenessExpiry = null
+        if (generation === this.generation) this.applyLiveness(this.liveness, generation)
+      },
+      Math.min(expiresAt - now + 1, MAX_TIMEOUT_MS),
+    )
+  }
+
+  private clearLivenessExpiry(): void {
+    if (this.livenessExpiry == null) return
+    window.clearTimeout(this.livenessExpiry)
+    this.livenessExpiry = null
   }
 
   private startPopoverVisibility = async (generation: number): Promise<void> => {

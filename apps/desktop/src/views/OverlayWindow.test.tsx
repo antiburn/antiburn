@@ -9,7 +9,7 @@ import { OverlayWindow } from "./OverlayWindow"
 const REFRESH_TEST_MS = 60_000
 
 const getLiveUsage = vi.hoisted(() => vi.fn())
-const getLatestSessionActivity = vi.hoisted(() => vi.fn())
+const getLiveSessions = vi.hoisted(() => vi.fn())
 const isOverlayWorkActive = vi.hoisted(() => vi.fn())
 const showHudDetail = vi.hoisted(() => vi.fn(async () => {}))
 const hideHudDetail = vi.hoisted(() => vi.fn(async () => {}))
@@ -30,7 +30,7 @@ vi.mock("../lib/ipc", async () => {
   return {
     ...actual,
     getLiveUsage,
-    getLatestSessionActivity,
+    getLiveSessions,
     isOverlayWorkActive,
     showHudDetail,
     hideHudDetail,
@@ -224,6 +224,28 @@ async function advance(ms: number) {
   })
 }
 
+const SESSION_REF = { environmentKey: "native", agent: "claude-code", sessionId: "session-1" }
+
+function liveSession(sessionId = "session-1") {
+  return {
+    session: { ...SESSION_REF, sessionId },
+    agent: "claude-code",
+    lastActivityAt: Math.floor(Date.now() / 1000),
+  }
+}
+
+function lifecycle(
+  kind: "started" | "activity" | "idle",
+  sessionId: string | null = "session-1",
+): Record<string, unknown> {
+  return {
+    kind,
+    session: sessionId == null ? null : { ...SESSION_REF, sessionId },
+    agent: "claude-code",
+    at: Math.floor(Date.now() / 1000),
+  }
+}
+
 describe("OverlayWindow", () => {
   let rectSpy: ReturnType<typeof vi.spyOn>
 
@@ -231,8 +253,8 @@ describe("OverlayWindow", () => {
     vi.stubGlobal("localStorage", storage)
     getLiveUsage.mockReset()
     getLiveUsage.mockResolvedValue(summary())
-    getLatestSessionActivity.mockReset()
-    getLatestSessionActivity.mockResolvedValue(null)
+    getLiveSessions.mockReset()
+    getLiveSessions.mockResolvedValue([])
     isOverlayWorkActive.mockReset()
     isOverlayWorkActive.mockResolvedValue(true)
     showHudDetail.mockClear()
@@ -290,7 +312,7 @@ describe("OverlayWindow", () => {
       await advance(0)
 
       expect(getLiveUsage).not.toHaveBeenCalled()
-      expect(getLatestSessionActivity).not.toHaveBeenCalled()
+      expect(getLiveSessions).not.toHaveBeenCalled()
       expect(nativeEvents.get("overlay_hover")?.size ?? 0).toBe(0)
       await advance(5 * 60_000)
       expect(getLiveUsage).not.toHaveBeenCalled()
@@ -310,7 +332,7 @@ describe("OverlayWindow", () => {
       act(() => emitNative("overlay_work_changed", true))
       await advance(0)
       expect(getLiveUsage).toHaveBeenCalledTimes(1)
-      expect(getLatestSessionActivity).toHaveBeenCalledTimes(1)
+      expect(getLiveSessions).toHaveBeenCalledTimes(1)
 
       act(() => emitNative("overlay_work_changed", false))
       expect(nativeEvents.get("overlay_hover")?.size ?? 0).toBe(0)
@@ -320,7 +342,7 @@ describe("OverlayWindow", () => {
       act(() => emitNative("overlay_work_changed", true))
       await advance(0)
       expect(getLiveUsage).toHaveBeenCalledTimes(2)
-      expect(getLatestSessionActivity).toHaveBeenCalledTimes(2)
+      expect(getLiveSessions).toHaveBeenCalledTimes(2)
 
       act(() => emitNative("overlay_work_changed", false))
       act(() => emitNative("overlay_work_changed", true))
@@ -385,7 +407,7 @@ describe("OverlayWindow", () => {
     await act(async () => resolveActive(true))
 
     expect(getLiveUsage).not.toHaveBeenCalled()
-    expect(getLatestSessionActivity).not.toHaveBeenCalled()
+    expect(getLiveSessions).not.toHaveBeenCalled()
   })
 
   it("retries a transient native work-listener failure", async () => {
@@ -398,54 +420,74 @@ describe("OverlayWindow", () => {
     expect(nativeEvents.get("overlay_work_changed")?.size).toBe(1)
   })
 
-  it("expires live activity once without polling", async () => {
+  it("turns the blink off at the bus's idle event, with no timer of its own", async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
-    getLatestSessionActivity.mockResolvedValue(Date.now() / 1000)
+    getLiveSessions.mockResolvedValue([liveSession()])
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
       expect(container.querySelector(".led-blink")).not.toBeNull()
 
-      await advance(90_001)
+      await advance(10 * 60_000)
+      expect(container.querySelector(".led-blink")).not.toBeNull()
+
+      act(() => emitNative("session:lifecycle", lifecycle("idle")))
       expect(container.querySelector(".led-blink")).toBeNull()
-      expect(getLatestSessionActivity).toHaveBeenCalledTimes(1)
+      expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it("keeps a far-future activity expiry inside the browser timer bound", async () => {
+  it("keeps blinking while another session is still live", async () => {
+    getLiveSessions.mockResolvedValue([liveSession("session-1"), liveSession("session-2")])
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
+
+    act(() => emitNative("session:lifecycle", lifecycle("idle", "session-1")))
+    expect(container.querySelector(".led-blink")).not.toBeNull()
+    act(() => emitNative("session:lifecycle", lifecycle("idle", "session-2")))
+    expect(container.querySelector(".led-blink")).toBeNull()
+  })
+
+  it("expires keyless agent activity after the active window", async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
-    const day = 24 * 60 * 60 * 1000
-    getLatestSessionActivity.mockResolvedValue((Date.now() + 40 * day) / 1000)
-    const timeout = vi.spyOn(window, "setTimeout")
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
+      expect(container.querySelector(".led-blink")).toBeNull()
+
+      act(() => emitNative("session:lifecycle", lifecycle("activity", null)))
       expect(container.querySelector(".led-blink")).not.toBeNull()
-      expect(timeout).toHaveBeenCalledWith(expect.any(Function), 2_147_483_647)
-      expect(getLatestSessionActivity).toHaveBeenCalledTimes(1)
+
+      await advance(180_001)
+      expect(container.querySelector(".led-blink")).toBeNull()
+      expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
-      timeout.mockRestore()
       vi.useRealTimers()
     }
+  })
+
+  it("re-reads the live set after a scan pass", async () => {
+    render(<OverlayWindow />)
+    await waitFor(() => expect(nativeEvents.get("scan:finished")?.size).toBe(1))
+    expect(getLiveSessions).toHaveBeenCalledTimes(1)
+
+    act(() => emitNative("scan:finished", {}))
+    expect(getLiveSessions).toHaveBeenCalledTimes(2)
   })
 
   it("uses pushed session activity and cleans its subscriptions on hide", async () => {
     const { container, unmount } = render(<OverlayWindow />)
-    await waitFor(() => expect(nativeEvents.get("sessions:entry-changed")?.size).toBe(1))
+    await waitFor(() => expect(nativeEvents.get("session:lifecycle")?.size).toBe(1))
 
-    act(() =>
-      emitNative("sessions:entry-changed", {
-        timestamp: new Date().toISOString(),
-      }),
-    )
+    act(() => emitNative("session:lifecycle", lifecycle("activity")))
     expect(container.querySelector(".led-blink")).not.toBeNull()
 
     act(() => emitNative("overlay_work_changed", false))
-    expect(nativeEvents.get("sessions:entry-changed")?.size ?? 0).toBe(0)
+    expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(0)
     expect(nativeEvents.get("scan:finished")?.size ?? 0).toBe(0)
     expect(nativeEvents.get("sessions:invalidated")?.size ?? 0).toBe(0)
     expect(nativeEvents.get("overlay_work_changed")?.size).toBe(1)
@@ -458,7 +500,7 @@ describe("OverlayWindow", () => {
     const low = summary()
     low.providers[0]!.windows[0]!.usedPercent = 1
     getLiveUsage.mockResolvedValue(low)
-    getLatestSessionActivity.mockResolvedValue(Date.now() / 1000)
+    getLiveSessions.mockResolvedValue([liveSession()])
     const { container } = render(<OverlayWindow />)
 
     await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
@@ -475,7 +517,7 @@ describe("OverlayWindow", () => {
     const empty = summary()
     empty.providers = []
     getLiveUsage.mockResolvedValue(empty)
-    getLatestSessionActivity.mockResolvedValue(Date.now() / 1000)
+    getLiveSessions.mockResolvedValue([liveSession()])
     const { container } = render(<OverlayWindow />)
 
     await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
@@ -491,12 +533,12 @@ describe("OverlayWindow", () => {
     getLiveUsage.mockResolvedValue(low)
     const { container } = render(<OverlayWindow />)
 
-    await waitFor(() => expect(getLatestSessionActivity).toHaveBeenCalled())
+    await waitFor(() => expect(getLiveSessions).toHaveBeenCalled())
     expect(container.querySelector(".led-blink")).toBeNull()
   })
 
   it("blinks the last lit segment with its own colour as the rest state", async () => {
-    getLatestSessionActivity.mockResolvedValue(Date.now() / 1000)
+    getLiveSessions.mockResolvedValue([liveSession()])
     const { container } = render(<OverlayWindow />)
 
     await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())

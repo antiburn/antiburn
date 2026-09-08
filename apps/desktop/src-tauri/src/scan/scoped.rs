@@ -581,7 +581,6 @@ async fn refresh_sessions_locked(
         store.upsert_sessions(&described.records, &agents::evidence_cohort()),
     )?;
     crate::insights_worker::wake(app);
-    super::idle::wake(app);
     super::report_indexed(
         app,
         now,

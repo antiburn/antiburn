@@ -109,7 +109,6 @@ use crate::session_lifecycle;
 use crate::storage_health::{self, checked};
 use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
-pub mod idle;
 pub mod scoped;
 pub mod watch;
 
@@ -895,9 +894,8 @@ async fn pass(
         ),
     )?;
     crate::insights_worker::wake(app);
-    // A write may have added a session the idle task was not yet watching,
-    // or moved one's deadline later; either way its sleep needs recomputing.
-    idle::wake(app);
+    // The lifecycle actor learns of a session it was not yet watching, or of
+    // one whose deadline just moved later, from this report.
     report_indexed(app, now, &records, &changed, &previous_records);
 
     announce_changed_rows(&store, &changed, &previous_records, now, announce);

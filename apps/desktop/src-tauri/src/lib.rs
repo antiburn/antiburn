@@ -218,7 +218,6 @@ pub fn run() {
                 }
             }
             app.manage(scan::ScanController::default());
-            app.manage(scan::idle::IdleWake::default());
             app.manage(session_lifecycle::SessionEvents::default());
             app.manage(Schedulers::default());
             app.manage(popover::PopoverState::default());
@@ -308,9 +307,8 @@ pub fn run() {
             if let Some(schedulers) = app.try_state::<Schedulers>() {
                 schedulers.push(runtime_pricing::spawn_scheduler(app.handle()));
                 schedulers.push(scan::spawn_scheduler(app.handle()));
-                schedulers.push(scan::idle::spawn(app.handle()));
                 schedulers.push(session_lifecycle::spawn(app.handle()));
-                schedulers.push(session_lifecycle::spawn_log(app.handle()));
+                schedulers.push(session_lifecycle::spawn_bridge(app.handle()));
                 schedulers.push(retention::spawn_scheduler(app.handle()));
                 schedulers.push(insights_worker::spawn(app.handle()));
                 schedulers.push(updates::spawn_scheduler(app.handle()));

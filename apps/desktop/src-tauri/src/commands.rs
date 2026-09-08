@@ -308,12 +308,6 @@ pub fn set_hud_detail_size(app: tauri::AppHandle, height: f64) {
     antiburn_hud::apply_detail_size(&app, height);
 }
 
-/// Return the newest recent transcript write as epoch seconds.
-#[tauri::command]
-pub fn get_latest_session_activity(app: tauri::AppHandle) -> Option<i64> {
-    crate::hud::latest_session_activity(&app.state::<Store>())
-}
-
 /// Every session inside the active window, most recent first. This is the
 /// snapshot a reader takes before it subscribes to lifecycle events.
 #[tauri::command]
@@ -1642,6 +1636,10 @@ pub const SESSIONS_INVALIDATED_EVENT: &str = "sessions:invalidated";
 /// scan. The payload is the fresh [`ActivityEntry`] for that session, so the
 /// popover can update the one row without a re-query.
 pub const SESSION_ENTRY_CHANGED_EVENT: &str = "sessions:entry-changed";
+
+/// Event the shell emits for every transition on the session lifecycle bus.
+/// The payload is one [`crate::session_lifecycle::SessionEvent`].
+pub const SESSION_LIFECYCLE_EVENT: &str = "session:lifecycle";
 pub const CHECKS_REPORT_CHANGED_EVENT: &str = "checks:report-changed";
 
 /// Re-derive the repository list from what is on disk right now.
