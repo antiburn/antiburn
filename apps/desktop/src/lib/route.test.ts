@@ -6,6 +6,7 @@ import {
   OVERLAY_FRAGMENT,
   POPOVER_PEEK_FRAGMENT,
   routeFromHash,
+  SESSION_WINDOW_FRAGMENT,
 } from "./route"
 
 /**
@@ -18,6 +19,7 @@ describe("routeFromHash", () => {
     expect(routeFromHash(NUDGE_FRAGMENT)).toBe("nudge")
     expect(routeFromHash(OVERLAY_FRAGMENT)).toBe("overlay")
     expect(routeFromHash(POPOVER_PEEK_FRAGMENT)).toBe("popover-peek")
+    expect(routeFromHash(SESSION_WINDOW_FRAGMENT)).toBe("session-window")
   })
 
   it("accepts a fragment with or without the leading slash", () => {

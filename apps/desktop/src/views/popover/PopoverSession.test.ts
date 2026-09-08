@@ -10,7 +10,8 @@ import {
   type SessionAnalysisPayload,
   type SessionLimitAllocationSummaryPayload,
 } from "../../lib/ipc"
-import { PopoverSession, sessionKey } from "./PopoverSession"
+import { toActivityEntry } from "../../lib/activityEntries"
+import { PopoverSession, sessionKey, sessionPaneState } from "./PopoverSession"
 import type { SessionSubject } from "./SessionPane"
 
 const getSessionAnalysis = vi.hoisted(() => vi.fn())
@@ -18,6 +19,7 @@ const getSubagentAnalysis = vi.hoisted(() => vi.fn())
 const getSessionLimitAllocations = vi.hoisted(() => vi.fn())
 const getProviderUsage = vi.hoisted(() => vi.fn())
 const setPopoverHeight = vi.hoisted(() => vi.fn())
+const hidePopover = vi.hoisted(() => vi.fn())
 const listRecentSessions = vi.hoisted(() => vi.fn())
 const onSessionEntryChanged = vi.hoisted(() => vi.fn())
 const onScanEvent = vi.hoisted(() => vi.fn())
@@ -40,6 +42,7 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     getSessionLimitAllocations,
     getProviderUsage,
     setPopoverHeight,
+    hidePopover,
     listRecentSessions,
     onSessionEntryChanged,
     onScanEvent,
@@ -101,6 +104,8 @@ beforeEach(() => {
   getSubagentAnalysis.mockResolvedValue(null)
   setPopoverHeight.mockReset()
   setPopoverHeight.mockResolvedValue(true)
+  hidePopover.mockReset()
+  hidePopover.mockResolvedValue(undefined)
   listRecentSessions.mockReset()
   listRecentSessions.mockResolvedValue([])
   onSessionEntryChanged.mockReset()
@@ -1134,5 +1139,145 @@ describe("PopoverSession event-driven refresh", () => {
       ]),
     )
     unsubscribe()
+  })
+})
+
+describe("PopoverSession in the session window", () => {
+  const subject: SessionSubject = {
+    agent: "claude-code",
+    sessionId: "session-1",
+    wslDistro: null,
+  }
+
+  it("presents a session at once and never resizes the popover", () => {
+    const session = new PopoverSession({ shell: "window" })
+    const unsubscribe = session.subscribe(() => undefined)
+
+    session.openSession(subject)
+
+    expect(session.getSnapshot().presentedSurface).toBe("session")
+    expect(session.getSnapshot().presentedSession).toEqual(subject)
+    expect(setPopoverHeight).not.toHaveBeenCalled()
+
+    session.goBack()
+
+    expect(session.getSnapshot().presentedSurface).toBe("activity")
+    expect(setPopoverHeight).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it("leaves Escape alone, where the popover would hide itself", () => {
+    const popover = new PopoverSession()
+    const unsubscribePopover = popover.subscribe(() => undefined)
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))
+    expect(hidePopover).toHaveBeenCalledTimes(1)
+    unsubscribePopover()
+
+    hidePopover.mockClear()
+    const session = new PopoverSession({ shell: "window" })
+    const unsubscribe = session.subscribe(() => undefined)
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))
+    expect(hidePopover).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it("does not listen for the popover's shown and hidden signals", async () => {
+    const session = new PopoverSession({ shell: "window" })
+    const unsubscribe = session.subscribe(() => undefined)
+
+    await vi.waitFor(() => expect(session.getSnapshot().entries).not.toBeNull())
+
+    expect(onPopoverShown).not.toHaveBeenCalled()
+    expect(onPopoverHidden).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+})
+
+describe("sessionPaneState", () => {
+  const older = activityEntry({ sessionId: "session-0", timestamp: "2024-01-01T00:00:00.000Z" })
+  const listed = activityEntry({
+    sessionId: "session-1",
+    repo: "listed-repo",
+    timestamp: "2024-01-02T00:00:00.000Z",
+  })
+  const newer = activityEntry({ sessionId: "session-2", timestamp: "2024-01-03T00:00:00.000Z" })
+  const subject: SessionSubject = {
+    agent: "claude-code",
+    sessionId: "session-1",
+    wslDistro: null,
+  }
+
+  function snapshot(overrides: Partial<ReturnType<PopoverSession["getSnapshot"]>>) {
+    return { ...new PopoverSession().getSnapshot(), ...overrides }
+  }
+
+  it("is null while the activity list is the presented surface", () => {
+    expect(sessionPaneState(snapshot({ presentedSurface: "activity" }))).toBeNull()
+    expect(
+      sessionPaneState(
+        snapshot({ presentedSurface: "session", presentedSession: null, stack: [subject] }),
+      ),
+    ).toBeNull()
+  })
+
+  it("is loading until an analysis for the same subject settles", () => {
+    const base = snapshot({ presentedSurface: "session", presentedSession: subject })
+
+    expect(sessionPaneState(base)).toMatchObject({
+      loading: true,
+      refreshing: false,
+      payload: null,
+    })
+
+    const other = {
+      key: sessionKey({ ...subject, sessionId: "session-9" }),
+      payload: null,
+      error: false,
+    }
+    expect(
+      sessionPaneState({ ...base, analysis: other, analysisRefreshing: true }),
+    ).toMatchObject({
+      loading: true,
+      refreshing: false,
+    })
+
+    const settled = { key: sessionKey(subject), payload: null, error: true }
+    expect(
+      sessionPaneState({ ...base, analysis: settled, analysisRefreshing: true }),
+    ).toMatchObject({
+      loading: false,
+      refreshing: true,
+      error: true,
+    })
+  })
+
+  it("takes the listed row's repo and timestamp, and names both neighbours", () => {
+    const state = sessionPaneState(
+      snapshot({
+        presentedSurface: "session",
+        presentedSession: subject,
+        entries: [newer, listed, older].map((entry) => toActivityEntry(entry)),
+      }),
+    )
+
+    expect(state?.subject).toMatchObject({ repo: "listed-repo", timestamp: listed.timestamp })
+    expect(state?.prev?.sessionId).toBe("session-2")
+    expect(state?.next?.sessionId).toBe("session-0")
+  })
+
+  it("gives a sub-agent no neighbours", () => {
+    const state = sessionPaneState(
+      snapshot({
+        presentedSurface: "session",
+        presentedSession: {
+          ...subject,
+          subagent: { parentSessionId: "session-1", subagentId: "agent-1" },
+        },
+        entries: [toActivityEntry(listed)],
+      }),
+    )
+
+    expect(state?.prev).toBeUndefined()
+    expect(state?.next).toBeUndefined()
   })
 })

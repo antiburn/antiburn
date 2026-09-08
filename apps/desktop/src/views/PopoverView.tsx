@@ -3,7 +3,7 @@ import { lazy, Suspense, useCallback, useRef, useState, useSyncExternalStore } f
 import { AlertTriangle, Settings } from "lucide-react"
 import type { VirtualItem } from "@tanstack/react-virtual"
 
-import { SessionList, type SessionListEntry } from "../components/session/SessionList"
+import { SessionList } from "../components/session/SessionList"
 import { UsageLimitsBar } from "../components/providerUsage"
 import {
   EMPTY_USAGE_WINDOWS,
@@ -12,7 +12,6 @@ import {
 import { Banner } from "../components/ui/Banner"
 import { Skeleton } from "../components/ui/Skeleton"
 import { renderAgentIcon } from "../lib/agentIcon"
-import { indexOfSession } from "../lib/activityEntries"
 import { attentionBanners } from "../lib/attention"
 import { AnchoredTriggerController } from "../lib/anchoredTrigger"
 import {
@@ -32,7 +31,7 @@ import {
 } from "../lib/popoverPeekIpc"
 import type { PopoverSurface } from "../lib/popoverHeight"
 import { checksPresentation } from "../lib/presentation/checks"
-import { PopoverSession, sessionKey } from "./popover/PopoverSession"
+import { PopoverSession, sessionPaneState, subjectForEntry } from "./popover/PopoverSession"
 import { ChecksSummary } from "./popover/ChecksView"
 import { foldActivityHeader } from "./popover/usageChartFold"
 import type { SessionSubject } from "./popover/SessionPane"
@@ -123,7 +122,22 @@ function selectedProviderPresentation(
  * by `lib/attention`, from signals the shell reports; dismissal is held there,
  * because "I have seen this" is a fact about this run of the popover and not
  * something worth persisting.
+ *
+ * The debug session window (`SessionWindowView`) hosts this same view as its
+ * left column. It hands in the session it shares with its detail column and
+ * asks for `detail="aside"`, so the list stays on screen and the detail is
+ * the host's to render.
  */
+export interface PopoverViewProps {
+  /** A session to use instead of creating one. Read once, on mount. */
+  session?: PopoverSession | undefined
+  /**
+   * Where a session's detail renders. `"inline"` swaps the list for the
+   * detail, as the popover does. `"aside"` keeps the list on screen and
+   * leaves the detail to the host.
+   */
+  detail?: "inline" | "aside" | undefined
+}
 
 /** Placeholder rows while the first list load is in flight. */
 function ActivitySkeleton() {
@@ -141,7 +155,7 @@ function ActivitySkeleton() {
 }
 
 /** Placeholder while the session detail chunk loads on the first open. */
-function SessionPaneLoading() {
+export function SessionPaneLoading() {
   return (
     <div className="flex h-full flex-col" aria-busy="true" data-testid="session-pane-loading">
       <header className="flex h-11 shrink-0 items-center px-4">
@@ -197,8 +211,11 @@ function PopoverFooter({
   )
 }
 
-export function PopoverView() {
-  const [session] = useState(() => new PopoverSession())
+export function PopoverView({
+  session: hostSession,
+  detail = "inline",
+}: PopoverViewProps = {}) {
+  const [session] = useState(() => hostSession ?? new PopoverSession())
   const [peekTriggers] = useState(createPopoverPeekTriggers)
   const state = useSyncExternalStore(
     session.subscribe,
@@ -217,7 +234,6 @@ export function PopoverView() {
     ? checksPresentation(state.checksReport, state.checksUnavailable)
     : null
 
-  const current = state.presentedSession
   const windowDays = state.settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays
 
   /* ---------------------------------------------------------------------
@@ -262,19 +278,6 @@ export function PopoverView() {
   )
 
   /* ---------------------------------------------------------------------
-   * Session analysis: derived from the session's tagged load result
-   * ------------------------------------------------------------------ */
-
-  const currentKey = current ? sessionKey(current) : null
-  const settledAnalysis = state.analysis?.key === currentKey ? state.analysis : null
-  const sessionPayload = settledAnalysis?.payload ?? null
-  const sessionLoading = current != null && settledAnalysis == null
-  const sessionError = settledAnalysis?.error ?? false
-  // Only a re-load over a settled result is "refreshing"; a first load shows
-  // the skeleton through `loading` instead.
-  const sessionRefreshing = state.analysisRefreshing && settledAnalysis != null
-
-  /* ---------------------------------------------------------------------
    * Attention banners
    * ------------------------------------------------------------------ */
 
@@ -283,58 +286,26 @@ export function PopoverView() {
     storage: state.storage,
   }).filter((banner) => !state.dismissed.includes(banner.id))
 
-  const subjectFor = (entry: SessionListEntry): SessionSubject => {
-    return {
-      agent: entry.agent,
-      sessionId: entry.sessionId ?? "",
-      ...(entry.repo ? { repo: entry.repo } : {}),
-      timestamp: entry.timestamp,
-      wslDistro: entry.wslDistro ?? null,
-      ...(entry.title ? { title: entry.title } : {}),
-    }
-  }
-
   /* ---------------------------------------------------------------------
    * Surfaces
    * ------------------------------------------------------------------ */
 
   function body() {
-    if (surface === "session" && current) {
-      // Traversal only applies to a session that is actually in the list; a
-      // sub-agent or a fork opened from elsewhere has no neighbours.
-      const position = current.subagent
-        ? -1
-        : indexOfSession(
-            state.entries ?? [],
-            current.agent,
-            current.sessionId,
-            current.wslDistro,
-          )
-      const listedEntry = position >= 0 ? state.entries?.[position] : undefined
-      const displaySubject = listedEntry
-        ? {
-            ...current,
-            ...(listedEntry.repo ? { repo: listedEntry.repo } : {}),
-            timestamp: listedEntry.timestamp,
-          }
-        : current
-      const neighbour = (offset: number) => {
-        const entry = position >= 0 ? state.entries?.[position + offset] : undefined
-        if (!entry?.sessionId) return undefined
-        return () => session.replaceTop(subjectFor(entry))
-      }
-
+    const pane = detail === "inline" ? sessionPaneState(state) : null
+    if (pane) {
+      const traverse = (subject: SessionSubject | undefined) =>
+        subject ? () => session.replaceTop(subject) : undefined
       return (
         <Suspense fallback={<SessionPaneLoading />}>
           <SessionPane
-            subject={displaySubject}
-            payload={sessionPayload}
-            loading={sessionLoading}
-            refreshing={sessionRefreshing}
-            error={sessionError}
+            subject={pane.subject}
+            payload={pane.payload}
+            loading={pane.loading}
+            refreshing={pane.refreshing}
+            error={pane.error}
             onBack={session.goBack}
-            onPrev={neighbour(-1)}
-            onNext={neighbour(1)}
+            onPrev={traverse(pane.prev)}
+            onNext={traverse(pane.next)}
             onOpenSession={session.openSession}
             onDeleted={session.sessionDeleted}
           />
@@ -458,7 +429,7 @@ export function PopoverView() {
                   agent: entry.agent,
                   environment: entry.wslDistro ? "wsl" : "native",
                 })
-                session.openSession(subjectFor(entry))
+                session.openSession(subjectForEntry(entry))
               }}
               renderAgentIcon={renderAgentIcon}
               viewportRef={restoreListScroll}
@@ -485,8 +456,10 @@ export function PopoverView() {
     )
   }
 
+  // With the detail aside, the list is the only surface here, so the wrapper
+  // keeps one key and the list is not remounted when a session opens.
   return (
-    <div key={surface} ref={focusHeading} className="h-full">
+    <div key={detail === "inline" ? surface : "activity"} ref={focusHeading} className="h-full">
       {body()}
     </div>
   )

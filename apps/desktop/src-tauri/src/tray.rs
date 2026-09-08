@@ -22,7 +22,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{Manager, Wry};
 
 #[cfg(debug_assertions)]
-use crate::commands;
+use crate::{commands, session_window};
 use crate::{nudges, popover, settings};
 
 const DOT_COUNT: usize = 13;
@@ -97,6 +97,8 @@ const MENU_SETTINGS: &str = "settings";
 const MENU_RESET_ONBOARDING: &str = "reset-onboarding";
 #[cfg(debug_assertions)]
 const MENU_RANDOM_USAGE: &str = "random-usage";
+#[cfg(debug_assertions)]
+const MENU_SESSION_WINDOW: &str = "session-window";
 const MENU_QUIT: &str = "quit";
 
 /// Title case, matching "Quit antiburn" and the platform's own menus.
@@ -110,6 +112,8 @@ const OPEN_LABEL: &str = "Open antiburn";
 const RESET_ONBOARDING_LABEL: &str = "Reset Onboarding";
 #[cfg(debug_assertions)]
 const RANDOM_USAGE_LABEL: &str = "Simulate Random Usage";
+#[cfg(debug_assertions)]
+const SESSION_WINDOW_LABEL: &str = "Session Window…";
 
 /// The tray menu items whose text follows app state.
 ///
@@ -492,6 +496,14 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         false,
         None::<&str>,
     )?;
+    #[cfg(debug_assertions)]
+    let session_window_item = MenuItem::with_id(
+        app,
+        MENU_SESSION_WINDOW,
+        SESSION_WINDOW_LABEL,
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit antiburn", true, None::<&str>)?;
     #[cfg(target_os = "linux")]
@@ -506,6 +518,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         &reset_onboarding_item,
         #[cfg(debug_assertions)]
         &random_usage_item,
+        #[cfg(debug_assertions)]
+        &session_window_item,
         &separator,
         &quit_item,
     ];
@@ -579,6 +593,12 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                 && let Err(error) = menu.random_usage.set_checked(enabled)
             {
                 ::tracing::warn!(event = "tray_random_usage_relabel_failed", enabled, error = %error);
+            }
+        }
+        #[cfg(debug_assertions)]
+        MENU_SESSION_WINDOW => {
+            if let Err(error) = session_window::open(app) {
+                ::tracing::error!(event = "session_window_open_failed", error = %error);
             }
         }
         MENU_QUIT => {

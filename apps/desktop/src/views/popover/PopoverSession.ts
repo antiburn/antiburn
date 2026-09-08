@@ -156,6 +156,71 @@ export function sessionKey(subject: SessionSubject): string {
     : localSessionKey(subject.agent, subject.sessionId, subject.wslDistro)
 }
 
+/** The subject a row of the activity list opens. */
+export function subjectForEntry(entry: SessionListEntry): SessionSubject {
+  return {
+    agent: entry.agent,
+    sessionId: entry.sessionId ?? "",
+    ...(entry.repo ? { repo: entry.repo } : {}),
+    timestamp: entry.timestamp,
+    wslDistro: entry.wslDistro ?? null,
+    ...(entry.title ? { title: entry.title } : {}),
+  }
+}
+
+/** What a session pane needs from one snapshot. */
+export interface SessionPaneState {
+  subject: SessionSubject
+  payload: SessionAnalysisPayload | null
+  loading: boolean
+  refreshing: boolean
+  error: boolean
+  /** The newer neighbour in the list, when the subject is listed. */
+  prev: SessionSubject | undefined
+  /** The older neighbour in the list, when the subject is listed. */
+  next: SessionSubject | undefined
+}
+
+/**
+ * Derive the session pane's props from a snapshot.
+ *
+ * Returns null while the activity list is the presented surface. The popover
+ * and the session window both read this, so the two hosts agree on what
+ * "loading" and "refreshing" mean.
+ */
+export function sessionPaneState(state: PopoverSnapshot): SessionPaneState | null {
+  const current = state.presentedSurface === "session" ? state.presentedSession : null
+  if (!current) return null
+  const settled = state.analysis?.key === sessionKey(current) ? state.analysis : null
+  // Traversal only applies to a session that is in the list; a sub-agent or a
+  // fork opened from elsewhere has no neighbours.
+  const position = current.subagent
+    ? -1
+    : indexOfSession(state.entries ?? [], current.agent, current.sessionId, current.wslDistro)
+  const listed = position >= 0 ? state.entries?.[position] : undefined
+  const neighbour = (offset: number): SessionSubject | undefined => {
+    const entry = position >= 0 ? state.entries?.[position + offset] : undefined
+    return entry?.sessionId ? subjectForEntry(entry) : undefined
+  }
+  return {
+    subject: listed
+      ? {
+          ...current,
+          ...(listed.repo ? { repo: listed.repo } : {}),
+          timestamp: listed.timestamp,
+        }
+      : current,
+    payload: settled?.payload ?? null,
+    loading: settled == null,
+    // Only a re-load over a settled result is "refreshing"; a first load
+    // shows the skeleton through `loading` instead.
+    refreshing: state.analysisRefreshing && settled != null,
+    error: settled?.error ?? false,
+    prev: neighbour(-1),
+    next: neighbour(1),
+  }
+}
+
 /** Load one subject's analysis. Sub-agents come from their own command. */
 async function loadAnalysis(subject: SessionSubject): Promise<SessionAnalysisPayload | null> {
   if (subject.subagent) {
@@ -238,7 +303,21 @@ function repositoryStatus(status: string): LocalRepositoryStatus {
   }
 }
 
+/** Which window hosts a `PopoverSession`. */
+export type PopoverShell = "popover" | "window"
+
+export interface PopoverSessionOptions {
+  /**
+   * The window the session runs in. `"window"` is the debug session window
+   * (`views/SessionWindowView.tsx`). It is an ordinary window: it has no
+   * popover height to sync, no popover to hide on Escape, and no shown or
+   * hidden signal of its own, so the session skips those three there.
+   */
+  shell?: PopoverShell | undefined
+}
+
 export class PopoverSession {
+  private readonly shell: PopoverShell
   private listeners = new Set<() => void>()
   private started = false
   private generation = 0
@@ -348,6 +427,10 @@ export class PopoverSession {
     now: Date.now(),
   }
 
+  constructor(options: PopoverSessionOptions = {}) {
+    this.shell = options.shell ?? "popover"
+  }
+
   getSnapshot = (): PopoverSnapshot => this.snapshot
 
   subscribe = (listener: () => void): (() => void) => {
@@ -448,7 +531,9 @@ export class PopoverSession {
     void this.startChecks(generation)
     void this.listenStorageHealth(generation)
     void this.listenScanEvent(generation)
-    void this.startPopoverVisibility(generation)
+    // The session window never hears `popover:shown`; it is visible from the
+    // start and stays that way until it closes.
+    if (this.shell === "popover") void this.startPopoverVisibility(generation)
     void this.listenLiveUsage(generation)
 
     // ⌘, opens Settings — the platform's standard preferences shortcut, which
@@ -910,8 +995,9 @@ export class PopoverSession {
       // A surface with something nearer to close — an open provider panel —
       // claims the key by calling `preventDefault`. Anything left over
       // dismisses the popover, which is the keyboard's only way out of a tray
-      // window.
-      if (event.defaultPrevented) return
+      // window. The session window has a close button, so Escape does
+      // nothing there.
+      if (event.defaultPrevented || this.shell === "window") return
       void hidePopover().catch(() => {})
       return
     }
@@ -1225,6 +1311,11 @@ export class PopoverSession {
   private syncHeight(): void {
     const surface = this.surface()
     const presentedSession = surface === "session" ? (this.snapshot.stack.at(-1) ?? null) : null
+    if (this.shell === "window") {
+      // The session window keeps its own size, so there is nothing to wait for.
+      this.update({ presentedSurface: surface, presentedSession })
+      return
+    }
     const targetHeight = popoverHeightFor(surface)
     const token = ++this.resizeToken
 

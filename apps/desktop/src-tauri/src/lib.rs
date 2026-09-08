@@ -77,6 +77,8 @@ mod retention;
 mod runtime_pricing;
 mod runtime_pricing_config;
 mod scan;
+#[cfg(debug_assertions)]
+mod session_window;
 mod settings;
 mod startup_registration;
 mod storage_health;

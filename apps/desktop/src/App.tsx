@@ -15,6 +15,13 @@ const HudDetailView = lazy(() =>
 const PopoverPeekView = lazy(() =>
   import("./views/PopoverPeekView").then(({ PopoverPeekView: view }) => ({ default: view })),
 )
+// Debug builds only open this window, so its code stays out of the popover's
+// initial chunk.
+const SessionWindowView = lazy(() =>
+  import("./views/SessionWindowView").then(({ SessionWindowView: view }) => ({
+    default: view,
+  })),
+)
 
 function RouteLoading() {
   return <div className="h-full" aria-busy="true" data-testid="route-loading" />
@@ -41,6 +48,13 @@ export function App() {
     return (
       <Suspense fallback={<RouteLoading />}>
         <PopoverPeekView />
+      </Suspense>
+    )
+  }
+  if (route === "session-window") {
+    return (
+      <Suspense fallback={<RouteLoading />}>
+        <SessionWindowView />
       </Suspense>
     )
   }

@@ -6,7 +6,14 @@ import { useSyncExternalStore } from "react"
  * windows use dedicated entries and pass their route directly.
  */
 export type Route =
-  "popover" | "popover-peek" | "settings" | "nudge" | "onboarding" | "overlay" | "hud-detail"
+  | "popover"
+  | "popover-peek"
+  | "settings"
+  | "nudge"
+  | "onboarding"
+  | "overlay"
+  | "hud-detail"
+  | "session-window"
 
 type ShellRoute = Exclude<Route, "settings" | "onboarding">
 
@@ -19,6 +26,12 @@ export const OVERLAY_FRAGMENT = "#/overlay"
 /** Fixed fragment for the resident passive popover companion. */
 export const POPOVER_PEEK_FRAGMENT = "#/popover-peek"
 
+/**
+ * Fragment the debug-only session window opens with. See
+ * `src-tauri/src/session_window.rs`; release builds never open it.
+ */
+export const SESSION_WINDOW_FRAGMENT = "#/session-window"
+
 // A Map, not a plain object: the fragment is outside input, and an object
 // index would resolve inherited names ("constructor") to functions rather
 // than falling back to the popover.
@@ -27,6 +40,7 @@ const ROUTES = new Map<string, ShellRoute>([
   ["overlay", "overlay"],
   ["hud-detail", "hud-detail"],
   ["popover-peek", "popover-peek"],
+  ["session-window", "session-window"],
 ])
 
 export function routeFromHash(hash: string): ShellRoute {

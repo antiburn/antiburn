@@ -82,6 +82,13 @@ describe("App", () => {
     ).not.toBeInTheDocument()
   })
 
+  it("renders the list beside an empty detail column for the session-window fragment", async () => {
+    window.location.hash = "#/session-window"
+    render(<App />)
+    expect(await screen.findByText("Select a session")).toBeInTheDocument()
+    expect(await screen.findByRole("button", { name: "antiburn v0.1.0" })).toBeInTheDocument()
+  })
+
   it("renders the floating HUD for the overlay fragment", async () => {
     window.location.hash = "#/overlay"
     render(<App />)
