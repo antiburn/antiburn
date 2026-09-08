@@ -593,6 +593,13 @@ async fn refresh_sessions_locked(
     )?;
     if persisted {
         super::wake_session_workers(app);
+        super::report_indexed(
+            app,
+            now,
+            &described.records,
+            &described.changed,
+            &previous_map,
+        );
     }
     super::announce_changed_rows(&store, &described.changed, &previous_map, now, &announce);
     for key in &described.rejected {

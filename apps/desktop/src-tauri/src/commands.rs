@@ -314,6 +314,14 @@ pub fn get_latest_session_activity(app: tauri::AppHandle) -> Option<i64> {
     crate::hud::latest_session_activity(&app.state::<Store>())
 }
 
+/// Every session inside the active window, most recent first. This is the
+/// snapshot a reader takes before it subscribes to lifecycle events.
+#[tauri::command]
+pub fn get_live_sessions(app: tauri::AppHandle) -> Vec<crate::session_lifecycle::LiveSession> {
+    app.state::<crate::session_lifecycle::SessionEvents>()
+        .live_sessions()
+}
+
 /// Where the app came from and what it is running against.
 #[tauri::command]
 pub fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
