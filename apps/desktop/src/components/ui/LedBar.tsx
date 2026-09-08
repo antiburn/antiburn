@@ -1,5 +1,7 @@
 import type { CSSProperties } from "react"
 
+import { ledBlinkStep } from "../../lib/ledBlink"
+
 /**
  * Render an LED-style bar with fixed circular segments.
  *
@@ -11,19 +13,24 @@ import type { CSSProperties } from "react"
  * `blinkLast` marks a live session on the last lit segment, or on the first
  * segment when usage is too low to light one. The blink shows the brand tint
  * as its on state and the segment's resting colour as its off state, so
- * "live" reads as its own fact and not as a shorter bar.
+ * "live" reads as its own fact and not as a shorter bar. `blinkStep` is the
+ * bar's row within its provider: each row turns on 250 ms after the one
+ * above it, and all rows turn off together.
  */
 export function LedBar({
   split,
   segments = 40,
   className = "",
   blinkLast = false,
+  blinkStep = 0,
   expectedFraction = null,
 }: {
   split: Array<{ fraction: number; color: string }>
   segments?: number
   className?: string
   blinkLast?: boolean
+  /** The bar's row within its provider, for the blink stagger. */
+  blinkStep?: number
   /** Elapsed share of the window's period, 0-1, or null when unknown. */
   expectedFraction?: number | null
 }) {
@@ -51,6 +58,7 @@ export function LedBar({
         return (
           <span
             key={index}
+            data-led-step={blinking ? ledBlinkStep(blinkStep) : undefined}
             className={`h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "" : "bg-led-off"} ${blinking ? "led-blink" : ""}`.trimEnd()}
             style={
               blinking

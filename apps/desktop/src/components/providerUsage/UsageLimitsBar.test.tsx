@@ -166,22 +166,49 @@ describe("UsageLimitsBar — the ring row", () => {
 })
 
 describe("UsageLimitsBar — the live blink", () => {
-  it("blinks one segment of the first meter while a session is live", () => {
-    bar({ sessionLive: true, expanded: true })
+  const twoProviders = () =>
+    liveSummary({
+      providers: [
+        liveProvider({
+          windows: [
+            liveWindow(),
+            liveWindow({ id: "seven-day", role: "primaryLong" }),
+            liveWindow({ id: "seven-day-fable", role: "other", scopeModel: "fable" }),
+          ],
+        }),
+        liveProvider({ provider: "openai", displayName: "OpenAI" }),
+      ],
+    })
+
+  it("blinks every meter of the live provider, one step apart from the top", () => {
+    bar({ live: twoProviders(), liveProviders: ["anthropic"], expanded: true })
     const region = screen.getByRole("region", { name: "Usage limits" })
-    const blinking = region.querySelectorAll(".led-blink")
-    expect(blinking).toHaveLength(1)
-    // The first provider group holds the blinking segment.
+    const blinking = Array.from(region.querySelectorAll<HTMLElement>(".led-blink"))
+    expect(blinking).toHaveLength(3)
+    expect(blinking.map((node) => node.dataset["ledStep"])).toEqual([undefined, "1", "2"])
+    // The live provider's group holds them all; the other provider stays dark.
     const groups = within(region).getAllByRole("group")
-    expect(groups[0]?.contains(blinking[0]!)).toBe(true)
+    expect(blinking.every((node) => groups[0]?.contains(node))).toBe(true)
+    expect(groups[1]?.querySelector(".led-blink")).toBeNull()
   })
 
-  it("blinks the first ring of the closed bar", () => {
-    const { container } = bar({ sessionLive: true, expanded: false })
+  it("blinks the ring of each live provider on the closed bar", () => {
+    const { container } = bar({
+      live: twoProviders(),
+      liveProviders: ["openai"],
+      expanded: false,
+    })
     const blinking = container.querySelectorAll(".led-blink")
     expect(blinking).toHaveLength(1)
     expect(blinking[0]).toHaveAttribute("data-testid", "usage-ring-blink")
-    expect(screen.getAllByRole("img")[0]?.contains(blinking[0]!)).toBe(true)
+    const rings = screen.getAllByRole("img")
+    expect(rings[0]?.contains(blinking[0]!)).toBe(false)
+    expect(rings[1]?.contains(blinking[0]!)).toBe(true)
+  })
+
+  it("keeps the bar dark while the live session draws on a provider it does not show", () => {
+    const { container } = bar({ liveProviders: ["google"], expanded: false })
+    expect(container.querySelector(".led-blink")).toBeNull()
   })
 
   it("does not blink the rings without a live session", () => {

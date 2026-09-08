@@ -10,6 +10,8 @@ import {
 
 export type UsageBarItem = {
   key: string
+  /** The provider slug the window belongs to, for the live blink. */
+  provider: string
   label: string
   percent: number
   resetsAt: Date | null
@@ -112,6 +114,7 @@ export function deriveUsageBars(response: LiveUsageSummaryPayload | null): Usage
   return withBars.flatMap((group) =>
     group.windows.map((window) => ({
       key: `${group.provider.provider}-${window.id}`,
+      provider: group.provider.provider,
       label: multiProvider
         ? `${group.provider.displayName} · ${liveWindowLabel(window)}`
         : liveWindowLabel(window),

@@ -1,4 +1,9 @@
-import type { LiveSessionPayload, SessionLifecycleEvent, SessionRefPayload } from "./ipc"
+import type {
+  LiveSessionPayload,
+  LiveUsageProvider,
+  SessionLifecycleEvent,
+  SessionRefPayload,
+} from "./ipc"
 
 /**
  * How long agent-level activity with no session counts as live, in
@@ -8,19 +13,31 @@ import type { LiveSessionPayload, SessionLifecycleEvent, SessionRefPayload } fro
  */
 const LIVE_WINDOW_MS = 180_000
 
-/** What a surface knows about live sessions, from the bus. */
-export interface Liveness {
-  /** The sessions the bus says are live, by `liveSessionKey`. */
-  keys: ReadonlySet<string>
-  /**
-   * When agent-level activity with no session stops counting, as epoch
-   * milliseconds, or `null` when there is none. A write under an agent's
-   * root that the store has not indexed yet reaches here.
-   */
-  anonymousUntil: number | null
+/**
+ * The provider whose limits an agent draws down, by agent slug. Mirrors the
+ * fixed routes in `src-tauri/src/provider_usage/providers.rs`, kept to the
+ * providers the limits surfaces can show. An agent with no entry has no
+ * meter on screen to blink.
+ */
+const AGENT_PROVIDERS: Readonly<Record<string, LiveUsageProvider>> = {
+  "claude-code": "anthropic",
+  codex: "openai",
+  antigravity: "google",
 }
 
-export const IDLE_LIVENESS: Liveness = { keys: new Set(), anonymousUntil: null }
+/** What a surface knows about live sessions, from the bus. */
+export interface Liveness {
+  /** The sessions the bus says are live, by `liveSessionKey`, with their agent slug. */
+  keys: ReadonlyMap<string, string>
+  /**
+   * When agent-level activity with no session stops counting, as epoch
+   * milliseconds, by agent slug. A write under an agent's root that the
+   * store has not indexed yet reaches here.
+   */
+  anonymousUntil: ReadonlyMap<string, number>
+}
+
+export const IDLE_LIVENESS: Liveness = { keys: new Map(), anonymousUntil: new Map() }
 
 function liveSessionKey(session: SessionRefPayload): string {
   return JSON.stringify([session.environmentKey, session.agent, session.sessionId])
@@ -32,7 +49,7 @@ export function livenessFromSnapshot(
   previous: Liveness = IDLE_LIVENESS,
 ): Liveness {
   return {
-    keys: new Set(sessions.map(({ session }) => liveSessionKey(session))),
+    keys: new Map(sessions.map(({ session, agent }) => [liveSessionKey(session), agent])),
     anonymousUntil: previous.anonymousUntil,
   }
 }
@@ -41,42 +58,66 @@ export function livenessFromSnapshot(
 export function applyLifecycleEvent(state: Liveness, event: SessionLifecycleEvent): Liveness {
   switch (event.kind) {
     case "started":
-      return withKey(state, liveSessionKey(event.session))
+      return withKey(state, liveSessionKey(event.session), event.agent)
     case "activity": {
-      if (event.session) return withKey(state, liveSessionKey(event.session))
+      if (event.session) return withKey(state, liveSessionKey(event.session), event.agent)
       const until = event.at * 1000 + LIVE_WINDOW_MS
-      return {
-        keys: state.keys,
-        anonymousUntil: Math.max(state.anonymousUntil ?? 0, until),
-      }
+      const anonymousUntil = new Map(state.anonymousUntil)
+      anonymousUntil.set(event.agent, Math.max(anonymousUntil.get(event.agent) ?? 0, until))
+      return { keys: state.keys, anonymousUntil }
     }
     case "idle": {
       const key = liveSessionKey(event.session)
       if (!state.keys.has(key)) return state
-      const keys = new Set(state.keys)
+      const keys = new Map(state.keys)
       keys.delete(key)
       return { keys, anonymousUntil: state.anonymousUntil }
     }
   }
 }
 
-function withKey(state: Liveness, key: string): Liveness {
-  if (state.keys.has(key)) return state
-  return { keys: new Set(state.keys).add(key), anonymousUntil: state.anonymousUntil }
+function withKey(state: Liveness, key: string, agent: string): Liveness {
+  if (state.keys.get(key) === agent) return state
+  return { keys: new Map(state.keys).set(key, agent), anonymousUntil: state.anonymousUntil }
+}
+
+/** The agent slugs with a live session at `now` (epoch milliseconds). */
+function liveAgents(state: Liveness, now: number): Set<string> {
+  const agents = new Set(state.keys.values())
+  for (const [agent, until] of state.anonymousUntil) {
+    if (until > now) agents.add(agent)
+  }
+  return agents
 }
 
 /** True while any session is live at `now` (epoch milliseconds). */
 export function isLive(state: Liveness, now: number): boolean {
-  return state.keys.size > 0 || (state.anonymousUntil != null && state.anonymousUntil > now)
+  return liveAgents(state, now).size > 0
 }
 
 /**
- * The instant `isLive` turns false on its own, as epoch milliseconds, or
- * `null` when nothing expires locally: a keyed session ends with an `idle`
- * event, not a timer.
+ * The providers a live session draws on at `now`, sorted. A live agent
+ * with no provider on the limits surfaces contributes nothing here, but it
+ * still counts for `isLive`.
+ */
+export function liveProviders(state: Liveness, now: number): LiveUsageProvider[] {
+  const providers = new Set<LiveUsageProvider>()
+  for (const agent of liveAgents(state, now)) {
+    const provider = AGENT_PROVIDERS[agent]
+    if (provider) providers.add(provider)
+  }
+  return [...providers].sort()
+}
+
+/**
+ * The next instant the live set changes on its own, as epoch milliseconds,
+ * or `null` when nothing expires locally: a keyed session ends with an
+ * `idle` event, not a timer.
  */
 export function livenessExpiry(state: Liveness, now: number): number | null {
-  if (state.keys.size > 0) return null
-  if (state.anonymousUntil != null && state.anonymousUntil > now) return state.anonymousUntil
-  return null
+  let next: number | null = null
+  for (const until of state.anonymousUntil.values()) {
+    if (until > now && (next == null || until < next)) next = until
+  }
+  return next
 }

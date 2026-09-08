@@ -3,9 +3,24 @@ import { useCallback, useState, useSyncExternalStore } from "react"
 import { X } from "lucide-react"
 
 import { LedBar } from "../components/ui/LedBar"
+import type { UsageBarItem } from "../lib/usageBars"
 import { OverlaySession } from "./overlay/OverlaySession"
 
 const HUD_SEGMENTS = 20
+
+/**
+ * The bar's row within its provider's run of bars. The bars of one provider
+ * sit together, so the count of bars above it with the same provider is
+ * its row.
+ */
+function providerRow(bars: readonly UsageBarItem[], index: number): number {
+  const provider = bars[index]!.provider
+  let row = 0
+  for (let above = 0; above < index; above += 1) {
+    if (bars[above]!.provider === provider) row += 1
+  }
+  return row
+}
 
 /** Render the content-sized usage HUD. The detail window owns the full stats. */
 export function OverlayWindow() {
@@ -59,7 +74,8 @@ export function OverlayWindow() {
                 key={bar.key}
                 segments={HUD_SEGMENTS}
                 split={[{ fraction: bar.percent / 100, color: bar.color }]}
-                blinkLast={state.sessionLive && index === 0}
+                blinkLast={state.liveProviders.includes(bar.provider)}
+                blinkStep={providerRow(state.bars, index)}
                 expectedFraction={bar.expectedFraction}
               />
             ))}

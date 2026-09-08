@@ -61,11 +61,11 @@ export interface UsageLimitsBarProps {
     activation: Exclude<AnchoredTriggerActivation, "idle">
   } | null
   /**
-   * Whether a session is live. The first provider then blinks, the way the
-   * HUD's first bar blinks: its ring's next eighth on the closed bar, its
-   * first meter's next segment on the open one.
+   * The providers a live session draws on. Each of them blinks, the way the
+   * HUD's bars blink: its ring's next eighth on the closed bar, and every
+   * meter's next segment on the open one, from the top down.
    */
-  sessionLive?: boolean
+  liveProviders?: readonly string[]
 }
 
 /**
@@ -92,7 +92,7 @@ export function UsageLimitsBar({
   refreshing,
   onHoverProvider,
   activeProvider,
-  sessionLive = false,
+  liveProviders = [],
 }: UsageLimitsBarProps) {
   const limited = orderedLiveAccounts(liveDisplayableProviders(live)).filter(
     ({ reading }) => liveWindows(reading).length > 0,
@@ -127,14 +127,14 @@ export function UsageLimitsBar({
       {!expanded && (
         <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            {limited.map(({ reading, key }, index) => (
+            {limited.map(({ reading, key }) => (
               <ProviderRadial
                 key={key}
                 provider={reading}
                 displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
                 status={liveProviderStatus(live, reading)}
                 onHover={onHoverProvider}
-                blink={sessionLive && index === 0}
+                blink={liveProviders.includes(reading.provider)}
                 activation={
                   activeProvider?.provider === reading.provider
                     ? activeProvider.activation
@@ -168,7 +168,7 @@ export function UsageLimitsBar({
               status={liveProviderStatus(live, reading)}
               now={at}
               action={index === 0 ? disclosure(true) : undefined}
-              blink={sessionLive && index === 0}
+              blink={liveProviders.includes(reading.provider)}
               activation={
                 activeProvider?.provider === reading.provider ? activeProvider.activation : null
               }
@@ -280,7 +280,7 @@ function ProviderGroup({
   now: number
   /** The disclosure, on the topmost group only. */
   action?: ReactNode
-  /** Blink the first meter for a live session, on the topmost group only. */
+  /** Blink every meter for a live session on this provider, from the top down. */
   blink?: boolean
   onHover?: (provider: string | null, anchor: AnchorRegion | null) => void
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
@@ -321,7 +321,8 @@ function ProviderGroup({
             window={window}
             now={now}
             resetOnHover
-            blink={blink && index === 0}
+            blink={blink}
+            blinkStep={index}
           />
         ))}
       </div>
@@ -464,6 +465,7 @@ function WindowMeterRow({
   now,
   resetOnHover = false,
   blink = false,
+  blinkStep = 0,
 }: {
   window: LiveUsageWindowPayload
   /** The instant the elapsed notch is measured from. */
@@ -478,6 +480,8 @@ function WindowMeterRow({
   resetOnHover?: boolean
   /** Blink the next segment to light while a session is live. */
   blink?: boolean
+  /** The row's place under its provider, for the blink stagger. */
+  blinkStep?: number
 }) {
   const percent = window.usedPercent
   return (
@@ -510,6 +514,7 @@ function WindowMeterRow({
         percent={percent ?? null}
         expectedFraction={liveWindowElapsed(window, now)}
         blinkNext={blink}
+        blinkStep={blinkStep}
       />
     </div>
   )

@@ -62,6 +62,7 @@ import {
   isLive,
   livenessExpiry,
   livenessFromSnapshot,
+  liveProviders,
   type Liveness,
 } from "../../lib/sessionLiveness"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
@@ -106,6 +107,8 @@ export interface PopoverSnapshot {
   liveUsage: LiveUsageSummaryPayload
   /** Whether a session is live, from the shell's lifecycle bus. */
   sessionLive: boolean
+  /** The providers a live session draws on, sorted. Their meters blink. */
+  liveProviders: readonly string[]
   sessionLimitAllocations: SessionLimitAllocationSummaryPayload
   /** Whether a `refreshUsage` call is in flight, for the limits section's spinner. */
   usageRefreshing: boolean
@@ -354,6 +357,7 @@ export class PopoverSession {
     usage: null,
     liveUsage: EMPTY_LIVE_USAGE,
     sessionLive: false,
+    liveProviders: [],
     sessionLimitAllocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
     usageRefreshing: false,
     checksReport: null,
@@ -895,7 +899,13 @@ export class PopoverSession {
     this.clearLivenessExpiry()
     const now = Date.now()
     const sessionLive = isLive(next, now)
-    if (sessionLive !== this.snapshot.sessionLive) this.update({ sessionLive })
+    const providers = liveProviders(next, now)
+    if (
+      sessionLive !== this.snapshot.sessionLive ||
+      !sameList(providers, this.snapshot.liveProviders)
+    ) {
+      this.update({ sessionLive, liveProviders: providers })
+    }
     const expiresAt = livenessExpiry(next, now)
     if (expiresAt == null) return
     this.livenessExpiry = window.setTimeout(
@@ -1389,4 +1399,8 @@ export class PopoverSession {
       payload.models.length > 0
     return hasData ? "ready" : "empty"
   }
+}
+
+function sameList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index])
 }

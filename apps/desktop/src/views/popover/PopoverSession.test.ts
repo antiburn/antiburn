@@ -779,12 +779,15 @@ describe("PopoverSession live sessions", () => {
     await vi.waitFor(() => expect(lifecycleHandler).not.toBeNull())
     await vi.waitFor(() => expect(getLiveSessions).toHaveBeenCalledTimes(1))
     expect(session.getSnapshot().sessionLive).toBe(false)
+    expect(session.getSnapshot().liveProviders).toEqual([])
 
     lifecycleHandler?.({ kind: "activity", session: ref, agent: "claude-code", at: 1 })
     expect(session.getSnapshot().sessionLive).toBe(true)
+    expect(session.getSnapshot().liveProviders).toEqual(["anthropic"])
 
     lifecycleHandler?.({ kind: "idle", session: ref, agent: "claude-code", at: 2 })
     expect(session.getSnapshot().sessionLive).toBe(false)
+    expect(session.getSnapshot().liveProviders).toEqual([])
 
     unsubscribe()
     expect(lifecycleHandler).toBeNull()
@@ -798,6 +801,7 @@ describe("PopoverSession live sessions", () => {
     const unsubscribe = session.subscribe(() => undefined)
 
     await vi.waitFor(() => expect(session.getSnapshot().sessionLive).toBe(true))
+    expect(session.getSnapshot().liveProviders).toEqual(["anthropic"])
     unsubscribe()
   })
 

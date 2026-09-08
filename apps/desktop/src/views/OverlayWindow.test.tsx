@@ -226,10 +226,10 @@ async function advance(ms: number) {
 
 const SESSION_REF = { environmentKey: "native", agent: "claude-code", sessionId: "session-1" }
 
-function liveSession(sessionId = "session-1") {
+function liveSession(sessionId = "session-1", agent = "claude-code") {
   return {
-    session: { ...SESSION_REF, sessionId },
-    agent: "claude-code",
+    session: { ...SESSION_REF, agent, sessionId },
+    agent,
     lastActivityAt: Math.floor(Date.now() / 1000),
   }
 }
@@ -525,6 +525,28 @@ describe("OverlayWindow", () => {
     expect(dots).toHaveLength(20)
     expect(dots[0]).toHaveClass("led-blink")
     expect(container.querySelectorAll(".led-blink")).toHaveLength(1)
+  })
+
+  it("blinks every bar of the live provider, one step apart from the top", async () => {
+    getLiveUsage.mockResolvedValue(withSecondBar())
+    getLiveSessions.mockResolvedValue([liveSession()])
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(container.querySelectorAll(".led-blink")).toHaveLength(2))
+    const [first, second] = Array.from(container.querySelectorAll<HTMLElement>(".led-blink"))
+    expect(first?.dataset["ledStep"]).toBeUndefined()
+    expect(second?.dataset["ledStep"]).toBe("1")
+  })
+
+  it("keeps the bars dark while the live session draws on another provider", async () => {
+    getLiveSessions.mockResolvedValue([liveSession("session-1", "cursor")])
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(getLiveSessions).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(container.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20),
+    )
+    expect(container.querySelector(".led-blink")).toBeNull()
   })
 
   it("keeps a low-usage bar dark without a live session", async () => {

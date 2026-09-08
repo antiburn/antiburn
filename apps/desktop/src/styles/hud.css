@@ -152,8 +152,135 @@ body[data-transparent-window] #root {
   animation: led-blink 3s steps(1, end) infinite;
 }
 
+/*
+ * The stagger. A provider's meters turn on from the top down, one row every
+ * 250 ms, and turn off together at the half cycle. `animation-delay` would
+ * move the off edge as well, so each step is its own keyframe set. Five
+ * steps fit inside the 1.5 s on phase; `ledBlinkStep` in
+ * `src/lib/ledBlink.ts` caps the row index to match.
+ */
+.led-blink[data-led-step="1"] {
+  animation-name: led-blink-1;
+}
+
+.led-blink[data-led-step="2"] {
+  animation-name: led-blink-2;
+}
+
+.led-blink[data-led-step="3"] {
+  animation-name: led-blink-3;
+}
+
+.led-blink[data-led-step="4"] {
+  animation-name: led-blink-4;
+}
+
+.led-blink[data-led-step="5"] {
+  animation-name: led-blink-5;
+}
+
 @keyframes led-blink {
   0%,
+  49.9% {
+    background-color: var(--color-brand-tint);
+    stroke: var(--color-brand-tint);
+  }
+
+  50%,
+  100% {
+    background-color: var(--led-rest, var(--color-led-off));
+    stroke: var(--led-rest, var(--color-led-off));
+  }
+}
+
+@keyframes led-blink-1 {
+  0%,
+  8.3% {
+    background-color: var(--led-rest, var(--color-led-off));
+    stroke: var(--led-rest, var(--color-led-off));
+  }
+
+  8.4%,
+  49.9% {
+    background-color: var(--color-brand-tint);
+    stroke: var(--color-brand-tint);
+  }
+
+  50%,
+  100% {
+    background-color: var(--led-rest, var(--color-led-off));
+    stroke: var(--led-rest, var(--color-led-off));
+  }
+}
+
+@keyframes led-blink-2 {
+  0%,
+  16.6% {
+    background-color: var(--led-rest, var(--color-led-off));
+    stroke: var(--led-rest, var(--color-led-off));
+  }
+
+  16.7%,
+  49.9% {
+    background-color: var(--color-brand-tint);
+    stroke: var(--color-brand-tint);
+  }
+
+  50%,
+  100% {
+    background-color: var(--led-rest, var(--color-led-off));
+    stroke: var(--led-rest, var(--color-led-off));
+  }
+}
+
+@keyframes led-blink-3 {
+  0%,
+  24.9% {
+    background-color: var(--led-rest, var(--color-led-off));
+    stroke: var(--led-rest, var(--color-led-off));
+  }
+
+  25%,
+  49.9% {
+    background-color: var(--color-brand-tint);
+    stroke: var(--color-brand-tint);
+  }
+
+  50%,
+  100% {
+    background-color: var(--led-rest, var(--color-led-off));
+    stroke: var(--led-rest, var(--color-led-off));
+  }
+}
+
+@keyframes led-blink-4 {
+  0%,
+  33.3% {
+    background-color: var(--led-rest, var(--color-led-off));
+    stroke: var(--led-rest, var(--color-led-off));
+  }
+
+  33.4%,
+  49.9% {
+    background-color: var(--color-brand-tint);
+    stroke: var(--color-brand-tint);
+  }
+
+  50%,
+  100% {
+    background-color: var(--led-rest, var(--color-led-off));
+    stroke: var(--led-rest, var(--color-led-off));
+  }
+}
+
+@keyframes led-blink-5 {
+  0%,
+  41.6% {
+    background-color: var(--led-rest, var(--color-led-off));
+    stroke: var(--led-rest, var(--color-led-off));
+  }
+
+  41.7%,
   49.9% {
     background-color: var(--color-brand-tint);
     stroke: var(--color-brand-tint);

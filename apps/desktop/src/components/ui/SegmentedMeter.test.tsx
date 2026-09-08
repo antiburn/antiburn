@@ -99,6 +99,17 @@ describe("SegmentedMeter", () => {
     )
   })
 
+  it("marks the blinking segment with its stagger step, capped at the last keyframe set", () => {
+    const { container: first } = render(<SegmentedMeter percent={50} blinkNext />)
+    expect(segments(first)[16]?.dataset["ledStep"]).toBeUndefined()
+    const { container: third } = render(<SegmentedMeter percent={50} blinkNext blinkStep={2} />)
+    expect(segments(third)[16]?.dataset["ledStep"]).toBe("2")
+    const { container: ninth } = render(<SegmentedMeter percent={50} blinkNext blinkStep={8} />)
+    expect(segments(ninth)[16]?.dataset["ledStep"]).toBe("5")
+    const { container: still } = render(<SegmentedMeter percent={50} blinkStep={2} />)
+    expect(still.querySelector("[data-led-step]")).toBeNull()
+  })
+
   it("blinks the first segment at zero and the last at full", () => {
     const { container: zero } = render(<SegmentedMeter percent={0} blinkNext />)
     expect(segments(zero)[0]).toHaveClass("led-blink")

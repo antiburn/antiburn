@@ -239,11 +239,20 @@ Built 2026-09-08, three small departures:
 - The popover meter blinks the *next unlit* segment, not the last lit one: a
   lit meter segment is already the brand tint, so only the segment past the
   reading can alternate (brand on, the zone's track tint off). At zero both
-  rules land on the first segment. Only the first provider blinks: its first
-  meter on the open bar, and on the closed bar its ring, which blinks the
-  next eighth past the arc's end (agreed 2026-09-08, "yeah blink them"). A
-  thirty-second of a 26px ring is two pixels, so the ring's blink is an
-  eighth.
+  rules land on the first segment. On the closed bar a provider's ring
+  blinks the next eighth past the arc's end (agreed 2026-09-08, "yeah blink
+  them"). A thirty-second of a 26px ring is two pixels, so the ring's blink
+  is an eighth.
+- Every meter of the provider a live session draws on blinks, not only the
+  first (agreed 2026-09-08: "flash all the usage quotas/limits that are
+  being effected"). The renderer maps the agent slug to its provider in
+  `sessionLiveness.ts`, mirroring the fixed routes in `providers.rs`, and
+  both snapshots carry `liveProviders` beside `sessionLive`. Within a
+  provider the rows turn on from the top down, 250 ms apart, and turn off
+  together: `hud.css` holds one keyframe set per step, because
+  `animation-delay` would move the off edge too. A live agent with no
+  provider on the limits surfaces (Cursor, Copilot) blinks nothing on the
+  bars; the empty HUD bar still blinks for it.
 - Both renderers re-read `get_live_sessions` on `scan:finished` and
   `sessions:invalidated` (the popover also on show), so a lagged bus reader
   recovers within one pass.

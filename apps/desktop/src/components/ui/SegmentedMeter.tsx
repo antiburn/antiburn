@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react"
 
 import { cn } from "../../lib/cn"
+import { ledBlinkStep } from "../../lib/ledBlink"
 
 /**
  * One colored zone of a meter track. The zone runs from `from` to the start
@@ -93,6 +94,8 @@ function zoneAt(zones: MeterZone[], fraction: number): MeterZone {
  * and dark, but a lit segment here is already the brand color, so the
  * segment past the reading is the one that can alternate: brand on, its
  * zone's track tint off. At zero the two rules meet on the first segment.
+ * `blinkStep` is the meter's row within its provider: each row turns on
+ * 250 ms after the one above it, and all rows turn off together.
  */
 export function SegmentedMeter({
   percent,
@@ -104,6 +107,7 @@ export function SegmentedMeter({
   zones = USAGE_METER_ZONES,
   fillFrom = "start",
   blinkNext = false,
+  blinkStep = 0,
 }: {
   /** Consumed capacity, 0–100, or `null` for no stated figure. */
   percent: number | null
@@ -117,6 +121,8 @@ export function SegmentedMeter({
   fillFrom?: MeterFillFrom
   /** Blink the next segment to light, for a live session. */
   blinkNext?: boolean
+  /** The meter's row within its provider, for the blink stagger. */
+  blinkStep?: number
 }) {
   const clamped = percent == null ? null : Math.min(100, Math.max(0, percent))
   const filled = clamped == null ? 0 : Math.round((clamped / 100) * segments)
@@ -143,6 +149,7 @@ export function SegmentedMeter({
             <span
               key={index}
               data-blinking={blinking || undefined}
+              data-led-step={blinking ? ledBlinkStep(blinkStep) : undefined}
               className={cn(
                 "h-[7px] w-[7px] shrink-0 rounded-full",
                 lit ? zone.fillClassName : zone.trackClassName,
