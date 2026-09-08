@@ -143,21 +143,12 @@ fn usage_band(value: &Value) -> &'static str {
     let Ok(usage) = parse_usage_value(value) else {
         return "unknown";
     };
-    let Some(percent) = usage
+    let percent = usage
         .windows
         .iter()
         .find(|window| matches!(window.role, WindowRole::PrimaryShort))
-        .and_then(|window| window.used_percent)
-    else {
-        return "unknown";
-    };
-    if percent >= 100.0 {
-        "at_limit"
-    } else if percent >= 80.0 {
-        "80_to_under_100"
-    } else {
-        "below_80"
-    }
+        .and_then(|window| window.used_percent);
+    super::model::band_for_percent(percent)
 }
 
 #[cfg(feature = "analytics")]

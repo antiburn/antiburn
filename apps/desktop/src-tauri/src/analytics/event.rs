@@ -61,6 +61,9 @@ pub enum EventName {
     /// A provider state appeared on a visible usage surface.
     #[cfg(feature = "analytics")]
     LiveUsageStateObserved,
+    /// An ordinary live-usage refresh published a changed coarse usage band.
+    #[cfg(feature = "analytics")]
+    UsageObserved,
 }
 
 /// Every event this application may send.
@@ -87,6 +90,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::SettingsPaneViewed,
     EventName::SurfaceStateObserved,
     EventName::LiveUsageStateObserved,
+    EventName::UsageObserved,
 ];
 
 #[cfg(feature = "analytics")]
@@ -107,6 +111,7 @@ impl EventName {
             EventName::SettingsPaneViewed => "antiburn.settings_pane_viewed",
             EventName::SurfaceStateObserved => "antiburn.surface_state_observed",
             EventName::LiveUsageStateObserved => "antiburn.live_usage_state_observed",
+            EventName::UsageObserved => "antiburn.usage_observed",
         }
     }
 }
@@ -546,6 +551,28 @@ wire_values!(LiveUsageProvider, {
 });
 
 #[cfg(feature = "analytics")]
+impl LiveUsageProvider {
+    /// The provider category for a canonical provider id, from
+    /// [`crate::provider_usage::providers`].
+    ///
+    /// `antiburn.usage_observed` reports for the same providers
+    /// `antiburn.live_usage_state_observed` does, so both read this one
+    /// closed mapping rather than keeping two vocabularies in step by hand.
+    /// An id outside the three known providers returns `None`, so a future
+    /// source cannot silently widen what a label can say.
+    pub fn from_provider_id(provider: &str) -> Option<LiveUsageProvider> {
+        match provider {
+            id if id == crate::provider_usage::providers::ANTHROPIC => {
+                Some(LiveUsageProvider::Anthropic)
+            }
+            id if id == crate::provider_usage::providers::OPENAI => Some(LiveUsageProvider::Openai),
+            id if id == crate::provider_usage::providers::GOOGLE => Some(LiveUsageProvider::Google),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "analytics")]
 wire_values!(LiveUsageState, {
     LiveUsageState::Fresh => "fresh",
     LiveUsageState::Stale => "stale",
@@ -791,12 +818,13 @@ mod tests {
                 | EventName::SettingsPaneViewed
                 | EventName::SurfaceStateObserved
                 | EventName::LiveUsageStateObserved
-                | EventName::ClaudeLimitResetObserved => true,
+                | EventName::ClaudeLimitResetObserved
+                | EventName::UsageObserved => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            14,
+            15,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -913,6 +941,30 @@ mod tests {
         assert_eq!(facts.label, Some("google"));
         assert_eq!(facts.detail, Some("rate_limited"));
         assert_eq!(facts.origin, None);
+    }
+
+    /// `usage_observed` reads the same closed vocabulary
+    /// `live_usage_state_observed` does, rather than trusting a new source's
+    /// provider id outright. A provider this build does not recognize maps to
+    /// `None`, so the caller skips it instead of inventing a fourth label.
+    #[test]
+    fn an_unrecognised_provider_id_has_no_usage_observed_label() {
+        assert_eq!(
+            LiveUsageProvider::from_provider_id(crate::provider_usage::providers::ANTHROPIC),
+            Some(LiveUsageProvider::Anthropic)
+        );
+        assert_eq!(
+            LiveUsageProvider::from_provider_id(crate::provider_usage::providers::OPENAI),
+            Some(LiveUsageProvider::Openai)
+        );
+        assert_eq!(
+            LiveUsageProvider::from_provider_id(crate::provider_usage::providers::GOOGLE),
+            Some(LiveUsageProvider::Google)
+        );
+        assert_eq!(
+            LiveUsageProvider::from_provider_id("some-future-provider"),
+            None
+        );
     }
 
     /// The renderer cannot invent a value. This is the whole reason the IPC

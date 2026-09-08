@@ -1,10 +1,11 @@
 # Anonymised analytics
 
 antiburn sends anonymised product events — which features get used, what
-breaks, and a coarse diagnostic of Claude's session-limit reset. This document is the complete account of
-that: every field, every event, what is deliberately excluded, what antiburn
-cannot promise, and how to verify all of it yourself without trusting this
-page.
+breaks, a coarse diagnostic of Claude's session-limit reset, and how close a
+connected provider's own usage windows run to their limit. This document is
+the complete account of that: every field, every event, what is deliberately
+excluded, what antiburn cannot promise, and how to verify all of it yourself
+without trusting this page.
 
 Official release builds start with analytics on. This includes the launch and
 fixed onboarding-step events. The first-run Ready screen explains the channel,
@@ -45,9 +46,9 @@ be put.
 | `properties.arch`    | CPU architecture.                                                                                                                                          | `aarch64`                 |
 | `properties.bucket`  | A count rounded into a range. Never exact.                                                                                                                 | `10-49`                   |
 | `properties.label`   | A key from a closed vocabulary — which surface, Settings pane, provider, setting, agent category, or failure category. Never work content or a user-selected value. | `activity`                |
-| `properties.detail`  | A second value from a closed vocabulary, such as a visible state, `user` or `automatic` origin, or `native` versus `wsl`.                                   | `ready`                   |
+| `properties.detail`  | A second value from a closed vocabulary, such as a visible state, `user` or `automatic` origin, `native` versus `wsl`, or a usage window's `short` or `long` role. | `ready`                   |
 | `properties.origin`  | Whether a state appeared after a `user` or `automatic` exposure. Optional and present only on `antiburn.surface_state_observed`.                             | `user`                    |
-| `properties.usageBand` | Claude's five-hour usage from the same reset-check response: `below_80`, `80_to_under_100`, `at_limit`, or `unknown`. | `80_to_under_100` |
+| `properties.usageBand` | How close a usage window runs to its limit: `below_80`, `80_to_under_100`, `at_limit`, or `unknown`. On the Claude reset event, Claude's five-hour usage from the same reset-check response; on `antiburn.usage_observed`, the window named by `detail`. | `80_to_under_100` |
 | `properties.responseShape` | Whether `juniper_tide` was an `object`, `missing`, `null`, or `malformed`; also `invalid_json`, `malformed_envelope`, `not_received`, `unreadable`, or `not_requested` for request and envelope outcomes. | `object` |
 | `properties.eligibility` | Claude's `eligible` boolean as `eligible` or `ineligible`, or `missing`, `null`, or `malformed`. | `eligible` |
 | `properties.ineligibleReason` | An allowlisted Claude reason: `tier`, `tenure`, `surface`, `mobile`, `cli_version`, `not_at_wall`, `weekly_limit`, `no_weekly_limit`, `other_experiment`, `extra_usage`, `unavailable`, `unknown`, or `other`; also `missing`, `null`, or `malformed`. | `not_at_wall` |
@@ -88,11 +89,13 @@ antiburn knows how to read. Nothing else about the session travels with it: not
 its title, not its repository, not its path, and not the name of your WSL
 distribution, which you chose and which would identify your machine.
 
-`antiburn.live_usage_state_observed` carries one of three provider categories:
-`anthropic`, `openai`, or `google`. The Claude reset event also reveals that
-Claude is enabled. These are the only analytics fields that identify an agent or
-provider category. If that is more than you want to share, the switch turns all
-analytics off.
+`antiburn.live_usage_state_observed` and `antiburn.usage_observed` each carry
+one of three provider categories: `anthropic`, `openai`, or `google`. The
+Claude reset event reveals that Claude is enabled; `usage_observed` reveals
+more broadly which of the three providers are enabled and visible, since it
+fires for whichever ones an ordinary refresh publishes a reading for. These
+are the only analytics fields that identify an agent or provider category. If
+that is more than you want to share, the switch turns all analytics off.
 
 ### Why counts are bucketed
 
@@ -133,6 +136,7 @@ Event names are namespaced `antiburn.*`.
 | `antiburn.error_occurred`      | A full discovery pass fails, and the previous full pass had not already reported the same failure.                                                                                                          | `label` — a category, currently `scan_failed`. No message, no path, no backtrace.                                                                                                                           |
 | `antiburn.unrecognized_records_observed` | Settings → Insights returns a cohort containing unknown record vocabulary, and its outcome differs from the last one reported during this run. | `bucket` — sessions containing unknown types. `label` — `inert_only`, `inert_capped`, or `evidence_bearing`. No discriminator, payload, session identifier, or second dimension. |
 | `antiburn.claude_limit_reset_observed` | After an ordinary Claude usage refresh, when analytics and Claude live usage are both enabled and the observation differs from the last one queued during this run. The probe uses a separate five-minute cooldown. | `label` — `success`, `authentication`, `rateLimited`, `unavailable`, `credential_absent`, `credential_expired`, or `credential_unavailable`. The nine reset fields listed above. No response body, credential, account identifier, exact usage percentage, or date. |
+| `antiburn.usage_observed`      | An ordinary live-usage refresh — a background tick or a visible one — publishes a usage window for a provider that is online and not hidden. Reports the first observation for each `(provider, window role)` pair in a run, then only when that pair's band changes. A provider that fails this pass has no window to report and its last reported band is left alone. Reveals which providers are enabled, at worst a handful of times per install per day. | `label` — `anthropic`, `openai`, or `google`, the same vocabulary `live_usage_state_observed` uses. `detail` — `short` or `long`, the window's role. `usageBand` — `below_80`, `80_to_under_100`, `at_limit`, or `unknown`. A window without an authoritative figure still reports; the band is coarse enough to stay useful either way. No percentage, timestamp, window id, scope, account, or model name. |
 
 Several events are deliberately not sent once per occurrence. A full scan result
 that repeats the last bucket is dropped, so a machine left running does not
@@ -177,6 +181,23 @@ event preserves missing, null, and malformed field states, and keeps eligibility
 experiment membership, arm, and availability separate so contradictory server
 states remain visible. It sends only the presence of `next_available_at`, because
 the exact date adds little diagnostic value and reveals more timing detail.
+
+`antiburn.usage_observed` answers a narrower, provider-agnostic question the
+Claude reset diagnostic cannot: how often installs run near or at a limit, per
+provider and per window, across every provider antiburn can meter — not only
+Claude. It fires wherever the Claude reset probe's own gates already fire —
+analytics configured and enabled, live usage active, the provider not
+hidden — but at the boundary every ordinary refresh publishes its snapshot
+from, background ticks and popover-triggered refreshes alike. Only a
+provider's short (five-hour or session) and long (weekly or billing-period)
+windows are in scope; a supplemental or provider-specific window is not part
+of this coarse picture. A provider with both windows reports both, once each,
+the first time they are seen in a run and again only when a window's band
+changes; a provider that fails a pass contributes nothing and does not clear
+what was last reported for it, so a transient failure cannot be mistaken for a
+drop back below the limit. Windows the provider marked non-authoritative —
+derived rather than stated — still report, because a coarse band tolerates
+that imprecision better than the exact percentage the Usage surface shows.
 
 The `inert_capped` label covers either too many distinct unknown types or one
 type name that exceeds the local string limit. The event never sends those

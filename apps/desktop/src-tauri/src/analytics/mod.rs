@@ -128,6 +128,13 @@ pub fn record_unrecognized_records(
 }
 
 #[cfg(not(feature = "analytics"))]
+pub fn record_usage_observed(
+    _app: &tauri::AppHandle,
+    _snapshots: &[crate::provider_usage::live::ProviderUsageSnapshot],
+) {
+}
+
+#[cfg(not(feature = "analytics"))]
 pub fn handle_settings_transition(
     _app: &tauri::AppHandle,
     _previous: &crate::store::AppSettings,
@@ -138,10 +145,13 @@ pub fn handle_settings_transition(
 #[cfg(feature = "analytics")]
 mod enabled {
 
+    use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
 
     use antiburn_local::insights::UnrecognizedRecords;
     use tauri::Manager as _;
+
+    use crate::provider_usage::live::{ProviderUsageSnapshot, WindowRole, band_for_percent};
 
     use super::delivery::{DeliverySchedule, FlushOutcome};
     use super::event::{
@@ -297,6 +307,87 @@ mod enabled {
         }
     }
 
+    /// Record a coarse usage band for every provider window an ordinary
+    /// live-usage refresh just published, when analytics allows it.
+    ///
+    /// `snapshots` is expected to already carry only online, visible
+    /// providers — see [`crate::provider_usage::live::sources::collect`] —
+    /// so no further gate is applied here beyond [`allowed`]. A provider that
+    /// failed this pass has no snapshot in the slice, so it contributes no
+    /// observation and its last reported band is left exactly as it was.
+    pub fn record_usage_observed(app: &tauri::AppHandle, snapshots: &[ProviderUsageSnapshot]) {
+        if !allowed(app) {
+            return;
+        }
+        let candidates = usage_observed_candidates(snapshots);
+        if candidates.is_empty() {
+            return;
+        }
+        let mut last = LAST_USAGE_OBSERVED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (label, detail, band) in candidates {
+            if !usage_observed_is_new(&last, label, detail, band) {
+                continue;
+            }
+            if record_event(
+                app,
+                EventName::UsageObserved,
+                Facts {
+                    label: Some(label),
+                    detail: Some(detail),
+                    usage_band: Some(band),
+                    ..Facts::default()
+                },
+            ) {
+                last.insert((label, detail), band);
+            }
+        }
+    }
+
+    /// Every `(provider, window role, band)` this build can report for one
+    /// collected pass.
+    ///
+    /// Only the two windows that make up a provider's primary allowance
+    /// count: the short rolling window and the long weekly or billing-period
+    /// one. A supplemental or provider-named window is not part of this
+    /// coarse picture, the same narrowing the milestone engine applies. A
+    /// provider id this build does not recognize is skipped rather than
+    /// given an invented label. `authoritative` is not checked — the band is
+    /// coarse enough that even a derived figure stays useful here.
+    fn usage_observed_candidates(
+        snapshots: &[ProviderUsageSnapshot],
+    ) -> Vec<(&'static str, &'static str, &'static str)> {
+        snapshots
+            .iter()
+            .filter_map(|snapshot| {
+                let label = LiveUsageProvider::from_provider_id(snapshot.provider)?.as_str();
+                Some(snapshot.windows.iter().filter_map(move |window| {
+                    let detail = match &window.role {
+                        WindowRole::PrimaryShort => "short",
+                        WindowRole::PrimaryLong => "long",
+                        WindowRole::Supplemental | WindowRole::Other(_) => return None,
+                    };
+                    Some((label, detail, band_for_percent(window.used_percent)))
+                }))
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// Whether `(label, detail)`'s band differs from the last one reported.
+    ///
+    /// A pure lookup rather than a mutating check, so the duplicate rule can
+    /// be tested without the process-wide static behind it.
+    fn usage_observed_is_new(
+        last: &BTreeMap<(&'static str, &'static str), &'static str>,
+        label: &'static str,
+        detail: &'static str,
+        band: &'static str,
+    ) -> bool {
+        last.get(&(label, detail)) != Some(&band)
+    }
+
     /// Record an interaction reported by the renderer.
     ///
     /// The renderer names a shape, not an event. See [`Interaction`] for why.
@@ -423,6 +514,14 @@ mod enabled {
     static LAST_CLAUDE_LIMIT_RESET: std::sync::Mutex<
         Option<crate::provider_usage::live::anthropic::LimitResetDiagnostic>,
     > = std::sync::Mutex::new(None);
+
+    /// The last band reported for each `(provider, window role)` pair queued
+    /// during this run. In memory only, for the same reason every other
+    /// suppression hint here is: it is a dedup key, not a fact worth keeping
+    /// past this process.
+    static LAST_USAGE_OBSERVED: std::sync::Mutex<
+        BTreeMap<(&'static str, &'static str), &'static str>,
+    > = std::sync::Mutex::new(BTreeMap::new());
 
     #[derive(Debug, Clone, Copy, Default)]
     struct OnboardingCapture {
@@ -685,6 +784,10 @@ mod enabled {
         *LAST_CLAUDE_LIMIT_RESET
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        LAST_USAGE_OBSERVED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         *DELIBERATE_VISIT
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = DeliberateVisit::default();
@@ -1111,6 +1214,144 @@ mod enabled {
             assert!(visit.live_usage_states.is_empty());
         }
 
+        /// A minimal snapshot for one provider, with one window per
+        /// `(role, used_percent)` pair given.
+        fn usage_snapshot(
+            provider: &'static str,
+            windows: Vec<(WindowRole, Option<f64>)>,
+        ) -> ProviderUsageSnapshot {
+            ProviderUsageSnapshot {
+                provider,
+                account: None,
+                account_uuid: None,
+                account_email: None,
+                plan: None,
+                plan_tier: None,
+                observed_at: time::OffsetDateTime::UNIX_EPOCH,
+                source: crate::provider_usage::live::model::UsageSource {
+                    id: "fixture",
+                    label: "fixture".into(),
+                    confidence: crate::provider_usage::live::Confidence::High,
+                    freshness: crate::provider_usage::live::Freshness::Fresh,
+                },
+                windows: windows
+                    .into_iter()
+                    .enumerate()
+                    .map(
+                        |(index, (role, used_percent))| crate::provider_usage::live::UsageWindow {
+                            id: format!("window-{index}"),
+                            role,
+                            kind: crate::provider_usage::live::UsageWindowKind::Rolling,
+                            scope: crate::provider_usage::live::UsageScope::Account,
+                            used_percent,
+                            starts_at: None,
+                            resets_at: None,
+                            authoritative: true,
+                        },
+                    )
+                    .collect(),
+                supplemental: None,
+                reset_credits: None,
+            }
+        }
+
+        #[test]
+        fn a_window_at_eighty_five_percent_reports_the_under_hundred_band() {
+            let snapshot = usage_snapshot(
+                crate::provider_usage::providers::ANTHROPIC,
+                vec![(WindowRole::PrimaryShort, Some(85.0))],
+            );
+            assert_eq!(
+                usage_observed_candidates(std::slice::from_ref(&snapshot)),
+                vec![("anthropic", "short", "80_to_under_100")]
+            );
+        }
+
+        #[test]
+        fn short_and_long_windows_each_report_their_own_role() {
+            let snapshot = usage_snapshot(
+                crate::provider_usage::providers::OPENAI,
+                vec![
+                    (WindowRole::PrimaryShort, Some(10.0)),
+                    (WindowRole::PrimaryLong, Some(100.0)),
+                ],
+            );
+            assert_eq!(
+                usage_observed_candidates(std::slice::from_ref(&snapshot)),
+                vec![
+                    ("openai", "short", "below_80"),
+                    ("openai", "long", "at_limit"),
+                ]
+            );
+        }
+
+        #[test]
+        fn a_supplemental_or_unrecognized_window_role_is_not_part_of_the_coarse_picture() {
+            let snapshot = usage_snapshot(
+                crate::provider_usage::providers::ANTHROPIC,
+                vec![
+                    (WindowRole::Supplemental, Some(95.0)),
+                    (WindowRole::Other("daily".into()), Some(50.0)),
+                ],
+            );
+            assert!(usage_observed_candidates(std::slice::from_ref(&snapshot)).is_empty());
+        }
+
+        #[test]
+        fn a_provider_this_build_does_not_recognize_reports_nothing() {
+            let snapshot = usage_snapshot(
+                "some-future-provider",
+                vec![(WindowRole::PrimaryShort, Some(50.0))],
+            );
+            assert!(usage_observed_candidates(std::slice::from_ref(&snapshot)).is_empty());
+        }
+
+        #[test]
+        fn a_missing_percentage_is_unknown_rather_than_zero() {
+            let snapshot = usage_snapshot(
+                crate::provider_usage::providers::GOOGLE,
+                vec![(WindowRole::PrimaryShort, None)],
+            );
+            assert_eq!(
+                usage_observed_candidates(std::slice::from_ref(&snapshot)),
+                vec![("google", "short", "unknown")]
+            );
+        }
+
+        #[test]
+        fn a_failed_providers_absent_snapshot_contributes_no_candidate() {
+            // `collect` never puts a failed source's provider in `snapshots` —
+            // see `provider_usage::live::sources::collect`. An empty slice is
+            // what a pass where every source failed looks like here.
+            assert!(usage_observed_candidates(&[]).is_empty());
+        }
+
+        #[test]
+        fn a_repeated_band_is_not_worth_a_second_event_but_a_changed_one_is() {
+            let mut last = BTreeMap::new();
+            assert!(usage_observed_is_new(
+                &last,
+                "anthropic",
+                "short",
+                "below_80"
+            ));
+            last.insert(("anthropic", "short"), "below_80");
+            assert!(!usage_observed_is_new(
+                &last,
+                "anthropic",
+                "short",
+                "below_80"
+            ));
+            assert!(usage_observed_is_new(
+                &last,
+                "anthropic",
+                "short",
+                "80_to_under_100"
+            ));
+            // A second provider's pair is judged independently of the first.
+            assert!(usage_observed_is_new(&last, "openai", "short", "below_80"));
+        }
+
         #[test]
         fn a_hidden_hud_cannot_consume_its_pending_origin() {
             let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
@@ -1310,12 +1551,17 @@ mod enabled {
                     "success", "null",
                 ),
             );
+            LAST_USAGE_OBSERVED
+                .lock()
+                .unwrap()
+                .insert(("anthropic", "short"), "below_80");
 
             reset_suppression();
 
             assert!(scan_outcome_is_new(Some("1-9")));
             assert!(unrecognized_outcome_is_new(inert));
             assert_eq!(*LAST_CLAUDE_LIMIT_RESET.lock().unwrap(), None);
+            assert!(LAST_USAGE_OBSERVED.lock().unwrap().is_empty());
             reset_suppression();
         }
 
