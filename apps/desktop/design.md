@@ -276,6 +276,9 @@ sizes:
   --space-lg: 16px
   --space-xl: 20px
   --space-2xl: 24px # group separation in a settings-style pane
+  # Local geometry that stays in its component. The wide Session Detail
+  # (`layout="wide"` in src/components/session/SessionDetailPresentation.tsx)
+  # caps the context chart at max-h-[360px]; the popover lets it fill the tab.
 rounded:
   small: 4px
   control: 5px

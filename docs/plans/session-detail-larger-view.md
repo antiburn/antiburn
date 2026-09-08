@@ -1,15 +1,15 @@
 # Session Detail: wide layout, plus a resizable dev window to see it in
 
-**Branch:** `claude/session-details-larger-view-12b08a` (worktree `session-details-larger-view-12b08a`, reset onto `origin/main` at `88ec278a` on 2026-09-08) · **Status:** PR 1 built 2026-09-08, awaiting review; PR 2 not started
+**Branch:** `claude/session-details-larger-view-12b08a` (worktree `session-details-larger-view-12b08a`, reset onto `origin/main` at `88ec278a` on 2026-09-08) · **Status:** dev window built 2026-09-08 (dev-only, no PR of its own); wide layout built 2026-09-08, awaiting Keith's review in the dev window
 
 ## Status
 
 | Step | State | Notes |
 | --- | --- | --- |
 | 0. Plan | approved | Keith approved PR 1 in chat on 2026-09-08 after the pins review closed with no comments |
-| 1. Dev session window (PR 1) | built, awaiting review | Debug-only tray item opens a resizable window: list on the left, detail on the right. The detail still renders the popover layout until PR 2 adds `layout="wide"` |
-| 2. Wide layout for Session Detail (PR 2, stacked on PR 1) | not started | The ten pins below, gated by a `layout="wide"` prop |
-| 3. Verify in the dev window, screenshots for both PRs | not started | Keith uploads the images |
+| 1. Dev session window | built, dev-only | Debug-only tray item opens a resizable window: list on the left, detail on the right. Keith decided on 2026-09-08 that it is dev tooling and gets no PR of its own; it ships on this branch with step 2 |
+| 2. Wide layout for Session Detail | built, awaiting review | All pins below, gated by a `layout="wide"` prop. The dev window passes it. Checks green: eslint, tsc, prettier, knip, vitest (1233), design drift. Verified in jsdom only: another session held the Tauri app open, so this session could not run a second instance |
+| 3. Verify in the dev window, screenshots | not started | Keith walks the three tabs at 760px, 1180px, and full screen, and uploads the images |
 
 ## What this is
 
@@ -89,8 +89,10 @@ It is not the upcoming larger view and does not try to look like it. It has no s
 
 ## PR split
 
-1. **PR 1: dev session window.** `session_window.rs`, tray item, capability, route, `SessionWindowView`, the `PopoverView` / `PopoverSession` props. Roughly 350 lines. Debug-only, so it ships dark. Screenshot: the window open with a session selected.
-2. **PR 2: wide layout for Session Detail** (based on PR 1). The `layout` prop through `SessionPane` → `SessionDetailPresentation` → `ChartKey` / `EfficiencyBreakdown` / `SkillsMcpChart` / `SegmentedControl`, the paragraph change, `design.md` note for the 360px chart cap. Roughly 400 lines with tests. Screenshot: each of the three tabs in the dev window.
+Planned as two stacked PRs. On 2026-09-08 Keith decided the dev window is dev-only tooling and gets no PR of its own, so both land together on this branch.
+
+1. **Dev session window** (commit `48e8dfae`). `session_window.rs`, tray item, capability, route, `SessionWindowView`, the `PopoverView` / `PopoverSession` props. Roughly 350 lines. Debug-only, so it ships dark.
+2. **Wide layout for Session Detail.** The `layout` prop through `SessionPane` → `SessionDetailPresentation` → `ChartKey` / `EfficiencyBreakdown` / `SkillsMcpChart` / `SegmentedControl`, the paragraph change, `design.md` note for the 360px chart cap. Roughly 500 lines with tests. Screenshot: each of the three tabs in the dev window.
 
 ## Verification
 

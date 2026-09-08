@@ -18,6 +18,11 @@ export interface EfficiencyBreakdownProps {
    * composition under the context chart. Omit it to draw both.
    */
   section?: "cost" | "composition"
+  /**
+   * The pane the block sits in. The wide layout draws the composition as a
+   * bar with its legend on one row, and gives the cost paragraph a measure.
+   */
+  layout?: "popover" | "wide"
 }
 
 /* The fill for one band of the cost scale. The three bands are a fixed
@@ -223,14 +228,25 @@ function CostScaleBar({
  * The three shares as one composition. They are parts of a single whole, so
  * they draw as one track: each run takes its slice of the width, in that
  * slice's own color. Three separate meters hid the only fact that matters,
- * which is how the session divided its cost.
+ * which is how the session divided its cost. The popover draws a hairline;
+ * the wide pane draws a bar.
  */
-function CompositionTrack({ segments }: { segments: ShareSegment[] }) {
+function CompositionTrack({
+  segments,
+  height,
+}: {
+  segments: ShareSegment[]
+  height: "hairline" | "bar"
+}) {
   return (
     <div
       data-testid="efficiency-composition"
+      data-height={height}
       aria-hidden
-      className="flex h-1 gap-px overflow-hidden rounded-full bg-surface-secondary"
+      className={cn(
+        "flex gap-px overflow-hidden bg-surface-secondary",
+        height === "bar" ? "h-2.5 rounded-control" : "h-1 rounded-full",
+      )}
     >
       {segments.map((segment) => (
         <span
@@ -252,7 +268,8 @@ function CompositionTrack({ segments }: { segments: ShareSegment[] }) {
  * The composition rows keep their guidance in a tooltip so the block stays
  * the height of its readings. A panel that grows and shrinks under the rows
  * moves everything below it every time the pointer crosses a row. The cost
- * reading stands alone on its tab, so it prints the same guidance inline.
+ * reading stands alone on its tab, so it prints the same guidance inline, as
+ * one quiet paragraph that wraps at the width of its pane.
  */
 function MetricGuidance({
   metricKey,
@@ -263,22 +280,26 @@ function MetricGuidance({
   profile: EfficiencyProfile
   inline?: boolean
 }) {
-  const leadClass = inline ? "text-label-secondary" : "text-label"
-  const restClass = inline ? "text-label-tertiary" : "text-label-secondary"
+  const advice = [
+    ...efficiencyThresholdGuidance(metricKey, profile),
+    ...METRIC_GUIDANCE[metricKey],
+  ]
+  if (inline) {
+    return (
+      <p className="type-callout text-pretty text-label-tertiary">
+        {[...METRIC_SUMMARY[metricKey], ...advice].join(" ")}
+      </p>
+    )
+  }
   return (
-    <div className={cn("space-y-1 text-pretty", inline && "type-callout")}>
+    <div className="space-y-1 text-pretty">
       {METRIC_SUMMARY[metricKey].map((sentence) => (
-        <p key={sentence} className={leadClass}>
+        <p key={sentence} className="text-label">
           {sentence}
         </p>
       ))}
-      {efficiencyThresholdGuidance(metricKey, profile).map((sentence) => (
-        <p key={sentence} className={restClass}>
-          {sentence}
-        </p>
-      ))}
-      {METRIC_GUIDANCE[metricKey].map((sentence) => (
-        <p key={sentence} className={restClass}>
+      {advice.map((sentence) => (
+        <p key={sentence} className="text-label-secondary">
           {sentence}
         </p>
       ))}
@@ -289,6 +310,14 @@ function MetricGuidance({
 const ROW_CLASS =
   "-mx-1.5 rounded-control px-1.5 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
 
+/* One cell of the wide legend. The row that holds the cells carries the
+   negative margin, so a cell keeps only its own padding. */
+const CELL_CLASS =
+  "flex flex-col items-start rounded-control px-1.5 py-1 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
+
+/* The wide legend: the cells on one row, spaced like the chart key above. */
+const LEGEND_ROW_CLASS = "-mx-1.5 flex flex-wrap gap-x-6"
+
 /**
  * The $/MTok reading: label and figure on one baseline, its scale underneath,
  * and its guidance printed below the scale. This metric is not part of the
@@ -298,9 +327,11 @@ const ROW_CLASS =
 function CostRowLine({
   metric,
   profile,
+  wide,
 }: {
   metric: EfficiencyMetric
   profile: EfficiencyProfile
+  wide: boolean
 }) {
   return (
     <div className="type-body" data-testid="cost-row">
@@ -311,7 +342,7 @@ function CostRowLine({
         </span>
       </span>
       <CostScaleBar metric={metric} profile={profile} />
-      <div className="mt-3" data-testid="cost-guidance">
+      <div className={cn("mt-3", wide && "max-w-prose")} data-testid="cost-guidance">
         <MetricGuidance metricKey="costPerMTok" profile={profile} inline />
       </div>
     </div>
@@ -351,6 +382,51 @@ function ShareRowLine({
   )
 }
 
+/**
+ * One cell of the wide legend, in the shape of the chart key above it: the
+ * swatch and the share on one line, the name and the band word under them.
+ * The cell keeps the row's tooltip.
+ */
+function ShareCell({
+  segment,
+  profile,
+}: {
+  segment: ShareSegment
+  profile: EfficiencyProfile
+}) {
+  return (
+    <Tooltip label={<MetricGuidance metricKey={segment.key} profile={profile} />} delayMs={150}>
+      <div data-testid={`share-row-${segment.key}`} className={CELL_CLASS} tabIndex={0}>
+        <span className="flex items-center gap-x-1.5 type-body font-medium text-label tabular-nums">
+          <span
+            aria-hidden
+            className={cn("size-2 shrink-0 rounded-full", segment.inkClassName)}
+          />
+          {segment.displayPercent}
+        </span>
+        <span className="flex items-baseline gap-x-1.5 type-caption">
+          <span className="text-label-secondary">{segment.label}</span>
+          <span className={BAND_WORD_CLASS}>
+            {efficiencyBandWord(segment.metric.band, segment.key)}
+          </span>
+        </span>
+      </div>
+    </Tooltip>
+  )
+}
+
+/** A wide-legend cell for a share with no reading yet: a dash and the name. */
+function ShareCellPlaceholder({ row }: { row: ShareRow }) {
+  return (
+    <div className={CELL_CLASS}>
+      <span className="flex items-center gap-x-1.5 type-body font-medium text-label tabular-nums">
+        <span aria-hidden className="size-2 shrink-0 rounded-full bg-surface-tertiary" />—
+      </span>
+      <span className="type-caption text-label-secondary">{row.label}</span>
+    </div>
+  )
+}
+
 /** A share with no reading yet: the name and a dash, on the same grid. */
 function ShareRowPlaceholder({ row }: { row: ShareRow }) {
   return (
@@ -366,10 +442,15 @@ function ShareRowPlaceholder({ row }: { row: ShareRow }) {
   )
 }
 
-export function EfficiencyBreakdown({ metrics, section }: EfficiencyBreakdownProps) {
+export function EfficiencyBreakdown({
+  metrics,
+  section,
+  layout = "popover",
+}: EfficiencyBreakdownProps) {
   const segments = shareSegments(metrics)
   const showCost = section !== "composition"
   const showComposition = section !== "cost"
+  const wide = layout === "wide"
 
   if (!metrics.costPerMTok) {
     return null
@@ -377,24 +458,40 @@ export function EfficiencyBreakdown({ metrics, section }: EfficiencyBreakdownPro
 
   return (
     <div className="flex flex-col" data-testid="efficiency-block">
-      {showCost && <CostRowLine metric={metrics.costPerMTok} profile={metrics.profile} />}
+      {showCost && (
+        <CostRowLine metric={metrics.costPerMTok} profile={metrics.profile} wide={wide} />
+      )}
       {showCost && showComposition && (
         <div className="my-3 border-b border-dashed border-separator" />
       )}
       {!showComposition ? null : segments.length > 0 ? (
         <>
-          <CompositionTrack segments={segments} />
-          <div className="mt-2 flex flex-col">
-            {segments.map((segment) => (
-              <ShareRowLine key={segment.key} segment={segment} profile={metrics.profile} />
-            ))}
+          <CompositionTrack segments={segments} height={wide ? "bar" : "hairline"} />
+          <div
+            data-testid="composition-legend"
+            className={wide ? cn(LEGEND_ROW_CLASS, "mt-3") : "mt-2 flex flex-col"}
+          >
+            {segments.map((segment) =>
+              wide ? (
+                <ShareCell key={segment.key} segment={segment} profile={metrics.profile} />
+              ) : (
+                <ShareRowLine key={segment.key} segment={segment} profile={metrics.profile} />
+              ),
+            )}
           </div>
         </>
       ) : (
-        <div className="flex flex-col">
-          {SHARE_ROWS.map((row) => (
-            <ShareRowPlaceholder key={row.key} row={row} />
-          ))}
+        <div
+          data-testid="composition-legend"
+          className={wide ? LEGEND_ROW_CLASS : "flex flex-col"}
+        >
+          {SHARE_ROWS.map((row) =>
+            wide ? (
+              <ShareCellPlaceholder key={row.key} row={row} />
+            ) : (
+              <ShareRowPlaceholder key={row.key} row={row} />
+            ),
+          )}
         </div>
       )}
     </div>

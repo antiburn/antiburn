@@ -10,6 +10,8 @@ import type { InitialContextBreakdown } from "../../../lib/types/session"
 
 export interface SkillsMcpChartProps {
   breakdown: InitialContextBreakdown
+  /** How many columns the cells fill. Two suits a wide pane. */
+  columns?: 1 | 2
 }
 
 /** Kind label shown on a row's detail line. */
@@ -69,9 +71,10 @@ function SkillMcpRowLine({ row }: { row: SkillMcpRow }) {
 /**
  * The full skills, MCPs and tools list. Every source renders as a two-line
  * cell: the list is the tab's whole content, so it hides nothing behind a
- * disclosure and needs no column headers.
+ * disclosure and needs no column headers. The cells keep their rank order
+ * across `columns` columns, left to right and then down.
  */
-export function SkillsMcpChart({ breakdown }: SkillsMcpChartProps) {
+export function SkillsMcpChart({ breakdown, columns = 1 }: SkillsMcpChartProps) {
   const usage = skillMcpUsage(breakdown)
 
   if (usage.totalTokens === 0) {
@@ -79,7 +82,11 @@ export function SkillsMcpChart({ breakdown }: SkillsMcpChartProps) {
   }
 
   return (
-    <div className="flex flex-col gap-y-1.5">
+    <div
+      data-testid="skills-mcp-list"
+      data-columns={columns}
+      className={cn("grid gap-1.5", columns === 2 ? "grid-cols-2" : "grid-cols-1")}
+    >
       {usage.rows.map((row) => (
         <SkillMcpRowLine key={row.key} row={row} />
       ))}

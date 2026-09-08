@@ -44,7 +44,7 @@ export function SessionWindowView() {
               loading={pane.loading}
               refreshing={pane.refreshing}
               error={pane.error}
-              onBack={session.goBack}
+              layout="wide"
               onPrev={traverse(pane.prev)}
               onNext={traverse(pane.next)}
               onOpenSession={session.openSession}

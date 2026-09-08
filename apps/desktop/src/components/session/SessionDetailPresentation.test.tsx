@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { INITIAL_SESSION_HYGIENE } from "../../lib/presentation/sessionHygiene"
@@ -679,6 +679,111 @@ describe("SessionDetailPresentation — session facts", () => {
     expect(
       screen.getByText("No startup context has been recorded for this session."),
     ).toBeTruthy()
+  })
+})
+
+describe("SessionDetailPresentation — wide layout", () => {
+  const efficiency = {
+    totalUsd: 10,
+    newWorkUsd: 3.4,
+    carryUsd: 5.4,
+    rewriteUsd: 1.2,
+    growthTokens: 200_000,
+    outputTokens: 50_000,
+    pricedTurns: 12,
+    unpricedTurns: 0,
+  }
+
+  function wideView(over: Partial<SessionDetailPresentationProps> = {}) {
+    const props = presentationProps({ layout: "wide", cost: cost(), efficiency, ...over })
+    delete props.onBack
+    return render(<SessionDetailPresentation {...props} />)
+  }
+
+  it("drops the title row and keeps the host actions on the hero's title line", () => {
+    const onDeleteSession = vi.fn()
+    const onRevealSource = vi.fn()
+    wideView({ onDeleteSession, onRevealSource, refreshing: true })
+
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull()
+    expect(screen.queryByText("Session Detail")).toBeNull()
+
+    const title = screen.getByText("Fix the flaky test")
+    const line = title.parentElement!
+    expect(line).toHaveClass("flex")
+    fireEvent.click(within(line).getByLabelText("Delete this session"))
+    fireEvent.click(within(line).getByLabelText("Reveal in file manager"))
+    expect(onDeleteSession).toHaveBeenCalledTimes(1)
+    expect(onRevealSource).toHaveBeenCalledTimes(1)
+    expect(within(line).getByRole("status")).toBeTruthy()
+  })
+
+  it("draws no separator rules and gives the tab bar its content width", () => {
+    const { container } = wideView()
+    expect(container.querySelectorAll(".border-separator")).toHaveLength(0)
+    expect(screen.getByRole("tablist", { name: "Session detail sections" })).toHaveClass(
+      "inline-grid",
+    )
+  })
+
+  it("sets the chart key and composition legend on one row under a capped chart", () => {
+    const { container } = wideView()
+    const key = screen.getByTestId("chart-key")
+    expect(key.dataset.layout).toBe("wide")
+    expect(key).toHaveClass("flex")
+    expect(key).not.toHaveClass("grid-cols-3")
+    expect(container.querySelector(".max-h-\\[360px\\]")).toBeTruthy()
+    expect(screen.getByTestId("efficiency-composition").dataset.height).toBe("bar")
+    expect(screen.getByTestId("composition-legend")).not.toHaveClass("flex-col")
+  })
+
+  it("keeps the Cost tab's sections apart with spacing, not rules", () => {
+    const { container } = wideView()
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
+    expect(screen.getByText("Checks")).toBeTruthy()
+    expect(screen.getByText("Efficiency")).toBeTruthy()
+    // The cost table keeps the rule over its total row. The sections that
+    // hold the table, the checks, and the scale draw none of their own.
+    const sections = Array.from(container.querySelectorAll("section"))
+    expect(sections).toHaveLength(3)
+    for (const section of sections) expect(section).not.toHaveClass("border-separator")
+  })
+
+  it("lays the Tools tab out in two columns", () => {
+    wideView({
+      summary: summary({
+        sessions: [
+          metrics({
+            initialContext: {
+              sources: [
+                {
+                  source: "skill_instructions",
+                  sourceName: "research",
+                  tokenCount: 12_000,
+                  useCount: 1,
+                },
+                {
+                  source: "skill_instructions",
+                  sourceName: "deploy",
+                  tokenCount: 8_000,
+                  useCount: 0,
+                },
+              ],
+            },
+          }),
+        ],
+      }),
+    })
+    fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
+    expect(screen.getByTestId("skills-mcp-list").dataset.columns).toBe("2")
+  })
+
+  it("leaves the popover layout as it was", () => {
+    const { container } = view({ cost: cost(), efficiency })
+    expect(screen.getByRole("button", { name: "Back" })).toBeTruthy()
+    expect(screen.getByTestId("chart-key").dataset.layout).toBe("popover")
+    expect(screen.getByRole("tablist", { name: "Session detail sections" })).toHaveClass("grid")
+    expect(container.querySelectorAll(".border-separator").length).toBeGreaterThan(0)
   })
 })
 

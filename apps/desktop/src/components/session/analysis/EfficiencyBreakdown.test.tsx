@@ -150,18 +150,56 @@ describe("EfficiencyBreakdown", () => {
     expect(screen.queryByText(/fresh input and output/)).toBeNull()
   })
 
-  it("prints the cost reading's guidance inline under its scale", () => {
+  it("prints the cost reading's guidance inline under its scale as one paragraph", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
 
-    const guidance = within(screen.getByTestId("cost-guidance"))
-    expect(guidance.getByText(/average cost for each million tokens/)).toHaveClass(
-      "text-label-secondary",
+    const guidance = screen.getByTestId("cost-guidance")
+    // One quiet paragraph, so the sentences wrap at the pane's width instead
+    // of each taking a line.
+    expect(guidance.querySelectorAll("p")).toHaveLength(1)
+    const paragraph = within(guidance).getByText(/average cost for each million tokens/)
+    expect(paragraph).toHaveClass("text-label-tertiary")
+    expect(paragraph).not.toHaveClass("font-medium")
+    expect(paragraph).toHaveTextContent(
+      "For Claude, aim for below $33. Above $80 is too high. Craft tight workflows",
     )
-    expect(
-      guidance.getByText("For Claude, aim for below $33. Above $80 is too high."),
-    ).toHaveClass("text-label-tertiary")
-    expect(guidance.getByText(/Context tab shows/)).toBeInTheDocument()
+    expect(paragraph).toHaveTextContent(/Context tab shows/)
+    expect(guidance).not.toHaveClass("max-w-prose")
     // The cost row is plain text now, not a tooltip trigger.
     expect(screen.getByTestId("cost-row")).not.toHaveAttribute("tabindex")
+  })
+
+  it("draws the wide layout as a bar with its legend on one row", () => {
+    render(
+      <EfficiencyBreakdown
+        metrics={efficiencyMetrics(totals(), "claude-code")}
+        layout="wide"
+      />,
+    )
+
+    const track = screen.getByTestId("efficiency-composition")
+    expect(track.dataset.height).toBe("bar")
+    expect(track).toHaveClass("h-2.5", "rounded-control")
+
+    const legend = screen.getByTestId("composition-legend")
+    expect(legend).toHaveClass("flex")
+    expect(legend).not.toHaveClass("flex-col")
+    // Each cell keeps its share, its name, its band word, and its tooltip.
+    const realWork = screen.getByTestId("share-row-realWorkShare")
+    expect(realWork).toHaveTextContent("34%")
+    expect(realWork).toHaveTextContent("Real Work %")
+    expect(realWork).toHaveAttribute("tabindex", "0")
+    fireEvent.focus(realWork)
+    expect(screen.getAllByText(/fresh input and output/).length).toBeGreaterThan(0)
+
+    expect(screen.getByTestId("cost-guidance")).toHaveClass("max-w-prose")
+  })
+
+  it("keeps the popover's hairline track and stacked rows by default", () => {
+    render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
+    const track = screen.getByTestId("efficiency-composition")
+    expect(track.dataset.height).toBe("hairline")
+    expect(track).toHaveClass("h-1", "rounded-full")
+    expect(screen.getByTestId("composition-legend")).toHaveClass("flex-col")
   })
 })
