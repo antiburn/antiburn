@@ -8,7 +8,11 @@ import { useCallback, useRef, useState, type ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
-import { agentDisplayName, type AgentSurface } from "../../lib/presentation/agents"
+import {
+  agentDisplayName,
+  agentProvider,
+  type AgentSurface,
+} from "../../lib/presentation/agents"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import {
@@ -34,6 +38,7 @@ import { countGroupedItems, groupActivityByDay } from "../activity/activityFeedG
 import { useActivityGroupPinning, type ViewportRef } from "../activity/useActivityGroupPinning"
 import type {
   LiveUsageSummaryPayload,
+  LiveUsageWindowPayload,
   SessionLimitAllocationPayload,
   SessionLimitAllocationSummaryPayload,
 } from "../../lib/ipc"
@@ -142,26 +147,71 @@ function hasDisplayedFiveHourWindow(live: LiveUsageSummaryPayload | undefined): 
     : false
 }
 
+/** Whether a window reports the metric a session limit badge shows. */
+function windowMatchesMetric(
+  provider: string,
+  window: LiveUsageWindowPayload,
+  metric: Exclude<BadgeMetric, "cost">,
+): boolean {
+  return metric === "weeklyPercent"
+    ? window.kind === "weekly"
+    : isFiveHourWindow(provider, window.id)
+}
+
+/**
+ * Whether `live` affirmatively shows the provider that bills `agent` has no
+ * window of `metric`.
+ *
+ * This can say so only when `live` has loaded and the agent resolves to one
+ * fixed provider. Neither condition proves absence on its own: a missing
+ * summary just has not loaded yet, and an agent with no fixed provider (its
+ * route depends on the model) has no single provider to check.
+ */
+function providerConfirmsNoWindow(
+  live: LiveUsageSummaryPayload | undefined,
+  agent: string,
+  metric: Exclude<BadgeMetric, "cost">,
+): boolean {
+  if (!live) return false
+  const provider = agentProvider(agent)
+  if (!provider) return false
+  return !liveDisplayableProviders(live).some(
+    (entry) =>
+      entry.provider === provider &&
+      liveWindows(entry).some((window) => windowMatchesMetric(provider, window, metric)),
+  )
+}
+
 function sessionLimitBadge(
   metric: Exclude<BadgeMetric, "cost">,
+  agent: string,
+  liveUsage: LiveUsageSummaryPayload | undefined,
   allocation?: SessionLimitAllocationPayload,
 ): {
   label: string
   percent: number | null
   provider?: string
   windowId?: string
+  unknown?: boolean
 } {
-  if (!allocation || !Number.isFinite(allocation.percent)) {
+  if (allocation && Number.isFinite(allocation.percent)) {
+    return {
+      label: `Estimated share of your ${allocation.displayName} ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit.`,
+      percent: allocation.percent,
+      provider: allocation.provider,
+      windowId: allocation.windowId,
+    }
+  }
+  if (providerConfirmsNoWindow(liveUsage, agent, metric)) {
     return {
       label: `No ${metric === "weeklyPercent" ? "weekly" : "5h"} limit for this session.`,
       percent: null,
     }
   }
   return {
-    label: `Estimated share of your ${allocation.displayName} ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit.`,
-    percent: allocation.percent,
-    provider: allocation.provider,
-    windowId: allocation.windowId,
+    label: `Share of your ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit is not known for this session.`,
+    percent: null,
+    unknown: true,
   }
 }
 
@@ -227,6 +277,7 @@ interface SessionRowProps {
         percent: number | null
         provider?: string
         windowId?: string
+        unknown?: boolean
       }
     | undefined
 }
@@ -809,6 +860,8 @@ export function SessionList({
                                   ? {
                                       limitBadge: sessionLimitBadge(
                                         selectedMetric,
+                                        virtualItem.item.entry.agent,
+                                        liveUsage,
                                         virtualItem.item.entry.sessionId
                                           ? allocationBySession.get(
                                               `${localSessionKey(

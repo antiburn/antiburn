@@ -82,6 +82,15 @@ percentage over matching local session work, so this is an estimate and can exce
 account or provider-history evidence. This session estimate remains after a provider
 reset. The provider meter still shows only the current allowance period.
 
+For Codex, antiburn can also read the rate-limit metadata a session's own rollout
+file already recorded, so a directly or singly attributed account has meter history
+from before this app was installed, not only from readings taken while it ran. This
+bounded, resumable local read looks only at each rollout file's `token_count` rate-
+limit events; it does not read or retain transcript message content. A rollout
+reading older than the local data retention setting is never imported. An account
+that resolves to more than one Codex login on this machine is skipped, the same as
+for a live reading.
+
 ## What antiburn stores
 
 antiburn keeps its own local data under the application's data directory. Settings →
@@ -147,7 +156,7 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   and require the next package to be installed manually.
 - **Anonymised product analytics** are the one thing antiburn reports to us.
   Official release builds start with it on, including during onboarding. The Ready
-  screen explains it, and the switch is in Settings → Privacy. The event schema has twenty-four fields and
+  screen explains it, and the switch is in Settings → Privacy. The event schema has twenty-seven fields and
   no others: the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier replaced every 30 days;
   a random analytics-session identifier; the event name; the time it happened and the time it was delivered; the
@@ -158,7 +167,10 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   automatic exposure; a coarse five-hour usage
   band; the reset response shape; eligibility, experiment membership, experiment
   arm, and availability states; an allowlisted ineligibility reason; a reset-count
-  bucket; whether a next-reset date was present; a nested hourly summary of
+  bucket; whether a next-reset date was present; a learned session-limit
+  factor's plan mapped to a fixed list; that factor's dollars-per-percent value
+  reduced to a coarse band; how far that factor's estimate and the provider's
+  own meter disagree, also reduced to a coarse band; a nested hourly summary of
   fixed bands and coverage for antiburn's own shell CPU, memory, process I/O,
   database size, and database-log size; the app version; and the operating system. The payload has no
   field able to carry anything else. The analytics-session identifier changes
