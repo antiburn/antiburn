@@ -102,4 +102,59 @@ Describe 'install.ps1' {
         $source | Should -Match 'not required to have an Authenticode signature yet'
         $source | Should -Match 'SmartScreen can warn'
     }
+
+    It 'binds the version parameter when the script runs through Invoke-Expression' {
+        # The documented Windows command pipes this file into Invoke-Expression.
+        # PowerShell then runs the file as a script block and adds each param
+        # attribute to a variable in the caller scope.
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $script:InstallerPath, [ref] $null, [ref] $null)
+        $paramBlock = $ast.ParamBlock.Extent.Text
+        $previous = $env:ANTIBURN_VERSION
+        try {
+            $env:ANTIBURN_VERSION = ''
+            { $paramBlock | Invoke-Expression } | Should -Not -Throw
+            $env:ANTIBURN_VERSION = '1.2.3'
+            { $paramBlock | Invoke-Expression } | Should -Not -Throw
+        }
+        finally {
+            $env:ANTIBURN_VERSION = $previous
+        }
+    }
+
+    Context 'Resolve-RequestedVersion' {
+        BeforeAll {
+            $script:PreviousRequestedVersion = $env:ANTIBURN_VERSION
+        }
+
+        AfterAll {
+            $env:ANTIBURN_VERSION = $script:PreviousRequestedVersion
+        }
+
+        It 'prefers the parameter over the environment variable' {
+            $env:ANTIBURN_VERSION = '9.9.9'
+            Resolve-RequestedVersion -Version '1.2.3' | Should -Be '1.2.3'
+        }
+
+        It 'reads the environment variable when the parameter is empty' {
+            $env:ANTIBURN_VERSION = '1.2.3'
+            Resolve-RequestedVersion -Version '' | Should -Be '1.2.3'
+        }
+
+        It 'returns nothing when neither source gives a version' {
+            $env:ANTIBURN_VERSION = ''
+            [string]::IsNullOrEmpty((Resolve-RequestedVersion -Version '')) | Should -BeTrue
+        }
+
+        It 'rejects a version that holds unsafe characters' {
+            $env:ANTIBURN_VERSION = ''
+            { Resolve-RequestedVersion -Version '1.2.3;calc' } |
+                Should -Throw '*Invalid version*'
+        }
+
+        It 'rejects an unsafe version from the environment variable' {
+            $env:ANTIBURN_VERSION = '1.2.3;calc'
+            { Resolve-RequestedVersion -Version '' } | Should -Throw '*Invalid version*'
+        }
+    }
 }
