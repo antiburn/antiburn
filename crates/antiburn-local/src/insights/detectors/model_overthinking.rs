@@ -158,7 +158,10 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
 mod tests {
     use super::super::test_support::claude_evidence;
     use super::*;
-    use crate::analysis::{CoverageReason, EvidenceValue, ModelTokens, SignalCoverage, TurnCounts};
+    use crate::analysis::{
+        CoverageReason, EvidenceValue, ModelControlObservation, ModelTokens, SignalCoverage,
+        TurnCounts,
+    };
 
     /// Builds evidence with one effort-tier entry, one Claude `by_model`
     /// entry (so the Claude family is present), and full effort-signal
@@ -222,6 +225,39 @@ mod tests {
             evaluate(&with_tier("medium", false), &catalogs),
             Observation::NoFinding
         );
+    }
+
+    #[test]
+    fn explicit_claude_routes_preserve_findings_and_reject_unknown_routes() {
+        let catalogs = ReportCatalogs::default();
+        for (provider, effort, expected) in [
+            ("anthropic", "max", Observation::Finding),
+            ("anthropic", "medium", Observation::NoFinding),
+            ("anthropic", "custom", Observation::ContractIncomplete),
+            ("gateway", "medium", Observation::ContractIncomplete),
+        ] {
+            let mut evidence = with_tier(effort, false);
+            evidence.identity.agent = "claude-code".to_owned();
+            let EvidenceValue::Complete(models) = &mut evidence.models else {
+                unreachable!()
+            };
+            models.control_observations.push(ModelControlObservation {
+                provider: Some(provider.to_owned()),
+                api: Some("messages".to_owned()),
+                model: "claude-sonnet-5".to_owned(),
+                effort: Some(effort.to_owned()),
+                speed: None,
+                turns: TurnCounts {
+                    main_loop: 1,
+                    delegated: 0,
+                },
+            });
+            assert_eq!(
+                evaluate(&evidence, &catalogs),
+                expected,
+                "{provider}/{effort}"
+            );
+        }
     }
 
     #[test]

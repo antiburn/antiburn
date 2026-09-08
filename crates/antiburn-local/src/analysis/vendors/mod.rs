@@ -61,13 +61,14 @@ pub fn reader_for(agent: &str) -> &'static dyn SessionReader {
     }
 }
 
-/// Whether an agent label has a dedicated reader instead of the generic reader.
+/// Whether an agent label has a dedicated session parser for analysis.
 ///
-/// Used to scope features that should only run for vendors we model precisely
-/// (e.g. the background health/drift signal), so a generically-parsed session
-/// never produces a half-confident metric.
+/// Passive readers register source formats but do not provide usable session analysis.
 pub fn has_dedicated_reader(agent: &str) -> bool {
-    reader_for(agent).agent() != GENERIC.agent()
+    matches!(
+        reader_for(agent).agent(),
+        "claude" | "codex" | "cursor" | "opencode" | "pi" | "antigravity"
+    )
 }
 
 /// Read a non-SQLite source into a string. SQLite sources are handled directly
@@ -99,20 +100,8 @@ mod tests {
     }
 
     #[test]
-    fn dedicated_readers_are_recognized_case_insensitively() {
-        for agent in [
-            "claude",
-            "codex",
-            "cursor",
-            "copilot",
-            "cline",
-            "opencode",
-            "kiro",
-            "amp-code",
-            "pi",
-            "antigravity",
-            "windsurf",
-        ] {
+    fn dedicated_session_parsers_are_recognized_case_insensitively() {
+        for agent in ["claude", "codex", "cursor", "opencode", "pi", "antigravity"] {
             assert!(has_dedicated_reader(agent));
             assert!(has_dedicated_reader(&agent.to_uppercase()));
         }
@@ -138,6 +127,10 @@ mod tests {
             ),
         ];
         for (agent, expected) in cases {
+            assert_eq!(reader_for(agent).agent(), agent);
+            assert_eq!(reader_for(&agent.to_uppercase()).agent(), agent);
+            assert!(!has_dedicated_reader(agent));
+            assert!(!has_dedicated_reader(&agent.to_uppercase()));
             let capabilities = reader_for(agent).capabilities(&RawSource::Jsonl(String::new()));
             assert_eq!(capabilities.source_format, expected, "{agent}");
             assert_eq!(

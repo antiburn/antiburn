@@ -53,6 +53,7 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
     if let Some(models) = observed(&evidence.models) {
         let catalog = ReviewedModelCatalog::new(catalogs.clone());
         let mut contract_incomplete = false;
+        let mut delegated_fast_turns = 0_u64;
         if !models.control_observations.is_empty() {
             for observation in &models.control_observations {
                 let Some(speed) = observation.speed.as_ref() else {
@@ -71,8 +72,11 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
                 match catalog.resolve(&target) {
                     Support::Supported(definition) => match definition.service_tier {
                         Support::Supported(Some(speed)) if speed == FAST_SPEED_KEY => {
-                            if observation.turns.delegated
-                                >= catalogs.fast_mode_delegated_turns_threshold
+                            delegated_fast_turns =
+                                delegated_fast_turns.saturating_add(observation.turns.delegated);
+                            if delegated_fast_turns > 0
+                                && delegated_fast_turns
+                                    >= catalogs.fast_mode_delegated_turns_threshold
                             {
                                 return Observation::Finding;
                             }
@@ -141,8 +145,9 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
             match catalog.resolve(&target) {
                 Support::Supported(definition) => match definition.service_tier {
                     Support::Supported(Some(speed)) if speed == FAST_SPEED_KEY => {
-                        if turns.delegated > 0
-                            && turns.delegated >= catalogs.fast_mode_delegated_turns_threshold
+                        delegated_fast_turns = delegated_fast_turns.saturating_add(turns.delegated);
+                        if delegated_fast_turns > 0
+                            && delegated_fast_turns >= catalogs.fast_mode_delegated_turns_threshold
                         {
                             return Observation::Finding;
                         }
@@ -177,7 +182,10 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
 mod tests {
     use super::super::test_support::claude_evidence;
     use super::*;
-    use crate::analysis::{CoverageReason, EvidenceValue, ModelTokens, SignalCoverage, TurnCounts};
+    use crate::analysis::{
+        CoverageReason, EvidenceValue, ModelControlObservation, ModelTokens, SignalCoverage,
+        TurnCounts,
+    };
 
     /// Builds evidence with one `FAST_SPEED_KEY` entry and full speed-
     /// signal coverage: every eligible turn carried a speed value.
@@ -246,6 +254,114 @@ mod tests {
             evaluate(&with_fast_turns(5, 0, false), &catalogs),
             Observation::NoFinding
         );
+    }
+
+    #[test]
+    fn split_route_observations_count_only_reviewed_delegated_fast_turns() {
+        let catalogs = ReportCatalogs {
+            fast_mode_delegated_turns_threshold: 2,
+            ..ReportCatalogs::default()
+        };
+        for (provider, speed, delegated, expected) in [
+            ("anthropic", "fast", 1, Observation::Finding),
+            ("anthropic", "priority", 1, Observation::Finding),
+            ("anthropic", "standard", 1, Observation::NoFinding),
+            ("anthropic", "fast", 0, Observation::NoFinding),
+            ("gateway", "fast", 1, Observation::ContractIncomplete),
+            ("anthropic", "unknown", 1, Observation::ContractIncomplete),
+        ] {
+            let mut evidence = with_fast_turns(0, 1, false);
+            evidence.identity.agent = "claude-code".to_owned();
+            let EvidenceValue::Complete(models) = &mut evidence.models else {
+                unreachable!()
+            };
+            models.control_observations = vec![
+                ModelControlObservation {
+                    provider: Some("anthropic".to_owned()),
+                    api: Some("messages".to_owned()),
+                    model: "claude-sonnet-5".to_owned(),
+                    effort: Some("low".to_owned()),
+                    speed: Some("fast".to_owned()),
+                    turns: TurnCounts {
+                        main_loop: 0,
+                        delegated: 1,
+                    },
+                },
+                ModelControlObservation {
+                    provider: Some(provider.to_owned()),
+                    api: Some("messages".to_owned()),
+                    model: "claude-sonnet-5".to_owned(),
+                    effort: Some("high".to_owned()),
+                    speed: Some(speed.to_owned()),
+                    turns: TurnCounts {
+                        main_loop: 1 - delegated,
+                        delegated,
+                    },
+                },
+            ];
+            models.speed_signal = SignalCoverage {
+                eligible_turns: 2,
+                present_turns: 2,
+            };
+            assert_eq!(
+                evaluate(&evidence, &catalogs),
+                expected,
+                "{provider}/{speed}/{delegated}"
+            );
+            let EvidenceValue::Complete(models) = &mut evidence.models else {
+                unreachable!()
+            };
+            models.control_observations.reverse();
+            assert_eq!(evaluate(&evidence, &catalogs), expected);
+        }
+    }
+
+    #[test]
+    fn zero_threshold_still_requires_a_delegated_fast_turn() {
+        let catalogs = ReportCatalogs {
+            fast_mode_delegated_turns_threshold: 0,
+            ..ReportCatalogs::default()
+        };
+        let mut evidence = with_fast_turns(1, 0, false);
+        let EvidenceValue::Complete(models) = &mut evidence.models else {
+            unreachable!()
+        };
+        models.control_observations.push(ModelControlObservation {
+            provider: Some("anthropic".to_owned()),
+            api: Some("messages".to_owned()),
+            model: "claude-sonnet-5".to_owned(),
+            effort: None,
+            speed: Some("fast".to_owned()),
+            turns: TurnCounts {
+                main_loop: 1,
+                delegated: 0,
+            },
+        });
+        assert_eq!(evaluate(&evidence, &catalogs), Observation::NoFinding);
+    }
+
+    #[test]
+    fn legacy_fast_turns_aggregate_across_models_and_normalized_labels() {
+        let catalogs = ReportCatalogs {
+            fast_mode_delegated_turns_threshold: 2,
+            ..ReportCatalogs::default()
+        };
+        let mut evidence = with_fast_turns(0, 1, false);
+        let EvidenceValue::Complete(models) = &mut evidence.models else {
+            unreachable!()
+        };
+        models
+            .fast_modes_by_model
+            .entry("claude-opus-5".to_owned())
+            .or_default()
+            .insert(
+                " Fast ".to_owned(),
+                TurnCounts {
+                    main_loop: 0,
+                    delegated: 1,
+                },
+            );
+        assert_eq!(evaluate(&evidence, &catalogs), Observation::Finding);
     }
 
     #[test]

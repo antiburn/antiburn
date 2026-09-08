@@ -16,7 +16,8 @@ use antiburn_local::discovery::source_version::{
     FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
 };
 use antiburn_local::insights::{
-    BadgeId, BadgeStatus, DetectorId, ReportCatalogs, eligible, session_badges,
+    BadgeId, BadgeStatus, CoverageCounts, DetectorId, DetectorStatus, EfficiencyReportAccumulator,
+    ReportCatalogs, ReportContext, ReportWindow, clean_facts_complete, eligible, session_badges,
 };
 use serde_json::{Value, json};
 
@@ -161,6 +162,379 @@ fn composite(input: &SessionInput) -> (SessionEvidence, SessionMetricsAccumulato
     let evidence = sink.evidence().expect("Codex evidence must publish");
     let (metrics, _evidence_accumulator) = sink.into_parts().expect("Codex metrics must publish");
     (evidence, metrics)
+}
+
+fn provider_input(records: Vec<Value>) -> SessionInput {
+    SessionInput {
+        agent: "codex".to_owned(),
+        session_id: "provider-controls".to_owned(),
+        source: RawSource::Jsonl(
+            records
+                .into_iter()
+                .enumerate()
+                .map(|(index, mut record)| {
+                    record["timestamp"] = json!(format!("2026-08-05T10:00:{index:02}Z"));
+                    record.to_string() + "\n"
+                })
+                .collect(),
+        ),
+        fork_parent_session_id: None,
+    }
+}
+
+fn provider_usage() -> Value {
+    json!({"type":"event_msg","payload":{"type":"token_count","info":{
+        "last_token_usage":{"input_tokens":300,"output_tokens":40}
+    }}})
+}
+
+#[test]
+fn provider_routes_from_the_reader_fail_closed_for_custom_and_invalid_providers() {
+    use antiburn_local::model_catalog::{
+        ModelCatalog, ReviewedModelCatalog, Support, model_control_target,
+    };
+
+    for provider in [
+        None,
+        Some(json!("openai")),
+        Some(json!("custom")),
+        Some(json!("azure")),
+        Some(Value::Null),
+        Some(json!("")),
+        Some(json!(42)),
+        Some(json!("openai".to_owned() + &"x".repeat(4096))),
+    ] {
+        let mut meta = json!({"type":"session_meta","payload":{}});
+        if let Some(provider) = &provider {
+            meta["payload"]["model_provider"] = provider.clone();
+        }
+        let input = provider_input(vec![
+            meta,
+            json!({"type":"turn_context","payload":{"model":"gpt-5.6","effort":"high"}}),
+            provider_usage(),
+        ]);
+        let (_, _, streamed) = collect(&input);
+        let legacy = reader_for("codex").normalize(&input).unwrap();
+        assert_eq!(streamed.events, legacy.events);
+        let (evidence, _) = composite(&input);
+        let EvidenceValue::Complete(models) = &evidence.models else {
+            panic!("provider evidence must be complete");
+        };
+        assert_eq!(models.control_observations.len(), 1);
+        let observation = &models.control_observations[0];
+        let default_route = provider.is_none() || provider == Some(json!("openai"));
+        if provider == Some(json!("openai")) {
+            assert_eq!(observation.provider.as_deref(), Some("openai"));
+            assert_eq!(observation.api.as_deref(), Some("responses"));
+        } else {
+            assert!(observation.api.is_none());
+        }
+        if !default_route {
+            assert!(observation.provider.is_some());
+        }
+        let target = model_control_target(
+            "codex",
+            observation.provider.as_deref(),
+            observation.api.as_deref(),
+            &observation.model,
+        );
+        assert_eq!(
+            matches!(
+                ReviewedModelCatalog::default().resolve(&target),
+                Support::Supported(_)
+            ),
+            default_route,
+            "unexpected catalog route for {provider:?}"
+        );
+    }
+}
+
+#[test]
+fn provider_effort_and_tier_changes_stay_on_their_own_requests() {
+    let input = provider_input(vec![
+        json!({"type":"session_meta","payload":{"model_provider":"openai"}}),
+        json!({"type":"turn_context","payload":{"model":"gpt-5.6","effort":"high"}}),
+        provider_usage(),
+        json!({"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{
+            "model_provider_id":"custom","model":"gpt-5.6","reasoning_effort":"low","service_tier":"priority"
+        }}}),
+        provider_usage(),
+        json!({"type":"event_msg","payload":{"type":"collab_agent_spawn_end","model":"child-model","reasoning_effort":"xhigh"}}),
+        json!({"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{
+            "reasoning_effort":null,"service_tier":null
+        }}}),
+        provider_usage(),
+        json!({"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{
+            "model_provider_id":"openai","reasoning_effort":"medium","service_tier":"default"
+        }}}),
+        provider_usage(),
+    ]);
+    let (_, _, streamed) = collect(&input);
+    assert_eq!(
+        streamed.events,
+        reader_for("codex").normalize(&input).unwrap().events
+    );
+    assert_eq!(streamed.events.len(), 4);
+    assert_eq!(streamed.events[2].provider.as_deref(), Some("custom"));
+    assert!(streamed.events[2].api.is_none());
+    assert!(streamed.events[2].thinking_mode.is_none());
+    assert!(streamed.events[2].speed.is_none());
+    let (evidence, _) = composite(&input);
+    let EvidenceValue::Complete(models) = &evidence.models else {
+        panic!("provider evidence must be complete");
+    };
+    let controls = models
+        .control_observations
+        .iter()
+        .map(|row| {
+            (
+                row.provider.as_deref(),
+                row.api.as_deref(),
+                row.effort.as_deref(),
+                row.speed.as_deref(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        controls,
+        vec![
+            (Some("openai"), Some("responses"), Some("high"), None),
+            (Some("custom"), None, Some("low"), Some("fast")),
+            (
+                Some("openai"),
+                Some("responses"),
+                Some("medium"),
+                Some("standard")
+            ),
+        ]
+    );
+    assert!(
+        models
+            .control_observations
+            .iter()
+            .all(|row| row.model == "gpt-5.6" && row.turns.main_loop == 1)
+    );
+}
+
+#[test]
+fn native_skill_listing_is_inventory_not_injection_or_invocation() {
+    let input = provider_input(vec![
+        json!({"type":"response_item","payload":{
+            "type":"message","role":"developer","content":[{"type":"input_text","text":
+                "## Skills\n- verify: Check the result. (file: /synthetic/.codex/skills/verify/SKILL.md)\n"
+            }]
+        }}),
+        json!({"type":"response_item","payload":{
+            "type":"message","role":"user","content":[{"type":"input_text","text":
+                "## Skills\n- invented: Do not treat user text as inventory.\n"
+            }]
+        }}),
+    ]);
+    let (evidence, _) = composite(&input);
+    let EvidenceValue::Complete(sources) = evidence.context_sources else {
+        panic!("context sources must be available");
+    };
+    assert_eq!(sources.skills.len(), 1);
+    let skill = &sources.skills["verify"];
+    assert!(skill.available);
+    assert!(!skill.injected);
+    assert!(!skill.invoked);
+    assert_eq!(sources.skill_coverage, EvidenceValue::Complete(()));
+}
+
+#[test]
+fn persisted_resource_exposure_keeps_exact_names_and_private_documents_out_of_evidence() {
+    let input = SessionInput {
+        agent: "codex".to_owned(),
+        session_id: "resource-exposure".to_owned(),
+        source: RawSource::Jsonl(
+            include_str!("fixtures/codex_characterization/resource_exposure.jsonl").to_owned(),
+        ),
+        fork_parent_session_id: None,
+    };
+    let (evidence, _) = composite(&input);
+    let persisted = serde_json::to_string(&evidence).unwrap();
+    for private in ["/synthetic/private", "Synthetic private", "# Verify"] {
+        assert!(!persisted.contains(private));
+    }
+    let EvidenceValue::Complete(sources) = evidence.context_sources else {
+        panic!("valid resource observations must remain available");
+    };
+    assert_eq!(sources.mcp_servers.len(), 2);
+    assert!(sources.mcp_servers["Calendar"].injected);
+    assert!(sources.mcp_servers["Calendar"].invoked);
+    assert!(!sources.mcp_servers["CalendarBackup"].invoked);
+    assert!(sources.skills["verify"].injected);
+    assert!(sources.skills["verify"].invoked);
+    let (_, _, streamed) = collect(&input);
+    assert_eq!(streamed, reader_for("codex").normalize(&input).unwrap());
+}
+
+#[test]
+fn tool_search_exposure_reaches_the_report_without_inventory_capabilities() {
+    for invoked in [false, true] {
+        for record_loss in [false, true] {
+            let mut records = vec![
+                json!({"type":"turn_context","payload":{"model":"gpt-5.6","effort":"high"}}),
+                json!({"type":"response_item","payload":{
+                    "type":"tool_search_output","status":"completed","execution":"client",
+                    "tools":[{"type":"namespace","name":"mcp__Calendar","tools":[{
+                        "type":"function","name":"read","parameters":{"type":"object"}
+                    }]}]
+                }}),
+                provider_usage(),
+            ];
+            if invoked {
+                records.push(json!({"type":"response_item","payload":{
+                    "type":"function_call","namespace":"mcp__Calendar","name":"read",
+                    "arguments":"{}","call_id":"read-1"
+                }}));
+            }
+            let mut input = provider_input(records);
+            if record_loss {
+                let RawSource::Jsonl(text) = &mut input.source else {
+                    unreachable!()
+                };
+                text.push_str("{malformed}\n");
+            }
+            let (evidence, _) = composite(&input);
+            assert!(!evidence.capabilities.mcp_inventory);
+            assert!(!evidence.capabilities.skill_inventory);
+            let sources = match &evidence.context_sources {
+                EvidenceValue::Complete(sources)
+                | EvidenceValue::Partial {
+                    observed: sources, ..
+                } => sources,
+                EvidenceValue::Unsupported => panic!("MCP-only observations must survive"),
+            };
+            assert_eq!(sources.skill_coverage, EvidenceValue::Unsupported);
+            assert_eq!(sources.mcp_servers["Calendar"].invoked, invoked);
+            assert_eq!(
+                matches!(sources.mcp_coverage, EvidenceValue::Complete(())),
+                !record_loss
+            );
+            let detector = DetectorId::UnusedMcpServers;
+            assert!(eligible(detector, &evidence));
+            assert!(!clean_facts_complete(detector, &evidence));
+            let mut accumulator = EfficiencyReportAccumulator::new();
+            accumulator.observe_session(evidence);
+            let report = accumulator.finish(ReportContext {
+                environment_key: "native".to_owned(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: 1,
+                },
+                computed_at_epoch: 1,
+                parser_revision: antiburn_local::analysis::PARSER_REVISION,
+                analyzer_revision: antiburn_local::analysis::ANALYZER_REVISION,
+                evidence_schema_revision: antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+                coverage: CoverageCounts::default(),
+            });
+            assert_eq!(
+                report.detectors[detector.index()].finding,
+                u64::from(!invoked && !record_loss)
+            );
+            assert_eq!(report.detectors[detector.index()].clean, 0);
+            assert_ne!(
+                report.detector_statuses[detector.index()],
+                DetectorStatus::Clean
+            );
+        }
+    }
+}
+
+#[test]
+fn selected_skill_schema_rejects_prose_listings_empty_documents_and_wrong_roles() {
+    for (role, text) in [
+        ("user", "Please use <skill>verify</skill>"),
+        (
+            "user",
+            "<skill>\n<name>verify</name>\n<path>/synthetic/SKILL.md</path>\n\n</skill>",
+        ),
+        (
+            "user",
+            "<skill>\n<name>verify</name>\nA listing only.\n</skill>",
+        ),
+        (
+            "assistant",
+            "<skill>\n<name>verify</name>\n<path>/synthetic/SKILL.md</path>\nFull document.\n</skill>",
+        ),
+    ] {
+        let (evidence, _) = composite(&provider_input(vec![
+            json!({"type":"response_item","payload":{
+                "type":"message","role":role,"content":[{"type":"input_text","text":text}]
+            }}),
+        ]));
+        match evidence.context_sources {
+            EvidenceValue::Complete(sources)
+            | EvidenceValue::Partial {
+                observed: sources, ..
+            } => {
+                assert!(sources.skills.values().all(|skill| !skill.injected));
+            }
+            EvidenceValue::Unsupported => {}
+        }
+    }
+}
+
+#[test]
+fn ambiguous_search_results_are_partial_not_injected() {
+    for payload in [
+        json!({"type":"tool_search_output","tools":[]}),
+        json!({"type":"tool_search_output","status":"completed","execution":"client","tools":[{"type":"namespace","name":"mcp__ambiguous__server","tools":[]}]}),
+        json!({"type":"tool_search_output","status":"completed","execution":"client","tools":[{"type":"namespace","name":"mcp__server","tools":[{"name":"read"}]}]}),
+    ] {
+        let (evidence, _) = composite(&provider_input(vec![
+            json!({"type":"response_item","payload":payload}),
+        ]));
+        assert!(matches!(evidence.coverage, EvidenceCoverage::Partial(_)));
+        let observed = match evidence.context_sources {
+            EvidenceValue::Complete(observed) | EvidenceValue::Partial { observed, .. } => observed,
+            EvidenceValue::Unsupported => panic!("Codex context sources must be available"),
+        };
+        assert!(observed.mcp_servers.is_empty());
+        assert!(!matches!(
+            observed.mcp_coverage,
+            EvidenceValue::Complete(())
+        ));
+    }
+}
+
+#[test]
+fn fork_requests_inherit_explicit_provider_and_controls_without_parent_usage() {
+    for provider in ["openai", "custom"] {
+        let input = provider_input(vec![
+            json!({"type":"session_meta","payload":{"thread_source":"subagent","agent_path":"worker","model_provider":provider}}),
+            json!({"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{
+                "model":"gpt-5.6","reasoning_effort":"high","service_tier":"priority"
+            }}}),
+            provider_usage(),
+            json!({"type":"event_msg","payload":{"type":"task_started"}}),
+            json!({"type":"response_item","payload":{"type":"agent_message","recipient":"worker"}}),
+            provider_usage(),
+        ]);
+        let (_, _, streamed) = collect(&input);
+        assert_eq!(
+            streamed.events,
+            reader_for("codex").normalize(&input).unwrap().events
+        );
+        assert_eq!(streamed.events.len(), 1);
+        let (evidence, _) = composite(&input);
+        let EvidenceValue::Complete(models) = &evidence.models else {
+            panic!("provider evidence must be complete");
+        };
+        let observations = &models.control_observations;
+        assert_eq!(observations.len(), 1);
+        let row = &observations[0];
+        assert_eq!(row.provider.as_deref(), Some(provider));
+        assert_eq!(
+            row.api.as_deref(),
+            (provider == "openai").then_some("responses")
+        );
+        assert_eq!(row.effort.as_deref(), Some("high"));
+        assert_eq!(row.speed.as_deref(), Some("fast"));
+        assert_eq!(row.turns.main_loop, 1);
+    }
 }
 
 fn golden_path(name: &str) -> PathBuf {
@@ -411,7 +785,6 @@ fn codex_detector_prerequisites_assess_only_supported_detectors() {
             DetectorId::SessionsOverDepth,
             DetectorId::ModelOverthinking,
             DetectorId::OverpoweredSubagents,
-            DetectorId::UnusedBuiltInTools,
             DetectorId::OldModelUsage,
             DetectorId::OveruseOfFastMode,
             // Codex reports `token_classes` and `request_context_tokens`.

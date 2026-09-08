@@ -66,6 +66,13 @@ pub enum ModelState {
     Obsolete(ModelReplacementEntry),
 }
 
+/// The meaning of the resolved effort value, not a provider translation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffortSemantics {
+    ProviderEffort,
+    AgentSelectedPolicy,
+}
+
 /// The catalog facts resolved for one provider route and model.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelDefinition {
@@ -74,6 +81,7 @@ pub struct ModelDefinition {
     pub family_policy: FamilyPolicy,
     pub state: ModelState,
     pub effort: Support<Option<String>>,
+    pub effort_semantics: EffortSemantics,
     pub service_tier: Support<Option<String>>,
     pub pricing: Support<ModelPricing>,
     pub repeated_context_accounting: Support<RepeatedContextAccounting>,
@@ -152,6 +160,18 @@ const ROUTES: &[Route] = &[
     Route {
         agent: "pi",
         provider: "openai",
+        api: "openai-responses",
+        family: ModelFamily::OpenAi,
+    },
+    Route {
+        agent: "pi",
+        provider: "openai-codex",
+        api: "openai-codex-responses",
+        family: ModelFamily::OpenAi,
+    },
+    Route {
+        agent: "pi",
+        provider: "openai",
         api: "openai-completions",
         family: ModelFamily::OpenAi,
     },
@@ -171,6 +191,12 @@ const ROUTES: &[Route] = &[
         agent: "pi",
         provider: "google",
         api: "generate-content",
+        family: ModelFamily::Google,
+    },
+    Route {
+        agent: "pi",
+        provider: "google",
+        api: "google-generative-ai",
         family: ModelFamily::Google,
     },
 ];
@@ -214,6 +240,11 @@ pub fn reviewed_model_state(
 impl ModelCatalog for ReviewedModelCatalog {
     fn resolve(&self, target: &ModelTarget) -> Support<ModelDefinition> {
         let agent = normalized_label(&target.agent);
+        let agent = if agent == "claude-code" {
+            "claude"
+        } else {
+            agent.as_str()
+        };
         let provider = normalized_label(&target.provider);
         let api = normalized_label(&target.api);
         if provider.is_empty() {
@@ -260,11 +291,33 @@ impl ModelCatalog for ReviewedModelCatalog {
             return unknown(CapabilityReason::ProviderModelMismatch);
         }
 
-        let Some(family_policy) = self.report_catalogs.families.get(&family).cloned() else {
+        let (family_policy, effort_semantics) = if agent == "pi" {
+            let mut policy = self
+                .report_catalogs
+                .families
+                .get(&family)
+                .cloned()
+                .unwrap_or_default();
+            // Pi selects an ordered policy level. Model maps and request overrides can change the provider effort.
+            policy.effort.recognized = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            policy.effort.above_cap = ["xhigh", "max"].into_iter().map(str::to_owned).collect();
+            (policy, EffortSemantics::AgentSelectedPolicy)
+        } else if let Some(policy) = self.report_catalogs.families.get(&family).cloned() {
+            (policy, EffortSemantics::ProviderEffort)
+        } else {
             return unknown(CapabilityReason::PolicyUnreviewed);
         };
-        let effort = resolve_effort(target.raw_effort.as_deref(), &family_policy);
-        let service_tier = resolve_service_tier(&agent, target.service_tier.as_deref());
+        let effort = if agent == "opencode" {
+            Support::Unsupported {
+                reason: CapabilityReason::PolicyUnreviewed,
+            }
+        } else {
+            resolve_effort(target.raw_effort.as_deref(), &family_policy)
+        };
+        let service_tier = resolve_service_tier(agent, target.service_tier.as_deref());
         let pricing = match lookup_pricing(&canonical) {
             Some(pricing) => Support::Supported(pricing),
             None => unknown(CapabilityReason::PricingUnavailable),
@@ -283,6 +336,7 @@ impl ModelCatalog for ReviewedModelCatalog {
             family_policy,
             state,
             effort,
+            effort_semantics,
             service_tier,
             pricing,
             repeated_context_accounting,
@@ -431,23 +485,87 @@ mod tests {
     }
 
     #[test]
-    fn opencode_effort_must_exist_in_the_resolved_family_policy() {
+    fn the_claude_discovery_slug_resolves_an_explicit_reviewed_route() {
         let catalog = ReviewedModelCatalog::default();
-        let mut target = ModelTarget::new("opencode", "anthropic", "messages", "claude-sonnet-5");
-        target.raw_effort = Some("minimal".to_owned());
-
+        let mut target = model_control_target(
+            " Claude-Code ",
+            Some("anthropic"),
+            Some("messages"),
+            "claude-sonnet-5",
+        );
+        target.raw_effort = Some("max".to_owned());
+        target.service_tier = Some("fast".to_owned());
         let resolved = definition(catalog.resolve(&target));
-
+        assert_eq!(resolved.effort, Support::Supported(Some("max".to_owned())));
         assert_eq!(
-            resolved.effort,
-            Support::Unknown {
-                reason: CapabilityReason::UnrecognizedEffort
-            }
+            resolved.service_tier,
+            Support::Supported(Some("fast".to_owned()))
         );
     }
 
     #[test]
-    fn pi_effort_resolves_only_after_the_model_family_resolves() {
+    fn explicit_or_incomplete_routes_do_not_fall_back_to_the_fixed_route() {
+        let catalog = ReviewedModelCatalog::default();
+        for agent in ["claude", "claude-code", "codex"] {
+            let model = if agent == "codex" {
+                "gpt-5.6"
+            } else {
+                "claude-sonnet-5"
+            };
+            for (provider, api, reason) in [
+                (
+                    Some("gateway"),
+                    Some("messages"),
+                    CapabilityReason::UnknownProvider,
+                ),
+                (None, Some("messages"), CapabilityReason::MissingProvider),
+                (Some("anthropic"), None, CapabilityReason::MissingApi),
+                (Some(""), Some(""), CapabilityReason::MissingProvider),
+            ] {
+                assert_eq!(
+                    catalog.resolve(&model_control_target(agent, provider, api, model)),
+                    Support::Unknown { reason },
+                    "{agent}: {provider:?}/{api:?}"
+                );
+            }
+        }
+        for agent in ["opencode", "pi", "antigravity"] {
+            assert_eq!(fixed_route_target(agent, "claude-sonnet-5"), None);
+        }
+    }
+
+    #[test]
+    fn opencode_variants_do_not_resolve_as_family_effort() {
+        let catalog = ReviewedModelCatalog::default();
+        for (provider, api, model) in [
+            ("anthropic", "messages", "claude-sonnet-5"),
+            ("openai", "responses", "gpt-5.6"),
+            ("google", "generate-content", "gemini-3.8-pro"),
+        ] {
+            for variant in [
+                None,
+                Some("high"),
+                Some("xhigh"),
+                Some("max"),
+                Some("custom"),
+            ] {
+                let mut target = ModelTarget::new("opencode", provider, api, model);
+                target.raw_effort = variant.map(str::to_owned);
+                let resolved = definition(catalog.resolve(&target));
+                assert_eq!(resolved.canonical_model_key, model);
+                assert_eq!(resolved.state, ModelState::Current);
+                assert_eq!(
+                    resolved.effort,
+                    Support::Unsupported {
+                        reason: CapabilityReason::PolicyUnreviewed
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pi_effort_resolves_only_after_the_route_and_model_resolve() {
         let catalog = ReviewedModelCatalog::default();
         let mut target = ModelTarget::new("pi", "openai", "responses", "gpt-5.6-luna");
         target.raw_effort = Some("minimal".to_owned());
@@ -458,6 +576,91 @@ mod tests {
             resolved.effort,
             Support::Supported(Some("minimal".to_owned()))
         );
+    }
+
+    // Reviewed upstream: https://github.com/badlogic/pi-mono/tree/b2602be77cb7b0de45dd616407fd210daa48aa75/packages/ai/src
+    // types.ts defines policy levels. models.ts clamps them. api/openai-responses.ts applies thinkingLevelMap.
+    // providers/openai.ts, openai-codex.ts, and google.ts declare the native provider/API pairs.
+    // api/google-generative-ai.ts maps medium to HIGH for Gemini Pro and permits custom token budgets.
+    #[test]
+    fn pi_native_routes_preserve_agent_policy_without_provider_translation() {
+        let catalog = ReviewedModelCatalog::default();
+        for (provider, api, model) in [
+            ("openai", "openai-responses", "gpt-5.6"),
+            ("openai-codex", "openai-codex-responses", "gpt-5.6"),
+            ("openai", "responses", "gpt-5.6"),
+            ("openai", "openai-completions", "gpt-5.6"),
+            ("anthropic", "anthropic-messages", "claude-sonnet-4.6"),
+            ("anthropic", "messages", "claude-sonnet-4.6"),
+            ("google", "google-generative-ai", "gemini-3.8-pro"),
+            ("google", "generate-content", "gemini-3.8-pro"),
+        ] {
+            for level in ["off", "minimal", "low", "medium", "high", "xhigh", "max"] {
+                let mut target = ModelTarget::new("pi", provider, api, model);
+                target.raw_effort = Some(level.to_owned());
+                let resolved = definition(catalog.resolve(&target));
+                assert_eq!(
+                    resolved.effort_semantics,
+                    EffortSemantics::AgentSelectedPolicy
+                );
+                assert_eq!(resolved.effort, Support::Supported(Some(level.to_owned())));
+                assert_eq!(
+                    resolved.family_policy.effort.above_cap.contains(level),
+                    matches!(level, "xhigh" | "max")
+                );
+            }
+            for level in ["none", "ultra", "32768", "adaptive", "unreviewed"] {
+                let mut target = ModelTarget::new("pi", provider, api, model);
+                target.raw_effort = Some(level.to_owned());
+                assert_eq!(
+                    definition(catalog.resolve(&target)).effort,
+                    unknown(CapabilityReason::UnrecognizedEffort)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pi_native_api_names_do_not_authorize_other_providers_or_models() {
+        let catalog = ReviewedModelCatalog::default();
+        for (provider, api, model, reason) in [
+            (
+                "",
+                "openai-responses",
+                "gpt-5.6",
+                CapabilityReason::MissingProvider,
+            ),
+            ("openai", "", "gpt-5.6", CapabilityReason::MissingApi),
+            (
+                "gateway",
+                "openai-responses",
+                "gpt-5.6",
+                CapabilityReason::UnknownProvider,
+            ),
+            (
+                "openai",
+                "google-generative-ai",
+                "gpt-5.6",
+                CapabilityReason::ApiModelMismatch,
+            ),
+            (
+                "google",
+                "google-generative-ai",
+                "gpt-5.6",
+                CapabilityReason::ProviderModelMismatch,
+            ),
+            (
+                "google",
+                "google-generative-ai",
+                "gemini-unreviewed",
+                CapabilityReason::UnknownModel,
+            ),
+        ] {
+            assert_eq!(
+                catalog.resolve(&ModelTarget::new("pi", provider, api, model)),
+                unknown(reason)
+            );
+        }
     }
 
     #[test]

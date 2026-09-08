@@ -1,10 +1,8 @@
 /**
  * Agent display registry.
  *
- * Maps the kebab-case slug the engine emits for an agent onto the three facts
- * the UI needs about it: what to call it, which icon slot it asks for, where
- * its sessions come from, and whether the analysis engine has a dedicated
- * adapter for its transcript format.
+ * Maps each engine slug to its display name, icon slot, session surface, and
+ * usable session analysis support.
  *
  * The registry holds an icon *name*, never artwork. Rendering an icon is the
  * caller's job: components in this app take a `renderAgentIcon` slot and are
@@ -25,9 +23,8 @@ interface AgentInfo {
    */
   defaultSurface: AgentSurface
   /**
-   * Whether the analysis engine has a dedicated adapter for this agent's
-    * transcript format. A dedicated fail-closed reader can support a source
-    * while leaving checks unavailable when the persisted format lacks evidence.
+   * Whether the engine has a usable session parser for this agent.
+   * Passive source registration does not enable analysis.
    */
   supportsAnalysis: boolean
 }
@@ -58,13 +55,13 @@ const AGENTS: Record<string, AgentInfo> = {
     displayName: "GitHub Copilot",
     icon: "copilot",
     defaultSurface: "unknown",
-    supportsAnalysis: true,
+    supportsAnalysis: false,
   },
   cline: {
     displayName: "Cline",
     icon: "cline",
     defaultSurface: "unknown",
-    supportsAnalysis: true,
+    supportsAnalysis: false,
   },
   opencode: {
     displayName: "OpenCode",
@@ -76,13 +73,13 @@ const AGENTS: Record<string, AgentInfo> = {
     displayName: "Kiro",
     icon: "kiro",
     defaultSurface: "ide_desktop",
-    supportsAnalysis: true,
+    supportsAnalysis: false,
   },
   "amp-code": {
     displayName: "Amp",
     icon: "amp",
     defaultSurface: "cli",
-    supportsAnalysis: true,
+    supportsAnalysis: false,
   },
   antigravity: {
     displayName: "Antigravity",
@@ -94,7 +91,7 @@ const AGENTS: Record<string, AgentInfo> = {
     displayName: "Windsurf",
     icon: "windsurf",
     defaultSurface: "ide_desktop",
-    supportsAnalysis: true,
+    supportsAnalysis: false,
   },
   pi: {
     displayName: "Pi",
@@ -134,8 +131,7 @@ export function defaultAgentSurface(slug: string): AgentSurface {
 }
 
 /**
- * Whether the analysis engine has a dedicated adapter for this agent. Agents
- * without a dedicated reader return false.
+ * Whether the engine has a usable session parser for this agent.
  */
 export function agentSupportsAnalysis(slug: string): boolean {
   return AGENTS[slug]?.supportsAnalysis ?? false

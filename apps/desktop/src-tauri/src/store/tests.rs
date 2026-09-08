@@ -2819,7 +2819,7 @@ async fn reprocessing_a_revision_one_row_leaves_no_placeholder_in_stored_evidenc
 
     let ready = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(ready.status, EvidenceStatus::Ready);
-    assert_eq!(ready.evidence_schema_revision, Some(16));
+    assert_eq!(ready.evidence_schema_revision, Some(17));
     assert!(!ready.evidence_json.unwrap().contains("unimplemented"));
 }
 
@@ -2861,7 +2861,7 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
 
     let failed = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(failed.status, EvidenceStatus::Failed);
-    assert_eq!(failed.evidence_schema_revision, Some(16));
+    assert_eq!(failed.evidence_schema_revision, Some(17));
     assert!(failed.evidence_json.is_none());
 }
 
@@ -3737,6 +3737,8 @@ fn turn_row(turn_index: u64) -> TurnRow {
         role: "assistant",
         ts_ms: Some(1_000 + turn_index as i64),
         model: Some("claude-opus-4-6".into()),
+        provider: None,
+        api: None,
         effort: None,
         speed: None,
         input_tokens: 10,

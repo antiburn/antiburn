@@ -28,10 +28,10 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
     assert_eq!(
         crate::analysis::projection_revisions(),
         ProjectionRevisions {
-            parser_revision: 30,
-            analyzer_revision: 20,
+            parser_revision: 31,
+            analyzer_revision: 21,
             metrics_schema_revision: 8,
-            evidence_schema_revision: 16,
+            evidence_schema_revision: 17,
         }
     );
 }

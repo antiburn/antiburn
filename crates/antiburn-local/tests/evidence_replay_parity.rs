@@ -248,6 +248,22 @@ fn run_fixture_and_replay(
         (facts, record)
     });
     let replayed = evidence_from_facts(&facts, &record);
+    assert_eq!(record.coverage_schema_revision, 4);
+    assert_eq!(replayed.schema_revision, 17);
+    let json_evidence: SessionEvidence =
+        serde_json::from_str(&serde_json::to_string(&replayed).unwrap()).unwrap();
+    assert_eq!(replayed, json_evidence);
+    let binary_evidence: SessionEvidence =
+        postcard::from_bytes(&postcard::to_allocvec(&replayed).unwrap()).unwrap_or_else(|error| {
+            panic!("fixture {fixture}: evidence postcard decode failed: {error}")
+        });
+    assert_eq!(replayed, binary_evidence);
+    let binary_record = postcard::from_bytes(&postcard::to_allocvec(&record).unwrap())
+        .unwrap_or_else(|error| {
+            panic!("fixture {fixture}: coverage postcard decode failed: {error}")
+        });
+    assert_eq!(record, binary_record);
+    assert_eq!(replayed, evidence_from_facts(&facts, &binary_record));
     (live, replayed)
 }
 

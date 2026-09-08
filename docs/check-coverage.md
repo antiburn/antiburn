@@ -1,10 +1,11 @@
 # Burn Check Source Coverage
 
-Audit date: 2026-09-07.
+Audit date: 2026-09-08.
 
 This document covers local passive evidence only. Coverage must not use hooks,
-extensions, runtime subscriptions, or agent calls to fill evidence gaps. The
-current OpenCode WSL discovery exception is recorded in `session-coverage.md`.
+new extensions, runtime subscriptions, or agent calls to fill evidence gaps. Existing
+persisted output from the reviewed Pi example extension is a passive input. The
+current OpenCode WSL discovery conflict is recorded in `session-coverage.md`.
 
 See [`session-coverage.md`](session-coverage.md) for discovery, framing, parsing,
 companion-source, and provider-route coverage for the same source formats.
@@ -15,12 +16,13 @@ companion-source, and provider-route coverage for the same source formats.
 | --- | --- |
 | Assessable | The current reader can produce the evidence needed for a finding and a clean result. A damaged or incomplete session can still be partial. |
 | Partial | The source has useful passive evidence, but the current reader or the source cannot prove all required facts. Do not report a clean result. |
-| Unsupported | The audited passive source does not save a required fact. More parsing of the same source cannot make the check assessable. |
+| Unsupported | The reviewed passive sources do not prove a required fact or its policy semantics. This is source-scoped, not a claim about future formats. |
 | Unknown | The source or its relevant field semantics are not characterized. Do not infer support from a path, field name, mode name, or generic JSON shape. |
 
-`Partial` does not mean that the related work is implemented. The limitation
-tables state whether parsing exists. `Unsupported` is a passive-source result,
-not a statement about what the agent can do at run time.
+`Partial` can mean finding-only support or an unimplemented evidence path. The
+limits below distinguish them. `Assessable` describes the accepted source
+contract, not every session or historical release. Complete session facts,
+eligible activity, and reviewed model/provider policy remain necessary for clean.
 
 ## Checks
 
@@ -38,17 +40,18 @@ not a statement about what the agent can do at run time.
 
 ## Source Inventory
 
-The repository does not yet pin vendor schema versions. "Fixture-backed" means
-that committed synthetic fixtures cover the current parsed shape. It does not
-mean that all vendor releases use that shape.
+The tables list all 26 `SourceFormat` keys. Known source shape and release
+version are separate facts. A version range is not always available; an accepted
+schema, header, or pinned producer commit with synthetic fixtures can establish
+a bounded contract. No row promises parity across all historical versions.
 
 | `SourceFormat` | Passive source format | Version statement | Current reader |
 | --- | --- | --- | --- |
-| `ClaudeJsonl` | Claude Code session JSONL | Unversioned; current shape is fixture-backed | Dedicated |
-| `CodexRolloutJsonl` | Codex rollout JSONL, with discovered child rollouts | Unversioned; current shape is fixture-backed | Dedicated |
-| `OpenCodeJsonl` | OpenCode legacy exported session data | Unversioned; current shape is fixture-backed | Dedicated |
-| `OpenCodeSqliteV2` | OpenCode V2 SQLite session data | V2 is detected, but no vendor version range is pinned | Dedicated |
-| `PiV3Jsonl` | Pi session JSONL | Header version 3 is fixture-backed | Dedicated |
+| `ClaudeJsonl` | Claude Code session JSONL and child sidecars | Accepted persisted shapes have synthetic fixtures; no universal release range | Dedicated |
+| `CodexRolloutJsonl` | Codex rollout JSONL, with discovered child rollouts | Accepted rollout/protocol shapes and pinned producer research below; synthetic fixtures | Dedicated |
+| `OpenCodeJsonl` | OpenCode legacy exported session data | Accepted export wrappers and native message/part shapes; pinned research below | Dedicated |
+| `OpenCodeSqliteV2` | OpenCode SQLite `session`, `message`, `part` tables | Fixture-backed table contract; not CoreV2 `session_message` | Dedicated |
+| `PiV3Jsonl` | Pi session JSONL | Header version 3 and pinned core/example-extension shapes; synthetic fixtures | Dedicated |
 | `CursorJsonl` | Cursor compatibility JSONL without a surface marker | Unversioned and uncharacterized | Dedicated shared Cursor reader |
 | `CursorCliAgentJsonl` | Cursor agent transcript JSONL | Unversioned; current synthesis is partial | Dedicated shared Cursor reader |
 | `CursorCliStoreDb` | Cursor CLI `chats/**/store.db` data | Private and unversioned; current synthesis is partial | Dedicated shared Cursor reader |
@@ -58,7 +61,7 @@ mean that all vendor releases use that shape.
 | `AntigravityBrainJsonl` | Antigravity brain transcript JSONL | Unversioned; current shape is partially characterized | Dedicated |
 | `AntigravityCascadeJson` | Antigravity API cascade or mirror JSON | Unversioned; current shape is partially characterized | Dedicated |
 | `AntigravityWorkspaceChatJson` | Antigravity workspace `chatSessions/*.json` | Unversioned and uncharacterized | Dedicated fail-closed profile |
-| `AntigravitySqlite` | Native `conversations/<uuid>.db` plus an optional brain transcript | Antigravity 2.0 subset from embedded descriptors; private schema | Dedicated |
+| `AntigravitySqlite` | Native `conversations/<uuid>.db` plus an optional brain transcript | Private descriptor subset; installed 2.11.0 research below, not full schema support | Dedicated |
 | `CopilotCliJsonl` | `session-state/<id>/events.jsonl` | Copilot CLI GA 2026 shape; no exact schema revision is pinned | Dedicated fail-closed |
 | `CopilotIdeChatJson` | VS Code-family `chatSessions/*.json` | Unversioned; IDE and CLI contracts are separate | Dedicated fail-closed |
 | `ClineSessionJson` | Cline metadata and message companion | Cline 2.0+ naming is known; message schemas are not pinned | Dedicated fail-closed |
@@ -73,28 +76,27 @@ mean that all vendor releases use that shape.
 
 ## Coverage Matrix
 
-This matrix is the safe coverage contract. It can be stricter than current
-binary runtime capability flags when implementation gaps exist. An
-implementation that lets a `Partial` or `Unknown` cell return `Clean` is a
-coverage bug.
+This manual matrix records implemented eligibility and audited source limits,
+not just binary capability flags. The inventory test checks keys and cell
+vocabulary; behavior tests separately check finding and clean gates.
 
 | `SourceFormat` | D | T | S | M | B | K | O | F | C |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `ClaudeJsonl` | Assessable | Partial | Partial | Partial | Partial | Partial | Assessable | Partial | Partial |
-| `CodexRolloutJsonl` | Assessable | Partial | Assessable | Unsupported | Partial | Unsupported | Assessable | Partial | Partial |
-| `OpenCodeJsonl` | Assessable | Partial | Partial | Partial | Partial | Partial | Assessable | Unsupported | Unsupported |
-| `OpenCodeSqliteV2` | Assessable | Partial | Partial | Partial | Partial | Partial | Assessable | Unsupported | Partial |
-| `PiV3Jsonl` | Assessable | Partial | Unsupported | Unsupported | Partial | Partial | Assessable | Unsupported | Unsupported |
-| `CursorJsonl` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown |
+| `ClaudeJsonl` | Assessable | Assessable | Assessable | Partial | Partial | Partial | Assessable | Assessable | Assessable |
+| `CodexRolloutJsonl` | Assessable | Assessable | Assessable | Partial | Partial | Partial | Assessable | Assessable | Assessable |
+| `OpenCodeJsonl` | Assessable | Unsupported | Assessable | Unsupported | Unsupported | Partial | Assessable | Unsupported | Assessable |
+| `OpenCodeSqliteV2` | Assessable | Unsupported | Assessable | Unsupported | Unsupported | Partial | Assessable | Unsupported | Assessable |
+| `PiV3Jsonl` | Assessable | Assessable | Partial | Unsupported | Unsupported | Unsupported | Assessable | Unsupported | Assessable |
+| `CursorJsonl` | Unsupported | Unknown | Unknown | Unknown | Unknown | Unknown | Partial | Unknown | Unknown |
 | `CursorCliAgentJsonl` | Unsupported | Unknown | Partial | Partial | Partial | Unknown | Partial | Unknown | Unsupported |
 | `CursorCliStoreDb` | Unsupported | Unknown | Partial | Partial | Partial | Unknown | Partial | Unknown | Unsupported |
 | `CursorIdeComposer` | Unsupported | Unknown | Partial | Partial | Partial | Unknown | Partial | Unknown | Unsupported |
 | `CursorLegacyChatJson` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown |
-| `AntigravityJson` | Partial | Unknown | Partial | Partial | Partial | Unknown | Partial | Unknown | Unsupported |
-| `AntigravityBrainJsonl` | Partial | Unknown | Partial | Partial | Partial | Unknown | Partial | Unknown | Unsupported |
-| `AntigravityCascadeJson` | Partial | Unknown | Partial | Partial | Partial | Unknown | Partial | Unknown | Unsupported |
+| `AntigravityJson` | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial | Unsupported | Unsupported |
+| `AntigravityBrainJsonl` | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial | Unsupported | Unsupported |
+| `AntigravityCascadeJson` | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial | Unsupported | Unsupported |
 | `AntigravityWorkspaceChatJson` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown |
-| `AntigravitySqlite` | Partial | Unknown | Partial | Unsupported | Unsupported | Unsupported | Partial | Unknown | Partial |
+| `AntigravitySqlite` | Partial | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Partial | Unsupported | Unsupported |
 | `CopilotCliJsonl` | Unsupported | Partial | Partial | Partial | Unsupported | Partial | Partial | Unknown | Unsupported |
 | `CopilotIdeChatJson` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Partial | Unknown | Unknown |
 | `ClineSessionJson` | Unknown | Unknown | Unknown | Partial | Partial | Unknown | Partial | Unknown | Unknown |
@@ -107,108 +109,99 @@ coverage bug.
 | `WindsurfCascadeProtobuf` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown |
 | `Uncharacterized` | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown | Unknown |
 
-## Dedicated Reader Limits
+## Evidence Boundaries
 
-An assessable entry needs no source upgrade. It still needs complete accepted
-input, recognized records, and the reviewed model policy used by the check.
+No current reader proves a full historical resource inventory. All M/B/K checks
+deny session-wide `Clean`, even when a nested observed-resource map is complete.
+A scoped finding requires complete coverage of that observed subset, calls, and
+eligible activity. An unrelated partial resource group does not block it.
 
-| Source | Checks | Exact passive limitation | Upgrade condition |
+Skills mean full documents injected into model context. Listings, installed
+skills, and names in tool calls do not prove unused document overhead. Resource
+identity is retained without copying private document bodies into evidence.
+
+| Source | Checks | Implemented contract and remaining limit |
+| --- | --- | --- |
+| Claude and Codex | D, O | Direct request depth and timed model use reach checks independently of token-accounting policy. Clean needs all required session facts and reviewed model state. Unknown models are not automatically current. |
+| Claude and Codex | T, F | Request-level model, effort, speed, and route observations are evaluated together. Codex preserves explicit provider/control changes and inherited fork state; child controls retain delegated scope. Missing eligible signals or unreviewed routes deny clean. |
+| Claude | S | Exact `Task`/`Agent` call IDs join unique sidecar `toolUseId` claims to actual child models and the model on the parent call. Missing, duplicate, malformed, mismatched, or nested-parent claims remain partial. Requested model aliases and directory ancestry are not proof. |
+| Codex | S | Owned `spawn_agent` records and discovered child rollouts provide delegation and actual models. Incomplete child evidence cannot prove clean. |
+| Claude | M, K | Observed MCP injection plus exact server calls and full skill-document injection plus invocation identity support scoped findings. Skill listings alone do not. The observed subset is not a historical inventory. |
+| Codex | M | Accepted completed client `tool_search_output` namespace records expose exact MCP server identities. Complete observed exposure and calls support scoped findings without a full-inventory capability. Ambiguous or incomplete search results do not establish injection. |
+| Claude and Codex | B | The existing harness-version/model catalog path supports scoped definition findings with complete calls. Deferred, situational, and zero-cost definitions are excluded. Catalog resolution does not prove every historical enabled tool or exposure change; it cannot justify a whole-inventory claim. |
+| Codex | K | Selected full skill documents reach observed injection/invocation evidence. Listings remain availability only. Selected documents do not establish unused listing overhead or full inventory coverage. |
+| OpenCode | S | Native `task` metadata identifies the child session and model; ancestry and the child's assistant model must agree. The parent model comes from the task request. A bare `subtask`, fork, or `parent_id` relation is insufficient. |
+| OpenCode | K | Complete native selected-skill results preserve full identity as injected and invoked. Truncated, compacted, empty, or invalid result wrappers do not prove full injection. This is observed selected-skill support, not an unused-listing finding or complete inventory. |
+| OpenCode | T, M, B, F | Confirmed unsupported for the reviewed sources: no historical effort map, model-facing resource inventories, or effective speed tier. Variant labels, current configuration, and tool registries cannot substitute. |
+| Pi | T | `EffortSemantics::AgentSelectedPolicy` evaluates the saved agent-selected thinking level, not translated provider effort. Reviewed native routes and branch/fork policy state are retained. Missing levels/routes and unknown models fail closed; provider overrides are not guessed. |
+| Pi | S | Existing output from the official subagent example extension supplies nested `toolResult` messages, exact native call/worker identity, and actual models. This is finding-only. Arbitrary extensions, fork ancestry, requested aliases, and a nonpremium observed worker cannot establish clean. |
+| Pi | M, B, K, F | Confirmed unsupported for the reviewed sources. Tool calls and bounded skill invocation identity do not establish historical resource exposure or speed. No alternative local proof was identified. |
+| Claude, Codex, OpenCode, Pi | C | Durable request provider/API fields and the compatible-request query select reviewed cache-write or uncached-input accounting. Main-thread identity, order, token classes, model, route, and compaction boundaries constrain pairs. Unknown or incompatible segments remain partial, not clean. Google cache policy remains unreviewed. |
+| OpenCode | C | Both accepted export and SQLite shapes use validated ordered history. `parentID` identifies the user being answered, not the predecessor. Missing wrappers/timestamps, duplicate or out-of-order messages, and unresolved forks prevent complete history. CoreV2 `session_message` is not the existing SQLite table contract. |
+| Cursor | D, O | O retains direct timed-model findings; the source gate denies clean on every surface. D remains unavailable because the current reader does not emit request-usage evidence. Synthetic source-gate tests do not establish native parsing support. |
+| Cursor | T, S, M, B, K, F, C | Broader surface characterization is deferred. Current settings, relations, inventories, and cache evidence remain partial, unknown, or unsupported as listed; no new parity claim is made. |
+| Antigravity | D, O | Brain/cascade steps and native SQLite preserve direct usage/model findings where present. Missing model/time is not filled from an earlier step or an invented database timestamp. Private identity, enum, and completeness gaps deny clean. |
+| Antigravity | T, S, M, B, K, F, C | Confirmed unsupported in the reviewed native evidence. Token classes do not establish compatible request linkage or cache cause. Runtime descriptors and unproved relationship sidecars do not establish persisted delegation, controls, or resource exposure. Workspace chat remains uncharacterized. |
+
+Cursor can use its explicit synthesized source-header model, but does not borrow
+the previous message's model. This preserves existing basic support without
+claiming native per-request completeness.
+
+## Confirmation Ledger
+
+The maintainer confirmed these source-scoped decisions on 2026-09-08. The
+alternatives below were reviewed; none authorizes runtime collection or claims
+future impossibility. Workspace/unknown shapes retain `Unknown` rather than
+inheriting a native format's contract.
+
+| Date | Agent | Named checks | Decision and alternatives reviewed |
 | --- | --- | --- | --- |
-| Claude | T | Effort now keeps its request-level model association, and incomplete eligible activity cannot read clean. Provider-route semantics remain incomplete. | Add reviewed provider-route mappings for every persisted route. |
-| Claude | S | Sidechain links and models are saved, but an event parent alone does not always prove worker delegation. | Accept only a characterized spawn or worker relation. Keep the actual parent and child model on that relation. |
-| Claude | M | Loaded MCP data and exact `mcp__<server>__<tool>` calls exist. The source does not preserve all exposure changes. | Preserve exposure boundaries and complete call coverage when the source provides them. |
-| Claude | B | Calls and a built-in catalog path exist. A generic catalog does not prove the effective enabled or deferred tool surface for every version. | Pin the harness version and model. Resolve the effective enabled surface and deferred state. Test positive, negative, and incomplete sessions. |
-| Claude | K | Loaded and invoked skill data preserve full identity. Reliable origin and every injection boundary remain incomplete. | Preserve reliable origin, injection boundaries, and complete invocation coverage. |
-| Claude | F | The transcript can save `fast`, and incomplete eligible activity cannot read clean. Delegated scope is not complete for every request. | Preserve each request's effective speed and delegation scope. |
-| Claude | C | Token classes and order exist. Accounting is explicit for this format but does not isolate every compatible request segment. | Normalize accounting per request or compatible segment. Preserve links, provider changes, and compactions. |
-| Codex | T | Reasoning effort keeps its request-level model association. Inherited settings are not complete. | Preserve explicit and inherited effort with each request. Resolve it through reviewed provider and model mappings. |
-| Codex | M | Tool calls can be read. The persisted rollout does not provide a complete loaded MCP inventory through the current reader. | Connect a passive, versioned loaded inventory and exact native call attribution. If no passive inventory exists, change this entry to `Unsupported`. |
-| Codex | B | Tool calls and harness-version evidence now reach the check path. The effective enabled and deferred surface is not proved. | Reconstruct the effective surface for the observed version and model. |
-| Codex | K | Skill listings exist outside the current check path. A listing does not prove that a skill document entered model context. | Connect listings and skill reads. Preserve full identity, origin, injection state, and complete invocation coverage. |
-| Codex | F | Service-tier settings are saved, but inherited tier and delegated scope are not complete for every eligible request. | Preserve the effective tier per request and worker. Require complete eligible activity before a clean result. |
-| Codex | C | Ordered usage uses explicit uncached-input accounting. Mixed accounting shapes are not complete for all records. | Pin each API accounting shape and reject mixed or missing accounting from clean coverage. |
-| OpenCode | T | A variant name is saved, but an arbitrary variant name is not a reasoning-effort value. | Resolve the effective variant through the provider connection and model catalog. Preserve the request-level model association. |
-| OpenCode | S | Session parent rows are saved. A parent session or fork relation does not by itself prove delegated work. | Require a characterized delegation event and retain the actual parent and worker models. |
-| OpenCode | M | Tool calls exist, but the current reader has no loaded MCP inventory or exact server attribution. | Parse a passive loaded inventory and native tool-to-server identity for the applicable legacy or V2 format. |
-| OpenCode | B | Tool calls exist, but no versioned effective built-in tool surface is parsed. | Parse the enabled and deferred tool surface for the detected format and version. |
-| OpenCode | K | Skill calls can appear as tools, but loaded or injected skills and reliable origins are not complete. | Parse the loaded inventory and injection boundaries. Preserve full identities and invocation coverage. |
-| OpenCode | F | The audited session sources do not save an effective service tier or speed setting. Routing and variant names are not speed evidence. | A new passive source must save the effective tier per eligible request and worker. Otherwise this check remains unsupported. |
-| OpenCode | C | V2 SQLite uses uncached-input accounting. Legacy JSONL has no reviewed repeated-context contract. Provider semantics can change within one session. | Resolve provider and API accounting per request or compatible segment. Keep JSONL unsupported until characterized. |
-| Pi | T | Thinking-level rows exist, but labels are not resolved against each model's supported mapping. | Resolve each level through the provider connection and model. Preserve the request-level association. |
-| Pi | S | Continuation and fork links are saved. They do not establish a worker delegation relation or worker model. | A new passive record must identify a delegated child and its effective model. Do not use fork ancestry as a substitute. |
-| Pi | M | Tool blocks do not save a complete loaded MCP inventory or reliable server origin. | A new passive source must save model-facing MCP exposure and exact call attribution. Otherwise this check remains unsupported. |
-| Pi | B | Tool calls are saved, but the effective built-in tool definitions and deferred surface are not. | Add a versioned catalog only when the session saves the inputs needed to select the effective surface. |
-| Pi | K | Skill invocation detail can be present, but loaded or injected skill coverage and reliable origins are incomplete. | Preserve native invocation identity and parse a complete model-facing skill inventory with injection boundaries. |
-| Pi | F | Session files do not save an effective service tier or speed setting. Thinking level is not speed evidence. | A new passive source must save the effective tier per eligible request and worker. Otherwise this check remains unsupported. |
-| Pi | C | Pi V3 token classes vary by the selected API and do not identify repeated paid context. | A characterized passive source must identify repeated context per request. Otherwise this check remains unsupported. |
-| Cursor CLI and IDE | D | Current Cursor synthesis does not retain request usage. Session totals cannot establish request depth. | Preserve native per-request context usage from a characterized CLI or IDE record. Test the two surfaces separately. |
-| Cursor CLI and IDE | T | No characterized persisted field proves effective reasoning effort. Mode names and thinking text are not settings. | Characterize an explicit effective effort field, its model mapping, and its request coverage for each surface. |
-| Cursor CLI and IDE | S | Some native records can save worker identity, but current synthesis drops structured relation data and models. | Preserve a native spawn relation, parent model, worker model, record identity, and timestamps. Test CLI and IDE separately. |
-| Cursor CLI and IDE | M | Structured tool calls can be saved, but synthesis loses attribution arguments and no complete loaded inventory reaches evidence. | Preserve calls and exact server arguments. Parse complete historical model-facing MCP exposure for each surface. |
-| Cursor CLI and IDE | B | Tool calls can be saved, but no effective enabled or deferred built-in surface reaches evidence. | Preserve structured calls and reconstruct a versioned effective tool surface for each surface. |
-| Cursor CLI and IDE | K | The audit has not proved a complete persisted skill inventory, injection boundary, and invocation contract. | Characterize all three facts separately for CLI and IDE before enabling the check. |
-| Cursor CLI and IDE | O | Model names can be saved and the reader emits some names. Current check coverage lacks complete timing and source-shape coverage. | Preserve model identity and timing for every eligible request. Pin aliases and reviewed replacement policy per surface. |
-| Cursor CLI and IDE | F | The audit has not proved a persisted effective speed tier. A fast model, routing preset, or latency is not a tier. | Characterize an explicit effective tier with request and worker scope for each surface. |
-| Cursor CLI and IDE | C | Current synthesized records do not retain the per-request token classes needed for repeated-context accounting. | Preserve characterized token classes, provider accounting, order, links, and compaction boundaries. |
-| Antigravity file | D | Some steps save direct usage, but brain traces usually omit usage and mixed file shapes do not prove complete request coverage. | Declare capability per file shape. Require per-request usage coverage or pair the session with its native database. |
-| Antigravity file | T, F | No characterized file field proves effective reasoning effort or speed tier. Thinking text, latency, and model names are not settings. | Characterize explicit effective settings with request and worker scope. |
-| Antigravity file | S | Captured relationship sidecars can contain links, but the current reader does not connect them or prove delegation. | Pair and fingerprint the sidecar. Preserve a native delegation relation and both effective models. |
-| Antigravity file | M, B | Tool calls can be saved, but model-facing MCP inventory, exact server origin, and effective built-in definitions are incomplete. | Parse exposure, attribution, and the versioned enabled surface independently for each file shape. |
-| Antigravity file | K | The audit has not proved loaded and invoked skill evidence with reliable origins. | Characterize inventory, injection, invocation, and origin for each file shape. |
-| Antigravity file | O | Direct model values can exist, but placeholders and shape-specific gaps prevent complete canonical identity coverage. | Resolve saved model enums or aliases and require identity plus timing on every eligible generation. |
-| Antigravity file | C | Characterized files do not provide complete cache-write and cache-read classes per request. | Use the native database or characterize another passive source with all required token classes and request order. |
-| Antigravity SQLite | T, F | Usage rows do not expose characterized effective effort or speed settings. Thinking-token counts and latency are not settings. | Add support only if a passive row saves the explicit effective setting and request scope. |
-| Antigravity SQLite | D | Usage rows provide request token counts, but they do not prove complete logical thread membership for a clean result. | Preserve a characterized thread identity or pair a source that provides it. Keep missing links partial. |
-| Antigravity SQLite | S | The database usage rows do not prove delegation. Separate relationship sidecars are not connected. | Pair and fingerprint a characterized sidecar that proves delegation and both models. |
-| Antigravity SQLite | M, B, K | Generation and step usage rows do not contain a complete model-facing resource inventory or reliable resource origins. | Pair a characterized passive resource source with matching observation boundaries. Otherwise these checks remain unsupported. |
-| Antigravity SQLite | O | Model enums and names are saved, but the private mapping and unknown values are not a complete reviewed identity policy. | Pin descriptor-derived mappings and preserve unknown models as unknown. Require complete generation timing. |
-| Antigravity SQLite | C | The database saves all token classes, retries, timestamps, and model names. The private schema and request linkage still limit a clean churn cause. | Pin the accounting subset. Preserve compatible request order and links, mixed-provider boundaries, and compactions. |
+| 2026-09-08 | Pi | M (MCP), B (built-ins), K (skills), F (fast mode) | Unsupported. Core session persistence, resource/tool configuration, and official example-extension output do not supply alternative historical inventories or speed proof. See [Pi source][pi-source]. |
+| 2026-09-08 | OpenCode | M (MCP), B (built-ins), F (fast mode), T (overthinking) | Unsupported. Legacy/native message schemas, CoreV2 `session_message`, and the tool registry do not save historical inventories, effective tier, or a request-resolvable effort map. See [v1.2.0 source][opencode-v1] and [CoreV2 source][opencode-core]. |
+| 2026-09-08 | Antigravity | T (overthinking), S (subagents), M (MCP), B (built-ins), K (skills), F (fast mode), C (cache churn) | Unsupported. Installed 2.11.0 descriptors, native conversation databases, brain/cascade data, and adapter protobuf research provide no alternative native proof for these checks. See [adapter research][antigravity-adapter]. |
+| 2026-09-08 | Claude, Codex, OpenCode | M/B/K where observed evidence exists | Approved scoped observed-resource findings only. Complete observed subset plus calls is required; no session-wide clean without full inventory. Codex exact server exposure and selected documents are covered by [rollout/protocol/skills research][codex-source]. |
+| 2026-09-08 | Pi | T, S | T is explicitly agent-selected policy on reviewed routes. S is limited to persisted official example-extension nested results and actual models, finding-only. See [core/session and examples/extensions/subagent][pi-source]. |
 
-## Uncharacterized Source Limits
+[opencode-v1]: https://github.com/anomalyco/opencode/tree/ffc000de8e446c63d41a2e352d119d9ff43530d0
+[opencode-core]: https://github.com/anomalyco/opencode/tree/ecbc6ccac85b3e8087b6445e584318419b9e2b34
+[pi-source]: https://github.com/badlogic/pi-mono/tree/b2602be77cb7b0de45dd616407fd210daa48aa75/packages/coding-agent
+[codex-source]: https://github.com/openai/codex/tree/e7637306bc9246a3e42e407cb94f96b7ed345e3e
+[antigravity-adapter]: https://github.com/ccusage/ccusage/blob/90e296efd1bdd25a9db07019854255284588d720/rust/adapters/antigravity/src/proto.rs
 
-All sources in this section now reach dedicated readers with distinct source
-formats. Their detector-grade capabilities remain unavailable until fixtures
-establish the persisted semantics. Therefore no entry in this section is
-implemented as assessable, and missing evidence cannot produce a clean result.
+Research anchors include OpenCode schema/session-message and tool registry;
+Pi core/session and `examples/extensions/subagent`; Codex rollout policy,
+protocol models, and `ext/skills/fragments`; and ccusage
+`rust/adapters/antigravity/src/proto.rs`. The [Antigravity SDK runtime schema][sdk-source] at
+`52ea99480960ed02be1561f6fe57b99e7186962a` describes runtime events, not proof
+that those events persist in a local session.
 
-| Source | Checks | Exact passive limitation | Upgrade condition |
-| --- | --- | --- | --- |
-| Copilot CLI | D, C | The official persisted event log omits per-call usage. Usage events are transient. | Find and characterize an equivalent passive source with per-request token classes and order. Otherwise these checks remain unsupported. |
-| Copilot CLI | T | Persisted model or effort changes can exist, but no dedicated reader keeps effective request association. | Add a versioned reader for explicit effective effort, inheritance, model, and request boundaries. |
-| Copilot CLI | S | Subagent configuration can be persisted, but configuration alone does not prove an actual delegated relation or model use. | Parse actual spawn and worker records with parent and worker models. |
-| Copilot CLI | M | MCP attribution can be persisted, but the official loaded inventory and per-call usage events are transient. | Demonstrate an equivalent passive loaded inventory and complete exact call attribution. Otherwise change this entry to `Unsupported`. |
-| Copilot CLI | B | Loaded built-in inventory and per-call usage are transient in the official schema. | Demonstrate equivalent passive definitions and calls for the effective surface. Otherwise this check remains unsupported. |
-| Copilot CLI | K | Skill invocation records can persist, but loaded skill inventory is transient and no dedicated reader joins the facts. | Demonstrate passive loaded or injected inventory, then parse it with full invocation identity and boundaries. |
-| Copilot CLI | O | Persisted model changes can identify use, but the generic reader discards them and reviewed timing coverage is absent. | Add a dedicated reader with complete model and timing coverage plus reviewed aliases and replacement policy. |
-| Copilot CLI | F | Service-tier persistence and inheritance are not characterized. | Prove an explicit effective tier per request and worker before enabling the check. |
-| Copilot IDE | O | Chat JSON can carry model identity, but the current generic reader does not establish complete model and timing coverage. | Add an IDE-specific reader and fixtures for all eligible message shapes. |
-| Copilot IDE | D, T, S, M, B, K, F, C | IDE persistence is not characterized for the required facts. CLI schema facts do not apply to IDE storage. | Characterize the IDE source independently. Pin versions and add positive, negative, and incomplete fixtures for each check. |
-| Cline pair | M, B | Message files can contain tool calls, but metadata-only discovery does not load the companion transcript. Loaded inventory and origins are not proved. | Read and fingerprint metadata with its message companion. Then characterize exposure, definitions, and exact call attribution. |
-| Cline pair | O | Metadata or messages can contain model identity, but the current path does not provide complete paired timing coverage. | Pair both files and parse model identity and timing for every eligible request. |
-| Cline pair | D, T, S, K, F, C | The paired source has not been characterized for complete request usage, effort, delegation, skills, speed, or cache accounting. | Characterize each JSON and database variant independently. Add companion-change and missing-companion tests. |
-| Kiro canonical | M, B, K | Canonical sessions may save resource and tool data, but versioned exposure, origin, deferred state, and invocation semantics are not characterized. | Add a canonical-format reader with versioned resource semantics and complete boundaries. |
-| Kiro canonical | O | Canonical sessions can carry model identity, but the generic reader provides no complete identity or timing contract. | Parse all eligible model records and timing. Add reviewed aliases and replacement policy. |
-| Kiro canonical | D, T, S, F, C | Required usage, effort, delegation, speed, and accounting semantics are not characterized. | Characterize explicit fields and completeness rules before enabling each check. |
-| Kiro chat | M, B | Chat fallback can contain calls, but loaded resource and effective tool-surface semantics are not characterized. | Add a separate fallback reader and prove exposure plus complete calls. Do not inherit canonical coverage. |
-| Kiro chat | O | Chat fallback can contain model names, but complete identity and timing coverage are not characterized. | Parse and test the fallback independently with reviewed aliases. |
-| Kiro chat | D, T, S, K, F, C | The fallback is not characterized for the required facts. | Characterize the `.chat` format independently. Do not reuse canonical declarations. |
-| Amp thread | D | A whole thread can contain request data, but the current generic reader does not parse the thread or prove request context usage. | Add whole-thread parsing and require complete per-request context usage. |
-| Amp thread | T, F | Routing modes are saved, but a mode name does not prove model effort or speed tier. | Map only explicit effective settings through reviewed model and provider semantics. |
-| Amp thread | S | Amp supports subagents, but the current source path does not preserve an actual parent-worker relation and both models. | Parse native delegation records and retain parent and worker models. |
-| Amp thread | B | Thread tool calls can exist, but the effective enabled and deferred built-in surface is not characterized. | Parse complete calls and a versioned effective tool surface. |
-| Amp thread | O | Thread model data can exist, but routing modes and model identities are not separated by the generic reader. | Parse actual model identity and timing. Keep routing mode separate and apply reviewed policy. |
-| Amp thread | M, K, C | Loaded MCP, loaded skills, exact origins, and cache-accounting semantics are not characterized. | Characterize each required fact and its completeness boundary before enabling a check. |
-| Amp fallback | D, T, S, M, B, K, O, F, C | File-change records are not a conversation transcript. They do not save the complete request, model, resource, delegation, tier, or token facts required by any check. | Use the whole-thread source. Do not widen fallback coverage unless a new fallback schema saves the required facts. |
-| Windsurf JSON | M, B | Conversation JSON can contain tool calls, but loaded MCP exposure, exact origins, and the effective built-in surface are not characterized. | Add a JSON reader with complete exposure, definitions, deferred state, and call attribution. |
-| Windsurf JSON | O | Conversation JSON can contain model identity, but complete timing and alias semantics are not characterized. | Parse every eligible model record and timing. Add reviewed aliases and replacement policy. |
-| Windsurf JSON | D, T, S, K, F, C | Required usage, effort, delegation, skill, speed, and cache semantics are not characterized. | Characterize explicit persisted fields and completeness rules before enabling each check. |
-| Windsurf protobuf | D, T, S, M, B, K, O, F, C | Discovery recognizes Cascade paths, but there is no protobuf session parser or supported field contract. Path recognition proves no check evidence. | Derive and test a bounded passive protobuf subset for each fact. Pin the supported source version before changing any entry. |
+[sdk-source]: https://github.com/google-antigravity/antigravity-sdk-python/tree/52ea99480960ed02be1561f6fe57b99e7186962a
+
+## Deferred Source Limits
+
+These existing source classifications use dedicated fail-closed readers. Their
+basic discovery remains supported, but none has an assessable detector-grade
+contract. The matrix retains their prior source limits; `Partial` here does not
+claim an implemented finding path.
+
+| Source | Current boundary |
+| --- | --- |
+| Copilot CLI | Persisted event logs omit per-call usage and loaded inventories that the official schema marks transient. Model/effort changes, skill calls, and subagent configuration lack a complete request-level check contract. Configuration alone is not actual delegation. |
+| Copilot IDE | Chat JSON can carry model names, but model/time and other check facts are uncharacterized. CLI contracts do not apply to IDE storage. |
+| Cline | Metadata/message companion loading and fingerprinting remain incomplete. Calls and model names do not prove paired timing, historical resources, or other check facts. |
+| Kiro canonical and chat | Separate source shapes; resource definitions, exposure, calls, models, timing, and settings lack characterized detector-grade semantics. The fallback does not inherit canonical coverage. |
+| Amp thread | No whole-thread check contract. Saved routing modes do not prove actual model effort or speed; native delegation, resources, timing, and accounting remain uncharacterized. |
+| Amp file changes | Not a conversation session. No check can use file-change records as request, model, or inventory proof. |
+| Windsurf workspace and mirror JSON | Calls and model names can exist, but complete resource, timing, control, and accounting semantics remain uncharacterized. |
+| Windsurf protobuf | Discovery recognizes Cascade paths; no bounded protobuf session parser or supported field contract exists. |
+| Generic fallback | No native source contract. Recognized-looking JSON does not authorize detector-grade evidence or clean. |
 
 ## Coverage Promotion Rule
 
 Change an entry to `Assessable` only when all of these conditions are true:
 
-- The source format and supported version range are explicit.
+- The accepted source shape is explicit through a schema, header, or pinned
+  producer commit and synthetic fixtures. Record a release range when known.
 - The reader emits every fact required for both a finding and a clean result.
 - Missing, malformed, truncated, capped, or unknown records produce partial or unavailable evidence.
 - Positive, negative, and incomplete synthetic fixtures exist.
@@ -218,6 +211,24 @@ Change an entry to `Assessable` only when all of these conditions are true:
 
 If a passive source cannot meet these conditions, keep the entry `Partial`,
 `Unsupported`, or `Unknown`. Do not convert missing evidence into a clean result.
-For Claude Code, Codex, OpenCode, Pi, Cursor, and Antigravity, inspect all
-relevant passive native sources and get explicit maintainer approval before a
-check remains `Unsupported` or `Unknown` in the coverage contract.
+For the reviewed targets (OpenCode, Pi, Codex, Claude Code, and Antigravity),
+record alternative passive-source research and explicit maintainer confirmation
+for unsupported named checks. The ledger above records the current decisions.
+Cursor and other agents retain their deferred basic support; these decisions
+do not assert a completed audit of all their native sources.
+
+## Contract Tests
+
+- [`check_coverage_contract.rs`](../crates/antiburn-local/tests/check_coverage_contract.rs)
+  checks every enum key once in each inventory, the nine detector columns, valid
+  status words, partial-fact clean denial, source gates, and direct D/O findings.
+- Agent characterization suites in `crates/antiburn-local/tests/` cover native
+  records, missing facts, scoped resources, provider controls, and malformed input.
+- `resume_parity.rs`, `evidence_replay_parity.rs`, and `turn_row_replay_parity.rs`
+  cover supported resume and persisted-row paths. Desktop
+  `analysis/tests/claude_parent_child.rs` and scan tests cover Claude sidecar joins
+  and change detection.
+
+The matrix is manually reviewed; the inventory test does not generate or prove
+every cell. Unknown changed evidence-bearing shapes must make affected evidence
+partial or unavailable, not pass through a generic reader as clean.

@@ -22,6 +22,24 @@ use crate::discovery::scanner;
 const SUBAGENT_LABEL_SCAN_LINES: usize = 16;
 /// Max characters of the task prompt kept for a sub-agent label.
 const SUBAGENT_LABEL_MAX_CHARS: usize = 80;
+const SUBAGENT_META_MAX_BYTES: u64 = 64 * 1024;
+
+impl SubagentMeta {
+    /// Reads a bounded Claude sidecar for a transcript on a blocking worker.
+    pub fn read_from_transcript(path: &Path) -> Option<Self> {
+        use std::io::Read;
+
+        let file = std::fs::File::open(path.with_extension("meta.json")).ok()?;
+        let mut content = Vec::new();
+        file.take(SUBAGENT_META_MAX_BYTES + 1)
+            .read_to_end(&mut content)
+            .ok()?;
+        if content.len() as u64 > SUBAGENT_META_MAX_BYTES {
+            return None;
+        }
+        serde_json::from_slice(&content).ok()
+    }
+}
 
 /// Map a parent transcript path to its `subagents` directory:
 /// `<dir>/<stem>/subagents`. `None` if the path has no parent or stem.
@@ -104,9 +122,11 @@ pub(super) fn subagent_id(path: &Path) -> Option<String> {
 /// Read a sub-agent's `.meta.json` sidecar (`agent-X.jsonl` → `agent-X.meta.json`),
 /// returning `None` when it's missing or unparseable.
 pub(super) async fn read_subagent_meta(path: &Path) -> Option<SubagentMeta> {
-    let meta_path = path.with_extension("meta.json");
-    let content = tokio::fs::read_to_string(&meta_path).await.ok()?;
-    serde_json::from_str(&content).ok()
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || SubagentMeta::read_from_transcript(&path))
+        .await
+        .ok()
+        .flatten()
 }
 
 /// A sub-agent's display label. Prefers the `Task` spawn's own short label from
@@ -169,6 +189,33 @@ mod tests {
             subagents_dir(&parent).unwrap(),
             PathBuf::from("/p/-Users-foo-bar/abc-123/subagents"),
         );
+    }
+
+    #[tokio::test]
+    async fn subagent_meta_preserves_native_linkage_and_bounds_sidecar_reads() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("agent-worker.jsonl");
+        let meta_path = path.with_extension("meta.json");
+        assert!(SubagentMeta::read_from_transcript(&path).is_none());
+        tokio::fs::write(
+            &meta_path,
+            r#"{"toolUseId":"call-worker","agentType":"Explore"}"#,
+        )
+        .await
+        .unwrap();
+        let meta = read_subagent_meta(&path).await.unwrap();
+        assert_eq!(meta.tool_use_id.as_deref(), Some("call-worker"));
+        assert_eq!(meta, SubagentMeta::read_from_transcript(&path).unwrap());
+        for body in [
+            "{".to_owned(),
+            format!(
+                r#"{{"description":"{}"}}"#,
+                "x".repeat(SUBAGENT_META_MAX_BYTES as usize)
+            ),
+        ] {
+            tokio::fs::write(&meta_path, body).await.unwrap();
+            assert!(read_subagent_meta(&path).await.is_none());
+        }
     }
 
     #[tokio::test]

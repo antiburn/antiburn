@@ -87,7 +87,13 @@
     "contextSources": {
       "state": "complete",
       "value": {
+        "mcpCoverage": {
+          "state": "unsupported"
+        },
         "mcpServers": {},
+        "skillCoverage": {
+          "state": "unsupported"
+        },
         "skills": {},
         "toolDefinitions": {
           "state": "unsupported"
@@ -180,21 +186,21 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 20,
-      "evidenceSchemaRevision": 16,
+      "analyzerRevision": 21,
+      "evidenceSchemaRevision": 17,
       "harnessVersion": {
         "state": "complete",
         "value": null
       },
       "ordering": "monotonic",
-      "parserRevision": 30,
+      "parserRevision": 31,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 16,
+    "schemaRevision": 17,
     "subagents": {
       "state": "complete",
       "value": {

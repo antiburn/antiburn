@@ -744,6 +744,8 @@ mod tests {
                     role: "assistant",
                     ts_ms: Some(1_000 + turn_index as i64),
                     model: Some("claude-sonnet-5".to_owned()),
+                    provider: None,
+                    api: None,
                     effort: Some("high".to_owned()),
                     speed: None,
                     input_tokens: 10,

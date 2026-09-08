@@ -53,3 +53,43 @@ fn format_for(agent: &str, default: SourceFormat, source: &RawSource) -> SourceF
         _ => default,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_variants_keep_fail_closed_capabilities() {
+        for (agent, path, format) in [
+            ("copilot", "events.jsonl", SourceFormat::CopilotCliJsonl),
+            ("copilot", "chat.json", SourceFormat::CopilotIdeChatJson),
+            ("cline", "session.json", SourceFormat::ClineSessionJson),
+            ("kiro", "session.json", SourceFormat::KiroSessionJson),
+            ("kiro", "session.chat", SourceFormat::KiroChat),
+            ("amp-code", "thread.json", SourceFormat::AmpThreadJson),
+            (
+                "amp-code",
+                "file-changes.json",
+                SourceFormat::AmpFileChanges,
+            ),
+            (
+                "windsurf",
+                "workspace.json",
+                SourceFormat::WindsurfWorkspaceJson,
+            ),
+            (
+                "windsurf",
+                "cascade.pb",
+                SourceFormat::WindsurfCascadeProtobuf,
+            ),
+            ("windsurf", "mirror.json", SourceFormat::WindsurfMirrorJson),
+        ] {
+            let reader = super::super::reader_for(agent);
+            assert_eq!(
+                reader.capabilities(&RawSource::File(path.into())),
+                SourceCapabilities::uncharacterized(format),
+                "{agent}: {path}"
+            );
+        }
+    }
+}

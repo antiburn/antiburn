@@ -98,29 +98,25 @@ impl Fact {
                 }
             }
             Self::ToolInvocations => state(&evidence.tools),
-            Self::SkillInventory => resource_state(
-                &evidence.context_sources,
-                evidence.capabilities.skill_inventory,
-            ),
-            Self::McpInventory => resource_state(
-                &evidence.context_sources,
-                evidence.capabilities.mcp_inventory,
-            ),
-            // Unlike `SkillMcpAttribution`, the sink never gates
-            // `context_sources` on `capabilities.tool_definitions` — that
-            // group stays supported (Claude, for example) while its
-            // nested `tool_definitions` marker is always `Unsupported`.
-            // This fact must test the flag itself.
-            Self::ToolDefinitions => {
-                if !evidence.capabilities.tool_definitions {
-                    FactState::Unsupported
-                } else {
-                    state(&evidence.context_sources)
+            Self::SkillInventory | Self::McpInventory | Self::ToolDefinitions => {
+                match &evidence.context_sources {
+                    EvidenceValue::Complete(sources)
+                    | EvidenceValue::Partial {
+                        observed: sources, ..
+                    } => match self {
+                        Self::SkillInventory => state(&sources.skill_coverage),
+                        Self::McpInventory => state(&sources.mcp_coverage),
+                        _ => state(&sources.tool_definitions),
+                    },
+                    EvidenceValue::Unsupported => FactState::Unsupported,
                 }
             }
             Self::SubagentRelationships => state(&evidence.subagents),
             Self::DelegatedModels => {
-                if !evidence.capabilities.subagent_models {
+                if !evidence.capabilities.subagent_models
+                    && !detectors::observed(&evidence.subagents)
+                        .is_some_and(|subagents| !subagents.delegated_models.is_empty())
+                {
                     FactState::Unsupported
                 } else {
                     state(&evidence.subagents)
@@ -163,14 +159,6 @@ fn state<T>(value: &EvidenceValue<T>) -> FactState {
         EvidenceValue::Unsupported => FactState::Unsupported,
         EvidenceValue::Partial { .. } => FactState::Partial,
         EvidenceValue::Complete(_) => FactState::Complete,
-    }
-}
-
-fn resource_state<T>(value: &EvidenceValue<T>, supported: bool) -> FactState {
-    if supported {
-        state(value)
-    } else {
-        FactState::Unsupported
     }
 }
 
@@ -305,10 +293,49 @@ pub fn eligible(detector: DetectorId, evidence: &SessionEvidence) -> bool {
 /// A session supports a clean claim for `detector` when every clean fact
 /// is `Complete`. Only complete evidence can prove absence.
 pub fn clean_facts_complete(detector: DetectorId, evidence: &SessionEvidence) -> bool {
-    requirements(detector)
-        .clean
-        .iter()
-        .all(|fact| fact.state(evidence) == FactState::Complete)
+    // No current reader proves a full historical resource inventory.
+    !matches!(
+        detector,
+        DetectorId::UnusedSkills | DetectorId::UnusedMcpServers | DetectorId::UnusedBuiltInTools
+    ) && evidence.coverage == EvidenceCoverage::Complete
+        && source_supports_clean(evidence.capabilities.source_format)
+        && requirements(detector)
+            .clean
+            .iter()
+            .all(|fact| fact.state(evidence) == FactState::Complete)
+}
+
+/// Complete session facts permit clean results only for characterized source contracts.
+fn source_supports_clean(format: crate::analysis::SourceFormat) -> bool {
+    use crate::analysis::SourceFormat;
+    match format {
+        SourceFormat::ClaudeJsonl
+        | SourceFormat::CodexRolloutJsonl
+        | SourceFormat::OpenCodeJsonl
+        | SourceFormat::OpenCodeSqliteV2
+        | SourceFormat::PiV3Jsonl => true,
+        SourceFormat::CursorJsonl
+        | SourceFormat::CursorCliAgentJsonl
+        | SourceFormat::CursorCliStoreDb
+        | SourceFormat::CursorIdeComposer
+        | SourceFormat::CursorLegacyChatJson
+        | SourceFormat::AntigravityJson
+        | SourceFormat::AntigravityBrainJsonl
+        | SourceFormat::AntigravityCascadeJson
+        | SourceFormat::AntigravityWorkspaceChatJson
+        | SourceFormat::AntigravitySqlite
+        | SourceFormat::CopilotCliJsonl
+        | SourceFormat::CopilotIdeChatJson
+        | SourceFormat::ClineSessionJson
+        | SourceFormat::KiroSessionJson
+        | SourceFormat::KiroChat
+        | SourceFormat::AmpThreadJson
+        | SourceFormat::AmpFileChanges
+        | SourceFormat::WindsurfWorkspaceJson
+        | SourceFormat::WindsurfMirrorJson
+        | SourceFormat::WindsurfCascadeProtobuf
+        | SourceFormat::Uncharacterized => false,
+    }
 }
 
 /// A clean claim is out of reach for `detector` when a clean fact is
@@ -406,6 +433,7 @@ pub struct EfficiencyReport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenBurnSourceEvidence {
+    // Collectors omit source groups when deferred loading prevents token attribution.
     /// The agent and installation scope used for window-level grouping.
     pub scope: String,
     /// The normalized source name used for window-level grouping.
@@ -1186,18 +1214,32 @@ impl EfficiencyReportAccumulator {
     pub fn observe_session_with_token_burn(
         &mut self,
         evidence: SessionEvidence,
-        token_evidence: SessionTokenBurnEvidence,
+        mut token_evidence: SessionTokenBurnEvidence,
     ) {
+        let has_built_in_sources = token_evidence
+            .built_in_tool_sources
+            .as_ref()
+            .is_some_and(|sources| !sources.is_empty());
+        if let Some(sources) = &mut token_evidence.built_in_tool_sources {
+            use crate::analysis::tool_catalog::{comparable_tool_name, situational_tools};
+            let situational = situational_tools(&evidence.identity.agent);
+            sources.retain(|source| {
+                !situational
+                    .iter()
+                    .any(|name| comparable_tool_name(name) == comparable_tool_name(&source.name))
+            });
+        }
         let built_in_sources = token_evidence.built_in_tool_sources.as_ref();
         let built_in_not_applicable =
             complete(&evidence.eligibility).is_some_and(|value| value.assistant_turns == 0);
-        let built_in_assessable = built_in_sources.is_some_and(|sources| !sources.is_empty())
+        let built_in_assessable = has_built_in_sources
+            && Fact::ToolDefinitions.state(&evidence) == FactState::Unsupported
             && matches!(evidence.coverage, EvidenceCoverage::Complete)
             && matches!(&evidence.tools, EvidenceValue::Complete(_))
             && complete(&evidence.eligibility).is_some_and(|value| value.assistant_turns > 0);
         let source_eligible = [
             eligible(DetectorId::UnusedMcpServers, &evidence),
-            built_in_assessable,
+            built_in_assessable || eligible(DetectorId::UnusedBuiltInTools, &evidence),
             eligible(DetectorId::UnusedSkills, &evidence),
         ];
         self.assessed_sessions += 1;
@@ -1251,9 +1293,11 @@ impl EfficiencyReportAccumulator {
             counts.eligible += 1;
             let observation = if detector == DetectorId::UnusedBuiltInTools {
                 if built_in_assessable {
-                    if built_in_sources
-                        .is_some_and(|sources| sources.iter().any(|source| !source.invoked))
-                    {
+                    if built_in_sources.is_some_and(|sources| {
+                        sources
+                            .iter()
+                            .any(|source| source.replicated_tokens > 0 && !source.invoked)
+                    }) {
                         detectors::Observation::Finding
                     } else {
                         detectors::Observation::NoFinding
@@ -1270,10 +1314,7 @@ impl EfficiencyReportAccumulator {
                     counts.assessed += 1;
                     findings[detector.index()] = true;
                 }
-                detectors::Observation::NoFinding
-                    if (detector == DetectorId::UnusedBuiltInTools && built_in_assessable)
-                        || clean_facts_complete(detector, &evidence) =>
-                {
+                detectors::Observation::NoFinding if clean_facts_complete(detector, &evidence) => {
                     counts.clean += 1;
                     counts.assessed += 1;
                 }
@@ -1365,13 +1406,19 @@ mod tests {
     use crate::insights::quota::QuotaPressureSection;
 
     fn evidence(session_id: &str) -> SessionEvidence {
-        SessionEvidenceAccumulator::new(EvidenceSource {
+        let mut row = SessionEvidenceAccumulator::new(EvidenceSource {
             agent: "claude".to_owned(),
             session_id: session_id.to_owned(),
             kind: SourceKind::File,
             capabilities: SourceCapabilities::claude(),
         })
-        .evidence(&TurnFacts::default())
+        .evidence(&TurnFacts::default());
+        let EvidenceValue::Complete(sources) = &mut row.context_sources else {
+            unreachable!()
+        };
+        sources.skill_coverage = EvidenceValue::Complete(());
+        sources.mcp_coverage = EvidenceValue::Complete(());
+        row
     }
 
     /// The same claude evidence with one observed assistant turn, so
@@ -1495,7 +1542,7 @@ mod tests {
         );
         assert_eq!(
             report.detector_estimated_token_burn_basis_points[DetectorId::UnusedSkills.index()],
-            Some(0)
+            None
         );
     }
 
@@ -1531,6 +1578,72 @@ mod tests {
                 [DetectorId::UnusedBuiltInTools.index()],
             Some(1_000)
         );
+    }
+
+    #[test]
+    fn report_time_sources_respect_built_in_applicability() {
+        for (name, tokens, definitions, expected) in [
+            (
+                "Skill",
+                100,
+                EvidenceValue::Unsupported,
+                DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+            ),
+            (
+                "read",
+                0,
+                EvidenceValue::Unsupported,
+                DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+            ),
+            (
+                "read",
+                100,
+                EvidenceValue::Complete(BTreeMap::from([(
+                    "read".to_owned(),
+                    ToolDefinition {
+                        tokens: 100,
+                        invoked: false,
+                        deferred: true,
+                    },
+                )])),
+                DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+            ),
+            (
+                "read",
+                100,
+                EvidenceValue::Partial {
+                    observed: BTreeMap::new(),
+                    reason: CoverageReason::AttributionIncomplete,
+                },
+                DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+            ),
+        ] {
+            let mut row = evidence_with_work("built-in-applicability");
+            let EvidenceValue::Complete(sources) = &mut row.context_sources else {
+                unreachable!()
+            };
+            sources.tool_definitions = definitions;
+            let mut accumulator = EfficiencyReportAccumulator::new();
+            accumulator.observe_session_with_token_burn(
+                row,
+                SessionTokenBurnEvidence {
+                    total_tokens: Some(1_000),
+                    built_in_tool_sources: Some(vec![TokenBurnSourceEvidence {
+                        scope: "claude:bundled".to_owned(),
+                        name: name.to_owned(),
+                        replicated_tokens: tokens,
+                        invoked: false,
+                    }]),
+                    ..SessionTokenBurnEvidence::default()
+                },
+            );
+            let report = accumulator.finish(context(CoverageCounts::default()));
+            assert_eq!(
+                report.detector_statuses[DetectorId::UnusedBuiltInTools.index()],
+                expected,
+                "{name}: {tokens}"
+            );
+        }
     }
 
     #[test]
@@ -2479,7 +2592,6 @@ mod tests {
                 DetectorId::ModelOverthinking,
                 DetectorId::OverpoweredSubagents,
                 DetectorId::UnusedMcpServers,
-                DetectorId::UnusedBuiltInTools,
                 DetectorId::UnusedSkills,
                 DetectorId::OldModelUsage,
                 DetectorId::OveruseOfFastMode,
@@ -2582,8 +2694,6 @@ mod tests {
             DetectorId::SessionsOverDepth,
             DetectorId::ModelOverthinking,
             DetectorId::OverpoweredSubagents,
-            DetectorId::UnusedMcpServers,
-            DetectorId::UnusedSkills,
             DetectorId::OveruseOfFastMode,
             DetectorId::CacheChurn,
             // The reviewed production registry has entries, and this
@@ -2596,14 +2706,17 @@ mod tests {
                 DetectorStatus::Clean
             );
         }
-        // The session carries no observed harness version, so the
-        // built-in tool catalogue never resolves: the signal gap stays
-        // not assessed with a structured reason, distinct from a
-        // capability gap.
+        // The missing harness version leaves nested tool definitions unsupported.
         assert_eq!(
             report.detector_statuses[DetectorId::UnusedBuiltInTools.index()],
-            DetectorStatus::NotAssessed(NotAssessedReason::SignalMissing)
+            DetectorStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
         );
+        for detector in [DetectorId::UnusedMcpServers, DetectorId::UnusedSkills] {
+            assert_eq!(
+                report.detector_statuses[detector.index()],
+                DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
+            );
+        }
     }
 
     #[test]
@@ -2652,9 +2765,9 @@ mod tests {
         for detector in [DetectorId::UnusedMcpServers, DetectorId::UnusedSkills] {
             let counts = report.detectors[detector.index()];
             assert_eq!(counts.eligible, 2, "{detector:?}");
-            assert_eq!(counts.assessed, 1, "{detector:?}");
-            assert_eq!(counts.clean, 1, "{detector:?}");
-            assert_eq!(counts.unavailable, 1, "{detector:?}");
+            assert_eq!(counts.assessed, 0, "{detector:?}");
+            assert_eq!(counts.clean, 0, "{detector:?}");
+            assert_eq!(counts.unavailable, 2, "{detector:?}");
             assert_eq!(
                 report.detector_statuses[detector.index()],
                 DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
@@ -2715,6 +2828,262 @@ mod tests {
         };
     }
 
+    #[test]
+    fn resource_facts_read_independent_nested_coverage_in_either_wrapper() {
+        for fact in [
+            Fact::SkillInventory,
+            Fact::McpInventory,
+            Fact::ToolDefinitions,
+        ] {
+            for wrapper_partial in [false, true] {
+                for expected in [
+                    FactState::Complete,
+                    FactState::Partial,
+                    FactState::Unsupported,
+                ] {
+                    let mut row = complete_row("nested-coverage");
+                    row.capabilities.skill_inventory = false;
+                    row.capabilities.mcp_inventory = false;
+                    row.capabilities.tool_definitions = false;
+                    match expected {
+                        FactState::Complete => (),
+                        FactState::Partial => degrade_fact_to_partial(&mut row, fact),
+                        FactState::Unsupported => degrade_fact_to_unsupported(&mut row, fact),
+                    }
+                    if wrapper_partial {
+                        to_partial(&mut row.context_sources);
+                    }
+                    assert_eq!(
+                        fact.state(&row),
+                        expected,
+                        "{fact:?}, partial wrapper: {wrapper_partial}"
+                    );
+                    for other in [
+                        Fact::SkillInventory,
+                        Fact::McpInventory,
+                        Fact::ToolDefinitions,
+                    ] {
+                        if other != fact {
+                            assert_eq!(other.state(&row), FactState::Complete);
+                        }
+                    }
+                }
+            }
+            let mut row = complete_row("unsupported-wrapper");
+            row.context_sources = EvidenceValue::Unsupported;
+            assert_eq!(fact.state(&row), FactState::Unsupported);
+        }
+    }
+
+    #[test]
+    fn coverage_contract_nested_resource_markers_gate_eligibility_but_not_inventory_clean() {
+        for (detector, fact) in [
+            (DetectorId::UnusedSkills, Fact::SkillInventory),
+            (DetectorId::UnusedMcpServers, Fact::McpInventory),
+            (DetectorId::UnusedBuiltInTools, Fact::ToolDefinitions),
+        ] {
+            for wrapper_partial in [false, true] {
+                for marker in [
+                    FactState::Complete,
+                    FactState::Partial,
+                    FactState::Unsupported,
+                ] {
+                    let mut row = complete_row("resource-marker-contract");
+                    match marker {
+                        FactState::Complete => (),
+                        FactState::Partial => degrade_fact_to_partial(&mut row, fact),
+                        FactState::Unsupported => degrade_fact_to_unsupported(&mut row, fact),
+                    }
+                    if wrapper_partial {
+                        to_partial(&mut row.context_sources);
+                    }
+                    assert_eq!(eligible(detector, &row), marker != FactState::Unsupported);
+                    assert!(!clean_facts_complete(detector, &row));
+                    assert_ne!(
+                        status_for(row, detector),
+                        DetectorStatus::Clean,
+                        "{detector:?}/{marker:?}, partial wrapper: {wrapper_partial}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_contract_partial_sessions_never_read_clean_from_complete_groups() {
+        let mut failures = Vec::new();
+        for format in [
+            crate::analysis::SourceFormat::ClaudeJsonl,
+            crate::analysis::SourceFormat::CodexRolloutJsonl,
+            crate::analysis::SourceFormat::OpenCodeJsonl,
+            crate::analysis::SourceFormat::OpenCodeSqliteV2,
+            crate::analysis::SourceFormat::PiV3Jsonl,
+        ] {
+            let mut row = complete_row("partial-session-contract");
+            row.capabilities.source_format = format;
+            row.coverage = EvidenceCoverage::Partial(CoverageReason::UnrecognizedRecordType);
+            for detector in DetectorId::ALL {
+                if status_for(row.clone(), detector) == DetectorStatus::Clean {
+                    failures.push(format!("{format:?}/{detector:?}"));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "partial sessions returned clean: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn coverage_contract_observed_resources_allow_findings_but_not_inventory_clean() {
+        use crate::analysis::{ContextSourceKind, EvidenceObservation, NormalizedRecord};
+
+        let mut failures = Vec::new();
+        for (detector, observation) in [
+            (
+                DetectorId::UnusedSkills,
+                EvidenceObservation::SkillInjection {
+                    name: "contract-skill".to_owned(),
+                    invoked: false,
+                },
+            ),
+            (
+                DetectorId::UnusedMcpServers,
+                EvidenceObservation::ContextSource {
+                    kind: ContextSourceKind::McpServer,
+                    name: "contract-server".to_owned(),
+                    description: None,
+                },
+            ),
+        ] {
+            let mut sink = SessionEvidenceAccumulator::new(EvidenceSource {
+                agent: "codex".to_owned(),
+                session_id: "observed-resource-contract".to_owned(),
+                kind: SourceKind::Jsonl,
+                capabilities: SourceCapabilities::codex(),
+            });
+            sink.observe(&NormalizedRecord::Observation(Box::new(observation)));
+            let mut facts = TurnFacts::default();
+            facts.eligibility.assistant_turns = 1;
+            let observed = sink.evidence(&facts);
+            assert!(!observed.capabilities.skill_inventory);
+            assert!(!observed.capabilities.mcp_inventory);
+            assert!(
+                matches!(
+                    status_for(observed.clone(), detector),
+                    DetectorStatus::Findings(_)
+                ),
+                "{detector:?}"
+            );
+            let mut invoked = observed;
+            let sources = match &mut invoked.context_sources {
+                EvidenceValue::Complete(sources)
+                | EvidenceValue::Partial {
+                    observed: sources, ..
+                } => sources,
+                EvidenceValue::Unsupported => panic!("the resource must be observed"),
+            };
+            for source in sources
+                .skills
+                .values_mut()
+                .chain(sources.mcp_servers.values_mut())
+            {
+                source.invoked = true;
+            }
+            if status_for(invoked, detector) == DetectorStatus::Clean {
+                failures.push(detector);
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "observed resources cannot prove a complete inventory: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn coverage_contract_report_time_built_in_sources_do_not_prove_inventory_clean() {
+        for invoked in [false, true] {
+            let row = evidence_with_work("observed-built-in-contract");
+            let mut accumulator = EfficiencyReportAccumulator::new();
+            accumulator.observe_session_with_token_burn(
+                row,
+                SessionTokenBurnEvidence {
+                    built_in_tool_sources: Some(vec![TokenBurnSourceEvidence {
+                        scope: "claude:bundled".to_owned(),
+                        name: "read".to_owned(),
+                        replicated_tokens: 100,
+                        invoked,
+                    }]),
+                    ..SessionTokenBurnEvidence::default()
+                },
+            );
+            let report = accumulator.finish(context(CoverageCounts::default()));
+            let status = &report.detector_statuses[DetectorId::UnusedBuiltInTools.index()];
+            if invoked {
+                assert_ne!(
+                    *status,
+                    DetectorStatus::Clean,
+                    "observed definitions do not prove the effective inventory"
+                );
+            } else {
+                assert!(matches!(status, DetectorStatus::Findings(_)));
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_contract_pi_observed_delegation_needs_no_blanket_capabilities() {
+        use crate::analysis::{
+            RelationConfidence, RelationProvenance, SubagentChild, SubagentEvidence,
+        };
+
+        for (worker, finding) in [("claude-opus-4-6", true), ("claude-haiku-4-5", false)] {
+            let mut row = complete_row("pi-observed-delegation-contract");
+            row.identity.agent = "pi".to_owned();
+            row.capabilities = SourceCapabilities::pi();
+            assert!(!row.capabilities.subagent_relationships);
+            assert!(!row.capabilities.subagent_models);
+            let EvidenceValue::Complete(models) = &mut row.models else {
+                unreachable!()
+            };
+            models.dominant_main_model = Some("claude-opus-4-6".to_owned());
+            row.subagents = EvidenceValue::Partial {
+                observed: SubagentEvidence {
+                    spawn_count: 1,
+                    delegated_turns: 1,
+                    delegated_models: BTreeSet::from([worker.to_owned()]),
+                    children: vec![SubagentChild {
+                        ordinal: 1,
+                        parent_model: Some("claude-opus-4-6".to_owned()),
+                        parent_call_id: Some("contract-call".to_owned()),
+                        observed_child_models: BTreeSet::from([worker.to_owned()]),
+                        child_model: EvidenceValue::Unsupported,
+                        confidence: RelationConfidence::Observed,
+                        provenance: RelationProvenance::TaskToolUse,
+                    }],
+                    examples: Vec::new(),
+                },
+                reason: CoverageReason::AttributionIncomplete,
+            };
+            let detector = DetectorId::OverpoweredSubagents;
+            assert!(eligible(detector, &row));
+            assert!(!clean_facts_complete(detector, &row));
+            let status = status_for(row.clone(), detector);
+            assert_ne!(status, DetectorStatus::Clean);
+            assert_eq!(
+                matches!(status, DetectorStatus::Findings(_)),
+                finding,
+                "{worker}"
+            );
+            row.subagents = EvidenceValue::Unsupported;
+            assert!(!eligible(detector, &row));
+            assert!(matches!(
+                status_for(row, detector),
+                DetectorStatus::NotAssessed(_)
+            ));
+        }
+    }
+
     /// Degrades one fact's backing evidence from `Complete` to `Partial`.
     /// `ThreadMembership` has no partial state (`Fact::state` maps its
     /// capability flag straight to `Complete`/`Unsupported`), so this
@@ -2728,7 +3097,14 @@ mod tests {
             }
             Fact::ToolInvocations => to_partial(&mut row.tools),
             Fact::SkillInventory | Fact::McpInventory | Fact::ToolDefinitions => {
-                to_partial(&mut row.context_sources)
+                let EvidenceValue::Complete(sources) = &mut row.context_sources else {
+                    unreachable!()
+                };
+                match fact {
+                    Fact::SkillInventory => to_partial(&mut sources.skill_coverage),
+                    Fact::McpInventory => to_partial(&mut sources.mcp_coverage),
+                    _ => to_partial(&mut sources.tool_definitions),
+                }
             }
             Fact::SubagentRelationships | Fact::DelegatedModels => to_partial(&mut row.subagents),
             Fact::RepeatedContextAccounting | Fact::RecordLinkage => to_partial(&mut row.cache),
@@ -2752,9 +3128,16 @@ mod tests {
                 row.capabilities.service_tier = false;
             }
             Fact::ToolInvocations => row.tools = EvidenceValue::Unsupported,
-            Fact::SkillInventory => row.capabilities.skill_inventory = false,
-            Fact::McpInventory => row.capabilities.mcp_inventory = false,
-            Fact::ToolDefinitions => row.capabilities.tool_definitions = false,
+            Fact::SkillInventory | Fact::McpInventory | Fact::ToolDefinitions => {
+                let EvidenceValue::Complete(sources) = &mut row.context_sources else {
+                    unreachable!()
+                };
+                match fact {
+                    Fact::SkillInventory => sources.skill_coverage = EvidenceValue::Unsupported,
+                    Fact::McpInventory => sources.mcp_coverage = EvidenceValue::Unsupported,
+                    _ => sources.tool_definitions = EvidenceValue::Unsupported,
+                }
+            }
             Fact::SubagentRelationships => row.subagents = EvidenceValue::Unsupported,
             Fact::DelegatedModels => row.capabilities.subagent_models = false,
             // `RepeatedContextAccounting` and `RecordLinkage` both read a
@@ -2807,6 +3190,15 @@ mod tests {
         // detector from reading Clean.
         for detector in DetectorId::ALL {
             let baseline = status_for(complete_row("complete"), detector);
+            if matches!(
+                detector,
+                DetectorId::UnusedSkills
+                    | DetectorId::UnusedMcpServers
+                    | DetectorId::UnusedBuiltInTools
+            ) {
+                assert_ne!(baseline, DetectorStatus::Clean);
+                continue;
+            }
             assert_eq!(
                 baseline,
                 DetectorStatus::Clean,
@@ -3242,12 +3634,7 @@ mod tests {
     fn capability_gap_examples_keep_the_first_three_sessions() {
         let mut accumulator = EfficiencyReportAccumulator::new();
         for index in 0..5 {
-            let mut row = evidence_with_work(&format!("session-{index}"));
-            // Unused Built-In Tools needs the capability flag itself
-            // (`Fact::ToolDefinitions`), not just a complete
-            // `context_sources` group, so forcing it off is what makes
-            // every session here a capability gap for this detector.
-            row.capabilities.tool_definitions = false;
+            let row = evidence_with_work(&format!("session-{index}"));
             accumulator.observe_session(row);
         }
         let report = accumulator.finish(context(CoverageCounts::default()));

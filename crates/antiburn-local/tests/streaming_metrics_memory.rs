@@ -266,6 +266,8 @@ fn saturated_evidence_accumulator(record_count: usize) -> SessionEvidenceAccumul
             EvidenceObservation::SubagentSpawn {
                 ts_ms: Some(index as i64),
                 parent_model: Some(format!("synthetic-model-{index}")),
+                parent_call_id: Some(format!("call-{index}")),
+                child_model: Some(format!("synthetic-child-model-{index}")),
                 provenance: RelationProvenance::TaskToolUse,
             },
         )));

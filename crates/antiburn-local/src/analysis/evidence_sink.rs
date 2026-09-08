@@ -95,6 +95,7 @@ pub struct SessionEvidenceAccumulator {
     subagent_children: Vec<SubagentChild>,
     subagent_examples: Vec<SubagentExample>,
     subagents_cap_exceeded: bool,
+    subagent_linkage_incomplete: bool,
     seen_thread_uuids: HashSet<String>,
     thread_parent_unresolved: bool,
     /// The harness's own version, from a `HarnessVersion` observation.
@@ -136,6 +137,7 @@ impl SessionEvidenceAccumulator {
             subagent_children: Vec::new(),
             subagent_examples: Vec::new(),
             subagents_cap_exceeded: false,
+            subagent_linkage_incomplete: false,
             seen_thread_uuids: HashSet::new(),
             thread_parent_unresolved: false,
             harness_version: None,
@@ -304,12 +306,35 @@ impl SessionEvidenceAccumulator {
                 kind,
                 name,
                 description,
-            } => self.observe_context_source(*kind, name, description.as_deref()),
+            } => self.observe_context_source(
+                *kind,
+                name,
+                description.as_deref(),
+                *kind == ContextSourceKind::McpServer,
+                false,
+            ),
+            EvidenceObservation::SkillInjection { name, invoked } => {
+                self.observe_context_source(ContextSourceKind::Skill, name, None, true, *invoked);
+            }
             EvidenceObservation::SubagentSpawn {
                 ts_ms,
                 parent_model,
+                parent_call_id,
+                child_model,
                 provenance,
-            } => self.observe_subagent_spawn(*ts_ms, parent_model.as_deref(), *provenance),
+            } => self.observe_subagent_spawn(
+                *ts_ms,
+                parent_model.as_deref(),
+                parent_call_id.as_deref(),
+                child_model.as_deref(),
+                *provenance,
+            ),
+            EvidenceObservation::SubagentModel {
+                parent_call_id,
+                model,
+            } => {
+                self.observe_child_models(Some(parent_call_id), std::iter::once(model.as_str()));
+            }
             // Delegated-turn counting and modeling now come entirely from
             // the row-derived `TurnFacts`; the accumulator does not fold
             // this observation.
@@ -394,10 +419,12 @@ impl SessionEvidenceAccumulator {
         &mut self,
         ts_ms: Option<i64>,
         parent_model: Option<&str>,
+        parent_call_id: Option<&str>,
+        child_model: Option<&str>,
         provenance: crate::analysis::interface::RelationProvenance,
     ) {
         self.subagent_spawn_count = self.subagent_spawn_count.saturating_add(1);
-        let child_parent_model = parent_model.map(|model| {
+        let child_parent_model = parent_model.and_then(|model| {
             let capped = cap_string(
                 "subagents.children.parent_model",
                 model,
@@ -406,19 +433,39 @@ impl SessionEvidenceAccumulator {
             if capped.len() != model.len() {
                 self.subagents_cap_exceeded = true;
             }
-            capped
+            (capped.len() == model.len()).then_some(capped)
         });
+        let parent_call_id = parent_call_id
+            .filter(|id| !id.trim().is_empty())
+            .and_then(|id| {
+                let capped = cap_string(
+                    "subagents.children.parent_call_id",
+                    id,
+                    &mut self.diagnostics,
+                );
+                if capped.len() != id.len() {
+                    self.subagents_cap_exceeded = true;
+                    return None;
+                }
+                Some(capped)
+            });
         if self.subagent_children.len() == MAX_SUBAGENT_CHILDREN {
             self.subagents_cap_exceeded = true;
             self.note_collection_cap("subagents.children");
         } else {
+            let index = self.subagent_children.len();
             self.subagent_children.push(SubagentChild {
                 ordinal: u32::try_from(self.subagent_spawn_count).unwrap_or(u32::MAX),
                 parent_model: child_parent_model,
+                parent_call_id,
+                observed_child_models: BTreeSet::new(),
                 child_model: EvidenceValue::Unsupported,
                 confidence: RelationConfidence::Observed,
                 provenance,
             });
+            if let Some(model) = child_model {
+                self.insert_child_model(index, model);
+            }
         }
         if let Some(ts_ms) = ts_ms {
             let example_parent_model = parent_model.map(|model| {
@@ -444,11 +491,85 @@ impl SessionEvidenceAccumulator {
         }
     }
 
+    /// Adds models only when exactly one native parent call matches the child metadata.
+    pub fn observe_child_models<'a>(
+        &mut self,
+        parent_call_id: Option<&str>,
+        models: impl Iterator<Item = &'a str>,
+    ) {
+        let Some(id) = parent_call_id.filter(|id| !id.trim().is_empty()) else {
+            self.subagent_linkage_incomplete = true;
+            return;
+        };
+        let mut matches = self
+            .subagent_children
+            .iter()
+            .enumerate()
+            .filter(|(_, child)| child.parent_call_id.as_deref() == Some(id));
+        let Some((index, _)) = matches.next() else {
+            self.subagent_linkage_incomplete = true;
+            return;
+        };
+        if matches.next().is_some() {
+            self.subagent_linkage_incomplete = true;
+            return;
+        }
+        let mut observed = false;
+        for model in models {
+            observed = true;
+            self.insert_child_model(index, model);
+        }
+        self.subagent_linkage_incomplete |= !observed;
+    }
+
+    fn insert_child_model(&mut self, index: usize, model: &str) {
+        let capped = cap_string(
+            "subagents.children.observed_child_models",
+            model,
+            &mut self.diagnostics,
+        );
+        if capped.len() != model.len() {
+            self.subagents_cap_exceeded = true;
+            return;
+        }
+        if model.trim().is_empty() || model == "<synthetic>" {
+            self.subagent_linkage_incomplete = true;
+            return;
+        }
+        if self.subagent_children[index]
+            .observed_child_models
+            .contains(model)
+        {
+            return;
+        }
+        // The cap applies across all children, not separately to each child.
+        if self
+            .subagent_children
+            .iter()
+            .map(|child| child.observed_child_models.len())
+            .sum::<usize>()
+            >= crate::analysis::evidence::MAX_SUBAGENT_MODELS
+        {
+            self.subagents_cap_exceeded = true;
+            self.note_collection_cap("subagents.children.observed_child_models");
+            return;
+        }
+        let child = &mut self.subagent_children[index];
+        self.subagent_linkage_incomplete |= child
+            .parent_model
+            .as_deref()
+            .is_none_or(|model| model.trim().is_empty());
+        child.observed_child_models.insert(capped);
+        child.child_model = EvidenceValue::Complete(());
+    }
+
     fn observe_context_source(
         &mut self,
         kind: ContextSourceKind,
         name: &str,
         description: Option<&str>,
+        injected: bool,
+        invoked: bool,
     ) {
         let (field, description_field, map) = match kind {
             ContextSourceKind::Skill => (
@@ -477,6 +598,8 @@ impl SessionEvidenceAccumulator {
             })
         });
         if let Some(existing) = map.get_mut(&capped_name) {
+            existing.injected |= injected;
+            existing.invoked |= invoked;
             if existing.description.is_none() {
                 existing.description = capped_description;
             }
@@ -490,8 +613,8 @@ impl SessionEvidenceAccumulator {
                     description: capped_description,
                     configured: false,
                     available: true,
-                    injected: true,
-                    invoked: false,
+                    injected,
+                    invoked,
                     token_count: None,
                     origin: EvidenceValue::Unsupported,
                 },
@@ -514,12 +637,8 @@ impl SessionEvidenceAccumulator {
             self.diagnostics.children_unreadable.saturating_add(1);
     }
 
-    /// Folds one streamed child's residual into this (the parent's)
-    /// residual. Folds the child's record loss, diagnostics counts, and
-    /// out-of-order ordering. Does not fold the child's tools or context
-    /// sources — those stay parent-only by design (deferred: a later
-    /// change may decide a child's skill or MCP use belongs in the
-    /// session's own coverage).
+    /// Folds a child's record loss, diagnostics, ordering, and model controls into the parent.
+    /// Counts child model controls as delegated work. Keeps tools and context sources parent-only.
     pub fn observe_child_coverage(&mut self, child: &SessionEvidenceAccumulator) {
         self.diagnostics.children_discovered =
             self.diagnostics.children_discovered.saturating_add(1);
@@ -527,6 +646,44 @@ impl SessionEvidenceAccumulator {
             self.set_child_loss_reason(reason);
         }
         self.fold_child_diagnostics(&child.diagnostics);
+        for observation in &child.model_control_observations {
+            let delegated = observation
+                .turns
+                .main_loop
+                .saturating_add(observation.turns.delegated);
+            if let Some(existing) = self.model_control_observations.iter_mut().find(|existing| {
+                existing.provider == observation.provider
+                    && existing.api == observation.api
+                    && existing.model == observation.model
+                    && existing.effort == observation.effort
+                    && existing.speed == observation.speed
+            }) {
+                existing.turns.delegated = existing.turns.delegated.saturating_add(delegated);
+            } else if self.model_control_observations.len() == MAX_MODEL_CONTROL_OBSERVATIONS {
+                self.session_cap_exceeded = true;
+                self.note_collection_cap("models.control_observations");
+            } else {
+                let mut observation = observation.clone();
+                observation.turns.main_loop = 0;
+                observation.turns.delegated = delegated;
+                self.model_control_observations.push(observation);
+            }
+        }
+        if child
+            .diagnostics
+            .capped_collections
+            .contains("models.control_observations")
+        {
+            self.note_collection_cap("models.control_observations");
+        }
+        for field in &child.diagnostics.truncated_strings {
+            if field.starts_with("models.control_observations.")
+                && insert_diagnostic_field(&mut self.diagnostics.truncated_strings, field)
+            {
+                self.session_cap_exceeded = true;
+                record_diagnostic_set_cap(&mut self.diagnostics, "diagnostics.truncated_strings");
+            }
+        }
         if child.ordering == OrderingObservation::OutOfOrder {
             self.ordering = OrderingObservation::OutOfOrder;
         }
@@ -613,14 +770,16 @@ impl SessionEvidenceAccumulator {
             } else {
                 continue;
             };
-            self.observe_context_source(kind, name, None);
+            self.observe_context_source(kind, name, None, false, false);
             let map = match kind {
                 ContextSourceKind::Skill => &mut self.skills,
                 ContextSourceKind::McpServer => &mut self.mcp_servers,
             };
             if let Some(source) = map.get_mut(name) {
-                source.injected = row.token_count > 0;
-                source.invoked = row.use_count > 0;
+                if kind == ContextSourceKind::McpServer {
+                    source.injected |= row.token_count > 0;
+                }
+                source.invoked |= row.use_count > 0;
                 source.token_count = Some(row.token_count);
                 source.origin = match row.origin {
                     SourceOrigin::Unknown => EvidenceValue::Unsupported,
@@ -667,6 +826,7 @@ impl SessionEvidenceAccumulator {
             subagent_children: self.subagent_children.clone(),
             subagent_examples: self.subagent_examples.clone(),
             subagents_cap_exceeded: self.subagents_cap_exceeded,
+            subagent_linkage_incomplete: self.subagent_linkage_incomplete,
             thread_parent_unresolved: self.thread_parent_unresolved,
             harness_version: self.harness_version.clone(),
             deferred_tools: self.deferred_tools.clone(),
@@ -721,6 +881,7 @@ impl SessionEvidenceAccumulator {
             subagent_children: record.subagent_children,
             subagent_examples: record.subagent_examples,
             subagents_cap_exceeded: record.subagents_cap_exceeded,
+            subagent_linkage_incomplete: record.subagent_linkage_incomplete,
             seen_thread_uuids: resume.seen_thread_uuids,
             thread_parent_unresolved: record.thread_parent_unresolved,
             harness_version: record.harness_version,
@@ -878,27 +1039,18 @@ impl SessionEvidenceAccumulator {
                 .then_some(CoverageReason::CapExceeded))
             .or((self.capabilities.record_identity && record_identity_gap)
                 .then_some(CoverageReason::AttributionIncomplete));
-        // Chosen once per session from capabilities, per the vendor
-        // billing contract `RepeatedContextAccounting` documents:
-        // cache-write accounting when the source bills cache creation
-        // separately, else uncached-input accounting when the source
-        // reports token classes and context occupancy, else unsupported.
-        // Codex is a fixed exception to that capability-driven choice.
-        // OpenAI reports cache-write tokens but does not bill Codex for cache
-        // writes. The Codex overpay threshold uses uncached-input accounting.
-        // Thus, Codex always uses uncached-input accounting when its required
-        // signals exist. `self.identity.agent` identifies the agent. Cache-write
-        // tokens still feed `cache.cache_creation_tokens` and turn depth. Only
-        // this finding's accounting bucket stays fixed.
-        let repeated_context_accounting =
-            self.capabilities
-                .repeated_context_accounting
-                .filter(|accounting| match accounting {
-                    RepeatedContextAccounting::CacheWrite => self.capabilities.cache_write_tokens,
-                    RepeatedContextAccounting::UncachedInput => {
-                        self.capabilities.token_classes && self.capabilities.request_context_tokens
-                    }
-                });
+        // The row scan selects one proven contract and excludes incompatible requests from its partial total.
+        let repeated_context_accounting = match self.identity.agent.as_str() {
+            "claude" | "claude-code" | "codex" => self.capabilities.repeated_context_accounting,
+            _ => facts.repeated_context_accounting,
+        }
+        .filter(|accounting| {
+            self.capabilities.token_classes
+                && self.capabilities.request_context_tokens
+                && (*accounting != RepeatedContextAccounting::CacheWrite
+                    || self.capabilities.cache_write_tokens
+                    || self.identity.agent == "pi")
+        });
         let repeated_context = match repeated_context_accounting {
             None => EvidenceValue::Unsupported,
             Some(accounting) => {
@@ -921,7 +1073,9 @@ impl SessionEvidenceAccumulator {
                 };
                 if let Some(reason) = cache_partial_reason {
                     EvidenceValue::Partial { observed, reason }
-                } else if facts.repeated_context_pairs_skipped > 0 {
+                } else if facts.repeated_context_incomplete
+                    || facts.repeated_context_pairs_skipped > 0
+                {
                     EvidenceValue::Partial {
                         observed,
                         reason: CoverageReason::AttributionIncomplete,
@@ -1013,7 +1167,9 @@ impl SessionEvidenceAccumulator {
             ),
             context_sources: if !(self.capabilities.skill_inventory
                 || self.capabilities.mcp_inventory
-                || self.capabilities.tool_definitions)
+                || self.capabilities.tool_definitions
+                || !context_sources.skills.is_empty()
+                || !context_sources.mcp_servers.is_empty())
             {
                 EvidenceValue::Unsupported
             } else if self.context_sources_cap_exceeded {
@@ -1054,7 +1210,7 @@ impl SessionEvidenceAccumulator {
             } else {
                 EvidenceValue::Complete(models)
             },
-            subagents: if !self.capabilities.subagent_relationships {
+            subagents: if !self.capabilities.subagent_relationships && subagents.spawn_count == 0 {
                 EvidenceValue::Unsupported
             } else if let Some(reason) = self.record_loss_reason {
                 EvidenceValue::Partial {
@@ -1071,7 +1227,9 @@ impl SessionEvidenceAccumulator {
                     observed: subagents,
                     reason: CoverageReason::CapExceeded,
                 }
-            } else if (self.capabilities.subagent_models && facts.delegated_model_missing)
+            } else if !self.capabilities.subagent_relationships
+                || self.subagent_linkage_incomplete
+                || facts.delegated_model_missing
                 || facts.duplicate_turn_identities > 0
             {
                 EvidenceValue::Partial {
@@ -1173,23 +1331,60 @@ impl SessionEvidenceAccumulator {
     ) -> (ContextSourceEvidence, bool) {
         let mut skills = self.skills.clone();
         let mut mcp_servers = self.mcp_servers.clone();
-        let (invoked_skills, skill_attribution_incomplete) = self.resolved_skill_invocations();
+        let (invoked_skills, mut skill_attribution_incomplete) = self.resolved_skill_invocations();
         for (name, source) in &mut skills {
-            source.invoked = invoked_skills.contains(name);
+            source.invoked |= invoked_skills.contains(name);
         }
+        // A directory basename cannot identify which namespaced skill document loaded.
+        skill_attribution_incomplete |= skills.iter().any(|(name, source)| {
+            source.injected
+                && !source.invoked
+                && !name.contains(':')
+                && skills.keys().any(|candidate| {
+                    candidate
+                        .rsplit_once(':')
+                        .is_some_and(|(_, suffix)| suffix.eq_ignore_ascii_case(name))
+                })
+        });
         for (name, source) in &mut mcp_servers {
-            source.invoked = self
+            source.invoked |= self
                 .tools
                 .keys()
                 .any(|tool| tool_belongs_to_mcp_server(tool, name));
         }
         (
             ContextSourceEvidence {
+                skill_coverage: self.resource_coverage(
+                    !skills.is_empty(),
+                    "context_sources.skills",
+                    skill_attribution_incomplete,
+                ),
+                mcp_coverage: self.resource_coverage(
+                    !mcp_servers.is_empty(),
+                    "context_sources.mcp_servers",
+                    false,
+                ),
                 skills,
                 mcp_servers,
                 tool_definitions: self.tool_definitions(catalog, model),
             },
             skill_attribution_incomplete,
+        )
+    }
+
+    fn resource_coverage(
+        &self,
+        observed: bool,
+        field: &str,
+        attribution_incomplete: bool,
+    ) -> EvidenceValue<()> {
+        // Coverage applies only to observed resources, not the full historical inventory.
+        self.supported_value(
+            (),
+            observed,
+            attribution_incomplete.then_some(CoverageReason::AttributionIncomplete),
+            self.diagnostics.capped_collections.contains(field)
+                || self.diagnostics.truncated_strings.contains(field),
         )
     }
 
@@ -1230,7 +1425,7 @@ impl SessionEvidenceAccumulator {
                 },
             );
         }
-        EvidenceValue::Complete(definitions)
+        self.supported_value(definitions, true, None, self.tools_cap_exceeded)
     }
 
     /// `child_dependent_reason` degrades a group that is computed over the
@@ -1384,7 +1579,15 @@ fn subagent_children_retained_bytes(children: &[SubagentChild], capacity: usize)
         .saturating_add(
             children
                 .iter()
-                .map(|child| child.parent_model.as_ref().map_or(0, String::capacity))
+                .map(|child| {
+                    child.parent_model.as_ref().map_or(0, String::capacity)
+                        + child.parent_call_id.as_ref().map_or(0, String::capacity)
+                        + child
+                            .observed_child_models
+                            .iter()
+                            .map(|model| model.capacity() + BTREE_ENTRY_OVERHEAD_BYTES)
+                            .sum::<usize>()
+                })
                 .sum::<usize>(),
         )
 }
@@ -1830,6 +2033,163 @@ mod tests {
     }
 
     #[test]
+    fn child_model_controls_reach_detectors_through_reader_rows_and_replay() {
+        use crate::analysis::{ClaudeSessionReader, SessionInput, TurnScope};
+        use crate::insights::{
+            DetectorId, DetectorStatus, EfficiencyReportAccumulator, ReportContext, ReportWindow,
+        };
+
+        for (parent_speed, child_effort, child_speed, finding) in [
+            ("standard", "max", "fast", true),
+            ("fast", "low", "standard", false),
+        ] {
+            let store = MemoryTurnRowStore::new("claude", "parent");
+            let mut residuals = Vec::new();
+            for (id, effort, speed, scope) in [
+                ("parent", "low", parent_speed, None),
+                (
+                    "child",
+                    child_effort,
+                    child_speed,
+                    Some(TurnScope::Delegated),
+                ),
+            ] {
+                let input = SessionInput {
+                    agent: "claude".to_owned(),
+                    session_id: id.to_owned(),
+                    source: RawSource::Jsonl(
+                        serde_json::json!({
+                            "type": "assistant", "uuid": id,
+                            "timestamp": "2026-09-01T12:00:00Z", "effort": effort,
+                            "message": {"role": "assistant", "model": "claude-opus-4-6",
+                                "usage": {"input_tokens": 10, "output_tokens": 5, "speed": speed},
+                                "content": [{"type": "text", "text": "Synthetic response."}]}
+                        })
+                        .to_string(),
+                    ),
+                    fork_parent_session_id: None,
+                };
+                let mut sink = CompositeSink::with_turn_rows(
+                    SessionMetricsAccumulator::new("claude", id),
+                    accumulator(true),
+                    TurnRowSink::new(
+                        Arc::clone(&store) as Arc<dyn TurnRowStore>,
+                        id.to_owned(),
+                        scope,
+                    ),
+                );
+                let outcome = ClaudeSessionReader
+                    .visit(&input, &mut sink)
+                    .expect("parse transcript");
+                sink.observe_source_outcome(outcome);
+                residuals.push(sink.into_parts().expect("published residual").1);
+            }
+            let child = residuals.pop().unwrap();
+            let mut parent = residuals.pop().unwrap();
+            parent.observe_child_coverage(&child);
+            let facts = store
+                .query_turn_facts()
+                .expect("query parent and child rows");
+            let evidence = parent.evidence(&facts);
+            let EvidenceValue::Complete(models) = &evidence.models else {
+                panic!("model evidence must be complete");
+            };
+            assert_eq!(models.control_observations.len(), 2);
+            assert_eq!(models.control_observations[0].turns.main_loop, 1);
+            assert_eq!(models.control_observations[0].turns.delegated, 0);
+            assert_eq!(models.control_observations[1].turns.main_loop, 0);
+            assert_eq!(models.control_observations[1].turns.delegated, 1);
+            let encoded = serde_json::to_vec(&parent.coverage_record()).unwrap();
+            let restored = SessionEvidenceAccumulator::from_coverage_record(
+                serde_json::from_slice(&encoded).unwrap(),
+            );
+            assert_eq!(evidence, restored.evidence(&facts));
+
+            let mut report = EfficiencyReportAccumulator::new();
+            report.observe_session(restored.evidence(&facts));
+            let report = report.finish(ReportContext {
+                environment_key: "native".to_owned(),
+                window: ReportWindow {
+                    start_epoch: 0,
+                    end_epoch: i64::MAX,
+                },
+                computed_at_epoch: 0,
+                parser_revision: PARSER_REVISION,
+                analyzer_revision: ANALYZER_REVISION,
+                evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
+                coverage: Default::default(),
+            });
+            for detector in [DetectorId::ModelOverthinking, DetectorId::OveruseOfFastMode] {
+                let status = &report.detector_statuses[detector.index()];
+                if finding {
+                    assert!(
+                        matches!(status, DetectorStatus::Findings(_)),
+                        "{detector:?}: {status:?}"
+                    );
+                } else {
+                    assert_eq!(status, &DetectorStatus::Clean, "{detector:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn child_model_controls_merge_at_capacity_with_saturating_delegated_counts() {
+        let mut parent = accumulator(true);
+        for index in 0..MAX_MODEL_CONTROL_OBSERVATIONS {
+            let mut event = assistant_event(index);
+            event.thinking_mode = Some("low".to_owned());
+            parent.observe_event(&event);
+        }
+        let mut child = accumulator(true);
+        let mut event = assistant_event(MAX_MODEL_CONTROL_OBSERVATIONS);
+        event.thinking_mode = Some("low".to_owned());
+        child.observe_event(&event);
+        event.model = Some("model-0".to_owned());
+        child.observe_event(&event);
+        child.model_control_observations[1].turns.main_loop = u64::MAX;
+        child.model_control_observations[1].turns.delegated = 1;
+        parent.model_control_observations[0].turns.delegated = 1;
+        parent.observe_child_coverage(&child);
+        let evidence = parent.evidence(&TurnFacts::default());
+        assert_capped_collection(&evidence, "models.control_observations");
+        let models = assert_cap_partial(evidence.models);
+        assert_eq!(
+            models.control_observations.len(),
+            MAX_MODEL_CONTROL_OBSERVATIONS
+        );
+        assert_eq!(models.control_observations[0].turns.main_loop, 1);
+        assert_eq!(models.control_observations[0].turns.delegated, u64::MAX);
+        assert!(matches!(evidence.tools, EvidenceValue::Complete(_)));
+    }
+
+    #[test]
+    fn child_model_control_caps_and_truncation_keep_parent_models_partial() {
+        for truncate in [false, true] {
+            let mut child = accumulator(true);
+            for index in 0..=MAX_MODEL_CONTROL_OBSERVATIONS {
+                let mut event = assistant_event(index);
+                event.thinking_mode = Some("low".to_owned());
+                if truncate {
+                    event.model = Some(long_string());
+                }
+                child.observe_event(&event);
+            }
+            let mut parent = accumulator(true);
+            parent.observe_child_coverage(&child);
+            let evidence = parent.evidence(&TurnFacts::default());
+            if truncate {
+                assert_truncated_string(&evidence, "models.control_observations.model");
+            } else {
+                assert_capped_collection(&evidence, "models.control_observations");
+            }
+            assert_cap_partial(evidence.models);
+            assert!(matches!(evidence.tools, EvidenceValue::Complete(_)));
+            assert!(matches!(evidence.context, EvidenceValue::Complete(_)));
+        }
+    }
+
+    #[test]
     fn observe_child_coverage_with_a_lossy_child_degrades_child_dependent_groups_but_not_tools() {
         let mut parent = accumulator(true);
         let mut child = accumulator(true);
@@ -1985,6 +2345,82 @@ mod tests {
     }
 
     #[test]
+    fn resource_coverage_is_independent_and_survives_replay() {
+        for capped_kind in [ContextSourceKind::Skill, ContextSourceKind::McpServer] {
+            let mut sink = accumulator(true);
+            sink.observe_context_source(ContextSourceKind::Skill, "skill", None, true, false);
+            sink.observe_context_source(ContextSourceKind::McpServer, "mcp", None, true, false);
+            for index in 0..MAX_CONTEXT_SOURCES {
+                sink.observe_context_source(
+                    capped_kind,
+                    &format!("source-{index}"),
+                    None,
+                    true,
+                    false,
+                );
+            }
+            let replay = SessionEvidenceAccumulator::from_coverage_record(sink.coverage_record());
+            let evidence = replay.evidence(&TurnFacts::default());
+            let EvidenceValue::Partial {
+                observed: sources, ..
+            } = evidence.context_sources
+            else {
+                panic!("the coarse group must retain its cap");
+            };
+            let (capped, complete) = match capped_kind {
+                ContextSourceKind::Skill => (sources.skill_coverage, sources.mcp_coverage),
+                ContextSourceKind::McpServer => (sources.mcp_coverage, sources.skill_coverage),
+            };
+            assert_eq!(complete, EvidenceValue::Complete(()));
+            assert_eq!(
+                capped,
+                EvidenceValue::Partial {
+                    observed: (),
+                    reason: CoverageReason::CapExceeded
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn missing_resource_lifecycle_does_not_prove_empty_inventory() {
+        let sink = accumulator(true);
+        let EvidenceValue::Complete(sources) = sink.evidence(&TurnFacts::default()).context_sources
+        else {
+            panic!("the wrapper remains available for built-in definitions");
+        };
+        assert_eq!(sources.skill_coverage, EvidenceValue::Unsupported);
+        assert_eq!(sources.mcp_coverage, EvidenceValue::Unsupported);
+    }
+
+    #[test]
+    fn record_loss_degrades_each_observed_resource() {
+        let mut sink = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "codex".to_owned(),
+            session_id: "resource-record-loss".to_owned(),
+            kind: SourceKind::Jsonl,
+            capabilities: SourceCapabilities::codex(),
+        });
+        sink.observe_context_source(ContextSourceKind::Skill, "skill", None, true, false);
+        sink.observe_context_source(ContextSourceKind::McpServer, "mcp", None, true, false);
+        sink.set_record_loss_reason(CoverageReason::MalformedRecord);
+        let sink = SessionEvidenceAccumulator::from_coverage_record(sink.coverage_record());
+        let EvidenceValue::Complete(sources) = sink.evidence(&TurnFacts::default()).context_sources
+        else {
+            unreachable!()
+        };
+        for coverage in [sources.skill_coverage, sources.mcp_coverage] {
+            assert_eq!(
+                coverage,
+                EvidenceValue::Partial {
+                    observed: (),
+                    reason: CoverageReason::MalformedRecord
+                }
+            );
+        }
+    }
+
+    #[test]
     fn a_skill_suffix_does_not_match_a_namespaced_identity() {
         let mut accumulator = accumulator(true);
         accumulator.record(NormalizedRecord::Observation(Box::new(
@@ -2078,6 +2514,8 @@ mod tests {
                 EvidenceObservation::SubagentSpawn {
                     ts_ms: Some(i64::try_from(index).unwrap()),
                     parent_model: Some("model".to_owned()),
+                    parent_call_id: None,
+                    child_model: None,
                     provenance: crate::analysis::RelationProvenance::TaskToolUse,
                 },
             )));
@@ -2376,12 +2814,106 @@ mod tests {
         assert_eq!(source.description, None);
     }
 
+    #[test]
+    fn native_child_models_require_one_exact_call_and_reject_truncated_identities() {
+        for (ids, joined_id) in [
+            (vec!["call-1".to_owned()], None),
+            (vec!["call-1".to_owned()], Some("other".to_owned())),
+            (
+                vec!["call-1".to_owned(), "call-1".to_owned()],
+                Some("call-1".to_owned()),
+            ),
+            (vec![long_string()], Some(long_string())),
+        ] {
+            let mut accumulator = accumulator(true);
+            for id in ids {
+                accumulator.observe_subagent_spawn(
+                    None,
+                    Some("claude-opus-4-6"),
+                    Some(&id),
+                    None,
+                    crate::analysis::RelationProvenance::TaskToolUse,
+                );
+            }
+            accumulator
+                .observe_child_models(joined_id.as_deref(), std::iter::once("claude-opus-4-6"));
+            let record = accumulator.coverage_record();
+            assert!(
+                record
+                    .subagent_children
+                    .iter()
+                    .all(|child| child.observed_child_models.is_empty())
+            );
+            assert!(matches!(
+                accumulator.evidence(&TurnFacts::default()).subagents,
+                EvidenceValue::Partial { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn native_child_model_pairs_are_bounded_and_survive_json_and_binary_replay() {
+        let mut accumulator = accumulator(true);
+        accumulator.observe_subagent_spawn(
+            None,
+            Some("claude-opus-4-6"),
+            Some("call-1"),
+            None,
+            crate::analysis::RelationProvenance::TaskToolUse,
+        );
+        accumulator.observe_child_models(Some("call-1"), std::iter::once(long_string().as_str()));
+        assert!(
+            accumulator.coverage_record().subagent_children[0]
+                .observed_child_models
+                .is_empty()
+        );
+        for index in 0..=crate::analysis::evidence::MAX_SUBAGENT_MODELS {
+            accumulator.observe_child_models(
+                Some("call-1"),
+                std::iter::once(format!("model-{index}").as_str()),
+            );
+        }
+        let record = accumulator.coverage_record();
+        assert_eq!(
+            record.subagent_children[0].observed_child_models.len(),
+            crate::analysis::evidence::MAX_SUBAGENT_MODELS
+        );
+        assert!(record.subagents_cap_exceeded);
+        assert!(accumulator.retained_bytes() < RETAINED_EVIDENCE_BYTES_BOUND);
+        let decoded: SessionCoverageRecord =
+            postcard::from_bytes(&postcard::to_allocvec(&record).unwrap()).unwrap();
+        assert_eq!(decoded, record);
+        assert_eq!(
+            SessionEvidenceAccumulator::from_coverage_record(decoded)
+                .evidence(&TurnFacts::default()),
+            accumulator.evidence(&TurnFacts::default())
+        );
+        let mut legacy = serde_json::to_value(&record).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("subagentLinkageIncomplete");
+        for child in legacy["subagentChildren"].as_array_mut().unwrap() {
+            child.as_object_mut().unwrap().remove("parentCallId");
+            child.as_object_mut().unwrap().remove("observedChildModels");
+        }
+        let decoded: SessionCoverageRecord = serde_json::from_value(legacy).unwrap();
+        assert!(decoded.subagent_children[0].parent_call_id.is_none());
+        assert!(
+            decoded.subagent_children[0]
+                .observed_child_models
+                .is_empty()
+        );
+    }
+
     fn subagent_string_overflow() -> SessionEvidence {
         let mut accumulator = accumulator(true);
         accumulator.record(NormalizedRecord::Observation(Box::new(
             EvidenceObservation::SubagentSpawn {
                 ts_ms: Some(1),
                 parent_model: Some(long_string()),
+                parent_call_id: None,
+                child_model: None,
                 provenance: crate::analysis::RelationProvenance::TaskToolUse,
             },
         )));
@@ -2393,10 +2925,7 @@ mod tests {
         let evidence = subagent_string_overflow();
         assert_truncated_string(&evidence, "subagents.children.parent_model");
         let subagents = assert_cap_partial(evidence.subagents);
-        assert_eq!(
-            subagents.children[0].parent_model.as_ref().unwrap().len(),
-            EVIDENCE_STRING_CAP
-        );
+        assert!(subagents.children[0].parent_model.is_none());
     }
 
     #[test]

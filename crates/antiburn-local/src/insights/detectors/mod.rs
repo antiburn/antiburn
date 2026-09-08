@@ -94,10 +94,15 @@ pub(crate) struct DetectorFold {
     pub examples: Vec<SessionExample>,
     pub contract_incomplete: u64,
     pub signal_missing: u64,
+    pub partial_sessions: u64,
 }
 
 impl DetectorFold {
     pub(crate) fn observe(&mut self, observation: Observation, evidence: &SessionEvidence) {
+        self.partial_sessions += u64::from(matches!(
+            evidence.coverage,
+            crate::analysis::EvidenceCoverage::Partial(_)
+        ));
         match observation {
             Observation::Finding => {
                 self.finding_sessions += 1;
@@ -426,7 +431,7 @@ pub(crate) fn status(
     if fold.signal_missing > 0 {
         return DetectorStatus::NotAssessed(NotAssessedReason::SignalMissing);
     }
-    if counts.clean == counts.eligible {
+    if counts.clean == counts.eligible && fold.partial_sessions == 0 {
         return DetectorStatus::Clean;
     }
     DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
@@ -492,6 +497,7 @@ mod tests {
             examples: Vec::new(),
             contract_incomplete: 1,
             signal_missing: 0,
+            partial_sessions: 0,
         };
 
         assert!(matches!(
@@ -536,6 +542,7 @@ mod tests {
             examples: Vec::new(),
             contract_incomplete: 1,
             signal_missing: 0,
+            partial_sessions: 0,
         };
 
         assert_eq!(
@@ -551,6 +558,7 @@ mod tests {
             examples: Vec::new(),
             contract_incomplete: 0,
             signal_missing: 1,
+            partial_sessions: 0,
         };
 
         assert_eq!(
@@ -565,6 +573,25 @@ mod tests {
             status(counts(2, 0, 2, 0), DetectorFold::default(), 2),
             DetectorStatus::Clean
         );
+    }
+
+    #[test]
+    fn partial_session_fold_blocks_clean_but_preserves_findings() {
+        let mut evidence = test_support::claude_evidence("partial-fold");
+        evidence.coverage = crate::analysis::EvidenceCoverage::Partial(
+            crate::analysis::CoverageReason::MalformedRecord,
+        );
+        let mut fold = DetectorFold::default();
+        fold.observe(Observation::NoFinding, &evidence);
+        assert_eq!(
+            status(counts(1, 0, 1, 0), fold.clone(), 1),
+            DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
+        );
+        fold.observe(Observation::Finding, &evidence);
+        assert!(matches!(
+            status(counts(2, 1, 1, 0), fold, 2),
+            DetectorStatus::Findings(_)
+        ));
     }
 
     #[test]

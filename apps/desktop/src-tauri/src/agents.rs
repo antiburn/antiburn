@@ -29,8 +29,8 @@ pub fn vendor_label(kind: AgentKind) -> &'static str {
     }
 }
 
-/// Whether the engine has a dedicated adapter for this agent's transcript
-/// format, as opposed to the generic JSONL fallback.
+/// Whether the engine has a usable session parser for this agent.
+/// Passive source registration does not enable analysis.
 ///
 /// Mirrors the webview's `agentSupportsAnalysis`, but asks the engine rather
 /// than a second hand-maintained list.
@@ -57,28 +57,27 @@ mod tests {
 
     #[test]
     fn every_kind_resolves_to_a_vendor_label_the_registry_recognizes() {
-        // The registry answers for every label (unknown ones get the generic
-        // adapter), so the meaningful assertion is that the kinds the engine
-        // models precisely actually reach their dedicated adapter.
-        let dedicated = [
-            AgentKind::Claude,
-            AgentKind::Codex,
-            AgentKind::Cursor,
-            AgentKind::Copilot,
-            AgentKind::Cline,
-            AgentKind::OpenCode,
-            AgentKind::Kiro,
-            AgentKind::AmpCode,
-            AgentKind::Pi,
-            AgentKind::Antigravity,
-            AgentKind::Windsurf,
-        ];
-        for kind in dedicated {
-            assert!(
-                supports_analysis(kind),
-                "{kind:?} should reach its dedicated adapter via {:?}",
+        for kind in AgentKind::ALL.iter().copied() {
+            assert_eq!(
+                antiburn_local::analysis::reader_for(vendor_label(kind)).agent(),
                 vendor_label(kind)
             );
+        }
+    }
+
+    #[test]
+    fn only_functional_session_parsers_support_analysis() {
+        for kind in AgentKind::ALL.iter().copied() {
+            let expected = matches!(
+                kind,
+                AgentKind::Claude
+                    | AgentKind::Codex
+                    | AgentKind::Cursor
+                    | AgentKind::OpenCode
+                    | AgentKind::Pi
+                    | AgentKind::Antigravity
+            );
+            assert_eq!(supports_analysis(kind), expected, "{kind:?}");
         }
     }
 

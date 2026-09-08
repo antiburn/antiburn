@@ -323,7 +323,6 @@ impl AntigravitySessionReader {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<SessionSummary> {
-        let fallback_ts = summary.started_at_ms;
         let has_generations = table_exists(connection, "gen_metadata")?;
         let has_steps = table_exists(connection, "steps")?;
         if !has_generations && !has_steps {
@@ -345,14 +344,7 @@ impl AntigravitySessionReader {
             )?;
         }
         if has_steps {
-            visit_step_rows(
-                connection,
-                fallback_ts,
-                cancel,
-                sink,
-                &mut state,
-                &mut summary,
-            )?;
+            visit_step_rows(connection, cancel, sink, &mut state, &mut summary)?;
         }
         if has_generations {
             visit_generation_rows(
@@ -361,13 +353,7 @@ impl AntigravitySessionReader {
                 sink,
                 |metadata, sink| {
                     for_each_chat_usage(metadata.data, |invocation| {
-                        state.emit(
-                            invocation,
-                            Some(metadata.model),
-                            fallback_ts,
-                            sink,
-                            &mut summary,
-                        );
+                        state.emit(invocation, Some(metadata.model), None, sink, &mut summary);
                     })
                     .is_none_or(|scan| scan.malformed)
                 },
@@ -509,8 +495,10 @@ impl<R: Read> Read for CancelReader<'_, R> {
 #[derive(Default)]
 struct AntigravityStreamState {
     model: Option<String>,
+    observed_model: Option<String>,
     started_at_ms: Option<i64>,
     cascade_partial: bool,
+    attribution_incomplete: bool,
 }
 
 impl AntigravityStreamState {
@@ -518,6 +506,12 @@ impl AntigravityStreamState {
         if is_meta_line(value) {
             self.observe_model(value);
             return;
+        }
+        let kind = normalize_type(value.get("type").and_then(Value::as_str).unwrap_or(""));
+        if role_for(&kind).is_none() {
+            sink.record(NormalizedRecord::Unusable(
+                PartialReason::UnrecognizedRecordType,
+            ));
         }
         let Some(mut event) = step_to_event(value) else {
             return;
@@ -531,8 +525,12 @@ impl AntigravityStreamState {
                 event.role = Role::Tool;
             }
         }
-        self.observe_model(value);
         event.model = model_from(value).or_else(|| self.model.clone());
+        if event.model.is_some() {
+            self.observed_model = event.model.clone();
+        }
+        self.attribution_incomplete |=
+            event.ts_ms.is_none() || (event.role == Role::Assistant && event.model.is_none());
         if self.started_at_ms.is_none() {
             self.started_at_ms = event.ts_ms;
         }
@@ -548,12 +546,16 @@ impl AntigravityStreamState {
     fn finish(self) -> SessionSummary {
         SessionSummary {
             cache_write_tokens_available: false,
-            model: self.model,
+            model: self.observed_model.or(self.model),
             started_at_ms: self.started_at_ms,
             coverage_gaps: self
                 .cascade_partial
                 .then_some(PartialReason::Oversized)
                 .into_iter()
+                .chain(
+                    self.attribution_incomplete
+                        .then_some(PartialReason::AttributionIncomplete),
+                )
                 .collect(),
             ..SessionSummary::default()
         }
@@ -651,12 +653,20 @@ impl DatabaseUsageState {
         self.seen.insert(invocation.identity);
         let model = direct_model
             .map(str::to_owned)
-            .or_else(|| self.models.get(&invocation.identity).cloned())
-            .or_else(|| summary.model.clone());
+            .or_else(|| self.models.get(&invocation.identity).cloned());
         let mut event = NormalizedEvent::new(Role::Assistant);
         event.ts_ms = ts_ms;
         event.usage = invocation.usage;
         event.model = model.clone();
+        if (event.ts_ms.is_none() || event.model.is_none())
+            && !summary
+                .coverage_gaps
+                .contains(&PartialReason::AttributionIncomplete)
+        {
+            summary
+                .coverage_gaps
+                .push(PartialReason::AttributionIncomplete);
+        }
         if model.is_some() {
             summary.model = model;
         }
@@ -717,7 +727,6 @@ fn visit_generation_rows(
 
 fn visit_step_rows(
     connection: &Connection,
-    fallback_ts: Option<i64>,
     cancel: &dyn Fn() -> bool,
     sink: &mut dyn RecordSink,
     state: &mut DatabaseUsageState,
@@ -740,6 +749,7 @@ fn visit_step_rows(
             continue;
         }
         let Some(data) = row.get::<_, Option<Vec<u8>>>(0).ok().flatten() else {
+            sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             continue;
         };
         let Some((ts_ms, scan)) = for_each_step_usage(&data, |_| {}) else {
@@ -750,7 +760,7 @@ fn visit_step_rows(
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
         }
         let _ = for_each_step_usage(&data, |invocation| {
-            state.emit(invocation, None, ts_ms.or(fallback_ts), sink, summary);
+            state.emit(invocation, None, ts_ms, sink, summary);
         });
     }
     Ok(())
@@ -1395,7 +1405,15 @@ impl<'de> Visitor<'de> for StepsVisitor<'_> {
                 .retained_high_water
                 .set(self.0.retained_high_water.get().max(step.retained_bytes));
             let partial = step.partial;
+            let kind = normalize_type(step.raw_type.as_deref().unwrap_or(""));
+            if role_for(&kind).is_none() {
+                self.0.sink.record(NormalizedRecord::Unusable(
+                    PartialReason::UnrecognizedRecordType,
+                ));
+            }
             if let Some(event) = step.into_event(self.0.state) {
+                self.0.state.attribution_incomplete |= event.ts_ms.is_none()
+                    || (event.role == Role::Assistant && event.model.is_none());
                 if self.0.state.started_at_ms.is_none() {
                     self.0.state.started_at_ms = event.ts_ms;
                 }
@@ -1607,10 +1625,12 @@ impl CascadeStep {
             .and_then(parse_ts);
         event.usage = self.usage;
         if let Some(model) = self.model.filter(|model| !model.trim().is_empty()) {
-            state.model = Some(model.clone());
             event.model = Some(model);
         } else {
             event.model = state.model.clone();
+        }
+        if event.model.is_some() {
+            state.observed_model = event.model.clone();
         }
         for tool in self.tools {
             event
@@ -3507,7 +3527,7 @@ mod tests {
         assert_eq!(usage_events[2].usage.input_tokens, 11);
         assert_eq!(usage_events[2].ts_ms, Some(200_500));
         assert_eq!(usage_events[3].usage.input_tokens, 13);
-        assert!(usage_events[3].ts_ms.is_some());
+        assert!(usage_events[3].ts_ms.is_none());
         assert_eq!(session.events[1].usage, Usage::default());
         assert_eq!(session.events[1].role, Role::Tool);
         assert_eq!(session.events[1].tools[0].name, "read_file");

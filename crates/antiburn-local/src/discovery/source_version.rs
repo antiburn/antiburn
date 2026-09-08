@@ -8,6 +8,34 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const FINGERPRINT_HEAD_BYTES: usize = 64 * 1024;
 
+/// Fingerprint a Claude child sidecar with reads bounded to the metadata parser's 64 KiB limit.
+pub fn claude_sidecar_fingerprint(transcript: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+
+    let file = match std::fs::File::open(transcript.with_extension("meta.json")) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok("missing".to_owned());
+        }
+        Err(error) => return Err(error),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::other(
+            "Claude sidecar is not a regular file",
+        ));
+    }
+    let stat = SourceStat::from_open_std_metadata(&file, &metadata);
+    let mut bytes = Vec::new();
+    file.take(FINGERPRINT_HEAD_BYTES as u64)
+        .read_to_end(&mut bytes)?;
+    Ok(FingerprintInputs {
+        stat,
+        head_hash: Some(head_hash_of(&bytes)),
+    }
+    .fingerprint())
+}
+
 pub(crate) fn provider_db_fingerprint(latest: u64, rows: u64) -> String {
     format!("sv1:db:{latest}:{rows}")
 }
@@ -306,6 +334,23 @@ mod tests {
             format!("{:016x}", head_hash_of(b"foobar")),
             "85944171f73967e8"
         );
+    }
+
+    #[test]
+    fn claude_sidecar_fingerprint_bounds_content_reads() {
+        let directory = TempDir::new().unwrap();
+        let transcript = directory.path().join("agent-child.jsonl");
+        let sidecar = transcript.with_extension("meta.json");
+        assert_eq!(claude_sidecar_fingerprint(&transcript).unwrap(), "missing");
+        let file = std::fs::File::create(&sidecar).unwrap();
+        file.set_len(1024 * 1024 * 1024).unwrap();
+        let fingerprint = claude_sidecar_fingerprint(&transcript).unwrap();
+        assert!(fingerprint.ends_with(&format!(
+            ":{:016x}",
+            head_hash_of(&vec![0; FINGERPRINT_HEAD_BYTES])
+        )));
+        std::fs::remove_file(&sidecar).unwrap();
+        assert_eq!(claude_sidecar_fingerprint(&transcript).unwrap(), "missing");
     }
 
     #[test]

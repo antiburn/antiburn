@@ -17,6 +17,25 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** Session readers replace `VendorAdapter`, `ClaudeAdapter`,
+  `PiAdapter`, `adapter_for`, and `has_dedicated_adapter` with `SessionReader`,
+  `ClaudeSessionReader`, `PiSessionReader`, `reader_for`, and
+  `has_dedicated_reader`. Compatibility aliases are not provided.
+- Session readers expose source-format capabilities and preserve request-level
+  provider, model, effort, and speed evidence.
+- Partial Cursor and Antigravity source contracts preserve direct findings but
+  cannot prove clean results. Unsupported parser wrappers no longer advertise
+  usable session analysis.
+
+### Fixed
+
+- Preserve delegated model controls when merging parent and child evidence.
+- Require native OpenCode task proof instead of session ancestry for delegation.
+- Distinguish available skill listings from injected skill documents.
+- Invalidate earlier resume snapshots after changing resumable evidence state.
+
 ## [0.6.0] - 2026-09-07
 
 ### Added

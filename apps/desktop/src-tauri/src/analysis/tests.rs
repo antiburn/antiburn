@@ -1,5 +1,7 @@
 use super::*;
 
+mod claude_parent_child;
+
 /// A row store for a test pass that wants published evidence. A pass
 /// without a row store publishes no evidence, so any test that reads
 /// `session.evidence` or `pass.evidence` needs one of these.
@@ -332,12 +334,26 @@ fn opencode_database_with_delegated_child(model: &str) -> (tempfile::TempDir, st
             )],
         )
         .expect("child message");
+    connection
+        .execute(
+            "INSERT INTO part VALUES ('task', 'message', 'root', 101, 115, ?1)",
+            [serde_json::json!({
+                "type": "tool", "tool": "task", "callID": "call-child",
+                "state": {
+                    "status": "completed",
+                    "input": {"description": "Inspect code", "prompt": "Inspect code", "subagent_type": "explore"},
+                    "metadata": {"sessionId": "child", "model": {"providerID": "test", "modelID": model}},
+                    "time": {"start": 101, "end": 115}, "output": "Complete"
+                }
+            }).to_string()],
+        )
+        .expect("completed task");
     drop(connection);
     (directory, path)
 }
 
 #[test]
-fn an_opencode_parent_id_child_links_as_a_delegated_thread() {
+fn an_opencode_completed_task_links_as_a_delegated_thread() {
     let (_directory, path) = opencode_database_with_delegated_child("model-b");
     let input = SessionInput {
         agent: "opencode".to_owned(),
@@ -358,6 +374,10 @@ fn an_opencode_parent_id_child_links_as_a_delegated_thread() {
     assert_eq!(subagents.spawn_count, 1);
     assert!(subagents.delegated_models.contains("model-b"));
     assert_eq!(subagents.delegated_turns, 1);
+    assert_eq!(
+        subagents.children[0].parent_model.as_deref(),
+        Some("model-a")
+    );
 }
 
 fn codex_record() -> String {
@@ -1500,13 +1520,13 @@ fn a_child_transcript_change_updates_the_combined_fingerprint() {
     std::fs::write(&child, "child").unwrap();
     let source = SessionSource::File(parent);
 
-    let before = combined_fingerprint(&source, std::slice::from_ref(&child));
+    let before = combined_fingerprint(AgentKind::Claude, &source, std::slice::from_ref(&child));
     assert!(before.starts_with(&format!("v{ANALYSIS_FINGERPRINT_VERSION}:")));
     std::fs::write(&child, "child has more model events").unwrap();
 
     assert_ne!(
         before,
-        combined_fingerprint(&source, std::slice::from_ref(&child))
+        combined_fingerprint(AgentKind::Claude, &source, std::slice::from_ref(&child))
     );
 }
 
@@ -1541,6 +1561,57 @@ fn cached_costs_re_price_from_the_stored_breakdown() {
 
     // Garbage in the cache degrades to "unknown", never to a panic.
     assert_eq!(price_cached_breakdown("not json", "not json").0, None);
+}
+
+#[test]
+fn claude_sidecar_changes_invalidate_the_full_fingerprint_and_publication() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let parent = directory.path().join("parent.jsonl");
+    let child = directory.path().join("agent-child.jsonl");
+    let sidecar = child.with_extension("meta.json");
+    std::fs::write(&parent, claude_record("parent", 1_760_000_000)).unwrap();
+    std::fs::write(&child, claude_record("child", 1_760_000_001)).unwrap();
+    let source = SessionSource::File(parent.clone());
+    let last_child = directory.path().join("agent-last.jsonl");
+    std::fs::write(&last_child, claude_record("last", 1_760_000_002)).unwrap();
+    let fingerprint = |agent| combined_fingerprint(agent, &source, std::slice::from_ref(&child));
+    let absent = fingerprint(AgentKind::Claude);
+    let codex = fingerprint(AgentKind::Codex);
+    let inputs = [
+        file_input(&parent, "parent"),
+        file_input(&child, "child"),
+        file_input(&last_child, "last"),
+    ];
+
+    for content in [
+        Some(r#"{"toolUseId":"call-a"}"#),
+        Some(r#"{"toolUseId":"call-b"}"#),
+        None,
+    ] {
+        let before = fingerprint(AgentKind::Claude);
+        let outcome = stream_vendor_with_hooks(
+            &inputs,
+            &|| false,
+            &|index, _| {
+                if index == 2 {
+                    match content {
+                        Some(content) => std::fs::write(&sidecar, content).unwrap(),
+                        None => std::fs::remove_file(&sidecar).unwrap(),
+                    }
+                }
+            },
+            None,
+            Some(turn_row_store("claude", "parent")),
+        );
+        assert!(matches!(outcome, StreamOutcome::SourceChanged));
+        assert_ne!(before, fingerprint(AgentKind::Claude));
+        assert_eq!(codex, fingerprint(AgentKind::Codex));
+        assert!(matches!(
+            stream_vendor(&inputs, &CancelFlag::never()),
+            StreamOutcome::Published { .. }
+        ));
+    }
+    assert_eq!(absent, fingerprint(AgentKind::Claude));
 }
 
 #[test]

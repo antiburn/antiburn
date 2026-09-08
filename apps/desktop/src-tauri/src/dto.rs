@@ -1796,6 +1796,8 @@ mod tests {
             subagents.children.push(SubagentChild {
                 ordinal: 1,
                 parent_model: Some("claude-opus-4-6".to_owned()),
+                parent_call_id: None,
+                observed_child_models: subagents.delegated_models.clone(),
                 child_model: EvidenceValue::Unsupported,
                 confidence: RelationConfidence::Observed,
                 provenance: RelationProvenance::TaskToolUse,

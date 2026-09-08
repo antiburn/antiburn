@@ -1,11 +1,17 @@
 # Burn check coverage and remediation
 
-Status: Phase 1 is in progress. Phase 2 is backend-only. Phase 3 is deferred.
+Status (2026-09-08): Phase 1 implementation and full-suite validation are complete
+for the scoped baseline. Merged-worktree validation remains pending. Phase 2 is planned as full backend
+remediation in four bounded substeps; no Phase 2 code is implemented. Start it
+after Phase 1 acceptance. Phase 3 UI remains deferred.
 
 ## Naming and architecture
 
-Rename `VendorAdapter` to `SessionReader`. Name the model-provider abstraction
-`ModelCatalog`, not `ProviderAdapter`.
+The reader API is `SessionReader`; the model-provider abstraction is
+`ModelCatalog`, not `ProviderAdapter`. Only the new reader API is supported.
+The maintainer approved removal of `VendorAdapter` and related aliases; the
+[engine changelog](../../crates/antiburn-local/CHANGELOG.md) records the breaking
+change. Do not restore compatibility aliases.
 
 | Name | Responsibility |
 | --- | --- |
@@ -44,8 +50,8 @@ trait AgentConfigEditor: Send + Sync {
 }
 ```
 
-Preserve the existing reader's streaming, snapshot, and resume methods during
-the rename. These signatures describe boundaries, not a replacement API.
+The reader retains streaming, snapshot, and resume methods. These illustrative
+signatures describe boundaries, not a replacement for the implemented API.
 Keep checks, prompt generation, fix verification, and savings calculations
 provider-neutral. Use trait-object registries rather than cross-product match
 tables.
@@ -60,23 +66,24 @@ tables.
 - Otherwise provide a bounded prompt with the reason automatic remediation is unavailable.
 - Apply edits only through explicit invocation, never during scanning.
 - Track verified fixes, external fixes, recurrence, and potential token-equivalent savings.
-- Keep Phases 1 and 2 backend-only.
+- Keep remediation backend-only until the separate UI phase.
 
 Missing evidence remains unavailable. Enabling a check for every agent must not
 mean returning a misleading clean result.
 
 ## Phase 1: Fix agent and provider coverage
 
-Phase 1 targets full passive-analysis support for Claude Code, Codex, OpenCode,
-Pi, Cursor, and Antigravity. Full support means that each native source has a
-dedicated bounded reader and every fact it saves reaches the applicable check.
-It does not mean that all nine checks must return a result when an agent does
-not save the required fact.
+The only Phase 1 targets are OpenCode, Pi, Codex, Claude Code, and Antigravity.
+The baseline covers accepted persisted shapes and approved source-scoped limits,
+not all historical versions or every native schema. Cursor and other agents are
+deferred and retain their basic current support. All 26 source keys remain in
+the living inventories.
 
 Do not remove a working finding while coverage expands. A correction from a
 false clean result to partial evidence is not a regression. Before a check is
-left unavailable for one of the six target agents, inspect all relevant passive
-native sources and ask the maintainer to approve that exact agent/check pair.
+left unsupported for a target agent, record the passive alternatives reviewed
+and maintainer confirmation for that named check. The dated ledger below is the
+current decision record, not a claim of future impossibility.
 
 The living coverage contracts are:
 
@@ -85,200 +92,117 @@ The living coverage contracts are:
 - [`docs/check-coverage.md`](../check-coverage.md) for the nine checks and their
   evidence limits by exact source format.
 
-### 1.1 Establish capability contracts
+### Implemented baseline
 
-Replace coarse agent-wide assumptions with capabilities tied to the source
-format, version, and observed session evidence.
-
-| Concept | Meaning |
+| Area | Current result |
 | --- | --- |
-| Source support | The reader understands this fact in this source format |
-| Evidence coverage | This session contains sufficient, complete observations |
-| Model policy | The catalog has reviewed semantics for evaluating these observations |
+| Source contracts | Exact source formats separate reader support, complete/partial session evidence, and reviewed policy. The manual inventories contain all 26 keys; machine inventory and behavior tests are available. |
+| Model catalog | Provider/API/model resolution retains unknown states and reuses reviewed pricing/replacement data. Compatible protocol names alone do not authorize options. |
+| Claude and Codex core | D/T/S/O/F/C can assess complete accepted sessions on reviewed routes. Possible incomplete sessions do not make the entire source Partial. Request controls and delegated scope remain associated with their actual models. |
+| Claude delegation | Exact Task/Agent call IDs pair with unique sidecar `toolUseId` and actual child models. Sidecar presence/content affects scan cursors, analysis fingerprints, resume joining, and publication guards. |
+| Resources | All M/B/K checks deny session-wide clean without full historical inventories. Scoped findings require complete observed subsets and calls. Claude M/K and Codex exact `tool_search_output` MCP exposure follow this rule. |
+| Skills and built-ins | Full injected skill documents are separate from listings. OpenCode selected skills and Codex selected documents remain observed/invoked, not unused listings. Claude/Codex catalog-backed built-in findings stay scoped; the catalog is not whole-inventory proof. |
+| OpenCode | Native task metadata plus matching ancestry and actual child model prove delegation. Both accepted exports and SQLite use compatible-request cache accounting and validated order, not `parentID` as predecessor. |
+| Pi | T explicitly uses `AgentSelectedPolicy`, reviewed native provider/API names, and branch/fork state. Official example-extension nested `toolResult` output provides actual worker-model findings only; arbitrary extensions cannot prove clean. |
+| Cache persistence | Pi and OpenCode provider/API fields survive durable turn rows and feed the shared compatible-request query. Unknown routes, incompatible history, and compactions prevent clean. |
+| Partial sources | Cursor and Antigravity preserve direct D/O findings where evidence exists and deny clean by source gate. Missing model/time is not borrowed from earlier records. Cursor's explicit synthesized header model remains supported. |
 
-A reader must not claim complete coverage merely because its agent usually
-supports a feature.
+### Confirmed limits
 
-Split the current coupled evidence groups:
+The [2026-09-08 confirmation ledger](../check-coverage.md#confirmation-ledger)
+records named checks, alternatives reviewed, and pinned citations:
 
-- Model identity, occurrence counts, and timing from token accounting.
-- Loaded skills from MCP servers and built-in tool definitions.
-- Reasoning effort from model identity, while preserving request-level association.
-- Service tier from reasoning effort and observed latency.
-- Delegation relationships from ordinary event-parent or fork relationships.
-- Cache accounting from agent identity.
+- Pi M/B/K/F are unsupported; no alternative local inventory or speed proof was found.
+- OpenCode M/B/F/T are unsupported; historical inventories, tier, and effort maps are absent from the reviewed sources.
+- Antigravity T/S/M/B/K/F/C are unsupported; reviewed native sources and runtime descriptors provide no alternative persisted proof.
+- These are source-scoped decisions, not future impossibility claims. Workspace and unknown shapes remain uncharacterized.
 
-```rust
-enum Support<T> {
-    Supported(T),
-    Unsupported { reason: CapabilityReason },
-    Unknown { reason: CapabilityReason },
-}
-```
+Open gaps remain explicit: CoreV2 `session_message` is not the existing
+`OpenCodeSqliteV2` `session`/`message`/`part` reader; OpenCode WSL discovery still
+uses an executable export path; Cursor native synthesis and Antigravity private
+identity/model/linkage coverage remain incomplete. Other agents' broader
+parsing and companion work is deferred, not completed by reader registration.
 
-Preserve the existing complete/partial evidence distinction. Unsupported
-capabilities and incomplete session data are different conditions.
+Known accepted shapes do not require an unobtainable universal version range.
+Schema/header or pinned producer evidence plus synthetic fixtures defines the
+boundary. Unknown changed evidence fails partial or unavailable.
 
-### 1.2 Add a data-driven model catalog
+### Validation record
 
-Resolve capabilities for a provider connection and model, not just a model
-family. A resolved definition contains the relevant subset of:
+Pre-merge validation passed on 2026-09-08:
 
-- Canonical model identity and aliases.
-- API/accounting format.
-- Supported reasoning controls and native value mappings.
-- Supported service tiers.
-- Context limits.
-- Reviewed premium-model and replacement policies.
-- Applicable pricing and its provenance.
-- Capability and policy revisions.
+- Engine formatting, strict Clippy, 1,336 unit tests, all integration suites,
+  and doctests. Two existing ignored tests did not run.
+- Desktop Rust formatting, strict Clippy, and 937 tests.
+- Frontend lint, type checks, 1,144 tests, and production build.
+- Coverage contract, resume/replay, provider changes, forks, scoped resources,
+  and sidecar scan/publication regressions.
+- Changed-code and full-project quality scans, secrets scan, and whitespace checks.
 
-Use local agent catalogs where their format is understood, plus reviewed
-catalog data. Declared availability does not prove that an account can use a
-model successfully. Reuse existing pricing and policy infrastructure rather
-than creating a second pricing store.
+Repeat acceptance against the merged worktree before pushing. Documentation
+inventory tests do not prove all matrix cells or all installed versions. The
+existing frontend chunk-size warning does not fail the build.
 
-Important rules:
+## Delivery Order
 
-- An OpenAI-compatible endpoint does not automatically support every OpenAI option.
-- Claude on Anthropic, Bedrock, or another route can expose different features.
-- Resolve OpenCode variant names to options; arbitrary names are not effort levels.
-- Resolve Pi thinking levels through the model's supported mappings.
-- A model's highest supported effort is not automatically excessive.
-- Unknown models must not silently become non-premium or current.
-
-Adding a provider that uses an existing protocol should usually require catalog
-entries and tests, not another configuration editor. New protocol semantics
-require a focused implementation behind the catalog boundary.
-
-### 1.3 Repair shared evidence bugs
-
-Land these before widening check eligibility:
-
-| Gap | Change |
-| --- | --- |
-| Model checks depend on token accounting | Allow model-only assessment when identity and timing are sufficient |
-| Context sources share one skill/MCP gate | Give each resource kind independent coverage |
-| Codex context extraction does not reach check evidence | Connect existing skill listings, harness version, and tool-catalog observations |
-| MCP attribution uses substring matching | Preserve exact server identity and native tool-to-server mappings |
-| Namespaced skill identities are truncated or matched ambiguously | Preserve full identity and resolve aliases only when unambiguous |
-| Cursor synthesis discards structured tool data | Preserve supported calls, attribution arguments, record identities, and timestamps |
-| Cursor advertises cache-write support without sufficient usage evidence | Correct its source-specific capability |
-| Cline analysis reads metadata without the transcript companion | Load relevant sources together and fingerprint companion changes |
-| Cache accounting uses agent exceptions and session-wide flags | Normalize per request or compatible request segment |
-| Effort labels lose their model association | Evaluate effort against the model and provider that produced the request |
-| Partial effort/speed signals can appear clean | Require coverage of eligible post-boundary activity before verifying absence |
-
-Preserve bounded reads, streaming behavior, and resume/full-read equivalence.
-
-### 1.4 Normalize resource evidence
-
-Use one shared representation for skills, MCP servers, and tools:
-
-```text
-Identity and kind
-Source and scope
-Observation boundary
-Configured / available / injected / invoked
-Coverage and provenance
-Optional token measurement
-```
-
-Injected means present in model-facing context. Do not equate:
-
-- Installed with loaded.
-- Connected with injected.
-- Permission-denied with removed from the request.
-- An unused skill listing with an unused full skill document.
-- Current configuration with a historical session inventory.
-
-A versioned catalog supports reconstruction only when the session preserves
-the inputs needed to select the correct definitions and enabled surface.
-Otherwise return partial or unavailable evidence.
-
-### 1.5 Expand all nine checks
-
-| Check | Required coverage work | Remaining boundary |
+| Phase | Scope | Status |
 | --- | --- | --- |
-| Session overdepth | Preserve actual request context for Claude, Codex, OpenCode, and Pi; improve Antigravity coverage; add native formats with request usage | Lifetime session totals cannot establish request depth |
-| Model overthinking | Resolve OpenCode variants and Pi mappings; add explicit effort from characterized persisted records; add reviewed provider policies | Thinking text, mode names, and latency are not effort settings |
-| Overpowered subagents | Preserve actual parent/worker model relationships; connect Antigravity sidecars; add Copilot and Cursor delegation evidence where saved | A fork or parent event ID does not establish delegation |
-| Unused MCP servers | Generalize loaded-inventory observations and exact call attribution | Current config and observed calls alone cannot prove historical non-use |
-| Unused built-in tools | Connect Codex's version/catalog path; characterize other tool surfaces and deferred loading | A generic catalog is insufficient without the effective enabled surface |
-| Unused skills | Connect Codex listings; normalize native invocation/injection and reliable origins | Loaded lists and invocation coverage are both required |
-| Old model usage | Remove token-accounting coupling; add identities from dedicated readers; expand reviewed replacement data | Unlisted models are unknown to the policy, not automatically current |
-| Fast mode overuse | Preserve explicit delegated service-tier evidence; add agents where effective speed settings are saved | Do not infer fast mode from a fast model, latency, or routing preset |
-| Cache churn | Correct per-API tokens, ordering, and mixed-provider handling; extend reviewed accounting/policy | Cache misses alone do not establish a user-fixable cause |
+| 2.1 | Typed current findings, exact selectors, deterministic bounded prompts | Planned; gated on Phase 1 acceptance |
+| 2.2 | Minimal native editors: inspection, preview, explicit apply, readback | Planned; builds on 2.1 |
+| 2.3 | Durable episodes, post-boundary verification, external fixes, recurrence | Planned; builds on 2.1 and 2.2 |
+| 2.4 | Potential savings and stable typed backend IPC | Planned; builds on 2.3 |
+| 3 | Remediation UI/UX after backend acceptance | Deferred |
 
-Keep detector IDs stable. Coverage work must not silently change check meaning.
-Threshold or policy changes need separate tests and must not create a false win.
+Phase 2 must not turn partial coverage, a selected resource, or a catalog guess
+into a new finding. It consumes only verified existing findings and preserves
+their exact scope. All four substeps belong to Phase 2. Deliver and validate
+them separately; prompts alone do not complete backend remediation.
 
-### 1.6 Agent work packages
+## Phase 2: Backend Remediation
 
-Every supported agent now has a dedicated bounded reader and explicit source
-format. Copilot, Cline, Kiro, Amp, and Windsurf remain fail-closed because the
-repository has no fixtures that prove detector-grade semantics. Their unproved
-capabilities stay unavailable until reviewed contracts and fixtures exist.
+The following contracts are planned, not implemented capabilities. Use the five
+Phase 1 targets and their accepted shapes. Do not expand reader coverage, add
+collection, or build UI to make remediation appear complete. Unknown and
+confirmed unsupported checks return a typed unavailable reason, not an action
+based on missing facts. A prompt fallback applies to an actual finding, not to
+an absent finding.
 
-The six target agents must reach the maximum coverage their passive sources can
-support. Research another native file, database, or companion before proposing
-that a missing check remain unavailable. Do not use mutable current
-configuration as historical evidence.
+### 2.1: Typed findings and prompts
 
-| Agent | Work |
-| --- | --- |
-| Claude Code | Preserve request-level provider, effort, and speed. Join characterized `Task` calls to child sidecars. Parse MCP, built-in, and skill exposure changes. Resolve the effective tool surface by version and model. Segment cache evidence by request and route. |
-| Codex | Preserve provider, effort, and service-tier inheritance for parent and child requests. Characterize thread-scoped dynamic tools for MCP and built-ins. Connect skill listing, injection, and invocation evidence. Reject incomplete accounting shapes from clean coverage. |
-| OpenCode | Parse native `subtask` records instead of treating all ancestry as delegation. Resolve variants by provider and model. Preserve session version, explicit tool settings, skill origin, and exact tool attribution. Characterize resource inventories and SQLite accounting. |
-| Pi | Resolve thinking levels by provider, API, and model. Preserve bounded skill invocation identity. Research passive delegation, resource inventory, effective tool surface, speed, and repeated-context evidence. Keep continuation and fork ancestry separate from delegation. |
-| Cursor | Characterize CLI agent JSONL, CLI store DB, IDE composer, and legacy chat separately. Preserve structured calls, arguments, record identities, usage, settings, model changes, and worker relations where each native source saves them. |
-| Antigravity | Characterize brain JSONL, cascade JSON, workspace chat, and native SQLite separately. Preserve request identities, retries, token classes, model enums, and timestamps. Connect a relationship companion only after its passive pairing and provenance are proved. |
-| Copilot CLI | Add a dedicated reader for persisted model/effort changes, subagent configuration, skill invocation, and MCP attribution |
-| Copilot IDE | Characterize separately from CLI; do not reuse CLI coverage declarations |
-| Cline | Repair metadata/transcript pairing and change detection; support characterized JSON and database variants independently |
-| Kiro | Characterize canonical/chat evidence, add CLI discovery where supported, and account for versioned tool/resource semantics |
-| Amp | Add whole-thread parsing; distinguish routing modes from models, effort, and speed; keep file-change fallback coverage narrow |
-| Windsurf/Cascade | Characterize native files or existing exports; path recognition must not claim protobuf analysis support |
+Build the input from the current published assessment, not report prose or a
+cumulative badge. Retain typed check facts, exact finding scope, coverage and
+policy semantics, and the evidence references needed to revalidate them.
 
-Copilot's official schema marks per-call usage and loaded skill/MCP inventories
-as transient. These events cannot be recovered from the persisted event log.
-Other existing files may provide equivalent evidence, but support remains
-unavailable until demonstrated.
+- Identify the agent, environment/profile, workspace, exact `SourceFormat`,
+  session/thread, request or resource, and delegated parent/call/child where applicable.
+- Retain provider/API/model and controls on the actual request. Never substitute
+  a requested alias, parent default, fork relation, or current setting for actual child evidence.
+- Bind the finding to source generation, published fence, projection/schema
+  revisions, detector/catalog policy revisions, and assessment revision.
+- Require analyzed generation to match current source generation and all
+  relevant revisions to match before returning an actionable recommendation.
+- Read evidence and turn rows from the same published fence. A pending claim
+  or an older ready row cannot authorize an action against a newer source.
+- Include contributing companion fingerprints. Claude sidecar additions,
+  removals, or changed claims invalidate prior parent-child recommendations.
+- Recheck the binding before preview, apply, and episode-result persistence.
+  Stale or unavailable evidence requires reassessment, not a fallback edit.
 
-The same rule applies where other agents expose facts only through runtime
-hooks or extensions. Those integrations are outside this plan.
+Use an opaque finding ID and a server-resolved typed target selector. Display
+names and model aliases alone are not selectors. Automatic proposals require
+both a current verified finding and an exact selector; user selection can
+narrow an established finding but cannot supply missing historical proof.
+"Verified finding" means a currently supported detector result, not a fixed
+episode. A historical finding alone does not prove the same setting is active now.
 
-### 1.7 Acceptance
+Local configuration inspection establishes only the current edit target,
+precedence, and activation requirements. It cannot backfill historical effort,
+resource exposure, service tier, delegation, or cache linkage. CoreV2
+`session_message` remains outside the accepted OpenCode reader. Do not call the
+OpenCode WSL executable export path from remediation; its passive-access gap
+remains unresolved. Unsupported environments receive an explicit reason.
 
-- Every check has an explicit coverage result for every supported source format.
-- Every source format has an explicit discovery and parsing result in
-  `docs/session-coverage.md`.
-- Every newly enabled combination has synthetic positive, negative, and incomplete-evidence fixtures.
-- Full and resumed reads produce equivalent evidence.
-- Tests cover model changes, mixed providers, duplicates, forks, deferred tools, malformed records, and missing fields.
-- Unsupported versions never trigger a generic interpretation that produces clean results.
-- A checked-in coverage matrix records supported source versions and remaining gaps.
-- Partial source coverage can support safe findings but cannot produce a clean result.
-- A target-agent check remains unavailable only after passive-source research
-  and explicit maintainer approval for that agent/check pair.
-- No new runtime capture or UI is introduced.
-
-### 1.8 Implementation order
-
-1. Make source capabilities represent complete, partial, and unavailable facts.
-2. Add contract tests that bind every `SourceFormat` to parsing and check coverage.
-3. Repair shared resource identity, request-level model controls, and cache segments.
-4. Complete Claude Code and Codex without removing valid existing findings.
-5. Complete OpenCode native delegation, model controls, resources, and SQLite accounting.
-6. Complete Pi model controls and investigate each missing passive fact.
-7. Rework Cursor synthesis and add characterization suites for every native surface.
-8. Complete Antigravity protobuf, companion, model, delegation, and cache contracts.
-9. Ask for individual disable approval only when passive research proves a fact is absent.
-10. Update both living coverage documents from the implemented and tested result.
-
-## Phase 2: Implement remediation for all checks
-
-### 2.1 Define shared operations
+### Shared operations
 
 Use typed operations rather than provider-specific setting paths in detectors:
 
@@ -300,7 +224,7 @@ configuration. Agent-only changes do not need provider feature validation.
 Keep native option encoding inside the implementation boundary. API callers
 must not supply arbitrary JSON pointers, paths, commands, or replacement bytes.
 
-### 2.2 Select automatic remediation first
+### Recommendation selection
 
 Return one primary recommendation:
 
@@ -320,6 +244,7 @@ enum Recommendation {
 Select automatic remediation only when all gates pass:
 
 - The finding identifies a specific target.
+- The assessment is current under the generation, fence, and revision rules above.
 - The proposed change addresses the observed issue.
 - The native setting and applicable version are supported.
 - The effective configuration scope is known.
@@ -340,25 +265,37 @@ Automatic means callable after explicit approval, not background mutation.
 An apply conflict requires a fresh preview. Never execute the fallback prompt
 or choose another edit automatically.
 
-### 2.3 Provide a strategy for every check
+### Per-check strategies
 
-| Check | Automatic option when eligible | Prompt fallback | Verification |
-| --- | --- | --- | --- |
-| Session overdepth | Supported compaction/context policy | Bounded handoff or context-policy review | New relevant requests have appropriate context; retain the historical maximum |
-| Model overthinking | Lower effective effort for the selected scope | Review effort or bound the task | Explicit subsequent effort on eligible requests |
-| Overpowered subagents | Validated lower-cost model for a named worker | Review worker selection and bounded delegation | Actual worker model and parent relationship |
-| Unused MCP servers | Disable a selected optional server in scope | Named-server keep/disable audit | Complete subsequent evidence shows model-facing definitions absent |
-| Unused built-in tools | Restrict the injected tool surface | Task-specific tool audit | Definitions absent, not merely permission-denied |
-| Unused skills | Supported visibility/enablement change | Named-skill audit and narrow proposal | Complete context evidence reflects intended visibility |
-| Old model usage | Validated replacement for an explicit model | Replacement and compatibility review | Actual subsequent replacement use |
-| Fast mode overuse | Standard service for the relevant worker | Effective worker-speed review | Explicit standard-tier delegated activity |
-| Cache churn | Specific supported change after diagnosis | Bounded cache/input diagnosis | Sufficient comparable post-fix request evidence |
+The observation column covers all five targets. CC = Claude Code, CX = Codex,
+OC = OpenCode, PI = Pi, AG = Antigravity. D/T/S/M/B/K/O/F/C use the coverage
+document's check codes. Every editor below is conditional on a pinned native
+contract, exact current target, and all safety gates; none is promised today.
+
+| Check | Available observations across five targets | Safe prompt for a current finding | Conditional native editor | Verification feasibility | Savings constraints |
+| --- | --- | --- | --- | --- | --- |
+| D: Session overdepth | CC/CX/OC/PI: accepted request depth. AG: direct positive depth only where present, never clean. | Propose a bounded handoff or review context policy; retain necessary task state. | Supported scoped compaction/context policy; no destructive session reset. | Relevant new requests below the reviewed threshold; retain historical maximum. AG cannot establish a clean fix with its present source gate. | Unknown without comparable workload/context evidence; a smaller request alone does not prove avoided tokens. |
+| T: Model overthinking | CC/CX: request model, effort, route, inherited controls. PI: branch-local `AgentSelectedPolicy`. OC/AG: unsupported. | Review the observed level for this task and scope, without asserting provider-translated Pi effort. | CC/CX effective scoped effort; PI native thinking-policy setting only under its reviewed semantics. | Explicit post-boundary control on eligible requests. PI verifies saved agent policy, not final provider effort or quality equivalence. | Unknown without defensible comparable activity; no fixed percentage reduction. |
+| S: Overpowered subagents | CC: exact Task/Agent ID and unique sidecar claim. CX: owned spawn and child rollout. OC: task metadata, ancestry, actual child model agree. PI: official example-extension nested results, positive-only. AG: unsupported. | Review a named worker's model and bounded task; preserve quality and required capabilities. | Exact persistent worker model only; no global substitution when worker scope is unavailable. PI needs a reviewed existing extension config contract, not extension installation. | New exact parent/call/child activity with actual model. PI positive-only evidence cannot prove a clean fix under current coverage. | Price counterfactual only with owned child usage and reviewed rates; no parent/child duplication or assumed equal quality. |
+| M: Unused MCP servers | CC: observed injection and exact calls. CX: completed exact `tool_search_output` namespace exposure and calls. OC/PI/AG: unsupported. | Audit only the named observed optional server; ask whether it is needed beyond this task. | Disable an explicitly selected optional server in the proven scope; inactivity alone does not authorize disabling. | Complete later evidence must prove the selected definitions absent. No full inventory exists; missing observation is not removal or session-wide clean. | Unknown unless definition token size and subsequent avoided exposure are supported. |
+| B: Unused built-in tools | CC/CX: harness/model catalog-backed scoped definitions and complete calls; exclude deferred, situational, zero-cost definitions. OC/PI/AG: unsupported. | Audit only the supported observed tool surface for this task. | Native definition/exposure restriction, not a permission-denial setting masquerading as removal. | Complete targeted exposure proof is required; permission denial or no calls does not verify absence. No session-wide clean. | Unknown without measured definition size and comparable exposure; catalog membership alone is insufficient. |
+| K: Unused skills | CC: full document injection plus invocation identity can support scoped findings. CX/OC: selected documents are injected and invoked, not unused listings. PI/AG: unsupported. | Audit a named full injected document only when an unused-skill finding exists; do not propose removal from a listing. | Supported visibility/enablement edit for an explicitly selected document and scope. | Complete targeted context evidence must prove intended visibility. Selected-only evidence and missing documents cannot prove absence; no session-wide clean. | Unknown without document token size and proved avoided injection; never retain private document bodies for estimates. |
+| O: Old model usage | CC/CX/OC/PI: actual timed model use and reviewed replacement policy. AG: direct positive timed model use only; no borrowed model/time or clean. | Review the exact replacement's compatibility and task requirements. | Exact scoped model setting with reviewed provider/API support; worker findings stay worker-scoped. | Actual subsequent replacement use in the same applicable scope. AG may show an improvement but cannot establish clean with current gaps. | Compare supported post-fix token classes at pinned old/new rates; increases remain negative and unknown rates stay unknown. |
+| F: Fast mode overuse | CC/CX: actual delegated model, speed/tier, route, inherited controls. OC/PI/AG: unsupported. | Review speed needs for the identified worker; do not change global service by default. | Explicit standard-tier control for that worker, if native precedence and activation are known. | Explicit post-boundary standard-tier delegated requests, not missing tier or a parent default. | Known tier-price difference on owned usage only; overlap with model changes must be accounted once. |
+| C: Cache churn | CC/CX/OC/PI: durable route, token classes, compatible ordered main-thread history and compaction boundaries. AG: unsupported. | Diagnose bounded input/cache behavior without claiming a cause from token totals alone. | Only a diagnosed cause with a supported scoped setting; otherwise prompt-only. | Sufficient comparable requests on a reviewed route; exclude unknown/mixed routes, unresolved forks, compactions, late or malformed ordering. OC `parentID` is not a predecessor; Google cache policy is unreviewed. | Unknown without comparable cache accounting and a supported causal comparison; no generic cache-hit savings ratio. |
 
 All nine checks receive a strategy. This does not promise an automatic edit or
 numeric savings for every finding. Do not broaden a worker-specific fix into a
 global edit merely because the agent lacks a worker-specific setting.
 
-### 2.4 Implement safe native editors
+Resource scope is the complete observed subset plus complete calls and eligible
+activity, not a full historical inventory. Current config absence cannot fill
+that gap. When accepted post-boundary evidence cannot prove targeted absence,
+keep the episode awaiting verification with an unavailable reason. Likewise,
+positive-only AG D/O and PI S observations can show improvement but do not
+override their clean-result limits to mark a fix verified.
+
+### 2.2: Minimal native editors
 
 Register only implemented editors. Missing support selects the prompt.
 
@@ -382,11 +319,22 @@ Start with single-file edits. Do not build multi-file transactions or automatic
 undo infrastructure. Retain only non-secret action metadata needed for
 verification. Full configuration snapshots remain in memory.
 
-Implement verified operations across Claude, Codex, OpenCode, and Pi first.
-Add Cursor, Kiro, and other editors as native contracts are established.
-Provider additions should reuse these editors.
+For CC/CX/OC/PI, first inspect native current config contracts without writes.
+Record each supported operation's schema/version, precedence, exact target,
+activation boundary, verification evidence, and fixture. Enable one single-file
+operation at a time only when this record and its tests pass. Unsupported layers,
+managed policy, environment/CLI overrides, ambiguous worker routing, or unknown
+Pi extension settings remain prompt-only with specific reasons. AG is
+prompt-only unless a safe current native edit contract is separately established;
+this does not expand its D/O-only finding support. Other agents remain deferred.
 
-### 2.5 Generate bounded prompts
+Bind previews to the finding revision, opaque target ID, config fingerprint,
+typed change, and expiry. Reinspect effective scope at apply; reject changed
+content, identity, overrides, expired approval, or stale evidence. Do not retry
+a conflicting write with a new target. Record explicit approval and distinguish
+no-op, conflict, failed write, successful readback, and effective activation.
+
+### Bounded prompts
 
 Use deterministic templates over typed evidence. Do not call another model to
 generate remediation prompts.
@@ -400,14 +348,21 @@ Each prompt contains:
 - A request to inspect native support before proposing or applying a change.
 - A short verification request.
 
-Target approximately 200-350 words with a hard size cap. Exclude full
+Target approximately 200-350 words with a hard cap of 8 KiB UTF-8 for the entire
+prompt, including quoted data. Include at most eight resource identities, each
+at most 256 UTF-8 bytes. Omit excess examples with a count; never truncate an
+exact action selector into a different identity. If essential facts cannot fit,
+return a typed size-limit reason instead of an unsafe prompt. Exclude full
 transcripts, configuration files, credentials, and unrelated project history.
-Treat extracted content as quoted data.
+Treat extracted content as quoted untrusted data, never instructions. Strip
+control characters, exclude secrets and raw private paths, and use sanitized
+display labels separate from exact backend selectors. Deterministic ordering
+must give identical output for identical typed inputs.
 
 State limitations honestly. Asking an agent to use less reasoning does not
 prove that its configured effort changed.
 
-### 2.6 Persist fix episodes
+### 2.3: Episodes and verification
 
 Persist fix history separately from cumulative reports:
 
@@ -425,6 +380,7 @@ Store:
 - Detector and target identity.
 - Full agent/environment identity and applicable scope.
 - Baseline facts and relevant revisions.
+- Source generation/fence and exact selector binding, separate from the episode ID.
 - Applied action metadata, if any.
 - Effective behavior boundary.
 - Verification time and evidence.
@@ -439,13 +395,23 @@ A successful write is not a verified fix. Require fresh, relevant post-boundary
 work. Never infer a fix from inactivity, deletion, report aging, source failure,
 changed policy, or corrected historical accounting.
 
-### 2.7 Reuse background processing
+Define each verifier's minimum eligible post-boundary activity and completeness
+requirements before enabling the operation. Capture the effective boundary
+(next request, next session, or restart), not merely the config write time.
+Unknown timing cannot assign old requests to a fix. Insufficient evidence keeps
+the episode awaiting verification with a reason; positive recurrence requires a
+fresh supported finding for the same target. Do not merge sibling workers,
+forks, environments, or distinct resource scopes into one episode.
+
+### Background processing
 
 Use the existing evidence worker and startup reconciliation:
 
 - Mark affected assessments dirty inside the successful publication transaction.
 - Evaluate outside the database write lock.
 - Guard persistence against stale results.
+- Compare current generation, published fence, policy/schema revisions, and
+  assessment revision at result commit; discard and reevaluate changed inputs.
 - Reconcile unfinished work after restart.
 - Use assessment/source revisions for idempotency, not the published fence as a unique behavioral event.
 - Generate prompts and previews on demand.
@@ -453,7 +419,7 @@ Use the existing evidence worker and startup reconciliation:
 Do not add a separate remediation queue, worker, lease system, scheduler, or
 service. Tracking must work without any report window being open.
 
-### 2.8 Calculate potential savings
+### 2.4: Savings and backend IPC
 
 Support potential token-equivalent savings with an explicit underlying method:
 
@@ -484,7 +450,7 @@ Rules:
 - Recompute idempotently so retries and rereads cannot duplicate savings.
 - Permit a verified fix without a numeric estimate.
 
-### 2.9 Expose backend operations
+### Backend operations
 
 Keep the API small:
 
@@ -497,31 +463,101 @@ Get fix episodes and savings
 
 Follow repository conventions for IPC names. No operation accepts arbitrary
 filesystem targets or shell commands. Do not connect these operations to
-existing UI surfaces during this phase.
+existing UI surfaces before the UI phase.
 
-### 2.10 Full test suite and acceptance
+Requests use opaque finding, preview, and episode IDs plus typed operation and
+scope enums. The backend resolves targets from trusted discovery/config context;
+reject forged, cross-environment, expired, and stale IDs. Responses distinguish
+automatic, prompt-only, unavailable, stale/conflict, applied-awaiting-verification,
+fixed, and recurred outcomes with typed reason codes. Savings carry units,
+method/rate revision, interval, and known/unknown status. Keep serialized Rust
+types and desktop mirrors aligned; do not expose internal config snapshots or
+raw evidence bodies. An external-change request records a claim, never an
+immediate verified fix. No endpoint executes prompts or fallback commands.
+
+### Tests and acceptance
 
 Use shared contract suites plus implementation-specific synthetic fixtures.
 
 | Area | Required coverage |
 | --- | --- |
 | Recommendation selection | Automatic eligibility, prompt fallback, precise reasons, all nine checks |
+| Phase 1 boundaries | Five-target per-check table; AG D/O positive-only; PI M/B/K/F and OC T/M/B/F unavailable; selected CX/OC skills do not create unused findings |
+| Exact identity | CC unique sidecar claim and actual child; CX owned spawn/fork controls; OC metadata/ancestry/model agreement; PI native policy and official extension only; aliases and sibling workers rejected |
+| Freshness | New source generation with old ready evidence, in-flight fence, changed sidecars, schema/catalog/detector revisions, stale preview/apply/result; no mixed-fence rows |
 | Provider extensibility | New catalog provider works through existing editors; unknown capabilities block edits |
 | Config editors | Precedence, versions, comments, unrelated keys, permissions, secrets, malformed files, unsafe paths, conflicts, failed writes, readback |
-| Verification | Historical failure remains; new behavior fixes it; application alone does not |
+| Verification | Historical failure remains; eligible new behavior fixes only supported scopes; application alone does not; missing inventory, no activity, positive-only sources, and missing tier cannot prove clean |
 | External fixes | Unknown application time, conservative boundaries, correct scope |
 | Persistence | Restart recovery, stale results, duplicate publications, migrations, deletion, retention |
 | Accounting | Missing timestamps, late imports, mixed providers, pinned prices, recurrence, zero/unknown, no double counting |
-| Privacy | No transcripts or credentials in previews, prompts, action records, or logs |
+| Prompt bounds/privacy | Deterministic output, 8 KiB boundary and overflow, multibyte labels, eight-resource cap, long identities, injection text, controls, secrets; no transcripts/config bodies in outputs or logs |
+| IPC | Rust/mirror serialization, typed unknown states, forged IDs, cross-scope approval, expiry, bounded pagination, no arbitrary path/command or automatic fallback execution |
+| Known discovery gaps | CoreV2 is not accepted SQLite; WSL executable export is not invoked; unknown shapes/environments stay unavailable |
 | Performance | Bounded queries and retained evidence; no dependency on an open window |
 
-Run `aislop scan --changes`, then formatting, Clippy, and tests in the engine
-and desktop Rust workspaces. Run desktop lint, type checks, tests, and build
-when IPC mirrors change. Follow `CONTRIBUTING.md` and the desktop README.
+### Execution and acceptance
 
-Acceptance: every surfaced finding has a recommendation path; automatic edits
-are explicit and safe; fixes survive restarts; savings are evidence-based and
-idempotent; no UI changes are present.
+1. Close Phase 1 acceptance on main. Review the two coverage baselines against
+   characterization, replay/resume, durable provider/control rows, and desktop
+   sidecar/publication tests. Record the revision and actual command results.
+   Do not treat inventory tests or this plan review as full acceptance.
+2. Implement 2.1 in the engine's typed finding/strategy boundary with desktop
+   publication freshness checks. Reuse existing IDs and evidence types where
+   valid. Complete deterministic prompt and unavailable-result tests for every
+   check/target before introducing writes.
+3. Implement 2.2 behind `AgentConfigEditor`. Pin the first native operation's
+   accepted config shape and safety contract, then add other proven operations
+   across CC/CX/OC/PI. Test preview/apply/readback and conflicts per operation.
+   Record unsupported combinations rather than inventing generic writers.
+4. Implement 2.3 using existing store migrations and evidence-worker publication
+   and reconciliation paths. Add bounded episode records and per-check pure
+   verifiers. Test restart, external changes, missing proof, and recurrence
+   before counting any savings.
+5. Implement 2.4 with pinned counterfactual methods, idempotent usage allocation,
+   unknown reasons, and bounded episode queries. Expose typed IPC and mirrors
+   only after internal contracts pass; do not wire report or settings UI.
+6. Run `aislop scan --changes` after supported code changes, then the relevant
+   formatter, lint, type checks, tests, and builds below. Review the combined
+   diff for widened evidence claims, current-config-as-history, secret retention,
+   and accidental UI work. Record results and remaining limitations per substep.
+
+For implementation validation, use `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, and `cargo test` in both
+`crates/antiburn-local` and `apps/desktop/src-tauri`. Run the engine's
+`cargo test --test check_coverage_contract` as an explicit coverage guard.
+From the root, run `pnpm --filter @antiburn/desktop lint`, `type-check`, `test`,
+and `build` as separate commands with the same filter when IPC mirrors change.
+Follow `CONTRIBUTING.md` and `apps/desktop/README.md` for current prerequisites.
+Any future evidence or coverage change requires the corresponding living
+coverage-document update and characterization tests; Phase 2 does not assume
+such a change is needed to enable an editor.
+
+Phase 2 is accepted only when all of these outcomes are demonstrated:
+
+- Every current supported finding has a deterministic bounded prompt, or an
+  explicit privacy/size reason if essential facts cannot safely be rendered.
+  Missing facts and confirmed unsupported checks never produce actions.
+- Automatic previews exist only for proven exact current targets. Every enabled
+  native operation passes its safety fixtures and requires explicit approval;
+  unsupported operations retain a precise prompt-only reason.
+- Durable episodes distinguish applied from behavior-verified, track external
+  improvements and recurrence, survive restart, and reject stale results.
+  Unverifiable scopes remain visibly unverified rather than counted as fixes.
+- Savings are evidence-based, pinned, idempotent, and non-overlapping. Unknown,
+  measured zero, and negative estimates remain distinct.
+- Stable typed IPC has contract tests and no arbitrary file/command escape.
+  Tracking works without an open window. No remediation UI is implemented.
+
+Current completion record for this plan revision:
+
+- Documented: scoped Phase 1 implementation baseline, confirmed limits, and
+  remaining discovery/source gaps, checked against the living coverage documents.
+- Planned: all four Phase 2 substeps, strategy table, safety gates, and acceptance matrix.
+- Pending: Phase 1 final full-suite and merged-main validation by the integration owner.
+- Pending: all Phase 2 implementation, native operation fixtures, migrations,
+  IPC contracts, and implementation test results. This documentation update
+  does not claim those tests ran or Phase 1 was finally accepted.
 
 ## Phase 3: Remediation UI/UX (deferred)
 
@@ -530,17 +566,21 @@ prompt fallback, awaiting-verification state, verified wins, recurrence, and
 potential token-equivalent savings presentation.
 
 Preserve the distinction between configuration applied, behavior verified
-fixed, and estimated savings. No UI/UX implementation belongs in Phases 1 or 2.
+fixed, and estimated savings. No remediation UI implementation belongs in the
+backend phase.
 
 ## Research and implementation references
 
-Research date: 2026-09-07. Upstream references establish opportunities, not
-guarantees about every installed version. Pin supported schema versions and
-test exact behavior before enabling readers or writers.
+Research baseline: 2026-09-08. The
+[confirmation ledger](../check-coverage.md#confirmation-ledger) pins the reviewed
+OpenCode, Pi, Codex, Antigravity descriptor/adapter, and SDK references. Runtime
+SDK schema is not persisted proof. Upstream references below describe future
+options, not guarantees about every installed version. Pin accepted shapes and
+test behavior before enabling readers or writers.
 
 ### Repository
 
-- [Existing session adapter](../../crates/antiburn-local/src/analysis/interface.rs)
+- [Session reader interface](../../crates/antiburn-local/src/analysis/interface.rs)
 - [Reader registration](../../crates/antiburn-local/src/analysis/vendors/mod.rs)
 - [Evidence capabilities](../../crates/antiburn-local/src/analysis/evidence.rs)
 - [Evidence normalization and attribution](../../crates/antiburn-local/src/analysis/evidence_sink.rs)

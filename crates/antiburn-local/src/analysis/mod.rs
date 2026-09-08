@@ -100,12 +100,13 @@ pub use resume::{AdapterResume, AdapterSnapshot, EvidenceSnapshot, StreamSnapsho
 pub use rows::{
     MemoryTurnRowStore, ResumeRevisions, SESSION_COVERAGE_SCHEMA_SQL, SOURCE_RESUME_SCHEMA_SQL,
     StoredResume, TURN_MIGRATIONS, TURN_ROW_BATCH_SIZE, TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL,
-    TURN_SCHEMA_V3_SQL, TURN_SCHEMA_V4_SQL, TURN_SCHEMA_V5_SQL, TURN_SCHEMA_V6_SQL, TurnRow,
-    TurnRowError, TurnRowSink, TurnRowStore, TurnScope, TurnSessionKey, count_turn_content_rows,
-    count_turn_rows, delete_source_resume, delete_source_rows_at_fence, delete_stale_source_resume,
-    delete_turn_rows, delete_turn_rows_except_fence, delete_turn_rows_for_fence,
-    insert_coverage_record, insert_source_resume, insert_turn_rows, query_coverage_record,
-    query_source_resume, restamp_source_rows, turn_row_from_event,
+    TURN_SCHEMA_V3_SQL, TURN_SCHEMA_V4_SQL, TURN_SCHEMA_V5_SQL, TURN_SCHEMA_V6_SQL,
+    TURN_SCHEMA_V7_SQL, TurnRow, TurnRowError, TurnRowSink, TurnRowStore, TurnScope,
+    TurnSessionKey, count_turn_content_rows, count_turn_rows, delete_source_resume,
+    delete_source_rows_at_fence, delete_stale_source_resume, delete_turn_rows,
+    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_coverage_record,
+    insert_source_resume, insert_turn_rows, query_coverage_record, query_source_resume,
+    restamp_source_rows, turn_row_from_event,
 };
 pub use source_validity::{
     AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, RESUME_TAIL_BYTES, ResumePoint,
@@ -167,7 +168,9 @@ pub use vendors::{has_dedicated_reader, reader_for};
 // `context_window_source`, so a stored Claude session must reparse.
 // +1 for source-format contracts and bounded Cursor and generic file visits.
 // +1 for Pi provider/API retention and Cursor native record identities.
-pub const PARSER_REVISION: i64 = 30;
+// Reparse existing rows to retain request provider and API fields.
+// This batch also reparses nested resources and paired subagent observations.
+pub const PARSER_REVISION: i64 = 31;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
@@ -208,7 +211,9 @@ pub const PARSER_REVISION: i64 = 30;
 // +1 for exact resource attribution, model-associated signal coverage, and
 // source-format-specific repeated-context accounting.
 // +1 for reviewed route resolution in effort and speed assessment.
-pub const ANALYZER_REVISION: i64 = 20;
+// Recompute repeated context within compatible request segments.
+// This batch also reassesses nested resource use and paired subagent models.
+pub const ANALYZER_REVISION: i64 = 21;
 // +1 for seam R2: the worker path now derives `inclusive_model_breakdown`
 // and `model_runs` from published turn rows instead of the accumulator
 // (`query_model_breakdown`, `query_model_runs`), so every session in the
@@ -238,7 +243,8 @@ pub const METRICS_SCHEMA_REVISION: i64 = 8;
 // +1 for split skill and MCP inventories, source format, resource state,
 // harness version, and model-associated speed and effort evidence.
 // +1 for source-surface formats and fail-closed skill alias attribution.
-pub const EVIDENCE_SCHEMA_REVISION: i64 = 16;
+// +1 for nested resource evidence and paired parent-call and child-model observations.
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 17;
 /// Versions [`evidence::SessionCoverageRecord`]'s own shape, separately
 /// from [`EVIDENCE_SCHEMA_REVISION`]: the record is an internal input to
 /// evidence replay, not the published `SessionEvidence` shape itself.
@@ -246,7 +252,8 @@ pub const EVIDENCE_SCHEMA_REVISION: i64 = 16;
 /// correctly, so a reader must reparse instead of reusing it.
 // +1 for source format and repeated-context accounting capabilities.
 // +1 for dedicated source-surface capability contracts.
-pub const COVERAGE_SCHEMA_REVISION: i64 = 3;
+// +1 for nested resources, paired subagent models, and incomplete linkage state.
+pub const COVERAGE_SCHEMA_REVISION: i64 = 4;
 /// Versions [`resume::StreamSnapshot`]'s own shape. [`resume::StreamSnapshot::is_current`]
 /// rejects a persisted snapshot stamped with an older revision.
 ///
@@ -260,7 +267,9 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 3;
 /// documented here so a future revision bump remembers to bump this one
 /// too, when the change touches resumable state.
 // +1 because `ClaudeStreamState` gained a `context_window_source` field.
-pub const RESUME_SNAPSHOT_REVISION: i64 = 5;
+// +1 because parent evidence now includes delegated model control observations.
+// This batch also changes retained nested resource and paired subagent state.
+pub const RESUME_SNAPSHOT_REVISION: i64 = 6;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

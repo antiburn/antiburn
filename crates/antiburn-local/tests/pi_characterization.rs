@@ -463,14 +463,168 @@ fn every_recognized_inert_family_fails_closed_on_hidden_signals() {
 }
 
 #[test]
-fn skill_arguments_never_become_pi_tool_or_skill_evidence() {
+fn explicit_skill_identity_does_not_expose_other_arguments_or_imply_inventory() {
     let (evidence, metrics) = composite(&input("skill_tool_privacy"));
     let EvidenceValue::Complete(tools) = evidence.tools else {
         panic!("Pi tool evidence must be complete");
     };
-    assert!(tools.by_name.contains_key("Skill"));
+    assert!(tools.by_name.contains_key("review-code"));
     assert!(!tools.by_name.contains_key("synthetic-private-skill-marker"));
-    assert_eq!(metrics.metrics().skill_uses[0].name, "skill");
+    assert_eq!(metrics.metrics().skill_uses[0].name, "review-code");
+    assert!(!evidence.capabilities.skill_inventory);
+    assert!(matches!(
+        evidence.context_sources,
+        EvidenceValue::Unsupported
+    ));
+}
+
+// Reviewed upstream: https://github.com/badlogic/pi-mono/blob/b2602be77cb7b0de45dd616407fd210daa48aa75/packages/coding-agent/src/core/skills.ts
+// validateName defines the safe subset. Pi loads invalid names with warnings; this reader does not retain them.
+#[test]
+fn pi_skill_identity_rejects_paths_commands_prompts_and_oversized_names() {
+    for arguments in [
+        json!({"skill": "/synthetic/private/SKILL.md"}),
+        json!({"skill": "C:\\synthetic\\private\\SKILL.md"}),
+        json!({"skill": "private prompt text"}),
+        json!({"skill": "private\nprompt"}),
+        json!({"skill": "x".repeat(65)}),
+        json!({"skill": "-invalid"}),
+        json!({"skill": "invalid--name"}),
+        json!({"path": "/synthetic/private/SKILL.md"}),
+        json!({"command": "/private prompt"}),
+        json!({"name": "private"}),
+        json!("{\"skill\":\"private\"}"),
+    ] {
+        let input = SessionInput {
+            source: RawSource::Jsonl(json!({
+                "type": "message", "id": "a", "parentId": null, "timestamp": 1,
+                "message": {"role": "assistant", "content": [
+                    {"type": "toolCall", "name": "Skill", "arguments": arguments},
+                    {"type": "toolCall", "name": "read", "arguments": {"path": "/synthetic/private/SKILL.md"}},
+                    {"type": "toolCall", "name": "skill", "arguments": {"skill": "review-code", "prompt": "private prompt"}}
+                ]}
+            }).to_string()),
+            ..input("skill_tool_privacy")
+        };
+        let (_, _, session) = collect(&input);
+        assert_eq!(session.events[0].tools[0].detail, None);
+        assert_eq!(
+            session.events[0].tools[2].detail.as_deref(),
+            Some("review-code")
+        );
+        let (evidence, metrics) = composite(&input);
+        let retained =
+            serde_json::to_string(&json!({"evidence": evidence, "metrics": metrics.metrics()}))
+                .unwrap();
+        assert!(!retained.contains("private"));
+        assert!(!retained.contains("synthetic/"));
+    }
+}
+
+// Reviewed upstream: https://github.com/badlogic/pi-mono/blob/b2602be77cb7b0de45dd616407fd210daa48aa75/packages/ai/src/types.ts
+// AssistantMessage.providerThinkingLevel is provider effort, not the selected thinking_level_change policy.
+#[test]
+fn pi_native_policy_drives_checks_without_borrowing_provider_effort_or_routes() {
+    for (provider, api, model) in [
+        ("openai", "openai-responses", "gpt-5.6"),
+        ("openai-codex", "openai-codex-responses", "gpt-5.6"),
+        ("anthropic", "anthropic-messages", "claude-sonnet-4.6"),
+        ("google", "google-generative-ai", "gemini-3.8-pro"),
+    ] {
+        for level in ["off", "minimal", "low", "medium", "high", "xhigh", "max"] {
+            let input = SessionInput {
+                source: RawSource::Jsonl(format!(
+                    "{}\n{}",
+                    json!({
+                        "type": "thinking_level_change", "id": "a", "parentId": null,
+                        "timestamp": 1, "thinkingLevel": level
+                    }),
+                    json!({
+                        "type": "message", "id": "b", "parentId": "a", "timestamp": 2,
+                        "message": {"role": "assistant", "provider": provider, "api": api, "model": model,
+                            "providerThinkingLevel": "max", "content": [],
+                            "usage": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0}}
+                    })
+                )),
+                ..input("minimal_session")
+            };
+            let (_, _, session) = collect(&input);
+            assert_eq!(session.events[0].thinking_mode.as_deref(), Some(level));
+            let (evidence, _) = composite(&input);
+            let badge = session_badges(&evidence, &ReportCatalogs::default())
+                .into_iter()
+                .find(|badge| badge.id == BadgeId::ModelOverthinking)
+                .unwrap();
+            assert_eq!(
+                badge.status,
+                if matches!(level, "xhigh" | "max") {
+                    BadgeStatus::Finding
+                } else {
+                    BadgeStatus::Clean
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn pi_missing_policy_or_route_is_not_filled_from_provider_effort_or_an_earlier_model() {
+    for (level, provider, api, expected) in [
+        (
+            None,
+            Some("openai"),
+            Some("openai-responses"),
+            NotAssessedReason::SignalMissing,
+        ),
+        (
+            Some("low"),
+            None,
+            Some("openai-responses"),
+            NotAssessedReason::EvidenceContractIncomplete,
+        ),
+        (
+            Some("low"),
+            Some("openai"),
+            None,
+            NotAssessedReason::EvidenceContractIncomplete,
+        ),
+        (
+            Some("future-level"),
+            Some("openai"),
+            Some("openai-responses"),
+            NotAssessedReason::EvidenceContractIncomplete,
+        ),
+    ] {
+        let mut rows = vec![json!({"type": "model_change", "id": "a", "parentId": null,
+            "timestamp": 1, "provider": "openai", "modelId": "gpt-5.6"})];
+        if let Some(level) = level {
+            rows.push(
+                json!({"type": "thinking_level_change", "id": "b", "parentId": "a",
+                "timestamp": 2, "thinkingLevel": level}),
+            );
+        }
+        rows.push(
+            json!({"type": "message", "id": "c", "parentId": if level.is_some() {"b"} else {"a"},
+            "timestamp": 3, "message": {"role": "assistant", "model": "gpt-5.6",
+                "provider": provider, "api": api, "providerThinkingLevel": "max", "content": [],
+                "usage": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0}}}),
+        );
+        let input = SessionInput {
+            source: RawSource::Jsonl(
+                rows.iter()
+                    .map(Value::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            ..input("minimal_session")
+        };
+        let (evidence, _) = composite(&input);
+        let badge = session_badges(&evidence, &ReportCatalogs::default())
+            .into_iter()
+            .find(|badge| badge.id == BadgeId::ModelOverthinking)
+            .unwrap();
+        assert_eq!(badge.status, BadgeStatus::NotAssessed(expected));
+    }
 }
 
 #[test]

@@ -19,8 +19,7 @@ pub const MAX_SUBAGENT_MODELS: usize = 32;
 pub const MAX_MODEL_TRANSITIONS: usize = 64;
 pub const MAX_COMPACTION_BOUNDARIES: usize = 64;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", content = "value", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvidenceValue<T> {
     Unsupported,
     Partial { observed: T, reason: CoverageReason },
@@ -148,6 +147,10 @@ pub struct ToolDefinition {
 pub struct ContextSourceEvidence {
     pub skills: BTreeMap<String, LoadedSource>,
     pub mcp_servers: BTreeMap<String, LoadedSource>,
+    #[serde(default)]
+    pub skill_coverage: EvidenceValue<()>,
+    #[serde(default)]
+    pub mcp_coverage: EvidenceValue<()>,
     /// Keyed by each tool's display name (see
     /// `tool_catalog::CatalogTool::display_name`). `Complete` only when
     /// the session's harness version and model both resolve against the
@@ -224,13 +227,8 @@ pub struct ModelEvidence {
     /// so it deserializes as `0/0`, which reads as missing.
     #[serde(default)]
     pub speed_signal: SignalCoverage,
-    /// The `scope = 'main'` assistant model with the most summed
-    /// output tokens in this session, ties broken by turn count, then
-    /// the latest `ts_ms`, then the earliest `turn_index`. Overpowered
-    /// Subagents uses this as the main-loop model; `SubagentChild::
-    /// parent_model` is the fallback when this is `None`. Old
-    /// persisted evidence has no field here, so it deserializes as
-    /// `None`.
+    /// The main-loop model with the most output tokens. Break ties by turn count, timestamp, then turn index.
+    /// Older persisted evidence leaves this field unset.
     #[serde(default)]
     pub dominant_main_model: Option<String>,
 }
@@ -246,6 +244,12 @@ pub enum RelationConfidence {
 pub struct SubagentChild {
     pub ordinal: u32,
     pub parent_model: Option<String>,
+    /// The native call key includes a worker index for Pi parallel results.
+    #[serde(default)]
+    pub parent_call_id: Option<String>,
+    /// These models belong to this native call, not merely to the session directory.
+    #[serde(default)]
+    pub observed_child_models: BTreeSet<String>,
     pub child_model: EvidenceValue<()>,
     pub confidence: RelationConfidence,
     pub provenance: RelationProvenance,
@@ -256,6 +260,53 @@ pub struct SubagentChild {
 pub struct SubagentExample {
     pub ts_ms: i64,
     pub parent_model: Option<String>,
+}
+
+// Postcard needs enum tags instead of the adjacently tagged JSON representation.
+mod evidence_value_serde {
+    use super::{CoverageReason, EvidenceValue};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(
+        remote = "EvidenceValue",
+        tag = "state",
+        content = "value",
+        rename_all = "snake_case"
+    )]
+    enum HumanReadable<T> {
+        Unsupported,
+        Partial { observed: T, reason: CoverageReason },
+        Complete(T),
+    }
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(remote = "EvidenceValue")]
+    enum Binary<T> {
+        Unsupported,
+        Partial { observed: T, reason: CoverageReason },
+        Complete(T),
+    }
+
+    impl<T: Serialize> Serialize for EvidenceValue<T> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            if serializer.is_human_readable() {
+                HumanReadable::serialize(self, serializer)
+            } else {
+                Binary::serialize(self, serializer)
+            }
+        }
+    }
+
+    impl<'de, T: Deserialize<'de>> Deserialize<'de> for EvidenceValue<T> {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            if deserializer.is_human_readable() {
+                HumanReadable::deserialize(deserializer)
+            } else {
+                Binary::deserialize(deserializer)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -328,10 +379,8 @@ pub enum SourceFormat {
     Uncharacterized,
 }
 
-/// Per-thread repeated-context accounting: paid context beyond positive
-/// growth, summed over adjacent `scope = 'main'` assistant turn pairs
-/// within one thread. See "Excess context reprocessing" in
-/// `docs/plans/session-evidence-harness-parity.md`.
+/// Paid context beyond positive growth across compatible main-thread requests.
+/// A partial result can exclude requests under other billing contracts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepeatedContext {
@@ -456,9 +505,8 @@ pub struct SourceCapabilities {
     /// Every counted row carries its own record id (`uuid`) and its parent
     /// link (`parent_uuid`) resolves to an id this source declared earlier.
     pub record_identity: bool,
-    /// The source writes records of one thread to one append-only stream.
-    /// Line order is the turn chain. A turn's predecessor is always the
-    /// counted record immediately before it, with no id needed to prove it.
+    /// The reader proves record order within each thread through an append-only stream or a validated native snapshot.
+    /// The previous counted record is the predecessor; no parent ID is required.
     #[serde(default)]
     pub linear_record_order: bool,
     pub quota_incidents: bool,
@@ -567,7 +615,7 @@ impl SourceCapabilities {
     /// OpenCode messages report prompt, output, reasoning, and both cache classes.
     /// Message and part timestamps provide deterministic order within one database snapshot.
     /// Tool and patch parts identify invocations but do not provide a tool catalog.
-    /// `modelID` and `variant` identify each assistant model run and reasoning tier.
+    /// `modelID` identifies the model. The raw `variant` has no reviewed effort mapping.
     /// Compaction parts identify boundaries, but OpenCode provides no quota contract.
     ///
     /// `subagent_relationships`, `subagent_models`, and `thread_identity` are
@@ -580,9 +628,8 @@ impl SourceCapabilities {
     /// reprocessing. A fork (null `parent_id`) is a separate root and never
     /// enters this relationship.
     ///
-    /// `record_identity` is set: every message row carries its own id, and
-    /// a non-root row's `parent_id` resolves to an id declared earlier in
-    /// the same session.
+    /// The reader validates snapshot order by creation time and message ID within each session.
+    /// `parentID` identifies the user being answered, not the previous message.
     pub fn opencode() -> Self {
         Self {
             source_format: SourceFormat::OpenCodeJsonl,
@@ -595,15 +642,15 @@ impl SourceCapabilities {
             tool_definitions: false,
             model_identity: true,
             token_classes: true,
-            reasoning_effort_tier: true,
+            reasoning_effort_tier: false,
             fast_tier: false,
             service_tier: false,
             subagent_relationships: true,
             subagent_models: true,
             compaction_boundaries: true,
             thread_identity: true,
-            record_identity: true,
-            linear_record_order: false,
+            record_identity: false,
+            linear_record_order: true,
             quota_incidents: false,
             harness_version: false,
             repeated_context_accounting: None,
@@ -1014,6 +1061,8 @@ pub struct SessionCoverageRecord {
     pub subagent_children: Vec<SubagentChild>,
     pub subagent_examples: Vec<SubagentExample>,
     pub subagents_cap_exceeded: bool,
+    #[serde(default)]
+    pub subagent_linkage_incomplete: bool,
     /// A `ThreadLink` observation's `parent_uuid` named an identity this
     /// source never declared. Distinct from [`super::evidence_query::
     /// TurnFacts::thread_identity_missing`]: that flags a counted turn with
@@ -1077,7 +1126,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 16,
+            "schemaRevision": 17,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -1106,9 +1155,9 @@ mod tests {
             },
             "coverage": coverage,
             "provenance": {
-                "parserRevision": 30,
-                "analyzerRevision": 20,
-                "evidenceSchemaRevision": 16,
+                "parserRevision": 31,
+                "analyzerRevision": 21,
+                "evidenceSchemaRevision": 17,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",
@@ -1130,7 +1179,7 @@ mod tests {
             "timeRange": {"state": "complete", "value": {"firstTsMs": 0, "lastTsMs": 0, "timestampedTurns": 0}},
             "eligibility": {"state": "complete", "value": {"turns": 0, "assistantTurns": 0, "toolTurns": 0, "depthEligibleTurns": 0}},
             "tools": {"state": "complete", "value": {"byName": {}}},
-            "contextSources": {"state": "complete", "value": {"skills": {}, "mcpServers": {}, "toolDefinitions": {"state": "unsupported"}}},
+            "contextSources": {"state": "complete", "value": {"skills": {}, "mcpServers": {}, "skillCoverage": {"state": "unsupported"}, "mcpCoverage": {"state": "unsupported"}, "toolDefinitions": {"state": "unsupported"}}},
             "models": {"state": "complete", "value": {"byModel": {}, "controlObservations": [], "unattributedTurns": 0, "effortTiers": {}, "fastModes": {}, "effortTiersByModel": {}, "fastModesByModel": {}, "serviceTiers": {"state": "unsupported"}, "effortSignal": {"eligibleTurns": 0, "presentTurns": 0}, "speedSignal": {"eligibleTurns": 0, "presentTurns": 0}, "dominantMainModel": null}},
             "subagents": {"state": "complete", "value": {"spawnCount": 0, "delegatedTurns": 0, "delegatedModels": [], "children": [], "examples": []}},
             "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "complete", "value": null}, "providerEviction": {"state": "unsupported"}, "repeatedContext": {"state": "complete", "value": {"accounting": "cache_write", "repeatedTokens": 0, "pairsConsidered": 0, "pairsSkipped": 0, "paidTokens": 0}}}},
@@ -1200,6 +1249,68 @@ mod tests {
             serde_json::to_value(unsupported).unwrap(),
             json!({"state": "unsupported"})
         );
+    }
+
+    #[test]
+    fn evidence_value_binary_tags_preserve_payloads_and_reasons() {
+        let cases = [
+            (
+                EvidenceValue::Unsupported,
+                vec![0],
+                json!({"state": "unsupported"}),
+            ),
+            (
+                EvidenceValue::Partial {
+                    observed: vec![7_u8, 9],
+                    reason: CoverageReason::MalformedRecord,
+                },
+                vec![1, 2, 7, 9, 1],
+                json!({"state": "partial", "value": {"observed": [7, 9], "reason": "malformed_record"}}),
+            ),
+            (
+                EvidenceValue::Complete(vec![7, 9]),
+                vec![2, 2, 7, 9],
+                json!({"state": "complete", "value": [7, 9]}),
+            ),
+        ];
+        for (value, bytes, json) in cases {
+            assert_eq!(postcard::to_allocvec(&value).unwrap(), bytes);
+            assert_eq!(
+                postcard::from_bytes::<EvidenceValue<Vec<u8>>>(&bytes).unwrap(),
+                value
+            );
+            assert_eq!(serde_json::to_value(&value).unwrap(), json);
+            assert_eq!(
+                serde_json::from_value::<EvidenceValue<Vec<u8>>>(json).unwrap(),
+                value
+            );
+        }
+        for bytes in [&[3][..], &[1, 2, 7, 9], &[2, 2, 7]] {
+            assert!(postcard::from_bytes::<EvidenceValue<Vec<u8>>>(bytes).is_err());
+        }
+    }
+
+    #[test]
+    fn evidence_value_unit_markers_round_trip_in_both_formats() {
+        for value in [
+            EvidenceValue::Unsupported,
+            EvidenceValue::Partial {
+                observed: (),
+                reason: CoverageReason::AttributionIncomplete,
+            },
+            EvidenceValue::Complete(()),
+        ] {
+            let bytes = postcard::to_allocvec(&value).unwrap();
+            assert_eq!(
+                postcard::from_bytes::<EvidenceValue<()>>(&bytes).unwrap(),
+                value
+            );
+            let json = serde_json::to_string(&value).unwrap();
+            assert_eq!(
+                serde_json::from_str::<EvidenceValue<()>>(&json).unwrap(),
+                value
+            );
+        }
     }
 
     #[test]

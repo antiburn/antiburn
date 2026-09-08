@@ -165,6 +165,8 @@ mod tests {
                 subagents.children.push(SubagentChild {
                     ordinal: 1,
                     parent_model: Some("claude-opus-4-6".to_owned()),
+                    parent_call_id: None,
+                    observed_child_models: subagents.delegated_models.clone(),
                     child_model: EvidenceValue::Unsupported,
                     confidence: RelationConfidence::Observed,
                     provenance: RelationProvenance::TaskToolUse,
@@ -427,28 +429,21 @@ mod tests {
         }
     }
 
-    /// The badge is a session-scope integrity signal. The report is
-    /// detector-scope. A truncated group that no detector reads keeps the
-    /// report Clean for that detector. The badge for the same session stays
-    /// NotAssessed. This asymmetry is intentional. Issue #229 keeps the
-    /// detector-scope report rule.
     #[test]
-    fn session_wide_partial_coverage_diverges_from_report_by_design() {
-        let mut evidence = claude_evidence("synthetic-divergent");
+    fn session_wide_partial_coverage_blocks_clean_in_badges_and_report() {
+        let mut evidence = claude_evidence("synthetic-partial");
         evidence.coverage = EvidenceCoverage::Partial(CoverageReason::MalformedRecord);
 
         for badge in session_badges(&evidence, &ReportCatalogs::default()) {
-            // Obsolete Model, Model Overthinking, and Fast Mode Overuse
-            // report their own not-assessed reason on both sides
-            // regardless of session-wide coverage, so they sit outside
-            // this test's badge-vs-report divergence claim.
             let expected = zero_turn_override(badge.id).unwrap_or(BadgeStatus::NotAssessed(
                 NotAssessedReason::IncompleteEvidence,
             ));
             assert_eq!(badge.status, expected, "{:?}", badge.id);
         }
         for id in BadgeId::ALL {
-            let expected = zero_turn_override_detector(id).unwrap_or(DetectorStatus::Clean);
+            let expected = zero_turn_override_detector(id).unwrap_or(DetectorStatus::NotAssessed(
+                NotAssessedReason::IncompleteEvidence,
+            ));
             assert_eq!(
                 report_status(evidence.clone(), id.detector(), &ReportCatalogs::default()),
                 expected,

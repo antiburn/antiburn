@@ -55,22 +55,26 @@ describe("agentDisplayName / agentIconName", () => {
 })
 
 describe("agentSupportsAnalysis", () => {
-  it("is true only for agents with a dedicated analysis adapter", () => {
+  it("is true for the six functional session parsers", () => {
     expect(agentSupportsAnalysis("claude-code")).toBe(true)
     expect(agentSupportsAnalysis("codex")).toBe(true)
     expect(agentSupportsAnalysis("cursor")).toBe(true)
-    expect(agentSupportsAnalysis("copilot")).toBe(true)
-    expect(agentSupportsAnalysis("cline")).toBe(true)
     expect(agentSupportsAnalysis("opencode")).toBe(true)
-    expect(agentSupportsAnalysis("kiro")).toBe(true)
-    expect(agentSupportsAnalysis("amp-code")).toBe(true)
     expect(agentSupportsAnalysis("antigravity")).toBe(true)
-    expect(agentSupportsAnalysis("windsurf")).toBe(true)
     expect(agentSupportsAnalysis("pi")).toBe(true)
   })
 
+  it.each(["copilot", "cline", "kiro", "amp-code", "windsurf"])(
+    "keeps %s registered without enabling session analysis",
+    (slug) => {
+      expect(AGENT_SLUGS).toContain(slug)
+      expect(agentSupportsAnalysis(slug)).toBe(false)
+    },
+  )
+
   it("is false for unknown slugs", () => {
     expect(agentSupportsAnalysis("totally-made-up")).toBe(false)
+    expect(agentSupportsAnalysis("")).toBe(false)
   })
 })
 

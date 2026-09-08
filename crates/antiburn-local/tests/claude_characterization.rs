@@ -707,11 +707,11 @@ fn a_delegated_turn_without_a_model_degrades_subagent_evidence() {
 }
 
 #[test]
-fn delegated_models_unblock_overpowered_subagents() {
+fn delegated_models_without_native_linkage_do_not_prove_overpowered_subagents() {
     let report = fixture_report("delegated_models");
     assert!(matches!(
         report.detector_statuses[DetectorId::OverpoweredSubagents.index()],
-        DetectorStatus::Findings(_)
+        DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete)
     ));
 }
 
@@ -1315,10 +1315,14 @@ fn a_resumed_sessions_in_file_replay_contributes_nothing_but_a_diagnostic() {
     let EvidenceValue::Complete(cache) = evidence.cache else {
         panic!("a resumed replay must keep the cache group complete");
     };
-    let EvidenceValue::Complete(repeated_context) = cache.repeated_context else {
-        panic!("repeated context must be complete");
+    let EvidenceValue::Partial {
+        observed: repeated_context,
+        reason: CoverageReason::AttributionIncomplete,
+    } = cache.repeated_context
+    else {
+        panic!("the compaction must break the repeated-context baseline");
     };
-    assert_eq!(repeated_context.pairs_skipped, 0);
+    assert_eq!(repeated_context.pairs_skipped, 1);
     let EvidenceValue::Complete(compactions) = evidence.compactions else {
         panic!("compactions must be complete");
     };

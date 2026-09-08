@@ -17,7 +17,14 @@
           "state": "unsupported"
         },
         "repeatedContext": {
-          "state": "unsupported"
+          "state": "complete",
+          "value": {
+            "accounting": "cache_write",
+            "paidTokens": 0,
+            "pairsConsidered": 0,
+            "pairsSkipped": 0,
+            "repeatedTokens": 0
+          }
         },
         "userControlledChurn": {
           "manualCompactions": 0
@@ -156,20 +163,20 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 20,
-      "evidenceSchemaRevision": 16,
+      "analyzerRevision": 21,
+      "evidenceSchemaRevision": 17,
       "harnessVersion": {
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 30,
+      "parserRevision": 31,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 16,
+    "schemaRevision": 17,
     "subagents": {
       "state": "unsupported"
     },

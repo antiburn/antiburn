@@ -125,10 +125,22 @@ pub enum EvidenceObservation {
         name: String,
         description: Option<String>,
     },
+    /// The transcript contains the full skill document, not only its listing.
+    SkillInjection {
+        name: String,
+        invoked: bool,
+    },
     SubagentSpawn {
         ts_ms: Option<i64>,
         parent_model: Option<String>,
+        parent_call_id: Option<String>,
+        child_model: Option<String>,
         provenance: RelationProvenance,
+    },
+    /// A native call result identifies a model used by its child.
+    SubagentModel {
+        parent_call_id: String,
+        model: String,
     },
     DelegatedTurn {
         is_sidechain: bool,

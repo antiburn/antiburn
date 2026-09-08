@@ -57,6 +57,16 @@ check requirements, or finding and clean-result eligibility change.
 
 Update both documents when a session parsing change affects check coverage.
 
+Keep coverage documents as current baselines, not phase plans. List every
+`SourceFormat` exactly once per inventory or matrix, with exact enum names.
+Record accepted source shapes, finding scope, clean-result limits, and dated
+maintainer confirmations with reviewed passive alternatives. A pinned schema,
+header, or producer commit with synthetic fixtures can define an accepted shape
+when a release range is unavailable. Do not claim all historical versions.
+
+Run `check_coverage_contract` after coverage edits. Its inventory checks do not
+replace characterization and behavior tests or manual review of matrix cells.
+
 ## Tests and commits
 
 Run the relevant formatter, linter, type checks, and tests for every change. Use

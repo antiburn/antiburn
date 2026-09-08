@@ -217,6 +217,34 @@ fn insert_message(connection: &Connection, id: &str, session_id: &str, timestamp
         .expect("message");
 }
 
+fn insert_child_task(connection: &Connection, model: &str) {
+    let data = serde_json::json!({
+        "type": "tool",
+        "tool": "task",
+        "callID": "call-child",
+        "state": {
+            "status": "completed",
+            "input": {
+                "description": "Inspect code",
+                "prompt": "Inspect code",
+                "subagent_type": "explore"
+            },
+            "metadata": {
+                "sessionId": "child",
+                "model": { "providerID": "test", "modelID": model }
+            },
+            "time": { "start": 21, "end": 50 },
+            "output": "Complete"
+        }
+    });
+    connection
+        .execute(
+            "INSERT INTO part VALUES ('task-child', 'root-assistant', 'root', 21, 21, ?1)",
+            params![data.to_string()],
+        )
+        .expect("child task");
+}
+
 fn opencode_evidence(name: &str) -> SessionEvidence {
     let (_directory, path) = create_database();
     let connection = Connection::open(&path).expect("database");
@@ -301,6 +329,7 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
                 40,
                 r#"{"role":"assistant","modelID":"claude-opus-4-6","tokens":{"input":10,"output":5}}"#,
             );
+            insert_child_task(&connection, "claude-opus-4-6");
         }
         "overpowered_subagents_clean" => {
             insert_session(&connection, "root", None, 10);
@@ -329,6 +358,7 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
                 40,
                 r#"{"role":"assistant","modelID":"gpt-5.6-sol","tokens":{"input":10,"output":5}}"#,
             );
+            insert_child_task(&connection, "gpt-5.6-sol");
         }
         "overpowered_subagents_openai_luna_no_finding" => {
             insert_session(&connection, "root", None, 10);
@@ -348,6 +378,7 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
                 // GPT-5.6 Luna is not premium: only the Sol prefix is.
                 r#"{"role":"assistant","modelID":"gpt-5.6-luna","tokens":{"input":10,"output":5}}"#,
             );
+            insert_child_task(&connection, "gpt-5.6-luna");
         }
         "excess_cache_rehydration_finding" => {
             insert_session(&connection, "root", None, 10);
@@ -401,7 +432,7 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
         agent: input.agent.clone(),
         session_id: input.session_id.clone(),
         kind: SourceKind::from(&input.source),
-        capabilities: SourceCapabilities::opencode(),
+        capabilities: reader_for("opencode").capabilities(&input.source),
     });
     let store = MemoryTurnRowStore::new(&input.agent, &input.session_id);
     let turn_rows = TurnRowSink::new(
@@ -483,13 +514,13 @@ fn matrix() -> Vec<Row> {
             harness: "claude",
             fixture: "delegated_models",
             badge: OverpoweredSubagents,
-            expected: Finding,
+            expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
             harness: "claude",
             fixture: "delegated_turns",
             badge: OverpoweredSubagents,
-            expected: Clean,
+            expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
             // An uncatalogued model cannot prove that the model is current.
@@ -550,7 +581,7 @@ fn matrix() -> Vec<Row> {
             harness: "claude",
             fixture: "compaction_with_cache_rehydration",
             badge: ExcessCacheRehydration,
-            expected: Finding,
+            expected: NotAssessed(IncompleteEvidence),
         },
         Row {
             harness: "claude",
@@ -636,15 +667,11 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(SignalMissing),
         },
         Row {
-            // This fixture reports no cache-write tokens, and `evidence_sink`
-            // pins Codex to uncached-input accounting. This makes the badge eligible.
-            // Codex uses `linear_record_order` to attest linkage from line order.
-            // This fixture has no record loss, so `RecordLinkage` reads complete.
-            // The badge reads clean under "Conditional using uncached-input accounting".
+            // Compaction and zero-usage rows break the compatible request baseline.
             harness: "codex",
             fixture: "records_all_kinds",
             badge: ExcessCacheRehydration,
-            expected: Clean,
+            expected: NotAssessed(IncompleteEvidence),
         },
         Row {
             harness: "codex",
@@ -742,24 +769,23 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(IncompleteEvidence),
         },
         Row {
-            // OpenCode saves a provider and variant but no API route. The
-            // variant cannot become an effort finding without that mapping.
+            // OpenCode saves raw variants without an effective effort mapping.
             harness: "opencode",
             fixture: "model_overthinking_finding",
             badge: ModelOverthinking,
-            expected: NotAssessed(EvidenceContractIncomplete),
+            expected: NotAssessed(CapabilityMissing),
         },
         Row {
             harness: "opencode",
             fixture: "model_overthinking_clean",
             badge: ModelOverthinking,
-            expected: NotAssessed(EvidenceContractIncomplete),
+            expected: NotAssessed(CapabilityMissing),
         },
         Row {
             harness: "opencode",
             fixture: "model_overthinking_signal_missing",
             badge: ModelOverthinking,
-            expected: NotAssessed(SignalMissing),
+            expected: NotAssessed(CapabilityMissing),
         },
         Row {
             harness: "opencode",
