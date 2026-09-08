@@ -465,11 +465,12 @@ build.
   export's content notice; update the notice text.
 - Analytics event `antiburn.limit_factor_observed`: provider, lane, plan (closed
   vocabulary: mapped known plan names, else `other`), factor band (closed
-  vocabulary, log-spaced: `under_2`, `2_to_under_8`, `8_to_under_32`,
-  `32_and_over` dollars per percent), residual band (`within_5`, `within_20`,
-  `over_20`, `unknown`). Fire on first computation and on band change, at most
-  once per day per (provider, lane). Follow the catalogue steps in
-  `docs/analytics.md` and the review contract in
+  vocabulary, banded by powers of two: `under_1`, `1_to_under_2`,
+  `2_to_under_4`, `4_to_under_8`, `8_to_under_16`, `16_to_under_32`,
+  `32_to_under_64`, `64_to_under_128`, `128_and_over` dollars per percent),
+  residual band (`within_5`, `within_20`, `over_20`, `unknown`). Fire on first
+  computation and on band change, at most once per day per (provider, lane).
+  Follow the catalogue steps in `docs/analytics.md` and the review contract in
   `docs/analytics-measurement.md`.
 - Tests per the analytics review contract.
 
@@ -545,6 +546,10 @@ build and kept for later phases to build on.
   because `factor.rs`'s constant is private and the two call sites have no
   other reason to depend on each other; a future change to one lookback is
   not implied to require the other.
+- **On 2026-09-09, `factor_band` changed from four-fold steps to power-of-two
+  steps** (`under_1` through `128_and_over`). The original four-fold bands
+  were not based on any measured factor distribution; finer log buckets let
+  Cadence regroup adjacent bands later without a contract change.
 
 ### Phase 4: Codex rollout observations
 

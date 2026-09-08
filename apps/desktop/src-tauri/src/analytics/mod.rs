@@ -1573,7 +1573,7 @@ mod enabled {
                     label: "anthropic",
                     detail: "short",
                     plan: "max",
-                    factor_band: "2_to_under_8",
+                    factor_band: "4_to_under_8",
                     residual_band: "within_5",
                 }]
             );
@@ -1591,7 +1591,7 @@ mod enabled {
             let candidates = limit_factor_observed_candidates(&learned);
             assert_eq!(candidates[0].detail, "long");
             assert_eq!(candidates[0].plan, "unknown");
-            assert_eq!(candidates[0].factor_band, "32_and_over");
+            assert_eq!(candidates[0].factor_band, "32_to_under_64");
             assert_eq!(candidates[0].residual_band, "unknown");
         }
 
@@ -1620,8 +1620,8 @@ mod enabled {
         fn a_pair_fires_first_then_only_on_a_changed_tuple_at_least_a_day_later() {
             let mut last = BTreeMap::new();
             let key = ("anthropic", "short");
-            let tuple_a = ("max", "2_to_under_8", "within_5");
-            let tuple_b = ("max", "8_to_under_32", "within_5");
+            let tuple_a = ("max", "2_to_under_4", "within_5");
+            let tuple_b = ("max", "4_to_under_8", "within_5");
             let start = Instant::now();
 
             assert!(
@@ -1866,7 +1866,7 @@ mod enabled {
                 .insert(("anthropic", "short"), "below_80");
             LAST_LIMIT_FACTOR_OBSERVED.lock().unwrap().insert(
                 ("anthropic", "short"),
-                (("max", "2_to_under_8", "within_5"), Instant::now()),
+                (("max", "2_to_under_4", "within_5"), Instant::now()),
             );
 
             reset_suppression();

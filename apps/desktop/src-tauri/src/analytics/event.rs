@@ -678,21 +678,33 @@ pub fn map_plan(plan: Option<&str>) -> &'static str {
     }
 }
 
-/// Reduce a learned dollars-per-percent factor to a log-spaced band.
+/// Reduce a learned dollars-per-percent factor to a power-of-two band.
 ///
-/// Steps of 4x keep the bucket boundaries meaningful across the wide range a
-/// factor can take — cents per percent on a low-cost plan, tens of dollars on
-/// a high one — the same reasoning [`bucket`] uses for linear counts.
+/// Each band doubles the value of the band below it. Fine, doubling steps let
+/// a later reader group adjacent bands together without a change to this
+/// vocabulary. An earlier four-fold design fixed that grouping in advance,
+/// before any measured distribution existed to justify it. Non-finite and
+/// non-positive input, including a value under one, map to the lowest band.
 #[cfg(feature = "analytics")]
 pub fn factor_band(usd_per_percent: f64) -> &'static str {
-    if usd_per_percent < 2.0 {
-        "under_2"
+    if usd_per_percent.is_nan() || usd_per_percent < 1.0 {
+        "under_1"
+    } else if usd_per_percent < 2.0 {
+        "1_to_under_2"
+    } else if usd_per_percent < 4.0 {
+        "2_to_under_4"
     } else if usd_per_percent < 8.0 {
-        "2_to_under_8"
+        "4_to_under_8"
+    } else if usd_per_percent < 16.0 {
+        "8_to_under_16"
     } else if usd_per_percent < 32.0 {
-        "8_to_under_32"
+        "16_to_under_32"
+    } else if usd_per_percent < 64.0 {
+        "32_to_under_64"
+    } else if usd_per_percent < 128.0 {
+        "64_to_under_128"
     } else {
-        "32_and_over"
+        "128_and_over"
     }
 }
 
@@ -822,15 +834,29 @@ mod tests {
     }
 
     #[test]
-    fn the_factor_band_boundaries_step_by_four() {
-        assert_eq!(factor_band(0.5), "under_2");
-        assert_eq!(factor_band(1.99), "under_2");
-        assert_eq!(factor_band(2.0), "2_to_under_8");
-        assert_eq!(factor_band(7.99), "2_to_under_8");
-        assert_eq!(factor_band(8.0), "8_to_under_32");
-        assert_eq!(factor_band(31.99), "8_to_under_32");
-        assert_eq!(factor_band(32.0), "32_and_over");
-        assert_eq!(factor_band(1_000.0), "32_and_over");
+    fn the_factor_band_boundaries_step_by_powers_of_two() {
+        assert_eq!(factor_band(f64::NAN), "under_1");
+        assert_eq!(factor_band(f64::NEG_INFINITY), "under_1");
+        assert_eq!(factor_band(-1.0), "under_1");
+        assert_eq!(factor_band(0.0), "under_1");
+        assert_eq!(factor_band(0.99), "under_1");
+        assert_eq!(factor_band(1.0), "1_to_under_2");
+        assert_eq!(factor_band(1.99), "1_to_under_2");
+        assert_eq!(factor_band(2.0), "2_to_under_4");
+        assert_eq!(factor_band(3.99), "2_to_under_4");
+        assert_eq!(factor_band(4.0), "4_to_under_8");
+        assert_eq!(factor_band(7.99), "4_to_under_8");
+        assert_eq!(factor_band(8.0), "8_to_under_16");
+        assert_eq!(factor_band(15.99), "8_to_under_16");
+        assert_eq!(factor_band(16.0), "16_to_under_32");
+        assert_eq!(factor_band(31.99), "16_to_under_32");
+        assert_eq!(factor_band(32.0), "32_to_under_64");
+        assert_eq!(factor_band(63.99), "32_to_under_64");
+        assert_eq!(factor_band(64.0), "64_to_under_128");
+        assert_eq!(factor_band(127.99), "64_to_under_128");
+        assert_eq!(factor_band(128.0), "128_and_over");
+        assert_eq!(factor_band(1_000.0), "128_and_over");
+        assert_eq!(factor_band(f64::INFINITY), "128_and_over");
     }
 
     #[test]
