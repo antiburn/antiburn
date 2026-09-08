@@ -1,0 +1,367 @@
+---
+title: "Limit share from a learned dollars-per-percent factor"
+created_at: "2026-09-08"
+status: planned
+---
+
+# Limit share from a learned dollars-per-percent factor
+
+- **Date:** 2026-09-08
+- **Issue:** none. Opened from the 0.4.1 "no limit" badge report.
+- **Status:** planned. Phases below, built in stacked worktrees.
+
+## Problem
+
+The session list shows "% 5h" and "% week" for each session. Release 0.4.1
+(PR #426) computes these from a durable ledger: it stores one period per
+provider allowance window, splits each observed percent delta across the turns
+that fall inside the observation interval, and writes one allocation row per
+session and period.
+
+Three faults follow from that shape.
+
+- A session gets a percent only if a period covered it while the app ran. Every
+  session from before the install, and every session from a stretch when the
+  app was closed, shows "no limit" forever.
+- A session gets a percent only if a live poll bound it to an account within
+  ten minutes of its last write. Sessions that finish while the app is closed
+  never bind. The single-account fallback from 0.4.0 was dropped.
+- A window that the meter reports as 0% gets no allocation, because the delta
+  rounds to zero. The 5-hour lane starts every window in this state.
+
+The arithmetic in the allocator is correct. A reproduction matched the stored
+rows bit for bit. The shape is the problem, not the code.
+
+A fleet constant is not a substitute. Cadence data for the same question shows
+per-plan dollars-per-percent constants wrong by 2x to 10x for individuals, a
+15x swing for one user across weeks, and 2x to 4x drift across months. The only
+precise calibration source is the live meter that the app already polls.
+
+## Target shape
+
+One number per provider account and lane: the **factor**, in dollars per one
+percent of the limit. The app learns the factor from the meter. Every session,
+including sessions from before the install, shows `dollars / factor`.
+
+```
+meter reading a ─┐
+                 ├─ percent delta ─┐
+meter reading b ─┘                 ├─ sample = dollars / percent delta
+turns between a and b ─ dollars ───┘
+
+samples ─ weighted median ─ factor point (effective_at, usd_per_percent)
+
+session dollars / factor in effect at session end ─ badge percent
+Σ(estimates in current window) vs meter ─ residual
+```
+
+The factor belongs to the account and lane, not to the window. The limit does
+not change when a window resets. A new window starts with the last factor. A
+restart starts with the last saved factor. Only a true first install has none.
+
+The factor drifts when the provider changes the limit or the pricing, or when
+the user changes plan. New samples move it. The stored history of the factor
+is itself a product: it shows when a provider tightened a limit.
+
+### Inputs
+
+| Input | Source | Already durable |
+|---|---|---|
+| Meter readings with reset time | `provider_usage_observation` joined to `provider_usage_period` | yes (90-day retention) |
+| Turn dollars with timestamps | turn rows priced through `lookup_turn_pricing` | yes |
+| Session dollars, inclusive of subagents | `session_analysis.pricing_breakdown_json` via `price_cached_breakdown` | yes |
+| Session to account | `session_provider_account`, else single `provider_account_seen` row for the agent | yes, plus the fallback rule |
+| Plan name | `ProviderUsageSnapshot.plan` / `plan_tier` | no, dropped before the observation is written; V39 adds it |
+
+### Account resolution
+
+One rule, used by learning and by reading. A turn or session belongs to an
+account when:
+
+1. its session has exactly one `session_provider_account` row for the
+   provider, or
+2. it has none, and `provider_account_seen` holds exactly one account for the
+   session's agent and provider.
+
+Otherwise it is unattributed. Unattributed turns do not enter samples.
+Unattributed sessions show "unknown". This is the rule from branch
+`fix/single-account-allocation-fallback` (`provider_known_accounts`), lifted
+into one store helper so the two paths cannot disagree.
+
+### Samples
+
+A sample is one measurement of the factor. Three kinds.
+
+**delta**: two observations `a` and `b` in the same period, where `b` is the
+first later observation with `used_percent` greater than `a.used_percent`.
+Percent delta is `b.percent - a.percent`. Dollars are the priced turns with
+`a.observed_at < turn_at <= b.observed_at` that resolve to the period's
+account. Then `a := b` and the search continues. Consecutive readings with an
+equal percent are merged into one interval, so integer meters do not produce
+zero deltas.
+
+A delta interval with a positive percent delta and zero attributed dollars
+means usage from another device. It is stored with kind `unattributed` and
+excluded from the factor. The residual uses it.
+
+**window_start**: one observation with `used_percent > 0` and no delta sample
+yet for the lane. Dollars are the attributed turns from the window start to
+the observation. Window start is `starts_at_epoch`, else `resets_at_epoch`
+minus the lane duration (18 000 s or 604 800 s). The sample carries every
+outside use in the window, so it is only used while no delta sample exists.
+
+A Codex reading at 0% reports a projected reset (`is_sliding_reset_projection`).
+Zero readings never form a window_start sample and never define a window start.
+
+**rollout** (phase 4): a delta sample whose observations came from a Codex
+rollout file instead of a live poll. Same arithmetic, different `source_id`.
+
+Each sample stores the dollar split by token kind (input, output, cache read,
+cache write). Without it, a later chart cannot tell a provider change from a
+workload change.
+
+### Plan tracking
+
+Every live source reports the plan on the snapshot (Claude: subscription type
+and rate-limit tier; Codex: plan type; Antigravity: plan and tier). V39 adds
+`plan` and `plan_tier` to `provider_usage_observation`, stored as given. A
+sample takes the plan of its closing observation. A factor point carries the
+plan. Points are never pruned, so plan history survives the observation cap.
+
+A plan change is a step in the factor, not a drift. When the latest
+observation's plan differs from the current point's plan, the median uses only
+samples from after the change and a new point is appended even if the value
+is within 2%. Codex rollout files carry the plan on every turn, so phase 4
+backfills plan history too.
+
+Plan strings map to a closed vocabulary only at the analytics boundary.
+
+### The factor
+
+For each (provider, account, lane), the factor is the weighted median of delta
+samples from the last 14 days. Weight is `percent_delta × 0.5^(age_days / 7)`.
+Fewer than three samples in 14 days: use all delta samples. No delta samples:
+use the most recent window_start sample. Nothing: no factor, badge "unknown".
+
+Median, not mean, because a single interval that includes outside use pulls
+the factor down and every session up. The median ignores it.
+
+The app appends a **factor point** whenever the computed factor differs from
+the last point by more than 2%, the method changes, or the plan changes. Points are the history.
+The latest point is the current factor. A session uses the point in effect at
+its end time, the earliest point for sessions before the first point.
+
+### Recompute window
+
+Turn rows can arrive after the observation that closes their interval, because
+transcript ingest lags. Every learning pass recomputes samples whose `to_epoch`
+is within the last 15 minutes and upserts them by observation pair. Older
+samples are final. A pass handles at most 64 new observation pairs.
+
+### Reading
+
+`get_session_limit_allocations` returns one row per session and lane:
+
+```
+percent    = session.cost.total_usd / factor_point(account, lane, session.updated_at).usd_per_percent
+confidence = "learned" | "seeded"    (delta vs window_start method)
+```
+
+No row when the session is unattributed or the lane has no factor. The
+frontend shows "unknown" for a missing row, and "no limit" at the current
+opacity only when the live summary for that provider has no window of that
+kind (commit `4e7a7528`, `providerConfirmsNoWindow`).
+
+The dollars are the inclusive session cost, subagents included. The meter
+counts subagent turns. Subagent rows in the list keep their own cost and get
+their own percent.
+
+A percent above 100 is valid for a long session and shows as is.
+
+### Residual
+
+For each (provider, account, lane) and the current period: `meter_percent -
+Σ(attributed turn dollars since window start) / factor`. Stored on each
+learning pass as one row per period. It is the accuracy check. A large
+positive residual means outside use. A large negative one means the factor
+has drifted. Diagnostics export and analytics report it as a band.
+
+## What is kept, what goes
+
+Kept: `provider_usage_period`, `provider_usage_observation`,
+`record_provider_usage_snapshots`, `period_for`, retention,
+`session_provider_account`, `provider_account_seen`, `observe_provider_account`.
+
+Removed: `provider_usage_session_allocation`, `provider_usage_allocation_dirty`,
+`provider_usage_allocation_revision`, `allocation_frozen`, the
+`provider_usage::allocation` module, `ledger::reconcile` and `reconcile_period`,
+`cumulative_session_limit_allocations`, `cumulative_lane_allocation`, the
+`coverage` field on the payload, and the retention branches that check those
+tables.
+
+Branch `fix/single-account-allocation-fallback` is not merged. Commit
+`4e7a7528` (frontend unknown badge) is cherry-picked in phase 2. The
+`provider_known_accounts` query and its tests from `fb321855` move into the
+account resolution helper in phase 1. The `allocation.rs` changes are dropped.
+
+## Schema
+
+**V39** (phase 1):
+
+```sql
+ALTER TABLE provider_usage_observation ADD COLUMN plan TEXT;
+ALTER TABLE provider_usage_observation ADD COLUMN plan_tier TEXT;
+
+CREATE TABLE provider_limit_factor_sample (
+    id                  INTEGER PRIMARY KEY,
+    provider            TEXT NOT NULL,
+    account_key         TEXT NOT NULL,
+    lane                TEXT NOT NULL CHECK (lane IN ('weekly', 'fiveHour')),
+    kind                TEXT NOT NULL CHECK (kind IN ('delta', 'window_start', 'unattributed', 'rollout')),
+    period_id           INTEGER REFERENCES provider_usage_period(id),
+    from_epoch          INTEGER NOT NULL,
+    to_epoch            INTEGER NOT NULL,
+    from_percent        REAL NOT NULL,
+    to_percent          REAL NOT NULL,
+    input_usd           REAL NOT NULL,
+    output_usd          REAL NOT NULL,
+    cache_read_usd      REAL NOT NULL,
+    cache_write_usd     REAL NOT NULL,
+    turn_count          INTEGER NOT NULL,
+    plan                TEXT,
+    plan_tier           TEXT,
+    source_id           TEXT NOT NULL,
+    computed_at_epoch   INTEGER NOT NULL,
+    UNIQUE (provider, account_key, lane, from_epoch, to_epoch)
+) STRICT;
+
+CREATE TABLE provider_limit_factor_point (
+    id                  INTEGER PRIMARY KEY,
+    provider            TEXT NOT NULL,
+    account_key         TEXT NOT NULL,
+    lane                TEXT NOT NULL CHECK (lane IN ('weekly', 'fiveHour')),
+    effective_at_epoch  INTEGER NOT NULL,
+    usd_per_percent     REAL NOT NULL,
+    method              TEXT NOT NULL CHECK (method IN ('delta', 'window_start')),
+    sample_count        INTEGER NOT NULL,
+    plan                TEXT,
+    plan_tier           TEXT,
+    UNIQUE (provider, account_key, lane, effective_at_epoch)
+) STRICT;
+
+CREATE TABLE provider_limit_residual (
+    period_id           INTEGER PRIMARY KEY REFERENCES provider_usage_period(id),
+    computed_at_epoch   INTEGER NOT NULL,
+    meter_percent       REAL NOT NULL,
+    estimated_percent   REAL NOT NULL
+) STRICT;
+```
+
+Samples and points outlive observations. Retention deletes samples older than
+the session retention setting, capped at 365 days, and never deletes points.
+`period_id` on a sample is `ON DELETE SET NULL` in effect: the learner nulls
+it before the period retention pass runs, so the period retention query stays
+as it is.
+
+**V40** (phase 2): drop the four allocation objects listed above.
+
+## Phases
+
+Each phase is one PR from a stacked worktree, built by a Sonnet builder from
+this document, reviewed here, then merged. Phase 2 cannot ship without phase 1.
+Phases 1 and 2 ship in the same release; there is no release between them.
+
+### Phase 1: learn the factor
+
+- V39 schema.
+- `store::provider_limit` module: account resolution helper (SQL that returns
+  the account for a session under the two-step rule, plus the reverse:
+  attributed turn dollars for an account between two epochs, grouped by
+  session and split by token kind, priced through the existing turn pricing
+  key), sample upsert, point append, point lookup at an epoch, residual
+  upsert. The learner sums the per-session rows. The later contribution chart
+  reads the same query unsummed, so keep the session grouping from the start.
+- `provider_usage::factor` module: `learn(store, now_epoch)`. Called where
+  `ledger::reconcile` is called today (`live/mod.rs` after
+  `record_provider_usage_snapshots`, and `usage_alerts::background_pass`).
+  Bounded per pass as above.
+- The old allocator keeps running in this phase. Nothing reads the new tables
+  yet.
+- Tests: synthetic observations and turn rows for one account; delta sample
+  arithmetic; merged equal readings; unattributed interval; window_start only
+  while no delta exists; weighted median with one outlier; point appended only
+  on change; recompute window upserts a late turn; two accounts on one agent
+  produce no fallback attribution; Codex 0% projected reset ignored; plan
+  stored on the observation; plan change drops earlier samples and appends a
+  point.
+
+### Phase 2: read from the factor, delete the allocator
+
+- `get_session_limit_allocations` computes from session cost and factor
+  points. DTO: `coverage` becomes `confidence`. TypeScript payload updated.
+- Cherry-pick `4e7a7528`. Reconcile the "unknown" / "no limit" split with the
+  new missing-row semantics.
+- V40. Delete the removed list above. No lint suppressions; dead code goes.
+- Tests: command returns percent from cost and point-at-end-time; earliest
+  point for older sessions; missing factor gives no row; subagent rows priced
+  on their own cost; frontend badge tests from the cherry-pick still pass.
+
+### Phase 3: residual, diagnostics, analytics
+
+- Residual row per period on each learning pass.
+- Diagnostics export: one entry per (provider, lane) with factor, method,
+  sample count, point count, latest residual. No account keys, per the
+  export's content notice; update the notice text.
+- Analytics event `antiburn.limit_factor_observed`: provider, lane, plan (closed
+  vocabulary: mapped known plan names, else `other`), factor band (closed
+  vocabulary, log-spaced: `under_2`, `2_to_under_8`, `8_to_under_32`,
+  `32_and_over` dollars per percent), residual band (`within_5`, `within_20`,
+  `over_20`, `unknown`). Fire on first computation and on band change, at most
+  once per day per (provider, lane). Follow the catalogue steps in
+  `docs/analytics.md` and the review contract in
+  `docs/analytics-measurement.md`.
+- Tests per the analytics review contract.
+
+### Phase 4: Codex rollout observations
+
+- Resurrect the bounded rollout reader from closed PR #427
+  (`provider_usage/backfill.rs`, `store/usage_backfill.rs`,
+  `read_rollout_batch`, checkpoints, retry backoff). Skip its legacy
+  `internal:liveUsageHistoryV2` import; that history has no reset times.
+- Rollout readings become observations with `source_id`
+  `codex-rollout-backfill`. The learner treats them as any other observation;
+  samples from them carry kind `rollout`.
+- Effect: a Codex account has a factor from history on first install, without
+  waiting for a live poll.
+
+### Later, not in this round
+
+- A factor history chart per account, from `provider_limit_factor_point` and
+  the token-kind split on samples.
+- A limit-over-time chart per account and lane, from
+  `provider_usage_observation`. Needs the 90-day observation cap raised or a
+  downsampled copy that survives it. Phase 1 must not depend on the cap.
+- A contribution chart: which sessions used the most of a bucket. Per-session
+  attributed dollars inside the bucket, divided by the factor in effect, from
+  the phase 1 query. The meter line drawn over the stacked estimates shows the
+  residual as the gap.
+- Seed the 5-hour factor from the weekly factor and a per-plan ratio while no
+  5-hour sample exists.
+- Cadence: read the coarse factor and residual bands per plan in Metabase.
+
+## Known limits
+
+- The first-open estimate comes from one window_start sample. It includes
+  every outside use in the window, so early percentages run high. Delta
+  samples correct it within a few polls.
+- The provider does not meter every token at list price. A cache-heavy session
+  and an output-heavy session with the same dollars get the same percent. The
+  residual shows the error. The token-kind split on samples is the data a
+  later model would need to fix it.
+- An account with no local usage in the current window has no window_start
+  sample. The badge stays "unknown" until the first local session moves the
+  meter.
+- Session cost is repriced on read against the current pricing table. Samples
+  hold dollars priced at learning time. A pricing table update shifts the
+  two apart until new samples land. Acceptable; the drift is small and
+  self-correcting.
