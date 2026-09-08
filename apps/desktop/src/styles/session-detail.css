@@ -17,3 +17,90 @@
 .chart-key-stat:not(:disabled):active {
   transform: scale(0.98);
 }
+
+/* The toolbar groups the view picker and the session actions. */
+.session-detail-wide .session-detail-tabs,
+.session-detail-actions {
+  height: calc(var(--space-2xl) + var(--space-xs) * 2);
+  padding: var(--space-xs);
+}
+.session-detail-wide .session-detail-tabs button {
+  min-height: var(--space-2xl);
+  padding-inline: var(--space-md);
+}
+.session-detail-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--space-2xl);
+  padding: var(--space-xs);
+}
+.session-detail-actions svg {
+  width: var(--space-lg);
+  height: var(--space-lg);
+}
+.session-detail-key {
+  margin-inline: 0;
+}
+.session-detail-wide .chart-key-stat {
+  padding: var(--space-md);
+}
+.session-detail-wide [data-testid="skills-mcp-list"] {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: var(--space-md);
+}
+.session-detail-wide [data-testid="skills-mcp-list"] > div {
+  padding: var(--space-lg);
+  gap: var(--space-xs);
+}
+.session-detail-wide .session-detail-cost .group {
+  padding-block: var(--space-xs);
+}
+
+.session-detail-wide .session-detail-tabs button::before {
+  display: none;
+}
+.session-detail-wide .session-detail-tabs button[aria-selected="true"] {
+  background-color: var(--color-surface);
+  box-shadow: var(--shadow-raised);
+}
+.session-detail-wide .session-detail-tabs button {
+  font-weight: 400 !important;
+  font-size: inherit;
+  letter-spacing: inherit;
+}
+/* The toolbar uses a light material without an outlined control track. */
+.session-detail-toolbar {
+  backdrop-filter: blur(var(--space-lg)) saturate(120%);
+  -webkit-backdrop-filter: blur(var(--space-lg)) saturate(120%);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .session-detail-toolbar {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: var(--color-surface-window);
+  }
+}
+
+/* Checks share a row only when each explanation has enough reading width. */
+.session-detail-cost {
+  container-type: inline-size;
+}
+.session-checks-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+@container (min-width: 40rem) {
+  .session-checks-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.session-cost-summary {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+@container (min-width: 40rem) {
+  .session-cost-summary {
+    grid-template-columns: minmax(8rem, 1fr) minmax(0, 3fr);
+  }
+}

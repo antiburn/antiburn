@@ -17,6 +17,8 @@ export interface HygieneBreakdownProps {
    * own.
    */
   collapsePassing?: boolean
+  /** Show all assessed checks with guidance below each label. */
+  inlineGuidance?: boolean
 }
 
 interface HygieneStatusPresentation {
@@ -136,7 +138,37 @@ function HygieneRow({
   )
 }
 
-export function HygieneBreakdown({ checks, collapsePassing = true }: HygieneBreakdownProps) {
+function InlineHygieneRow({ check }: { check: AssessedHygieneCheck }) {
+  const status = STATUS_PRESENTATION[check.status]
+  const documentation = sessionHygieneDocumentation(check)
+  return (
+    <div className="py-2" role="group" aria-label={check.name}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 type-body">
+        <span className="type-body-large text-label">{check.name}</span>
+        <span className={cn("inline-flex items-center gap-1 type-callout", status.wordClass)}>
+          <status.Icon
+            size={STATUS_ICON_SIZE}
+            aria-hidden="true"
+            className={status.textClass}
+          />
+          {status.label}
+        </span>
+      </div>
+      <div className="mt-1 space-y-1 type-callout text-label-secondary">
+        {documentation.findingDetails.length > 0 && (
+          <p className="text-share-waste-text">{documentation.findingDetails.join(" ")}</p>
+        )}
+        <p>{[documentation.summary, ...documentation.guidance].join(" ")}</p>
+      </div>
+    </div>
+  )
+}
+
+export function HygieneBreakdown({
+  checks,
+  collapsePassing = true,
+  inlineGuidance = false,
+}: HygieneBreakdownProps) {
   const [rollupOpen, setRollupOpen] = useState(false)
   const [openCheck, setOpenCheck] = useState<SessionHygieneCheck["id"] | null>(null)
   const assessedChecks = checks.filter(isAssessed)
@@ -171,6 +203,19 @@ export function HygieneBreakdown({ checks, collapsePassing = true }: HygieneBrea
   const shownChecks = collapsePassing ? findings : [...findings, ...rolledChecks]
 
   if (assessedCount === 0) return null
+
+  if (inlineGuidance) {
+    return (
+      <div
+        className="session-checks-grid grid gap-x-8 gap-y-2"
+        aria-label="Session hygiene checks"
+      >
+        {[...findings, ...passing].map((check) => (
+          <InlineHygieneRow key={check.id} check={check} />
+        ))}
+      </div>
+    )
+  }
 
   return (
     <div className="grid gap-y-0.5" aria-label="Session hygiene checks">

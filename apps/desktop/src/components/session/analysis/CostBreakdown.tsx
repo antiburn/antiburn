@@ -1,5 +1,7 @@
 import { ChevronDown, ChevronRight } from "lucide-react"
 
+import { cn } from "../../../lib/cn"
+
 import {
   costBreakdownRows,
   costFigureLabel,
@@ -36,6 +38,8 @@ export interface CostBreakdownProps {
    * subject, so the rows always sum to the total shown.
    */
   cost: LocalSessionCost
+  /** The wide layout pairs the total with its component table. */
+  layout?: "popover" | "wide"
   /**
    * Parent/sub-agents split, for an inclusive orchestration result. Omit it
    * for any other subject, where there is nothing to break apart.
@@ -248,12 +252,25 @@ function SubagentsSplitRow({
  * that do not add up. The token and percent columns share that same subject,
  * so every row's percent reads as a share of the one total shown in the footer.
  */
-export function CostBreakdown({ cost, split, onOpenSubagent }: CostBreakdownProps) {
+export function CostBreakdown({
+  cost,
+  split,
+  onOpenSubagent,
+  layout = "popover",
+}: CostBreakdownProps) {
+  const wide = layout === "wide"
   const rows = costBreakdownRows(resultComponentCost(cost))
   const totalUsd = cost.totalCostUsd
 
-  return (
-    <div className="grid grid-cols-[1fr_max-content_max-content_max-content] gap-x-3 gap-y-1">
+  const table = (
+    <div
+      className={cn(
+        "grid min-w-0 gap-x-3 gap-y-1",
+        wide
+          ? "w-full max-w-[640px] justify-self-end justify-end grid-cols-[fit-content(12rem)_max-content_max-content_max-content]"
+          : "grid-cols-[1fr_max-content_max-content_max-content]",
+      )}
+    >
       {split && (
         <div className="col-span-full grid grid-cols-subgrid mb-1 border-b border-separator pb-1">
           <CostRowLine
@@ -284,20 +301,40 @@ export function CostBreakdown({ cost, split, onOpenSubagent }: CostBreakdownProp
         />
       ))}
 
-      <div className="col-span-full grid grid-cols-subgrid mt-1 border-t border-separator pt-1 type-body">
-        <span className="text-label-tertiary">{costFigureLabel(cost.isActive)}</span>
-        <span className="text-right text-label-tertiary tabular-nums">
-          {formatTokensShort(cost.totalTokens)}
-        </span>
-        <span className="flex justify-end">
-          <span className="flex shrink-0 items-center rounded-full bg-surface-secondary px-1.5 py-px type-body font-medium text-label tabular-nums">
-            {formatCost(cost.totalCostUsd)}
+      {!wide && (
+        <div className="col-span-full grid grid-cols-subgrid mt-1 border-t border-separator pt-1 type-body">
+          <span className="text-label-tertiary">{costFigureLabel(cost.isActive)}</span>
+          <span className="text-right text-label-tertiary tabular-nums">
+            {formatTokensShort(cost.totalTokens)}
           </span>
+          <span className="flex justify-end">
+            <span className="flex shrink-0 items-center rounded-full bg-surface-secondary px-1.5 py-px type-body font-medium text-label tabular-nums">
+              {formatCost(cost.totalCostUsd)}
+            </span>
+          </span>
+          <span className="text-right text-label-tertiary tabular-nums">
+            {formatSharePct(cost.totalCostUsd, totalUsd)}
+          </span>
+        </div>
+      )}
+    </div>
+  )
+  if (!wide) return table
+
+  return (
+    <div className="session-cost-summary grid w-full gap-6 rounded-popover bg-surface-card/50 p-4 font-mono">
+      <div className="flex min-w-0 flex-col gap-1">
+        <span className="type-large-title font-semibold! text-label tabular-nums">
+          {formatCost(totalUsd)}
         </span>
-        <span className="text-right text-label-tertiary tabular-nums">
-          {formatSharePct(cost.totalCostUsd, totalUsd)}
+        <span className="type-callout text-label-secondary">
+          {costFigureLabel(cost.isActive)}
+        </span>
+        <span className="type-callout text-label-tertiary">
+          {formatTokensShort(cost.totalTokens)} tokens
         </span>
       </div>
+      {table}
     </div>
   )
 }

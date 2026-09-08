@@ -5,6 +5,7 @@ import type { SessionHygienePayload } from "../../../lib/insightsIpc"
 import {
   INITIAL_SESSION_HYGIENE,
   sessionHygieneChecks,
+  sessionHygieneDocumentation,
 } from "../../../lib/presentation/sessionHygiene"
 import { HygieneBreakdown } from "./HygieneBreakdown"
 
@@ -40,6 +41,23 @@ function view() {
 }
 
 describe("HygieneBreakdown", () => {
+  it("shows guidance for all assessed checks without disclosure controls in inline mode", () => {
+    const checks = sessionHygieneChecks(PAYLOAD)
+    render(<HygieneBreakdown checks={checks} inlineGuidance />)
+    expect(screen.queryByRole("button")).toBeNull()
+    expect(screen.getAllByRole("group")).toHaveLength(5)
+    for (const check of checks.filter((item) => item.status !== "notAssessed")) {
+      const documentation = sessionHygieneDocumentation(check)
+      expect(screen.getByRole("group", { name: check.name })).toHaveTextContent(
+        documentation.summary,
+      )
+      for (const advice of documentation.guidance) {
+        expect(screen.getByRole("group", { name: check.name })).toHaveTextContent(advice)
+      }
+    }
+    expect(screen.queryByText("Overpowered subagents")).toBeNull()
+  })
+
   it("omits unavailable checks from the summary and detail rows", () => {
     view()
 
