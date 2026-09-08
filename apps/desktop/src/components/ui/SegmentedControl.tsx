@@ -23,15 +23,16 @@ export type SegmentedControlVariant = "segmented" | "text-tabs" | "raised-tabs" 
  *
  *  `variant="native-tabs"` is the macOS segmented control: a recessed neutral
  *  track with the selected segment raised on the surface in a semibold label.
- *  Quiet, so it sits under a hero without competing with it. It is always
- *  equal-width. */
+ *  Quiet, so it sits under a hero without competing with it. It fills its
+ *  row in equal columns unless `equalWidth` is `false`, which sizes each
+ *  segment to its label so the control sits at its content width. */
 export function SegmentedControl<T extends string>({
   options,
   value,
   onChange,
   ariaLabel,
   className = "",
-  equalWidth = false,
+  equalWidth,
   animatedIndicator = false,
   semantics = "radio",
   idPrefix,
@@ -53,6 +54,8 @@ export function SegmentedControl<T extends string>({
   const textTabs = variant === "text-tabs"
   const raisedTabs = variant === "raised-tabs"
   const nativeTabs = variant === "native-tabs"
+  // The native track fills its row unless the caller opts out.
+  const stretchNativeTabs = nativeTabs && equalWidth !== false
   const showAnimatedIndicator = animatedIndicator && !textTabs && !raisedTabs && !nativeTabs
   const selectedIndex = Math.max(
     0,
@@ -82,7 +85,11 @@ export function SegmentedControl<T extends string>({
               // outer curve matches them at any padding.
               cn("grid gap-0.5 rounded-full bg-surface-secondary p-0.5", className)
             : nativeTabs
-              ? cn("ui-segmented-native grid bg-surface-secondary p-0.5", className)
+              ? cn(
+                  "ui-segmented-native bg-surface-secondary p-0.5",
+                  stretchNativeTabs ? "grid" : "inline-grid auto-cols-max grid-flow-col",
+                  className,
+                )
               : cn(
                   showAnimatedIndicator && "relative",
                   equalWidth ? "grid" : "inline-flex",
@@ -91,7 +98,7 @@ export function SegmentedControl<T extends string>({
                 )
       }
       style={
-        (equalWidth || raisedTabs || nativeTabs) && !textTabs
+        (equalWidth || raisedTabs || stretchNativeTabs) && !textTabs
           ? {
               gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))`,
             }
@@ -152,6 +159,7 @@ export function SegmentedControl<T extends string>({
                 : nativeTabs
                   ? cn(
                       "ui-segmented-native-segment relative min-w-0 rounded-control py-0.5 type-caption transition-colors duration-[var(--duration-quick)] ease-out-quart disabled:opacity-50",
+                      !stretchNativeTabs && "px-4",
                       selected
                         ? "font-semibold! text-label shadow-raised"
                         : "font-medium! text-label-secondary hover:text-label",

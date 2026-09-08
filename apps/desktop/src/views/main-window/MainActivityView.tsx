@@ -123,6 +123,7 @@ export function MainActivityView({
               </div>
             )}
             <SessionPane
+              layout="wide"
               embedded
               active={state.active}
               subject={item.subject}

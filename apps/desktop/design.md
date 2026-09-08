@@ -245,6 +245,7 @@ fonts:
   sans: "-apple-system, BlinkMacSystemFont, SF Pro Text, system-ui, sans-serif"
   mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" # via `font-mono`
 typography:
+  display: { fontSize: 40px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.36px" }
   # class .type-<name> · [fontSize, fontWeight, lineHeight, letterSpacing] · family = fonts.sans
   large-title: { fontSize: 26px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.36px" }
   title-1: { fontSize: 22px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.35px" }
@@ -277,6 +278,9 @@ sizes:
   --space-lg: 16px
   --space-xl: 20px
   --space-2xl: 24px # group separation in a settings-style pane
+  # Local geometry that stays in its component. The wide Session Detail
+  # (`layout="wide"` in src/components/session/SessionDetailPresentation.tsx)
+  # lets the context chart fill the tab, with a min-h-48 floor.
 rounded:
   small: 4px
   control: 5px
@@ -529,3 +533,41 @@ The main-window collection slot owns this presentation; menu-bar empty states re
 
 Apply this treatment to main-window session selection. Do not change the shared color
 tokens or the menu-bar list's default appearance to achieve it.
+
+- **Wide Session Detail** — the fixed toolbar holds the compact session summary and
+  callout-size section picker. The repo uses `font-mono`. The toolbar uses surface at
+  80% opacity, 16px backdrop blur, and 120% saturation. Reduced transparency uses a
+  solid surface-window with no blur. Rounded controls have no outline; the active
+  tab uses surface and the raised shadow. Tab labels use regular weight.
+  The section picker and action group are both 32px tall, with 24px inner controls.
+  Typography matches the session list: row names use body-large (13.5px), figures and
+  table rows use body (13px), and descriptions use callout (12px). Section headings
+  are screen-reader-only; caption is reserved for compact toolbar metadata.
+  There are no inherited size overrides. Content has 40px side padding.
+  Cost composition closes the Context tab, below the plot and its key.
+  The context plot fills available height with a 192px minimum. Both efficiency tracks
+  are 24px tall. Scale labels use the primary data size. The chart key uses three
+  equal columns. The composition legend stacks three rows beneath the bar, with
+  names on the left and percentages and ratings aligned on the right.
+  Cost, Checks, and Efficiency stack vertically. Checks use two equal columns when
+  the content reaches 40rem, and one column below that width. The top cost block pairs
+  a large-title total with a component table; it stacks below 40rem. The card fills
+  the content width, while its table caps at 640px. A shared surface-card/50 background,
+  rounded-popover corners, and 16px padding group the total and table. The table
+  label column fits its text up to 12rem, with 12px gaps before the numeric columns.
+  The table columns sit together at the card’s right edge. The whole cost card uses
+  font-mono, including the total, captions, row labels, and figures.
+  Checks show documentation as callout
+  subtext by default, with findings first and the status beside each name.
+  Efficiency guidance uses the full content width. Tools and efficiency figures use
+  display without a background. Tools uses brand orange; efficiency uses label ink
+  for good and ok readings, and brand orange only for bad readings. Tool cells use
+  16px padding.
+  These rules apply only to `.session-detail-wide`.
+
+  The Context chart updates geometry without animation when its measured size changes.
+  New bucket data can still animate together, without the entrance stagger.
+
+  Efficiency sits at the bottom of the Cost pane when content fits, and follows the
+  checks in normal scroll order otherwise. The total appears once in the top cost
+  block; the popover retains its total row.

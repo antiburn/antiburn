@@ -1,7 +1,10 @@
 import { confirm } from "@tauri-apps/plugin-dialog"
 import { useCallback } from "react"
 
-import { SessionDetailPresentation } from "../../components/session/SessionDetailPresentation"
+import {
+  SessionDetailPresentation,
+  type SessionDetailLayout,
+} from "../../components/session/SessionDetailPresentation"
 import type { TokensCostSplit } from "../../components/session/tokensCard"
 import { renderAgentIcon } from "../../lib/agentIcon"
 import {
@@ -45,6 +48,9 @@ export interface SessionPaneProps {
   refreshing: boolean
   /** Whether the load for this subject failed. */
   error: boolean
+  /** Which layout the detail draws. Defaults to the popover layout. */
+  layout?: SessionDetailLayout | undefined
+  /** Leave the pane; omitted when the host owns navigation. */
   onBack?: (() => void) | undefined
   /** Newer adjacent session; omitted when there is none. */
   onPrev?: (() => void) | undefined
@@ -186,6 +192,7 @@ export function SessionPane({
   loading,
   refreshing,
   error,
+  layout,
   onBack,
   onPrev,
   onNext,
@@ -317,6 +324,7 @@ export function SessionPane({
       subagentCount={payload?.orchestration?.subagentCount ?? 0}
       modelRuns={payload?.modelRuns ?? []}
       relations={relations}
+      {...(layout ? { layout } : {})}
       {...(onBack ? { onBack } : {})}
       {...(onPrev ? { onPrev } : {})}
       {...(onNext ? { onNext } : {})}
