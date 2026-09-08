@@ -337,13 +337,44 @@ build and kept for phase 2 to build on.
   period seen per lane in a pass is already its current one; reusing it keeps
   the residual step inside the same bounded per-pass work instead of adding
   another unbounded query.
-- **Candidate-period selection uses one rule for both bootstrap and
-  recompute:** a period qualifies when it carries a primary lane and its
-  `last_observed_epoch` is at or after `now - 15 minutes`. A brand-new period
-  and a just-refreshed one both leave a fresh `last_observed_epoch`, so one
-  query serves both cases. This assumes `learn` runs close to when
-  observations are written, which holds today: it runs right after
-  `record_provider_usage_snapshots` and on every background tick.
+- **Candidate-period selection is cursor-based, not "observed in the last 15
+  minutes."** The original rule never learned from a period whose readings
+  were older than 15 minutes, which breaks bootstrap on upgrade (90 days of
+  stored observations sit unread until a new reading lands) and phase 4's
+  rollout backfill (it writes observations timestamped in the past, so those
+  periods would never enter a pass). `provider_limit_learn_cursor
+  (period_id, learned_through_epoch)` now tracks how far each period has been
+  read. A period is a candidate when it carries a primary lane and account
+  scope, and either has no cursor row, has a reading newer than its cursor, or
+  was observed at or after `now - 15 minutes` (so a just-touched period stays
+  open to recompute even once its cursor catches up). A pass advances a
+  period's cursor to its `last_observed_epoch` only after considering every
+  sample it could yield; stopping mid-period on the pass budget leaves the
+  cursor where it was, so the period stays a candidate next time. A cursor row
+  is deleted in the same place, and against the same about-to-be-removed set
+  of periods, that samples are detached before period retention runs.
+- **Plan comparison uses the (plan, plan_tier) pair, not `plan` alone.** On
+  Claude, moving between tiers of the same plan (Max 5x to Max 20x) changes
+  only `plan_tier`; `plan` stays `"max"`. Comparing `plan` alone would miss a
+  tier change entirely. `recompute_point`'s `plan_changed` check,
+  `filter_by_plan`, and `window_start_factor`'s plan guard all compare the
+  full pair.
+- **A factor point's `effective_at_epoch` is the `to_epoch` of the newest
+  sample its estimate used** (for a `window_start` estimate, that sample's own
+  `to_epoch`), not the epoch `learn` happened to run at. Bootstrapped or
+  backfilled history needs to date its points by the data, not by when the
+  pass computing them ran, so that "the factor in effect at a session's end
+  time" resolves correctly for historical sessions. The point upsert stays
+  keyed on `(provider, account_key, lane, effective_at_epoch)`, so recomputing
+  the same interval replaces its point rather than appending a duplicate.
+- **`has_delta_factor_sample` is scoped to the account's current
+  `(plan, plan_tier)`,** not asked lane-wide. Read lane-wide, a plan or tier
+  change would find the *old* plan's delta history, conclude a delta sample
+  already exists, and block a `window_start` sample from ever seeding the new
+  plan's own factor — leaving the point stuck on the old plan indefinitely.
+  Scoping the check to the pair the latest observation reports lets a fresh
+  plan or tier seed its own `window_start` sample immediately; the median path
+  already prefers delta samples over `window_start` once they exist.
 
 ### Phase 2: read from the factor, delete the allocator
 
