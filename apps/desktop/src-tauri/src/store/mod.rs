@@ -35,7 +35,7 @@ mod tests;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Duration;
 
 use antiburn_local::analysis::{
@@ -74,6 +74,60 @@ pub struct EvidenceBacklogCounts {
 /// to read.
 pub const DEFERRED_PERMISSION_DIRS_KEY: &str = "internal:deferredPermissionDirs";
 const PROVIDER_ACCOUNT_SECRET_KEY: &str = "internal:providerAccountHmacSecretV1";
+const ALLOCATION_READ_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn allocation_grouped_turn_sql(interval_count: usize) -> String {
+    let interval_values = (0..interval_count)
+        .map(|_| "(?, ?, ?)")
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "WITH interval(interval_start_ms, interval_end_ms, bucket_end_ms) AS (
+            VALUES {interval_values}
+         ), grouped_turn AS (
+            SELECT t.environment_key, t.agent, t.session_id,
+                   i.bucket_end_ms,
+                   t.model, t.speed,
+                   SUM(t.input_tokens) AS input_tokens,
+                   SUM(t.cache_read_tokens) AS cache_read_tokens,
+                   SUM(t.cache_write_tokens) AS cache_write_tokens,
+                   SUM(t.output_tokens) AS output_tokens
+              FROM interval i
+              JOIN turn t INDEXED BY turn_usage_timestamp
+                ON t.ts_ms >= i.interval_start_ms
+               AND t.ts_ms <= i.interval_end_ms
+              JOIN session_evidence e
+                ON e.environment_key = t.environment_key
+               AND e.agent = t.agent AND e.session_id = t.session_id
+               AND e.published_fence = t.claim_fence
+             WHERE t.ts_ms < ?
+             GROUP BY t.environment_key, t.agent, t.session_id, bucket_end_ms,
+                      t.model, t.speed
+             ORDER BY bucket_end_ms
+             LIMIT ?
+         )
+         SELECT g.environment_key, g.agent, g.session_id, s.wsl_distro,
+                a.provider_hints_json,
+                COALESCE((
+                    SELECT json_group_array(json_object(
+                        'provider', spa.provider,
+                        'accountKey', spa.account_key
+                    ))
+                      FROM session_provider_account spa
+                     WHERE spa.environment_key = s.environment_key
+                       AND spa.agent = s.agent AND spa.session_id = s.session_id
+                ), '[]'),
+                g.bucket_end_ms, g.model, g.speed, g.input_tokens,
+                g.cache_read_tokens, g.cache_write_tokens, g.output_tokens
+           FROM grouped_turn g
+           JOIN session s
+             ON s.environment_key = g.environment_key
+            AND s.agent = g.agent AND s.session_id = g.session_id
+           LEFT JOIN session_analysis a
+             ON a.environment_key = s.environment_key
+            AND a.agent = s.agent AND a.session_id = s.session_id"
+    )
+}
 
 fn encode_secret(secret: &[u8; 32]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -180,6 +234,8 @@ pub fn open_read_only(data_dir: &Path, busy_timeout: Duration) -> Result<Connect
 #[derive(Clone)]
 pub struct Store {
     connection: Arc<Mutex<Connection>>,
+    allocation_reconcile: Arc<Mutex<()>>,
+    database_path: Option<PathBuf>,
     /// The directory the engine's own state files (scan roots, ignored paths)
     /// live in. The engine never chooses this; the shell does.
     state_dir: PathBuf,
@@ -305,8 +361,14 @@ impl Store {
         connection.pragma_update(None, "journal_mode", "WAL").ok();
         connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.pragma_update(None, "foreign_keys", true)?;
+        let database_path = connection
+            .path()
+            .filter(|path| !path.is_empty() && *path != ":memory:")
+            .map(PathBuf::from);
         let store = Store {
             connection: Arc::new(Mutex::new(connection)),
+            allocation_reconcile: Arc::new(Mutex::new(())),
+            database_path,
             state_dir,
         };
         store.migrate()?;
@@ -380,6 +442,32 @@ impl Store {
         self.connection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Start one shared allocation pass, or skip work another clone already owns.
+    pub(crate) fn try_begin_allocation_reconcile(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
+        match self.allocation_reconcile.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
+    /// Open one read-only WAL connection for a bounded allocation pass.
+    pub(crate) fn open_allocation_reader(&self) -> Result<Option<Connection>> {
+        let Some(path) = &self.database_path else {
+            return Ok(None);
+        };
+        let connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| format!("failed to open {} for allocation", path.display()))?;
+        connection.busy_timeout(ALLOCATION_READ_BUSY_TIMEOUT)?;
+        connection.pragma_update(None, "query_only", true)?;
+        Ok(Some(connection))
     }
 
     /* --------------------------------------------------------------------
@@ -2289,6 +2377,24 @@ impl Store {
         interval_ends_ms: &[i64],
         max_groups: usize,
     ) -> Result<Option<Vec<SessionUsageRecord>>> {
+        let reader = self.open_allocation_reader()?;
+        self.session_usage_turns_grouped_between_with(
+            reader.as_ref(),
+            start_ms,
+            end_ms,
+            interval_ends_ms,
+            max_groups,
+        )
+    }
+
+    pub(crate) fn session_usage_turns_grouped_between_with(
+        &self,
+        reader: Option<&Connection>,
+        start_ms: i64,
+        end_ms: i64,
+        interval_ends_ms: &[i64],
+        max_groups: usize,
+    ) -> Result<Option<Vec<SessionUsageRecord>>> {
         if end_ms <= start_ms || interval_ends_ms.is_empty() {
             return Ok(Some(Vec::new()));
         }
@@ -2302,104 +2408,77 @@ impl Store {
         if ends.last().copied() != Some(end_ms) {
             ends.push(end_ms);
         }
-        let case_parts = ends
+        let mut interval_start = start_ms;
+        let intervals = ends
             .iter()
-            .map(|_| "WHEN t.ts_ms <= ? THEN ?")
-            .collect::<Vec<_>>()
-            .join(" ");
-        let sql = format!(
-            "WITH grouped_turn AS (
-                SELECT t.environment_key, t.agent, t.session_id,
-                       CASE {case_parts} ELSE ? END AS bucket_end_ms,
-                       t.model, t.speed,
-                       SUM(t.input_tokens) AS input_tokens,
-                       SUM(t.cache_read_tokens) AS cache_read_tokens,
-                       SUM(t.cache_write_tokens) AS cache_write_tokens,
-                       SUM(t.output_tokens) AS output_tokens
-                  FROM turn t
-                  JOIN session_evidence e
-                    ON e.environment_key = t.environment_key
-                   AND e.agent = t.agent AND e.session_id = t.session_id
-                   AND e.published_fence = t.claim_fence
-                 WHERE t.ts_ms >= ? AND t.ts_ms < ?
-                 GROUP BY t.environment_key, t.agent, t.session_id, bucket_end_ms,
-                          t.model, t.speed
-                 ORDER BY bucket_end_ms
-                 LIMIT ?
-             )
-             SELECT g.environment_key, g.agent, g.session_id, s.wsl_distro,
-                    a.provider_hints_json,
-                    COALESCE((
-                        SELECT json_group_array(json_object(
-                            'provider', spa.provider,
-                            'accountKey', spa.account_key
-                        ))
-                          FROM session_provider_account spa
-                         WHERE spa.environment_key = s.environment_key
-                           AND spa.agent = s.agent AND spa.session_id = s.session_id
-                    ), '[]'),
-                    g.bucket_end_ms, g.model, g.speed, g.input_tokens,
-                    g.cache_read_tokens, g.cache_write_tokens, g.output_tokens
-               FROM grouped_turn g
-               JOIN session s
-                 ON s.environment_key = g.environment_key
-                AND s.agent = g.agent AND s.session_id = g.session_id
-               LEFT JOIN session_analysis a
-                 ON a.environment_key = s.environment_key
-                AND a.agent = s.agent AND a.session_id = s.session_id"
-        );
-        let mut values = Vec::with_capacity(ends.len() * 2 + 3);
-        for end in &ends {
-            values.push(rusqlite::types::Value::from(*end));
-            values.push(rusqlite::types::Value::from(*end));
+            .copied()
+            .filter_map(|interval_end| {
+                if interval_end < interval_start {
+                    return None;
+                }
+                let interval = (interval_start, interval_end, interval_end);
+                interval_start = interval_end.saturating_add(1);
+                Some(interval)
+            })
+            .collect::<Vec<_>>();
+        let sql = allocation_grouped_turn_sql(intervals.len());
+        let mut values = Vec::with_capacity(intervals.len() * 3 + 2);
+        for (interval_start, interval_end, bucket_end) in intervals {
+            values.push(rusqlite::types::Value::from(interval_start));
+            values.push(rusqlite::types::Value::from(interval_end));
+            values.push(rusqlite::types::Value::from(bucket_end));
         }
-        values.push(rusqlite::types::Value::from(end_ms));
-        values.push(rusqlite::types::Value::from(start_ms));
         values.push(rusqlite::types::Value::from(end_ms));
         let limit =
             i64::try_from(max_groups.clamp(1, 50_000)).expect("bounded group limit fits i64");
         values.push(rusqlite::types::Value::from(limit + 1));
-        let connection = self.lock();
-        let mut statement = connection.prepare(&sql)?;
-        let mut rows = statement.query(params_from_iter(values))?;
-        let mut sessions = Vec::new();
-        let mut indexes = HashMap::new();
-        let mut group_count = 0usize;
-        while let Some(row) = rows.next()? {
-            group_count += 1;
-            if group_count > max_groups {
-                return Ok(None);
-            }
-            let key = SessionKey::new(
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            );
-            let index = if let Some(index) = indexes.get(&key) {
-                *index
-            } else {
-                let index = sessions.len();
-                sessions.push(SessionUsageRecord {
-                    key: key.clone(),
-                    wsl_distro: row.get(3)?,
-                    provider_hints_json: row.get(4)?,
-                    provider_accounts_json: row.get(5)?,
-                    turns: Vec::new(),
+        let load = |connection: &Connection| -> Result<Option<Vec<SessionUsageRecord>>> {
+            let mut statement = connection.prepare(&sql)?;
+            let mut rows = statement.query(params_from_iter(values.iter()))?;
+            let mut sessions = Vec::new();
+            let mut indexes = HashMap::new();
+            let mut group_count = 0usize;
+            while let Some(row) = rows.next()? {
+                group_count += 1;
+                if group_count > max_groups {
+                    return Ok(None);
+                }
+                let key = SessionKey::new(
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                );
+                let index = if let Some(index) = indexes.get(&key) {
+                    *index
+                } else {
+                    let index = sessions.len();
+                    sessions.push(SessionUsageRecord {
+                        key: key.clone(),
+                        wsl_distro: row.get(3)?,
+                        provider_hints_json: row.get(4)?,
+                        provider_accounts_json: row.get(5)?,
+                        turns: Vec::new(),
+                    });
+                    indexes.insert(key, index);
+                    index
+                };
+                sessions[index].turns.push(SessionUsageTurnRecord {
+                    ts_ms: row.get(6)?,
+                    model: row.get(7)?,
+                    speed: row.get(8)?,
+                    input_tokens: row.get::<_, i64>(9)?.try_into().unwrap_or(u64::MAX),
+                    cache_read_tokens: row.get::<_, i64>(10)?.try_into().unwrap_or(u64::MAX),
+                    cache_write_tokens: row.get::<_, i64>(11)?.try_into().unwrap_or(u64::MAX),
+                    output_tokens: row.get::<_, i64>(12)?.try_into().unwrap_or(u64::MAX),
                 });
-                indexes.insert(key, index);
-                index
-            };
-            sessions[index].turns.push(SessionUsageTurnRecord {
-                ts_ms: row.get(6)?,
-                model: row.get(7)?,
-                speed: row.get(8)?,
-                input_tokens: row.get::<_, i64>(9)?.try_into().unwrap_or(u64::MAX),
-                cache_read_tokens: row.get::<_, i64>(10)?.try_into().unwrap_or(u64::MAX),
-                cache_write_tokens: row.get::<_, i64>(11)?.try_into().unwrap_or(u64::MAX),
-                output_tokens: row.get::<_, i64>(12)?.try_into().unwrap_or(u64::MAX),
-            });
+            }
+            Ok(Some(sessions))
+        };
+        if let Some(reader) = reader {
+            return load(reader);
         }
-        Ok(Some(sessions))
+        let connection = self.lock();
+        load(&connection)
     }
 
     /// Bind recent sessions after the account-attribution rollout.

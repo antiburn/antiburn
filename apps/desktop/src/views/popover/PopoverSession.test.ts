@@ -8,6 +8,7 @@ import {
   type ActivityEntryPayload,
   type ScanStatus,
   type SessionAnalysisPayload,
+  type SessionLimitAllocationSummaryPayload,
 } from "../../lib/ipc"
 import { PopoverSession, sessionKey } from "./PopoverSession"
 import type { SessionSubject } from "./SessionPane"
@@ -65,6 +66,10 @@ let entryChangedHandler: EntryChangedHandler | null = null
 let scanEventHandler: ScanEventHandler | null = null
 let popoverShownHandler: (() => void) | null = null
 let popoverHiddenHandler: (() => void) | null = null
+
+function changedEntry(): ActivityEntryPayload {
+  return activityEntry({ timestamp: "2027-01-15T08:00:00Z", isActive: true })
+}
 
 function activityEntry(overrides: Partial<ActivityEntryPayload> = {}): ActivityEntryPayload {
   return {
@@ -531,26 +536,69 @@ describe("PopoverSession surface presentation", () => {
     unsubscribe()
   })
 
-  it("coalesces overlapping allocation requests into one trailing refresh", async () => {
-    let resolveFirst!: () => void
+  it("coalesces allocation events behind one refresh floor", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime("2027-01-15T08:00:00Z")
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
+
+    entryChangedHandler?.(changedEntry())
+    entryChangedHandler?.(changedEntry())
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(2)
+    unsubscribe()
+  })
+
+  it("publishes a current allocation response during an event storm", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime("2027-01-15T08:00:00Z")
+    let resolveFirst!: (value: SessionLimitAllocationSummaryPayload) => void
     getSessionLimitAllocations
       .mockImplementationOnce(
         () =>
-          new Promise((resolve) => {
-            resolveFirst = () =>
-              resolve({ generatedAt: "2027-01-15T08:00:00Z", allocations: [] })
+          new Promise<SessionLimitAllocationSummaryPayload>((resolve) => {
+            resolveFirst = resolve
           }),
       )
-      .mockResolvedValue({ generatedAt: "2027-01-15T08:00:01Z", allocations: [] })
+      .mockResolvedValue({ generatedAt: "later", allocations: [] })
     const session = new PopoverSession()
     const unsubscribe = session.subscribe(() => {})
-    await vi.waitFor(() => expect(resolveFirst).toBeTypeOf("function"))
-    await vi.waitFor(() => expect(session.getSnapshot().usage).not.toBeNull())
+    await vi.advanceTimersByTimeAsync(0)
     expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
 
-    resolveFirst()
+    for (let event = 0; event < 20; event += 1) {
+      entryChangedHandler?.(changedEntry())
+    }
+    resolveFirst({
+      generatedAt: "current",
+      allocations: [
+        {
+          agent: "claude-code",
+          sessionId: "session-1",
+          wslDistro: null,
+          provider: "anthropic",
+          displayName: "Claude",
+          accountKey: null,
+          metric: "weekly",
+          windowId: "weekly-main",
+          resetsAt: null,
+          percent: 10,
+          coverage: "complete",
+          periodCount: 1,
+        },
+      ],
+    })
+    await vi.advanceTimersByTimeAsync(0)
 
-    await vi.waitFor(() => expect(getSessionLimitAllocations).toHaveBeenCalledTimes(2))
+    expect(session.getSnapshot().sessionLimitAllocations.generatedAt).toBe("current")
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(2)
     unsubscribe()
   })
 
@@ -583,6 +631,90 @@ describe("PopoverSession surface presentation", () => {
     await vi.advanceTimersByTimeAsync(1_001)
 
     expect(session.getSnapshot().sessionLimitAllocations.allocations).toHaveLength(1)
+    unsubscribe()
+  })
+
+  it("keeps cached history but skips recurring allocation reads while hidden", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime("2027-01-15T08:00:00Z")
+    getSessionLimitAllocations.mockResolvedValue({
+      generatedAt: "2027-01-15T08:00:00Z",
+      allocations: [
+        {
+          agent: "claude-code",
+          sessionId: "session-1",
+          wslDistro: null,
+          provider: "anthropic",
+          displayName: "Claude",
+          accountKey: null,
+          metric: "weekly",
+          windowId: "weekly-main",
+          resetsAt: null,
+          percent: 10,
+          coverage: "complete",
+          periodCount: 2,
+        },
+      ],
+    })
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
+    expect(session.getSnapshot().sessionLimitAllocations.allocations).toHaveLength(1)
+
+    popoverHiddenHandler?.()
+    entryChangedHandler?.(changedEntry())
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
+    expect(session.getSnapshot().sessionLimitAllocations.allocations).toHaveLength(1)
+
+    popoverShownHandler?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(2)
+    expect(session.getSnapshot().sessionLimitAllocations.allocations).toHaveLength(1)
+    unsubscribe()
+  })
+
+  it("preserves a disabled cached read queued behind a stale hidden response", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime("2027-01-15T08:00:00Z")
+    let resolveFirst!: (value: SessionLimitAllocationSummaryPayload) => void
+    getSessionLimitAllocations
+      .mockImplementationOnce(
+        () =>
+          new Promise<SessionLimitAllocationSummaryPayload>((resolve) => {
+            resolveFirst = resolve
+          }),
+      )
+      .mockResolvedValue({ generatedAt: "shown", allocations: [] })
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
+
+    popoverHiddenHandler?.()
+    popoverShownHandler?.()
+    resolveFirst({ generatedAt: "hidden", allocations: [] })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(2)
+    expect(session.getSnapshot().sessionLimitAllocations.generatedAt).toBe("shown")
+    unsubscribe()
+  })
+
+  it("refreshes inactive cached history for local entry changes", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime("2027-01-15T08:00:00Z")
+    const session = new PopoverSession()
+    const unsubscribe = session.subscribe(() => {})
+    await vi.advanceTimersByTimeAsync(0)
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
+
+    entryChangedHandler?.(changedEntry())
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(getSessionLimitAllocations).toHaveBeenCalledTimes(2)
     unsubscribe()
   })
 

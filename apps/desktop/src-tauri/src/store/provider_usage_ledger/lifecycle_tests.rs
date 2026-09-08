@@ -74,6 +74,20 @@ fn queued(store: &Store, period_id: i64) -> DirtyPeriod {
 }
 
 #[test]
+fn allocation_reconcile_gate_is_shared_by_store_clones() {
+    let store = memory_store();
+    let clone = store.clone();
+    let first = store
+        .try_begin_allocation_reconcile()
+        .expect("claims the first pass");
+    assert!(clone.try_begin_allocation_reconcile().is_none());
+
+    drop(first);
+
+    assert!(clone.try_begin_allocation_reconcile().is_some());
+}
+
+#[test]
 fn retained_adjacent_weekly_and_five_hour_periods_survive_reopen_over_one_hundred_percent() {
     let directory = tempfile::tempdir().expect("creates synthetic state directory");
     let key = session("cumulative").key;
@@ -119,8 +133,16 @@ fn retained_adjacent_weekly_and_five_hour_periods_survive_reopen_over_one_hundre
 }
 
 #[test]
-fn a_single_session_many_turn_estimate_replaces_one_ledger_row() {
+fn disabled_network_setting_still_recomputes_the_local_dirty_ledger() {
     let store = memory_store();
+    store
+        .save_settings(&crate::store::AppSettings {
+            live_usage_enabled: false,
+            onboarding_completed: true,
+            ..crate::store::AppSettings::default()
+        })
+        .expect("disables provider network collection");
+    assert!(!store.settings().unwrap().live_usage_active());
     let record = session("many-turns");
     let key = record.key.clone();
     store
@@ -197,6 +219,13 @@ fn a_single_session_many_turn_estimate_replaces_one_ledger_row() {
         )
         .expect("counts ledger rows");
     assert_eq!(rows, 1);
+    drop(connection);
+    assert!(
+        store
+            .provider_usage_allocation_dirty_periods(32)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
