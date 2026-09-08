@@ -41,6 +41,10 @@ const MAX_CANDIDATE_PERIODS: usize = 64;
 /// Ceiling on sample retention, independent of the session-data setting.
 const SAMPLE_RETENTION_DAYS_CAP: i64 = 365;
 
+/// How far back the diagnostics export counts recent delta and unattributed
+/// samples, matching the factor's own weighted-median lookback.
+const RECENT_SAMPLE_WINDOW_SECS: i64 = 14 * 86_400;
+
 /// The two lanes the learner and the badge track. Anthropic's supplemental
 /// per-model windows, and any role a provider stated that this app declines
 /// to guess the meaning of, carry no factor.
@@ -669,6 +673,212 @@ impl Store {
         )?;
         Ok(())
     }
+}
+
+/// One `(provider, account, lane)` factor for the diagnostics export: its
+/// current point, how many points and recent samples support it, and its
+/// latest residual, if the lane has one.
+///
+/// [`crate::diagnostics_export`] is the only reader. It groups these rows by
+/// `(provider, lane)`, replaces `account_key` with a stable per-export
+/// ordinal, and never carries `account_key` itself into the document.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LimitFactorDiagnostics {
+    pub provider: String,
+    pub account_key: String,
+    pub lane: String,
+    pub usd_per_percent: f64,
+    pub method: String,
+    pub sample_count: i64,
+    pub point_count: i64,
+    pub delta_sample_count: i64,
+    pub unattributed_sample_count: i64,
+    pub plan: Option<String>,
+    pub plan_tier: Option<String>,
+    pub residual: Option<LimitResidualDiagnostics>,
+}
+
+/// One lane's latest residual, for [`LimitFactorDiagnostics`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LimitResidualDiagnostics {
+    pub meter_percent: f64,
+    pub estimated_percent: f64,
+    pub computed_at_epoch: i64,
+}
+
+/// A `(provider, account_key, lane)` group key, shared by the diagnostics
+/// queries below so their results can be joined in memory.
+type DiagnosticsGroupKey = (String, String, String);
+
+/// One entry per `(provider, account, lane)` that carries at least one factor
+/// point, for the diagnostics export.
+///
+/// Reads directly from a connection rather than through [`Store::lock`]: the
+/// export builds its document from its own pinned read-only snapshot, not
+/// from a live [`Store`].
+pub(crate) fn limit_factor_diagnostics_in(
+    connection: &Connection,
+    now_epoch: i64,
+) -> Result<Vec<LimitFactorDiagnostics>> {
+    let mut statement = connection.prepare(
+        "SELECT provider, account_key, lane, usd_per_percent, method, sample_count,
+                plan, plan_tier
+           FROM provider_limit_factor_point p
+          WHERE effective_at_epoch = (
+                    SELECT MAX(effective_at_epoch)
+                      FROM provider_limit_factor_point latest
+                     WHERE latest.provider = p.provider
+                       AND latest.account_key = p.account_key
+                       AND latest.lane = p.lane
+                )
+          ORDER BY provider, account_key, lane",
+    )?;
+    let latest_points = statement
+        .query_map([], |row| {
+            Ok((
+                (
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ),
+                row.get::<_, f64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let point_counts = grouped_counts(
+        connection,
+        "SELECT provider, account_key, lane, COUNT(*) FROM provider_limit_factor_point
+          GROUP BY provider, account_key, lane",
+        [],
+    )?;
+    let since_epoch = now_epoch - RECENT_SAMPLE_WINDOW_SECS;
+    let delta_counts = grouped_counts(
+        connection,
+        "SELECT provider, account_key, lane, COUNT(*) FROM provider_limit_factor_sample
+          WHERE kind = ?1 AND to_epoch >= ?2
+          GROUP BY provider, account_key, lane",
+        params!["delta", since_epoch],
+    )?;
+    let unattributed_counts = grouped_counts(
+        connection,
+        "SELECT provider, account_key, lane, COUNT(*) FROM provider_limit_factor_sample
+          WHERE kind = ?1 AND to_epoch >= ?2
+          GROUP BY provider, account_key, lane",
+        params!["unattributed", since_epoch],
+    )?;
+    let residuals = latest_residuals_by_lane(connection)?;
+
+    Ok(latest_points
+        .into_iter()
+        .map(
+            |(key, usd_per_percent, method, sample_count, plan, plan_tier)| {
+                let (provider, account_key, lane) = key.clone();
+                LimitFactorDiagnostics {
+                    point_count: point_counts.get(&key).copied().unwrap_or(0),
+                    delta_sample_count: delta_counts.get(&key).copied().unwrap_or(0),
+                    unattributed_sample_count: unattributed_counts.get(&key).copied().unwrap_or(0),
+                    residual: residuals.get(&key).copied(),
+                    provider,
+                    account_key,
+                    lane,
+                    usd_per_percent,
+                    method,
+                    sample_count,
+                    plan,
+                    plan_tier,
+                }
+            },
+        )
+        .collect())
+}
+
+/// Run one `GROUP BY (provider, account_key, lane)` count query.
+///
+/// A shared shape for the point-count, delta-sample-count, and
+/// unattributed-sample-count queries [`limit_factor_diagnostics_in`] needs,
+/// so the three read alike rather than each hand-rolling row decoding.
+fn grouped_counts(
+    connection: &Connection,
+    sql: &str,
+    query_params: impl rusqlite::Params,
+) -> Result<HashMap<DiagnosticsGroupKey, i64>> {
+    let mut statement = connection.prepare(sql)?;
+    let rows = statement
+        .query_map(query_params, |row| {
+            Ok((
+                (
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ),
+                row.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.into_iter().collect())
+}
+
+/// The latest residual for each `(provider, account, lane)`, resolving each
+/// residual row's period to the lane it belongs to.
+///
+/// `provider_limit_residual` is keyed by `period_id`, not by lane directly,
+/// so this joins through `provider_usage_period` to read the period's own
+/// provider, account, and window role.
+fn latest_residuals_by_lane(
+    connection: &Connection,
+) -> Result<HashMap<DiagnosticsGroupKey, LimitResidualDiagnostics>> {
+    let mut statement = connection.prepare(
+        "SELECT pu.provider, pu.account_key, pu.window_role,
+                r.meter_percent, r.estimated_percent, r.computed_at_epoch
+           FROM provider_limit_residual r
+           JOIN provider_usage_period pu ON pu.id = r.period_id
+          WHERE r.computed_at_epoch = (
+                    SELECT MAX(r2.computed_at_epoch)
+                      FROM provider_limit_residual r2
+                      JOIN provider_usage_period pu2 ON pu2.id = r2.period_id
+                     WHERE pu2.provider = pu.provider
+                       AND pu2.account_key = pu.account_key
+                       AND pu2.window_role = pu.window_role
+                )",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, f64>(4)?,
+            row.get::<_, i64>(5)?,
+        ))
+    })?;
+    let mut result = HashMap::new();
+    for row in rows {
+        let (
+            provider,
+            account_key,
+            window_role,
+            meter_percent,
+            estimated_percent,
+            computed_at_epoch,
+        ) = row?;
+        let Some(lane) = lane_for_window_role(&window_role) else {
+            continue;
+        };
+        result.insert(
+            (provider, account_key, lane.to_string()),
+            LimitResidualDiagnostics {
+                meter_percent,
+                estimated_percent,
+                computed_at_epoch,
+            },
+        );
+    }
+    Ok(result)
 }
 
 /// Null a sample's `period_id`, and delete its learn cursor, before its

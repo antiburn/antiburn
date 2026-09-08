@@ -23,7 +23,7 @@ which features are used, and coarse hourly ranges for the application's own
 resource use. This includes application launch and progress through the fixed
 onboarding steps.
 
-The event schema contains twenty-four fields:
+The event schema contains twenty-seven fields:
 
 - the constant product surface `desktop`;
 - random message, installation, and analytics-session identifiers;
@@ -38,7 +38,12 @@ The event schema contains twenty-four fields:
 - an allowlisted reason when Claude reports ineligibility;
 - Claude's reset experiment arm and availability state;
 - the weekly reset count rounded to zero, one, or two-plus;
-- whether Claude supplied a next-reset date, never the date itself; and
+- whether Claude supplied a next-reset date, never the date itself;
+- a learned session-limit factor's plan, mapped to a fixed list, never the
+  provider's own plan string;
+- that factor's dollars-per-percent value, reduced to a coarse band;
+- how far the factor's estimate and the provider's own meter disagree,
+  reduced to a coarse band; and
 - a nested hourly summary containing fixed bands for antiburn's own shell CPU,
   memory, process read and write I/O, local database size, and database log
   size, plus `none`, `partial`, or `full` coverage for each measurement.

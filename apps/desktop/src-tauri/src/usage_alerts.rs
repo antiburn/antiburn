@@ -227,7 +227,8 @@ fn background_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
     // provider network collection.
     if let Some(store) = app.try_state::<Store>() {
         let now = crate::scan::unix_now();
-        crate::provider_usage::factor::learn(store.inner(), now);
+        let learned = crate::provider_usage::factor::learn(store.inner(), now);
+        crate::analytics::record_limit_factor_observed(app, &learned);
     }
     if !settings.live_usage_active() {
         return;

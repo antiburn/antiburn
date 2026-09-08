@@ -465,13 +465,91 @@ build.
   export's content notice; update the notice text.
 - Analytics event `antiburn.limit_factor_observed`: provider, lane, plan (closed
   vocabulary: mapped known plan names, else `other`), factor band (closed
-  vocabulary, log-spaced: `under_2`, `2_to_under_8`, `8_to_under_32`,
-  `32_and_over` dollars per percent), residual band (`within_5`, `within_20`,
-  `over_20`, `unknown`). Fire on first computation and on band change, at most
-  once per day per (provider, lane). Follow the catalogue steps in
-  `docs/analytics.md` and the review contract in
+  vocabulary, banded by powers of two: `under_1`, `1_to_under_2`,
+  `2_to_under_4`, `4_to_under_8`, `8_to_under_16`, `16_to_under_32`,
+  `32_to_under_64`, `64_to_under_128`, `128_and_over` dollars per percent),
+  residual band (`within_5`, `within_20`, `over_20`, `unknown`). Fire on first
+  computation and on band change, at most once per day per (provider, lane).
+  Follow the catalogue steps in `docs/analytics.md` and the review contract in
   `docs/analytics-measurement.md`.
 - Tests per the analytics review contract.
+
+#### Decisions (implementation, 2026-09-08)
+
+The document above did not settle these; they were decided during the phase 3
+build and kept for later phases to build on.
+
+- **`compute_residual` already matched the design and needed no fix**, only a
+  return value. It writes one `provider_limit_residual` row per current period
+  on each learning pass, keyed by `period_id`, exactly as specified. It was
+  changed to return the `(meter_percent, estimated_percent)` pair it just
+  wrote, purely so `learn` could hand it to the analytics call without a
+  second read of the row it just upserted.
+- **`factor::learn` now returns `Vec<LearnedFactor>`**, one entry per
+  `(provider, account, lane)` the pass touched, carrying the account's latest
+  factor point and current residual. Existing callers that discarded `learn`'s
+  former `()` result need no change; the two call sites that have an
+  `AppHandle` available (`usage_alerts::background_pass` and
+  `live::mod::summarize_collected`'s `storage_app: Some(_)` branch) pass the
+  result to `analytics::record_limit_factor_observed`. The third call
+  site — `summarize_collected`'s `storage_app: None` branch, exercised only by
+  the `#[cfg(test)]` `summarize` helper — has no `AppHandle` to report through
+  and fires no event, which matches every other analytics call gated on an
+  `AppHandle` in this codebase.
+- **The event key is `(provider, lane)`, not `(provider, account, lane)`.**
+  The wire payload carries no account dimension — deliberately, since an
+  account key must never leave this machine — so there is nothing to key a
+  second observation on when one provider has more than one account for the
+  same lane. Within one pass, only the first account `learn` produced for a
+  given `(provider, lane)` pair can report; a second account's differing
+  tuple is suppressed by the same 24-hour floor that suppresses a genuine
+  same-account band change. This is a real information loss for the
+  (uncommon) multi-account case, accepted rather than widening the payload.
+- **The 24-hour floor applies even to a genuine band change**, not only to a
+  repeated one. Read literally, "fire on first computation and on band
+  change, at most once per day" could mean the daily cap only throttles
+  repeats of an *unchanged* tuple. Phase 3 instead treats the cap as an
+  absolute floor between any two events for the same pair: a pair that
+  changes bands twice in one day reports the first change and stays silent
+  on the second until 24 hours have passed. This keeps a factor bouncing
+  between two adjacent bands from becoming a daily-volume source.
+- **Plan mapping, factor banding, and residual banding are pure functions in
+  `analytics::event`** (`map_plan`, `factor_band`, `residual_band`), not
+  methods on `LearnedFactor` or inline in `record_limit_factor_observed`.
+  This mirrors `band_for_percent` in `provider_usage::live::model`: a single
+  function each call site and each test reads, so the boundaries cannot drift
+  between two hand-written copies.
+- **The `Properties`/`Facts` payload grew three optional fields** (`plan`,
+  `factorBand`, `residualBand`) rather than reusing `label`/`detail`/`bucket`
+  for a third and fourth dimension. The existing fields are already spoken
+  for by `label` (provider) and `detail` (lane); reusing `bucket` for a factor
+  or residual band would collide with its documented "always a magnitude
+  count" meaning. The event schema grew from twenty-three to twenty-six
+  wire fields; every document that counts them (`docs/analytics.md`,
+  `docs/privacy-policy.md`, `docs/support.md`, `PrivacyPane.tsx`) and the
+  Rust test that pins the count were updated together.
+- **The diagnostics export's `limit_factors` section groups by `(provider,
+  lane)` and numbers accounts `"account 1"`, `"account 2"`, ... only when a
+  group has more than one**, ordered by the (opaque, never-exported) account
+  key so the numbering is stable across repeated reads of the same database.
+  A lane with exactly one account carries no `account` field: there is
+  nothing to disambiguate, and an ever-present `"account 1"` would be a
+  needless field to explain in the content notice.
+- **`DiagnosticsExport::FORMAT_VERSION` was bumped from 1 to 2** even though
+  no existing test pinned it. Adding a new top-level section is a real shape
+  change for any external consumer of the exported JSON; bumping the version
+  costs nothing and documents the change in the file a consumer would
+  actually read.
+- **The diagnostics export's recent-sample window is 14 days**, matching
+  `factor::FACTOR_WINDOW_SECS`. The constant is duplicated
+  (`store::provider_limit::RECENT_SAMPLE_WINDOW_SECS`) rather than shared,
+  because `factor.rs`'s constant is private and the two call sites have no
+  other reason to depend on each other; a future change to one lookback is
+  not implied to require the other.
+- **On 2026-09-09, `factor_band` changed from four-fold steps to power-of-two
+  steps** (`under_1` through `128_and_over`). The original four-fold bands
+  were not based on any measured factor distribution; finer log buckets let
+  Cadence regroup adjacent bands later without a contract change.
 
 ### Phase 4: Codex rollout observations
 
