@@ -206,11 +206,7 @@ impl Store {
         retention_days: i32,
         now_epoch: i64,
     ) -> Result<usize> {
-        let bounded_days = match retention_days {
-            days if days > 0 => i64::from(days).min(RETENTION_DAYS),
-            _ => RETENTION_DAYS,
-        };
-        let cutoff = now_epoch.saturating_sub(bounded_days.saturating_mul(86_400));
+        let cutoff = bounded_retention_cutoff(retention_days, now_epoch);
         let removed = connection.execute(
             "DELETE FROM provider_usage_observation WHERE observed_at_epoch < ?1",
             [cutoff],
@@ -228,8 +224,38 @@ impl Store {
             [],
         )?;
         super::provider_limit::apply_sample_retention_in(connection, retention_days, now_epoch)?;
+        // A completed rollout file's checkpoint outlives the observations it
+        // produced only until they themselves expire. Once they are gone, a
+        // later append to the same file is cheap to re-read from byte zero,
+        // so nothing is lost by dropping the checkpoint too.
+        connection.execute(
+            "DELETE FROM provider_usage_rollout_checkpoint
+              WHERE status = 'complete' AND completed_at_epoch < ?1",
+            [cutoff],
+        )?;
         Ok(removed)
     }
+
+    /// The oldest observation the durable retention keeps: the session-data
+    /// retention setting, capped at 90 days.
+    ///
+    /// Shared with [`crate::provider_usage::codex_rollout_history`], so a
+    /// rollout reading older than what retention would keep is never
+    /// imported only to be deleted on the next pass.
+    pub(crate) fn provider_usage_retention_cutoff_epoch(&self, now_epoch: i64) -> Result<i64> {
+        let retention_days = self.settings()?.session_data_retention_days;
+        Ok(bounded_retention_cutoff(retention_days, now_epoch))
+    }
+}
+
+/// The retention setting, capped at [`RETENTION_DAYS`], turned into a cutoff
+/// epoch: an observation strictly before it is out of scope for retention.
+fn bounded_retention_cutoff(retention_days: i32, now_epoch: i64) -> i64 {
+    let bounded_days = match retention_days {
+        days if days > 0 => i64::from(days).min(RETENTION_DAYS),
+        _ => RETENTION_DAYS,
+    };
+    now_epoch.saturating_sub(bounded_days.saturating_mul(86_400))
 }
 
 impl<'a> Reading<'a> {
