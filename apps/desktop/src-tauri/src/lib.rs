@@ -128,7 +128,7 @@ impl WindowRebuildState {
 }
 
 impl Schedulers {
-    fn push(&self, handle: tauri::async_runtime::JoinHandle<()>) {
+    pub(crate) fn push(&self, handle: tauri::async_runtime::JoinHandle<()>) {
         if let Ok(mut handles) = self.0.lock() {
             handles.push(handle);
         }
@@ -304,6 +304,7 @@ pub fn run() {
                 true,
             );
             if let Some(schedulers) = app.try_state::<Schedulers>() {
+                analytics::install_schedulers(app.handle(), &schedulers);
                 schedulers.push(runtime_pricing::spawn_scheduler(app.handle()));
                 schedulers.push(scan::spawn_scheduler(app.handle()));
                 schedulers.push(scan::idle::spawn(app.handle()));

@@ -64,6 +64,9 @@ pub enum EventName {
     /// An ordinary live-usage refresh published a changed coarse usage band.
     #[cfg(feature = "analytics")]
     UsageObserved,
+    /// One hourly summary describes the shell's coarse resource use.
+    #[cfg(feature = "analytics")]
+    ResourceUsageObserved,
 }
 
 /// Every event this application may send.
@@ -91,6 +94,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::SurfaceStateObserved,
     EventName::LiveUsageStateObserved,
     EventName::UsageObserved,
+    EventName::ResourceUsageObserved,
 ];
 
 #[cfg(feature = "analytics")]
@@ -112,6 +116,7 @@ impl EventName {
             EventName::SurfaceStateObserved => "antiburn.surface_state_observed",
             EventName::LiveUsageStateObserved => "antiburn.live_usage_state_observed",
             EventName::UsageObserved => "antiburn.usage_observed",
+            EventName::ResourceUsageObserved => "antiburn.resource_usage_observed",
         }
     }
 }
@@ -212,6 +217,9 @@ pub struct Properties {
     /// Whether Claude returned a next-availability timestamp.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_reset_available: Option<&'static str>,
+    /// These bands describe process and local-store resource use for one bounded window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_usage: Option<super::resources::schema::ResourceUsageSummary>,
 }
 
 /// What a caller may attach to an event.
@@ -239,6 +247,8 @@ pub struct Facts {
     pub reset_availability: Option<&'static str>,
     pub resets_per_week: Option<&'static str>,
     pub next_reset_available: Option<&'static str>,
+    #[cfg(feature = "analytics")]
+    pub resource_usage: Option<super::resources::schema::ResourceUsageSummary>,
 }
 
 #[cfg(feature = "analytics")]
@@ -642,7 +652,28 @@ pub fn arch() -> &'static str {
 
 #[cfg(all(test, feature = "analytics"))]
 mod tests {
+    use super::super::resources::schema::{
+        CoverageBand, CpuBand, IoRateBand, MemoryBand, ResourceUsageSummary,
+    };
     use super::*;
+
+    fn resource_summary() -> ResourceUsageSummary {
+        ResourceUsageSummary {
+            memory_mean: MemoryBand::From100ToUnder250Mib,
+            memory_max: MemoryBand::From250ToUnder500Mib,
+            memory_coverage: CoverageBand::Full,
+            cpu_average: CpuBand::From10ToUnder25Percent,
+            cpu_coverage: CoverageBand::Partial,
+            read_rate_average: IoRateBand::Zero,
+            read_coverage: CoverageBand::Full,
+            write_rate_average: IoRateBand::Unavailable,
+            write_coverage: CoverageBand::None,
+            database_size: MemoryBand::From50ToUnder100Mib,
+            database_coverage: CoverageBand::Full,
+            wal_size: MemoryBand::Under50Mib,
+            wal_coverage: CoverageBand::Partial,
+        }
+    }
 
     fn sample() -> Event {
         Event {
@@ -667,6 +698,7 @@ mod tests {
                 reset_availability: Some("available"),
                 resets_per_week: Some("1"),
                 next_reset_available: Some("present"),
+                resource_usage: Some(resource_summary()),
             },
             context: Context {
                 app_version: "antiburn:1.2.3".into(),
@@ -696,7 +728,7 @@ mod tests {
     /// `apps/desktop/src/views/settings/PrivacyPane.tsx` is the bug this
     /// comment exists to prevent.
     #[test]
-    fn the_wire_payload_is_exactly_these_twenty_three_fields() {
+    fn the_wire_payload_is_exactly_these_twenty_four_fields() {
         let json = serde_json::to_value(sample()).expect("serializes");
         let object = json.as_object().expect("an object");
         let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
@@ -737,6 +769,7 @@ mod tests {
                 "resetArm",
                 "resetAvailability",
                 "resetsPerWeek",
+                "resourceUsage",
                 "responseShape",
                 "usageBand",
             ]
@@ -789,11 +822,48 @@ mod tests {
         event.properties.reset_availability = None;
         event.properties.resets_per_week = None;
         event.properties.next_reset_available = None;
+        event.properties.resource_usage = None;
         let json = serde_json::to_string(&event).expect("serializes");
         assert!(!json.contains("bucket"), "{json}");
         assert!(!json.contains("label"), "{json}");
         assert!(!json.contains("detail"), "{json}");
         assert!(!json.contains("\"origin\""), "{json}");
+        assert!(!json.contains("resourceUsage"), "{json}");
+    }
+
+    #[test]
+    fn resource_usage_has_only_the_typed_nested_allowlist() {
+        let mut event = sample();
+        event.event = EventName::ResourceUsageObserved.as_str().into();
+        event.properties.resource_usage = Some(resource_summary());
+
+        let json = serde_json::to_value(event).expect("serializes");
+        let resource = json["properties"]["resourceUsage"]
+            .as_object()
+            .expect("resourceUsage object");
+        let mut keys: Vec<_> = resource.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "cpuAverage",
+                "cpuCoverage",
+                "databaseCoverage",
+                "databaseSize",
+                "memoryCoverage",
+                "memoryMax",
+                "memoryMean",
+                "readCoverage",
+                "readRateAverage",
+                "walCoverage",
+                "walSize",
+                "writeCoverage",
+                "writeRateAverage",
+            ]
+        );
+        assert_eq!(resource["cpuAverage"], "from10_to_under25_percent");
+        assert_eq!(resource["readRateAverage"], "zero");
+        assert_eq!(resource["writeRateAverage"], "unavailable");
     }
 
     /// The compiler, not a reviewer, keeps [`EVERY_EVENT`] complete.
@@ -819,12 +889,13 @@ mod tests {
                 | EventName::SurfaceStateObserved
                 | EventName::LiveUsageStateObserved
                 | EventName::ClaudeLimitResetObserved
-                | EventName::UsageObserved => true,
+                | EventName::UsageObserved
+                | EventName::ResourceUsageObserved => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            15,
+            16,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -881,6 +952,7 @@ mod tests {
             14 => "fourteen",
             22 => "twenty-two",
             23 => "twenty-three",
+            24 => "twenty-four",
             other => panic!("no word for {other} fields; add one and update the documents"),
         };
 

@@ -195,7 +195,7 @@ describe("OnboardingView", () => {
     expect(
       await screen.findByRole("heading", { name: "Stop hitting your token limits." }),
     ).toBeInTheDocument()
-    expect(screen.getByText(/nothing from your sessions is ever uploaded/i)).toBeInTheDocument()
+    expect(screen.getByText(/your session content is never uploaded/i)).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 
     // 2 — Coding agents. Discovery starts on leaving Welcome.

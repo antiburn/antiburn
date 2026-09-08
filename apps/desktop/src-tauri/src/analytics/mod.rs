@@ -26,6 +26,8 @@ pub mod config;
 #[cfg(feature = "analytics")]
 mod delivery;
 pub mod event;
+#[cfg(feature = "analytics")]
+mod resources;
 
 #[cfg(not(feature = "analytics"))]
 pub fn available() -> bool {
@@ -44,6 +46,9 @@ pub fn operator() -> Option<&'static str> {
 
 #[cfg(not(feature = "analytics"))]
 pub fn install(_app: &tauri::AppHandle) {}
+
+#[cfg(not(feature = "analytics"))]
+pub fn install_schedulers(_app: &tauri::AppHandle, _schedulers: &crate::Schedulers) {}
 
 #[cfg(not(feature = "analytics"))]
 pub fn record(_app: &tauri::AppHandle, _name: event::EventName, facts: event::Facts) {
@@ -158,7 +163,7 @@ mod enabled {
         Event, EventName, Facts, Interaction, LiveUsageProvider, LiveUsageState, OnboardingFlow,
         Origin, SettingsPane, Surface,
     };
-    use super::{config, delivery, event};
+    use super::{config, delivery, event, resources};
     use crate::store::{AppSettings, Store};
 
     /// How long an installation identifier lives before it is replaced.
@@ -233,6 +238,10 @@ mod enabled {
         let _capture = CAPTURE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        record_event_locked(app, name, facts)
+    }
+
+    fn record_event_locked(app: &tauri::AppHandle, name: EventName, facts: Facts) -> bool {
         if !allowed(app) {
             return false;
         }
@@ -267,6 +276,7 @@ mod enabled {
                 reset_availability: facts.reset_availability,
                 resets_per_week: facts.resets_per_week,
                 next_reset_available: facts.next_reset_available,
+                resource_usage: facts.resource_usage,
             },
             context: event::Context {
                 app_version: format!("antiburn:{}", app.package_info().version),
@@ -903,15 +913,16 @@ mod enabled {
     /// React to a settings change. Called from the one transition hub in
     /// `commands.rs` so the queue can never drift out of step with the switch.
     ///
-    /// Only withdrawal does anything here. Opting *in* needs no work — the
-    /// identifier is minted lazily at the first event — and open windows learn
-    /// the new state from `SETTINGS_CHANGED_EVENT`, which the same hub emits with
-    /// the saved settings a moment later.
+    /// A consent change also resets and wakes the resource sampler. Opt-out
+    /// still clears the queue and identifiers before any later report.
     pub fn handle_settings_transition(
         app: &tauri::AppHandle,
         previous: &AppSettings,
         saved: &AppSettings,
     ) {
+        if saved.analytics_enabled != previous.analytics_enabled {
+            resources::settings_changed(app);
+        }
         if saved.analytics_enabled || !previous.analytics_enabled {
             return;
         }
@@ -1002,6 +1013,34 @@ mod enabled {
                 }
             }
         });
+    }
+
+    pub fn install_schedulers(app: &tauri::AppHandle, schedulers: &crate::Schedulers) {
+        resources::install(app, schedulers);
+    }
+
+    pub(super) fn record_resource_usage(
+        app: &tauri::AppHandle,
+        generation: u64,
+        summary: resources::schema::ResourceUsageSummary,
+    ) {
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(control) = app.try_state::<resources::ResourceSamplerControl>() else {
+            return;
+        };
+        if control.generation() != generation {
+            return;
+        }
+        let _ = record_event_locked(
+            app,
+            EventName::ResourceUsageObserved,
+            Facts {
+                resource_usage: Some(summary),
+                ..Facts::default()
+            },
+        );
     }
 
     /// Deliver what is queued, if the reader still allows it.
