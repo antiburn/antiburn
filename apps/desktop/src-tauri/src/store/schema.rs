@@ -749,7 +749,13 @@ CREATE INDEX session_source_lookup
 /// retention deletes rows older than the session retention setting, capped at
 /// 365 days; points are never deleted. `store::provider_limit` nulls a
 /// sample's `period_id` before period retention removes the period, so that
-/// deletion needs no `ON DELETE` action here.
+/// deletion needs no `ON DELETE` action here. The same step deletes that
+/// period's cursor row, so period retention itself needs no change.
+///
+/// `provider_limit_learn_cursor` marks how far a period's observations have
+/// been read into samples, so a pass can find a period whose readings are
+/// old — from bootstrap on upgrade or from a backfill — instead of only one
+/// observed in the last 15 minutes.
 const V39: &str = r#"
 ALTER TABLE provider_usage_observation ADD COLUMN plan TEXT;
 ALTER TABLE provider_usage_observation ADD COLUMN plan_tier TEXT;
@@ -804,5 +810,10 @@ CREATE TABLE provider_limit_residual (
     computed_at_epoch   INTEGER NOT NULL,
     meter_percent       REAL NOT NULL,
     estimated_percent   REAL NOT NULL
+) STRICT;
+
+CREATE TABLE provider_limit_learn_cursor (
+    period_id            INTEGER PRIMARY KEY REFERENCES provider_usage_period(id),
+    learned_through_epoch INTEGER NOT NULL
 ) STRICT;
 "#;
