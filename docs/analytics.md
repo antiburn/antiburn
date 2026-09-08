@@ -27,9 +27,11 @@ process-level opt-out.
 
 ## Exactly what the event schema can carry
 
-Twenty-three fields, and this is the whole list. Fourteen are the established
+Twenty-six fields, and this is the whole list. Fourteen are the established
 event envelope and general properties. The nine Claude reset fields are optional
-and appear only on `antiburn.claude_limit_reset_observed`. The payload is a closed Rust struct
+and appear only on `antiburn.claude_limit_reset_observed`. The three limit-factor
+fields are optional and appear only on `antiburn.limit_factor_observed`. The
+payload is a closed Rust struct
 ([`analytics/event.rs`](../apps/desktop/src-tauri/src/analytics/event.rs))
 with no map and no free-form string, so there is nowhere for anything else to
 be put.
@@ -57,6 +59,9 @@ be put.
 | `properties.resetAvailability` | Claude's `available` boolean as `available` or `unavailable`, or `missing`, `null`, or `malformed`. | `available` |
 | `properties.resetsPerWeek` | Claude's reset count as `0`, `1`, or `2_plus`, or `missing`, `null`, or `malformed`. | `1` |
 | `properties.nextResetAvailable` | Whether `next_available_at` was `present`, `missing`, `null`, or `malformed`. The timestamp itself is never sent. | `present` |
+| `properties.plan` | A learned limit factor's plan, mapped to `free`, `pro`, `max`, `team`, `enterprise`, `plus`, `business`, `edu`, `unknown` (none reported), or `other` (anything else). Never the provider's raw plan string. Optional and present only on `antiburn.limit_factor_observed`. | `max` |
+| `properties.factorBand` | A learned limit factor's dollars-per-percent value, log-spaced into `under_2`, `2_to_under_8`, `8_to_under_32`, or `32_and_over`. Optional and present only on `antiburn.limit_factor_observed`. | `2_to_under_8` |
+| `properties.residualBand` | How far the meter and the factor's own estimate for the current period disagree: `within_5`, `within_20`, `over_20`, or `unknown` (no residual yet). Optional and present only on `antiburn.limit_factor_observed`. | `within_5` |
 | `context.appVersion` | The application version.                                                                                                                                   | `antiburn:0.1.0`          |
 | `context.os`         | Operating-system family.                                                                                                                                   | `macos`                   |
 
@@ -89,13 +94,14 @@ antiburn knows how to read. Nothing else about the session travels with it: not
 its title, not its repository, not its path, and not the name of your WSL
 distribution, which you chose and which would identify your machine.
 
-`antiburn.live_usage_state_observed` and `antiburn.usage_observed` each carry
-one of three provider categories: `anthropic`, `openai`, or `google`. The
-Claude reset event reveals that Claude is enabled; `usage_observed` reveals
-more broadly which of the three providers are enabled and visible, since it
-fires for whichever ones an ordinary refresh publishes a reading for. These
-are the only analytics fields that identify an agent or provider category. If
-that is more than you want to share, the switch turns all analytics off.
+`antiburn.live_usage_state_observed`, `antiburn.usage_observed`, and
+`antiburn.limit_factor_observed` each carry one of three provider categories:
+`anthropic`, `openai`, or `google`. The Claude reset event reveals that Claude
+is enabled; `usage_observed` and `limit_factor_observed` reveal more broadly
+which of the three providers are enabled and visible, since each fires for
+whichever ones an ordinary pass produces a reading for. These are the only
+analytics fields that identify an agent or provider category. If that is more
+than you want to share, the switch turns all analytics off.
 
 ### Why counts are bucketed
 
@@ -137,6 +143,7 @@ Event names are namespaced `antiburn.*`.
 | `antiburn.unrecognized_records_observed` | Settings → Insights returns a cohort containing unknown record vocabulary, and its outcome differs from the last one reported during this run. | `bucket` — sessions containing unknown types. `label` — `inert_only`, `inert_capped`, or `evidence_bearing`. No discriminator, payload, session identifier, or second dimension. |
 | `antiburn.claude_limit_reset_observed` | After an ordinary Claude usage refresh, when analytics and Claude live usage are both enabled and the observation differs from the last one queued during this run. The probe uses a separate five-minute cooldown. | `label` — `success`, `authentication`, `rateLimited`, `unavailable`, `credential_absent`, `credential_expired`, or `credential_unavailable`. The nine reset fields listed above. No response body, credential, account identifier, exact usage percentage, or date. |
 | `antiburn.usage_observed`      | An ordinary live-usage refresh — a background tick or a visible one — publishes a usage window for a provider that is online and not hidden. Reports the first observation for each `(provider, window role)` pair in a run, then only when that pair's band changes. A provider that fails this pass has no window to report and its last reported band is left alone. Reveals which providers are enabled, at worst a handful of times per install per day. | `label` — `anthropic`, `openai`, or `google`, the same vocabulary `live_usage_state_observed` uses. `detail` — `short` or `long`, the window's role. `usageBand` — `below_80`, `80_to_under_100`, `at_limit`, or `unknown`. A window without an authoritative figure still reports; the band is coarse enough to stay useful either way. No percentage, timestamp, window id, scope, account, or model name. |
+| `antiburn.limit_factor_observed` | A background factor-learning pass produces a learned dollars-per-percent factor for a `(provider, lane)` pair. Reports the first observation for each pair in this run, then only when its `(plan, factor band, residual band)` tuple changes, and never more than once every 24 hours for the same pair even across a genuine change. Reveals a coarse sense of plan mix and estimate accuracy per provider and lane, at worst a handful of times per install per day. | `label` — `anthropic`, `openai`, or `google`. `detail` — `short` or `long`, the lane. `plan` — the mapped plan vocabulary. `factorBand` — the log-spaced dollars-per-percent band. `residualBand` — how far the meter and the estimate disagree. No dollar amount, percentage, account, or timestamp. |
 
 Several events are deliberately not sent once per occurrence. A full scan result
 that repeats the last bucket is dropped, so a machine left running does not
@@ -198,6 +205,20 @@ what was last reported for it, so a transient failure cannot be mistaken for a
 drop back below the limit. Windows the provider marked non-authoritative —
 derived rather than stated — still report, because a coarse band tolerates
 that imprecision better than the exact percentage the Usage surface shows.
+
+`antiburn.limit_factor_observed` reports on the background learning pass that
+turns meter readings and priced turns into the dollars-per-percent factor the
+session list's badge uses (see
+[`docs/plans/limit-factor-estimation.md`](plans/limit-factor-estimation.md)).
+It fires once per `(provider, lane)` pair the pass touched, mapping the
+provider's own plan string through the closed vocabulary above rather than
+sending it verbatim, and reducing the factor and its residual to bands. A
+provider account is never named: an install with more than one account on the
+same provider and lane reports only whichever account the pass reaches first,
+so the event answers "what plans and accuracy bands exist across installs",
+never "which account". The 24-hour floor between events for the same pair
+holds even across a genuine band change, so a factor bouncing between two
+adjacent bands cannot report more than once a day.
 
 The `inert_capped` label covers either too many distinct unknown types or one
 type name that exceeds the local string limit. The event never sends those

@@ -802,7 +802,7 @@ describe("SettingsView", () => {
     // earlier version of this test sampled two of them, which is how five
     // fields went unnamed in the pane while the copy claimed to list them all.
     // `analytics::event::Event` is the other half of this pair, and its
-    // `the_wire_payload_is_exactly_these_twenty_three_fields` pins the same number
+    // `the_wire_payload_is_exactly_these_twenty_six_fields` pins the same number
     // from the Rust side.
     const enumeration = screen.getByRole("button", { name: "Exactly what is sent" })
     fireEvent.click(enumeration)
@@ -810,7 +810,7 @@ describe("SettingsView", () => {
     // `every_document_that_counts_the_fields_counts_the_same_number` greps
     // this pane for that phrase, so it has to survive edits to this section.
     expect(
-      screen.getByText(/schema has twenty-three fields, and these are all of them/i),
+      screen.getByText(/schema has twenty-six fields, and these are all of them/i),
     ).toBeInTheDocument()
     for (const field of [
       /the word .desktop./i,
@@ -825,6 +825,9 @@ describe("SettingsView", () => {
       /a short label .* which surface, Settings pane, provider/i,
       /a second such label when an event has two things/i,
       /whether a visible state followed a user or automatic exposure/i,
+      /a learned session-limit factor.s plan, mapped to a fixed list/i,
+      /that factor.s dollars-per-percent value, reduced to a coarse band/i,
+      /how far that factor.s estimate and the provider.s own meter disagree/i,
       /the app version/i,
       /your operating system/i,
     ]) {
@@ -839,7 +842,7 @@ describe("SettingsView", () => {
     // neighbouring paragraph: the body is a sibling of nothing predictable,
     // and the id is the component's actual contract.
     const body = document.getElementById(enumeration.getAttribute("aria-controls") ?? "")
-    expect(body?.querySelectorAll("li")).toHaveLength(23)
+    expect(body?.querySelectorAll("li")).toHaveLength(26)
     // The exclusions live in the same body as the list, so a reader checking
     // one against the other does not have to open a second row to find them.
     expect(

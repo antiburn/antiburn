@@ -22,7 +22,7 @@ Official release builds send limited events about how the application works and
 which features are used. This includes application launch and progress through
 the fixed onboarding steps.
 
-The event schema contains twenty-three fields:
+The event schema contains twenty-six fields:
 
 - the constant product surface `desktop`;
 - random message, installation, and analytics-session identifiers;
@@ -36,8 +36,13 @@ The event schema contains twenty-three fields:
 - Claude's reset eligibility and experiment-membership states;
 - an allowlisted reason when Claude reports ineligibility;
 - Claude's reset experiment arm and availability state;
-- the weekly reset count rounded to zero, one, or two-plus; and
-- whether Claude supplied a next-reset date, never the date itself.
+- the weekly reset count rounded to zero, one, or two-plus;
+- whether Claude supplied a next-reset date, never the date itself;
+- a learned session-limit factor's plan, mapped to a fixed list, never the
+  provider's own plan string;
+- that factor's dollars-per-percent value, reduced to a coarse band; and
+- how far the factor's estimate and the provider's own meter disagree,
+  reduced to a coarse band.
 
 The installation identifier is random and changes every 30 days. The live
 analytics-session identifier is generated in memory and changes when the app
