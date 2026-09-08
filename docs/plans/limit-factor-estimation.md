@@ -558,6 +558,68 @@ build and kept for later phases to build on.
 - Effect: a Codex account has a factor from history on first install, without
   waiting for a live poll.
 
+#### Decisions (implementation, 2026-09-08)
+
+The document above did not settle these; they were decided during the phase 4
+build.
+
+- **No legacy-import state key.** #427's `BackfillState { legacy_history_imported }`
+  existed only to run the `internal:liveUsageHistoryV2` blob import once; the
+  document explicitly drops that import (reset-less history), which leaves
+  the state struct with no remaining field and no remaining purpose. Adding
+  it back only to leave it empty would be dead code under this repository's
+  no-suppression rule, so phase 4 carries no state setting key at all.
+- **The checkpoint is keyed by session and provider, not by account.**
+  #427's `provider_usage_backfill_checkpoint` included `account_key` in its
+  primary key, inherited from a candidate query that joined a direct
+  `session_provider_account` binding and so only ever saw one account per
+  session. Phase 4's candidate query instead resolves an account through the
+  shared two-step rule (`resolve_bound_account`, falling back to
+  `provider_known_accounts`), which is a Rust-side step over a raw SQL scan
+  rather than a join, and a resolved account is not guaranteed stable if the
+  machine's known-account set changes between passes. The checkpoint tracks
+  how far a *file* has been read, which does not depend on which account a
+  later pass attributes it to, so dropping `account_key` from its identity
+  removes a source of drift between the checkpoint and the resolution rule
+  without losing anything the checkpoint needs.
+- **Rollout windows reuse `codex_rollout::parse_windows` rather than
+  reimplementing window parsing.** #427 parsed `primary`/`secondary` a
+  second time in `backfill.rs`, with its own `authoritative` rule
+  (`resets_at.is_some()`) that disagreed with the live tail-reading path's
+  (`authoritative: true` always, per `codex_rollout.rs` and
+  `codex_app_server.rs`). Reusing the same function both paths share means a
+  historical reading and a live one build a window through the identical
+  rule — same `authoritative` value, same `is_sliding_reset_projection`
+  filtering — so the zero-reading/projected-reset case is "a stated reading
+  with no committed boundary," never "an unauthoritative, ignorable one."
+  Feeding a `used_percent`-bearing reading into the learner as
+  unauthoritative would have silently dropped it from every delta and
+  window-start computation, which is the opposite of phase 4's purpose.
+- **`import_rollout_batch` and its `RolloutImportBatch`, `RolloutBatch`, and
+  `RolloutReading` types carry no `scanned_bytes` or `skipped_bytes` field.**
+  #427 exposed both for test observability; neither is read by any
+  production caller. The "a too-long record is skipped forward, not
+  reread forever" behavior — the reason `skipped_bytes` existed — is instead
+  asserted directly against `RolloutBatch::next_offset` advancing between
+  two calls, which proves the same thing without carrying a field no
+  caller uses.
+- **The scheduler runs one rollout-history batch, then `factor::learn`,
+  every tick — and, only when a batch reports more work, wakes again after
+  a short delay (or its own retry time) via `tokio::select!` rather than
+  waiting for the next full `TICK`.** This mirrors #427's
+  `schedule_backfill`/`wait_for_backfill` shape exactly, renamed to
+  `schedule_rollout_continuation`/`wait_for_rollout_continuation`, and
+  `usage_alerts::blocking::run` is widened from `FnOnce(Thread)` to
+  `FnOnce(Thread) -> T` so the scheduler can read a batch's
+  `continue_soon`/`next_retry_epoch` back out of the blocking hop.
+- **Retention deletes a `complete` checkpoint once its `completed_at_epoch`
+  ages past the same cutoff observations use**, added to
+  `apply_provider_usage_retention_in` next to the existing sample and period
+  cleanup. A later append to that file is then read from byte zero instead
+  of its old cursor; the readings that offset would have skipped past have
+  already expired, so nothing already-imported is lost, and a stale
+  checkpoint for a file that no longer changes does not accumulate forever.
+
 ### Later, not in this round
 
 - A factor history chart per account, from `provider_limit_factor_point` and
