@@ -106,6 +106,38 @@ describe("UsageRing", () => {
     )
   })
 
+  it("blinks the next eighth of the ring, from the arc's end, while a session is live", () => {
+    const { container } = render(<UsageRing percent={50} blink />)
+    const blinking = container.querySelector('[data-testid="usage-ring-blink"]')
+    expect(blinking).toHaveClass("led-blink")
+    // Half gone: the arc ends at six o'clock, and the blink starts there.
+    expect(blinking).toHaveAttribute("transform", "rotate(90 16 16)")
+    expect(blinking?.getAttribute("stroke-dasharray")?.split(" ").map(Number)[0]).toBeCloseTo(
+      CIRCUMFERENCE / 8,
+      5,
+    )
+  })
+
+  it("blinks from twelve o'clock at zero, and the last eighth of a full ring", () => {
+    const zero = render(<UsageRing percent={0} blink />)
+    expect(zero.container.querySelector('[data-testid="usage-ring-blink"]')).toHaveAttribute(
+      "transform",
+      "rotate(-90 16 16)",
+    )
+    const full = render(<UsageRing percent={100} blink />)
+    expect(full.container.querySelector('[data-testid="usage-ring-blink"]')).toHaveAttribute(
+      "transform",
+      "rotate(225 16 16)",
+    )
+  })
+
+  it("draws no blink without a live session, or on the indeterminate ring", () => {
+    const still = render(<UsageRing percent={50} />)
+    expect(still.container.querySelector('[data-testid="usage-ring-blink"]')).toBeNull()
+    const indeterminate = render(<UsageRing percent={null} blink />)
+    expect(indeterminate.container.querySelector('[data-testid="usage-ring-blink"]')).toBeNull()
+  })
+
   it("is invisible to a screen reader, because its caller names it", () => {
     // The ring is a shape with no text. Every call site puts the figure into
     // the accessible name of the control around it instead.

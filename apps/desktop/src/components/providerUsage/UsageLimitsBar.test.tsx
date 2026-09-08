@@ -176,8 +176,16 @@ describe("UsageLimitsBar — the live blink", () => {
     expect(groups[0]?.contains(blinking[0]!)).toBe(true)
   })
 
-  it("does not blink the rings of the closed bar", () => {
+  it("blinks the first ring of the closed bar", () => {
     const { container } = bar({ sessionLive: true, expanded: false })
+    const blinking = container.querySelectorAll(".led-blink")
+    expect(blinking).toHaveLength(1)
+    expect(blinking[0]).toHaveAttribute("data-testid", "usage-ring-blink")
+    expect(screen.getAllByRole("img")[0]?.contains(blinking[0]!)).toBe(true)
+  })
+
+  it("does not blink the rings without a live session", () => {
+    const { container } = bar({ expanded: false })
     expect(container.querySelector(".led-blink")).toBeNull()
   })
 

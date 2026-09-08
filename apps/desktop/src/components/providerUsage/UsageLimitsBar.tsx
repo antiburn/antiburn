@@ -61,9 +61,9 @@ export interface UsageLimitsBarProps {
     activation: Exclude<AnchoredTriggerActivation, "idle">
   } | null
   /**
-   * Whether a session is live. The first meter of the first provider then
-   * blinks its next segment, the way the HUD's first bar blinks. The rings
-   * of the closed bar do not blink.
+   * Whether a session is live. The first provider then blinks, the way the
+   * HUD's first bar blinks: its ring's next eighth on the closed bar, its
+   * first meter's next segment on the open one.
    */
   sessionLive?: boolean
 }
@@ -127,13 +127,14 @@ export function UsageLimitsBar({
       {!expanded && (
         <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            {limited.map(({ reading, key }) => (
+            {limited.map(({ reading, key }, index) => (
               <ProviderRadial
                 key={key}
                 provider={reading}
                 displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
                 status={liveProviderStatus(live, reading)}
                 onHover={onHoverProvider}
+                blink={sessionLive && index === 0}
                 activation={
                   activeProvider?.provider === reading.provider
                     ? activeProvider.activation
@@ -338,12 +339,15 @@ function ProviderRadial({
   status,
   onHover,
   activation,
+  blink = false,
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
   status: LiveProviderStatus
   onHover?: ((provider: string | null, anchor: AnchorRegion | null) => void) | undefined
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
+  /** Blink the ring's next eighth while a session is live. */
+  blink?: boolean
 }) {
   const percent = maxLiveUsedPercent(provider)
   const figure = percent != null ? `${Math.round(percent)}%` : "no stated figure"
@@ -377,6 +381,7 @@ function ProviderRadial({
         glyph={providerInitial(displayName)}
         size={RING_SIZE}
         className="block text-label-secondary"
+        blink={blink}
       />
       <span
         aria-hidden="true"

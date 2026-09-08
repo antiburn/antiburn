@@ -176,8 +176,9 @@ switch and in Mission Control.
 
 - Each LED bar has 20 segments.
 - Only the first bar blinks during a live session. The detail window does not
-  blink. The popover's first usage meter blinks its next unlit segment from
-  the same events; the closed bar's rings do not.
+  blink. The popover's first provider blinks from the same events: its
+  first usage meter's next unlit segment on the open bar, and the next
+  eighth of its ring on the closed bar.
 - The blink sits on the last lit segment, or on the first segment when usage
   is too low to light one. Its on state is the brand tint and its off state
   is the segment's resting colour: the bar colour when lit, the unlit grey

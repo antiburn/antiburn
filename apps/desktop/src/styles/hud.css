@@ -143,6 +143,10 @@ body[data-transparent-window] #root {
  * inline: its own bar colour when lit, the unlit grey when not. The brand
  * tint holds one value in both themes, so it survives any desktop behind the
  * HUD the way `led-off` does.
+ *
+ * The keyframes set `stroke` as well, so the same class blinks an SVG arc:
+ * the usage ring's next eighth. Each element reads the one property it
+ * paints with.
  */
 .led-blink {
   animation: led-blink 3s steps(1, end) infinite;
@@ -152,11 +156,13 @@ body[data-transparent-window] #root {
   0%,
   49.9% {
     background-color: var(--color-brand-tint);
+    stroke: var(--color-brand-tint);
   }
 
   50%,
   100% {
     background-color: var(--led-rest, var(--color-led-off));
+    stroke: var(--led-rest, var(--color-led-off));
   }
 }
 
