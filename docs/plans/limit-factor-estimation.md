@@ -392,17 +392,23 @@ build and kept for phase 2 to build on.
 The document above did not settle these; they were decided during the phase 2
 build.
 
-- **Attribution and pricing use `model_breakdown_json`, not
+- **Attribution routes on `model_breakdown_json`; pricing reads
   `pricing_breakdown_json`.** `session_analysis` stores two breakdowns:
   `model_breakdown_json` keys by the literal model name;
-  `pricing_breakdown_json` keys by the normalized `turn_pricing_key`, which
-  folds a "-fast" speed suffix into the model name. `provider_usage::attribute`
-  routes by-model for bring-your-own agents and needs the literal model name to
-  match its routing table, so `session_limit_allocations` calls `attribute`
-  with `model_breakdown_json` and prices the result with `price_breakdown`.
-  This loses the "-fast" tier's separate price for a mixed-speed session; the
-  badge accepts that imprecision rather than routing on a key `attribute`
-  cannot read.
+  `pricing_breakdown_json` keys by `turn_pricing_key(model, speed)`, which
+  appends a "-fast" suffix when the turn ran fast and the model's own name
+  does not already end that way. `provider_usage::attribute` routes by-model
+  for bring-your-own agents and needs the literal model name to match its
+  routing table, so `session_limit_allocations` calls `attribute` with
+  `model_breakdown_json`. It then prices each provider's dollars from
+  `pricing_breakdown_json`, keeping each entry's own key (so a fast-mode turn
+  prices at its fast rate) and assigning it to whichever provider's
+  attributed models match it directly or with a trailing `-fast` removed.
+  The factor's own samples price turns through the same speed-aware
+  `lookup_turn_pricing`, so this keeps the badge on the same rate the factor
+  was learned at. It falls back to pricing `model_breakdown_json` directly
+  only when `pricing_breakdown_json` is empty or fails to parse — the only
+  breakdown available then.
 - **Subagent cost needs no separate handling.** The plan's phase 2 test list
   asks for "subagent rows priced on their own cost," which assumes a subagent
   appears as its own row to price. It does not: `assemble_session_analysis`
@@ -412,6 +418,12 @@ build.
   `session_limit_allocations` already prices each session's subagent work
   through that single inclusive breakdown. No separate subagent `SessionRecord`
   exists to test in isolation.
+- **`Store::analyses` batches the per-session analysis lookup**, the same way
+  `session_bound_accounts` batches account resolution: one query across every
+  session key in the activity window (chunked at 500, matching
+  `MAX_ACTIVITY_ROWS`) rather than one `session_analysis` lookup per session.
+  `session_limit_allocations` was calling the existing single-session
+  `Store::analysis` once per row.
 - **`window_id` on `SessionLimitAllocation` now carries the lane string**
   (`"weekly"` or `"fiveHour"`), not a period or window identifier. Periods no
   longer drive the badge, so no per-period id exists to report; the lane is the
