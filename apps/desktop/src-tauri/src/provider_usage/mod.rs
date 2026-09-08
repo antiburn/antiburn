@@ -26,6 +26,7 @@
 //!    touched. The views say so.
 
 pub(crate) mod allocation;
+pub(crate) mod factor;
 pub(crate) mod ledger;
 pub mod live;
 pub mod providers;
@@ -307,7 +308,7 @@ fn state_of(accumulator: &Accumulator) -> ProviderUsageState {
     }
 }
 
-fn has_tokens(tokens: &ModelTokens) -> bool {
+pub(crate) fn has_tokens(tokens: &ModelTokens) -> bool {
     tokens.input_tokens > 0
         || tokens.output_tokens > 0
         || tokens.cache_read_tokens > 0
@@ -386,8 +387,8 @@ fn account_for(record: &UsageEvidenceRecord, provider: &str) -> Option<String> {
 }
 
 #[derive(Debug, Default)]
-struct Attributed {
-    models: BTreeMap<String, ModelTokens>,
+pub(crate) struct Attributed {
+    pub(crate) models: BTreeMap<String, ModelTokens>,
     explicit: bool,
 }
 
@@ -426,7 +427,7 @@ fn explicit_providers<'a>(hints: impl IntoIterator<Item = &'a ProviderHint>) -> 
 /// A fixed-route agent puts every model under its vendor; a bring-your-own
 /// agent splits them, so one session can appear under two providers with the
 /// tokens divided between them rather than double-counted.
-fn attribute(
+pub(crate) fn attribute(
     agent: &str,
     breakdown: BTreeMap<String, ModelTokens>,
     hints: &[ProviderHint],
