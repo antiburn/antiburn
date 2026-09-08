@@ -36,13 +36,13 @@ antiburn supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, K
 macOS or Linux:
 
 ```sh
-curl -fsSL http://antiburn.ai/install.sh | sh
+curl -fsSL https://antiburn.ai/install.sh | sh
 ```
 
 Windows 11 PowerShell:
 
 ```powershell
-irm http://antiburn.ai/install.ps1 | iex
+irm https://antiburn.ai/install.ps1 | iex
 ```
 
 The installers verify release checksums. macOS also verifies the application

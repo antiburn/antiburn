@@ -67,6 +67,9 @@ pub enum EventName {
     /// A learning pass produced a first or changed coarse limit factor.
     #[cfg(feature = "analytics")]
     LimitFactorObserved,
+    /// One hourly summary describes the shell's coarse resource use.
+    #[cfg(feature = "analytics")]
+    ResourceUsageObserved,
 }
 
 /// Every event this application may send.
@@ -95,6 +98,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::LiveUsageStateObserved,
     EventName::UsageObserved,
     EventName::LimitFactorObserved,
+    EventName::ResourceUsageObserved,
 ];
 
 #[cfg(feature = "analytics")]
@@ -117,6 +121,7 @@ impl EventName {
             EventName::LiveUsageStateObserved => "antiburn.live_usage_state_observed",
             EventName::UsageObserved => "antiburn.usage_observed",
             EventName::LimitFactorObserved => "antiburn.limit_factor_observed",
+            EventName::ResourceUsageObserved => "antiburn.resource_usage_observed",
         }
     }
 }
@@ -226,6 +231,9 @@ pub struct Properties {
     /// How far the meter and the factor's own estimate disagree, banded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub residual_band: Option<&'static str>,
+    /// These bands describe process and local-store resource use for one bounded window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_usage: Option<super::resources::schema::ResourceUsageSummary>,
 }
 
 /// What a caller may attach to an event.
@@ -256,6 +264,8 @@ pub struct Facts {
     pub plan: Option<&'static str>,
     pub factor_band: Option<&'static str>,
     pub residual_band: Option<&'static str>,
+    #[cfg(feature = "analytics")]
+    pub resource_usage: Option<super::resources::schema::ResourceUsageSummary>,
 }
 
 #[cfg(feature = "analytics")]
@@ -668,21 +678,33 @@ pub fn map_plan(plan: Option<&str>) -> &'static str {
     }
 }
 
-/// Reduce a learned dollars-per-percent factor to a log-spaced band.
+/// Reduce a learned dollars-per-percent factor to a power-of-two band.
 ///
-/// Steps of 4x keep the bucket boundaries meaningful across the wide range a
-/// factor can take — cents per percent on a low-cost plan, tens of dollars on
-/// a high one — the same reasoning [`bucket`] uses for linear counts.
+/// Each band doubles the value of the band below it. Fine, doubling steps let
+/// a later reader group adjacent bands together without a change to this
+/// vocabulary. An earlier four-fold design fixed that grouping in advance,
+/// before any measured distribution existed to justify it. Non-finite and
+/// non-positive input, including a value under one, map to the lowest band.
 #[cfg(feature = "analytics")]
 pub fn factor_band(usd_per_percent: f64) -> &'static str {
-    if usd_per_percent < 2.0 {
-        "under_2"
+    if usd_per_percent.is_nan() || usd_per_percent < 1.0 {
+        "under_1"
+    } else if usd_per_percent < 2.0 {
+        "1_to_under_2"
+    } else if usd_per_percent < 4.0 {
+        "2_to_under_4"
     } else if usd_per_percent < 8.0 {
-        "2_to_under_8"
+        "4_to_under_8"
+    } else if usd_per_percent < 16.0 {
+        "8_to_under_16"
     } else if usd_per_percent < 32.0 {
-        "8_to_under_32"
+        "16_to_under_32"
+    } else if usd_per_percent < 64.0 {
+        "32_to_under_64"
+    } else if usd_per_percent < 128.0 {
+        "64_to_under_128"
     } else {
-        "32_and_over"
+        "128_and_over"
     }
 }
 
@@ -725,7 +747,28 @@ pub fn arch() -> &'static str {
 
 #[cfg(all(test, feature = "analytics"))]
 mod tests {
+    use super::super::resources::schema::{
+        CoverageBand, CpuBand, IoRateBand, MemoryBand, ResourceUsageSummary,
+    };
     use super::*;
+
+    fn resource_summary() -> ResourceUsageSummary {
+        ResourceUsageSummary {
+            memory_mean: MemoryBand::From100ToUnder250Mib,
+            memory_max: MemoryBand::From250ToUnder500Mib,
+            memory_coverage: CoverageBand::Full,
+            cpu_average: CpuBand::From10ToUnder25Percent,
+            cpu_coverage: CoverageBand::Partial,
+            read_rate_average: IoRateBand::Zero,
+            read_coverage: CoverageBand::Full,
+            write_rate_average: IoRateBand::Unavailable,
+            write_coverage: CoverageBand::None,
+            database_size: MemoryBand::From50ToUnder100Mib,
+            database_coverage: CoverageBand::Full,
+            wal_size: MemoryBand::Under50Mib,
+            wal_coverage: CoverageBand::Partial,
+        }
+    }
 
     fn sample() -> Event {
         Event {
@@ -751,8 +794,9 @@ mod tests {
                 resets_per_week: Some("1"),
                 next_reset_available: Some("present"),
                 plan: Some("max"),
-                factor_band: Some("2_to_under_8"),
+                factor_band: Some("2_to_under_4"),
                 residual_band: Some("within_5"),
+                resource_usage: Some(resource_summary()),
             },
             context: Context {
                 app_version: "antiburn:1.2.3".into(),
@@ -790,15 +834,29 @@ mod tests {
     }
 
     #[test]
-    fn the_factor_band_boundaries_step_by_four() {
-        assert_eq!(factor_band(0.5), "under_2");
-        assert_eq!(factor_band(1.99), "under_2");
-        assert_eq!(factor_band(2.0), "2_to_under_8");
-        assert_eq!(factor_band(7.99), "2_to_under_8");
-        assert_eq!(factor_band(8.0), "8_to_under_32");
-        assert_eq!(factor_band(31.99), "8_to_under_32");
-        assert_eq!(factor_band(32.0), "32_and_over");
-        assert_eq!(factor_band(1_000.0), "32_and_over");
+    fn the_factor_band_boundaries_step_by_powers_of_two() {
+        assert_eq!(factor_band(f64::NAN), "under_1");
+        assert_eq!(factor_band(f64::NEG_INFINITY), "under_1");
+        assert_eq!(factor_band(-1.0), "under_1");
+        assert_eq!(factor_band(0.0), "under_1");
+        assert_eq!(factor_band(0.99), "under_1");
+        assert_eq!(factor_band(1.0), "1_to_under_2");
+        assert_eq!(factor_band(1.99), "1_to_under_2");
+        assert_eq!(factor_band(2.0), "2_to_under_4");
+        assert_eq!(factor_band(3.99), "2_to_under_4");
+        assert_eq!(factor_band(4.0), "4_to_under_8");
+        assert_eq!(factor_band(7.99), "4_to_under_8");
+        assert_eq!(factor_band(8.0), "8_to_under_16");
+        assert_eq!(factor_band(15.99), "8_to_under_16");
+        assert_eq!(factor_band(16.0), "16_to_under_32");
+        assert_eq!(factor_band(31.99), "16_to_under_32");
+        assert_eq!(factor_band(32.0), "32_to_under_64");
+        assert_eq!(factor_band(63.99), "32_to_under_64");
+        assert_eq!(factor_band(64.0), "64_to_under_128");
+        assert_eq!(factor_band(127.99), "64_to_under_128");
+        assert_eq!(factor_band(128.0), "128_and_over");
+        assert_eq!(factor_band(1_000.0), "128_and_over");
+        assert_eq!(factor_band(f64::INFINITY), "128_and_over");
     }
 
     #[test]
@@ -826,7 +884,7 @@ mod tests {
     /// `apps/desktop/src/views/settings/PrivacyPane.tsx` is the bug this
     /// comment exists to prevent.
     #[test]
-    fn the_wire_payload_is_exactly_these_twenty_six_fields() {
+    fn the_wire_payload_is_exactly_these_twenty_seven_fields() {
         let json = serde_json::to_value(sample()).expect("serializes");
         let object = json.as_object().expect("an object");
         let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
@@ -870,6 +928,7 @@ mod tests {
                 "resetAvailability",
                 "resetsPerWeek",
                 "residualBand",
+                "resourceUsage",
                 "responseShape",
                 "usageBand",
             ]
@@ -925,6 +984,7 @@ mod tests {
         event.properties.plan = None;
         event.properties.factor_band = None;
         event.properties.residual_band = None;
+        event.properties.resource_usage = None;
         let json = serde_json::to_string(&event).expect("serializes");
         assert!(!json.contains("bucket"), "{json}");
         assert!(!json.contains("label"), "{json}");
@@ -933,6 +993,42 @@ mod tests {
         assert!(!json.contains("\"plan\""), "{json}");
         assert!(!json.contains("factorBand"), "{json}");
         assert!(!json.contains("residualBand"), "{json}");
+        assert!(!json.contains("resourceUsage"), "{json}");
+    }
+
+    #[test]
+    fn resource_usage_has_only_the_typed_nested_allowlist() {
+        let mut event = sample();
+        event.event = EventName::ResourceUsageObserved.as_str().into();
+        event.properties.resource_usage = Some(resource_summary());
+
+        let json = serde_json::to_value(event).expect("serializes");
+        let resource = json["properties"]["resourceUsage"]
+            .as_object()
+            .expect("resourceUsage object");
+        let mut keys: Vec<_> = resource.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "cpuAverage",
+                "cpuCoverage",
+                "databaseCoverage",
+                "databaseSize",
+                "memoryCoverage",
+                "memoryMax",
+                "memoryMean",
+                "readCoverage",
+                "readRateAverage",
+                "walCoverage",
+                "walSize",
+                "writeCoverage",
+                "writeRateAverage",
+            ]
+        );
+        assert_eq!(resource["cpuAverage"], "from10_to_under25_percent");
+        assert_eq!(resource["readRateAverage"], "zero");
+        assert_eq!(resource["writeRateAverage"], "unavailable");
     }
 
     /// The compiler, not a reviewer, keeps [`EVERY_EVENT`] complete.
@@ -959,12 +1055,13 @@ mod tests {
                 | EventName::LiveUsageStateObserved
                 | EventName::ClaudeLimitResetObserved
                 | EventName::UsageObserved
-                | EventName::LimitFactorObserved => true,
+                | EventName::LimitFactorObserved
+                | EventName::ResourceUsageObserved => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            16,
+            17,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -1021,7 +1118,7 @@ mod tests {
             14 => "fourteen",
             22 => "twenty-two",
             23 => "twenty-three",
-            26 => "twenty-six",
+            27 => "twenty-seven",
             other => panic!("no word for {other} fields; add one and update the documents"),
         };
 

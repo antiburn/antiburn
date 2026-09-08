@@ -107,14 +107,14 @@ Use reporting installations, not people. Installation IDs rotate after 30 days
 and reset after opt-out/re-enable. Do not add a stable identifier or use IP,
 user-agent, or device information to join rotations.
 
-| Question                                           | Definition after the first implementation phase                                                                                                                                                     | Decision supported                                               |
-| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Question                                           | Definition after the first implementation phase                                                                                                                                                                                                    | Decision supported                                               |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | Are people deliberately returning?                 | Daily/weekly distinct `anonymousId` with a user-initiated core `surface_viewed` event or `settings_pane_viewed` for `insights`. Exclude setup, other Settings-only visits, automatic restores, nudges merely appearing, and all background events. | Whether the core utility earns repeat attention.                 |
-| Does setup lead to visible value?                  | Among distinct IDs completing a new setup flow, fraction that see a core surface with `ready` data within 24 hours of completion. Also report empty, error, and timeout outcomes.                   | Whether to improve setup or the first data experience.           |
-| Which features get used?                           | Distinct IDs viewing each core surface divided by engaged reporting IDs in the same interval and supporting versions/platforms. Separate ready-data reach from view reach.                          | Which surfaces merit investment or improved discovery.           |
-| Do users return after value?                       | Among IDs first reaching ready data after new setup, observed return on day 1 and day 7 using deliberate core views. Include only cohorts whose full observation window has elapsed.                | Whether activation translates into observed repeat use.          |
-| Where does the experience fail?                    | Per surface, fraction of reporting exposed IDs with empty, error, or loading-timeout states. For explicit operations, compare terminal outcomes with attempts separately.                           | Which reliability issues block adoption.                         |
-| Does passive monitoring remain enabled and useful? | Report HUD/meter enablement, successful automatic exposure, data availability, and deliberate detail use separately.                                                                                | Whether passive display features are configured and functioning. |
+| Does setup lead to visible value?                  | Among distinct IDs completing a new setup flow, fraction that see a core surface with `ready` data within 24 hours of completion. Also report empty, error, and timeout outcomes.                                                                  | Whether to improve setup or the first data experience.           |
+| Which features get used?                           | Distinct IDs viewing each core surface divided by engaged reporting IDs in the same interval and supporting versions/platforms. Separate ready-data reach from view reach.                                                                         | Which surfaces merit investment or improved discovery.           |
+| Do users return after value?                       | Among IDs first reaching ready data after new setup, observed return on day 1 and day 7 using deliberate core views. Include only cohorts whose full observation window has elapsed.                                                               | Whether activation translates into observed repeat use.          |
+| Where does the experience fail?                    | Per surface, fraction of reporting exposed IDs with empty, error, or loading-timeout states. For explicit operations, compare terminal outcomes with attempts separately.                                                                          | Which reliability issues block adoption.                         |
+| Does passive monitoring remain enabled and useful? | Report HUD/meter enablement, successful automatic exposure, data availability, and deliberate detail use separately.                                                                                                                               | Whether passive display features are configured and functioning. |
 
 Use capture time for behavior, deduplicate retries by `messageId`, and allow a
 documented late-arrival window before finalizing cohorts. Segment by app version
@@ -149,8 +149,8 @@ when the wire field count stays unchanged.
 | `surface_viewed`                                   | Successful reveal or visible navigation. `label`: `activity`, `session_detail`, `provider_preview`, `checks_preview`, `hud`, `hud_detail`, or `settings`. `detail`: `user` or `automatic`.                                               | Shell visibility transition plus surface controllers. One per actual transition; no event for prewarm, repeated show requests, data refresh, or hidden navigation. Only deliberate transitions qualify as engagement.                                                          |
 | `settings_pane_viewed`                             | Requested pane is selected and visible. `label`: the eight existing Settings pane IDs.                                                                                                                                                   | `SettingsWindowSession`, including first opening and external pane requests. One per visible pane transition, with duplicate requests suppressed.                                                                                                                              |
 | `surface_state_observed`                           | Data state presented on a visible surface. Same surface vocabulary, plus `insights`; `detail`: `ready`, `empty`, `error`, or `loading_timeout`. Ready means a usable payload, not merely a mounted component or successful IPC response. | Surface controllers after both visibility and data readiness. At most once per distinct state per surface exposure; ignore stale asynchronous results. Use a documented 10-second visible initial-load timeout, canceled when hidden; later ready data can still emit `ready`. |
-| `live_usage_state_observed`                        | A provider state is presented on Activity, a provider preview, or a user-opened HUD. `label`: `anthropic`, `openai`, or `google`; `detail`: `fresh`, `stale`, `authentication`, `rate_limited`, `unavailable`, or `no_credentials`. | Map existing presentation states, without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. `no_credentials` remains dormant. No account, plan name, balance, quota value, or raw response.                                       |
-| `onboarding_started`, extend `onboarding_finished` | Visible start or resume and committed completion of a setup flow. `label`: `new` or `restart`.                                                                                                                                           | Emit a start on the first visible start or resume in each app process. A quit and later resume emits another start with the persisted classification. Emit completion once per pending-to-complete transition. Preserve the four existing step events.                           |
+| `live_usage_state_observed`                        | A provider state is presented on Activity, a provider preview, or a user-opened HUD. `label`: `anthropic`, `openai`, or `google`; `detail`: `fresh`, `stale`, `authentication`, `rate_limited`, `unavailable`, or `no_credentials`.      | Map existing presentation states, without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. `no_credentials` remains dormant. No account, plan name, balance, quota value, or raw response.                                       |
+| `onboarding_started`, extend `onboarding_finished` | Visible start or resume and committed completion of a setup flow. `label`: `new` or `restart`.                                                                                                                                           | Emit a start on the first visible start or resume in each app process. A quit and later resume emits another start with the persisted classification. Emit completion once per pending-to-complete transition. Preserve the four existing step events.                         |
 
 `surface_state_observed` also needs a closed `properties.origin` value of `user`
 or `automatic`, inherited from its exposure. This optional wire field lets
@@ -211,6 +211,38 @@ categories and changed-state suppression. Do not add an unconditional heartbeat
 or events per poll, transcript record, chart hover, scroll tick, or token update.
 Give temporary diagnostics, including the Claude reset probe, an owner and
 review date so experiments do not become permanent noise or provider traffic.
+
+The first narrow background-summary exception is
+`antiburn.resource_usage_observed`. It answers: "Does a supported app version
+introduce an antiburn resource regression?" Compare each fixed resource band by
+app version and operating system. Use observed installation-hours as the
+denominator and show `none`, `partial`, and `full` coverage beside each
+distribution. Report the number of observed installations and hours. Do not
+substitute event count for either denominator. Exclude this event from
+engagement, activation, retention, visit, and time-spent definitions.
+
+The shell samples only its own process CPU, platform-specific memory, process
+read/write counters, and logical SQLite database and WAL file sizes. It uses a
+five-minute cadence, skips missed ticks, never overlaps reads, emits no per-sample
+event, and takes no resource measurement while analytics is disabled. A delayed
+read can be followed soon by the next scheduled tick. The event contains one typed,
+thirteen-field closed summary after at least one enabled monotonic hour with a
+sample. Suspension or a delayed tick can make the reporting window longer.
+Missing measurements stay unavailable and carry coverage; they never become
+zero. Full coverage means every attempted sample or interval succeeded, not
+that every instant was measured or no tick was missed. Counter rates are elapsed-time weighted over independently valid
+intervals. The sampled memory maximum is not a true peak. CPU and memory cover
+the shell process, not renderers or whole-app totals. Linux I/O can include
+accounting inherited from waited-for child processes. Windows I/O is all shell-process
+I/O, not physical disk traffic. No metric measures the whole machine, and the event
+does not enumerate renderers. There is no shutdown catch-up summary.
+
+Interpret changes with survivor and consent bias: a process must remain running
+long enough to contribute usable samples, and opted-out installations are
+unobserved. A distribution shift supports regression investigation, not a claim
+about all users or a causal conclusion. Resource bands can reveal coarse app
+work intensity and data volume, so the public catalog, privacy policy, and
+in-product disclosure name that consequence.
 
 Phase 1 adds bounded queue-depth-triggered draining, protected retry backoff, and
 a request budget. Before expanding volume further, simulate normal repeated

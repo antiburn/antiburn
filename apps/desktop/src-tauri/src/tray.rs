@@ -88,9 +88,9 @@ impl Default for UsageMeter {
     }
 }
 
-/// Linux only: the item that stands in for the click the backend never reports.
+const MENU_MAIN: &str = "open-main";
 #[cfg(target_os = "linux")]
-const MENU_OPEN: &str = "open";
+const MENU_OPEN_POPOVER: &str = "open-popover";
 const MENU_PIN: &str = "pin";
 const MENU_SETTINGS: &str = "settings";
 #[cfg(debug_assertions)]
@@ -103,9 +103,9 @@ const MENU_QUIT: &str = "quit";
 const PIN_LABEL: &str = "Pin Window";
 const UNPIN_LABEL: &str = "Unpin Window";
 
-/// Linux only, and title case for the same reason the pin labels are.
-#[cfg(target_os = "linux")]
 const OPEN_LABEL: &str = "Open antiburn";
+#[cfg(target_os = "linux")]
+const OPEN_POPOVER_LABEL: &str = "Open Usage Popover";
 #[cfg(debug_assertions)]
 const RESET_ONBOARDING_LABEL: &str = "Reset Onboarding";
 #[cfg(debug_assertions)]
@@ -494,12 +494,20 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit antiburn", true, None::<&str>)?;
+    let main_item = MenuItem::with_id(app, MENU_MAIN, OPEN_LABEL, true, None::<&str>)?;
     #[cfg(target_os = "linux")]
-    let open_item = MenuItem::with_id(app, MENU_OPEN, OPEN_LABEL, true, None::<&str>)?;
+    let open_popover_item = MenuItem::with_id(
+        app,
+        MENU_OPEN_POPOVER,
+        OPEN_POPOVER_LABEL,
+        true,
+        None::<&str>,
+    )?;
 
     let items: Vec<&dyn IsMenuItem<Wry>> = vec![
+        &main_item,
         #[cfg(target_os = "linux")]
-        &open_item,
+        &open_popover_item,
         &pin_item,
         &settings_item,
         #[cfg(debug_assertions)]
@@ -535,10 +543,15 @@ fn on_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
 
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
-        // The AppIndicator backend reports no click events, so this item is the
-        // popover's entry point on Linux.
+        MENU_MAIN => {
+            if let Err(error) =
+                crate::open_launch_surface(app, crate::main_window::OpenTrigger::Interaction)
+            {
+                ::tracing::error!(event = "main_window_open_failed", trigger = "tray", error = %error);
+            }
+        }
         #[cfg(target_os = "linux")]
-        MENU_OPEN => popover::open_from_tray_menu(app),
+        MENU_OPEN_POPOVER => popover::open_from_tray_menu(app),
         MENU_PIN => {
             // The item names the action, so choosing it always means "do the
             // other thing"; the popover is re-shown by `set_pinned`, because
@@ -584,6 +597,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         MENU_QUIT => {
             // Exit code 0 distinguishes a deliberate quit from the window
             // closes the shell suppresses (see `on_window_event`).
+            crate::main_window::flush_placement(app);
             app.exit(0);
         }
         _ => {}

@@ -802,7 +802,7 @@ describe("SettingsView", () => {
     // earlier version of this test sampled two of them, which is how five
     // fields went unnamed in the pane while the copy claimed to list them all.
     // `analytics::event::Event` is the other half of this pair, and its
-    // `the_wire_payload_is_exactly_these_twenty_six_fields` pins the same number
+    // `the_wire_payload_is_exactly_these_twenty_seven_fields` pins the same number
     // from the Rust side.
     const enumeration = screen.getByRole("button", { name: "Exactly what is sent" })
     fireEvent.click(enumeration)
@@ -810,7 +810,7 @@ describe("SettingsView", () => {
     // `every_document_that_counts_the_fields_counts_the_same_number` greps
     // this pane for that phrase, so it has to survive edits to this section.
     expect(
-      screen.getByText(/schema has twenty-six fields, and these are all of them/i),
+      screen.getByText(/schema has twenty-seven fields, and these are all of them/i),
     ).toBeInTheDocument()
     for (const field of [
       /the word .desktop./i,
@@ -828,6 +828,7 @@ describe("SettingsView", () => {
       /a learned session-limit factor.s plan, mapped to a fixed list/i,
       /that factor.s dollars-per-percent value, reduced to a coarse band/i,
       /how far that factor.s estimate and the provider.s own meter disagree/i,
+      /an hourly summary of antiburn’s own CPU, memory, process I\/O/i,
       /the app version/i,
       /your operating system/i,
     ]) {
@@ -842,11 +843,14 @@ describe("SettingsView", () => {
     // neighbouring paragraph: the body is a sibling of nothing predictable,
     // and the id is the component's actual contract.
     const body = document.getElementById(enumeration.getAttribute("aria-controls") ?? "")
-    expect(body?.querySelectorAll("li")).toHaveLength(26)
+    expect(body?.querySelectorAll("li")).toHaveLength(27)
     // The exclusions live in the same body as the list, so a reader checking
     // one against the other does not have to open a second row to find them.
     expect(
       screen.getByText(/file paths, repository or branch names, token counts/i),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/coarse app work intensity and local data volume/i),
     ).toBeInTheDocument()
 
     // The rest of the receipts, each behind its own label. Opening them is the
@@ -1064,14 +1068,9 @@ describe("SettingsView", () => {
     expect(screen.getByText(/· aarch64$/)).toBeInTheDocument()
   })
 
-  it("quits antiburn from the sidebar, through the shell", async () => {
+  it("keeps application Quit out of the Settings sidebar", () => {
     render(<SettingsView />)
-
-    fireEvent.click(await screen.findByRole("button", { name: "Quit antiburn" }))
-
-    // Through the shell, not by closing a window: a menu-bar app outlives its
-    // windows, and only `exit(0)` is a deliberate quit.
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("quit_app"))
+    expect(screen.queryByRole("button", { name: /quit/i })).toBeNull()
   })
 
   it("opens on the pane the shell was asked for, when the window is new", async () => {

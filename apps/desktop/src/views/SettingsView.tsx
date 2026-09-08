@@ -2,7 +2,6 @@ import {
   Bell,
   Info,
   Lightbulb,
-  LogOut,
   Palette,
   ShieldCheck,
   SlidersHorizontal,
@@ -13,7 +12,7 @@ import { useState, useSyncExternalStore } from "react"
 
 import { ScrollPane } from "../components/ui/ScrollPane"
 import { SidebarNav, type SidebarNavItem } from "../components/ui/SidebarNav"
-import { closeCurrentWindow, quitApp } from "../lib/ipc"
+import { closeCurrentWindow } from "../lib/ipc"
 import { useGlobalKeydown } from "../lib/useGlobalKeydown"
 import { isMacOS } from "../lib/platform"
 import { isSettingsPane, type SettingsPane } from "../lib/settingsPanes"
@@ -44,9 +43,6 @@ import { useAppSettings } from "./settings/useAppSettings"
  *   because it is never re-mounted.
  * - **Nothing else.** There is no deep-link scheme and no route.
  *
- * The sidebar ends in Quit because a menu-bar application has no Dock icon and
- * no application menu: Settings and the tray menu are the only two places a
- * reader can reasonably look for the way out.
  */
 
 // Everyday panes first, provenance last: Privacy and Notifications sit ahead
@@ -122,16 +118,6 @@ export function SettingsView() {
         // strip — while the sidebar material still fills to the window's top
         // edge behind the traffic lights.
         className={isMacOS() ? "pt-7" : ""}
-        footer={
-          <button
-            type="button"
-            onClick={() => void quitApp()}
-            className="type-body flex h-9 w-full items-center gap-3 rounded-control px-3 text-label transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover"
-          >
-            <LogOut size={16} strokeWidth={2} className="shrink-0" aria-hidden="true" />
-            <span className="truncate">Quit antiburn</span>
-          </button>
-        }
       />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
