@@ -93,6 +93,27 @@ impl ProviderUsageError {
     }
 }
 
+/// Reduce a consumed-capacity percentage to the coarse band two analytics
+/// events share: the Claude reset diagnostic, and the per-provider usage
+/// event.
+///
+/// `None` stays `unknown`. A window at 100% or more is `at_limit`; at 80% or
+/// more it is `80_to_under_100`; below that it is `below_80`. Sharing this one
+/// function keeps the two events' bands from silently drifting apart.
+#[cfg(feature = "analytics")]
+pub fn band_for_percent(percent: Option<f64>) -> &'static str {
+    let Some(percent) = percent else {
+        return "unknown";
+    };
+    if percent >= 100.0 {
+        "at_limit"
+    } else if percent >= 80.0 {
+        "80_to_under_100"
+    } else {
+        "below_80"
+    }
+}
+
 /// How important a window is when several apply at once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowRole {
@@ -266,5 +287,15 @@ mod tests {
             "schema"
         );
         assert_eq!(ProviderUsageError::Unavailable.category(), "unavailable");
+    }
+
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn the_usage_band_boundaries_match_what_the_reader_sees() {
+        assert_eq!(band_for_percent(None), "unknown");
+        assert_eq!(band_for_percent(Some(79.9)), "below_80");
+        assert_eq!(band_for_percent(Some(80.0)), "80_to_under_100");
+        assert_eq!(band_for_percent(Some(99.9)), "80_to_under_100");
+        assert_eq!(band_for_percent(Some(100.0)), "at_limit");
     }
 }

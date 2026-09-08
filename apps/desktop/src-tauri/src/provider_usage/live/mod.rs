@@ -56,6 +56,8 @@ pub mod sources;
 mod tests;
 
 pub use milestones::{MilestoneContent, MilestoneLedger, milestone_content};
+#[cfg(feature = "analytics")]
+pub use model::band_for_percent;
 pub use model::{
     Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, UsageScope, UsageWindow,
     UsageWindowKind, WindowRole,

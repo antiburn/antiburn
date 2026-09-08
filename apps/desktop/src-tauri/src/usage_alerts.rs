@@ -270,6 +270,11 @@ pub(crate) fn refresh_publish_and_evaluate(
     let collected = provider_usage::live::sources::collect(&live.sources, online, &hidden, max_age);
     let snapshots: Vec<provider_usage::live::milestones::LiveUsageSnapshot> =
         collected.snapshots.iter().map(milestone_snapshot).collect();
+    // Every provider this pass actually published a snapshot for, not only
+    // Claude — `collected.snapshots` already excludes a hidden or offline
+    // provider (see `sources::collect`), and a provider that failed this
+    // pass has no entry here at all.
+    crate::analytics::record_usage_observed(app, &collected.snapshots);
     let summary = provider_usage::live::summarize_collected(
         collected,
         provider_usage::live::roster(&live.sources, &hidden),
