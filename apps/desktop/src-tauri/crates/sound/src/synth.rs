@@ -148,11 +148,6 @@ fn note_layer(v: &Voice, f: f32, gain: f32) -> Wave {
     acc.expect("the fixed three-voice array always produces a wave")
 }
 
-/// Render one voice at its own root — the "nobody in particular" sound.
-pub fn render_voice(v: &Voice) -> Wave {
-    finish_to(v.dur + 0.35, voice_parts(v), v.level)
-}
-
 /// One pitched note at `freq`, with no sub and no air.
 ///
 /// Exposed so a chord can place its notes itself — at their own start times for an
@@ -175,27 +170,6 @@ pub fn note_part(v: &Voice, freq: f32, gain: f32) -> Wave {
 /// already a sub underneath it.
 pub fn note_gain(n: usize, _i: usize) -> f32 {
     (1.0 / (n * 3) as f32) * 0.5
-}
-
-/// The layers one voice is made of, before any mixing or finishing decision.
-fn voice_parts(v: &Voice) -> Vec<(Wave, f64, f32)> {
-    let mut parts = tone_parts(v);
-    parts.extend(foundation_parts(v, v.root));
-    parts
-}
-
-/// Just the pitched layers — the notes themselves, with no sub and no air.
-///
-/// Separated out because a chord needs these **per note** while it needs the
-/// foundation below only **once**. See [`foundation_parts`].
-pub fn tone_parts(v: &Voice) -> Vec<(Wave, f64, f32)> {
-    let n_notes = v.chord.len();
-    let mut parts: Vec<(Wave, f64, f32)> = Vec::new();
-    for (i, semi) in v.chord.iter().enumerate() {
-        let f = v.root * 2.0_f32.powf(semi / 12.0);
-        parts.push((note_layer(v, f, note_gain(n_notes, i)), 0.0, 1.0));
-    }
-    parts
 }
 
 /// The sub an octave below `root`, plus the band-passed air on top.

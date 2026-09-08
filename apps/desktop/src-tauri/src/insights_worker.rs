@@ -9,7 +9,7 @@ use antiburn_local::analysis::{SessionEvidence, TurnRowStore};
 use antiburn_local::insights::{DetectorId, eligible};
 use antiburn_local::model::AgentKind;
 use tauri::{Emitter, Manager};
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::Notify;
 
 use crate::analysis::{self, EvidencePass, PassOutcome, PassSignal, UnreadableReason};
 use crate::commands;
@@ -39,27 +39,10 @@ pub(crate) const EVIDENCE_ERROR_UNSUPPORTED: &str = "source-unsupported";
 /// this suffix safely.
 const UNREADABLE_REASON_SEPARATOR: &str = ":";
 
-struct Permits {
-    cpu: Semaphore,
-    source: Semaphore,
-    provider_db: Semaphore,
-}
-
-impl Default for Permits {
-    fn default() -> Self {
-        Self {
-            cpu: Semaphore::new(1),
-            source: Semaphore::new(1),
-            provider_db: Semaphore::new(1),
-        }
-    }
-}
-
-/// This handle wakes the worker and limits its shared processing resources.
+/// This handle wakes the worker.
 #[derive(Default)]
 pub struct WorkerHandle {
     wake: Notify,
-    permits: Permits,
 }
 
 pub(crate) type PassFuture = Pin<Box<dyn Future<Output = EvidencePass> + Send>>;
@@ -80,12 +63,6 @@ type RecordAnalyzer<'a> = dyn Fn(
     + Send
     + Sync
     + 'a;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PermitKind {
-    Source,
-    ProviderDb,
-}
 
 /// `store` is a cheap handle (see [`Store`]'s doc comment): this clones it
 /// once per pass into a [`FencedTurnRowStore`] stamped with `claim_fence`,
@@ -200,13 +177,6 @@ pub(crate) fn backoff_secs(retry_count: i64) -> i64 {
     BACKOFF_BASE_SECS
         .saturating_mul(1_i64.checked_shl(exponent).unwrap_or(i64::MAX))
         .min(BACKOFF_MAX_SECS)
-}
-
-pub(crate) fn permit_for_source_kind(source_kind: &str) -> PermitKind {
-    match source_kind {
-        "providerDb" => PermitKind::ProviderDb,
-        _ => PermitKind::Source,
-    }
 }
 
 /// Classifies a provider against the shipped detector fact
@@ -349,7 +319,6 @@ fn lease_renew_interval() -> Duration {
 
 pub(crate) async fn process_next(
     store: &Store,
-    handle: &WorkerHandle,
     clock: &(dyn Fn() -> i64 + Send + Sync),
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(ActivityEntry) + Send + Sync),
@@ -367,20 +336,6 @@ pub(crate) async fn process_next(
         apply_outcome(store, &claim, &pass, clock())?;
         return Ok(true);
     };
-    let _cpu = handle
-        .permits
-        .cpu
-        .acquire()
-        .await
-        .map_err(|_| anyhow::anyhow!("CPU permit closed"))?;
-    let permit = match permit_for_source_kind(&record.source_kind) {
-        PermitKind::Source => &handle.permits.source,
-        PermitKind::ProviderDb => &handle.permits.provider_db,
-    };
-    let _source = permit
-        .acquire()
-        .await
-        .map_err(|_| anyhow::anyhow!("source permit closed"))?;
     let signal = PassSignal::new();
     let mut pass = run_pass(&record, signal.clone(), claim.claim_fence);
     let mut progress = signal.progress();
@@ -426,7 +381,7 @@ pub(crate) async fn worker_loop(
 ) {
     let mut processed = false;
     loop {
-        match process_next(store, handle, clock, run_pass, announce).await {
+        match process_next(store, clock, run_pass, announce).await {
             Ok(true) => {
                 processed = true;
                 continue;

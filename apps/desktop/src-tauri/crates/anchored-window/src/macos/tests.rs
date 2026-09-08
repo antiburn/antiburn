@@ -25,7 +25,7 @@ fn horizontal_alignment_uses_anchor_and_work_area_in_order() {
     };
     let request = FrameRequest {
         width: 300.0,
-        height: Some(200.0),
+        height: 200.0,
         anchor_region: AnchorRegion {
             top: 0.0,
             height: 48.0,

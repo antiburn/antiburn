@@ -104,13 +104,6 @@ pub async fn run_git_output_in_environment(
     envs: &[(&str, &str)],
 ) -> Result<Output> {
     let mut cmd = environment::configure_command_for_environment(environment, "git", repo)?;
-    let mut display_parts = vec!["git".to_string()];
-
-    if let Some(repo) = repo {
-        let repo_str = repo.to_string_lossy().to_string();
-        display_parts.push("-C".to_string());
-        display_parts.push(repo_str);
-    }
 
     for (key, value) in envs {
         cmd.env(key, value);
@@ -121,7 +114,6 @@ pub async fn run_git_output_in_environment(
         .iter()
         .map(|(key, _)| (*key).to_string())
         .collect::<Vec<_>>();
-    display_parts.extend(args.iter().map(|s| s.to_string()));
     ::tracing::trace!(
         event = "git_command_started",
         repo = repo_for_log.as_deref().unwrap_or(""),

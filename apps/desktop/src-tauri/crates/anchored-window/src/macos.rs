@@ -4,12 +4,12 @@ use objc2_app_kit::{NSEvent, NSWindow};
 use tauri::window::{Effect, EffectState, EffectsBuilder};
 use tauri::{Manager, Runtime, WebviewWindow, WebviewWindowBuilder};
 
+use crate::AnchorRegion;
 use crate::geometry::{CursorProximity, Point, Rect, classify_cursor, place_left_preferred};
-use crate::{AnchorRegion, WindowMaterial};
 
 pub(crate) struct FrameRequest {
     pub width: f64,
-    pub height: Option<f64>,
+    pub height: f64,
     pub anchor_region: AnchorRegion,
     pub gap: f64,
     pub screen_margin: f64,
@@ -17,19 +17,15 @@ pub(crate) struct FrameRequest {
 
 pub(crate) fn configure<'a, R: Runtime, M: Manager<R>>(
     builder: WebviewWindowBuilder<'a, R, M>,
-    material: WindowMaterial,
+    corner_radius: f64,
 ) -> WebviewWindowBuilder<'a, R, M> {
-    let builder = builder.accept_first_mouse(true);
-    match material {
-        WindowMaterial::Popover { corner_radius } => builder.effects(
-            EffectsBuilder::new()
-                .effect(Effect::Popover)
-                .state(EffectState::Active)
-                .radius(corner_radius)
-                .build(),
-        ),
-        WindowMaterial::Opaque | WindowMaterial::Transparent => builder,
-    }
+    builder.accept_first_mouse(true).effects(
+        EffectsBuilder::new()
+            .effect(Effect::Popover)
+            .state(EffectState::Active)
+            .radius(corner_radius)
+            .build(),
+    )
 }
 
 pub(crate) fn show_without_activation(window: &WebviewWindow) -> tauri::Result<()> {
@@ -93,7 +89,7 @@ fn update_frame(
         return;
     };
     let work_frame = screen.visibleFrame();
-    let height = request.height.unwrap_or(anchor_frame.size.height);
+    let height = request.height;
     let x = horizontal_origin(
         frame_rect(
             anchor_frame.origin.x,

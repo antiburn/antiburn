@@ -1429,6 +1429,48 @@ fn records_to_persist_keeps_only_changed_or_returned_rows() {
 }
 
 #[test]
+fn scoped_persistence_skips_unchanged_rows_without_calling_the_store() {
+    let records = vec![record("claude-code", "steady", Some(1_000))];
+    let calls = std::cell::Cell::new(0);
+
+    let persisted = persist_changed_records(&records, &[], &[], |_| {
+        calls.set(calls.get() + 1);
+        Ok(())
+    })
+    .unwrap();
+
+    assert!(!persisted);
+    assert_eq!(calls.get(), 0);
+}
+
+#[test]
+fn scoped_persistence_writes_changed_new_and_returned_rows_once() {
+    let changed = record("claude-code", "changed", Some(1_000));
+    let new = record("claude-code", "new", Some(2_000));
+    let returned = record("codex", "returned", Some(3_000));
+    let unchanged = record("codex", "steady", Some(4_000));
+    let records = vec![changed.clone(), new.clone(), returned.clone(), unchanged];
+    let writes = Mutex::new(Vec::new());
+
+    let persisted = persist_changed_records(
+        &records,
+        &[changed.key.clone(), new.key.clone()],
+        std::slice::from_ref(&returned.key),
+        |batch| {
+            writes.lock().unwrap().push(batch.to_vec());
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert!(persisted);
+    assert_eq!(
+        writes.into_inner().unwrap(),
+        vec![vec![changed, new, returned]]
+    );
+}
+
+#[test]
 fn per_agent_totals_count_sessions_and_keep_the_newest_activity() {
     let records = vec![
         record("claude-code", "a", Some(1_000)),

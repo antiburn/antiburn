@@ -1,5 +1,5 @@
 use crate::lifecycle::RequestTransition;
-use crate::model::{AnchorRegion, AnchoredWindowRequest, RevealPolicy};
+use crate::model::{AnchorRegion, AnchoredWindowRequest};
 
 use super::fixtures::{lifecycle, region, retargeted};
 
@@ -7,17 +7,12 @@ use super::fixtures::{lifecycle, region, retargeted};
 fn visible_immediate_retarget_waits_for_the_renderer_commit() {
     let mut lifecycle = lifecycle();
     lifecycle.renderer_generation = 7;
-    let (queued, reveal_before_ready) = retargeted(lifecycle.request(
-        "target",
-        region(),
-        RevealPolicy::ImmediatePlaceholder,
-        320.0,
-        None,
-    ));
+    let (queued, reveal_before_ready) =
+        retargeted(lifecycle.request("target", region(), 320.0, None));
     assert!(!reveal_before_ready);
     assert!(!queued.retarget_commit_required);
 
-    let Some(reveal_ready) = lifecycle.renderer_ready(7, RevealPolicy::ImmediatePlaceholder) else {
+    let Some(reveal_ready) = lifecycle.renderer_ready(7) else {
         panic!("the renderer generation is current");
     };
     let delivered = lifecycle
@@ -35,13 +30,8 @@ fn visible_immediate_retarget_waits_for_the_renderer_commit() {
     assert_eq!(delivered.initial_presentation, None);
     lifecycle.height = 500.0;
 
-    let (retargeted, reveal_now) = retargeted(lifecycle.request(
-        "second",
-        region(),
-        RevealPolicy::ImmediatePlaceholder,
-        320.0,
-        Some("second presentation"),
-    ));
+    let (retargeted, reveal_now) =
+        retargeted(lifecycle.request("second", region(), 320.0, Some("second presentation")));
 
     assert_eq!(retargeted.generation, queued.generation + 1);
     assert!(retargeted.retarget_commit_required);
@@ -63,16 +53,11 @@ fn visible_immediate_retarget_waits_for_the_renderer_commit() {
 fn cold_seeded_request_waits_for_presentation_before_reveal() {
     let mut lifecycle = lifecycle();
     lifecycle.renderer_generation = 7;
-    let (queued, reveal_before_ready) = retargeted(lifecycle.request(
-        "target",
-        region(),
-        RevealPolicy::ImmediatePlaceholder,
-        320.0,
-        Some("presentation"),
-    ));
+    let (queued, reveal_before_ready) =
+        retargeted(lifecycle.request("target", region(), 320.0, Some("presentation")));
 
     assert!(!reveal_before_ready);
-    let Some(reveal_ready) = lifecycle.renderer_ready(7, RevealPolicy::ImmediatePlaceholder) else {
+    let Some(reveal_ready) = lifecycle.renderer_ready(7) else {
         panic!("the renderer generation is current");
     };
     let delivered = lifecycle
@@ -92,13 +77,8 @@ fn seeded_renderer_recovery_rearms_the_presentation_barrier() {
     let mut lifecycle = lifecycle();
     lifecycle.renderer_generation = 7;
     lifecycle.renderer_ready = true;
-    let (request, reveal_now) = retargeted(lifecycle.request(
-        "target",
-        region(),
-        RevealPolicy::ImmediatePlaceholder,
-        320.0,
-        Some("presentation"),
-    ));
+    let (request, reveal_now) =
+        retargeted(lifecycle.request("target", region(), 320.0, Some("presentation")));
     assert!(!reveal_now);
     assert!(lifecycle.presented(request.generation));
     assert!(lifecycle.visible);
@@ -108,7 +88,7 @@ fn seeded_renderer_recovery_rearms_the_presentation_barrier() {
 
     assert!(!lifecycle.visible);
     assert!(lifecycle.awaiting_presentation);
-    let Some(reveal_ready) = lifecycle.renderer_ready(8, RevealPolicy::ImmediatePlaceholder) else {
+    let Some(reveal_ready) = lifecycle.renderer_ready(8) else {
         panic!("the replacement renderer generation is current");
     };
     let delivered = lifecycle
@@ -126,13 +106,7 @@ fn unseeded_renderer_recovery_waits_for_replacement_presentation() {
     let mut lifecycle = lifecycle();
     lifecycle.renderer_generation = 7;
     lifecycle.renderer_ready = true;
-    let (request, reveal_now) = retargeted(lifecycle.request(
-        "target",
-        region(),
-        RevealPolicy::ImmediatePlaceholder,
-        320.0,
-        None,
-    ));
+    let (request, reveal_now) = retargeted(lifecycle.request("target", region(), 320.0, None));
     assert!(reveal_now);
     assert!(lifecycle.presented(request.generation));
     assert!(lifecycle.visible);
@@ -142,10 +116,7 @@ fn unseeded_renderer_recovery_waits_for_replacement_presentation() {
 
     assert!(!lifecycle.visible);
     assert!(lifecycle.awaiting_presentation);
-    assert_eq!(
-        lifecycle.renderer_ready(8, RevealPolicy::ImmediatePlaceholder),
-        Some(false)
-    );
+    assert_eq!(lifecycle.renderer_ready(8), Some(false));
     let delivered = lifecycle
         .pending_render_request()
         .expect("the replacement renderer needs delivery");
@@ -159,13 +130,8 @@ fn unseeded_renderer_recovery_waits_for_replacement_presentation() {
 fn failed_delivery_remains_retryable_for_the_same_target() {
     let mut lifecycle = lifecycle();
     lifecycle.renderer_ready = true;
-    let (request, _) = retargeted(lifecycle.request(
-        "target",
-        region(),
-        RevealPolicy::AfterPresentation,
-        120.0,
-        Some("presentation"),
-    ));
+    let (request, _) =
+        retargeted(lifecycle.request("target", region(), 120.0, Some("presentation")));
 
     assert_eq!(
         lifecycle
@@ -174,13 +140,7 @@ fn failed_delivery_remains_retryable_for_the_same_target() {
             .generation,
         request.generation
     );
-    let retained = lifecycle.request(
-        "target",
-        region(),
-        RevealPolicy::AfterPresentation,
-        120.0,
-        Some("ignored replacement"),
-    );
+    let retained = lifecycle.request("target", region(), 120.0, Some("ignored replacement"));
     assert!(matches!(retained, RequestTransition::Retained { .. }));
     assert!(lifecycle.pending_render_request().is_some());
     assert!(lifecycle.mark_delivered(request.generation));
@@ -190,10 +150,7 @@ fn failed_delivery_remains_retryable_for_the_same_target() {
 
     lifecycle.renderer_destroyed();
     lifecycle.renderer_generation = 9;
-    assert_eq!(
-        lifecycle.renderer_ready(9, RevealPolicy::AfterPresentation),
-        Some(false)
-    );
+    assert_eq!(lifecycle.renderer_ready(9), Some(false));
     assert!(lifecycle.pending_render_request().is_some());
 }
 
@@ -201,33 +158,21 @@ fn failed_delivery_remains_retryable_for_the_same_target() {
 fn same_target_reentry_does_not_bypass_a_pending_retarget_commit() {
     let mut lifecycle = lifecycle();
     lifecycle.renderer_ready = true;
-    let (first, _) = retargeted(lifecycle.request(
-        "first",
-        region(),
-        RevealPolicy::ImmediatePlaceholder,
-        120.0,
-        None,
-    ));
+    let (first, _) = retargeted(lifecycle.request("first", region(), 120.0, None));
     assert!(lifecycle.presented(first.generation));
 
     let next_region = AnchorRegion {
         top: 80.0,
         height: 52.0,
     };
-    let (second, _) = retargeted(lifecycle.request(
-        "second",
-        next_region,
-        RevealPolicy::ImmediatePlaceholder,
-        120.0,
-        Some("second presentation"),
-    ));
+    let (second, _) =
+        retargeted(lifecycle.request("second", next_region, 120.0, Some("second presentation")));
     assert!(second.retarget_commit_required);
 
     assert_eq!(
         lifecycle.request(
             "second",
             next_region,
-            RevealPolicy::ImmediatePlaceholder,
             120.0,
             Some("replacement presentation"),
         ),

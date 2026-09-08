@@ -9,8 +9,7 @@
 //! the app's navigation — that is the app's **policy**.
 //!
 //! The seam between crate and app is intentionally tiny:
-//! - [`NudgeManager::new`] — created once at app setup with an `on_action`
-//!   callback (the only app-specific behavior injected in).
+//! - [`NudgeManager::with_placement`] — created once at app setup with callbacks.
 //! - [`NudgeManager::show`] / [`NudgeManager::dismiss`].
 //! - the [`commands::nudge_action`] / [`commands::nudge_dismiss`] commands the
 //!   notification webview calls.
@@ -150,19 +149,6 @@ pub struct NudgeManager {
 }
 
 impl NudgeManager {
-    /// Capture the app handle and the on-action callback. The (hidden)
-    /// notification window itself is created lazily on first [`Self::show`].
-    ///
-    /// `on_action` is invoked with `{ kind, action_id }` when the user clicks a
-    /// CTA; the notification is then dismissed automatically. The app implements
-    /// focus/navigation there.
-    pub fn new(
-        app: &AppHandle,
-        on_action: impl Fn(NudgeActionEvent) + Send + Sync + 'static,
-    ) -> tauri::Result<Self> {
-        Self::with_placement(app, on_action, || NudgePlacement::NativeCorner)
-    }
-
     /// Capture the app handle, on-action callback, and placement provider. The
     /// provider is evaluated at reveal time so it can reflect the latest user
     /// setting and current tray rect.

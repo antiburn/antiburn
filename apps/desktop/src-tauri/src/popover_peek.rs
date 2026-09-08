@@ -4,8 +4,7 @@ use std::time::Duration;
 
 use antiburn_anchored_window::{
     AnchorRegion, AnchoredWindowConfig, AnchoredWindowManager, AnchoredWindowRequest,
-    AnchoredWindowState, HeightPolicy, InteractionPolicy, PlacementPolicy, PointerExitPolicy,
-    RevealPolicy, WindowMaterial,
+    AnchoredWindowState, PointerExitPolicy,
 };
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
@@ -85,20 +84,12 @@ pub fn manager() -> PopoverPeekManager {
         route: "index.html#/popover-peek".to_string(),
         title: "antiburn".to_string(),
         width: 380.0,
-        material: WindowMaterial::Popover {
-            corner_radius: crate::popover::CORNER_RADIUS,
-        },
-        interaction: InteractionPolicy::Passive,
-        reveal: RevealPolicy::ImmediatePlaceholder,
-        height: HeightPolicy::Content {
-            initial: 320.0,
-            min: 60.0,
-            max: MAX_CONTENT_HEIGHT,
-        },
-        placement: PlacementPolicy::LeftPreferred {
-            gap: 8.0,
-            screen_margin: 8.0,
-        },
+        corner_radius: crate::popover::CORNER_RADIUS,
+        initial_height: 320.0,
+        min_height: 60.0,
+        max_height: MAX_CONTENT_HEIGHT,
+        gap: 8.0,
+        screen_margin: 8.0,
         conceal_fallback: Duration::from_millis(80),
         pointer_exit: Some(PointerExitPolicy {
             edge_tolerance: 12.0,

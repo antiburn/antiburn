@@ -19,8 +19,7 @@ mod windows;
 pub use manager::AnchoredWindowManager;
 pub use model::{
     AnchorRegion, AnchoredWindowConfig, AnchoredWindowLifecycleEvent, AnchoredWindowRenderRequest,
-    AnchoredWindowRequest, AnchoredWindowState, HeightPolicy, InteractionPolicy, PlacementPolicy,
-    PointerExitPolicy, RevealPolicy, WindowMaterial,
+    AnchoredWindowRequest, AnchoredWindowState, PointerExitPolicy,
 };
 
 /// The event that carries each target generation to the active renderer.
