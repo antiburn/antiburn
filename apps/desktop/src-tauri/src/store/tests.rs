@@ -14,6 +14,7 @@ mod activity_tests;
 mod coverage_tests;
 mod reconcile_tests;
 mod resume_tests;
+mod rollout_checkpoint_migration_tests;
 mod turn_row_tests;
 
 fn store() -> Store {

@@ -13,6 +13,7 @@
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
     V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
+    V41,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -833,4 +834,42 @@ DROP TABLE provider_usage_allocation_revision;
 DROP TABLE provider_usage_session_allocation;
 
 ALTER TABLE provider_usage_period DROP COLUMN allocation_frozen;
+"#;
+
+/// v41 adds the checkpoint the bounded Codex rollout history reader keeps
+/// per session, so a large rollout file resumes from its last read byte
+/// instead of rereading it every pass. Keyed by session and provider, not
+/// by account: the checkpoint tracks how far a file has been read, which
+/// does not depend on which account a later pass resolves the session to.
+///
+/// `FOREIGN KEY ... ON DELETE CASCADE` removes a session's checkpoint row
+/// when the session itself is deleted, the same way `session_provider_account`
+/// relies on the cascade rather than an explicit delete in
+/// `Store::delete_session` or `Store::clear_local_session_data`.
+///
+/// Readers: `store::codex_rollout_checkpoint`,
+/// `provider_usage::codex_rollout_history`.
+const V41: &str = r#"
+CREATE TABLE provider_usage_rollout_checkpoint (
+    environment_key       TEXT NOT NULL,
+    agent                 TEXT NOT NULL,
+    session_id            TEXT NOT NULL,
+    provider              TEXT NOT NULL,
+    source_label          TEXT NOT NULL,
+    cursor_bytes          INTEGER NOT NULL DEFAULT 0 CHECK (cursor_bytes >= 0),
+    source_bytes          INTEGER NOT NULL DEFAULT 0 CHECK (source_bytes >= 0),
+    source_modified_epoch INTEGER,
+    source_identity       TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL CHECK (status IN ('pending', 'retry', 'complete')),
+    retry_count           INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+    next_attempt_epoch    INTEGER NOT NULL DEFAULT 0,
+    updated_at_epoch      INTEGER NOT NULL,
+    completed_at_epoch    INTEGER,
+    PRIMARY KEY (environment_key, agent, session_id, provider),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session(environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX provider_usage_rollout_checkpoint_ready
+    ON provider_usage_rollout_checkpoint (status, next_attempt_epoch, updated_at_epoch);
 "#;
