@@ -98,6 +98,14 @@
      see lib/agentIcon.tsx. */
   --color-agent-mark: var(--color-agent-mark-val);
 
+  /* Burn Check outcomes use a feature-specific palette. They do not replace
+     native accents or the broader status palette. */
+  --color-burn-check-failure-fill: var(--color-burn-check-failure-fill-val);
+  --color-burn-check-failure-text: var(--color-burn-check-failure-text-val);
+  --color-burn-check-pass-fill: var(--color-burn-check-pass-fill-val);
+  --color-burn-check-neutral: var(--color-burn-check-neutral-val);
+  --color-session-card-highlight: var(--color-session-card-highlight-val);
+
   /* Session-analysis chart tokens are theme-adaptive too and live in
    * ./session-analysis-colors.css. */
 
@@ -183,6 +191,13 @@
 
   /* Brand-mark ink */
   --color-agent-mark-val: hsl(52 11% 13.3%);
+
+  /* Burn Checks and session cards */
+  --color-burn-check-failure-fill-val: hsl(17.6 100% 58.6%);
+  --color-burn-check-failure-text-val: hsl(18 100% 36.4%);
+  --color-burn-check-pass-fill-val: hsl(191.5 83% 36.8%);
+  --color-burn-check-neutral-val: hsl(209 6% 73.7%);
+  --color-session-card-highlight-val: hsl(0 0% 100% / 0.96);
 
   /* Spacing rhythm (multiples of 4) */
   --space-xs: 4px;
@@ -281,6 +296,11 @@
     --color-shimmer-val: hsl(0 0% 100%);
     --color-system-gold-text-val: hsl(43.5 88% 66%);
     --color-agent-mark-val: hsl(60 15% 96.2%);
+    --color-burn-check-failure-fill-val: hsl(17.6 100% 58.6%);
+    --color-burn-check-failure-text-val: hsl(18 100% 68%);
+    --color-burn-check-pass-fill-val: hsl(192 63% 47.6%);
+    --color-burn-check-neutral-val: hsl(210 3% 50.5%);
+    --color-session-card-highlight-val: hsl(0 0% 100% / 0.1);
     /* The system tertiary label is ~25% opacity in dark mode; bump to 62%,
        where small text reaches 4.5:1 on a card (same rationale as light
        mode). The hard case is again the popover: the surface is translucent,
@@ -341,6 +361,11 @@
   --color-shimmer-val: hsl(0 0% 100%);
   --color-system-gold-text-val: hsl(41 100% 28.6%);
   --color-agent-mark-val: hsl(52 11% 13.3%);
+  --color-burn-check-failure-fill-val: hsl(17.6 100% 58.6%);
+  --color-burn-check-failure-text-val: hsl(18 100% 36.4%);
+  --color-burn-check-pass-fill-val: hsl(191.5 83% 36.8%);
+  --color-burn-check-neutral-val: hsl(209 6% 73.7%);
+  --color-session-card-highlight-val: hsl(0 0% 100% / 0.96);
 }
 
 @media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: light) {
@@ -401,6 +426,11 @@
   --color-shimmer-val: hsl(0 0% 100%);
   --color-system-gold-text-val: hsl(43.5 88% 66%);
   --color-agent-mark-val: hsl(60 15% 96.2%);
+  --color-burn-check-failure-fill-val: hsl(17.6 100% 58.6%);
+  --color-burn-check-failure-text-val: hsl(18 100% 68%);
+  --color-burn-check-pass-fill-val: hsl(192 63% 47.6%);
+  --color-burn-check-neutral-val: hsl(210 3% 50.5%);
+  --color-session-card-highlight-val: hsl(0 0% 100% / 0.1);
 }
 
 /* Must follow the :root[data-theme="dark"] block above — media queries add no

@@ -467,10 +467,9 @@ describe("SessionList — rows", () => {
 
   it("shows evidence computation instead of a synthetic hygiene verdict", () => {
     list({ entries: [entry({ sessionId: "session-pending" })] })
-    const verdict = screen.getByLabelText("Computing session hygiene checks")
-    expect(verdict.textContent).toBe("Computing checks…")
-    expect(verdict.style.color).toBe("var(--color-label-tertiary)")
-    expect(screen.queryByLabelText("All checks passed")).toBeNull()
+    const verdict = screen.getByLabelText(/Running Burn Checks/)
+    expect(verdict).toHaveTextContent("Running Burn Checks…")
+    expect(screen.queryByLabelText(/All Burn Checks passed/)).toBeNull()
   })
 
   it("renders finding and clean statuses returned by the batched IPC path", async () => {
@@ -514,8 +513,8 @@ describe("SessionList — rows", () => {
     list({ entries: [entry({ sessionId: "synthetic-hygiene-result" })] })
 
     await waitFor(() => {
-      expect(screen.getByLabelText("5 of 6 burn checks passed").textContent).toBe(
-        "5/6 burn checks",
+      expect(screen.getByLabelText(/Some Burn Checks failed/)).toHaveTextContent(
+        "1 Burn Check failed · 5 passed",
       )
     })
     expect(getSessionHygiene).toHaveBeenCalledWith([
@@ -544,11 +543,11 @@ describe("SessionList — rows", () => {
     list({ entries: [entry({ sessionId: "synthetic-hygiene-stale" })] })
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Refreshing — 5 of 6 burn checks passed").textContent).toBe(
-        "5/6 burn checks",
+      expect(screen.getByLabelText(/Refreshing/)).toHaveTextContent(
+        "1 Burn Check failed · 5 passed",
       )
     })
-    expect(screen.queryByLabelText("Refreshing session hygiene checks")).toBeNull()
+    expect(screen.queryByText("Refreshing Burn Checks…")).toBeNull()
   })
 
   it("states the last-activity time", () => {
@@ -588,7 +587,7 @@ describe("SessionList — navigation", () => {
   it("renders an agent icon only from the injected renderer", () => {
     const renderAgentIcon = vi.fn(() => <span data-testid="agent-icon" />)
     list({ entries: [entry({ surface: "cli" })], renderAgentIcon })
-    expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 14, "cli")
+    expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 12, "cli", "neutral")
     expect(screen.getByTestId("agent-icon")).toBeTruthy()
   })
 })
@@ -821,7 +820,7 @@ describe("SessionList — shared tooltips", () => {
         }),
       ],
     })
-    const status = await screen.findByLabelText("5 of 6 burn checks passed")
+    const status = await screen.findByLabelText(/Some Burn Checks failed/)
     const cost = screen.getByLabelText("Estimated cost $2.40")
     const fork = screen.getByLabelText("Forked from another session")
     const repository = screen.getByText("avery/widgets +1")
@@ -876,7 +875,7 @@ describe("SessionList — shared tooltips", () => {
     const { container, unmount } = list({
       entries: [entry({ hasForkParent: true, repo: "avery/widgets", wslDistro: "Ubuntu" })],
     })
-    const status = screen.getByLabelText("Computing session hygiene checks")
+    const status = screen.getByLabelText(/Running Burn Checks/)
     const fork = screen.getByLabelText("Forked from another session")
     const repository = screen.getByText("avery/widgets")
     const wsl = screen.getByLabelText("Found in Ubuntu on Windows Subsystem for Linux")
@@ -903,8 +902,8 @@ describe("SessionList — shared tooltips", () => {
     expect(repository.dataset.state).toBe("closed")
 
     fireEvent.focus(status)
-    expect(document.querySelector(".ui-tooltip")?.textContent).toBe(
-      "Computing session hygiene checks",
+    expect(document.querySelector(".ui-tooltip")?.textContent).toContain(
+      "Session depth not assessed",
     )
     fireEvent.blur(status)
     expect(document.querySelector(".ui-tooltip")).toBeNull()

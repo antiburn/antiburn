@@ -1,0 +1,670 @@
+<div id="session-list-check-line" data-blue-style="cyan" aria-label="Session list card blue comparison">
+  <style>
+    #session-list-check-line {
+      --sl-blue-light: #318fc9;
+      --sl-blue-dark: #68b9ef;
+      --sl-blue-cyan-light: #108eac;
+      --sl-blue-cyan-dark: #2ea5c6;
+      --sl-blue-active-light: var(--sl-blue-light);
+      --sl-blue-active-dark: var(--sl-blue-dark);
+      --sl-orange: #ff6a2c;
+      --sl-green-light-ring: #0a9b6e;
+      --sl-green-light-text: #08714e;
+      --sl-green-light-fill: #087b57;
+      --sl-green-dark: #0bc689;
+      --sl-green-dark-fill: #087b57;
+      --sl-red-light: #d13a3e;
+      --sl-red-light-text: #b8292e;
+      --sl-red-dark: #e84548;
+      --sl-red-dark-text: #ff8587;
+      width: 100%;
+      background: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    #session-list-check-line * { box-sizing: border-box; }
+
+    #session-list-check-line[data-blue-style="cyan"] {
+      --sl-blue-active-light: var(--sl-blue-cyan-light);
+      --sl-blue-active-dark: var(--sl-blue-cyan-dark);
+    }
+
+    #session-list-check-line .sl-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+      color: light-dark(#202124, #f2f3f5);
+    }
+
+    #session-list-check-line .sl-heading h2 {
+      margin: 0;
+      font-size: 19px;
+      font-weight: 500;
+      letter-spacing: -0.015em;
+      text-wrap: balance;
+    }
+
+    #session-list-check-line .sl-heading-note {
+      color: light-dark(#676b70, #9b9da3);
+      font-size: 12px;
+    }
+
+    #session-list-check-line .sl-heading-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    #session-list-check-line .sl-blue-toggle {
+      display: inline-flex;
+      flex: none;
+      gap: 2px;
+      padding: 2px;
+      border: 1px solid light-dark(rgb(0 0 0 / 0.12), rgb(255 255 255 / 0.16));
+      border-radius: 7px;
+    }
+
+    #session-list-check-line .sl-blue-toggle button {
+      border: 0;
+      border-radius: 4px;
+      padding: 3px 7px;
+      background: transparent;
+      color: light-dark(#666a70, #a5a8ad);
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    #session-list-check-line .sl-blue-toggle button[aria-pressed="true"] {
+      background: light-dark(rgb(0 0 0 / 0.08), rgb(255 255 255 / 0.12));
+      color: light-dark(#202124, #f2f3f5);
+    }
+
+    #session-list-check-line .sl-theme-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    #session-list-check-line .sl-window {
+      --sl-system-orange-text: #ba3800;
+      --sl-failure-text: var(--sl-system-orange-text);
+      --sl-pass: var(--sl-blue-active-light);
+      --sl-pass-text: var(--sl-pass);
+      --sl-pass-fill: var(--sl-pass);
+      --sl-fail: var(--sl-orange);
+      --sl-neutral: #b8bcc0;
+      --sl-window: #f3f3f3;
+      --sl-sidebar: #ededed;
+      --sl-card: #fbfbfb;
+      --sl-card-hover: #fdfdfd;
+      --sl-card-highlight: rgb(255 255 255 / 0.96);
+      --sl-card-highlight-hover: rgb(255 255 255 / 1);
+      --sl-card-shadow: rgb(0 0 0 / 0.07);
+      --sl-card-shadow-hover: rgb(0 0 0 / 0.10);
+      --sl-label: rgb(0 0 0 / 0.86);
+      --sl-secondary: rgb(34 35 39 / 0.74);
+      --sl-tertiary: rgb(34 35 39 / 0.56);
+      --sl-separator: rgb(0 0 0 / 0.10);
+      --sl-provider: #d9d9da;
+      --sl-agent-mark: #24231f;
+      --sl-accent-foreground: #ffffff;
+      overflow: hidden;
+      min-width: 0;
+      border-radius: 14px;
+      background: var(--sl-window);
+      color: var(--sl-label);
+      box-shadow:
+        0 0 0 1px rgb(0 0 0 / 0.06),
+        0 1px 2px -1px rgb(0 0 0 / 0.06),
+        0 8px 24px rgb(0 0 0 / 0.08);
+      color-scheme: light;
+    }
+
+    #session-list-check-line .sl-window-dark {
+      --sl-system-orange-text: #ff8d5c;
+      --sl-failure-text: var(--sl-system-orange-text);
+      --sl-pass: var(--sl-blue-active-dark);
+      --sl-neutral: #7d8185;
+      --sl-window: #1d1d1d;
+      --sl-sidebar: #202020;
+      --sl-card: #303030;
+      --sl-card-hover: #343434;
+      --sl-card-highlight: rgb(255 255 255 / 0.10);
+      --sl-card-highlight-hover: rgb(255 255 255 / 0.14);
+      --sl-card-shadow: rgb(0 0 0 / 0.20);
+      --sl-card-shadow-hover: rgb(0 0 0 / 0.26);
+      --sl-label: rgb(255 255 255 / 0.92);
+      --sl-secondary: rgb(240 240 247 / 0.72);
+      --sl-tertiary: rgb(240 240 247 / 0.54);
+      --sl-separator: rgb(255 255 255 / 0.10);
+      --sl-provider: #505052;
+      --sl-agent-mark: #f6f6f1;
+      --sl-accent-foreground: #1e1e1e;
+      color-scheme: dark;
+      box-shadow: 0 0 0 1px rgb(255 255 255 / 0.08);
+    }
+
+    #session-list-check-line[data-palette="green-red"] .sl-window {
+      --sl-pass: var(--sl-green-light-ring);
+      --sl-pass-text: var(--sl-green-light-text);
+      --sl-pass-fill: var(--sl-green-light-fill);
+      --sl-fail: var(--sl-red-light);
+      --sl-failure-text: var(--sl-red-light-text);
+    }
+
+    #session-list-check-line[data-palette="green-red"] .sl-window-dark {
+      --sl-pass: var(--sl-green-dark);
+      --sl-pass-text: var(--sl-green-dark);
+      --sl-pass-fill: var(--sl-green-dark-fill);
+      --sl-fail: var(--sl-red-dark);
+      --sl-failure-text: var(--sl-red-dark-text);
+    }
+
+    #session-list-check-line .sl-window-bar {
+      display: grid;
+      grid-template-columns: 12px 12px 12px minmax(0, 1fr) max-content;
+      align-items: center;
+      gap: 7px;
+      height: 38px;
+      padding: 0 12px;
+      background: var(--sl-sidebar);
+      border-bottom: 1px solid var(--sl-separator);
+    }
+
+    #session-list-check-line .sl-window-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--sl-separator);
+    }
+
+    #session-list-check-line .sl-window-title {
+      margin-left: 6px;
+      overflow: hidden;
+      font-size: 12px;
+      font-weight: 500;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #session-list-check-line .sl-theme-label {
+      color: var(--sl-tertiary);
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    #session-list-check-line .sl-list {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+    }
+
+    #session-list-check-line .sl-card {
+      min-width: 0;
+      padding: 12px;
+      border-radius: 10px;
+      background: var(--sl-card);
+      box-shadow:
+        inset 0 1px 0 var(--sl-card-highlight),
+        0 1px 2px var(--sl-card-shadow);
+      transition-property: background-color, box-shadow;
+      transition-duration: 150ms;
+      transition-timing-function: ease-out;
+    }
+
+    #session-list-check-line .sl-card:hover {
+      background: var(--sl-card-hover);
+      box-shadow:
+        inset 0 1px 0 var(--sl-card-highlight-hover),
+        0 2px 5px var(--sl-card-shadow-hover);
+    }
+
+    #session-list-check-line .sl-check-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content;
+      align-items: center;
+      gap: 12px;
+      min-height: 16px;
+    }
+
+    #session-list-check-line .sl-check-status {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      gap: 7px;
+      color: var(--sl-secondary);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.12px;
+      line-height: 13px;
+    }
+
+    #session-list-check-line .sl-check-copy {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #session-list-check-line .sl-failure-copy {
+      color: var(--sl-failure-text);
+      font-weight: 500;
+    }
+
+    #session-list-check-line .sl-pass-copy {
+      color: inherit;
+      font-weight: 500;
+    }
+
+    #session-list-check-line .sl-cost {
+      color: var(--sl-tertiary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      line-height: 13px;
+    }
+
+    #session-list-check-line .sl-session-title-row {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    #session-list-check-line .sl-provider-mark {
+      display: inline-grid;
+      place-items: center;
+      flex: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 5px;
+      background: var(--sl-provider);
+      color: var(--sl-secondary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+      line-height: 1;
+    }
+
+    #session-list-check-line .sl-agent-mark {
+      display: inline-grid;
+      place-items: center;
+      flex: none;
+      width: 14px;
+      height: 14px;
+      color: var(--sl-agent-mark);
+    }
+
+    #session-list-check-line .sl-agent-mark::before {
+      width: 12px;
+      height: 12px;
+      background: currentColor;
+      content: "";
+      -webkit-mask: var(--sl-agent-icon) center / contain no-repeat;
+      mask: var(--sl-agent-icon) center / contain no-repeat;
+    }
+
+    #session-list-check-line .sl-agent-codex {
+      --sl-agent-icon: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNTYgMjYwIj48cGF0aCBkPSJNMjM5LjE4NCAxMDYuMjAzYTY0LjcyIDY0LjcyIDAgMCAwLTUuNTc2LTUzLjEwM0MyMTkuNDUyIDI4LjQ1OSAxOTEgMTUuNzg0IDE2My4yMTMgMjEuNzRBNjUuNTg2IDY1LjU4NiAwIDAgMCA1Mi4wOTYgNDUuMjJhNjQuNzIgNjQuNzIgMCAwIDAtNDMuMjMgMzEuMzZjLTE0LjMxIDI0LjYwMi0xMS4wNjEgNTUuNjM0IDguMDMzIDc2Ljc0YTY0LjY3IDY0LjY3IDAgMCAwIDUuNTI1IDUzLjEwMmMxNC4xNzQgMjQuNjUgNDIuNjQ0IDM3LjMyNCA3MC40NDYgMzEuMzZhNjQuNzIgNjQuNzIgMCAwIDAgNDguNzU0IDIxLjc0NGMyOC40ODEuMDI1IDUzLjcxNC0xOC4zNjEgNjIuNDE0LTQ1LjQ4MWE2NC43NyA2NC43NyAwIDAgMCA0My4yMjktMzEuMzZjMTQuMTM3LTI0LjU1OCAxMC44NzUtNTUuNDIzLTguMDgzLTc2LjQ4M20tOTcuNTYgMTM2LjMzOGE0OC40IDQ4LjQgMCAwIDEtMzEuMTA1LTExLjI1NWwxLjUzNS0uODdsNTEuNjctMjkuODI1YTguNiA4LjYgMCAwIDAgNC4yNDctNy4zNjd2LTcyLjg1bDIxLjg0NSAxMi42MzZjLjIxOC4xMTEuMzcuMzIuNDA5LjU2M3Y2MC4zNzdjLS4wNTYgMjYuODE4LTIxLjc4MyA0OC41NDUtNDguNjAxIDQ4LjYwMU0zNy4xNTggMTk3LjkzYTQ4LjM1IDQ4LjM1IDAgMCAxLTUuNzgxLTMyLjU4OWwxLjUzNC45MjFsNTEuNzIyIDI5LjgyNmE4LjM0IDguMzQgMCAwIDAgOC40NDEgMGw2My4xODEtMzYuNDI1djI1LjIyMWEuODcuODcgMCAwIDEtLjM1OC42NjVsLTUyLjMzNSAzMC4xODRjLTIzLjI1NyAxMy4zOTgtNTIuOTcgNS40MzEtNjYuNDA0LTE3LjgwM00yMy41NDkgODUuMzhhNDguNSA0OC41IDAgMCAxIDI1LjU4LTIxLjMzM3Y2MS4zOWE4LjI5IDguMjkgMCAwIDAgNC4xOTUgNy4zMTZsNjIuODc0IDM2LjI3MmwtMjEuODQ1IDEyLjYzNmEuODIuODIgMCAwIDEtLjc2NyAwTDQxLjM1MyAxNTEuNTNjLTIzLjIxMS0xMy40NTQtMzEuMTcxLTQzLjE0NC0xNy44MDQtNjYuNDA1em0xNzkuNDY2IDQxLjY5NWwtNjMuMDgtMzYuNjNMMTYxLjczIDc3Ljg2YS44Mi44MiAwIDAgMSAuNzY4IDBsNTIuMjMzIDMwLjE4NGE0OC42IDQ4LjYgMCAwIDEtNy4zMTYgODcuNjM1di02MS4zOTFhOC41NCA4LjU0IDAgMCAwLTQuNC03LjIxM20yMS43NDItMzIuNjlsLTEuNTM1LS45MjJsLTUxLjYxOS0zMC4wODFhOC4zOSA4LjM5IDAgMCAwLTguNDkyIDBMOTkuOTggOTkuODA4Vjc0LjU4N2EuNzIuNzIgMCAwIDEgLjMwNy0uNjY1bDUyLjIzMy0zMC4xMzNhNDguNjUyIDQ4LjY1MiAwIDAgMSA3Mi4yMzYgNTAuMzkxek04OC4wNjEgMTM5LjA5N2wtMjEuODQ1LTEyLjU4NWEuODcuODcgMCAwIDEtLjQxLS42MTRWNjUuNjg1YTQ4LjY1MiA0OC42NTIgMCAwIDEgNzkuNzU3LTM3LjM0NmwtMS41MzUuODdsLTUxLjY3IDI5LjgyNWE4LjYgOC42IDAgMCAwLTQuMjQ2IDcuMzY3em0xMS44NjgtMjUuNThMMTI4LjA2NyA5Ny4zbDI4LjE4OCAxNi4yMTh2MzIuNDM0bC0yOC4wODYgMTYuMjE4bC0yOC4xODgtMTYuMjE4eiIvPjwvc3ZnPg==");
+    }
+
+    #session-list-check-line .sl-agent-claude {
+      --sl-agent-icon: url("https://cdn.jsdelivr.net/npm/simple-icons@16.28.0/icons/claude.svg");
+      color: #d97757;
+    }
+
+    #session-list-check-line .sl-agent-cursor {
+      --sl-agent-icon: url("https://cdn.jsdelivr.net/npm/simple-icons@16.28.0/icons/cursor.svg");
+    }
+
+    #session-list-check-line .sl-agent-opencode {
+      --sl-agent-icon: url("https://cdn.jsdelivr.net/npm/simple-icons@16.28.0/icons/opencode.svg");
+    }
+
+    #session-list-check-line .sl-agent-copilot {
+      --sl-agent-icon: url("https://cdn.jsdelivr.net/npm/simple-icons@16.28.0/icons/githubcopilot.svg");
+    }
+
+    #session-list-check-line .sl-session-title {
+      overflow: hidden;
+      color: var(--sl-label);
+      font-size: 13.5px;
+      font-weight: 500;
+      line-height: 1.4;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #session-list-check-line .sl-session-meta {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 4px 0 0 22px;
+      color: var(--sl-tertiary);
+      font-size: 12px;
+      line-height: 1.4;
+      text-wrap: pretty;
+    }
+
+    #session-list-check-line .sl-session-model {
+      margin: 4px 0 0 22px;
+      overflow: hidden;
+      color: var(--sl-tertiary);
+      font-size: 12px;
+      line-height: 1.4;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #session-list-check-line .sl-session-model-name {
+      color: var(--sl-secondary);
+      font-weight: 500;
+    }
+
+    #session-list-check-line .sl-ring {
+      display: block;
+      flex: none;
+      width: 16px;
+      height: 16px;
+      overflow: visible;
+    }
+
+    #session-list-check-line .sl-state-mark {
+      display: inline-grid;
+      place-items: center;
+      position: relative;
+      flex: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      color: var(--sl-accent-foreground);
+    }
+
+    #session-list-check-line .sl-state-mark-pass::before,
+    #session-list-check-line .sl-state-mark-fail::before {
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      content: "";
+    }
+
+    #session-list-check-line .sl-state-mark-pass::before { background: var(--sl-pass-fill); }
+    #session-list-check-line .sl-state-mark-fail::before { background: var(--sl-fail); }
+    #session-list-check-line .sl-state-mark-neutral {
+      color: var(--sl-neutral);
+      box-shadow: inset 0 0 0 2px currentColor;
+    }
+
+    #session-list-check-line .sl-state-mark svg {
+      position: relative;
+      width: 8px !important;
+      height: 8px !important;
+    }
+
+    #session-list-check-line .sl-state-mark-pass svg,
+    #session-list-check-line .sl-state-mark-fail svg {
+      width: 7px !important;
+      height: 7px !important;
+      stroke-width: 2.5;
+    }
+
+    #session-list-check-line .sl-state-mark-fail {
+      color: var(--sl-fail);
+    }
+
+    #session-list-check-line .sl-state-mark-fail::before { display: none; }
+
+    #session-list-check-line .sl-state-mark-fail svg {
+      width: 14px !important;
+      height: 14px !important;
+      stroke-width: 2.25;
+    }
+    #session-list-check-line .sl-state-mark-neutral svg { stroke-width: 2.75; }
+
+    #session-list-check-line .sl-unavailable {
+      display: inline-grid;
+      place-items: center;
+      flex: none;
+      width: 16px;
+      height: 16px;
+      color: var(--sl-neutral);
+    }
+
+    #session-list-check-line .sl-unavailable svg {
+      width: 16px !important;
+      height: 16px !important;
+      stroke-width: 2.25;
+    }
+
+    #session-list-check-line .sl-computing {
+      animation: sl-ring-spin 900ms linear infinite;
+      transform-origin: center;
+    }
+
+    @keyframes sl-ring-spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 760px) {
+      #session-list-check-line .sl-theme-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 420px) {
+      #session-list-check-line .sl-heading {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #session-list-check-line .sl-computing { animation: none; }
+    }
+  </style>
+
+  <header class="sl-heading">
+    <h2>Session cards with Burn Check status</h2>
+    <div class="sl-heading-actions">
+      <span class="sl-heading-note">Blue + Antiburn orange</span>
+      <div class="sl-blue-toggle" role="group" aria-label="Blue style">
+        <button type="button" data-blue-choice="sky" aria-pressed="false">Sky</button>
+        <button type="button" data-blue-choice="cyan" aria-pressed="true">Cyan</button>
+      </div>
+    </div>
+  </header>
+
+  <template id="sl-all-states-template">
+    <article class="sl-card">
+      <div class="sl-check-row"><div class="sl-check-status"><span class="sl-state-mark sl-state-mark-pass" aria-hidden="true"><i data-lucide="check"></i></span><span class="sl-check-copy">6 Burn Checks passed</span></div><span class="sl-cost">$1.82</span></div>
+      <div class="sl-session-title-row"><span class="sl-agent-mark sl-agent-codex" role="img" aria-label="Codex" data-tooltip="Codex"></span><span class="sl-session-title">Skip imported Codex session noise</span></div>
+      <p class="sl-session-meta">antiburn · 4m ago</p>
+    </article>
+    <article class="sl-card">
+      <div class="sl-check-row"><div class="sl-check-status"><svg class="sl-ring" data-ring="1:fail,5:pass" aria-hidden="true"></svg><span class="sl-check-copy"><span class="sl-failure-copy">1 Burn Check failed</span> · 5 passed</span></div><span class="sl-cost">$2.40</span></div>
+      <div class="sl-session-title-row"><span class="sl-agent-mark sl-agent-claude" role="img" aria-label="Claude Code" data-tooltip="Claude Code"></span><span class="sl-session-title">Refine context accounting and cache eviction</span></div>
+      <p class="sl-session-meta">antiburn · 12m ago</p>
+    </article>
+    <article class="sl-card">
+      <div class="sl-check-row"><div class="sl-check-status"><svg class="sl-ring" data-ring="3:fail,3:pass" aria-hidden="true"></svg><span class="sl-check-copy"><span class="sl-failure-copy">3 Burn Checks failed</span> · 3 passed</span></div><span class="sl-cost">$3.16</span></div>
+      <div class="sl-session-title-row"><span class="sl-agent-mark sl-agent-cursor" role="img" aria-label="Cursor" data-tooltip="Cursor"></span><span class="sl-session-title">Audit multi-agent handoff context</span></div>
+      <p class="sl-session-meta">antiburn · 18m ago</p>
+    </article>
+    <article class="sl-card">
+      <div class="sl-check-row"><div class="sl-check-status"><svg class="sl-ring" data-ring="4:pass,2:neutral" aria-hidden="true"></svg><span class="sl-check-copy">4 Burn Checks passed</span></div><span class="sl-cost">$1.38</span></div>
+      <div class="sl-session-title-row"><span class="sl-agent-mark sl-agent-codex" role="img" aria-label="Codex" data-tooltip="Codex"></span><span class="sl-session-title">Index historical session metadata</span></div>
+      <p class="sl-session-meta">antiburn · 24m ago</p>
+    </article>
+    <article class="sl-card">
+      <div class="sl-check-row"><div class="sl-check-status"><svg class="sl-ring" data-ring="1:fail,3:pass,2:neutral" aria-hidden="true"></svg><span class="sl-check-copy"><span class="sl-failure-copy">1 Burn Check failed</span> · 3 passed</span></div><span class="sl-cost">$2.04</span></div>
+      <div class="sl-session-title-row"><span class="sl-agent-mark sl-agent-claude" role="img" aria-label="Claude Code" data-tooltip="Claude Code"></span><span class="sl-session-title">Improve retry budget accounting</span></div>
+      <p class="sl-session-meta">antiburn · 31m ago</p>
+    </article>
+    <article class="sl-card">
+      <div class="sl-check-row"><div class="sl-check-status"><span class="sl-state-mark sl-state-mark-fail" aria-hidden="true"><i data-lucide="circle-alert"></i></span><span class="sl-check-copy sl-failure-copy">6 Burn Checks failed</span></div><span class="sl-cost">$4.21</span></div>
+      <div class="sl-session-title-row"><span class="sl-agent-mark sl-agent-cursor" role="img" aria-label="Cursor" data-tooltip="Cursor"></span><span class="sl-session-title">Reconcile unsupported event schemas</span></div>
+      <p class="sl-session-meta">antiburn · 39m ago</p>
+    </article>
+    <article class="sl-card">
+      <div class="sl-check-row"><div class="sl-check-status"><svg class="sl-ring sl-computing" data-ring="indeterminate" aria-hidden="true"></svg><span class="sl-check-copy">Running Burn Checks…</span></div><span class="sl-cost">$0.74</span></div>
+      <div class="sl-session-title-row"><span class="sl-agent-mark sl-agent-codex" role="img" aria-label="Codex" data-tooltip="Codex"></span><span class="sl-session-title">Evaluate long-running session</span></div>
+      <p class="sl-session-meta">antiburn · 53m ago</p>
+    </article>
+    <article class="sl-card">
+      <div class="sl-check-row"><div class="sl-check-status"><span class="sl-unavailable" aria-hidden="true"><i data-lucide="ban"></i></span><span class="sl-check-copy">Burn Checks unavailable</span></div><span class="sl-cost">$0.96</span></div>
+      <div class="sl-session-title-row"><span class="sl-agent-mark sl-agent-copilot" role="img" aria-label="GitHub Copilot" data-tooltip="GitHub Copilot"></span><span class="sl-session-title">Normalize session event timelines</span></div>
+      <p class="sl-session-meta">antiburn · 1h ago</p>
+    </article>
+    <article class="sl-card">
+      <div class="sl-check-row"><div class="sl-check-status"><span class="sl-state-mark sl-state-mark-neutral" aria-hidden="true"><i data-lucide="minus"></i></span><span class="sl-check-copy">Burn Checks not supported</span></div><span class="sl-cost">$0.52</span></div>
+      <div class="sl-session-title-row"><span class="sl-agent-mark sl-agent-cursor" role="img" aria-label="Cursor" data-tooltip="Cursor"></span><span class="sl-session-title">Analyze external agent transcript</span></div>
+      <p class="sl-session-meta">antiburn · 1h ago</p>
+    </article>
+    <article class="sl-card">
+      <div class="sl-check-row"><div class="sl-check-status"><svg class="sl-ring" data-ring="6:neutral" aria-hidden="true"></svg><span class="sl-check-copy">Burn Checks not assessed</span></div><span class="sl-cost">$0.31</span></div>
+      <div class="sl-session-title-row"><span class="sl-agent-mark sl-agent-codex" role="img" aria-label="Codex" data-tooltip="Codex"></span><span class="sl-session-title">Review empty imported session</span></div>
+      <p class="sl-session-meta">antiburn · 2h ago</p>
+    </article>
+  </template>
+
+  <div class="sl-theme-grid">
+    <section class="sl-window" aria-label="Light session list">
+      <div class="sl-window-bar"><span class="sl-window-dot"></span><span class="sl-window-dot"></span><span class="sl-window-dot"></span><span class="sl-window-title">Sessions</span><span class="sl-theme-label">Light</span></div>
+      <div class="sl-list" data-session-list></div>
+    </section>
+
+    <section class="sl-window sl-window-dark" aria-label="Dark session list">
+      <div class="sl-window-bar"><span class="sl-window-dot"></span><span class="sl-window-dot"></span><span class="sl-window-dot"></span><span class="sl-window-title">Sessions</span><span class="sl-theme-label">Dark</span></div>
+      <div class="sl-list" data-session-list></div>
+    </section>
+  </div>
+
+  <script>
+    (() => {
+      const root = document.getElementById("session-list-check-line");
+      if (!root) return;
+      const state = { palette: "blue-orange", blueStyle: "cyan" };
+      const namespace = "http://www.w3.org/2000/svg";
+      const tones = { pass: "var(--sl-pass)", fail: "var(--sl-fail)", neutral: "var(--sl-neutral)" };
+      const gap = 30;
+
+      function polar(angle) {
+        const radians = ((angle - 90) * Math.PI) / 180;
+        return { x: 32 + 28 * Math.cos(radians), y: 32 + 28 * Math.sin(radians) };
+      }
+
+      function arcPath(startAngle, endAngle) {
+        const start = polar(endAngle);
+        const end = polar(startAngle);
+        const largeArc = endAngle - startAngle <= 180 ? 0 : 1;
+        return `M ${start.x.toFixed(3)} ${start.y.toFixed(3)} A 28 28 0 ${largeArc} 0 ${end.x.toFixed(3)} ${end.y.toFixed(3)}`;
+      }
+
+      function shape(name) {
+        const element = document.createElementNS(namespace, name);
+        element.setAttribute("fill", "none");
+        element.setAttribute("stroke-width", "8");
+        element.setAttribute("stroke-linecap", "round");
+        return element;
+      }
+
+      function drawRing(svg) {
+        svg.replaceChildren();
+        svg.setAttribute("viewBox", "0 0 64 64");
+        svg.setAttribute("focusable", "false");
+        if (svg.dataset.ring === "indeterminate") {
+          const path = shape("path");
+          path.setAttribute("d", arcPath(0, 260));
+          path.setAttribute("stroke", tones.neutral);
+          svg.append(path);
+          return;
+        }
+        const segments = (svg.dataset.ring || "").split(",").map((item) => {
+          const [rawValue, tone] = item.split(":");
+          return { value: Number(rawValue), tone };
+        }).filter((item) => Number.isFinite(item.value) && item.value > 0 && tones[item.tone]);
+        const total = segments.reduce((sum, segment) => sum + segment.value, 0);
+        if (!total) return;
+        if (segments.length === 1) {
+          const circle = shape("circle");
+          circle.setAttribute("cx", "32");
+          circle.setAttribute("cy", "32");
+          circle.setAttribute("r", "28");
+          circle.setAttribute("stroke", tones[segments[0].tone]);
+          svg.append(circle);
+          return;
+        }
+        const usableAngle = 360 - gap * segments.length;
+        let cursor = 0;
+        for (const segment of segments) {
+          const span = usableAngle * segment.value / total;
+          const path = shape("path");
+          path.setAttribute("d", arcPath(cursor, cursor + span));
+          path.setAttribute("stroke", tones[segment.tone]);
+          svg.append(path);
+          cursor += span + gap;
+        }
+      }
+
+      function render() {
+        root.dataset.palette = state.palette;
+        root.dataset.blueStyle = state.blueStyle;
+        root.querySelector(".sl-heading-note").textContent = state.palette === "blue-orange" ? "Blue + Antiburn orange" : "Green + red";
+        root.querySelectorAll("[data-blue-choice]").forEach((button) => {
+          button.setAttribute("aria-pressed", String(button.dataset.blueChoice === state.blueStyle));
+        });
+        root.querySelectorAll("svg[data-ring]").forEach(drawRing);
+      }
+
+      function markOutcomeCopy(container) {
+        container.querySelectorAll(".sl-check-copy").forEach((element) => {
+          const sourceText = element.textContent;
+          const parts = sourceText.split(/(\d+ Burn Checks? failed|All \d+ Burn Checks passed|\d+ Burn Checks passed|\d+ passed)/g);
+          if (parts.length === 1) return;
+          element.replaceChildren(...parts.filter(Boolean).map((part) => {
+            if (!part.endsWith("failed") && !part.endsWith("passed")) return document.createTextNode(part);
+            const outcome = document.createElement("span");
+            outcome.className = part.endsWith("failed") ? "sl-failure-copy" : "sl-pass-copy";
+            outcome.textContent = part;
+            return outcome;
+          }));
+        });
+      }
+
+      const template = root.querySelector("#sl-all-states-template");
+      if (template) {
+        markOutcomeCopy(template.content);
+        template.content.querySelectorAll(".sl-session-meta").forEach((meta) => {
+          const [repository, timestamp] = meta.textContent.split(" · ");
+          const model = document.createElement("div");
+          const modelName = document.createElement("span");
+          model.className = "sl-session-model";
+          modelName.className = "sl-session-model-name";
+          modelName.textContent = "5.6-sol";
+          model.append(modelName, document.createTextNode(" high"));
+          meta.before(model);
+          meta.replaceChildren(Object.assign(document.createElement("span"), { textContent: repository }), Object.assign(document.createElement("span"), { textContent: timestamp }));
+        });
+        root.querySelectorAll("[data-session-list]").forEach((list) => {
+          list.replaceChildren(template.content.cloneNode(true));
+        });
+      }
+      root.querySelectorAll("[data-blue-choice]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.blueStyle = button.dataset.blueChoice;
+          render();
+        });
+      });
+      render();
+      if (globalThis.lucide) globalThis.lucide.createIcons();
+      if (globalThis.Tweak) {
+        const tweak = new globalThis.Tweak({ container: root, onChange: render });
+        tweak.addSelect(state, "palette", { label: "Status palette", options: [{ label: "Blue + Antiburn orange", value: "blue-orange" }, { label: "Green + red", value: "green-red" }], reference: "BurnCheckStatus.palette" });
+        tweak.addSelect(state, "blueStyle", { label: "Blue", options: [{ label: "Sky", value: "sky" }, { label: "Reference cyan", value: "cyan" }], reference: "BurnCheckStatus.blue" });
+      }
+    })();
+  </script>
+</div>

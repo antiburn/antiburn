@@ -1,5 +1,9 @@
 /* These styles show active sessions with a title shimmer. */
 
+.session-card {
+  box-shadow: inset 0 1px 0 var(--color-session-card-highlight);
+}
+
 .activity-row-active {
   --activity-row-shimmer-cycle: 4000ms;
 }

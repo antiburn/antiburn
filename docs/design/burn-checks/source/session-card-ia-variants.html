@@ -1,0 +1,624 @@
+<div id="session-card-ia-variants" data-blue-style="cyan" aria-label="Session card information architecture blue comparison">
+  <style>
+    #session-card-ia-variants {
+      --sc-blue-light: #318fc9;
+      --sc-blue-dark: #68b9ef;
+      --sc-blue-cyan-light: #108eac;
+      --sc-blue-cyan-dark: #2ea5c6;
+      --sc-blue-active-light: var(--sc-blue-light);
+      --sc-blue-active-dark: var(--sc-blue-dark);
+      --sc-orange: #ff6a2c;
+      width: 100%;
+      background: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    #session-card-ia-variants * { box-sizing: border-box; }
+
+    #session-card-ia-variants[data-blue-style="cyan"] {
+      --sc-blue-active-light: var(--sc-blue-cyan-light);
+      --sc-blue-active-dark: var(--sc-blue-cyan-dark);
+    }
+
+    #session-card-ia-variants .sc-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+      color: light-dark(#202124, #f2f3f5);
+    }
+
+    #session-card-ia-variants .sc-heading h2 {
+      margin: 0;
+      font-size: 19px;
+      font-weight: 500;
+      letter-spacing: -0.015em;
+    }
+
+    #session-card-ia-variants .sc-heading-note {
+      color: light-dark(#676b70, #9b9da3);
+      font-size: 12px;
+    }
+
+    #session-card-ia-variants .sc-heading-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    #session-card-ia-variants .sc-blue-toggle {
+      display: inline-flex;
+      flex: none;
+      gap: 2px;
+      padding: 2px;
+      border: 1px solid light-dark(rgb(0 0 0 / 0.12), rgb(255 255 255 / 0.16));
+      border-radius: 7px;
+    }
+
+    #session-card-ia-variants .sc-blue-toggle button {
+      border: 0;
+      border-radius: 4px;
+      padding: 3px 7px;
+      background: transparent;
+      color: light-dark(#666a70, #a5a8ad);
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    #session-card-ia-variants .sc-blue-toggle button[aria-pressed="true"] {
+      background: light-dark(rgb(0 0 0 / 0.08), rgb(255 255 255 / 0.12));
+      color: light-dark(#202124, #f2f3f5);
+    }
+
+    #session-card-ia-variants .sc-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+
+    #session-card-ia-variants .sc-mode-pair {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    #session-card-ia-variants .sc-variant-label {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 0 2px 7px;
+      color: light-dark(#202124, #f2f3f5);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    #session-card-ia-variants .sc-variant-label span {
+      color: light-dark(#71757a, #96999e);
+      font-size: 11px;
+      font-weight: 400;
+    }
+
+    #session-card-ia-variants .sc-window {
+      --sc-system-orange-text: #ba3800;
+      --sc-pass: var(--sc-blue-active-light);
+      --sc-neutral: #b8bcc0;
+      --sc-window: #f3f3f3;
+      --sc-sidebar: #ededed;
+      --sc-session-surface: #fbfbfb;
+      --sc-session-highlight: rgb(255 255 255 / 0.96);
+      --sc-session-shadow: rgb(0 0 0 / 0.07);
+      --sc-label: rgb(0 0 0 / 0.86);
+      --sc-secondary: rgb(34 35 39 / 0.74);
+      --sc-tertiary: rgb(34 35 39 / 0.56);
+      --sc-separator: rgb(0 0 0 / 0.10);
+      --sc-accent-foreground: #ffffff;
+      overflow: hidden;
+      min-width: 0;
+      border-radius: 14px;
+      background: var(--sc-window);
+      color: var(--sc-label);
+      box-shadow: 0 0 0 1px rgb(0 0 0 / 0.06), 0 8px 24px rgb(0 0 0 / 0.08);
+      color-scheme: light;
+    }
+
+    #session-card-ia-variants .sc-window-dark {
+      --sc-system-orange-text: #ff8d5c;
+      --sc-pass: var(--sc-blue-active-dark);
+      --sc-neutral: #7d8185;
+      --sc-window: #1d1d1d;
+      --sc-sidebar: #202020;
+      --sc-session-surface: #303030;
+      --sc-session-highlight: rgb(255 255 255 / 0.10);
+      --sc-session-shadow: rgb(0 0 0 / 0.20);
+      --sc-label: rgb(255 255 255 / 0.92);
+      --sc-secondary: rgb(240 240 247 / 0.72);
+      --sc-tertiary: rgb(240 240 247 / 0.54);
+      --sc-separator: rgb(255 255 255 / 0.10);
+      --sc-accent-foreground: #1e1e1e;
+      color-scheme: dark;
+      box-shadow: 0 0 0 1px rgb(255 255 255 / 0.08);
+    }
+
+    #session-card-ia-variants .sc-window-bar {
+      display: grid;
+      grid-template-columns: 12px 12px 12px minmax(0, 1fr) max-content;
+      align-items: center;
+      gap: 7px;
+      height: 38px;
+      padding: 0 12px;
+      background: var(--sc-sidebar);
+      border-bottom: 1px solid var(--sc-separator);
+    }
+
+    #session-card-ia-variants .sc-window-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--sc-separator);
+    }
+
+    #session-card-ia-variants .sc-window-title {
+      margin-left: 6px;
+      overflow: hidden;
+      font-size: 12px;
+      font-weight: 500;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #session-card-ia-variants .sc-theme-label {
+      color: var(--sc-tertiary);
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: capitalize;
+    }
+
+    #session-card-ia-variants .sc-list {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+    }
+
+    #session-card-ia-variants .sc-session {
+      min-width: 0;
+      padding: 12px;
+      border-radius: 10px;
+      background: var(--sc-session-surface);
+      box-shadow:
+        inset 0 1px 0 var(--sc-session-highlight),
+        0 1px 2px var(--sc-session-shadow);
+    }
+
+    #session-card-ia-variants .sc-primary-row,
+    #session-card-ia-variants .sc-result-row,
+    #session-card-ia-variants .sc-title-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content;
+      align-items: center;
+      gap: 12px;
+      min-height: 16px;
+    }
+
+    #session-card-ia-variants .sc-title-group,
+    #session-card-ia-variants .sc-status {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
+
+    #session-card-ia-variants .sc-title-group { gap: 8px; }
+    #session-card-ia-variants .sc-status { gap: 7px; }
+
+    #session-card-ia-variants .sc-title,
+    #session-card-ia-variants .sc-check-copy {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #session-card-ia-variants .sc-title {
+      color: var(--sc-label);
+      font-size: 13.5px;
+      font-weight: 500;
+      line-height: 1.4;
+    }
+
+    #session-card-ia-variants .sc-status {
+      color: var(--sc-secondary);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.12px;
+      line-height: 13px;
+    }
+
+    #session-card-ia-variants .sc-failure-copy {
+      color: var(--sc-system-orange-text);
+      font-weight: 500;
+    }
+
+    #session-card-ia-variants .sc-pass-copy {
+      color: inherit;
+      font-weight: 500;
+    }
+
+    #session-card-ia-variants .sc-price {
+      color: var(--sc-tertiary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      line-height: 13px;
+      white-space: nowrap;
+    }
+
+    #session-card-ia-variants .sc-price-burn {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      border-radius: 9999px;
+      padding: 1px 6px;
+      background: var(--sc-orange);
+      color: #ffffff;
+      font-weight: 500;
+    }
+
+    #session-card-ia-variants .sc-price-burn svg {
+      width: 11px !important;
+      height: 11px !important;
+      flex: none;
+    }
+
+    #session-card-ia-variants .sc-meta {
+      margin: 0;
+      color: var(--sc-tertiary);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    #session-card-ia-variants .sc-model {
+      overflow: hidden;
+      color: var(--sc-tertiary);
+      font-size: 12px;
+      line-height: 1.4;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #session-card-ia-variants .sc-model-name {
+      color: var(--sc-secondary);
+      font-weight: 500;
+    }
+
+    #session-card-ia-variants .sc-meta-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    #session-card-ia-variants .sc-indent { margin-left: 22px; }
+    #session-card-ia-variants .sc-gap-top { margin-top: 4px; }
+    #session-card-ia-variants .sc-gap-small { margin-top: 4px; }
+    #session-card-ia-variants .sc-gap-meta { margin-top: 4px; }
+
+    #session-card-ia-variants .sc-footer-status {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--sc-separator);
+    }
+
+    #session-card-ia-variants .sc-split-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content;
+      align-items: center;
+      gap: 12px;
+      margin: 4px 0 0 22px;
+    }
+
+    #session-card-ia-variants .sc-model-agent-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      margin: 4px 0 0 22px;
+    }
+
+    #session-card-ia-variants .sc-model-agent-row .sc-model { min-width: 0; }
+
+    #session-card-ia-variants .sc-ring {
+      display: block;
+      flex: none;
+      width: 16px;
+      height: 16px;
+      overflow: visible;
+    }
+
+    #session-card-ia-variants .sc-terminal-mark {
+      display: inline-grid;
+      place-items: center;
+      position: relative;
+      flex: none;
+      width: 16px;
+      height: 16px;
+      color: var(--sc-accent-foreground);
+    }
+
+    #session-card-ia-variants .sc-terminal-mark::before {
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      background: var(--sc-pass);
+      content: "";
+    }
+
+    #session-card-ia-variants .sc-terminal-mark svg {
+      position: relative;
+      width: 7px !important;
+      height: 7px !important;
+      stroke-width: 2.5;
+    }
+
+    #session-card-ia-variants .sc-agent {
+      display: inline-grid;
+      place-items: center;
+      flex: none;
+      width: 14px;
+      height: 14px;
+      color: var(--sc-tertiary);
+    }
+
+    #session-card-ia-variants .sc-agent::before {
+      width: 12px;
+      height: 12px;
+      background: currentColor;
+      content: "";
+      -webkit-mask: var(--sc-agent-icon) center / contain no-repeat;
+      mask: var(--sc-agent-icon) center / contain no-repeat;
+    }
+
+    #session-card-ia-variants .sc-agent-claude {
+      --sc-agent-icon: url("https://cdn.jsdelivr.net/npm/simple-icons@16.28.0/icons/claude.svg");
+    }
+
+    #session-card-ia-variants .sc-agent-cursor {
+      --sc-agent-icon: url("https://cdn.jsdelivr.net/npm/simple-icons@16.28.0/icons/cursor.svg");
+    }
+
+    @media (max-width: 760px) {
+      #session-card-ia-variants .sc-mode-pair { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 420px) {
+      #session-card-ia-variants .sc-heading {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      #session-card-ia-variants .sc-split-row {
+        grid-template-columns: 1fr;
+        gap: 6px;
+      }
+    }
+  </style>
+
+  <header class="sc-heading">
+    <h2>Session card information architecture</h2>
+    <div class="sc-heading-actions">
+      <span class="sc-heading-note">Light and dark · price remains top-right</span>
+      <div class="sc-blue-toggle" role="group" aria-label="Blue style">
+        <button type="button" data-blue-choice="sky" aria-pressed="false">Sky</button>
+        <button type="button" data-blue-choice="cyan" aria-pressed="true">Cyan</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="sc-grid">
+    <section aria-label="Nested outcome variant">
+      <div class="sc-variant-label">A · Nested outcome <span>Recommended</span></div>
+      <div class="sc-window">
+        <div class="sc-window-bar"><span class="sc-window-dot"></span><span class="sc-window-dot"></span><span class="sc-window-dot"></span><span class="sc-window-title">Sessions</span><span class="sc-theme-label">Light</span></div>
+        <div class="sc-list">
+          <article class="sc-session">
+            <div class="sc-primary-row"><div class="sc-title-group"><span class="sc-agent sc-agent-claude" role="img" aria-label="Claude Code" data-tooltip="Claude Code"></span><span class="sc-title">Refine context accounting and cache eviction</span></div><span class="sc-price sc-price-burn" aria-label="Estimated cost $2.40, higher than usual"><i data-lucide="flame" aria-hidden="true"></i>$2.40</span></div>
+            <div class="sc-status sc-indent sc-gap-top"><svg class="sc-ring" data-ring="1:fail,5:pass" aria-hidden="true"></svg><span class="sc-check-copy"><span class="sc-failure-copy">1 Burn Check failed</span> · 5 passed</span></div>
+            <div class="sc-model sc-indent sc-gap-small"><span class="sc-model-name">5.6-sol</span> high</div>
+            <div class="sc-meta sc-meta-row sc-indent sc-gap-meta"><span>antiburn</span><span>12m ago</span></div>
+          </article>
+          <article class="sc-session">
+            <div class="sc-primary-row"><div class="sc-title-group"><span class="sc-agent sc-agent-cursor" role="img" aria-label="Cursor" data-tooltip="Cursor"></span><span class="sc-title">Audit multi-agent handoff context</span></div><span class="sc-price">$3.16</span></div>
+            <div class="sc-status sc-indent sc-gap-top"><span class="sc-terminal-mark" aria-hidden="true"><i data-lucide="check"></i></span><span class="sc-check-copy">6 Burn Checks passed</span></div>
+            <div class="sc-model sc-indent sc-gap-small"><span class="sc-model-name">5.6-sol</span> high</div>
+            <div class="sc-meta sc-meta-row sc-indent sc-gap-meta"><span>antiburn</span><span>18m ago</span></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section aria-label="Bottom outcome variant">
+      <div class="sc-variant-label">B · Bottom outcome <span>Strong separation</span></div>
+      <div class="sc-window">
+        <div class="sc-window-bar"><span class="sc-window-dot"></span><span class="sc-window-dot"></span><span class="sc-window-dot"></span><span class="sc-window-title">Sessions</span><span class="sc-theme-label">Light</span></div>
+        <div class="sc-list">
+          <article class="sc-session">
+            <div class="sc-primary-row"><div class="sc-title-group"><span class="sc-agent sc-agent-claude" role="img" aria-label="Claude Code" data-tooltip="Claude Code"></span><span class="sc-title">Refine context accounting and cache eviction</span></div><span class="sc-price sc-price-burn" aria-label="Estimated cost $2.40, higher than usual"><i data-lucide="flame" aria-hidden="true"></i>$2.40</span></div>
+            <div class="sc-model sc-indent sc-gap-small"><span class="sc-model-name">5.6-sol</span> high</div>
+            <div class="sc-meta sc-meta-row sc-indent sc-gap-meta"><span>antiburn</span><span>12m ago</span></div>
+            <div class="sc-status sc-footer-status"><svg class="sc-ring" data-ring="1:fail,5:pass" aria-hidden="true"></svg><span class="sc-check-copy"><span class="sc-failure-copy">1 Burn Check failed</span> · 5 passed</span></div>
+          </article>
+          <article class="sc-session">
+            <div class="sc-primary-row"><div class="sc-title-group"><span class="sc-agent sc-agent-cursor" role="img" aria-label="Cursor" data-tooltip="Cursor"></span><span class="sc-title">Audit multi-agent handoff context</span></div><span class="sc-price">$3.16</span></div>
+            <div class="sc-model sc-indent sc-gap-small"><span class="sc-model-name">5.6-sol</span> high</div>
+            <div class="sc-meta sc-meta-row sc-indent sc-gap-meta"><span>antiburn</span><span>18m ago</span></div>
+            <div class="sc-status sc-footer-status"><span class="sc-terminal-mark" aria-hidden="true"><i data-lucide="check"></i></span><span class="sc-check-copy">6 Burn Checks passed</span></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section aria-label="Result first variant">
+      <div class="sc-variant-label">C · Result first <span>Implemented</span></div>
+      <div class="sc-window">
+        <div class="sc-window-bar"><span class="sc-window-dot"></span><span class="sc-window-dot"></span><span class="sc-window-dot"></span><span class="sc-window-title">Sessions</span><span class="sc-theme-label">Light</span></div>
+        <div class="sc-list">
+          <article class="sc-session">
+            <div class="sc-result-row"><div class="sc-status"><svg class="sc-ring" data-ring="1:fail,5:pass" aria-hidden="true"></svg><span class="sc-check-copy"><span class="sc-failure-copy">1 Burn Check failed</span> · 5 passed</span></div><span class="sc-price sc-price-burn" aria-label="Estimated cost $2.40, higher than usual"><i data-lucide="flame" aria-hidden="true"></i>$2.40</span></div>
+            <div class="sc-title-row sc-indent sc-gap-top"><span class="sc-title">Refine context accounting and cache eviction</span></div>
+            <div class="sc-model-agent-row"><span class="sc-agent sc-agent-claude" role="img" aria-label="Claude Code" data-tooltip="Claude Code"></span><div class="sc-model"><span class="sc-model-name">5.6-sol</span> high</div></div>
+            <div class="sc-meta sc-meta-row sc-indent sc-gap-meta"><span>antiburn</span><span>12m ago</span></div>
+          </article>
+          <article class="sc-session">
+            <div class="sc-result-row"><div class="sc-status"><span class="sc-terminal-mark" aria-hidden="true"><i data-lucide="check"></i></span><span class="sc-check-copy">6 Burn Checks passed</span></div><span class="sc-price">$3.16</span></div>
+            <div class="sc-title-row sc-indent sc-gap-top"><span class="sc-title">Audit multi-agent handoff context</span></div>
+            <div class="sc-model-agent-row"><span class="sc-agent sc-agent-cursor" role="img" aria-label="Cursor" data-tooltip="Cursor"></span><div class="sc-model"><span class="sc-model-name">5.6-sol</span> high</div></div>
+            <div class="sc-meta sc-meta-row sc-indent sc-gap-meta"><span>antiburn</span><span>18m ago</span></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section aria-label="Compact split variant">
+      <div class="sc-variant-label">D · Compact split <span>Highest density</span></div>
+      <div class="sc-window">
+        <div class="sc-window-bar"><span class="sc-window-dot"></span><span class="sc-window-dot"></span><span class="sc-window-dot"></span><span class="sc-window-title">Sessions</span><span class="sc-theme-label">Light</span></div>
+        <div class="sc-list">
+          <article class="sc-session">
+            <div class="sc-primary-row"><div class="sc-title-group"><span class="sc-agent sc-agent-claude" role="img" aria-label="Claude Code" data-tooltip="Claude Code"></span><span class="sc-title">Refine context accounting and cache eviction</span></div><span class="sc-price sc-price-burn" aria-label="Estimated cost $2.40, higher than usual"><i data-lucide="flame" aria-hidden="true"></i>$2.40</span></div>
+            <div class="sc-model sc-indent sc-gap-small"><span class="sc-model-name">5.6-sol</span> high</div>
+            <div class="sc-split-row"><div class="sc-status"><svg class="sc-ring" data-ring="1:fail,5:pass" aria-hidden="true"></svg><span class="sc-check-copy"><span class="sc-failure-copy">1 Burn Check failed</span> · 5 passed</span></div><p class="sc-meta">antiburn · 12m ago</p></div>
+          </article>
+          <article class="sc-session">
+            <div class="sc-primary-row"><div class="sc-title-group"><span class="sc-agent sc-agent-cursor" role="img" aria-label="Cursor" data-tooltip="Cursor"></span><span class="sc-title">Audit multi-agent handoff context</span></div><span class="sc-price">$3.16</span></div>
+            <div class="sc-model sc-indent sc-gap-small"><span class="sc-model-name">5.6-sol</span> high</div>
+            <div class="sc-split-row"><div class="sc-status"><span class="sc-terminal-mark" aria-hidden="true"><i data-lucide="check"></i></span><span class="sc-check-copy">6 Burn Checks passed</span></div><p class="sc-meta">antiburn · 18m ago</p></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section aria-label="Status-led title with agent and model variant">
+      <div class="sc-variant-label">E · Status-led title <span>Agent moves to model</span></div>
+      <div class="sc-window">
+        <div class="sc-window-bar"><span class="sc-window-dot"></span><span class="sc-window-dot"></span><span class="sc-window-dot"></span><span class="sc-window-title">Sessions</span><span class="sc-theme-label">Light</span></div>
+        <div class="sc-list">
+          <article class="sc-session">
+            <div class="sc-primary-row"><div class="sc-title-group"><svg class="sc-ring" data-ring="1:fail,5:pass" aria-hidden="true"></svg><span class="sc-title">Refine context accounting and cache eviction</span></div><span class="sc-price sc-price-burn" aria-label="Estimated cost $2.40, higher than usual"><i data-lucide="flame" aria-hidden="true"></i>$2.40</span></div>
+            <div class="sc-status sc-indent sc-gap-top"><span class="sc-check-copy"><span class="sc-failure-copy">1 Burn Check failed</span> · 5 passed</span></div>
+            <div class="sc-model-agent-row"><span class="sc-agent sc-agent-claude" role="img" aria-label="Claude Code" data-tooltip="Claude Code"></span><div class="sc-model"><span class="sc-model-name">5.6-sol</span> high</div></div>
+            <div class="sc-meta sc-meta-row sc-indent sc-gap-meta"><span>antiburn</span><span>12m ago</span></div>
+          </article>
+          <article class="sc-session">
+            <div class="sc-primary-row"><div class="sc-title-group"><span class="sc-terminal-mark" aria-hidden="true"><i data-lucide="check"></i></span><span class="sc-title">Audit multi-agent handoff context</span></div><span class="sc-price">$3.16</span></div>
+            <div class="sc-status sc-indent sc-gap-top"><span class="sc-check-copy">6 Burn Checks passed</span></div>
+            <div class="sc-model-agent-row"><span class="sc-agent sc-agent-cursor" role="img" aria-label="Cursor" data-tooltip="Cursor"></span><div class="sc-model"><span class="sc-model-name">5.6-sol</span> high</div></div>
+            <div class="sc-meta sc-meta-row sc-indent sc-gap-meta"><span>antiburn</span><span>18m ago</span></div>
+          </article>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (() => {
+      const root = document.getElementById("session-card-ia-variants");
+      if (!root) return;
+      const state = { blueStyle: "cyan" };
+      const namespace = "http://www.w3.org/2000/svg";
+      const tones = { pass: "var(--sc-pass)", fail: "var(--sc-orange)" };
+      const gap = 30;
+
+      function polar(angle) {
+        const radians = ((angle - 90) * Math.PI) / 180;
+        return { x: 32 + 28 * Math.cos(radians), y: 32 + 28 * Math.sin(radians) };
+      }
+
+      function arcPath(startAngle, endAngle) {
+        const start = polar(endAngle);
+        const end = polar(startAngle);
+        const largeArc = endAngle - startAngle <= 180 ? 0 : 1;
+        return `M ${start.x.toFixed(3)} ${start.y.toFixed(3)} A 28 28 0 ${largeArc} 0 ${end.x.toFixed(3)} ${end.y.toFixed(3)}`;
+      }
+
+      function drawRing(svg) {
+        svg.replaceChildren();
+        svg.setAttribute("viewBox", "0 0 64 64");
+        svg.setAttribute("focusable", "false");
+        const segments = (svg.dataset.ring || "").split(",").map((item) => {
+          const [rawValue, tone] = item.split(":");
+          return { value: Number(rawValue), tone };
+        }).filter((item) => Number.isFinite(item.value) && item.value > 0 && tones[item.tone]);
+        const total = segments.reduce((sum, segment) => sum + segment.value, 0);
+        if (!total) return;
+        const usableAngle = 360 - gap * segments.length;
+        let cursor = 0;
+        for (const segment of segments) {
+          const span = usableAngle * segment.value / total;
+          const path = document.createElementNS(namespace, "path");
+          path.setAttribute("d", arcPath(cursor, cursor + span));
+          path.setAttribute("fill", "none");
+          path.setAttribute("stroke", tones[segment.tone]);
+          path.setAttribute("stroke-width", "8");
+          path.setAttribute("stroke-linecap", "round");
+          svg.append(path);
+          cursor += span + gap;
+        }
+      }
+
+      function render() {
+        root.dataset.blueStyle = state.blueStyle;
+        root.querySelectorAll("[data-blue-choice]").forEach((button) => {
+          button.setAttribute("aria-pressed", String(button.dataset.blueChoice === state.blueStyle));
+        });
+        root.querySelectorAll("svg[data-ring]").forEach(drawRing);
+      }
+
+      function markOutcomeCopy(container) {
+        container.querySelectorAll(".sc-check-copy").forEach((element) => {
+          const sourceText = element.textContent;
+          const parts = sourceText.split(/(\d+ Burn Checks? failed|All \d+ Burn Checks passed|\d+ Burn Checks passed|\d+ passed)/g);
+          if (parts.length === 1) return;
+          element.replaceChildren(...parts.filter(Boolean).map((part) => {
+            if (!part.endsWith("failed") && !part.endsWith("passed")) return document.createTextNode(part);
+            const outcome = document.createElement("span");
+            outcome.className = part.endsWith("failed") ? "sc-failure-copy" : "sc-pass-copy";
+            outcome.textContent = part;
+            return outcome;
+          }));
+        });
+      }
+
+      root.querySelectorAll(".sc-grid > section").forEach((section) => {
+        const light = section.querySelector(".sc-window");
+        if (!light) return;
+        const pair = document.createElement("div");
+        const dark = light.cloneNode(true);
+        light.classList.add("sc-window-light");
+        dark.classList.add("sc-window-dark");
+        light.querySelector(".sc-theme-label").textContent = "Light";
+        dark.querySelector(".sc-theme-label").textContent = "Dark";
+        pair.className = "sc-mode-pair";
+        light.before(pair);
+        pair.append(light, dark);
+      });
+      root.querySelectorAll("[data-blue-choice]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.blueStyle = button.dataset.blueChoice;
+          render();
+        });
+      });
+      markOutcomeCopy(root);
+      render();
+      if (globalThis.lucide) globalThis.lucide.createIcons();
+      if (globalThis.Tweak) {
+        const tweak = new globalThis.Tweak({ container: root, onChange: render });
+        tweak.addSelect(state, "blueStyle", { label: "Blue", options: [{ label: "Sky", value: "sky" }, { label: "Reference cyan", value: "cyan" }], reference: "SessionCard.blue" });
+      }
+    })();
+  </script>
+</div>

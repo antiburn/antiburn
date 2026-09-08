@@ -8,7 +8,11 @@ import { useCallback, useRef, useState, type ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
-import { agentDisplayName, type AgentSurface } from "../../lib/presentation/agents"
+import {
+  agentDisplayName,
+  type AgentIconAppearance,
+  type AgentSurface,
+} from "../../lib/presentation/agents"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import {
@@ -45,6 +49,7 @@ type SessionAgentIconRenderer = (
   slug: string,
   size: number,
   surface?: AgentSurface,
+  appearance?: AgentIconAppearance,
 ) => ReactNode
 
 /** One coding session in the list. */
@@ -263,7 +268,7 @@ function SessionRow({
   return (
     <div
       className={cn(
-        "group relative",
+        "session-card group relative",
         "w-full grid grid-cols-[14px_minmax(0,1fr)] gap-x-2 gap-y-1",
         "items-center",
         "rounded-[var(--radius-popover)] px-3 py-3",
@@ -313,7 +318,7 @@ function SessionRow({
     >
       {entry.isActive && <span className="sr-only">Active session</span>}
 
-      <div className="row-1 col-2">
+      <div className="col-span-full">
         <SessionStatusBar
           checks={hygieneChecks}
           evidenceState={hygiene.evidenceState}
@@ -321,10 +326,6 @@ function SessionRow({
           limitBadge={limitBadge}
         />
       </div>
-
-      <span className="row-2 col-1 h-full pt-[3px]">
-        {renderAgentIcon?.(entry.agent, 14, entry.surface)}
-      </span>
 
       <div className="col-2 flex min-w-0 items-center gap-x-1">
         <TruncatedText
@@ -362,7 +363,10 @@ function SessionRow({
       </div>
 
       {modelPairs.length > 0 && (
-        <div className="col-2 min-w-0 space-y-px">
+        <div className="col-2 flex min-w-0 items-center gap-x-1.5">
+          <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+            {renderAgentIcon?.(entry.agent, 12, entry.surface, "neutral")}
+          </span>
           <div
             className="min-w-0 max-w-full truncate type-callout text-label-tertiary"
             title={modelRunNames(modelRuns).join("\n")}
@@ -377,6 +381,14 @@ function SessionRow({
               </span>
             ))}
           </div>
+        </div>
+      )}
+
+      {modelPairs.length === 0 && renderAgentIcon && (
+        <div className="col-2 flex min-w-0 items-center">
+          <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+            {renderAgentIcon(entry.agent, 12, entry.surface, "neutral")}
+          </span>
         </div>
       )}
 

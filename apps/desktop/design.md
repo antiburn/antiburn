@@ -140,6 +140,21 @@ colors:
   agent-mark: # vendor brand-mark ink; see the Vendor brand marks note below
     light: "hsl(52 11% 13.3%)"
     dark: "hsl(60 15% 96.2%)"
+  burn-check-failure-fill: # failure arcs and terminal marks
+    light: "hsl(17.6 100% 58.6%)"
+    dark: "hsl(17.6 100% 58.6%)"
+  burn-check-failure-text: # failure wording on session and summary surfaces
+    light: "hsl(18 100% 36.4%)"
+    dark: "hsl(18 100% 68%)"
+  burn-check-pass-fill: # pass arcs and terminal marks
+    light: "hsl(191.5 83% 36.8%)"
+    dark: "hsl(192 63% 47.6%)"
+  burn-check-neutral: # unassessed arcs and neutral lifecycle marks
+    light: "hsl(209 6% 73.7%)"
+    dark: "hsl(210 3% 50.5%)"
+  session-card-highlight: # static inset highlight on the top edge
+    light: "hsl(0 0% 100% / 0.96)"
+    dark: "hsl(0 0% 100% / 0.1)"
   # Floating-HUD sub-palette only (src/styles/hud.css)
   burn:
     light: "hsl(18 100% 50%)"
@@ -422,6 +437,12 @@ Notes for what isn't expressible as a token:
   published brand value is made for a filled mark at 18px, and a row of 6px dots on an uncontrolled
   desktop needs more chroma to read as the same colour. The lift is a factor applied to the package
   value, so the source stays the package.
+- **Burn Checks** — `BurnCheckIndicator` owns the feature palette and iconography. Failure uses
+  `burn-check-failure-fill` for arcs or marks and `burn-check-failure-text` for wording. Pass arcs
+  and terminal ticks use `burn-check-pass-fill`; passed wording stays neutral. Unassessed arcs and
+  lifecycle marks use `burn-check-neutral`. Session cards add only the static
+  `session-card-highlight` inset edge; their existing rest, hover, tooltip-open, and selected fills
+  remain unchanged.
 - **Themes** — three sources, in cascade order. The system light/dark preference is the default. A
   platform whose webview exposes live system label/separator/accent tokens picks those up through
   `@supports`, so text and chrome track the OS exactly. A platform without them takes an explicit

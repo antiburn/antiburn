@@ -1,12 +1,10 @@
-import { Check, Flame, X, type LucideIcon } from "lucide-react"
+import { Check, CircleMinus, Flame, X, type LucideIcon } from "lucide-react"
 import { Fragment } from "react"
 
 import type { SessionHygieneEvidenceState } from "../../lib/insightsIpc"
-import {
-  sessionHygieneStateIsTransient,
-  sessionHygieneStateLabel,
-  type SessionHygieneCheck,
-} from "../../lib/presentation/sessionHygiene"
+import { sessionBurnCheckPresentation } from "../../lib/presentation/burnChecks"
+import type { SessionHygieneCheck } from "../../lib/presentation/sessionHygiene"
+import { BurnCheckStatus } from "../burn-checks/BurnCheckStatus"
 import { Tooltip } from "../presentation/Tooltip"
 import { SessionCostBadge, type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
 
@@ -26,29 +24,6 @@ export interface SessionStatusBarProps {
     | undefined
 }
 
-/**
- * The verdict line shows the pass count and the session cost.
- *
- * The verdict uses plain monospace text without badge chrome. Severity lives
- * in the ink. The ink moves from green through orange to red as findings rise.
- * The tooltip lists each check with its result.
- */
-
-/**
- * Return the ink for the assessed finding share. A clean result is green.
- * Findings mix orange with red in proportion to their share.
- *
- * The mix runs between the vivid fill tones, not the darkened text ones. The
- * text tones are tuned for contrast on a light surface, and a mostly-orange
- * mix of them reads as brown, which states nothing.
- */
-function verdictInk(failedShare: number, assessedCount: number): string {
-  if (assessedCount === 0) return "var(--color-label-tertiary)"
-  if (failedShare === 0) return "var(--color-system-green)"
-  const pct = Math.round(failedShare * 100)
-  return `color-mix(in oklch, var(--color-system-red-tint) ${pct}%, var(--color-system-orange-tint))`
-}
-
 function formatLimitPercent(percent: number): string {
   return `${roundedLimitPercent(percent)}%`
 }
@@ -65,15 +40,10 @@ interface StatusMark {
   label: string
 }
 
-type AssessedHygieneCheck = SessionHygieneCheck & { status: "finding" | "clean" }
-
-function isAssessed(check: SessionHygieneCheck): check is AssessedHygieneCheck {
-  return check.status !== "notAssessed"
-}
-
-const STATUS_MARK: Record<AssessedHygieneCheck["status"], StatusMark> = {
+const STATUS_MARK: Record<SessionHygieneCheck["status"], StatusMark> = {
   finding: { Icon: X, size: 12, strokeWidth: 2.5, label: "Finding" },
   clean: { Icon: Check, size: 12, strokeWidth: 2.5, label: "Passed" },
+  notAssessed: { Icon: CircleMinus, size: 12, strokeWidth: 2, label: "Not assessed" },
 }
 
 const INK_CLASS: Record<SessionHygieneCheck["ink"], string> = {
@@ -82,8 +52,10 @@ const INK_CLASS: Record<SessionHygieneCheck["ink"], string> = {
   "label-tertiary": "text-label-tertiary",
 }
 
-function renderTooltip(failed: AssessedHygieneCheck[], passed: AssessedHygieneCheck[]) {
-  const groups = [failed, passed].filter((group) => group.length > 0)
+function renderTooltip(checks: SessionHygieneCheck[]) {
+  const groups = (["finding", "clean", "notAssessed"] as const)
+    .map((status) => checks.filter((check) => check.status === status))
+    .filter((group) => group.length > 0)
   return (
     <div className="grid grid-cols-[1fr_max-content] gap-x-2.5 gap-y-0 items-center font-mono [word-spacing:-2px]">
       {groups.map((group, index) => (
@@ -119,56 +91,16 @@ export function SessionStatusBar({
   cost,
   limitBadge,
 }: SessionStatusBarProps) {
-  const assessedChecks = checks.filter(isAssessed)
-  const failed = assessedChecks.filter((check) => check.status === "finding")
-  const passed = assessedChecks.filter((check) => check.status === "clean")
-  const assessedCount = passed.length + failed.length
-  const failedShare = assessedCount === 0 ? 0 : failed.length / assessedCount
-  const allPassed = passed.length === assessedCount && assessedCount > 0
-  const hasUnavailableChecks = assessedCount < checks.length
-  const stateLabel = sessionHygieneStateLabel(evidenceState)
-  // A transient state ends on its own, so its label carries an ellipsis.
-  const stateText = stateLabel
-    ? `${stateLabel} checks${sessionHygieneStateIsTransient(evidenceState) ? "…" : ""}`
-    : null
-  // Once at least one check is assessed, the verdict is worth more than the
-  // state label — a stale or refreshing session still has a last result. Only
-  // the never-assessed case keeps the plain state text in the count's place.
-  const showStateText = stateLabel !== null && assessedCount === 0
-  const checkNoun = assessedCount === 1 ? "burn check" : "burn checks"
-  const countText = `${passed.length}/${assessedCount} ${checkNoun}`
-  // A transient state next to an assessed verdict still names itself, as a
-  // prefix on the aria label and the tooltip text.
-  const verdictPrefix = stateLabel && !showStateText ? `${stateLabel} — ` : ""
-  const verdictLabel = showStateText
-    ? `${stateLabel} session hygiene checks`
-    : `${verdictPrefix}${
-        allPassed
-          ? hasUnavailableChecks
-            ? "All assessed checks passed"
-            : "All checks passed"
-          : `${passed.length} of ${assessedCount} ${checkNoun} passed`
-      }`
-  const tooltip = showStateText ? verdictLabel : renderTooltip(failed, passed)
-  const showVerdict = showStateText || assessedCount > 0
+  const presentation = sessionBurnCheckPresentation(checks, evidenceState)
+  const hasCheckDetails = checks.length > 0
+  const tooltip = hasCheckDetails ? renderTooltip(checks) : presentation.accessibleDescription
   const isHighLimitShare = roundedLimitPercent(limitBadge?.percent ?? 0) >= 5
 
   return (
     <div className="flex w-full items-center justify-between gap-x-1.5 text-label-secondary">
-      {showVerdict && (
-        <Tooltip label={tooltip} delayMs={150}>
-          <span
-            // The modifiers remove the wider sans spacing from type-footnote.
-            // Monospace text already adds enough space between characters.
-            // Negative word spacing keeps the count together.
-            aria-label={verdictLabel}
-            className="font-mono type-footnote font-medium! tracking-tight! [word-spacing:-2px] leading-[13px] tabular-nums"
-            style={{ color: verdictInk(failedShare, assessedCount) }}
-          >
-            {showStateText ? stateText : countText}
-          </span>
-        </Tooltip>
-      )}
+      <Tooltip label={tooltip} delayMs={150}>
+        <BurnCheckStatus presentation={presentation} />
+      </Tooltip>
 
       <div className="ml-auto">
         {limitBadge && limitBadge.percent !== null ? (

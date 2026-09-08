@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { ChecksCategoryPayload } from "../../lib/insightsIpc"
 import type { ChecksPresentation } from "../../lib/presentation/checks"
+import { aggregateBurnCheckPresentation } from "../../lib/presentation/burnChecks"
 import { ChecksPeek, ChecksSummary } from "./ChecksView"
 
 function category(
@@ -38,6 +39,11 @@ const presentation: ChecksPresentation = {
   wins,
   unavailable: [],
   refreshUnavailable: false,
+  burnChecks: aggregateBurnCheckPresentation({
+    evidenceSettled: true,
+    estimatedTokenBurnBasisPoints: 1_625,
+    categories: [failure, ...wins],
+  }),
   estimate: { tokenBurnBasisPoints: 1_625 },
 }
 
@@ -56,8 +62,11 @@ describe("Checks", () => {
 
     expect(screen.getByText("16% token burn").closest(".text-system-red-text")).not.toBeNull()
     expect(screen.queryByText("Last 30 days")).not.toBeInTheDocument()
-    const trigger = screen.getByText("All checks").closest("[tabindex]")!
+    const trigger = screen.getByText("Burn Checks incomplete").closest("[tabindex]")!
     expect(screen.queryByRole("button")).not.toBeInTheDocument()
+    expect(trigger).toHaveAccessibleName(
+      `${presentation.burnChecks.accessibleDescription} 16% token burn.`,
+    )
     fireEvent.mouseEnter(trigger)
     fireEvent.focus(trigger)
     expect(onPreview).toHaveBeenCalledTimes(2)
@@ -105,7 +114,7 @@ describe("Checks", () => {
       />,
     )
     const summary = container.firstElementChild!
-    const trigger = screen.getByText("All checks").closest("[tabindex]")!
+    const trigger = screen.getByText("Burn Checks incomplete").closest("[tabindex]")!
     fireEvent.mouseEnter(summary)
     fireEvent.focus(trigger)
     fireEvent.mouseLeave(summary)
@@ -138,7 +147,7 @@ describe("Checks", () => {
         onLeave={vi.fn()}
       />,
     )
-    const summary = screen.getByText("All checks").parentElement?.parentElement
+    const summary = screen.getByText("Running Burn Checks…").closest("[aria-busy]")
     expect(summary).not.toHaveAttribute("tabindex")
   })
 
@@ -152,8 +161,10 @@ describe("Checks", () => {
         onLeave={vi.fn()}
       />,
     )
-    expect(screen.getByText("Checks unavailable")).toBeInTheDocument()
-    expect(screen.queryByText("Checking local sessions…")).not.toBeInTheDocument()
+    const headline = screen.getByText("Burn Checks unavailable")
+    expect(headline).toBeInTheDocument()
+    expect(headline.closest("[tabindex]")).toHaveAttribute("tabindex", "0")
+    expect(screen.queryByText("Running Burn Checks…")).not.toBeInTheDocument()
   })
 
   it("shows floored token burn estimates and every confirmed pass in preview mode", () => {
@@ -249,6 +260,11 @@ describe("Checks", () => {
           wins,
           unavailable: [],
           refreshUnavailable: false,
+          burnChecks: aggregateBurnCheckPresentation({
+            evidenceSettled: true,
+            estimatedTokenBurnBasisPoints: 0,
+            categories: wins,
+          }),
           estimate: { tokenBurnBasisPoints: 0 },
         }}
       />,
@@ -265,6 +281,11 @@ describe("Checks", () => {
           wins: [category("sessionsOverDepth", { clean: 8, unavailable: 4 })],
           unavailable: [],
           refreshUnavailable: false,
+          burnChecks: aggregateBurnCheckPresentation({
+            evidenceSettled: true,
+            estimatedTokenBurnBasisPoints: 0,
+            categories: [category("sessionsOverDepth", { clean: 8, unavailable: 4 })],
+          }),
           estimate: { tokenBurnBasisPoints: 0 },
         }}
       />,

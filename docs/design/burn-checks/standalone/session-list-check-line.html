@@ -1,0 +1,2063 @@
+<!doctype html>
+<html lang="en" data-visualize-standalone>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Session List Check Line</title>
+<style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
+</head>
+<body>
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="Session List Check Line" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot; data-visualize-standalone&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
+&lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
+&lt;title&gt;Session List Check Line&lt;/title&gt;
+&lt;style&gt;:root {
+  color-scheme: light dark;
+  background-color: var(
+    --background,
+    var(--color-background-primary, light-dark(rgb(255 255 255), rgb(24 24 24)))
+  ) !important;
+
+  /* Agent-facing contract; keep in sync with SKILL.md. */
+  --background: var(
+    --color-background-primary,
+    light-dark(rgb(255 255 255), rgb(24 24 24))
+  );
+  --foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --card: color-mix(in oklab, var(--foreground) 5%, var(--background));
+  --card-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --popover: var(
+    --color-background-secondary,
+    light-dark(rgb(255 255 255), rgb(45 45 45))
+  );
+  --popover-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --primary: var(
+    --color-text-info,
+    light-dark(rgb(51 156 255), rgb(131 195 255))
+  );
+  --primary-foreground: var(
+    --color-text-inverse,
+    light-dark(rgb(255 255 255), rgb(13 13 13))
+  );
+  --secondary: var(
+    --color-background-secondary,
+    light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%))
+  );
+  --secondary-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --muted-foreground: var(
+    --color-text-secondary,
+    light-dark(rgb(26 28 31 / 49.4%), rgb(255 255 255 / 49.8%))
+  );
+  --accent: var(
+    --color-background-info,
+    light-dark(rgb(229 242 255), rgb(13 39 63))
+  );
+  --accent-foreground: var(
+    --color-text-info,
+    light-dark(rgb(51 156 255), rgb(131 195 255))
+  );
+  --destructive: var(
+    --color-text-warning,
+    light-dark(rgb(226 85 7), rgb(255 133 73))
+  );
+  --border: var(
+    --color-border-secondary,
+    light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+  );
+  --input: var(
+    --color-border-primary,
+    light-dark(
+      rgb(26 28 31 / 11.8%),
+      color-mix(in oklab, rgb(0 0 0) 10%, transparent)
+    )
+  );
+  --ring: var(
+    --color-ring-primary,
+    light-dark(rgb(51 156 255), rgb(131 195 255 / 76%))
+  );
+  --font-size-base: var(--font-text-md-size, 14px);
+  --blue: light-dark(rgb(51 156 255), rgb(51 156 255));
+  --orange: light-dark(rgb(226 85 7), rgb(251 106 34));
+  --green: light-dark(rgb(0 162 64), rgb(64 201 119));
+  --red: light-dark(rgb(224 46 42), rgb(255 103 100));
+  --purple: light-dark(rgb(146 79 247), rgb(173 123 249));
+  --yellow: light-dark(rgb(255 195 0), rgb(255 210 64));
+  --viz-series-1: var(--primary);
+  --viz-series-2: light-dark(rgb(243 136 59), rgb(245 154 86));
+  --viz-series-3: light-dark(rgb(93 201 119), rgb(116 213 139));
+  --viz-series-4: light-dark(rgb(235 119 177), rgb(240 143 192));
+  --viz-series-5: light-dark(rgb(155 121 236), rgb(170 145 239));
+  --viz-series-6: light-dark(rgb(58 185 177), rgb(90 203 194));
+
+  /* Internal implementation variables; not part of the agent contract. */
+  --font-sans: -apple-system, system-ui, &quot;Segoe UI&quot;, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;,
+    monospace;
+  --font-size-normal: max(11px, var(--font-size-base));
+  --font-size-tooltip: calc(var(--font-size-base) - 1px);
+  --font-size-small: max(11px, calc(var(--font-size-base) - 2px));
+  --font-size-h1: calc(var(--font-size-normal) * 1.7142857143);
+  --font-size-h2: calc(var(--font-size-normal) * 1.4285714286);
+  --font-size-h3: calc(var(--font-size-normal) * 1.2857142857);
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --icon-size: 16px;
+  --line-height-normal: calc(var(--font-size-normal) * 1.5);
+  --line-height-tooltip: calc(var(--font-size-tooltip) * 1.4285714286);
+  --line-height-small: calc(var(--font-size-small) + 4px);
+  --corner-shape: round;
+  --radius: var(--border-radius-lg, 10px);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 8%);
+  --checkmark-image: url(&quot;data:image/svg+xml,%3Csvg xmlns=&#x27;http://www.w3.org/2000/svg&#x27; viewBox=&#x27;0 0 17 17&#x27;%3E%3Cpath d=&#x27;M12.8961 3.64101C13.1297 3.41418 13.4984 3.37523 13.7779 3.56581C14.0571 3.75635 14.1554 4.11331 14.0299 4.41347L13.9615 4.53847L7.71151 13.7045C7.59411 13.8767 7.4063 13.9877 7.19881 14.0072C6.99136 14.0267 6.78564 13.9533 6.63826 13.806L2.88826 10.056L2.79842 9.9457C2.6192 9.67407 2.64927 9.30496 2.88826 9.06581C3.12738 8.82669 3.49647 8.79676 3.76815 8.97597L3.8785 9.06581L7.03084 12.2182L12.8053 3.74941L12.8961 3.64101Z&#x27;/%3E%3C/svg%3E&quot;);
+
+  /* Legacy aliases; not part of the current agent contract. */
+  --viz-bg: transparent;
+  --viz-panel: var(--card);
+  --viz-border: var(--border);
+  --viz-text: var(--foreground);
+  --viz-muted: var(--muted-foreground);
+  --viz-accent: var(--primary);
+  --viz-accent-text: var(--primary-foreground);
+  --viz-accent-bg: var(--accent);
+  --viz-font-size: var(--font-size-base);
+  --viz-warning: var(--destructive);
+}
+
+:root[data-theme=&quot;light&quot;] {
+  color-scheme: light;
+}
+
+:root[data-theme=&quot;dark&quot;] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html &gt; body {
+  /* Preserve MCP aliases for older inline renderers without creating :root cycles. */
+  --color-background-primary: var(
+    --background,
+    light-dark(rgb(255 255 255), rgb(24 24 24))
+  );
+  --color-text-primary: var(
+    --foreground,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --color-border-secondary: var(
+    --border,
+    light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+  );
+
+  margin: 0;
+  padding: var(--visualize-paint-gutter, 0px);
+  color: var(--foreground);
+  background: transparent !important;
+  font-family: var(--font-sans) !important;
+  font-size: var(--font-size-normal);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+a {
+  color: color-mix(in srgb, var(--viz-accent) 80%, var(--viz-text) 20%);
+  cursor: pointer;
+  font-weight: var(--font-weight-medium, 500);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+a:is(:hover, :focus-visible) {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 0.5px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin-block: 0;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+b,
+strong,
+th {
+  font-weight: var(--font-weight-medium);
+}
+
+code:not(pre code) {
+  display: inline;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  corner-shape: var(--corner-shape);
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  word-break: break-word;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--foreground);
+  font: inherit;
+  text-align: start;
+}
+
+.table :is(th, td) {
+  padding-block: 10px;
+  padding-inline: 0 24px;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
+}
+
+.table-responsive &gt; .table :is(th, td) {
+  overflow-wrap: break-word;
+}
+
+.table :is(th, td):last-child {
+  padding-inline-end: 0;
+}
+
+.table :is(caption, thead th) {
+  font-weight: 600;
+}
+
+.table thead th {
+  padding-block: 8px;
+  border-bottom-color: color-mix(in srgb, var(--foreground) 16%, transparent);
+}
+
+.table tbody tr:last-child :is(th, td) {
+  border-bottom: 0;
+}
+
+.table.table-sm :is(th, td) {
+  padding-block: 6px;
+}
+
+.table.table-sm :is(th, td):not(:last-child) {
+  padding-inline-end: 16px;
+}
+
+.table :is(.text-end, [align=&quot;right&quot;]) {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.table :is(.text-center, [align=&quot;center&quot;]) {
+  text-align: center;
+}
+
+.table .text-nowrap {
+  white-space: nowrap;
+}
+
+#widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent !important;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  border-radius: var(--radius-2xl);
+  corner-shape: var(--corner-shape);
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+#widget &gt; :not(.card, .progress) {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(
+    20rem,
+    var(--tooltip-available-width, calc(100vw - 10px)),
+    calc(100vw - 10px)
+  );
+  max-height: min(
+    var(--tooltip-available-height, calc(100vh - 10px)),
+    calc(100vh - 10px)
+  );
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  corner-shape: var(--corner-shape);
+  color: var(--popover-foreground);
+  background: var(--popover);
+  box-shadow: none;
+  font-size: var(--font-size-tooltip);
+  line-height: var(--line-height-tooltip);
+  overflow-wrap: break-word;
+  white-space: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, 24%), 1fr));
+  gap: 10px;
+}
+
+.viz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viz-stat-value {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+hr {
+  width: 100%;
+  height: 1px;
+  margin-block: 6px;
+  border: 0;
+  background: var(--border);
+}
+
+.nav {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.progress {
+  display: flex;
+  height: 8px;
+  margin-block: calc((var(--line-height-normal, 1.5em) - 8px) / 2);
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+}
+
+.progress-bar:only-child {
+  border-radius: var(--radius-full);
+}
+
+.progress-bar {
+  height: 100%;
+  flex-shrink: 0;
+  border: 0;
+  background: var(--viz-series-1);
+}
+
+.viz-badge {
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+small,
+.text-small,
+.viz-badge {
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+}
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.viz-controls &gt; .form-label {
+  display: grid;
+  min-width: min(100%, 260px);
+  flex: 1 1 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 0;
+}
+
+.viz-controls &gt; .form-label &gt; :is(.form-control, .form-range, .form-select) {
+  grid-column: 1 / -1;
+}
+
+.btn,
+.nav-link,
+.form-check-input,
+.form-control,
+.form-range,
+.form-select {
+  font: inherit;
+}
+
+.btn,
+.nav-link {
+  appearance: button;
+  display: inline-flex;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: var(--corner-shape);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: var(--cursor-interaction, pointer);
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.btn:is(.btn-block, .viz-tile) {
+  inline-size: 100%;
+}
+
+.btn.viz-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+a.btn {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:not(:disabled):hover,
+.nav-link:not(:disabled):not([aria-disabled=&quot;true&quot;]):hover {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn-primary {
+  border-color: transparent;
+  color: var(--primary-foreground);
+  background: var(--foreground);
+  background-clip: padding-box;
+}
+
+.btn-primary .text-muted {
+  color: color-mix(in srgb, var(--primary-foreground) 50%, transparent);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 80%, transparent);
+  background-clip: padding-box;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.nav-pills .nav-link {
+  min-width: 0;
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.nav-justified .nav-link {
+  flex: 1 1 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.nav-pills .nav-link.active {
+  color: var(--foreground);
+  background: var(--muted);
+}
+
+.btn:disabled,
+.nav-link:disabled,
+.nav-link[aria-disabled=&quot;true&quot;] {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-lucide] {
+  stroke-width: 1.6;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--foreground);
+}
+
+.form-control {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: var(--corner-shape);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+
+.form-control::placeholder {
+  color: var(--muted-foreground);
+}
+
+.form-control[type=&quot;file&quot;] {
+  padding: 0;
+  overflow: hidden;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control[type=&quot;file&quot;]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--input);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: inherit;
+  font: inherit;
+}
+
+.form-control[type=&quot;file&quot;]:not(:disabled):hover::file-selector-button {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-control-color[type=&quot;color&quot;] {
+  width: 40px;
+  height: 28px;
+  padding: 3px;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--radius-lg) - 4px);
+  corner-shape: var(--corner-shape);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.form-select {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 32px 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: var(--corner-shape);
+  color: var(--foreground);
+  background-color: var(--secondary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-select:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-check {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-check-input {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--input);
+  color: var(--primary-foreground);
+  background-color: transparent;
+  cursor: var(--cursor-interaction, default);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;] {
+  border-color: var(--input);
+  border-radius: var(--radius-sm);
+  corner-shape: var(--corner-shape);
+  background-color: var(--secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input:not(:disabled):not(:checked):hover {
+  background-color: var(--card);
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input[type=&quot;checkbox&quot;]:checked::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--primary-foreground);
+  content: &quot;&quot;;
+  mask: var(--checkmark-image) center / 12px 12px no-repeat;
+}
+
+.form-check-input[type=&quot;radio&quot;] {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+}
+
+.form-check-input[type=&quot;radio&quot;]:checked {
+  border: 2px solid var(--primary);
+  background:
+    radial-gradient(circle, var(--primary-foreground) 0 2.5px, transparent 3px),
+    var(--primary);
+}
+
+.form-check:not(.form-switch) .form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+}
+
+.form-switch .form-check-input:disabled,
+.form-switch .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  box-shadow: none;
+  transition: background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid light-dark(var(--primary-foreground), var(--foreground));
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+  box-shadow: var(--shadow-sm);
+  content: &quot;&quot;;
+  transform: translate(2px, -50%);
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translate(14px, -50%);
+}
+
+.form-switch .form-check-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  accent-color: var(--primary);
+  background: linear-gradient(
+      color-mix(in srgb, var(--foreground) 7%, transparent),
+      color-mix(in srgb, var(--foreground) 7%, transparent)
+    )
+    center / 100% 2px no-repeat;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range::-moz-range-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-moz-range-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.btn:not(.btn-primary, .viz-tile):is(
+  [aria-pressed=&quot;true&quot;],
+  [aria-selected=&quot;true&quot;],
+  .is-selected
+) {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.btn.viz-tile:is([aria-pressed=&quot;true&quot;], [aria-selected=&quot;true&quot;], .is-selected) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.btn:focus-visible,
+.nav-link:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .btn,
+  .nav-link,
+  .form-control,
+  .form-select {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Keep small-screen WebKit from zooming when a text field receives focus. */
+  .form-control,
+  .form-select {
+    font-size: max(16px, var(--font-size-normal));
+  }
+
+  .form-control[type=&quot;file&quot;]::file-selector-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .form-control-color[type=&quot;color&quot;] {
+    width: 44px;
+    height: 44px;
+  }
+
+  .form-control:is(
+    [type=&quot;date&quot;],
+    [type=&quot;datetime-local&quot;],
+    [type=&quot;month&quot;],
+    [type=&quot;time&quot;],
+    [type=&quot;week&quot;]
+  ) {
+    min-width: 0;
+    max-width: 100%;
+    padding-block: 8px;
+  }
+
+  .form-check {
+    min-height: 44px;
+    padding-inline: 15px;
+  }
+
+  .form-check-input {
+    position: relative;
+  }
+
+  .form-check-input::after {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 44px;
+    height: 44px;
+    content: &quot;&quot;;
+    transform: translate(-50%, -50%);
+  }
+
+  .form-check-label {
+    display: inline-flex;
+    min-width: 44px;
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .form-range {
+    height: 44px;
+    touch-action: pan-y;
+  }
+
+  .form-range::-webkit-slider-runnable-track {
+    height: 44px;
+  }
+
+  .form-range::-moz-range-track {
+    height: 44px;
+  }
+
+  .form-range::-webkit-slider-thumb {
+    margin-top: 12px;
+  }
+}
+
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+#widget &gt; svg {
+  width: 100%;
+}
+
+/* Model-authored chart rules can otherwise stretch icons after these styles load. */
+svg.lucide {
+  display: block;
+  width: var(--icon-size) !important;
+  height: var(--icon-size) !important;
+  flex: none;
+  margin: 0 !important;
+  stroke-width: 1.6;
+}
+
+.text-warning,
+.text-destructive {
+  color: var(--destructive);
+}
+
+html&gt;body{padding:0}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div id=&quot;session-list-check-line&quot; data-blue-style=&quot;cyan&quot; aria-label=&quot;Session list card blue comparison&quot;&gt;
+  &lt;style&gt;
+    #session-list-check-line {
+      --sl-blue-light: #318fc9;
+      --sl-blue-dark: #68b9ef;
+      --sl-blue-cyan-light: #108eac;
+      --sl-blue-cyan-dark: #2ea5c6;
+      --sl-blue-active-light: var(--sl-blue-light);
+      --sl-blue-active-dark: var(--sl-blue-dark);
+      --sl-orange: #ff6a2c;
+      --sl-green-light-ring: #0a9b6e;
+      --sl-green-light-text: #08714e;
+      --sl-green-light-fill: #087b57;
+      --sl-green-dark: #0bc689;
+      --sl-green-dark-fill: #087b57;
+      --sl-red-light: #d13a3e;
+      --sl-red-light-text: #b8292e;
+      --sl-red-dark: #e84548;
+      --sl-red-dark-text: #ff8587;
+      width: 100%;
+      background: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    #session-list-check-line * { box-sizing: border-box; }
+
+    #session-list-check-line[data-blue-style=&quot;cyan&quot;] {
+      --sl-blue-active-light: var(--sl-blue-cyan-light);
+      --sl-blue-active-dark: var(--sl-blue-cyan-dark);
+    }
+
+    #session-list-check-line .sl-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+      color: light-dark(#202124, #f2f3f5);
+    }
+
+    #session-list-check-line .sl-heading h2 {
+      margin: 0;
+      font-size: 19px;
+      font-weight: 500;
+      letter-spacing: -0.015em;
+      text-wrap: balance;
+    }
+
+    #session-list-check-line .sl-heading-note {
+      color: light-dark(#676b70, #9b9da3);
+      font-size: 12px;
+    }
+
+    #session-list-check-line .sl-heading-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    #session-list-check-line .sl-blue-toggle {
+      display: inline-flex;
+      flex: none;
+      gap: 2px;
+      padding: 2px;
+      border: 1px solid light-dark(rgb(0 0 0 / 0.12), rgb(255 255 255 / 0.16));
+      border-radius: 7px;
+    }
+
+    #session-list-check-line .sl-blue-toggle button {
+      border: 0;
+      border-radius: 4px;
+      padding: 3px 7px;
+      background: transparent;
+      color: light-dark(#666a70, #a5a8ad);
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    #session-list-check-line .sl-blue-toggle button[aria-pressed=&quot;true&quot;] {
+      background: light-dark(rgb(0 0 0 / 0.08), rgb(255 255 255 / 0.12));
+      color: light-dark(#202124, #f2f3f5);
+    }
+
+    #session-list-check-line .sl-theme-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    #session-list-check-line .sl-window {
+      --sl-system-orange-text: #ba3800;
+      --sl-failure-text: var(--sl-system-orange-text);
+      --sl-pass: var(--sl-blue-active-light);
+      --sl-pass-text: var(--sl-pass);
+      --sl-pass-fill: var(--sl-pass);
+      --sl-fail: var(--sl-orange);
+      --sl-neutral: #b8bcc0;
+      --sl-window: #f3f3f3;
+      --sl-sidebar: #ededed;
+      --sl-card: #fbfbfb;
+      --sl-card-hover: #fdfdfd;
+      --sl-card-highlight: rgb(255 255 255 / 0.96);
+      --sl-card-highlight-hover: rgb(255 255 255 / 1);
+      --sl-card-shadow: rgb(0 0 0 / 0.07);
+      --sl-card-shadow-hover: rgb(0 0 0 / 0.10);
+      --sl-label: rgb(0 0 0 / 0.86);
+      --sl-secondary: rgb(34 35 39 / 0.74);
+      --sl-tertiary: rgb(34 35 39 / 0.56);
+      --sl-separator: rgb(0 0 0 / 0.10);
+      --sl-provider: #d9d9da;
+      --sl-agent-mark: #24231f;
+      --sl-accent-foreground: #ffffff;
+      overflow: hidden;
+      min-width: 0;
+      border-radius: 14px;
+      background: var(--sl-window);
+      color: var(--sl-label);
+      box-shadow:
+        0 0 0 1px rgb(0 0 0 / 0.06),
+        0 1px 2px -1px rgb(0 0 0 / 0.06),
+        0 8px 24px rgb(0 0 0 / 0.08);
+      color-scheme: light;
+    }
+
+    #session-list-check-line .sl-window-dark {
+      --sl-system-orange-text: #ff8d5c;
+      --sl-failure-text: var(--sl-system-orange-text);
+      --sl-pass: var(--sl-blue-active-dark);
+      --sl-neutral: #7d8185;
+      --sl-window: #1d1d1d;
+      --sl-sidebar: #202020;
+      --sl-card: #303030;
+      --sl-card-hover: #343434;
+      --sl-card-highlight: rgb(255 255 255 / 0.10);
+      --sl-card-highlight-hover: rgb(255 255 255 / 0.14);
+      --sl-card-shadow: rgb(0 0 0 / 0.20);
+      --sl-card-shadow-hover: rgb(0 0 0 / 0.26);
+      --sl-label: rgb(255 255 255 / 0.92);
+      --sl-secondary: rgb(240 240 247 / 0.72);
+      --sl-tertiary: rgb(240 240 247 / 0.54);
+      --sl-separator: rgb(255 255 255 / 0.10);
+      --sl-provider: #505052;
+      --sl-agent-mark: #f6f6f1;
+      --sl-accent-foreground: #1e1e1e;
+      color-scheme: dark;
+      box-shadow: 0 0 0 1px rgb(255 255 255 / 0.08);
+    }
+
+    #session-list-check-line[data-palette=&quot;green-red&quot;] .sl-window {
+      --sl-pass: var(--sl-green-light-ring);
+      --sl-pass-text: var(--sl-green-light-text);
+      --sl-pass-fill: var(--sl-green-light-fill);
+      --sl-fail: var(--sl-red-light);
+      --sl-failure-text: var(--sl-red-light-text);
+    }
+
+    #session-list-check-line[data-palette=&quot;green-red&quot;] .sl-window-dark {
+      --sl-pass: var(--sl-green-dark);
+      --sl-pass-text: var(--sl-green-dark);
+      --sl-pass-fill: var(--sl-green-dark-fill);
+      --sl-fail: var(--sl-red-dark);
+      --sl-failure-text: var(--sl-red-dark-text);
+    }
+
+    #session-list-check-line .sl-window-bar {
+      display: grid;
+      grid-template-columns: 12px 12px 12px minmax(0, 1fr) max-content;
+      align-items: center;
+      gap: 7px;
+      height: 38px;
+      padding: 0 12px;
+      background: var(--sl-sidebar);
+      border-bottom: 1px solid var(--sl-separator);
+    }
+
+    #session-list-check-line .sl-window-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--sl-separator);
+    }
+
+    #session-list-check-line .sl-window-title {
+      margin-left: 6px;
+      overflow: hidden;
+      font-size: 12px;
+      font-weight: 500;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #session-list-check-line .sl-theme-label {
+      color: var(--sl-tertiary);
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    #session-list-check-line .sl-list {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+    }
+
+    #session-list-check-line .sl-card {
+      min-width: 0;
+      padding: 12px;
+      border-radius: 10px;
+      background: var(--sl-card);
+      box-shadow:
+        inset 0 1px 0 var(--sl-card-highlight),
+        0 1px 2px var(--sl-card-shadow);
+      transition-property: background-color, box-shadow;
+      transition-duration: 150ms;
+      transition-timing-function: ease-out;
+    }
+
+    #session-list-check-line .sl-card:hover {
+      background: var(--sl-card-hover);
+      box-shadow:
+        inset 0 1px 0 var(--sl-card-highlight-hover),
+        0 2px 5px var(--sl-card-shadow-hover);
+    }
+
+    #session-list-check-line .sl-check-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content;
+      align-items: center;
+      gap: 12px;
+      min-height: 16px;
+    }
+
+    #session-list-check-line .sl-check-status {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      gap: 7px;
+      color: var(--sl-secondary);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.12px;
+      line-height: 13px;
+    }
+
+    #session-list-check-line .sl-check-copy {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #session-list-check-line .sl-failure-copy {
+      color: var(--sl-failure-text);
+      font-weight: 500;
+    }
+
+    #session-list-check-line .sl-pass-copy {
+      color: inherit;
+      font-weight: 500;
+    }
+
+    #session-list-check-line .sl-cost {
+      color: var(--sl-tertiary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      line-height: 13px;
+    }
+
+    #session-list-check-line .sl-session-title-row {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    #session-list-check-line .sl-provider-mark {
+      display: inline-grid;
+      place-items: center;
+      flex: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 5px;
+      background: var(--sl-provider);
+      color: var(--sl-secondary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+      line-height: 1;
+    }
+
+    #session-list-check-line .sl-agent-mark {
+      display: inline-grid;
+      place-items: center;
+      flex: none;
+      width: 14px;
+      height: 14px;
+      color: var(--sl-agent-mark);
+    }
+
+    #session-list-check-line .sl-agent-mark::before {
+      width: 12px;
+      height: 12px;
+      background: currentColor;
+      content: &quot;&quot;;
+      -webkit-mask: var(--sl-agent-icon) center / contain no-repeat;
+      mask: var(--sl-agent-icon) center / contain no-repeat;
+    }
+
+    #session-list-check-line .sl-agent-codex {
+      --sl-agent-icon: url(&quot;data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNTYgMjYwIj48cGF0aCBkPSJNMjM5LjE4NCAxMDYuMjAzYTY0LjcyIDY0LjcyIDAgMCAwLTUuNTc2LTUzLjEwM0MyMTkuNDUyIDI4LjQ1OSAxOTEgMTUuNzg0IDE2My4yMTMgMjEuNzRBNjUuNTg2IDY1LjU4NiAwIDAgMCA1Mi4wOTYgNDUuMjJhNjQuNzIgNjQuNzIgMCAwIDAtNDMuMjMgMzEuMzZjLTE0LjMxIDI0LjYwMi0xMS4wNjEgNTUuNjM0IDguMDMzIDc2Ljc0YTY0LjY3IDY0LjY3IDAgMCAwIDUuNTI1IDUzLjEwMmMxNC4xNzQgMjQuNjUgNDIuNjQ0IDM3LjMyNCA3MC40NDYgMzEuMzZhNjQuNzIgNjQuNzIgMCAwIDAgNDguNzU0IDIxLjc0NGMyOC40ODEuMDI1IDUzLjcxNC0xOC4zNjEgNjIuNDE0LTQ1LjQ4MWE2NC43NyA2NC43NyAwIDAgMCA0My4yMjktMzEuMzZjMTQuMTM3LTI0LjU1OCAxMC44NzUtNTUuNDIzLTguMDgzLTc2LjQ4M20tOTcuNTYgMTM2LjMzOGE0OC40IDQ4LjQgMCAwIDEtMzEuMTA1LTExLjI1NWwxLjUzNS0uODdsNTEuNjctMjkuODI1YTguNiA4LjYgMCAwIDAgNC4yNDctNy4zNjd2LTcyLjg1bDIxLjg0NSAxMi42MzZjLjIxOC4xMTEuMzcuMzIuNDA5LjU2M3Y2MC4zNzdjLS4wNTYgMjYuODE4LTIxLjc4MyA0OC41NDUtNDguNjAxIDQ4LjYwMU0zNy4xNTggMTk3LjkzYTQ4LjM1IDQ4LjM1IDAgMCAxLTUuNzgxLTMyLjU4OWwxLjUzNC45MjFsNTEuNzIyIDI5LjgyNmE4LjM0IDguMzQgMCAwIDAgOC40NDEgMGw2My4xODEtMzYuNDI1djI1LjIyMWEuODcuODcgMCAwIDEtLjM1OC42NjVsLTUyLjMzNSAzMC4xODRjLTIzLjI1NyAxMy4zOTgtNTIuOTcgNS40MzEtNjYuNDA0LTE3LjgwM00yMy41NDkgODUuMzhhNDguNSA0OC41IDAgMCAxIDI1LjU4LTIxLjMzM3Y2MS4zOWE4LjI5IDguMjkgMCAwIDAgNC4xOTUgNy4zMTZsNjIuODc0IDM2LjI3MmwtMjEuODQ1IDEyLjYzNmEuODIuODIgMCAwIDEtLjc2NyAwTDQxLjM1MyAxNTEuNTNjLTIzLjIxMS0xMy40NTQtMzEuMTcxLTQzLjE0NC0xNy44MDQtNjYuNDA1em0xNzkuNDY2IDQxLjY5NWwtNjMuMDgtMzYuNjNMMTYxLjczIDc3Ljg2YS44Mi44MiAwIDAgMSAuNzY4IDBsNTIuMjMzIDMwLjE4NGE0OC42IDQ4LjYgMCAwIDEtNy4zMTYgODcuNjM1di02MS4zOTFhOC41NCA4LjU0IDAgMCAwLTQuNC03LjIxM20yMS43NDItMzIuNjlsLTEuNTM1LS45MjJsLTUxLjYxOS0zMC4wODFhOC4zOSA4LjM5IDAgMCAwLTguNDkyIDBMOTkuOTggOTkuODA4Vjc0LjU4N2EuNzIuNzIgMCAwIDEgLjMwNy0uNjY1bDUyLjIzMy0zMC4xMzNhNDguNjUyIDQ4LjY1MiAwIDAgMSA3Mi4yMzYgNTAuMzkxek04OC4wNjEgMTM5LjA5N2wtMjEuODQ1LTEyLjU4NWEuODcuODcgMCAwIDEtLjQxLS42MTRWNjUuNjg1YTQ4LjY1MiA0OC42NTIgMCAwIDEgNzkuNzU3LTM3LjM0NmwtMS41MzUuODdsLTUxLjY3IDI5LjgyNWE4LjYgOC42IDAgMCAwLTQuMjQ2IDcuMzY3em0xMS44NjgtMjUuNThMMTI4LjA2NyA5Ny4zbDI4LjE4OCAxNi4yMTh2MzIuNDM0bC0yOC4wODYgMTYuMjE4bC0yOC4xODgtMTYuMjE4eiIvPjwvc3ZnPg==&quot;);
+    }
+
+    #session-list-check-line .sl-agent-claude {
+      --sl-agent-icon: url(&quot;https://cdn.jsdelivr.net/npm/simple-icons@16.28.0/icons/claude.svg&quot;);
+      color: #d97757;
+    }
+
+    #session-list-check-line .sl-agent-cursor {
+      --sl-agent-icon: url(&quot;https://cdn.jsdelivr.net/npm/simple-icons@16.28.0/icons/cursor.svg&quot;);
+    }
+
+    #session-list-check-line .sl-agent-opencode {
+      --sl-agent-icon: url(&quot;https://cdn.jsdelivr.net/npm/simple-icons@16.28.0/icons/opencode.svg&quot;);
+    }
+
+    #session-list-check-line .sl-agent-copilot {
+      --sl-agent-icon: url(&quot;https://cdn.jsdelivr.net/npm/simple-icons@16.28.0/icons/githubcopilot.svg&quot;);
+    }
+
+    #session-list-check-line .sl-session-title {
+      overflow: hidden;
+      color: var(--sl-label);
+      font-size: 13.5px;
+      font-weight: 500;
+      line-height: 1.4;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #session-list-check-line .sl-session-meta {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 4px 0 0 22px;
+      color: var(--sl-tertiary);
+      font-size: 12px;
+      line-height: 1.4;
+      text-wrap: pretty;
+    }
+
+    #session-list-check-line .sl-session-model {
+      margin: 4px 0 0 22px;
+      overflow: hidden;
+      color: var(--sl-tertiary);
+      font-size: 12px;
+      line-height: 1.4;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #session-list-check-line .sl-session-model-name {
+      color: var(--sl-secondary);
+      font-weight: 500;
+    }
+
+    #session-list-check-line .sl-ring {
+      display: block;
+      flex: none;
+      width: 16px;
+      height: 16px;
+      overflow: visible;
+    }
+
+    #session-list-check-line .sl-state-mark {
+      display: inline-grid;
+      place-items: center;
+      position: relative;
+      flex: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      color: var(--sl-accent-foreground);
+    }
+
+    #session-list-check-line .sl-state-mark-pass::before,
+    #session-list-check-line .sl-state-mark-fail::before {
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      content: &quot;&quot;;
+    }
+
+    #session-list-check-line .sl-state-mark-pass::before { background: var(--sl-pass-fill); }
+    #session-list-check-line .sl-state-mark-fail::before { background: var(--sl-fail); }
+    #session-list-check-line .sl-state-mark-neutral {
+      color: var(--sl-neutral);
+      box-shadow: inset 0 0 0 2px currentColor;
+    }
+
+    #session-list-check-line .sl-state-mark svg {
+      position: relative;
+      width: 8px !important;
+      height: 8px !important;
+    }
+
+    #session-list-check-line .sl-state-mark-pass svg,
+    #session-list-check-line .sl-state-mark-fail svg {
+      width: 7px !important;
+      height: 7px !important;
+      stroke-width: 2.5;
+    }
+
+    #session-list-check-line .sl-state-mark-fail {
+      color: var(--sl-fail);
+    }
+
+    #session-list-check-line .sl-state-mark-fail::before { display: none; }
+
+    #session-list-check-line .sl-state-mark-fail svg {
+      width: 14px !important;
+      height: 14px !important;
+      stroke-width: 2.25;
+    }
+    #session-list-check-line .sl-state-mark-neutral svg { stroke-width: 2.75; }
+
+    #session-list-check-line .sl-unavailable {
+      display: inline-grid;
+      place-items: center;
+      flex: none;
+      width: 16px;
+      height: 16px;
+      color: var(--sl-neutral);
+    }
+
+    #session-list-check-line .sl-unavailable svg {
+      width: 16px !important;
+      height: 16px !important;
+      stroke-width: 2.25;
+    }
+
+    #session-list-check-line .sl-computing {
+      animation: sl-ring-spin 900ms linear infinite;
+      transform-origin: center;
+    }
+
+    @keyframes sl-ring-spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 760px) {
+      #session-list-check-line .sl-theme-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 420px) {
+      #session-list-check-line .sl-heading {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #session-list-check-line .sl-computing { animation: none; }
+    }
+  &lt;/style&gt;
+
+  &lt;header class=&quot;sl-heading&quot;&gt;
+    &lt;h2&gt;Session cards with Burn Check status&lt;/h2&gt;
+    &lt;div class=&quot;sl-heading-actions&quot;&gt;
+      &lt;span class=&quot;sl-heading-note&quot;&gt;Blue + Antiburn orange&lt;/span&gt;
+      &lt;div class=&quot;sl-blue-toggle&quot; role=&quot;group&quot; aria-label=&quot;Blue style&quot;&gt;
+        &lt;button type=&quot;button&quot; data-blue-choice=&quot;sky&quot; aria-pressed=&quot;false&quot;&gt;Sky&lt;/button&gt;
+        &lt;button type=&quot;button&quot; data-blue-choice=&quot;cyan&quot; aria-pressed=&quot;true&quot;&gt;Cyan&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/header&gt;
+
+  &lt;template id=&quot;sl-all-states-template&quot;&gt;
+    &lt;article class=&quot;sl-card&quot;&gt;
+      &lt;div class=&quot;sl-check-row&quot;&gt;&lt;div class=&quot;sl-check-status&quot;&gt;&lt;span class=&quot;sl-state-mark sl-state-mark-pass&quot; aria-hidden=&quot;true&quot;&gt;&lt;i data-lucide=&quot;check&quot;&gt;&lt;/i&gt;&lt;/span&gt;&lt;span class=&quot;sl-check-copy&quot;&gt;6 Burn Checks passed&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;sl-cost&quot;&gt;$1.82&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;sl-session-title-row&quot;&gt;&lt;span class=&quot;sl-agent-mark sl-agent-codex&quot; role=&quot;img&quot; aria-label=&quot;Codex&quot; data-tooltip=&quot;Codex&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-session-title&quot;&gt;Skip imported Codex session noise&lt;/span&gt;&lt;/div&gt;
+      &lt;p class=&quot;sl-session-meta&quot;&gt;antiburn · 4m ago&lt;/p&gt;
+    &lt;/article&gt;
+    &lt;article class=&quot;sl-card&quot;&gt;
+      &lt;div class=&quot;sl-check-row&quot;&gt;&lt;div class=&quot;sl-check-status&quot;&gt;&lt;svg class=&quot;sl-ring&quot; data-ring=&quot;1:fail,5:pass&quot; aria-hidden=&quot;true&quot;&gt;&lt;/svg&gt;&lt;span class=&quot;sl-check-copy&quot;&gt;&lt;span class=&quot;sl-failure-copy&quot;&gt;1 Burn Check failed&lt;/span&gt; · 5 passed&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;sl-cost&quot;&gt;$2.40&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;sl-session-title-row&quot;&gt;&lt;span class=&quot;sl-agent-mark sl-agent-claude&quot; role=&quot;img&quot; aria-label=&quot;Claude Code&quot; data-tooltip=&quot;Claude Code&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-session-title&quot;&gt;Refine context accounting and cache eviction&lt;/span&gt;&lt;/div&gt;
+      &lt;p class=&quot;sl-session-meta&quot;&gt;antiburn · 12m ago&lt;/p&gt;
+    &lt;/article&gt;
+    &lt;article class=&quot;sl-card&quot;&gt;
+      &lt;div class=&quot;sl-check-row&quot;&gt;&lt;div class=&quot;sl-check-status&quot;&gt;&lt;svg class=&quot;sl-ring&quot; data-ring=&quot;3:fail,3:pass&quot; aria-hidden=&quot;true&quot;&gt;&lt;/svg&gt;&lt;span class=&quot;sl-check-copy&quot;&gt;&lt;span class=&quot;sl-failure-copy&quot;&gt;3 Burn Checks failed&lt;/span&gt; · 3 passed&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;sl-cost&quot;&gt;$3.16&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;sl-session-title-row&quot;&gt;&lt;span class=&quot;sl-agent-mark sl-agent-cursor&quot; role=&quot;img&quot; aria-label=&quot;Cursor&quot; data-tooltip=&quot;Cursor&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-session-title&quot;&gt;Audit multi-agent handoff context&lt;/span&gt;&lt;/div&gt;
+      &lt;p class=&quot;sl-session-meta&quot;&gt;antiburn · 18m ago&lt;/p&gt;
+    &lt;/article&gt;
+    &lt;article class=&quot;sl-card&quot;&gt;
+      &lt;div class=&quot;sl-check-row&quot;&gt;&lt;div class=&quot;sl-check-status&quot;&gt;&lt;svg class=&quot;sl-ring&quot; data-ring=&quot;4:pass,2:neutral&quot; aria-hidden=&quot;true&quot;&gt;&lt;/svg&gt;&lt;span class=&quot;sl-check-copy&quot;&gt;4 Burn Checks passed&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;sl-cost&quot;&gt;$1.38&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;sl-session-title-row&quot;&gt;&lt;span class=&quot;sl-agent-mark sl-agent-codex&quot; role=&quot;img&quot; aria-label=&quot;Codex&quot; data-tooltip=&quot;Codex&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-session-title&quot;&gt;Index historical session metadata&lt;/span&gt;&lt;/div&gt;
+      &lt;p class=&quot;sl-session-meta&quot;&gt;antiburn · 24m ago&lt;/p&gt;
+    &lt;/article&gt;
+    &lt;article class=&quot;sl-card&quot;&gt;
+      &lt;div class=&quot;sl-check-row&quot;&gt;&lt;div class=&quot;sl-check-status&quot;&gt;&lt;svg class=&quot;sl-ring&quot; data-ring=&quot;1:fail,3:pass,2:neutral&quot; aria-hidden=&quot;true&quot;&gt;&lt;/svg&gt;&lt;span class=&quot;sl-check-copy&quot;&gt;&lt;span class=&quot;sl-failure-copy&quot;&gt;1 Burn Check failed&lt;/span&gt; · 3 passed&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;sl-cost&quot;&gt;$2.04&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;sl-session-title-row&quot;&gt;&lt;span class=&quot;sl-agent-mark sl-agent-claude&quot; role=&quot;img&quot; aria-label=&quot;Claude Code&quot; data-tooltip=&quot;Claude Code&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-session-title&quot;&gt;Improve retry budget accounting&lt;/span&gt;&lt;/div&gt;
+      &lt;p class=&quot;sl-session-meta&quot;&gt;antiburn · 31m ago&lt;/p&gt;
+    &lt;/article&gt;
+    &lt;article class=&quot;sl-card&quot;&gt;
+      &lt;div class=&quot;sl-check-row&quot;&gt;&lt;div class=&quot;sl-check-status&quot;&gt;&lt;span class=&quot;sl-state-mark sl-state-mark-fail&quot; aria-hidden=&quot;true&quot;&gt;&lt;i data-lucide=&quot;circle-alert&quot;&gt;&lt;/i&gt;&lt;/span&gt;&lt;span class=&quot;sl-check-copy sl-failure-copy&quot;&gt;6 Burn Checks failed&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;sl-cost&quot;&gt;$4.21&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;sl-session-title-row&quot;&gt;&lt;span class=&quot;sl-agent-mark sl-agent-cursor&quot; role=&quot;img&quot; aria-label=&quot;Cursor&quot; data-tooltip=&quot;Cursor&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-session-title&quot;&gt;Reconcile unsupported event schemas&lt;/span&gt;&lt;/div&gt;
+      &lt;p class=&quot;sl-session-meta&quot;&gt;antiburn · 39m ago&lt;/p&gt;
+    &lt;/article&gt;
+    &lt;article class=&quot;sl-card&quot;&gt;
+      &lt;div class=&quot;sl-check-row&quot;&gt;&lt;div class=&quot;sl-check-status&quot;&gt;&lt;svg class=&quot;sl-ring sl-computing&quot; data-ring=&quot;indeterminate&quot; aria-hidden=&quot;true&quot;&gt;&lt;/svg&gt;&lt;span class=&quot;sl-check-copy&quot;&gt;Running Burn Checks…&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;sl-cost&quot;&gt;$0.74&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;sl-session-title-row&quot;&gt;&lt;span class=&quot;sl-agent-mark sl-agent-codex&quot; role=&quot;img&quot; aria-label=&quot;Codex&quot; data-tooltip=&quot;Codex&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-session-title&quot;&gt;Evaluate long-running session&lt;/span&gt;&lt;/div&gt;
+      &lt;p class=&quot;sl-session-meta&quot;&gt;antiburn · 53m ago&lt;/p&gt;
+    &lt;/article&gt;
+    &lt;article class=&quot;sl-card&quot;&gt;
+      &lt;div class=&quot;sl-check-row&quot;&gt;&lt;div class=&quot;sl-check-status&quot;&gt;&lt;span class=&quot;sl-unavailable&quot; aria-hidden=&quot;true&quot;&gt;&lt;i data-lucide=&quot;ban&quot;&gt;&lt;/i&gt;&lt;/span&gt;&lt;span class=&quot;sl-check-copy&quot;&gt;Burn Checks unavailable&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;sl-cost&quot;&gt;$0.96&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;sl-session-title-row&quot;&gt;&lt;span class=&quot;sl-agent-mark sl-agent-copilot&quot; role=&quot;img&quot; aria-label=&quot;GitHub Copilot&quot; data-tooltip=&quot;GitHub Copilot&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-session-title&quot;&gt;Normalize session event timelines&lt;/span&gt;&lt;/div&gt;
+      &lt;p class=&quot;sl-session-meta&quot;&gt;antiburn · 1h ago&lt;/p&gt;
+    &lt;/article&gt;
+    &lt;article class=&quot;sl-card&quot;&gt;
+      &lt;div class=&quot;sl-check-row&quot;&gt;&lt;div class=&quot;sl-check-status&quot;&gt;&lt;span class=&quot;sl-state-mark sl-state-mark-neutral&quot; aria-hidden=&quot;true&quot;&gt;&lt;i data-lucide=&quot;minus&quot;&gt;&lt;/i&gt;&lt;/span&gt;&lt;span class=&quot;sl-check-copy&quot;&gt;Burn Checks not supported&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;sl-cost&quot;&gt;$0.52&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;sl-session-title-row&quot;&gt;&lt;span class=&quot;sl-agent-mark sl-agent-cursor&quot; role=&quot;img&quot; aria-label=&quot;Cursor&quot; data-tooltip=&quot;Cursor&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-session-title&quot;&gt;Analyze external agent transcript&lt;/span&gt;&lt;/div&gt;
+      &lt;p class=&quot;sl-session-meta&quot;&gt;antiburn · 1h ago&lt;/p&gt;
+    &lt;/article&gt;
+    &lt;article class=&quot;sl-card&quot;&gt;
+      &lt;div class=&quot;sl-check-row&quot;&gt;&lt;div class=&quot;sl-check-status&quot;&gt;&lt;svg class=&quot;sl-ring&quot; data-ring=&quot;6:neutral&quot; aria-hidden=&quot;true&quot;&gt;&lt;/svg&gt;&lt;span class=&quot;sl-check-copy&quot;&gt;Burn Checks not assessed&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;sl-cost&quot;&gt;$0.31&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;sl-session-title-row&quot;&gt;&lt;span class=&quot;sl-agent-mark sl-agent-codex&quot; role=&quot;img&quot; aria-label=&quot;Codex&quot; data-tooltip=&quot;Codex&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-session-title&quot;&gt;Review empty imported session&lt;/span&gt;&lt;/div&gt;
+      &lt;p class=&quot;sl-session-meta&quot;&gt;antiburn · 2h ago&lt;/p&gt;
+    &lt;/article&gt;
+  &lt;/template&gt;
+
+  &lt;div class=&quot;sl-theme-grid&quot;&gt;
+    &lt;section class=&quot;sl-window&quot; aria-label=&quot;Light session list&quot;&gt;
+      &lt;div class=&quot;sl-window-bar&quot;&gt;&lt;span class=&quot;sl-window-dot&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-window-dot&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-window-dot&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-window-title&quot;&gt;Sessions&lt;/span&gt;&lt;span class=&quot;sl-theme-label&quot;&gt;Light&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;sl-list&quot; data-session-list&gt;&lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;sl-window sl-window-dark&quot; aria-label=&quot;Dark session list&quot;&gt;
+      &lt;div class=&quot;sl-window-bar&quot;&gt;&lt;span class=&quot;sl-window-dot&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-window-dot&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-window-dot&quot;&gt;&lt;/span&gt;&lt;span class=&quot;sl-window-title&quot;&gt;Sessions&lt;/span&gt;&lt;span class=&quot;sl-theme-label&quot;&gt;Dark&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;sl-list&quot; data-session-list&gt;&lt;/div&gt;
+    &lt;/section&gt;
+  &lt;/div&gt;
+
+  &lt;script&gt;
+    (() =&gt; {
+      const root = document.getElementById(&quot;session-list-check-line&quot;);
+      if (!root) return;
+      const state = { palette: &quot;blue-orange&quot;, blueStyle: &quot;cyan&quot; };
+      const namespace = &quot;http://www.w3.org/2000/svg&quot;;
+      const tones = { pass: &quot;var(--sl-pass)&quot;, fail: &quot;var(--sl-fail)&quot;, neutral: &quot;var(--sl-neutral)&quot; };
+      const gap = 30;
+
+      function polar(angle) {
+        const radians = ((angle - 90) * Math.PI) / 180;
+        return { x: 32 + 28 * Math.cos(radians), y: 32 + 28 * Math.sin(radians) };
+      }
+
+      function arcPath(startAngle, endAngle) {
+        const start = polar(endAngle);
+        const end = polar(startAngle);
+        const largeArc = endAngle - startAngle &lt;= 180 ? 0 : 1;
+        return `M ${start.x.toFixed(3)} ${start.y.toFixed(3)} A 28 28 0 ${largeArc} 0 ${end.x.toFixed(3)} ${end.y.toFixed(3)}`;
+      }
+
+      function shape(name) {
+        const element = document.createElementNS(namespace, name);
+        element.setAttribute(&quot;fill&quot;, &quot;none&quot;);
+        element.setAttribute(&quot;stroke-width&quot;, &quot;8&quot;);
+        element.setAttribute(&quot;stroke-linecap&quot;, &quot;round&quot;);
+        return element;
+      }
+
+      function drawRing(svg) {
+        svg.replaceChildren();
+        svg.setAttribute(&quot;viewBox&quot;, &quot;0 0 64 64&quot;);
+        svg.setAttribute(&quot;focusable&quot;, &quot;false&quot;);
+        if (svg.dataset.ring === &quot;indeterminate&quot;) {
+          const path = shape(&quot;path&quot;);
+          path.setAttribute(&quot;d&quot;, arcPath(0, 260));
+          path.setAttribute(&quot;stroke&quot;, tones.neutral);
+          svg.append(path);
+          return;
+        }
+        const segments = (svg.dataset.ring || &quot;&quot;).split(&quot;,&quot;).map((item) =&gt; {
+          const [rawValue, tone] = item.split(&quot;:&quot;);
+          return { value: Number(rawValue), tone };
+        }).filter((item) =&gt; Number.isFinite(item.value) &amp;&amp; item.value &gt; 0 &amp;&amp; tones[item.tone]);
+        const total = segments.reduce((sum, segment) =&gt; sum + segment.value, 0);
+        if (!total) return;
+        if (segments.length === 1) {
+          const circle = shape(&quot;circle&quot;);
+          circle.setAttribute(&quot;cx&quot;, &quot;32&quot;);
+          circle.setAttribute(&quot;cy&quot;, &quot;32&quot;);
+          circle.setAttribute(&quot;r&quot;, &quot;28&quot;);
+          circle.setAttribute(&quot;stroke&quot;, tones[segments[0].tone]);
+          svg.append(circle);
+          return;
+        }
+        const usableAngle = 360 - gap * segments.length;
+        let cursor = 0;
+        for (const segment of segments) {
+          const span = usableAngle * segment.value / total;
+          const path = shape(&quot;path&quot;);
+          path.setAttribute(&quot;d&quot;, arcPath(cursor, cursor + span));
+          path.setAttribute(&quot;stroke&quot;, tones[segment.tone]);
+          svg.append(path);
+          cursor += span + gap;
+        }
+      }
+
+      function render() {
+        root.dataset.palette = state.palette;
+        root.dataset.blueStyle = state.blueStyle;
+        root.querySelector(&quot;.sl-heading-note&quot;).textContent = state.palette === &quot;blue-orange&quot; ? &quot;Blue + Antiburn orange&quot; : &quot;Green + red&quot;;
+        root.querySelectorAll(&quot;[data-blue-choice]&quot;).forEach((button) =&gt; {
+          button.setAttribute(&quot;aria-pressed&quot;, String(button.dataset.blueChoice === state.blueStyle));
+        });
+        root.querySelectorAll(&quot;svg[data-ring]&quot;).forEach(drawRing);
+      }
+
+      function markOutcomeCopy(container) {
+        container.querySelectorAll(&quot;.sl-check-copy&quot;).forEach((element) =&gt; {
+          const sourceText = element.textContent;
+          const parts = sourceText.split(/(\d+ Burn Checks? failed|All \d+ Burn Checks passed|\d+ Burn Checks passed|\d+ passed)/g);
+          if (parts.length === 1) return;
+          element.replaceChildren(...parts.filter(Boolean).map((part) =&gt; {
+            if (!part.endsWith(&quot;failed&quot;) &amp;&amp; !part.endsWith(&quot;passed&quot;)) return document.createTextNode(part);
+            const outcome = document.createElement(&quot;span&quot;);
+            outcome.className = part.endsWith(&quot;failed&quot;) ? &quot;sl-failure-copy&quot; : &quot;sl-pass-copy&quot;;
+            outcome.textContent = part;
+            return outcome;
+          }));
+        });
+      }
+
+      const template = root.querySelector(&quot;#sl-all-states-template&quot;);
+      if (template) {
+        markOutcomeCopy(template.content);
+        template.content.querySelectorAll(&quot;.sl-session-meta&quot;).forEach((meta) =&gt; {
+          const [repository, timestamp] = meta.textContent.split(&quot; · &quot;);
+          const model = document.createElement(&quot;div&quot;);
+          const modelName = document.createElement(&quot;span&quot;);
+          model.className = &quot;sl-session-model&quot;;
+          modelName.className = &quot;sl-session-model-name&quot;;
+          modelName.textContent = &quot;5.6-sol&quot;;
+          model.append(modelName, document.createTextNode(&quot; high&quot;));
+          meta.before(model);
+          meta.replaceChildren(Object.assign(document.createElement(&quot;span&quot;), { textContent: repository }), Object.assign(document.createElement(&quot;span&quot;), { textContent: timestamp }));
+        });
+        root.querySelectorAll(&quot;[data-session-list]&quot;).forEach((list) =&gt; {
+          list.replaceChildren(template.content.cloneNode(true));
+        });
+      }
+      root.querySelectorAll(&quot;[data-blue-choice]&quot;).forEach((button) =&gt; {
+        button.addEventListener(&quot;click&quot;, () =&gt; {
+          state.blueStyle = button.dataset.blueChoice;
+          render();
+        });
+      });
+      render();
+      if (globalThis.lucide) globalThis.lucide.createIcons();
+      if (globalThis.Tweak) {
+        const tweak = new globalThis.Tweak({ container: root, onChange: render });
+        tweak.addSelect(state, &quot;palette&quot;, { label: &quot;Status palette&quot;, options: [{ label: &quot;Blue + Antiburn orange&quot;, value: &quot;blue-orange&quot; }, { label: &quot;Green + red&quot;, value: &quot;green-red&quot; }], reference: &quot;BurnCheckStatus.palette&quot; });
+        tweak.addSelect(state, &quot;blueStyle&quot;, { label: &quot;Blue&quot;, options: [{ label: &quot;Sky&quot;, value: &quot;sky&quot; }, { label: &quot;Reference cyan&quot;, value: &quot;cyan&quot; }], reference: &quot;BurnCheckStatus.blue&quot; });
+      }
+    })();
+  &lt;/script&gt;
+&lt;/div&gt;
+
+&lt;script src=&quot;https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  if (window.FloatingUIDOM == null) {
+    return;
+  }
+  const { autoUpdate, computePosition, flip, offset, shift, size } =
+    window.FloatingUIDOM;
+  const tooltipPlacements = new Set([&quot;top&quot;, &quot;right&quot;, &quot;bottom&quot;, &quot;left&quot;]);
+  const tooltipId = `codex-visualization-tooltip-${
+    window.crypto?.randomUUID?.() ?? Date.now().toString(36)
+  }`;
+  const tooltipGap = 5;
+  const hoverDelay = 700;
+  const skipDelay = 300;
+  let activeTrigger = null;
+  let pendingTrigger = null;
+  let tooltip = null;
+  let openTimeout = null;
+  let autoUpdateCleanup = null;
+  let positionRequest = 0;
+  let skipDelayUntil = 0;
+  let lastPointerWasTouch = false;
+  let pinnedByTouch = false;
+
+  const getTrigger = (target) =&gt;
+    target?.nodeType === Node.ELEMENT_NODE
+      ? target.closest(&quot;[data-tooltip]&quot;)
+      : null;
+  const containsTarget = (trigger, target) =&gt;
+    target?.nodeType != null &amp;&amp; trigger.contains(target);
+  const getContent = (trigger) =&gt;
+    trigger.getAttribute(&quot;data-tooltip&quot;)?.trim() ?? &quot;&quot;;
+  const getPlacement = (trigger) =&gt; {
+    const placement = trigger.getAttribute(&quot;data-tooltip-placement&quot;);
+    return tooltipPlacements.has(placement) ? placement : &quot;top&quot;;
+  };
+  const getTooltip = () =&gt; {
+    if (tooltip == null) {
+      tooltip = document.createElement(&quot;div&quot;);
+      tooltip.id = tooltipId;
+      tooltip.className = &quot;tooltip&quot;;
+      tooltip.setAttribute(&quot;role&quot;, &quot;tooltip&quot;);
+    }
+    return tooltip;
+  };
+  const setDescribedBy = (trigger, described) =&gt; {
+    const ids = new Set(
+      (trigger.getAttribute(&quot;aria-describedby&quot;) ?? &quot;&quot;)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
+    if (described) {
+      ids.add(tooltipId);
+    } else {
+      ids.delete(tooltipId);
+    }
+    if (ids.size === 0) {
+      trigger.removeAttribute(&quot;aria-describedby&quot;);
+    } else {
+      trigger.setAttribute(&quot;aria-describedby&quot;, [...ids].join(&quot; &quot;));
+    }
+  };
+  const clearOpenTimeout = () =&gt; {
+    if (openTimeout != null) {
+      window.clearTimeout(openTimeout);
+      openTimeout = null;
+    }
+    pendingTrigger = null;
+  };
+  const closeTooltip = (activateSkipDelay = true) =&gt; {
+    clearOpenTimeout();
+    pinnedByTouch = false;
+    positionRequest += 1;
+    autoUpdateCleanup?.();
+    autoUpdateCleanup = null;
+    if (activeTrigger == null) {
+      return;
+    }
+    setDescribedBy(activeTrigger, false);
+    activeTrigger = null;
+    tooltip?.remove();
+    if (activateSkipDelay) {
+      skipDelayUntil = Date.now() + skipDelay;
+    }
+  };
+  const updatePosition = (trigger, floating) =&gt; {
+    const request = ++positionRequest;
+    void computePosition(trigger, floating, {
+      middleware: [
+        offset(tooltipGap),
+        flip({ padding: tooltipGap }),
+        shift({ padding: tooltipGap }),
+        size({
+          padding: tooltipGap,
+          apply({ availableHeight, availableWidth, elements }) {
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-width&quot;,
+              `${Math.max(0, availableWidth)}px`,
+            );
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-height&quot;,
+              `${Math.max(0, availableHeight)}px`,
+            );
+          },
+        }),
+      ],
+      placement: getPlacement(trigger),
+      strategy: &quot;fixed&quot;,
+    })
+      .then(({ x, y }) =&gt; {
+        if (activeTrigger !== trigger || request !== positionRequest) {
+          return;
+        }
+        const scale = window.devicePixelRatio || 1;
+        floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;
+        floating.style.visibility = &quot;visible&quot;;
+      })
+      .catch(() =&gt; {
+        if (activeTrigger === trigger &amp;&amp; request === positionRequest) {
+          closeTooltip(false);
+        }
+      });
+  };
+  const openTooltip = (trigger) =&gt; {
+    const content = getContent(trigger);
+    if (!trigger.isConnected || content.length === 0) {
+      return;
+    }
+    clearOpenTimeout();
+    if (activeTrigger === trigger) {
+      return;
+    }
+    closeTooltip();
+    const floating = getTooltip();
+    floating.textContent = content;
+    floating.style.visibility = &quot;hidden&quot;;
+    floating.style.transform = &quot;translate(0, 0)&quot;;
+    document.body.appendChild(floating);
+    activeTrigger = trigger;
+    setDescribedBy(trigger, true);
+    autoUpdateCleanup = autoUpdate(trigger, floating, () =&gt; {
+      updatePosition(trigger, floating);
+    });
+  };
+  const requestOpen = (trigger, immediate = false) =&gt; {
+    if (
+      getContent(trigger).length === 0 ||
+      activeTrigger === trigger ||
+      pendingTrigger === trigger
+    ) {
+      return;
+    }
+    clearOpenTimeout();
+    pendingTrigger = trigger;
+    const delay =
+      immediate || activeTrigger != null || Date.now() &lt; skipDelayUntil
+        ? 0
+        : hoverDelay;
+    if (delay === 0) {
+      openTooltip(trigger);
+      return;
+    }
+    openTimeout = window.setTimeout(() =&gt; {
+      openTimeout = null;
+      pendingTrigger = null;
+      openTooltip(trigger);
+    }, delay);
+  };
+  const handlePointerOpen = (event) =&gt; {
+    if (event.pointerType === &quot;touch&quot;) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    requestOpen(trigger);
+  };
+  const handlePointer = (event) =&gt; {
+    lastPointerWasTouch =
+      event.type === &quot;pointerdown&quot; &amp;&amp; event.pointerType === &quot;touch&quot;;
+  };
+  const handleTouchClick = (event) =&gt; {
+    const isTouch = event.pointerType === &quot;touch&quot; || lastPointerWasTouch;
+    lastPointerWasTouch = false;
+    if (!isTouch || event.detail === 0) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (
+      trigger == null ||
+      !trigger.isConnected ||
+      getContent(trigger).length === 0 ||
+      (pinnedByTouch &amp;&amp; activeTrigger === trigger)
+    ) {
+      if (pinnedByTouch) {
+        closeTooltip();
+      }
+      return;
+    }
+    openTooltip(trigger);
+    pinnedByTouch = activeTrigger === trigger;
+    window.setTimeout(() =&gt; {
+      if (activeTrigger === trigger &amp;&amp; !trigger.isConnected) {
+        closeTooltip(false);
+      }
+    }, 0);
+  };
+  const handleLeave = (event) =&gt; {
+    if (pinnedByTouch) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const handleFocusIn = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger?.matches(&quot;:focus-visible&quot;)) {
+      requestOpen(trigger, true);
+    }
+  };
+  const handleKeyDown = (event) =&gt; {
+    if (event.key === &quot;Escape&quot;) {
+      closeTooltip();
+    }
+  };
+  const handleContextMenu = (event) =&gt; {
+    lastPointerWasTouch = false;
+    const trigger = getTrigger(event.target);
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const destroy = () =&gt; {
+    closeTooltip(false);
+    lastPointerWasTouch = false;
+    document.removeEventListener(&quot;pointerover&quot;, handlePointerOpen);
+    document.removeEventListener(&quot;pointerdown&quot;, handlePointer);
+    document.removeEventListener(&quot;pointercancel&quot;, handlePointer);
+    document.removeEventListener(&quot;click&quot;, handleTouchClick);
+    document.removeEventListener(&quot;pointerout&quot;, handleLeave);
+    document.removeEventListener(&quot;focusin&quot;, handleFocusIn);
+    document.removeEventListener(&quot;focusout&quot;, handleLeave);
+    document.removeEventListener(&quot;keydown&quot;, handleKeyDown);
+    document.removeEventListener(&quot;contextmenu&quot;, handleContextMenu);
+    tooltip = null;
+  };
+
+  document.addEventListener(&quot;pointerover&quot;, handlePointerOpen);
+  document.addEventListener(&quot;pointerdown&quot;, handlePointer);
+  document.addEventListener(&quot;pointercancel&quot;, handlePointer);
+  document.addEventListener(&quot;click&quot;, handleTouchClick);
+  document.addEventListener(&quot;pointerout&quot;, handleLeave);
+  document.addEventListener(&quot;focusin&quot;, handleFocusIn);
+  document.addEventListener(&quot;focusout&quot;, handleLeave);
+  document.addEventListener(&quot;keydown&quot;, handleKeyDown);
+  document.addEventListener(&quot;contextmenu&quot;, handleContextMenu);
+  window.addEventListener(&quot;pagehide&quot;, destroy, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-tabs&quot;&gt;
+(() =&gt; {
+  const selector = &#x27;.nav[role=&quot;tablist&quot;] [role=&quot;tab&quot;]&#x27;;
+  const disabled = &#x27;:disabled,[aria-disabled=&quot;true&quot;]&#x27;;
+  const selectTab = (selected) =&gt; {
+    const panelId = selected.getAttribute(&quot;aria-controls&quot;);
+    for (const tab of selected.closest(&#x27;[role=&quot;tablist&quot;]&#x27;).querySelectorAll(&#x27;[role=&quot;tab&quot;]&#x27;)) {
+      const active = tab === selected;
+      tab.classList.toggle(&quot;active&quot;, active);
+      tab.setAttribute(&quot;aria-selected&quot;, String(active));
+      const id = tab.getAttribute(&quot;aria-controls&quot;);
+      const panel = id &amp;&amp; document.getElementById(id);
+      if (panel != null) {
+        panel.hidden = id !== panelId;
+        if (!panel.hidden &amp;&amp; selected.id) {
+          panel.setAttribute(&quot;aria-labelledby&quot;, selected.id);
+        }
+      }
+    }
+  };
+  const interact = (event) =&gt; {
+    const tab = event.target?.closest?.(selector);
+    if (event.defaultPrevented || tab == null || tab.matches(disabled)) {
+      return;
+    }
+    if (event.type === &quot;click&quot;) {
+      selectTab(tab);
+      return;
+    }
+    const tabs = Array.from(
+      tab.closest(&#x27;[role=&quot;tablist&quot;]&#x27;).querySelectorAll(&#x27;[role=&quot;tab&quot;]&#x27;),
+    ).filter((candidate) =&gt; !candidate.matches(disabled));
+    const current = tabs.indexOf(tab);
+    let next;
+    if (event.key === &quot;ArrowRight&quot; || event.key === &quot;ArrowDown&quot;) {
+      next = (current + 1) % tabs.length;
+    } else if (event.key === &quot;ArrowLeft&quot; || event.key === &quot;ArrowUp&quot;) {
+      next = (current + tabs.length - 1) % tabs.length;
+    } else if (event.key === &quot;Home&quot;) {
+      next = 0;
+    } else if (event.key === &quot;End&quot;) {
+      next = tabs.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    tabs[next].focus();
+    selectTab(tabs[next]);
+  };
+
+  for (const list of document.querySelectorAll(&#x27;.nav[role=&quot;tablist&quot;]&#x27;)) {
+    const selected =
+      list.querySelector(&#x27;[role=&quot;tab&quot;][aria-selected=&quot;true&quot;]&#x27;) ??
+      list.querySelector(&#x27;[role=&quot;tab&quot;].active&#x27;) ??
+      list.querySelector(&#x27;[role=&quot;tab&quot;]&#x27;);
+    if (selected != null) {
+      selectTab(selected);
+    }
+  }
+  document.addEventListener(&quot;click&quot;, interact);
+  document.addEventListener(&quot;keydown&quot;, interact);
+  window.addEventListener(&quot;pagehide&quot;, () =&gt; {
+    document.removeEventListener(&quot;click&quot;, interact);
+    document.removeEventListener(&quot;keydown&quot;, interact);
+  }, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-lucide&quot; async src=&quot;https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  const initialize = () =&gt; {
+    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+  };
+  if (globalThis.lucide != null) {
+    initialize();
+    return;
+  }
+  document
+    .getElementById(&quot;codex-visualization-lucide&quot;)
+    ?.addEventListener(&quot;load&quot;, initialize, { once: true });
+})();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe>
+</body>
+</html>

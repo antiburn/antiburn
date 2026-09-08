@@ -649,7 +649,9 @@ describe("PopoverView", () => {
     expect(summary).not.toHaveAttribute("title")
     const foldTarget = summary.parentElement
     expect(foldTarget).toContainElement(screen.getByTestId("usage-limits-bar"))
-    expect(foldTarget).toContainElement(screen.getByText("All checks").closest("[tabindex]"))
+    expect(foldTarget).toContainElement(
+      screen.getByText("Some Burn Checks failed").closest("[tabindex]"),
+    )
     expect(foldTarget?.parentElement?.children).toHaveLength(1)
   })
 
@@ -744,8 +746,8 @@ describe("PopoverView", () => {
   it("shows Checks in one passive anchored preview", async () => {
     render(<PopoverView />)
 
-    await screen.findByText("1 check failed")
-    const trigger = (await screen.findByText("All checks")).closest("[tabindex]")!
+    await screen.findByText("1 failed")
+    const trigger = (await screen.findByText("Some Burn Checks failed")).closest("[tabindex]")!
     fireEvent.mouseEnter(trigger)
 
     expect(screen.queryByRole("heading", { name: "Checks" })).not.toBeInTheDocument()
@@ -769,8 +771,10 @@ describe("PopoverView", () => {
 
   it("conceals the Checks preview when the Activity list scrolls", async () => {
     render(<PopoverView />)
-    await screen.findByText("1 check failed")
-    fireEvent.mouseEnter((await screen.findByText("All checks")).closest("[tabindex]")!)
+    await screen.findByText("1 failed")
+    fireEvent.mouseEnter(
+      (await screen.findByText("Some Burn Checks failed")).closest("[tabindex]")!,
+    )
 
     const viewport = screen
       .getByRole("region", { name: "Sessions" })
@@ -803,12 +807,12 @@ describe("PopoverView", () => {
     resolveFirst!(CHECKS_REPORT)
 
     await waitFor(() => expect(checksCalls).toBe(2))
-    expect(await screen.findByText("1 check failed")).toBeInTheDocument()
+    expect(await screen.findByText("1 failed")).toBeInTheDocument()
   })
 
   it("keeps an anchored preview open when Checks refreshes in the background", async () => {
     render(<PopoverView />)
-    await screen.findByText("1 check failed")
+    await screen.findByText("1 failed")
     const trigger = await screen.findByRole("img", { name: "Codex at 40 percent" })
     fireEvent.mouseEnter(trigger)
     await waitFor(() =>
@@ -849,14 +853,14 @@ describe("PopoverView", () => {
     await waitFor(() =>
       expect(invoke.mock.calls.some(([command]) => command === "get_checks_report")).toBe(true),
     )
-    expect(await screen.findByText("1 check failed")).toBeInTheDocument()
+    expect(await screen.findByText("1 failed")).toBeInTheDocument()
 
     emit("scan:finished", SCAN_STATUS)
-    await waitFor(() => expect(screen.getByText("1 check failed")).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText("1 failed")).toBeInTheDocument())
 
     settled = true
     emit("checks:report-changed", null)
-    expect(await screen.findByText("1 check failed")).toBeInTheDocument()
+    expect(await screen.findByText("1 failed")).toBeInTheDocument()
   })
 
   it("keeps the verdict stable while new evidence is still processing", async () => {
@@ -869,13 +873,13 @@ describe("PopoverView", () => {
       return original(command, args)
     })
     render(<PopoverView />)
-    await screen.findByText("1 check failed")
+    await screen.findByText("1 failed")
 
     settled = false
     emit("scan:finished", SCAN_STATUS)
 
-    expect(await screen.findByText("1 check failed")).toBeInTheDocument()
-    expect(screen.queryByText("Checking local sessions…")).not.toBeInTheDocument()
+    expect(await screen.findByText("1 failed")).toBeInTheDocument()
+    expect(screen.getByText("Running")).toBeInTheDocument()
   })
 
   it("marks a retained verdict when a later Checks request fails", async () => {
@@ -890,18 +894,18 @@ describe("PopoverView", () => {
       return original(command, args)
     })
     render(<PopoverView />)
-    expect(await screen.findByText("1 check failed")).toBeInTheDocument()
+    expect(await screen.findByText("1 failed")).toBeInTheDocument()
 
     fail = true
     emit("checks:report-changed", null)
 
-    expect(await screen.findByText(/1 check failed · refresh unavailable/)).toBeInTheDocument()
+    expect(await screen.findByText("Refresh unavailable")).toBeInTheDocument()
     expect(screen.queryByText(/refreshing/i)).not.toBeInTheDocument()
   })
 
   it("refreshes after a settled scan that queues no evidence work", async () => {
     render(<PopoverView />)
-    await screen.findByText("1 check failed")
+    await screen.findByText("1 failed")
     const callsBefore = invoke.mock.calls.filter(
       ([command]) => command === "get_checks_report",
     ).length
@@ -918,7 +922,7 @@ describe("PopoverView", () => {
 
   it("cancels Checks work when the popover session stops", async () => {
     const view = render(<PopoverView />)
-    await screen.findByText("1 check failed")
+    await screen.findByText("1 failed")
 
     view.unmount()
 
@@ -929,13 +933,13 @@ describe("PopoverView", () => {
 
   it("uses a new Checks consumer ID when the popover session restarts", async () => {
     const firstView = render(<PopoverView />)
-    await screen.findByText("1 check failed")
+    await screen.findByText("1 failed")
     const firstId = invoke.mock.calls.find(([command]) => command === "get_checks_report")?.[1]
       ?.consumerId
     firstView.unmount()
 
     const secondView = render(<PopoverView />)
-    await screen.findByText("1 check failed")
+    await screen.findByText("1 failed")
     const ids = invoke.mock.calls
       .filter(([command]) => command === "get_checks_report")
       .map(([, args]) => args.consumerId)

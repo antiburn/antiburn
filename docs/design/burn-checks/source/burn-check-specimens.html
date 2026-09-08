@@ -1,0 +1,157 @@
+<div id="burn-check-specimens" aria-label="Burn Check dial and state language specimens">
+  <style>
+    #burn-check-specimens {
+      --bc-label: light-dark(rgb(0 0 0 / 0.85), rgb(255 255 255 / 0.92));
+      --bc-secondary: light-dark(rgb(43 43 48 / 0.85), rgb(240 240 247 / 0.72));
+      --bc-separator: light-dark(rgb(0 0 0 / 0.15), rgb(255 255 255 / 0.18));
+      --bc-failure: #ff6a2c;
+      --bc-failure-text: light-dark(#ba3800, #ff8d5c);
+      --bc-pass: light-dark(#108eac, #2ea5c6);
+      --bc-neutral: light-dark(#b8bcc0, #7d8185);
+      width: 100%;
+      color: var(--bc-label);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      line-height: 1.4;
+    }
+
+    #burn-check-specimens * { box-sizing: border-box; }
+
+    #burn-check-specimens .bc-layout {
+      display: grid;
+      gap: 24px;
+    }
+
+    #burn-check-specimens h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    #burn-check-specimens .bc-dials {
+      display: flex;
+      align-items: end;
+      gap: 24px;
+      min-height: 72px;
+    }
+
+    #burn-check-specimens .bc-dial-specimen {
+      display: grid;
+      justify-items: center;
+      gap: 6px;
+      color: var(--bc-secondary);
+      font-size: 11px;
+    }
+
+    #burn-check-specimens .bc-dial {
+      display: block;
+      overflow: visible;
+    }
+
+    #burn-check-specimens .bc-failure { stroke: var(--bc-failure); }
+    #burn-check-specimens .bc-pass { stroke: var(--bc-pass); }
+    #burn-check-specimens .bc-neutral { stroke: var(--bc-neutral); }
+
+    #burn-check-specimens table {
+      width: 100%;
+      border-collapse: collapse;
+      color: var(--bc-secondary);
+      font-size: 12px;
+    }
+
+    #burn-check-specimens th,
+    #burn-check-specimens td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--bc-separator);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    #burn-check-specimens th {
+      color: var(--bc-label);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    #burn-check-specimens .bc-failed-copy {
+      color: var(--bc-failure-text);
+      font-weight: 500;
+    }
+
+    @media (max-width: 560px) {
+      #burn-check-specimens .bc-dials { gap: 14px; }
+      #burn-check-specimens .bc-table-wrap { overflow-x: auto; }
+      #burn-check-specimens table { min-width: 620px; }
+    }
+  </style>
+
+  <div class="bc-layout">
+    <section aria-labelledby="bc-dial-title">
+      <h2 id="bc-dial-title">Generic segmented radial dial</h2>
+      <div class="bc-dials">
+        <div class="bc-dial-specimen"><svg class="bc-dial" data-size="16" width="16" height="16" aria-label="16 pixel dial"></svg><span>16px</span></div>
+        <div class="bc-dial-specimen"><svg class="bc-dial" data-size="24" width="24" height="24" aria-label="24 pixel dial"></svg><span>24px</span></div>
+        <div class="bc-dial-specimen"><svg class="bc-dial" data-size="32" width="32" height="32" aria-label="32 pixel dial"></svg><span>32px</span></div>
+        <div class="bc-dial-specimen"><svg class="bc-dial" data-size="48" width="48" height="48" aria-label="48 pixel dial"></svg><span>48px</span></div>
+      </div>
+    </section>
+
+    <section aria-labelledby="bc-language-title">
+      <h2 id="bc-language-title">Burn Check state language</h2>
+      <div class="bc-table-wrap">
+        <table>
+          <thead><tr><th>Evidence and result</th><th>Session card</th><th>Summary</th></tr></thead>
+          <tbody>
+            <tr><td>Complete, all passed</td><td>6 Burn Checks passed</td><td>All Burn Checks passed</td></tr>
+            <tr><td>Complete, all failed</td><td><span class="bc-failed-copy">6 Burn Checks failed</span></td><td><span class="bc-failed-copy">All Burn Checks failed</span></td></tr>
+            <tr><td>Complete, mixed</td><td><span class="bc-failed-copy">1 Burn Check failed</span> · 5 passed</td><td><span class="bc-failed-copy">Some Burn Checks failed</span></td></tr>
+            <tr><td>Incomplete, with results</td><td><span class="bc-failed-copy">1 Burn Check failed</span> · 3 passed</td><td>Burn Checks incomplete</td></tr>
+            <tr><td>Pending or processing</td><td>Running Burn Checks…</td><td>Running Burn Checks…</td></tr>
+            <tr><td>Refreshing, no results</td><td>Refreshing Burn Checks…</td><td>Refreshing Burn Checks…</td></tr>
+            <tr><td>Actively growing</td><td>Burn Checks awaiting session data</td><td>Burn Checks awaiting session data</td></tr>
+            <tr><td>Unsupported</td><td>Burn Checks not supported</td><td>Burn Checks not supported</td></tr>
+            <tr><td>Unavailable</td><td>Burn Checks unavailable</td><td>Burn Checks unavailable</td></tr>
+            <tr><td>Settled, no assessments</td><td>Burn Checks not assessed</td><td>Burn Checks not assessed</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (() => {
+      const root = document.getElementById("burn-check-specimens");
+      if (!root) return;
+      const namespace = "http://www.w3.org/2000/svg";
+      for (const svg of root.querySelectorAll(".bc-dial")) {
+        const size = Number(svg.dataset.size);
+        const stroke = size <= 16 ? 2.5 : 3;
+        const center = size / 2;
+        const radius = (size - stroke) / 2;
+        const capClearance = 2 * Math.asin(Math.min(1, stroke / (2 * radius))) * (180 / Math.PI);
+        const gap = 5 + capClearance;
+        const drawable = 360 - gap * 3;
+        svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
+        const segments = [
+          ["bc-failure", drawable / 6, 0],
+          ["bc-pass", drawable * (4 / 6), drawable / 6 + gap],
+          ["bc-neutral", drawable / 6, drawable * (5 / 6) + gap * 2],
+        ];
+        for (const [className, arc, start] of segments) {
+          const circle = document.createElementNS(namespace, "circle");
+          circle.setAttribute("cx", String(center));
+          circle.setAttribute("cy", String(center));
+          circle.setAttribute("r", String(radius));
+          circle.setAttribute("pathLength", "360");
+          circle.setAttribute("fill", "none");
+          circle.setAttribute("stroke-width", String(stroke));
+          circle.setAttribute("stroke-linecap", "round");
+          circle.setAttribute("stroke-dasharray", `${arc} ${360 - Number(arc)}`);
+          circle.setAttribute("stroke-dashoffset", String(-Number(start)));
+          circle.setAttribute("transform", `rotate(-90 ${center} ${center})`);
+          circle.setAttribute("class", String(className));
+          svg.append(circle);
+        }
+      }
+    })();
+  </script>
+</div>

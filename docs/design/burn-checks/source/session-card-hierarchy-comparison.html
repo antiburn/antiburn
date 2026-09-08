@@ -1,0 +1,528 @@
+<div id="session-card-hierarchy-comparison" data-theme="light" data-blue-style="cyan" aria-label="Agent and Burn Check hierarchy blue comparison">
+  <style>
+    #session-card-hierarchy-comparison {
+      --hc-blue-light: #318fc9;
+      --hc-blue-dark: #68b9ef;
+      --hc-blue-cyan-light: #108eac;
+      --hc-blue-cyan-dark: #2ea5c6;
+      --hc-blue-active-light: var(--hc-blue-light);
+      --hc-blue-active-dark: var(--hc-blue-dark);
+      --hc-orange: #ff6a2c;
+      width: 100%;
+      background: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    #session-card-hierarchy-comparison * { box-sizing: border-box; }
+
+    #session-card-hierarchy-comparison[data-blue-style="cyan"] {
+      --hc-blue-active-light: var(--hc-blue-cyan-light);
+      --hc-blue-active-dark: var(--hc-blue-cyan-dark);
+    }
+
+    #session-card-hierarchy-comparison .hc-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+      color: light-dark(#202124, #f2f3f5);
+    }
+
+    #session-card-hierarchy-comparison .hc-heading h2 {
+      margin: 0;
+      font-size: 19px;
+      font-weight: 500;
+      letter-spacing: -0.015em;
+    }
+
+    #session-card-hierarchy-comparison .hc-heading-note {
+      color: light-dark(#676b70, #9b9da3);
+      font-size: 12px;
+    }
+
+    #session-card-hierarchy-comparison .hc-heading-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    #session-card-hierarchy-comparison .hc-blue-toggle {
+      display: inline-flex;
+      flex: none;
+      gap: 2px;
+      padding: 2px;
+      border: 1px solid light-dark(rgb(0 0 0 / 0.12), rgb(255 255 255 / 0.16));
+      border-radius: 7px;
+    }
+
+    #session-card-hierarchy-comparison .hc-blue-toggle button {
+      border: 0;
+      border-radius: 4px;
+      padding: 3px 7px;
+      background: transparent;
+      color: light-dark(#666a70, #a5a8ad);
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    #session-card-hierarchy-comparison .hc-blue-toggle button[aria-pressed="true"] {
+      background: light-dark(rgb(0 0 0 / 0.08), rgb(255 255 255 / 0.12));
+      color: light-dark(#202124, #f2f3f5);
+    }
+
+    #session-card-hierarchy-comparison .hc-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    #session-card-hierarchy-comparison .hc-column-label {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      margin: 0 2px 7px;
+      color: light-dark(#202124, #f2f3f5);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    #session-card-hierarchy-comparison .hc-column-label span {
+      color: light-dark(#71757a, #96999e);
+      font-size: 11px;
+      font-weight: 400;
+    }
+
+    #session-card-hierarchy-comparison .hc-window {
+      --hc-system-orange-text: #ba3800;
+      --hc-pass: var(--hc-blue-active-light);
+      --hc-neutral: #b8bcc0;
+      --hc-window: #f3f3f3;
+      --hc-sidebar: #ededed;
+      --hc-card: #fbfbfb;
+      --hc-card-highlight: rgb(255 255 255 / 0.96);
+      --hc-card-shadow: rgb(0 0 0 / 0.07);
+      --hc-label: rgb(0 0 0 / 0.86);
+      --hc-secondary: rgb(34 35 39 / 0.74);
+      --hc-tertiary: rgb(34 35 39 / 0.56);
+      --hc-separator: rgb(0 0 0 / 0.10);
+      --hc-agent-ink: #24231f;
+      --hc-accent-foreground: #ffffff;
+      overflow: hidden;
+      min-width: 0;
+      border-radius: 14px;
+      background: var(--hc-window);
+      color: var(--hc-label);
+      box-shadow: 0 0 0 1px rgb(0 0 0 / 0.06), 0 8px 24px rgb(0 0 0 / 0.08);
+      color-scheme: light;
+    }
+
+    #session-card-hierarchy-comparison[data-theme="dark"] .hc-window {
+      --hc-system-orange-text: #ff8d5c;
+      --hc-pass: var(--hc-blue-active-dark);
+      --hc-neutral: #7d8185;
+      --hc-window: #1d1d1d;
+      --hc-sidebar: #202020;
+      --hc-card: #303030;
+      --hc-card-highlight: rgb(255 255 255 / 0.10);
+      --hc-card-shadow: rgb(0 0 0 / 0.20);
+      --hc-label: rgb(255 255 255 / 0.92);
+      --hc-secondary: rgb(240 240 247 / 0.72);
+      --hc-tertiary: rgb(240 240 247 / 0.54);
+      --hc-separator: rgb(255 255 255 / 0.10);
+      --hc-agent-ink: #f6f6f1;
+      --hc-accent-foreground: #1e1e1e;
+      color-scheme: dark;
+      box-shadow: 0 0 0 1px rgb(255 255 255 / 0.08);
+    }
+
+    #session-card-hierarchy-comparison .hc-window-bar {
+      display: grid;
+      grid-template-columns: 12px 12px 12px minmax(0, 1fr) max-content;
+      align-items: center;
+      gap: 7px;
+      height: 38px;
+      padding: 0 12px;
+      background: var(--hc-sidebar);
+      border-bottom: 1px solid var(--hc-separator);
+    }
+
+    #session-card-hierarchy-comparison .hc-window-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--hc-separator);
+    }
+
+    #session-card-hierarchy-comparison .hc-window-title {
+      margin-left: 6px;
+      overflow: hidden;
+      font-size: 12px;
+      font-weight: 500;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #session-card-hierarchy-comparison .hc-theme-label {
+      color: var(--hc-tertiary);
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: capitalize;
+    }
+
+    #session-card-hierarchy-comparison .hc-list {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+    }
+
+    #session-card-hierarchy-comparison .hc-card {
+      min-width: 0;
+      padding: 12px;
+      border-radius: 10px;
+      background: var(--hc-card);
+      box-shadow:
+        inset 0 1px 0 var(--hc-card-highlight),
+        0 1px 2px var(--hc-card-shadow);
+    }
+
+    #session-card-hierarchy-comparison .hc-check-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) max-content;
+      align-items: center;
+      gap: 12px;
+      min-height: 16px;
+    }
+
+    #session-card-hierarchy-comparison .hc-check-status {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      gap: 7px;
+      color: var(--hc-secondary);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.12px;
+      line-height: 13px;
+    }
+
+    #session-card-hierarchy-comparison .hc-copy,
+    #session-card-hierarchy-comparison .hc-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #session-card-hierarchy-comparison .hc-failure-copy {
+      color: var(--hc-system-orange-text);
+      font-weight: 500;
+    }
+
+    #session-card-hierarchy-comparison .hc-pass-copy {
+      color: inherit;
+      font-weight: 500;
+    }
+
+    #session-card-hierarchy-comparison .hc-cost {
+      color: var(--hc-tertiary);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      line-height: 13px;
+    }
+
+    #session-card-hierarchy-comparison .hc-title-row {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      gap: 8px;
+      margin-top: 4px;
+    }
+
+    #session-card-hierarchy-comparison .hc-title {
+      color: var(--hc-label);
+      font-size: 13.5px;
+      font-weight: 500;
+      line-height: 1.4;
+    }
+
+    #session-card-hierarchy-comparison .hc-meta {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 4px 0 0 22px;
+      color: var(--hc-tertiary);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    #session-card-hierarchy-comparison .hc-model {
+      margin: 4px 0 0 22px;
+      overflow: hidden;
+      color: var(--hc-tertiary);
+      font-size: 12px;
+      line-height: 1.4;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #session-card-hierarchy-comparison .hc-model-name {
+      color: var(--hc-secondary);
+      font-weight: 500;
+    }
+
+    #session-card-hierarchy-comparison .hc-ring {
+      display: block;
+      flex: none;
+      width: 16px;
+      height: 16px;
+      overflow: visible;
+    }
+
+    #session-card-hierarchy-comparison .hc-terminal-mark {
+      display: inline-grid;
+      place-items: center;
+      position: relative;
+      flex: none;
+      width: 16px;
+      height: 16px;
+      color: var(--hc-accent-foreground);
+    }
+
+    #session-card-hierarchy-comparison .hc-terminal-mark::before {
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      background: var(--hc-pass);
+      content: "";
+    }
+
+    #session-card-hierarchy-comparison .hc-terminal-mark svg {
+      position: relative;
+      width: 7px !important;
+      height: 7px !important;
+      stroke-width: 2.5;
+    }
+
+    #session-card-hierarchy-comparison .hc-agent {
+      display: inline-grid;
+      place-items: center;
+      flex: none;
+      width: 14px;
+      height: 14px;
+      color: var(--hc-agent-ink);
+    }
+
+    #session-card-hierarchy-comparison .hc-agent::before {
+      width: var(--hc-agent-size);
+      height: var(--hc-agent-size);
+      background: currentColor;
+      content: "";
+      -webkit-mask: var(--hc-agent-icon) center / contain no-repeat;
+      mask: var(--hc-agent-icon) center / contain no-repeat;
+    }
+
+    #session-card-hierarchy-comparison .hc-current { --hc-agent-size: 14px; }
+    #session-card-hierarchy-comparison .hc-recommended { --hc-agent-size: 12px; }
+
+    #session-card-hierarchy-comparison .hc-agent-codex {
+      --hc-agent-icon: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNTYgMjYwIj48cGF0aCBkPSJNMjM5LjE4NCAxMDYuMjAzYTY0LjcyIDY0LjcyIDAgMCAwLTUuNTc2LTUzLjEwM0MyMTkuNDUyIDI4LjQ1OSAxOTEgMTUuNzg0IDE2My4yMTMgMjEuNzRBNjUuNTg2IDY1LjU4NiAwIDAgMCA1Mi4wOTYgNDUuMjJhNjQuNzIgNjQuNzIgMCAwIDAtNDMuMjMgMzEuMzZjLTE0LjMxIDI0LjYwMi0xMS4wNjEgNTUuNjM0IDguMDMzIDc2Ljc0YTY0LjY3IDY0LjY3IDAgMCAwIDUuNTI1IDUzLjEwMmMxNC4xNzQgMjQuNjUgNDIuNjQ0IDM3LjMyNCA3MC40NDYgMzEuMzZhNjQuNzIgNjQuNzIgMCAwIDAgNDguNzU0IDIxLjc0NGMyOC40ODEuMDI1IDUzLjcxNC0xOC4zNjEgNjIuNDE0LTQ1LjQ4MWE2NC43NyA2NC43NyAwIDAgMCA0My4yMjktMzEuMzZjMTQuMTM3LTI0LjU1OCAxMC44NzUtNTUuNDIzLTguMDgzLTc2LjQ4M20tOTcuNTYgMTM2LjMzOGE0OC40IDQ4LjQgMCAwIDEtMzEuMTA1LTExLjI1NWwxLjUzNS0uODdsNTEuNjctMjkuODI1YTguNiA4LjYgMCAwIDAgNC4yNDctNy4zNjd2LTcyLjg1bDIxLjg0NSAxMi42MzZjLjIxOC4xMTEuMzcuMzIuNDA5LjU2M3Y2MC4zNzdjLS4wNTYgMjYuODE4LTIxLjc4MyA0OC41NDUtNDguNjAxIDQ4LjYwMU0zNy4xNTggMTk3LjkzYTQ4LjM1IDQ4LjM1IDAgMCAxLTUuNzgxLTMyLjU4OWwxLjUzNC45MjFsNTEuNzIyIDI5LjgyNmE4LjM0IDguMzQgMCAwIDAgOC40NDEgMGw2My4xODEtMzYuNDI1djI1LjIyMWEuODcuODcgMCAwIDEtLjM1OC42NjVsLTUyLjMzNSAzMC4xODRjLTIzLjI1NyAxMy4zOTgtNTIuOTcgNS40MzEtNjYuNDA0LTE3LjgwM00yMy41NDkgODUuMzhhNDguNSA0OC41IDAgMCAxIDI1LjU4LTIxLjMzM3Y2MS4zOWE4LjI5IDguMjkgMCAwIDAgNC4xOTUgNy4zMTZsNjIuODc0IDM2LjI3MmwtMjEuODQ1IDEyLjYzNmEuODIuODIgMCAwIDEtLjc2NyAwTDQxLjM1MyAxNTEuNTNjLTIzLjIxMS0xMy40NTQtMzEuMTcxLTQzLjE0NC0xNy44MDQtNjYuNDA1em0xNzkuNDY2IDQxLjY5NWwtNjMuMDgtMzYuNjNMMTYxLjczIDc3Ljg2YS44Mi44MiAwIDAgMSAuNzY4IDBsNTIuMjMzIDMwLjE4NGE0OC42IDQ4LjYgMCAwIDEtNy4zMTYgODcuNjM1di02MS4zOTFhOC41NCA4LjU0IDAgMCAwLTQuNC03LjIxM20yMS43NDItMzIuNjlsLTEuNTM1LS45MjJsLTUxLjYxOS0zMC4wODFhOC4zOSA4LjM5IDAgMCAwLTguNDkyIDBMOTkuOTggOTkuODA4Vjc0LjU4N2EuNzIuNzIgMCAwIDEgLjMwNy0uNjY1bDUyLjIzMy0zMC4xMzNhNDguNjUyIDQ4LjY1MiAwIDAgMSA3Mi4yMzYgNTAuMzkxek04OC4wNjEgMTM5LjA5N2wtMjEuODQ1LTEyLjU4NWEuODcuODcgMCAwIDEtLjQxLS42MTRWNjUuNjg1YTQ4LjY1MiA0OC42NTIgMCAwIDEgNzkuNzU3LTM3LjM0NmwtMS41MzUuODdsLTUxLjY3IDI5LjgyNWE4LjYgOC42IDAgMCAwLTQuMjQ2IDcuMzY3em0xMS44NjgtMjUuNThMMTI4LjA2NyA5Ny4zbDI4LjE4OCAxNi4yMTh2MzIuNDM0bC0yOC4wODYgMTYuMjE4bC0yOC4xODgtMTYuMjE4eiIvPjwvc3ZnPg==");
+    }
+
+    #session-card-hierarchy-comparison .hc-agent-claude {
+      --hc-agent-icon: url("https://cdn.jsdelivr.net/npm/simple-icons@16.28.0/icons/claude.svg");
+      color: #d97757;
+    }
+
+    #session-card-hierarchy-comparison .hc-agent-cursor {
+      --hc-agent-icon: url("https://cdn.jsdelivr.net/npm/simple-icons@16.28.0/icons/cursor.svg");
+    }
+
+    #session-card-hierarchy-comparison .hc-agent-opencode {
+      --hc-agent-icon: url("https://cdn.jsdelivr.net/npm/simple-icons@16.28.0/icons/opencode.svg");
+    }
+
+    #session-card-hierarchy-comparison .hc-recommended .hc-agent { color: var(--hc-tertiary); }
+
+    @media (max-width: 720px) {
+      #session-card-hierarchy-comparison .hc-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+
+  <header class="hc-heading">
+    <h2>Agent and Burn Check hierarchy</h2>
+    <div class="hc-heading-actions">
+      <span class="hc-heading-note">Same cards, one hierarchy change</span>
+      <div class="hc-blue-toggle" role="group" aria-label="Blue style">
+        <button type="button" data-blue-choice="sky" aria-pressed="false">Sky</button>
+        <button type="button" data-blue-choice="cyan" aria-pressed="true">Cyan</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="hc-grid">
+    <section class="hc-comparison hc-current" aria-label="Current agent icon hierarchy">
+      <div class="hc-column-label">Current <span>14px · brand colour</span></div>
+      <div class="hc-window">
+        <div class="hc-window-bar"><span class="hc-window-dot"></span><span class="hc-window-dot"></span><span class="hc-window-dot"></span><span class="hc-window-title">Sessions</span><span class="hc-theme-label">Light</span></div>
+        <div class="hc-list">
+          <article class="hc-card">
+            <div class="hc-check-row"><div class="hc-check-status"><span class="hc-terminal-mark" aria-hidden="true"><i data-lucide="check"></i></span><span class="hc-copy">6 Burn Checks passed</span></div><span class="hc-cost">$1.82</span></div>
+            <div class="hc-title-row"><span class="hc-agent hc-agent-codex" role="img" aria-label="Codex" data-tooltip="Codex"></span><span class="hc-title">Skip imported Codex session noise</span></div>
+            <p class="hc-meta">antiburn · 4m ago</p>
+          </article>
+          <article class="hc-card">
+            <div class="hc-check-row"><div class="hc-check-status"><svg class="hc-ring" data-ring="1:fail,5:pass" aria-hidden="true"></svg><span class="hc-copy"><span class="hc-failure-copy">1 Burn Check failed</span> · 5 passed</span></div><span class="hc-cost">$2.40</span></div>
+            <div class="hc-title-row"><span class="hc-agent hc-agent-claude" role="img" aria-label="Claude Code" data-tooltip="Claude Code"></span><span class="hc-title">Refine context accounting and cache eviction</span></div>
+            <p class="hc-meta">antiburn · 12m ago</p>
+          </article>
+          <article class="hc-card">
+            <div class="hc-check-row"><div class="hc-check-status"><svg class="hc-ring" data-ring="3:fail,3:pass" aria-hidden="true"></svg><span class="hc-copy"><span class="hc-failure-copy">3 Burn Checks failed</span> · 3 passed</span></div><span class="hc-cost">$3.16</span></div>
+            <div class="hc-title-row"><span class="hc-agent hc-agent-cursor" role="img" aria-label="Cursor" data-tooltip="Cursor"></span><span class="hc-title">Audit multi-agent handoff context</span></div>
+            <p class="hc-meta">antiburn · 18m ago</p>
+          </article>
+          <article class="hc-card">
+            <div class="hc-check-row"><div class="hc-check-status"><svg class="hc-ring" data-ring="4:pass,2:neutral" aria-hidden="true"></svg><span class="hc-copy">4 Burn Checks passed</span></div><span class="hc-cost">$1.38</span></div>
+            <div class="hc-title-row"><span class="hc-agent hc-agent-opencode" role="img" aria-label="OpenCode" data-tooltip="OpenCode"></span><span class="hc-title">Index historical session metadata</span></div>
+            <p class="hc-meta">antiburn · 24m ago</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="hc-comparison hc-recommended" aria-label="Recommended agent icon hierarchy">
+      <div class="hc-column-label">Recommended <span>12px · neutral ink</span></div>
+      <div class="hc-window">
+        <div class="hc-window-bar"><span class="hc-window-dot"></span><span class="hc-window-dot"></span><span class="hc-window-dot"></span><span class="hc-window-title">Sessions</span><span class="hc-theme-label">Light</span></div>
+        <div class="hc-list">
+          <article class="hc-card">
+            <div class="hc-check-row"><div class="hc-check-status"><span class="hc-terminal-mark" aria-hidden="true"><i data-lucide="check"></i></span><span class="hc-copy">6 Burn Checks passed</span></div><span class="hc-cost">$1.82</span></div>
+            <div class="hc-title-row"><span class="hc-agent hc-agent-codex" role="img" aria-label="Codex" data-tooltip="Codex"></span><span class="hc-title">Skip imported Codex session noise</span></div>
+            <p class="hc-meta">antiburn · 4m ago</p>
+          </article>
+          <article class="hc-card">
+            <div class="hc-check-row"><div class="hc-check-status"><svg class="hc-ring" data-ring="1:fail,5:pass" aria-hidden="true"></svg><span class="hc-copy"><span class="hc-failure-copy">1 Burn Check failed</span> · 5 passed</span></div><span class="hc-cost">$2.40</span></div>
+            <div class="hc-title-row"><span class="hc-agent hc-agent-claude" role="img" aria-label="Claude Code" data-tooltip="Claude Code"></span><span class="hc-title">Refine context accounting and cache eviction</span></div>
+            <p class="hc-meta">antiburn · 12m ago</p>
+          </article>
+          <article class="hc-card">
+            <div class="hc-check-row"><div class="hc-check-status"><svg class="hc-ring" data-ring="3:fail,3:pass" aria-hidden="true"></svg><span class="hc-copy"><span class="hc-failure-copy">3 Burn Checks failed</span> · 3 passed</span></div><span class="hc-cost">$3.16</span></div>
+            <div class="hc-title-row"><span class="hc-agent hc-agent-cursor" role="img" aria-label="Cursor" data-tooltip="Cursor"></span><span class="hc-title">Audit multi-agent handoff context</span></div>
+            <p class="hc-meta">antiburn · 18m ago</p>
+          </article>
+          <article class="hc-card">
+            <div class="hc-check-row"><div class="hc-check-status"><svg class="hc-ring" data-ring="4:pass,2:neutral" aria-hidden="true"></svg><span class="hc-copy">4 Burn Checks passed</span></div><span class="hc-cost">$1.38</span></div>
+            <div class="hc-title-row"><span class="hc-agent hc-agent-opencode" role="img" aria-label="OpenCode" data-tooltip="OpenCode"></span><span class="hc-title">Index historical session metadata</span></div>
+            <p class="hc-meta">antiburn · 24m ago</p>
+          </article>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (() => {
+      const root = document.getElementById("session-card-hierarchy-comparison");
+      if (!root) return;
+      const state = { theme: "light", blueStyle: "cyan" };
+      const namespace = "http://www.w3.org/2000/svg";
+      const tones = { pass: "var(--hc-pass)", fail: "var(--hc-orange)", neutral: "var(--hc-neutral)" };
+      const gap = 30;
+
+      function polar(angle) {
+        const radians = ((angle - 90) * Math.PI) / 180;
+        return { x: 32 + 28 * Math.cos(radians), y: 32 + 28 * Math.sin(radians) };
+      }
+
+      function arcPath(startAngle, endAngle) {
+        const start = polar(endAngle);
+        const end = polar(startAngle);
+        const largeArc = endAngle - startAngle <= 180 ? 0 : 1;
+        return `M ${start.x.toFixed(3)} ${start.y.toFixed(3)} A 28 28 0 ${largeArc} 0 ${end.x.toFixed(3)} ${end.y.toFixed(3)}`;
+      }
+
+      function drawRing(svg) {
+        svg.replaceChildren();
+        svg.setAttribute("viewBox", "0 0 64 64");
+        svg.setAttribute("focusable", "false");
+        const segments = (svg.dataset.ring || "").split(",").map((item) => {
+          const [rawValue, tone] = item.split(":");
+          return { value: Number(rawValue), tone };
+        }).filter((item) => Number.isFinite(item.value) && item.value > 0 && tones[item.tone]);
+        const total = segments.reduce((sum, segment) => sum + segment.value, 0);
+        if (!total) return;
+        const usableAngle = 360 - gap * segments.length;
+        let cursor = 0;
+        for (const segment of segments) {
+          const span = usableAngle * segment.value / total;
+          const path = document.createElementNS(namespace, "path");
+          path.setAttribute("d", arcPath(cursor, cursor + span));
+          path.setAttribute("fill", "none");
+          path.setAttribute("stroke", tones[segment.tone]);
+          path.setAttribute("stroke-width", "8");
+          path.setAttribute("stroke-linecap", "round");
+          svg.append(path);
+          cursor += span + gap;
+        }
+      }
+
+      function render() {
+        root.dataset.theme = state.theme;
+        root.dataset.blueStyle = state.blueStyle;
+        root.querySelectorAll("[data-blue-choice]").forEach((button) => {
+          button.setAttribute("aria-pressed", String(button.dataset.blueChoice === state.blueStyle));
+        });
+        root.querySelectorAll(".hc-theme-label").forEach((label) => { label.textContent = state.theme; });
+        root.querySelectorAll("svg[data-ring]").forEach(drawRing);
+      }
+
+      root.querySelectorAll(".hc-copy").forEach((element) => {
+        const sourceText = element.textContent;
+        const parts = sourceText.split(/(\d+ Burn Checks? failed|All \d+ Burn Checks passed|\d+ Burn Checks passed|\d+ passed)/g);
+        if (parts.length === 1) return;
+        element.replaceChildren(...parts.filter(Boolean).map((part) => {
+          if (!part.endsWith("failed") && !part.endsWith("passed")) return document.createTextNode(part);
+          const outcome = document.createElement("span");
+          outcome.className = part.endsWith("failed") ? "hc-failure-copy" : "hc-pass-copy";
+          outcome.textContent = part;
+          return outcome;
+        }));
+      });
+
+      root.querySelectorAll(".hc-meta").forEach((meta) => {
+        const [repository, timestamp] = meta.textContent.split(" · ");
+        const model = document.createElement("div");
+        const modelName = document.createElement("span");
+        const repositoryLabel = document.createElement("span");
+        const timestampLabel = document.createElement("span");
+        model.className = "hc-model";
+        modelName.className = "hc-model-name";
+        modelName.textContent = "5.6-sol";
+        repositoryLabel.textContent = repository;
+        timestampLabel.textContent = timestamp;
+        model.append(modelName, document.createTextNode(" high"));
+        meta.before(model);
+        meta.replaceChildren(repositoryLabel, timestampLabel);
+      });
+      root.querySelectorAll("[data-blue-choice]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.blueStyle = button.dataset.blueChoice;
+          render();
+        });
+      });
+      render();
+      if (globalThis.Tweak) {
+        const tweak = new globalThis.Tweak({ container: root, onChange: render });
+        tweak.addSelect(state, "theme", { label: "Theme", options: ["light", "dark"], reference: "SessionCard.theme" });
+        tweak.addSelect(state, "blueStyle", { label: "Blue", options: [{ label: "Sky", value: "sky" }, { label: "Reference cyan", value: "cyan" }], reference: "SessionCard.blue" });
+      }
+    })();
+  </script>
+</div>

@@ -1,0 +1,449 @@
+<div id="ab-checks-summary-row" data-blue-style="cyan" aria-label="Compact Burn Check summary blue comparison">
+  <style>
+    #ab-checks-summary-row {
+      --ab-orange-fill: #ff6a2c;
+      --ab-blue-light: #318fc9;
+      --ab-blue-dark: #68b9ef;
+      --ab-blue-cyan-light: #108eac;
+      --ab-blue-cyan-dark: #2ea5c6;
+      --ab-blue-active-light: var(--ab-blue-light);
+      --ab-blue-active-dark: var(--ab-blue-dark);
+      width: 100%;
+      color: light-dark(rgb(0 0 0 / 0.85), rgb(255 255 255 / 0.92));
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      line-height: 1.4;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    #ab-checks-summary-row * { box-sizing: border-box; }
+
+    #ab-checks-summary-row[data-blue-style="cyan"] {
+      --ab-blue-active-light: var(--ab-blue-cyan-light);
+      --ab-blue-active-dark: var(--ab-blue-cyan-dark);
+    }
+
+    #ab-checks-summary-row .ab-heading-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    #ab-checks-summary-row .ab-heading {
+      margin: 0;
+      font-weight: 500;
+      text-wrap: balance;
+    }
+
+    #ab-checks-summary-row .ab-blue-toggle {
+      display: inline-flex;
+      gap: 2px;
+      padding: 2px;
+      border: 1px solid light-dark(rgb(0 0 0 / 0.12), rgb(255 255 255 / 0.16));
+      border-radius: 7px;
+    }
+
+    #ab-checks-summary-row .ab-blue-toggle button {
+      border: 0;
+      border-radius: 4px;
+      padding: 3px 7px;
+      background: transparent;
+      color: light-dark(#666a70, #a5a8ad);
+      font: inherit;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    #ab-checks-summary-row .ab-blue-toggle button[aria-pressed="true"] {
+      background: light-dark(rgb(0 0 0 / 0.08), rgb(255 255 255 / 0.12));
+      color: light-dark(#202124, #f2f3f5);
+    }
+
+    #ab-checks-summary-row .ab-theme-stack {
+      display: grid;
+      gap: 14px;
+      justify-items: center;
+    }
+
+    #ab-checks-summary-row .ab-theme {
+      --ab-label: rgb(0 0 0 / 0.85);
+      --ab-secondary: rgb(43 43 48 / 0.85);
+      --ab-tertiary: rgb(43 43 48 / 0.79);
+      --ab-surface: rgb(255 255 255 / 0.85);
+      --ab-hover: rgb(0 0 0 / 0.04);
+      --ab-selected: rgb(0 0 0 / 0.09);
+      --ab-separator: rgb(0 0 0 / 0.15);
+      --ab-orange-text: #ba3800;
+      --ab-blue-fill: var(--ab-blue-active-light);
+      --ab-blue-text: #236a99;
+      --ab-neutral: #b8bcc0;
+      width: 380px;
+      max-width: 100%;
+      min-width: 0;
+      overflow: hidden;
+      border-radius: 10px;
+      background: var(--ab-surface);
+      color: var(--ab-label);
+      box-shadow:
+        0 0 0 1px rgb(0 0 0 / 0.06),
+        0 1px 2px -1px rgb(0 0 0 / 0.06),
+        0 2px 4px rgb(0 0 0 / 0.04);
+      color-scheme: light;
+    }
+
+    #ab-checks-summary-row .ab-theme-dark {
+      --ab-label: rgb(255 255 255 / 0.92);
+      --ab-secondary: rgb(240 240 247 / 0.72);
+      --ab-tertiary: rgb(240 240 247 / 0.62);
+      --ab-surface: rgb(30 30 30 / 0.92);
+      --ab-hover: rgb(255 255 255 / 0.04);
+      --ab-selected: rgb(255 255 255 / 0.11);
+      --ab-separator: rgb(255 255 255 / 0.18);
+      --ab-orange-text: #ff8d5c;
+      --ab-blue-fill: var(--ab-blue-active-dark);
+      --ab-blue-text: var(--ab-blue-active-dark);
+      --ab-neutral: #7d8185;
+      box-shadow: 0 0 0 1px rgb(255 255 255 / 0.08);
+      color-scheme: dark;
+    }
+
+    #ab-checks-summary-row .ab-theme-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--ab-separator);
+    }
+
+    #ab-checks-summary-row .ab-theme-name {
+      margin: 0;
+      font-weight: 500;
+    }
+
+    #ab-checks-summary-row .ab-theme-note,
+    #ab-checks-summary-row .ab-state-label {
+      color: var(--ab-tertiary);
+    }
+
+    #ab-checks-summary-row .ab-examples {
+      display: grid;
+      gap: 12px;
+      padding: 8px;
+    }
+
+    #ab-checks-summary-row .ab-example { min-width: 0; }
+
+    #ab-checks-summary-row .ab-state-label {
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    #ab-checks-summary-row .ab-summary-row {
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr) max-content;
+      align-items: center;
+      min-height: 44px;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--ab-label);
+    }
+
+    #ab-checks-summary-row .ab-summary-row:hover { background: var(--ab-hover); }
+    #ab-checks-summary-row .ab-summary-row[data-state="active"] { background: var(--ab-selected); }
+
+    #ab-checks-summary-row .ab-copy {
+      min-width: 0;
+      text-wrap: pretty;
+    }
+
+    #ab-checks-summary-row .ab-title {
+      display: block;
+      overflow: hidden;
+      color: var(--ab-label);
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: -0.015em;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #ab-checks-summary-row .ab-summary {
+      display: block;
+      overflow: hidden;
+      color: var(--ab-secondary);
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #ab-checks-summary-row .ab-failed {
+      color: var(--ab-orange-text);
+      font-weight: 500;
+    }
+
+    #ab-checks-summary-row .ab-passed {
+      color: inherit;
+      font-weight: 500;
+    }
+
+    #ab-checks-summary-row .ab-unassessed { color: var(--ab-tertiary); }
+
+    #ab-checks-summary-row .ab-estimate {
+      color: var(--ab-orange-text);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    #ab-checks-summary-row .ab-ring {
+      display: block;
+      width: 24px;
+      height: 24px;
+      overflow: visible;
+    }
+
+    #ab-checks-summary-row .ab-terminal-mark {
+      display: grid;
+      place-items: center;
+      position: relative;
+      width: 24px;
+      height: 24px;
+      color: #fff;
+    }
+
+    #ab-checks-summary-row .ab-terminal-mark::before {
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      border-radius: 9999px;
+      background: var(--ab-orange-fill);
+      content: "";
+    }
+
+    #ab-checks-summary-row .ab-terminal-mark svg {
+      position: relative;
+      width: 8px !important;
+      height: 8px !important;
+      stroke-width: 2.5;
+    }
+
+    #ab-checks-summary-row .ab-all-passed::before {
+      background: var(--ab-blue-fill);
+    }
+
+    #ab-checks-summary-row .ab-all-passed svg { stroke-width: 2.5; }
+
+    #ab-checks-summary-row .ab-all-failed {
+      color: var(--ab-orange-fill);
+    }
+
+    #ab-checks-summary-row .ab-all-failed::before { display: none; }
+
+    #ab-checks-summary-row .ab-all-failed svg {
+      width: 20px !important;
+      height: 20px !important;
+      stroke-width: 2;
+    }
+
+    #ab-checks-summary-row .ab-summary-row,
+    #ab-checks-summary-row .ab-summary-row * {
+      transition-property: background-color, color;
+      transition-duration: 120ms;
+      transition-timing-function: ease-out;
+    }
+
+  </style>
+
+  <div class="ab-heading-row">
+    <h2 class="ab-heading">Compact Burn Check summary</h2>
+    <div class="ab-blue-toggle" role="group" aria-label="Blue style">
+      <button type="button" data-blue-choice="sky" aria-pressed="false">Sky</button>
+      <button type="button" data-blue-choice="cyan" aria-pressed="true">Cyan</button>
+    </div>
+  </div>
+
+  <div class="ab-theme-stack">
+    <section class="ab-theme" aria-labelledby="ab-summary-light-title">
+      <header class="ab-theme-header">
+        <h3 id="ab-summary-light-title" class="ab-theme-name">Light</h3>
+        <span class="ab-theme-note text-small">380px popover · 364px row</span>
+      </header>
+      <div class="ab-examples">
+        <div class="ab-example">
+          <span class="ab-state-label text-small">Mixed · idle</span>
+          <div class="ab-summary-row">
+            <svg class="ab-ring" data-ring="1:fail,3:pass,2:neutral" role="img" aria-label="One failed, three passed, two not assessed"></svg>
+            <span class="ab-copy">
+              <span class="ab-title">Burn Checks incomplete</span>
+              <span class="ab-summary"><span class="ab-failed">1 failed</span> · <span class="ab-passed">3 passed</span> · <span class="ab-unassessed">2 not assessed</span></span>
+            </span>
+            <span class="ab-estimate text-small">15% token burn</span>
+          </div>
+        </div>
+        <div class="ab-example">
+          <span class="ab-state-label text-small">Mixed · selected</span>
+          <div class="ab-summary-row" data-state="active">
+            <svg class="ab-ring" data-ring="1:fail,3:pass,2:neutral" role="img" aria-label="One failed, three passed, two not assessed"></svg>
+            <span class="ab-copy">
+              <span class="ab-title">Burn Checks incomplete</span>
+              <span class="ab-summary"><span class="ab-failed">1 failed</span> · <span class="ab-passed">3 passed</span> · <span class="ab-unassessed">2 not assessed</span></span>
+            </span>
+            <span class="ab-estimate text-small">15% token burn</span>
+          </div>
+        </div>
+        <div class="ab-example">
+          <span class="ab-state-label text-small">All failed</span>
+          <div class="ab-summary-row">
+            <span class="ab-terminal-mark ab-all-failed" aria-hidden="true"><i data-lucide="circle-alert"></i></span>
+            <span class="ab-copy">
+              <span class="ab-title">All Burn Checks failed</span>
+              <span class="ab-summary"><span class="ab-failed">8 failed</span></span>
+            </span>
+            <span class="ab-estimate text-small">15% token burn</span>
+          </div>
+        </div>
+        <div class="ab-example">
+          <span class="ab-state-label text-small">All passed</span>
+          <div class="ab-summary-row">
+            <span class="ab-terminal-mark ab-all-passed" aria-hidden="true"><i data-lucide="check"></i></span>
+            <span class="ab-copy">
+              <span class="ab-title">All Burn Checks passed</span>
+              <span class="ab-summary"><span class="ab-passed">8 passed</span></span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="ab-theme ab-theme-dark" aria-labelledby="ab-summary-dark-title">
+      <header class="ab-theme-header">
+        <h3 id="ab-summary-dark-title" class="ab-theme-name">Dark</h3>
+        <span class="ab-theme-note text-small">380px popover · 364px row</span>
+      </header>
+      <div class="ab-examples">
+        <div class="ab-example">
+          <span class="ab-state-label text-small">Mixed · idle</span>
+          <div class="ab-summary-row">
+            <svg class="ab-ring" data-ring="1:fail,3:pass,2:neutral" role="img" aria-label="One failed, three passed, two not assessed"></svg>
+            <span class="ab-copy">
+              <span class="ab-title">Burn Checks incomplete</span>
+              <span class="ab-summary"><span class="ab-failed">1 failed</span> · <span class="ab-passed">3 passed</span> · <span class="ab-unassessed">2 not assessed</span></span>
+            </span>
+            <span class="ab-estimate text-small">15% token burn</span>
+          </div>
+        </div>
+        <div class="ab-example">
+          <span class="ab-state-label text-small">Mixed · selected</span>
+          <div class="ab-summary-row" data-state="active">
+            <svg class="ab-ring" data-ring="1:fail,3:pass,2:neutral" role="img" aria-label="One failed, three passed, two not assessed"></svg>
+            <span class="ab-copy">
+              <span class="ab-title">Burn Checks incomplete</span>
+              <span class="ab-summary"><span class="ab-failed">1 failed</span> · <span class="ab-passed">3 passed</span> · <span class="ab-unassessed">2 not assessed</span></span>
+            </span>
+            <span class="ab-estimate text-small">15% token burn</span>
+          </div>
+        </div>
+        <div class="ab-example">
+          <span class="ab-state-label text-small">All failed</span>
+          <div class="ab-summary-row">
+            <span class="ab-terminal-mark ab-all-failed" aria-hidden="true"><i data-lucide="circle-alert"></i></span>
+            <span class="ab-copy">
+              <span class="ab-title">All Burn Checks failed</span>
+              <span class="ab-summary"><span class="ab-failed">8 failed</span></span>
+            </span>
+            <span class="ab-estimate text-small">15% token burn</span>
+          </div>
+        </div>
+        <div class="ab-example">
+          <span class="ab-state-label text-small">All passed</span>
+          <div class="ab-summary-row">
+            <span class="ab-terminal-mark ab-all-passed" aria-hidden="true"><i data-lucide="check"></i></span>
+            <span class="ab-copy">
+              <span class="ab-title">All Burn Checks passed</span>
+              <span class="ab-summary"><span class="ab-passed">8 passed</span></span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (() => {
+      const root = document.getElementById("ab-checks-summary-row");
+      if (!root) return;
+      const state = { blueStyle: "cyan" };
+
+      const namespace = "http://www.w3.org/2000/svg";
+      const colors = {
+        pass: "var(--ab-blue-fill)",
+        fail: "var(--ab-orange-fill)",
+        neutral: "var(--ab-neutral)",
+      };
+      const stroke = 8;
+      const gap = 30;
+
+      function polar(angle) {
+        const radians = ((angle - 90) * Math.PI) / 180;
+        return { x: 32 + 28 * Math.cos(radians), y: 32 + 28 * Math.sin(radians) };
+      }
+
+      function arcPath(startAngle, endAngle) {
+        const start = polar(endAngle);
+        const end = polar(startAngle);
+        const largeArc = endAngle - startAngle <= 180 ? 0 : 1;
+        return `M ${start.x.toFixed(3)} ${start.y.toFixed(3)} A 28 28 0 ${largeArc} 0 ${end.x.toFixed(3)} ${end.y.toFixed(3)}`;
+      }
+
+      function drawRing(svg) {
+        svg.replaceChildren();
+        svg.setAttribute("viewBox", "0 0 64 64");
+        const segments = (svg.dataset.ring || "").split(",").map((item) => {
+          const [rawValue, tone] = item.split(":");
+          return { value: Number(rawValue), tone };
+        }).filter((item) => Number.isFinite(item.value) && item.value > 0 && colors[item.tone]);
+        const total = segments.reduce((sum, segment) => sum + segment.value, 0);
+        if (total <= 0) return;
+
+        const usableAngle = 360 - gap * segments.length;
+        let cursor = 0;
+        for (const segment of segments) {
+          const span = usableAngle * (segment.value / total);
+          const path = document.createElementNS(namespace, "path");
+          path.setAttribute("d", arcPath(cursor, cursor + span));
+          path.setAttribute("fill", "none");
+          path.setAttribute("stroke", colors[segment.tone]);
+          path.setAttribute("stroke-width", String(stroke));
+          path.setAttribute("stroke-linecap", "round");
+          svg.append(path);
+          cursor += span + gap;
+        }
+      }
+
+      function render() {
+        root.dataset.blueStyle = state.blueStyle;
+        root.querySelectorAll("[data-blue-choice]").forEach((button) => {
+          button.setAttribute("aria-pressed", String(button.dataset.blueChoice === state.blueStyle));
+        });
+        root.querySelectorAll("svg[data-ring]").forEach(drawRing);
+      }
+
+      root.querySelectorAll("[data-blue-choice]").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.blueStyle = button.dataset.blueChoice;
+          render();
+        });
+      });
+      render();
+      if (globalThis.Tweak) {
+        const tweak = new globalThis.Tweak({ container: root, onChange: render });
+        tweak.addSelect(state, "blueStyle", { label: "Blue", options: [{ label: "Sky", value: "sky" }, { label: "Reference cyan", value: "cyan" }], reference: "BurnCheck.blue" });
+      }
+    })();
+  </script>
+</div>

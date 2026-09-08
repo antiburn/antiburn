@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { PopoverPeekData } from "../lib/popoverPeekIpc"
+import { aggregateBurnCheckPresentation } from "../lib/presentation/burnChecks"
 import { PopoverPeekView } from "./PopoverPeekView"
 
 const harness = vi.hoisted(() => ({
@@ -72,6 +73,26 @@ const CHECKS_DATA: PopoverPeekData = {
     ],
     unavailable: [],
     refreshUnavailable: false,
+    burnChecks: aggregateBurnCheckPresentation({
+      evidenceSettled: true,
+      estimatedTokenBurnBasisPoints: 1_625,
+      categories: [
+        {
+          id: "cacheChurn",
+          finding: 7,
+          clean: 7,
+          unavailable: 0,
+          estimatedTokenBurnBasisPoints: 1_250,
+        },
+        {
+          id: "sessionsOverDepth",
+          finding: 0,
+          clean: 12,
+          unavailable: 0,
+          estimatedTokenBurnBasisPoints: 0,
+        },
+      ],
+    }),
     estimate: { tokenBurnBasisPoints: 1_625 },
   },
 }

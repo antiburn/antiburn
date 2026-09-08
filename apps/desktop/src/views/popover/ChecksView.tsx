@@ -16,6 +16,7 @@ import {
 import { useRef } from "react"
 
 import { TextRoll } from "../../components/ui/TextRoll"
+import { BurnCheckSummary } from "../../components/burn-checks/BurnCheckSummary"
 import { measureAnchorRegion } from "../../lib/anchorRegion"
 import type { ChecksCategoryPayload } from "../../lib/insightsIpc"
 import {
@@ -24,6 +25,7 @@ import {
   tokenBurnTone,
   type ChecksPresentation,
 } from "../../lib/presentation/checks"
+import { emptyBurnCheckPresentation } from "../../lib/presentation/burnChecks"
 
 const CHECK_ICONS: Record<string, LucideIcon> = {
   sessionsOverDepth: Layers3,
@@ -55,10 +57,6 @@ function summaryEstimate(presentation: ChecksPresentation): string | null {
     : `${formatTokenBurnPercent(basisPoints)} token burn`
 }
 
-function refreshFailureSuffix(presentation: ChecksPresentation): string {
-  return presentation.refreshUnavailable ? " · refresh unavailable" : ""
-}
-
 export function ChecksSummary({
   active,
   presentation,
@@ -72,26 +70,13 @@ export function ChecksSummary({
   onPreview: (anchor: ReturnType<typeof measureAnchorRegion>) => void
   onLeave: () => void
 }) {
-  const failures = presentation?.failures.length ?? 0
-  const wins = presentation?.wins.length ?? 0
-  const hasFindings = failures > 0
-  const hasWins = wins > 0
-  const checksNeedingEvidence = presentation
-    ? [...presentation.failures, ...presentation.wins, ...presentation.unavailable].filter(
-        (category) => category.unavailable > 0,
-      ).length
-    : 0
-  const completePass =
-    hasWins && presentation?.unavailable.length === 0 && checksNeedingEvidence === 0
-  const StatusIcon =
-    presentation == null
-      ? CircleDashed
-      : hasFindings
-        ? CircleX
-        : completePass
-          ? CheckCircle2
-          : CircleDashed
   const estimate = presentation ? summaryEstimate(presentation) : null
+  const burnChecks =
+    presentation?.burnChecks ??
+    emptyBurnCheckPresentation(reportUnavailable ? "unavailable" : "pending")
+  const accessibleLabel = estimate
+    ? `${burnChecks.accessibleDescription} ${estimate}.`
+    : burnChecks.accessibleDescription
   const hovered = useRef(false)
   const focused = useRef(false)
 
@@ -109,7 +94,8 @@ export function ChecksSummary({
       className="group flex items-center rounded-control hover:bg-surface-hover data-[state=active]:bg-surface-selected"
     >
       <div
-        tabIndex={presentation ? 0 : undefined}
+        tabIndex={presentation || reportUnavailable ? 0 : undefined}
+        aria-label={accessibleLabel}
         aria-busy={!presentation && !reportUnavailable}
         onFocus={(event) => {
           focused.current = true
@@ -119,33 +105,20 @@ export function ChecksSummary({
           focused.current = false
           if (!hovered.current) onLeave()
         }}
-        className="grid min-w-0 flex-1 grid-cols-[16px_minmax(0,1fr)_max-content] items-center gap-x-2 px-2 py-2 text-left"
+        className="min-w-0 flex-1"
       >
-        <StatusIcon
-          size={14}
-          strokeWidth={presentation == null ? 2 : 2.5}
-          className={`shrink-0 ${hasFindings ? "text-system-red-text" : completePass ? "text-system-green" : "text-label-tertiary"}`}
-          aria-hidden="true"
+        <BurnCheckSummary
+          presentation={burnChecks}
+          trailing={
+            presentation && estimate ? (
+              <span
+                className={`type-footnote font-medium! tabular-nums ${presentation.estimate.tokenBurnBasisPoints == null ? "text-label-secondary" : tokenBurnTone(presentation.estimate.tokenBurnBasisPoints)}`}
+              >
+                <TextRoll text={estimate} />
+              </span>
+            ) : undefined
+          }
         />
-        <span className="min-w-0">
-          <span className="block type-body font-medium! text-label">All checks</span>
-          <span className="block truncate type-footnote text-label-secondary">
-            {presentation &&
-              (hasFindings
-                ? `${failures} check${failures === 1 ? "" : "s"} failed`
-                : hasWins
-                  ? `${wins} check${wins === 1 ? "" : "s"} passed${checksNeedingEvidence > 0 ? ` · ${checksNeedingEvidence} need evidence` : ""}`
-                  : "More evidence needed")}
-            {presentation && refreshFailureSuffix(presentation)}
-            {!presentation &&
-              (reportUnavailable ? "Checks unavailable" : "Checking local sessions…")}
-          </span>
-        </span>
-        <span
-          className={`type-footnote font-medium! tabular-nums ${presentation?.estimate.tokenBurnBasisPoints == null ? "text-label-secondary" : tokenBurnTone(presentation.estimate.tokenBurnBasisPoints)}`}
-        >
-          {presentation && estimate ? <TextRoll text={estimate} /> : null}
-        </span>
       </div>
     </div>
   )
