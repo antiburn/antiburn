@@ -18,11 +18,12 @@ telemetry, crash-reporting, or session-replay SDK.
 
 ## Analytics we collect
 
-Official release builds send limited events about how the application works and
-which features are used. This includes application launch and progress through
-the fixed onboarding steps.
+Official release builds send limited events about how the application works,
+which features are used, and coarse hourly ranges for the application's own
+resource use. This includes application launch and progress through the fixed
+onboarding steps.
 
-The event schema contains twenty-three fields:
+The event schema contains twenty-four fields:
 
 - the constant product surface `desktop`;
 - random message, installation, and analytics-session identifiers;
@@ -36,8 +37,22 @@ The event schema contains twenty-three fields:
 - Claude's reset eligibility and experiment-membership states;
 - an allowlisted reason when Claude reports ineligibility;
 - Claude's reset experiment arm and availability state;
-- the weekly reset count rounded to zero, one, or two-plus; and
-- whether Claude supplied a next-reset date, never the date itself.
+- the weekly reset count rounded to zero, one, or two-plus;
+- whether Claude supplied a next-reset date, never the date itself; and
+- a nested hourly summary containing fixed bands for antiburn's own shell CPU,
+  memory, process read and write I/O, local database size, and database log
+  size, plus `none`, `partial`, or `full` coverage for each measurement.
+
+Resource summaries can reveal coarse application work intensity and local data
+volume. They contain no work content, paths, credentials, renderer-process
+counts, whole-machine measurements, exact byte counts, or exact percentages.
+CPU and memory describe the antiburn shell process, not renderer processes or
+whole-app totals. Memory means physical footprint on macOS, resident set size on
+Linux, and working set size on Windows. Linux I/O can include I/O inherited from
+child processes after the shell waits for them. Windows I/O covers all shell-process
+I/O transfer bytes, not physical disk traffic. An unavailable measurement is not
+reported as zero, and the highest memory band is a sampled maximum rather than a
+true peak.
 
 The installation identifier is random and changes every 30 days. The live
 analytics-session identifier is generated in memory and changes when the app
@@ -61,8 +76,9 @@ type, and app runtime. We store them with the raw event.
 ## Why we use analytics
 
 We use these events to understand whether onboarding works, which product
-features are useful, which operations fail, and when Claude makes its session
-limit-reset feature available. We do not use them for
+features are useful, which operations fail, when Claude makes its session
+limit-reset feature available, and whether antiburn has resource regressions.
+We do not use them for
 advertising, user profiling, or decisions about a person.
 
 We process this data for our legitimate interest in maintaining and improving
