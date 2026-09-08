@@ -19,7 +19,7 @@ use std::time::Duration;
 use antiburn_local::discovery::ACTIVE_SESSION_WINDOW_SECS;
 use antiburn_local::model::AgentKind;
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::Instant;
 
@@ -245,19 +245,37 @@ pub fn spawn(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     })
 }
 
-/// Log every event on the bus at debug level. This is the first subscriber:
-/// it shows the bus working in a trace before any view reads it, and it
-/// shows what a lagging subscriber must do, which is log and carry on.
-pub fn spawn_log(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
+/// Carry every bus event to the webviews as `session:lifecycle`.
+///
+/// An `Idle` event also becomes the `sessions:entry-changed` the popover's
+/// list already reads, so a row's active pill clears the moment its window
+/// ends. A lagged subscriber logs and carries on: the webviews re-read the
+/// live snapshot on the next `scan:finished`.
+pub fn spawn_bridge(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
+    let app = app.clone();
     let mut bus = app.state::<SessionEvents>().subscribe();
     tauri::async_runtime::spawn(async move {
         loop {
             match bus.recv().await {
                 Ok(event) => {
                     ::tracing::debug!(event = "session_lifecycle_event", payload = ?event);
+                    let _ = app.emit(crate::commands::SESSION_LIFECYCLE_EVENT, &event);
+                    if let SessionEvent::Idle { session, at, .. } = &event {
+                        let key = SessionKey::new(
+                            session.environment_key.clone(),
+                            session.agent.clone(),
+                            session.session_id.clone(),
+                        );
+                        let store = app.state::<Store>();
+                        if let Some(entry) =
+                            crate::insights_worker::completion_entry(&store, &key, *at)
+                        {
+                            let _ = app.emit(crate::commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
+                        }
+                    }
                 }
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    ::tracing::debug!(event = "session_lifecycle_log_lagged", skipped);
+                    ::tracing::warn!(event = "session_lifecycle_bridge_lagged", skipped);
                 }
                 Err(broadcast::error::RecvError::Closed) => return,
             }

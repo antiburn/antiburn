@@ -109,7 +109,6 @@ use crate::session_lifecycle;
 use crate::storage_health::{self, checked};
 use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
-pub mod idle;
 pub mod scoped;
 pub mod watch;
 
@@ -895,6 +894,8 @@ async fn pass(
     )?;
     if persisted {
         wake_session_workers(app);
+        // The lifecycle actor learns of a session it was not yet watching, or
+        // of one whose deadline just moved later, from this report.
         report_indexed(app, now, &records, &changed, &previous_records);
     }
 
@@ -1071,8 +1072,6 @@ fn persist_changed_records(
 
 fn wake_session_workers(app: &AppHandle) {
     crate::insights_worker::wake(app);
-    // A changed session can add, remove, or move an idle deadline.
-    idle::wake(app);
 }
 
 /// [`PassScope::Agents`]'s discovery: only the named agents, concurrently,
