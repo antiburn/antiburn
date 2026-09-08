@@ -50,7 +50,7 @@ export function OverlayWindow() {
 
         {state.bars.length === 0 ? (
           <div className="pointer-events-none">
-            <LedBar segments={HUD_SEGMENTS} split={[]} />
+            <LedBar segments={HUD_SEGMENTS} split={[]} blinkLast={state.sessionLive} />
           </div>
         ) : (
           <div className="pointer-events-none space-y-[3px]">

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../lib/ipc"
 import type { LiveUsageSummaryPayload } from "../lib/ipc"
+import { providerBarColor } from "../lib/usageBars"
 import { OverlayWindow } from "./OverlayWindow"
 
 const REFRESH_TEST_MS = 60_000
@@ -451,6 +452,61 @@ describe("OverlayWindow", () => {
 
     unmount()
     expect(nativeEvents.get("overlay_work_changed")?.size ?? 0).toBe(0)
+  })
+
+  it("blinks the first segment when usage is too low to light one", async () => {
+    const low = summary()
+    low.providers[0]!.windows[0]!.usedPercent = 1
+    getLiveUsage.mockResolvedValue(low)
+    getLatestSessionActivity.mockResolvedValue(Date.now() / 1000)
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
+    const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
+    expect(dots).toHaveLength(20)
+    expect(container.querySelectorAll(".led-blink")).toHaveLength(1)
+    expect(dots[0]).toHaveClass("led-blink", "bg-led-off")
+    expect((dots[0] as HTMLElement).style.getPropertyValue("--led-rest")).toBe(
+      "var(--color-led-off)",
+    )
+  })
+
+  it("blinks the first segment when there are no bars", async () => {
+    const empty = summary()
+    empty.providers = []
+    getLiveUsage.mockResolvedValue(empty)
+    getLatestSessionActivity.mockResolvedValue(Date.now() / 1000)
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
+    const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
+    expect(dots).toHaveLength(20)
+    expect(dots[0]).toHaveClass("led-blink")
+    expect(container.querySelectorAll(".led-blink")).toHaveLength(1)
+  })
+
+  it("keeps a low-usage bar dark without a live session", async () => {
+    const low = summary()
+    low.providers[0]!.windows[0]!.usedPercent = 1
+    getLiveUsage.mockResolvedValue(low)
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(getLatestSessionActivity).toHaveBeenCalled())
+    expect(container.querySelector(".led-blink")).toBeNull()
+  })
+
+  it("blinks the last lit segment with its own colour as the rest state", async () => {
+    getLatestSessionActivity.mockResolvedValue(Date.now() / 1000)
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
+    const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
+    // 81% of 20 segments rounds to 16 lit, so the blink sits on index 15.
+    expect(dots[15]).toHaveClass("led-blink")
+    expect(dots[15]).not.toHaveClass("bg-led-off")
+    const lit = dots[15] as HTMLElement
+    expect(lit.style.getPropertyValue("--led-rest")).toBe(providerBarColor("anthropic"))
+    expect(lit.style.backgroundColor).not.toBe("")
   })
 
   it("rests with bars only and a hidden close control", async () => {
