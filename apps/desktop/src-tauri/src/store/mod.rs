@@ -22,6 +22,7 @@
 //! come here only to write the result.
 
 pub mod model;
+pub(crate) mod provider_limit;
 pub(crate) mod provider_usage_history;
 pub(crate) mod provider_usage_ledger;
 mod schema;
@@ -235,6 +236,7 @@ pub fn open_read_only(data_dir: &Path, busy_timeout: Duration) -> Result<Connect
 pub struct Store {
     connection: Arc<Mutex<Connection>>,
     allocation_reconcile: Arc<Mutex<()>>,
+    limit_factor_learn: Arc<Mutex<()>>,
     database_path: Option<PathBuf>,
     /// The directory the engine's own state files (scan roots, ignored paths)
     /// live in. The engine never chooses this; the shell does.
@@ -368,6 +370,7 @@ impl Store {
         let store = Store {
             connection: Arc::new(Mutex::new(connection)),
             allocation_reconcile: Arc::new(Mutex::new(())),
+            limit_factor_learn: Arc::new(Mutex::new(())),
             database_path,
             state_dir,
         };
@@ -438,7 +441,12 @@ impl Store {
 
     /// A poisoned lock still holds a usable connection: the panic that poisoned
     /// it happened in a caller, not inside SQLite.
-    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+    ///
+    /// `pub(crate)` rather than private: [`crate::provider_usage::factor`]'s
+    /// tests build synthetic turns, periods, and observations directly, the
+    /// same way the store's own lifecycle tests do, from outside the `store`
+    /// module tree.
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.connection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -447,6 +455,16 @@ impl Store {
     /// Start one shared allocation pass, or skip work another clone already owns.
     pub(crate) fn try_begin_allocation_reconcile(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
         match self.allocation_reconcile.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
+    /// Start one shared limit-factor learning pass, or skip work another
+    /// clone already owns.
+    pub(crate) fn try_begin_limit_factor_learn(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
+        match self.limit_factor_learn.try_lock() {
             Ok(guard) => Some(guard),
             Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
             Err(TryLockError::WouldBlock) => None,

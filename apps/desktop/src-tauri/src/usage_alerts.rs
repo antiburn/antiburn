@@ -223,10 +223,12 @@ fn run_pass(app: &AppHandle, _blocking: blocking::Thread) {
 }
 
 fn background_pass(app: &AppHandle, settings: &crate::store::AppSettings) {
-    // Reconciliation uses only local durable inputs.
-    // It must run without provider network collection.
+    // Reconciliation and factor learning use only local durable inputs.
+    // Both must run without provider network collection.
     if let Some(store) = app.try_state::<Store>() {
-        crate::provider_usage::ledger::reconcile(store.inner(), crate::scan::unix_now());
+        let now = crate::scan::unix_now();
+        crate::provider_usage::ledger::reconcile(store.inner(), now);
+        crate::provider_usage::factor::learn(store.inner(), now);
     }
     if !settings.live_usage_active() {
         return;
