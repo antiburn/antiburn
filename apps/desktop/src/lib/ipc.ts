@@ -957,10 +957,44 @@ export const EMPTY_LIVE_USAGE: LiveUsageSummaryPayload = {
   generatedAt: "",
 }
 
-/** Return the newest recent transcript write as epoch seconds. */
-export async function getLatestSessionActivity(): Promise<number | null> {
-  if (!hasShell()) return null
-  return invoke<number | null>("get_latest_session_activity")
+/** One session's identity on the lifecycle bus. */
+export interface SessionRefPayload {
+  environmentKey: string
+  agent: string
+  sessionId: string
+}
+
+/**
+ * One transition on the shell's session lifecycle bus. Mirrors
+ * `session_lifecycle::SessionEvent` in `src-tauri/src/session_lifecycle.rs`.
+ * `at` is epoch seconds.
+ */
+export type SessionLifecycleEvent =
+  | { kind: "started"; session: SessionRefPayload; agent: string; at: number }
+  | {
+      kind: "activity"
+      /** `null` for a write under an agent root the store has not indexed yet. */
+      session: SessionRefPayload | null
+      agent: string
+      at: number
+    }
+  | { kind: "idle"; session: SessionRefPayload; agent: string; at: number }
+
+/** One session inside the active window, as the snapshot command returns it. */
+export interface LiveSessionPayload {
+  session: SessionRefPayload
+  agent: string
+  /** Epoch seconds. */
+  lastActivityAt: number
+}
+
+/**
+ * Return every session inside the active window, most recent first. A
+ * surface reads this once, then follows `onSessionLifecycle` for changes.
+ */
+export async function getLiveSessions(): Promise<LiveSessionPayload[]> {
+  if (!hasShell()) return []
+  return (await invoke<LiveSessionPayload[] | null>("get_live_sessions")) ?? []
 }
 
 /** Return whether the retained HUD renderer should run background work. */
@@ -1310,6 +1344,22 @@ export async function onSessionEntryChanged(
 ): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen<ActivityEntryPayload>(SESSION_ENTRY_CHANGED_EVENT, (event) =>
+    handler(event.payload),
+  )
+}
+
+/**
+ * Event the shell emits for every transition on the session lifecycle bus.
+ * Mirrors `SESSION_LIFECYCLE_EVENT` in `src-tauri/src/commands.rs`.
+ */
+export const SESSION_LIFECYCLE_EVENT = "session:lifecycle"
+
+/** Subscribe to session lifecycle transitions. The result unsubscribes. */
+export async function onSessionLifecycle(
+  handler: (event: SessionLifecycleEvent) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<SessionLifecycleEvent>(SESSION_LIFECYCLE_EVENT, (event) =>
     handler(event.payload),
   )
 }

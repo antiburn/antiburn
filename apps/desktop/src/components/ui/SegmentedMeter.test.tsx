@@ -87,6 +87,39 @@ describe("SegmentedMeter", () => {
     expect(queryByTestId("segmented-meter-notch")).not.toBeInTheDocument()
   })
 
+  it("blinks the next segment to light while a session is live", () => {
+    // 50% lights 16, so the seventeenth (index 16) is the one that can
+    // alternate between brand and its zone's track tint.
+    const { container } = render(<SegmentedMeter percent={50} blinkNext />)
+    const all = segments(container)
+    expect(container.querySelectorAll(".led-blink")).toHaveLength(1)
+    expect(all[16]).toHaveClass("led-blink", "bg-brand-unlit/12")
+    expect(all[16]?.style.getPropertyValue("--led-rest")).toBe(
+      "color-mix(in srgb, var(--color-brand-unlit) 12%, transparent)",
+    )
+  })
+
+  it("blinks the first segment at zero and the last at full", () => {
+    const { container: zero } = render(<SegmentedMeter percent={0} blinkNext />)
+    expect(segments(zero)[0]).toHaveClass("led-blink")
+    const { container: full } = render(<SegmentedMeter percent={100} blinkNext />)
+    expect(segments(full)[31]).toHaveClass("led-blink")
+    expect(segments(full)[31]?.style.getPropertyValue("--led-rest")).toBe(
+      "color-mix(in srgb, var(--color-system-red-unlit) 12%, transparent)",
+    )
+  })
+
+  it("blinks the segment past the mark on its own side when it fills from the right", () => {
+    // 95% from the right lights the last two; the next to light is index 29.
+    const { container } = render(<SegmentedMeter percent={95} fillFrom="end" blinkNext />)
+    expect(segments(container)[29]).toHaveClass("led-blink")
+  })
+
+  it("does not blink without a live session", () => {
+    const { container } = render(<SegmentedMeter percent={50} />)
+    expect(container.querySelector(".led-blink")).toBeNull()
+  })
+
   it("hides itself from the accessibility tree", () => {
     // The figure beside the meter carries the reading; the circles would
     // announce as noise.

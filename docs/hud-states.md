@@ -175,15 +175,21 @@ switch and in Mission Control.
 ## Data and timing
 
 - Each LED bar has 20 segments.
-- Only the first bar blinks during a live session, and only on the HUD. The
-  detail window does not blink.
+- Only the first bar blinks during a live session. The detail window does not
+  blink. The popover's first usage meter blinks its next unlit segment from
+  the same events; the closed bar's rings do not.
 - The blink sits on the last lit segment, or on the first segment when usage
   is too low to light one. Its on state is the brand tint and its off state
   is the segment's resting colour: the bar colour when lit, the unlit grey
   when not.
-- A transcript write stays live for 90 seconds.
-- The renderer reads liveness once when shown. Session and scan events push
-  later changes, and one timer clears the live state at its expiry.
+- A session stays live for 180 seconds after its last transcript write, the
+  same window the session list uses. The shell's lifecycle bus keeps that
+  clock and publishes `idle`; the renderer keeps no timer for a known session.
+- The renderer reads the live set once when shown and again after each scan
+  pass. `session:lifecycle` events push activity and idle changes in between,
+  about 1.5 seconds after a write lands on disk. A write under an agent root
+  the store has not indexed yet counts as live for the same window on a local
+  timer.
 - The renderer polls usage every 60 seconds while shown.
 - The native hover watcher polls every 100ms while the window is visible.
 - Hiding the HUD parks the native polls and the retained renderer's timers.

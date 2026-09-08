@@ -308,12 +308,6 @@ pub fn set_hud_detail_size(app: tauri::AppHandle, height: f64) {
     antiburn_hud::apply_detail_size(&app, height);
 }
 
-/// Return the newest recent transcript write as epoch seconds.
-#[tauri::command]
-pub fn get_latest_session_activity(app: tauri::AppHandle) -> Option<i64> {
-    crate::hud::latest_session_activity(&app.state::<Store>())
-}
-
 /// Every session inside the active window, most recent first. This is the
 /// snapshot a reader takes before it subscribes to lifecycle events.
 #[tauri::command]

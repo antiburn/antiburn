@@ -1,0 +1,82 @@
+import type { LiveSessionPayload, SessionLifecycleEvent, SessionRefPayload } from "./ipc"
+
+/**
+ * How long agent-level activity with no session counts as live, in
+ * milliseconds. Mirrors `ACTIVE_SESSION_WINDOW_SECS` in the engine: the
+ * shell's lifecycle bus applies the same window to a keyed session, and
+ * publishes `idle` for it, so only the keyless case needs a local expiry.
+ */
+const LIVE_WINDOW_MS = 180_000
+
+/** What a surface knows about live sessions, from the bus. */
+export interface Liveness {
+  /** The sessions the bus says are live, by `liveSessionKey`. */
+  keys: ReadonlySet<string>
+  /**
+   * When agent-level activity with no session stops counting, as epoch
+   * milliseconds, or `null` when there is none. A write under an agent's
+   * root that the store has not indexed yet reaches here.
+   */
+  anonymousUntil: number | null
+}
+
+export const IDLE_LIVENESS: Liveness = { keys: new Set(), anonymousUntil: null }
+
+function liveSessionKey(session: SessionRefPayload): string {
+  return JSON.stringify([session.environmentKey, session.agent, session.sessionId])
+}
+
+/** The live set a snapshot states. Keyless activity is kept from `previous`. */
+export function livenessFromSnapshot(
+  sessions: readonly LiveSessionPayload[],
+  previous: Liveness = IDLE_LIVENESS,
+): Liveness {
+  return {
+    keys: new Set(sessions.map(({ session }) => liveSessionKey(session))),
+    anonymousUntil: previous.anonymousUntil,
+  }
+}
+
+/** The live set after one bus event. */
+export function applyLifecycleEvent(state: Liveness, event: SessionLifecycleEvent): Liveness {
+  switch (event.kind) {
+    case "started":
+      return withKey(state, liveSessionKey(event.session))
+    case "activity": {
+      if (event.session) return withKey(state, liveSessionKey(event.session))
+      const until = event.at * 1000 + LIVE_WINDOW_MS
+      return {
+        keys: state.keys,
+        anonymousUntil: Math.max(state.anonymousUntil ?? 0, until),
+      }
+    }
+    case "idle": {
+      const key = liveSessionKey(event.session)
+      if (!state.keys.has(key)) return state
+      const keys = new Set(state.keys)
+      keys.delete(key)
+      return { keys, anonymousUntil: state.anonymousUntil }
+    }
+  }
+}
+
+function withKey(state: Liveness, key: string): Liveness {
+  if (state.keys.has(key)) return state
+  return { keys: new Set(state.keys).add(key), anonymousUntil: state.anonymousUntil }
+}
+
+/** True while any session is live at `now` (epoch milliseconds). */
+export function isLive(state: Liveness, now: number): boolean {
+  return state.keys.size > 0 || (state.anonymousUntil != null && state.anonymousUntil > now)
+}
+
+/**
+ * The instant `isLive` turns false on its own, as epoch milliseconds, or
+ * `null` when nothing expires locally: a keyed session ends with an `idle`
+ * event, not a timer.
+ */
+export function livenessExpiry(state: Liveness, now: number): number | null {
+  if (state.keys.size > 0) return null
+  if (state.anonymousUntil != null && state.anonymousUntil > now) return state.anonymousUntil
+  return null
+}

@@ -60,6 +60,12 @@ export interface UsageLimitsBarProps {
     provider: string
     activation: Exclude<AnchoredTriggerActivation, "idle">
   } | null
+  /**
+   * Whether a session is live. The first meter of the first provider then
+   * blinks its next segment, the way the HUD's first bar blinks. The rings
+   * of the closed bar do not blink.
+   */
+  sessionLive?: boolean
 }
 
 /**
@@ -86,6 +92,7 @@ export function UsageLimitsBar({
   refreshing,
   onHoverProvider,
   activeProvider,
+  sessionLive = false,
 }: UsageLimitsBarProps) {
   const limited = orderedLiveAccounts(liveDisplayableProviders(live)).filter(
     ({ reading }) => liveWindows(reading).length > 0,
@@ -160,6 +167,7 @@ export function UsageLimitsBar({
               status={liveProviderStatus(live, reading)}
               now={at}
               action={index === 0 ? disclosure(true) : undefined}
+              blink={sessionLive && index === 0}
               activation={
                 activeProvider?.provider === reading.provider ? activeProvider.activation : null
               }
@@ -262,6 +270,7 @@ function ProviderGroup({
   action,
   onHover,
   activation,
+  blink = false,
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
@@ -270,6 +279,8 @@ function ProviderGroup({
   now: number
   /** The disclosure, on the topmost group only. */
   action?: ReactNode
+  /** Blink the first meter for a live session, on the topmost group only. */
+  blink?: boolean
   onHover?: (provider: string | null, anchor: AnchorRegion | null) => void
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
@@ -303,8 +314,14 @@ function ProviderGroup({
       {/* Not orange: a grace-period reading is still fine, not a failure. */}
       {graceNote && <p className="pb-1.5 type-footnote text-label-tertiary">{graceNote}</p>}
       <div className="space-y-2.5">
-        {liveWindows(provider).map((window) => (
-          <WindowMeterRow key={window.id} window={window} now={now} resetOnHover />
+        {liveWindows(provider).map((window, index) => (
+          <WindowMeterRow
+            key={window.id}
+            window={window}
+            now={now}
+            resetOnHover
+            blink={blink && index === 0}
+          />
         ))}
       </div>
     </div>
@@ -441,6 +458,7 @@ function WindowMeterRow({
   window,
   now,
   resetOnHover = false,
+  blink = false,
 }: {
   window: LiveUsageWindowPayload
   /** The instant the elapsed notch is measured from. */
@@ -453,6 +471,8 @@ function WindowMeterRow({
    * A surface that shows one provider keeps the reset in view instead.
    */
   resetOnHover?: boolean
+  /** Blink the next segment to light while a session is live. */
+  blink?: boolean
 }) {
   const percent = window.usedPercent
   return (
@@ -484,6 +504,7 @@ function WindowMeterRow({
       <SegmentedMeter
         percent={percent ?? null}
         expectedFraction={liveWindowElapsed(window, now)}
+        blinkNext={blink}
       />
     </div>
   )

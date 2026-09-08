@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react"
+
 import { cn } from "../../lib/cn"
 
 /**
@@ -11,6 +13,11 @@ export interface MeterZone {
   fillClassName: string
   /** Ink for an unlit segment inside the zone. */
   trackClassName: string
+  /**
+   * The unlit ink as a CSS color, for the blinking segment's off phase. It
+   * must state the same color `trackClassName` paints.
+   */
+  trackColor: string
 }
 
 /**
@@ -19,8 +26,16 @@ export interface MeterZone {
  * not pick its own colors.
  */
 const METER_INK = {
-  normal: { fillClassName: "bg-brand-tint", trackClassName: "bg-brand-unlit/12" },
-  critical: { fillClassName: "bg-system-red-tint", trackClassName: "bg-system-red-unlit/12" },
+  normal: {
+    fillClassName: "bg-brand-tint",
+    trackClassName: "bg-brand-unlit/12",
+    trackColor: "color-mix(in srgb, var(--color-brand-unlit) 12%, transparent)",
+  },
+  critical: {
+    fillClassName: "bg-system-red-tint",
+    trackClassName: "bg-system-red-unlit/12",
+    trackColor: "color-mix(in srgb, var(--color-system-red-unlit) 12%, transparent)",
+  },
 } as const
 
 /**
@@ -72,6 +87,12 @@ function zoneAt(zones: MeterZone[], fraction: number): MeterZone {
  * the window's period the clock has travelled. It keeps 60% used at 30%
  * elapsed from looking the same as 60% used at 90% elapsed. With no fraction
  * there is no notch — the component never draws one from an assumption.
+ *
+ * `blinkNext` blinks the first unlit segment, the next one to light, while a
+ * session is live. The HUD blinks its last lit bar between the brand color
+ * and dark, but a lit segment here is already the brand color, so the
+ * segment past the reading is the one that can alternate: brand on, its
+ * zone's track tint off. At zero the two rules meet on the first segment.
  */
 export function SegmentedMeter({
   percent,
@@ -82,6 +103,7 @@ export function SegmentedMeter({
   className = "",
   zones = USAGE_METER_ZONES,
   fillFrom = "start",
+  blinkNext = false,
 }: {
   /** Consumed capacity, 0–100, or `null` for no stated figure. */
   percent: number | null
@@ -93,9 +115,17 @@ export function SegmentedMeter({
   zones?: MeterZone[]
   /** The end the fill and the zones start from. */
   fillFrom?: MeterFillFrom
+  /** Blink the next segment to light, for a live session. */
+  blinkNext?: boolean
 }) {
   const clamped = percent == null ? null : Math.min(100, Math.max(0, percent))
   const filled = clamped == null ? 0 : Math.round((clamped / 100) * segments)
+  // A full meter has no next segment; the blink then stays on the last one.
+  const blinkIndex = !blinkNext
+    ? -1
+    : fillFrom === "end"
+      ? Math.max(0, filled - 1)
+      : Math.min(segments - 1, filled)
 
   return (
     <div aria-hidden="true" className={cn("relative", className)}>
@@ -108,14 +138,20 @@ export function SegmentedMeter({
           // The reading sits at the same mark either way. The fill covers the
           // side of that mark its own end is on.
           const lit = fillFrom === "end" ? index >= filled : index < filled
+          const blinking = index === blinkIndex
           return (
             <span
               key={index}
+              data-blinking={blinking || undefined}
               className={cn(
                 "h-[7px] w-[7px] shrink-0 rounded-full",
                 lit ? zone.fillClassName : zone.trackClassName,
                 clamped == null && "opacity-50",
+                blinking && "led-blink",
               )}
+              style={
+                blinking ? ({ "--led-rest": zone.trackColor } as CSSProperties) : undefined
+              }
             />
           )
         })}
