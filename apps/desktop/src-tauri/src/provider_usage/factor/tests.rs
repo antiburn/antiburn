@@ -355,10 +355,7 @@ fn a_point_is_appended_only_when_the_factor_actually_changes() {
         "an unchanged factor earns no new point"
     );
 
-    // A late-arriving turn more than triples the dollars behind the same
-    // pair, moving the factor well past the 2% threshold. The point is dated
-    // by the sample's own to_epoch (200), same as before, so this replaces
-    // the existing point rather than appending a second one.
+    // A late turn changes the same interval, so the point is replaced.
     insert_turn(&store, &key, 180_000, 400_000); // +$2.00
     learn(&store, 500);
     assert_eq!(
