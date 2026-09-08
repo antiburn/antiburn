@@ -135,6 +135,8 @@ fn reduced_observation_series_keeps_the_full_reported_delta() {
             source_id: "test".to_string(),
             reported_starts_at_epoch: Some(0),
             reported_resets_at_epoch: Some(100),
+            plan: None,
+            plan_tier: None,
         })
         .collect::<Vec<_>>();
     let history = ProviderUsagePeriodHistory {
