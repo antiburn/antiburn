@@ -61,6 +61,9 @@ pub fn record(_app: &tauri::AppHandle, _name: event::EventName, facts: event::Fa
         facts.reset_availability,
         facts.resets_per_week,
         facts.next_reset_available,
+        facts.plan,
+        facts.factor_band,
+        facts.residual_band,
     );
 }
 
@@ -135,6 +138,13 @@ pub fn record_usage_observed(
 }
 
 #[cfg(not(feature = "analytics"))]
+pub fn record_limit_factor_observed(
+    _app: &tauri::AppHandle,
+    _learned: &[crate::provider_usage::factor::LearnedFactor],
+) {
+}
+
+#[cfg(not(feature = "analytics"))]
 pub fn handle_settings_transition(
     _app: &tauri::AppHandle,
     _previous: &crate::store::AppSettings,
@@ -151,6 +161,7 @@ mod enabled {
     use antiburn_local::insights::UnrecognizedRecords;
     use tauri::Manager as _;
 
+    use crate::provider_usage::factor::LearnedFactor;
     use crate::provider_usage::live::{ProviderUsageSnapshot, WindowRole, band_for_percent};
 
     use super::delivery::{DeliverySchedule, FlushOutcome};
@@ -179,6 +190,10 @@ mod enabled {
 
     /// Deliberate events separated by this gap belong to different visits.
     const DELIBERATE_VISIT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+    /// The floor between two `antiburn.limit_factor_observed` events for the
+    /// same `(provider, lane)` pair, even across a genuine band change.
+    const LIMIT_FACTOR_MIN_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
     /// Wakes the bounded delivery scheduler after a queue depth change.
     #[derive(Default)]
@@ -267,6 +282,9 @@ mod enabled {
                 reset_availability: facts.reset_availability,
                 resets_per_week: facts.resets_per_week,
                 next_reset_available: facts.next_reset_available,
+                plan: facts.plan,
+                factor_band: facts.factor_band,
+                residual_band: facts.residual_band,
             },
             context: event::Context {
                 app_version: format!("antiburn:{}", app.package_info().version),
@@ -386,6 +404,128 @@ mod enabled {
         band: &'static str,
     ) -> bool {
         last.get(&(label, detail)) != Some(&band)
+    }
+
+    /// A limit-factor pair's `(plan, factor band, residual band)` tuple.
+    type LimitFactorTuple = (&'static str, &'static str, &'static str);
+
+    /// The last tuple reported for each `(provider, lane)` pair, and when.
+    type LastLimitFactorObserved =
+        BTreeMap<(&'static str, &'static str), (LimitFactorTuple, Instant)>;
+
+    /// One `(provider, lane)` pair's coarse dimensions, computed from a
+    /// learning pass's [`LearnedFactor`].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct LimitFactorObservation {
+        label: &'static str,
+        detail: &'static str,
+        plan: &'static str,
+        factor_band: &'static str,
+        residual_band: &'static str,
+    }
+
+    /// The lane detail `antiburn.limit_factor_observed` reports, matching the
+    /// vocabulary `antiburn.usage_observed` already uses for the same window
+    /// roles.
+    fn limit_factor_lane_detail(lane: &str) -> Option<&'static str> {
+        match lane {
+            crate::store::provider_limit::LANE_FIVE_HOUR => Some("short"),
+            crate::store::provider_limit::LANE_WEEKLY => Some("long"),
+            _ => None,
+        }
+    }
+
+    /// Every `(provider, lane)` observation this build can report for one
+    /// learning pass.
+    ///
+    /// A provider id this build does not recognize, or a lane outside the two
+    /// this app tracks a factor for, is skipped rather than given an invented
+    /// label — the same narrowing `usage_observed_candidates` applies.
+    fn limit_factor_observed_candidates(learned: &[LearnedFactor]) -> Vec<LimitFactorObservation> {
+        learned
+            .iter()
+            .filter_map(|factor| {
+                let label = LiveUsageProvider::from_provider_id(&factor.provider)?.as_str();
+                let detail = limit_factor_lane_detail(factor.lane)?;
+                Some(LimitFactorObservation {
+                    label,
+                    detail,
+                    plan: event::map_plan(factor.plan.as_deref()),
+                    factor_band: event::factor_band(factor.usd_per_percent),
+                    residual_band: event::residual_band(factor.residual),
+                })
+            })
+            .collect()
+    }
+
+    /// Whether one `(label, detail)` pair's dimensions are worth a second
+    /// event: the pair is new to this run, or its tuple changed and at least
+    /// 24 hours have passed since the last fire. The 24-hour floor applies
+    /// even to a genuine change, so a factor bouncing between two bands
+    /// cannot report more than once a day.
+    ///
+    /// A pure lookup rather than a mutating check, so the rule can be tested
+    /// without the process-wide static behind it.
+    fn limit_factor_observed_is_new(
+        last: &LastLimitFactorObserved,
+        key: (&'static str, &'static str),
+        tuple: LimitFactorTuple,
+        now: Instant,
+    ) -> bool {
+        match last.get(&key) {
+            None => true,
+            Some((last_tuple, last_fired_at)) => {
+                *last_tuple != tuple
+                    && now.duration_since(*last_fired_at) >= LIMIT_FACTOR_MIN_INTERVAL
+            }
+        }
+    }
+
+    /// Record a coarse limit-factor observation for every `(provider, lane)`
+    /// pair one learning pass touched, when analytics allows it.
+    ///
+    /// Multiple accounts on one provider collapse onto the same
+    /// `(provider, lane)` key — the payload carries no account dimension, by
+    /// design, so there is nothing to key a second observation on. Within one
+    /// pass, only the first account processed for a pair can report; see
+    /// `docs/plans/limit-factor-estimation.md`'s Phase 3 decisions.
+    pub fn record_limit_factor_observed(app: &tauri::AppHandle, learned: &[LearnedFactor]) {
+        if !allowed(app) {
+            return;
+        }
+        let candidates = limit_factor_observed_candidates(learned);
+        if candidates.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut last = LAST_LIMIT_FACTOR_OBSERVED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for observation in candidates {
+            let key = (observation.label, observation.detail);
+            let tuple = (
+                observation.plan,
+                observation.factor_band,
+                observation.residual_band,
+            );
+            if !limit_factor_observed_is_new(&last, key, tuple, now) {
+                continue;
+            }
+            if record_event(
+                app,
+                EventName::LimitFactorObserved,
+                Facts {
+                    label: Some(observation.label),
+                    detail: Some(observation.detail),
+                    plan: Some(observation.plan),
+                    factor_band: Some(observation.factor_band),
+                    residual_band: Some(observation.residual_band),
+                    ..Facts::default()
+                },
+            ) {
+                last.insert(key, (tuple, now));
+            }
+        }
     }
 
     /// Record an interaction reported by the renderer.
@@ -522,6 +662,13 @@ mod enabled {
     static LAST_USAGE_OBSERVED: std::sync::Mutex<
         BTreeMap<(&'static str, &'static str), &'static str>,
     > = std::sync::Mutex::new(BTreeMap::new());
+
+    /// The last `(plan, factor band, residual band)` tuple reported for each
+    /// `(provider, lane)` pair during this run, and when it was reported. In
+    /// memory only, for the same reason [`LAST_USAGE_OBSERVED`] is: it is a
+    /// dedup and rate-limit key, not a fact worth keeping past this process.
+    static LAST_LIMIT_FACTOR_OBSERVED: std::sync::Mutex<LastLimitFactorObserved> =
+        std::sync::Mutex::new(BTreeMap::new());
 
     #[derive(Debug, Clone, Copy, Default)]
     struct OnboardingCapture {
@@ -785,6 +932,10 @@ mod enabled {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         LAST_USAGE_OBSERVED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        LAST_LIMIT_FACTOR_OBSERVED
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
@@ -1352,6 +1503,125 @@ mod enabled {
             assert!(usage_observed_is_new(&last, "openai", "short", "below_80"));
         }
 
+        fn learned_factor(
+            provider: &'static str,
+            lane: &'static str,
+            usd_per_percent: f64,
+            plan: Option<&str>,
+            residual: Option<(f64, f64)>,
+        ) -> LearnedFactor {
+            LearnedFactor {
+                provider: provider.to_string(),
+                lane,
+                usd_per_percent,
+                plan: plan.map(str::to_string),
+                residual,
+            }
+        }
+
+        #[test]
+        fn a_learned_factor_reports_its_provider_lane_plan_and_bands() {
+            let learned = vec![learned_factor(
+                crate::provider_usage::providers::ANTHROPIC,
+                crate::store::provider_limit::LANE_FIVE_HOUR,
+                5.0,
+                Some("Max"),
+                Some((50.0, 48.0)),
+            )];
+            assert_eq!(
+                limit_factor_observed_candidates(&learned),
+                vec![LimitFactorObservation {
+                    label: "anthropic",
+                    detail: "short",
+                    plan: "max",
+                    factor_band: "2_to_under_8",
+                    residual_band: "within_5",
+                }]
+            );
+        }
+
+        #[test]
+        fn a_missing_residual_reports_the_unknown_band() {
+            let learned = vec![learned_factor(
+                crate::provider_usage::providers::OPENAI,
+                crate::store::provider_limit::LANE_WEEKLY,
+                40.0,
+                None,
+                None,
+            )];
+            let candidates = limit_factor_observed_candidates(&learned);
+            assert_eq!(candidates[0].detail, "long");
+            assert_eq!(candidates[0].plan, "unknown");
+            assert_eq!(candidates[0].factor_band, "32_and_over");
+            assert_eq!(candidates[0].residual_band, "unknown");
+        }
+
+        #[test]
+        fn an_unrecognized_provider_or_lane_reports_nothing() {
+            let unrecognized_provider = vec![learned_factor(
+                "some-future-provider",
+                crate::store::provider_limit::LANE_WEEKLY,
+                5.0,
+                None,
+                None,
+            )];
+            assert!(limit_factor_observed_candidates(&unrecognized_provider).is_empty());
+
+            let unrecognized_lane = vec![learned_factor(
+                crate::provider_usage::providers::ANTHROPIC,
+                "supplemental",
+                5.0,
+                None,
+                None,
+            )];
+            assert!(limit_factor_observed_candidates(&unrecognized_lane).is_empty());
+        }
+
+        #[test]
+        fn a_pair_fires_first_then_only_on_a_changed_tuple_at_least_a_day_later() {
+            let mut last = BTreeMap::new();
+            let key = ("anthropic", "short");
+            let tuple_a = ("max", "2_to_under_8", "within_5");
+            let tuple_b = ("max", "8_to_under_32", "within_5");
+            let start = Instant::now();
+
+            assert!(
+                limit_factor_observed_is_new(&last, key, tuple_a, start),
+                "the first observation for a pair always fires"
+            );
+            last.insert(key, (tuple_a, start));
+
+            assert!(
+                !limit_factor_observed_is_new(&last, key, tuple_a, start),
+                "an unchanged tuple is not worth a second event"
+            );
+            assert!(
+                !limit_factor_observed_is_new(
+                    &last,
+                    key,
+                    tuple_b,
+                    start + Duration::from_secs(3_600)
+                ),
+                "a changed tuple inside the 24-hour floor is still suppressed"
+            );
+            assert!(
+                limit_factor_observed_is_new(
+                    &last,
+                    key,
+                    tuple_b,
+                    start + LIMIT_FACTOR_MIN_INTERVAL
+                ),
+                "a changed tuple past the floor fires again"
+            );
+            // A different pair is judged independently.
+            assert!(limit_factor_observed_is_new(
+                &last,
+                ("openai", "short"),
+                tuple_a,
+                start
+            ));
+        }
+
         #[test]
         fn a_hidden_hud_cannot_consume_its_pending_origin() {
             let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
@@ -1555,6 +1825,10 @@ mod enabled {
                 .lock()
                 .unwrap()
                 .insert(("anthropic", "short"), "below_80");
+            LAST_LIMIT_FACTOR_OBSERVED.lock().unwrap().insert(
+                ("anthropic", "short"),
+                (("max", "2_to_under_8", "within_5"), Instant::now()),
+            );
 
             reset_suppression();
 
@@ -1562,6 +1836,7 @@ mod enabled {
             assert!(unrecognized_outcome_is_new(inert));
             assert_eq!(*LAST_CLAUDE_LIMIT_RESET.lock().unwrap(), None);
             assert!(LAST_USAGE_OBSERVED.lock().unwrap().is_empty());
+            assert!(LAST_LIMIT_FACTOR_OBSERVED.lock().unwrap().is_empty());
             reset_suppression();
         }
 

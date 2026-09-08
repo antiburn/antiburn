@@ -42,19 +42,41 @@ type FactorEstimate = (
     i64,
 );
 
+/// One `(provider, account, lane)` a learning pass touched: its current
+/// factor and, when the pass could compute one, its current residual.
+///
+/// Carried out of this module so a caller past its boundary — analytics — can
+/// report coarse dimensions without a second trip to the store. Nothing here
+/// is a wire value on its own; the caller still maps `provider` and `lane`
+/// through a closed vocabulary and reduces the rest to bands.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LearnedFactor {
+    pub provider: String,
+    pub lane: &'static str,
+    pub usd_per_percent: f64,
+    pub plan: Option<String>,
+    /// `(meter_percent, estimated_percent)` for the current period, when the
+    /// pass could compute one.
+    pub residual: Option<(f64, f64)>,
+}
+
 /// Learn the dollars-per-percent factor from durable meter readings.
 ///
 /// Bounded the same way `ledger::reconcile` is: one shared gate across store
 /// clones skips a pass already running, and a fixed ceiling on observation
 /// pairs caps the work. Call this wherever `ledger::reconcile` runs today.
-pub fn learn(store: &Store, now_epoch: i64) {
+///
+/// Returns the `(provider, account, lane)` groups this pass touched, for a
+/// caller that wants to report on what changed without querying the store a
+/// second time.
+pub fn learn(store: &Store, now_epoch: i64) -> Vec<LearnedFactor> {
     let Some(_in_flight) = store.try_begin_limit_factor_learn() else {
-        return;
+        return Vec::new();
     };
     let recompute_since = now_epoch - RECOMPUTE_WINDOW_SECS;
     let Ok(periods) = store.provider_limit_candidate_periods(recompute_since) else {
         ::tracing::warn!(event = "limit_factor_candidate_periods_failed");
-        return;
+        return Vec::new();
     };
 
     let mut pairs_used = 0usize;
@@ -116,10 +138,21 @@ pub fn learn(store: &Store, now_epoch: i64) {
             .or_insert(period.id);
     }
 
+    let mut learned = Vec::new();
     for ((provider, account_key, lane), period_id) in current_period {
         recompute_point(store, &provider, &account_key, lane, now_epoch);
-        compute_residual(store, &provider, &account_key, lane, period_id, now_epoch);
+        let residual = compute_residual(store, &provider, &account_key, lane, period_id, now_epoch);
+        if let Ok(Some(point)) = store.latest_factor_point(&provider, &account_key, lane) {
+            learned.push(LearnedFactor {
+                provider,
+                lane,
+                usd_per_percent: point.usd_per_percent,
+                plan: point.plan,
+                residual,
+            });
+        }
     }
+    learned
 }
 
 /// The state one call to [`build_period_samples`] needs beyond the period
@@ -525,6 +558,10 @@ fn weighted_median(samples: &[FactorSample], now_epoch: i64) -> f64 {
 
 /// For each account and lane touched this pass, the current period's residual:
 /// meter percent against the factor's own estimate for the same span.
+///
+/// Returns the `(meter_percent, estimated_percent)` pair it wrote, so
+/// [`learn`] can hand it to a caller reporting on this pass without a second
+/// read of the row it just upserted.
 fn compute_residual(
     store: &Store,
     provider: &str,
@@ -532,45 +569,36 @@ fn compute_residual(
     lane: &str,
     period_id: i64,
     now_epoch: i64,
-) {
-    let Ok(Some(history)) = store.provider_usage_period_history(period_id) else {
-        return;
-    };
-    let Some(latest) = history
-        .observations
-        .iter()
-        .rev()
-        .find(|observation| observation.is_authoritative && observation.used_percent.is_some())
-    else {
-        return;
-    };
+) -> Option<(f64, f64)> {
+    let history = store.provider_usage_period_history(period_id).ok()??;
+    let latest =
+        history.observations.iter().rev().find(|observation| {
+            observation.is_authoritative && observation.used_percent.is_some()
+        })?;
     // The point in effect when the meter took this reading, not necessarily
     // the newest point overall: a later plan change should not restate an
     // older period's residual under today's factor.
-    let Ok(Some(point)) =
-        store.factor_point_at(provider, account_key, lane, latest.observed_at_epoch)
-    else {
-        return;
-    };
+    let point = store
+        .factor_point_at(provider, account_key, lane, latest.observed_at_epoch)
+        .ok()??;
     if point.usd_per_percent.is_nan() || point.usd_per_percent <= 0.0 {
-        return;
+        return None;
     }
-    let Some(window_start) = window_start_epoch(&history.period, lane) else {
-        return;
-    };
-    let Ok(Some(dollars)) = store.attributed_turn_dollars_between(
-        provider,
-        account_key,
-        window_start,
-        latest.observed_at_epoch,
-    ) else {
-        return;
-    };
+    let window_start = window_start_epoch(&history.period, lane)?;
+    let dollars = store
+        .attributed_turn_dollars_between(
+            provider,
+            account_key,
+            window_start,
+            latest.observed_at_epoch,
+        )
+        .ok()??;
     let totals = sum_dollars(&dollars);
     let attributed_total = totals.0 + totals.1 + totals.2 + totals.3;
     let estimated_percent = attributed_total / point.usd_per_percent;
     let meter_percent = latest.used_percent.unwrap_or(0.0);
     let _ = store.upsert_limit_residual(period_id, now_epoch, meter_percent, estimated_percent);
+    Some((meter_percent, estimated_percent))
 }
 
 #[cfg(test)]
