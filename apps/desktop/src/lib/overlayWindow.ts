@@ -7,6 +7,7 @@ import type { SurfaceOrigin } from "./ipc"
 
 const OVERLAY_WINDOW_LABEL = "antiburn-overlay"
 const OVERLAY_VISIBILITY_EVENT = "overlay_visibility_changed"
+const OVERLAY_WORK_EVENT = "overlay_work_changed"
 
 export function openOverlayWindow(origin: SurfaceOrigin): Promise<void> {
   return invoke("open_overlay_window", { origin })
@@ -19,6 +20,13 @@ export function takeHudAnalyticsOrigin(): Promise<SurfaceOrigin | null> {
 
 export async function hideOverlayWindow(): Promise<void> {
   await invoke("hide_overlay_window")
+}
+
+/** Subscribe to native HUD work transitions. */
+export async function onOverlayWorkChanged(
+  handler: (active: boolean) => void,
+): Promise<() => void> {
+  return listen<boolean>(OVERLAY_WORK_EVENT, (event) => handler(Boolean(event.payload)))
 }
 
 /**

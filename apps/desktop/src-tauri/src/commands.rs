@@ -258,6 +258,12 @@ pub fn hide_overlay_window(app: tauri::AppHandle) -> CommandResult<()> {
     antiburn_hud::hide(&app).map_err(fail)
 }
 
+/// Return whether the HUD should run while its retained renderer mounts.
+#[tauri::command]
+pub fn is_overlay_work_active() -> bool {
+    antiburn_hud::work_is_active()
+}
+
 /// Match the native HUD frame to the rendered panel.
 #[tauri::command]
 pub fn resize_overlay_window(

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-is-overlay-work-active"
+description = "Enables the is_overlay_work_active command without any pre-configured scope."
+commands.allow = ["is_overlay_work_active"]
+
+[[permission]]
+identifier = "deny-is-overlay-work-active"
+description = "Denies the is_overlay_work_active command without any pre-configured scope."
+commands.deny = ["is_overlay_work_active"]

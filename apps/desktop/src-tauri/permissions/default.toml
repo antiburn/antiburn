@@ -36,6 +36,7 @@ permissions = [
   "allow-hide-overlay-window",
   "allow-hide-popover",
   "allow-install-update",
+  "allow-is-overlay-work-active",
   "allow-list-recent-sessions",
   "allow-list-repositories",
   "allow-list-scan-roots",
