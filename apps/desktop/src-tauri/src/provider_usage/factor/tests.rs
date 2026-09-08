@@ -112,17 +112,28 @@ fn push_observation(
     used_percent: f64,
     plan: Option<&str>,
 ) {
+    push_observation_with_tier(store, period_id, observed_at, used_percent, plan, None);
+}
+
+fn push_observation_with_tier(
+    store: &Store,
+    period_id: i64,
+    observed_at: i64,
+    used_percent: f64,
+    plan: Option<&str>,
+    plan_tier: Option<&str>,
+) {
     let connection = store.lock();
     connection
         .execute(
             "INSERT INTO provider_usage_observation (
                  period_id, provider, account_key, window_id, window_kind, window_role,
                  scope_key, scope_label, observed_at_epoch, used_percent, is_fresh,
-                 is_authoritative, confidence, source_id, plan
+                 is_authoritative, confidence, source_id, plan, plan_tier
              ) SELECT id, provider, account_key, window_id, window_kind, window_role,
-                      scope_key, scope_label, ?2, ?3, 1, 1, 'high', 'test', ?4
+                      scope_key, scope_label, ?2, ?3, 1, 1, 'high', 'test', ?4, ?5
                  FROM provider_usage_period WHERE id = ?1",
-            params![period_id, observed_at, used_percent, plan],
+            params![period_id, observed_at, used_percent, plan, plan_tier],
         )
         .expect("stores a synthetic observation");
     connection
@@ -276,7 +287,7 @@ fn window_start_only_forms_while_no_delta_sample_exists_yet() {
     assert_eq!(window_start.to_epoch, 500);
     assert!(
         !store
-            .has_delta_factor_sample(PROVIDER, &account(), LANE_FIVE_HOUR)
+            .has_delta_factor_sample(PROVIDER, &account(), LANE_FIVE_HOUR, None, None)
             .unwrap()
     );
     let point = store
@@ -294,7 +305,7 @@ fn window_start_only_forms_while_no_delta_sample_exists_yet() {
     learn(&store, 18_300);
     assert!(
         store
-            .has_delta_factor_sample(PROVIDER, &account(), LANE_FIVE_HOUR)
+            .has_delta_factor_sample(PROVIDER, &account(), LANE_FIVE_HOUR, None, None)
             .unwrap()
     );
 
@@ -345,15 +356,25 @@ fn a_point_is_appended_only_when_the_factor_actually_changes() {
     );
 
     // A late-arriving turn more than triples the dollars behind the same
-    // pair, moving the factor well past the 2% threshold.
+    // pair, moving the factor well past the 2% threshold. The point is dated
+    // by the sample's own to_epoch (200), same as before, so this replaces
+    // the existing point rather than appending a second one.
     insert_turn(&store, &key, 180_000, 400_000); // +$2.00
     learn(&store, 500);
-    assert_eq!(count_points(&store), 2, "a real move earns a new point");
+    assert_eq!(
+        count_points(&store),
+        1,
+        "a recompute of the same interval replaces its point, not duplicates it"
+    );
     let latest = store
         .latest_factor_point(PROVIDER, &account(), LANE_FIVE_HOUR)
         .unwrap()
         .unwrap();
     assert!((latest.usd_per_percent - 0.6).abs() < 1e-9);
+    assert_eq!(
+        latest.effective_at_epoch, 200,
+        "the point is dated by the sample's to_epoch, not the moment it was computed"
+    );
 }
 
 #[test]
@@ -511,6 +532,120 @@ fn learning_records_one_residual_row_per_period() {
         )
         .unwrap();
     assert_eq!(row_count, 1);
+}
+
+#[test]
+fn a_plan_tier_change_with_the_same_plan_drops_earlier_samples_and_appends_a_point() {
+    let store = memory_store();
+    observe_account(&store);
+    let key = insert_session(&store, "s1");
+    let period_id = insert_period(&store, 0, 18_000);
+
+    // Three "max" / "standard"-tier delta pairs, $1.00 each for a 5-point
+    // delta: factor 0.2. The plan itself never changes.
+    push_observation_with_tier(&store, period_id, 100, 10.0, Some("max"), Some("standard"));
+    push_observation_with_tier(&store, period_id, 200, 15.0, Some("max"), Some("standard"));
+    push_observation_with_tier(&store, period_id, 300, 20.0, Some("max"), Some("standard"));
+    push_observation_with_tier(&store, period_id, 400, 25.0, Some("max"), Some("standard"));
+    insert_turn(&store, &key, 150_000, 200_000); // $1.00
+    insert_turn(&store, &key, 250_000, 200_000); // $1.00
+    insert_turn(&store, &key, 350_000, 200_000); // $1.00
+    learn(&store, 450);
+
+    let standard_point = store
+        .latest_factor_point(PROVIDER, &account(), LANE_FIVE_HOUR)
+        .unwrap()
+        .expect("the standard-tier samples seed a point");
+    assert_eq!(standard_point.plan.as_deref(), Some("max"));
+    assert_eq!(standard_point.plan_tier.as_deref(), Some("standard"));
+    assert!((standard_point.usd_per_percent - 0.2).abs() < 1e-9);
+
+    // A tier change alone (plan stays "max") priced twice as expensive per
+    // token: the factor should reflect only the new-tier sample.
+    push_observation_with_tier(&store, period_id, 500, 30.0, Some("max"), Some("pro"));
+    insert_turn(&store, &key, 450_000, 400_000); // $2.00
+    learn(&store, 600);
+
+    let pro_point = store
+        .latest_factor_point(PROVIDER, &account(), LANE_FIVE_HOUR)
+        .unwrap()
+        .expect("the tier change appends a new point");
+    assert_eq!(pro_point.plan.as_deref(), Some("max"));
+    assert_eq!(pro_point.plan_tier.as_deref(), Some("pro"));
+    assert!(
+        (pro_point.usd_per_percent - 0.4).abs() < 1e-9,
+        "expected the new-tier sample alone (0.4), got {}",
+        pro_point.usd_per_percent
+    );
+    assert_eq!(count_points(&store), 2);
+}
+
+#[test]
+fn a_point_computed_from_old_observations_is_dated_by_their_epoch_not_by_now() {
+    let store = memory_store();
+    observe_account(&store);
+    let key = insert_session(&store, "s1");
+    // Readings from two days ago, as a bootstrap or backfill pass would see.
+    let two_days_ago = 2 * 86_400;
+    let period_id = insert_period(&store, two_days_ago, two_days_ago + 18_000);
+    insert_turn(&store, &key, (two_days_ago + 150) * 1_000, 200_000); // $1.00
+    push_observation(&store, period_id, two_days_ago + 100, 10.0, None);
+    push_observation(&store, period_id, two_days_ago + 200, 15.0, None);
+
+    // The pass itself runs today, long after the data it is learning from.
+    let today = 5 * 86_400;
+    learn(&store, today);
+
+    let point = store
+        .latest_factor_point(PROVIDER, &account(), LANE_FIVE_HOUR)
+        .unwrap()
+        .expect("the old sample seeds a point");
+    assert_eq!(
+        point.effective_at_epoch,
+        two_days_ago + 200,
+        "the point is dated by the sample it came from, not by when the pass ran"
+    );
+}
+
+#[test]
+fn a_tier_change_with_no_delta_yet_seeds_a_window_start_sample_and_point() {
+    let store = memory_store();
+    observe_account(&store);
+
+    // Period 1: two "standard"-tier readings form a delta sample and point.
+    let key1 = insert_session(&store, "s1");
+    insert_turn(&store, &key1, 150_000, 200_000); // $1.00
+    let period1 = insert_period(&store, 0, 18_000);
+    push_observation_with_tier(&store, period1, 100, 10.0, Some("max"), Some("standard"));
+    push_observation_with_tier(&store, period1, 200, 15.0, Some("max"), Some("standard"));
+    learn(&store, 300);
+    let standard_point = store
+        .latest_factor_point(PROVIDER, &account(), LANE_FIVE_HOUR)
+        .unwrap()
+        .expect("the standard-tier delta seeds a point");
+    assert_eq!(standard_point.method, "delta");
+
+    // Period 2: the account moves to the "pro" tier. Its first reading has
+    // no partner yet, so only a window-start sample can form for this tier
+    // — and it can, because the delta check is scoped to (plan, plan_tier).
+    let key2 = insert_session(&store, "s2");
+    insert_turn(&store, &key2, 18_050_000, 200_000); // $1.00
+    let period2 = insert_period(&store, 18_000, 36_000);
+    push_observation_with_tier(&store, period2, 18_100, 5.0, Some("max"), Some("pro"));
+    learn(&store, 18_200);
+
+    let window_start = store
+        .latest_window_start_factor_sample(PROVIDER, &account(), LANE_FIVE_HOUR)
+        .unwrap()
+        .expect("the new tier's first positive reading seeds a window-start sample");
+    assert_eq!(window_start.plan_tier.as_deref(), Some("pro"));
+
+    let pro_point = store
+        .latest_factor_point(PROVIDER, &account(), LANE_FIVE_HOUR)
+        .unwrap()
+        .expect("the window-start sample seeds a new point");
+    assert_eq!(pro_point.method, "window_start");
+    assert_eq!(pro_point.plan_tier.as_deref(), Some("pro"));
 }
 
 fn count_points(store: &Store) -> i64 {

@@ -31,9 +31,17 @@ const FACTOR_WINDOW_SECS: i64 = 14 * 86_400;
 /// How much a newly computed factor must move before it earns a new point.
 const FACTOR_CHANGE_THRESHOLD: f64 = 0.02;
 
-/// A candidate factor: its value, method, the samples behind it, and the
-/// plan it carries.
-type FactorEstimate = (f64, &'static str, usize, (Option<String>, Option<String>));
+/// A candidate factor: its value, method, the samples behind it, the plan it
+/// carries, and the epoch it takes effect from — the `to_epoch` of the
+/// newest sample it used, so a bootstrapped or backfilled point is dated by
+/// the data it came from rather than by the moment it was computed.
+type FactorEstimate = (
+    f64,
+    &'static str,
+    usize,
+    (Option<String>, Option<String>),
+    i64,
+);
 
 /// Learn the dollars-per-percent factor from durable meter readings.
 ///
@@ -67,8 +75,22 @@ pub fn learn(store: &Store, now_epoch: i64) {
         let Ok(existing) = store.factor_samples_for_period(period.id) else {
             continue;
         };
+        // Scope "a delta sample already exists" to the account's current
+        // plan and tier, so a fresh plan can still seed its own window-start
+        // sample instead of being blocked by an older plan's delta history.
+        let (plan, plan_tier) = store
+            .latest_observation_plan(&period.provider, &period.account_key, lane)
+            .ok()
+            .flatten()
+            .unwrap_or((None, None));
         let has_delta_before = store
-            .has_delta_factor_sample(&period.provider, &period.account_key, lane)
+            .has_delta_factor_sample(
+                &period.provider,
+                &period.account_key,
+                lane,
+                plan.as_deref(),
+                plan_tier.as_deref(),
+            )
             .unwrap_or(true);
         let pass = SamplePass {
             existing: &existing,
@@ -76,7 +98,7 @@ pub fn learn(store: &Store, now_epoch: i64) {
             now_epoch,
             budget: MAX_OBSERVATION_PAIRS - pairs_used,
         };
-        pairs_used += build_period_samples(
+        let (produced, complete) = build_period_samples(
             store,
             period,
             lane,
@@ -84,6 +106,12 @@ pub fn learn(store: &Store, now_epoch: i64) {
             has_delta_before,
             &pass,
         );
+        pairs_used += produced;
+        // A pass that stopped mid-period on its budget must not advance the
+        // cursor: the period stays a candidate so the next pass finishes it.
+        if complete {
+            let _ = store.advance_learn_cursor(period.id, period.last_observed_epoch);
+        }
         current_period
             .entry((period.provider.clone(), period.account_key.clone(), lane))
             .or_insert(period.id);
@@ -106,8 +134,10 @@ struct SamplePass<'a> {
 
 /// Build delta and window-start samples for one period's observations.
 ///
-/// Returns the number of samples this call created or recomputed, so the
-/// caller can stop once the pass budget runs out.
+/// Returns the number of samples this call created or recomputed, and
+/// whether it considered every sample the period could yet yield. The
+/// second is `false` only when the pass budget cut the delta-pair loop off
+/// early; the caller must not advance that period's learn cursor then.
 fn build_period_samples(
     store: &Store,
     period: &ProviderUsagePeriod,
@@ -115,13 +145,14 @@ fn build_period_samples(
     observations: &[ProviderUsageObservation],
     has_delta_before: bool,
     pass: &SamplePass<'_>,
-) -> usize {
+) -> (usize, bool) {
     let authoritative: Vec<&ProviderUsageObservation> = observations
         .iter()
         .filter(|observation| observation.is_authoritative && observation.used_percent.is_some())
         .collect();
     let pairs = delta_pairs(&authoritative);
     let mut used = 0usize;
+    let mut complete = true;
 
     // A window-start sample only ever forms while no delta sample exists yet
     // for this lane, and only for a period that cannot form one of its own:
@@ -180,6 +211,7 @@ fn build_period_samples(
     // found them.
     for (base, observation) in pairs {
         if used >= pass.budget {
+            complete = false;
             break;
         }
         let base_percent = base.used_percent.unwrap_or(f64::NAN);
@@ -231,7 +263,7 @@ fn build_period_samples(
             used += 1;
         }
     }
-    used
+    (used, complete)
 }
 
 /// Pair adjacent readings inside one period into delta candidates.
@@ -312,7 +344,10 @@ fn recompute_point(store: &Store, provider: &str, account_key: &str, lane: &str,
         .ok()
         .flatten();
     let plan_changed = match (&current_point, &latest_plan) {
-        (Some(point), Some((plan, _))) => point.plan.as_deref() != plan.as_deref(),
+        (Some(point), Some((plan, plan_tier))) => {
+            point.plan.as_deref() != plan.as_deref()
+                || point.plan_tier.as_deref() != plan_tier.as_deref()
+        }
         _ => false,
     };
 
@@ -322,23 +357,27 @@ fn recompute_point(store: &Store, provider: &str, account_key: &str, lane: &str,
     let recent = filter_by_plan(recent, plan_changed, latest_plan.as_ref());
 
     let computed = if recent.len() >= 3 {
-        Some((
-            weighted_median(&recent, now_epoch),
-            "delta",
-            recent.len(),
-            newest_plan(&recent),
-        ))
+        newest_sample(&recent).map(|newest| {
+            (
+                weighted_median(&recent, now_epoch),
+                "delta",
+                recent.len(),
+                (newest.plan.clone(), newest.plan_tier.clone()),
+                newest.to_epoch,
+            )
+        })
     } else {
         let all = store
             .all_delta_factor_samples(provider, account_key, lane)
             .unwrap_or_default();
         let all = filter_by_plan(all, plan_changed, latest_plan.as_ref());
-        if !all.is_empty() {
+        if let Some(newest) = newest_sample(&all) {
             Some((
                 weighted_median(&all, now_epoch),
                 "delta",
                 all.len(),
-                newest_plan(&all),
+                (newest.plan.clone(), newest.plan_tier.clone()),
+                newest.to_epoch,
             ))
         } else {
             window_start_factor(
@@ -352,7 +391,8 @@ fn recompute_point(store: &Store, provider: &str, account_key: &str, lane: &str,
         }
     };
 
-    let Some((value, method, sample_count, (plan, plan_tier))) = computed else {
+    let Some((value, method, sample_count, (plan, plan_tier), effective_at_epoch)) = computed
+    else {
         return;
     };
     if !value.is_finite() || value <= 0.0 {
@@ -375,7 +415,7 @@ fn recompute_point(store: &Store, provider: &str, account_key: &str, lane: &str,
         provider: provider.to_string(),
         account_key: account_key.to_string(),
         lane: lane.to_string(),
-        effective_at_epoch: now_epoch,
+        effective_at_epoch,
         usd_per_percent: value,
         method: method.to_string(),
         sample_count: sample_count as i64,
@@ -397,8 +437,9 @@ fn window_start_factor(
         .ok()
         .flatten()?;
     if plan_changed
-        && let Some((plan, _)) = latest_plan
-        && sample.plan.as_deref() != plan.as_deref()
+        && let Some((plan, plan_tier)) = latest_plan
+        && (sample.plan.as_deref() != plan.as_deref()
+            || sample.plan_tier.as_deref() != plan_tier.as_deref())
     {
         return None;
     }
@@ -411,6 +452,7 @@ fn window_start_factor(
         "window_start",
         1,
         (sample.plan.clone(), sample.plan_tier.clone()),
+        sample.to_epoch,
     ))
 }
 
@@ -429,21 +471,22 @@ fn filter_by_plan(
     if !plan_changed {
         return samples;
     }
-    let Some((plan, _)) = latest_plan else {
+    let Some((plan, plan_tier)) = latest_plan else {
         return samples;
     };
     samples
         .into_iter()
-        .filter(|sample| sample.plan.as_deref() == plan.as_deref())
+        .filter(|sample| {
+            sample.plan.as_deref() == plan.as_deref()
+                && sample.plan_tier.as_deref() == plan_tier.as_deref()
+        })
         .collect()
 }
 
-fn newest_plan(samples: &[FactorSample]) -> (Option<String>, Option<String>) {
-    samples
-        .iter()
-        .max_by_key(|sample| sample.to_epoch)
-        .map(|sample| (sample.plan.clone(), sample.plan_tier.clone()))
-        .unwrap_or((None, None))
+/// The sample with the latest `to_epoch`, whose plan and close date the
+/// point they produce should carry.
+fn newest_sample(samples: &[FactorSample]) -> Option<&FactorSample> {
+    samples.iter().max_by_key(|sample| sample.to_epoch)
 }
 
 /// The weighted median of delta samples' dollars-per-percent values.
