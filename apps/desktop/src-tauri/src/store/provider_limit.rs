@@ -761,12 +761,15 @@ pub(crate) fn limit_factor_diagnostics_in(
         [],
     )?;
     let since_epoch = now_epoch - RECENT_SAMPLE_WINDOW_SECS;
+    // Rollout-history readings count as delta samples here: both are
+    // attributed observation-to-observation deltas, differing only in
+    // where the reading came from.
     let delta_counts = grouped_counts(
         connection,
         "SELECT provider, account_key, lane, COUNT(*) FROM provider_limit_factor_sample
-          WHERE kind = ?1 AND to_epoch >= ?2
+          WHERE kind IN ('delta', 'rollout') AND to_epoch >= ?1
           GROUP BY provider, account_key, lane",
-        params!["delta", since_epoch],
+        params![since_epoch],
     )?;
     let unattributed_counts = grouped_counts(
         connection,
