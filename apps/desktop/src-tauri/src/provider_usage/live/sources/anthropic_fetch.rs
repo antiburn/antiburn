@@ -23,12 +23,36 @@
 //! with the reader's own credential, the same request the CLI itself would
 //! make. No key of ours, no service of ours in between.
 //!
-//! **This source never refreshes that token.** Refreshing is a lifecycle
-//! decision — issuing a new credential under the reader's account — and it
-//! belongs to the tool that owns the token's lifecycle, which is the CLI, not
-//! a background reader of its credential. If `expiresAt` has already passed,
-//! that is reported as an authentication failure without a network call: the
-//! fix is signing in again with the CLI, not a retry from here.
+//! **This source never refreshes that token itself.** Refreshing is a
+//! lifecycle decision — issuing a new credential under the reader's account —
+//! and it belongs to the tool that owns the token's lifecycle, which is the
+//! CLI, not a background reader of its credential. If `expiresAt` has already
+//! passed on every carrier, that is reported as an authentication failure
+//! without a network call.
+//!
+//! # Delegating refresh to the CLI
+//!
+//! One case earns more than that failure: a *user-initiated* refresh — the
+//! popover's own polling, recognisable by its sub-minute `max_age`; see
+//! [`USER_INITIATED_MAX_AGE`] — that finds a **native** Claude carrier (the
+//! Keychain item or the credentials file, not Pi's read-only copy) with every
+//! token expired. Then this source asks the CLI to refresh its own
+//! credential: [`claude_touch`] spawns `claude` in a PTY, types `/status`,
+//! verifies the carrier changed and settled by polling *metadata only* —
+//! never the secret — and only then does this source read the secret once,
+//! through the normal parser, and retry the usage call once. A network or
+//! 5xx failure never triggers the touch, only the expired/rejected
+//! credential state; the Pi carrier alone never does either — it recovers
+//! when the reader next uses Pi.
+//!
+//! On macOS the secret read is also cached aggressively: once the Keychain
+//! item has been read and parsed, the token is held in memory until its own
+//! `expiresAt` and the item's secret is not read again while it is live —
+//! worst case, one secret read per token lifetime. Background polls
+//! therefore re-read the secret only when the token they hold has expired,
+//! and the touch — the one path adjacent to a fresh secret read — runs only
+//! in user context, so any Keychain prompt the OS ever judges owed appears
+//! while the reader is looking at the screen.
 //!
 //! Finding neither carrier — no Keychain item, no credentials file, or
 //! either one in a shape this parser does not recognize — is not an error.
@@ -92,6 +116,7 @@ use crate::provider_usage::live::model::{
 use crate::provider_usage::live::{LiveUsageSource, SourceOutcome};
 
 use super::claude_config_cache::{self, CachedUsage};
+use super::claude_touch;
 use super::cooldown::{self, Cooldown, FetchFailure};
 use super::http;
 use super::pi_auth;
@@ -118,6 +143,24 @@ const LIMIT_RESET_DIAGNOSTIC_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 /// The stable id [`SourceOutcome::error`] and the milestone engine key this
 /// source under.
 const SOURCE_ID: &str = "claude-usage-fetch";
+
+/// The `max_age` ceiling under which a fetch reads as user-initiated.
+///
+/// The popover's refresh command asks with fifty seconds
+/// (`POPOVER_LIVE_USAGE_MAX_AGE`) and the background monitor with its
+/// five-minute tick, so the caller's own `max_age` already states who is
+/// asking — threading a separate flag through the shared trait would only
+/// restate it. The delegated refresh in [`claude_touch`] runs behind this
+/// test because it may raise a Keychain prompt, and a prompt must only ever
+/// appear while the reader is looking — see the module doc's "Delegating
+/// refresh to the CLI" section.
+const USER_INITIATED_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether this fetch's `max_age` marks it as user-initiated — see
+/// [`USER_INITIATED_MAX_AGE`].
+fn user_initiated(max_age: std::time::Duration) -> bool {
+    max_age < USER_INITIATED_MAX_AGE
+}
 
 /// The credential file, at the one documented place it lives.
 pub fn default_credentials_path() -> Option<PathBuf> {
@@ -353,6 +396,19 @@ pub struct ClaudeDirectFetch {
     config_cache_path: Option<PathBuf>,
     transport: Box<dyn AnthropicTransport>,
     cooldown: Cooldown,
+    /// The world the expired-credential touch runs in — see [`claude_touch`]
+    /// and the module doc's "Delegating refresh to the CLI" section. `None`
+    /// disables the touch outright; the ordinary state for a test whose
+    /// scenario never reaches it, not a special mode.
+    touch_env: Option<Box<dyn claude_touch::TouchEnvironment>>,
+    /// The cooldown, in-flight dedup, and terminal state the touch runs
+    /// behind, so one expired credential cannot spawn PTYs repeatedly.
+    touch_gate: claude_touch::TouchGate,
+    /// The last credential successfully parsed out of the Keychain, held
+    /// until its own `expiresAt` so a live token's secret is never read
+    /// twice — see the module doc's "Delegating refresh to the CLI" section.
+    #[cfg(target_os = "macos")]
+    keychain_credentials: std::sync::Mutex<Option<ClaudeCredentials>>,
     #[cfg(feature = "analytics")]
     limit_reset_diagnostic: LimitResetDiagnosticState,
 }
@@ -438,6 +494,12 @@ impl ClaudeDirectFetch {
             config_cache_path: claude_config_cache::default_config_path(),
             transport: Box::new(LiveAnthropicTransport),
             cooldown: Cooldown::new(),
+            touch_env: Some(Box::new(claude_touch::CliTouchEnvironment::new(
+                default_credentials_path(),
+            ))),
+            touch_gate: claude_touch::TouchGate::new(),
+            #[cfg(target_os = "macos")]
+            keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
             limit_reset_diagnostic: LimitResetDiagnosticState::default(),
         }
@@ -458,6 +520,63 @@ impl ClaudeDirectFetch {
             config_cache_path: None,
             transport: Box::new(LiveAnthropicTransport),
             cooldown: Cooldown::new(),
+            touch_env: None,
+            touch_gate: claude_touch::TouchGate::new(),
+            #[cfg(target_os = "macos")]
+            keychain_credentials: std::sync::Mutex::new(None),
+            #[cfg(feature = "analytics")]
+            limit_reset_diagnostic: LimitResetDiagnosticState::default(),
+        }
+    }
+
+    /// A source rooted at an explicit credentials path with an injected
+    /// touch environment and transport — for the delegated-refresh tests.
+    /// The Keychain stays disabled for the same reason `at()` disables it.
+    #[cfg(test)]
+    fn at_with_touch(
+        credentials_path: PathBuf,
+        transport: Box<dyn AnthropicTransport>,
+        touch_env: Box<dyn claude_touch::TouchEnvironment>,
+    ) -> ClaudeDirectFetch {
+        ClaudeDirectFetch {
+            credentials_path: Some(credentials_path),
+            pi_auth_path: None,
+            claude_json_path: None,
+            #[cfg(target_os = "macos")]
+            try_keychain: false,
+            config_cache_path: None,
+            transport,
+            cooldown: Cooldown::new(),
+            touch_env: Some(touch_env),
+            touch_gate: claude_touch::TouchGate::new(),
+            #[cfg(target_os = "macos")]
+            keychain_credentials: std::sync::Mutex::new(None),
+            #[cfg(feature = "analytics")]
+            limit_reset_diagnostic: LimitResetDiagnosticState::default(),
+        }
+    }
+
+    /// A source with only the Pi carrier — for the test proving Pi's
+    /// read-only entry never triggers a touch, however expired it is.
+    #[cfg(test)]
+    fn at_pi_only(
+        pi_auth_path: PathBuf,
+        transport: Box<dyn AnthropicTransport>,
+        touch_env: Box<dyn claude_touch::TouchEnvironment>,
+    ) -> ClaudeDirectFetch {
+        ClaudeDirectFetch {
+            credentials_path: None,
+            pi_auth_path: Some(pi_auth_path),
+            claude_json_path: None,
+            #[cfg(target_os = "macos")]
+            try_keychain: false,
+            config_cache_path: None,
+            transport,
+            cooldown: Cooldown::new(),
+            touch_env: Some(touch_env),
+            touch_gate: claude_touch::TouchGate::new(),
+            #[cfg(target_os = "macos")]
+            keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
             limit_reset_diagnostic: LimitResetDiagnosticState::default(),
         }
@@ -485,6 +604,10 @@ impl ClaudeDirectFetch {
             config_cache_path: Some(config_cache_path),
             transport,
             cooldown: Cooldown::new(),
+            touch_env: None,
+            touch_gate: claude_touch::TouchGate::new(),
+            #[cfg(target_os = "macos")]
+            keychain_credentials: std::sync::Mutex::new(None),
             #[cfg(feature = "analytics")]
             limit_reset_diagnostic: LimitResetDiagnosticState::default(),
         }
@@ -492,6 +615,10 @@ impl ClaudeDirectFetch {
 
     /// Read all credential carriers in their documented order. A Keychain
     /// read failure stays separate so a later live carrier can suppress it.
+    ///
+    /// On macOS the Keychain secret is read through
+    /// [`ClaudeDirectFetch::keychain_credentials`]: while the cached token is
+    /// live, the item's secret is not read again at all.
     fn read_carriers(
         &self,
     ) -> (
@@ -507,17 +634,38 @@ impl ClaudeDirectFetch {
         let error = None;
         #[cfg(target_os = "macos")]
         if self.try_keychain {
-            match macos_keychain::read() {
-                macos_keychain::KeychainRead::Found(text) => {
-                    if let Some(credentials) = parse_credentials_json(&text) {
-                        native_carriers.push(credentials.clone());
-                        carriers.push(credentials);
+            let cached = self
+                .keychain_credentials
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+                .filter(|credentials| credentials.is_live(OffsetDateTime::now_utc()));
+            if let Some(credentials) = cached {
+                native_carriers.push(credentials.clone());
+                carriers.push(credentials);
+            } else {
+                match macos_keychain::read() {
+                    macos_keychain::KeychainRead::Found(text) => {
+                        let parsed = parse_credentials_json(&text);
+                        *self
+                            .keychain_credentials
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = parsed.clone();
+                        if let Some(credentials) = parsed {
+                            native_carriers.push(credentials.clone());
+                            carriers.push(credentials);
+                        }
+                    }
+                    macos_keychain::KeychainRead::Unreadable => {
+                        error = Some(ProviderUsageError::Unavailable);
+                    }
+                    macos_keychain::KeychainRead::Absent => {
+                        *self
+                            .keychain_credentials
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
                     }
                 }
-                macos_keychain::KeychainRead::Unreadable => {
-                    error = Some(ProviderUsageError::Unavailable);
-                }
-                macos_keychain::KeychainRead::Absent => {}
             }
         }
         if let Some(credentials) = self
@@ -542,6 +690,60 @@ impl ClaudeDirectFetch {
             });
         }
         (carriers, error, native_carriers)
+    }
+}
+
+impl ClaudeDirectFetch {
+    /// The delegated-refresh path the module doc's "Delegating refresh to
+    /// the CLI" section describes: touch, verify by metadata, read the
+    /// secret once, retry the usage call once.
+    ///
+    /// Every credential-shaped failure returns
+    /// [`ProviderUsageError::Authentication`] — the credential is exactly as
+    /// expired as it was — while a retry that failed for another reason
+    /// reports its own error.
+    fn touch_then_retry(
+        &self,
+        now: OffsetDateTime,
+    ) -> Result<Option<ProviderUsageSnapshot>, ProviderUsageError> {
+        let Some(env) = self.touch_env.as_deref() else {
+            return Err(ProviderUsageError::Authentication);
+        };
+        let claude_touch::TouchOutcome::Settled(settled) =
+            claude_touch::touch(env, &self.touch_gate)
+        else {
+            return Err(ProviderUsageError::Authentication);
+        };
+        // The change has settled: the one permitted secret read, through the
+        // normal carriers. On macOS this also refills the expiry cache.
+        let (_, _, native_carriers) = self.read_carriers();
+        let Some(credentials) = native_carriers
+            .into_iter()
+            .find(|credentials| credentials.is_live(now))
+        else {
+            // The CLI wrote its carrier and the credential is still dead: an
+            // `invalid_grant`-style terminal failure. The fix is `claude
+            // /login`, so the touch stays blocked until the material changes
+            // again — see [`claude_touch::TouchGate::mark_terminal`].
+            self.touch_gate.mark_terminal(settled);
+            return Err(ProviderUsageError::Authentication);
+        };
+        self.touch_gate.clear_terminal();
+        match fetch_live(
+            self.transport.as_ref(),
+            &credentials,
+            self.claude_json_path.as_deref(),
+            now,
+        ) {
+            Ok(snapshot) => Ok(Some(snapshot)),
+            Err(ProviderUsageError::Authentication) => {
+                // A freshly refreshed token the endpoint still rejects is
+                // the same terminal state, observed one hop later.
+                self.touch_gate.mark_terminal(settled);
+                Err(ProviderUsageError::Authentication)
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -575,6 +777,10 @@ impl LiveUsageSource for ClaudeDirectFetch {
         // access prompt the reader has already seen.
         let outcome = self.cooldown.poll(now, max_age, || {
             let (carriers, carrier_error, native_carriers) = self.read_carriers();
+            // The touch below requires a *native* carrier: Pi's read-only
+            // entry alone never triggers one — see the module doc's
+            // "Delegating refresh to the CLI" section.
+            let native_present = !native_carriers.is_empty();
             let native = native_carriers
                 .into_iter()
                 .find(|credentials| credentials.is_live(now));
@@ -589,12 +795,23 @@ impl LiveUsageSource for ClaudeDirectFetch {
                 log_cache_reading_used(cached, now, "fresh");
                 return Ok(Some(snapshot_from_cache(cached.clone(), native)));
             }
-            match fetch_from_carriers(
+            let fetched = fetch_from_carriers(
                 self.transport.as_ref(),
                 carriers,
                 self.claude_json_path.as_deref(),
                 now,
-            ) {
+            );
+            // Only the expired/rejected credential state — never a network
+            // or 5xx failure — reaches for the CLI, and only in user context.
+            let fetched = match fetched {
+                Err(ProviderUsageError::Authentication)
+                    if native_present && user_initiated(max_age) =>
+                {
+                    self.touch_then_retry(now)
+                }
+                other => other,
+            };
+            match fetched {
                 Ok(Some(snapshot)) => Ok(Some(snapshot)),
                 Ok(None) => match carrier_error {
                     Some(error) => Err(FetchFailure {
@@ -1013,7 +1230,6 @@ fn resolve_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "analytics")]
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1556,5 +1772,316 @@ mod tests {
     fn unparseable_keychain_shaped_text_reads_as_absent() {
         assert!(parse_credentials_json("not json at all").is_none());
         assert!(parse_credentials_json(r#"{"somethingElse": true}"#).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_live_cached_keychain_secret_is_used_without_another_read() {
+        // With a live token already cached, `read_carriers` answers from the
+        // cache and never reaches `macos_keychain::read` — the "never
+        // re-read the secret while it is live" rule from the module doc.
+        let mut source = ClaudeDirectFetch::at(PathBuf::from("/nonexistent/.credentials.json"));
+        source.try_keychain = true;
+        let live = ClaudeCredentials {
+            access_token: "cached-token".into(),
+            expires_at_ms: (OffsetDateTime::now_utc().unix_timestamp() + 3_600) * 1_000,
+            subscription_type: None,
+            rate_limit_tier: None,
+        };
+        *source.keychain_credentials.lock().unwrap() = Some(live);
+        let (carriers, error, native_carriers) = source.read_carriers();
+        assert!(error.is_none());
+        assert_eq!(carriers.len(), 1);
+        assert_eq!(carriers[0].access_token, "cached-token");
+        assert_eq!(native_carriers.len(), 1);
+    }
+
+    /// A popover-shaped `max_age` that reads as user-initiated — see
+    /// [`USER_INITIATED_MAX_AGE`].
+    const USER_MAX_AGE: std::time::Duration = SHORT_MAX_AGE;
+
+    /// A touch world over the real credentials file: `spawn` plays the CLI,
+    /// writing `writes_on_spawn` to the file — which also moves the
+    /// fingerprint, since the fingerprint is the file's contents.
+    struct FileTouchEnv {
+        path: PathBuf,
+        binary_present: bool,
+        writes_on_spawn: Option<String>,
+        spawns: Arc<AtomicUsize>,
+    }
+
+    struct NoopChild;
+
+    impl claude_touch::TouchChild for NoopChild {
+        fn kill(&mut self) {}
+    }
+
+    impl claude_touch::TouchEnvironment for FileTouchEnv {
+        fn binary_present(&self) -> bool {
+            self.binary_present
+        }
+        fn fingerprint(&self) -> Option<claude_touch::Fingerprint> {
+            let contents = fs::read(&self.path).unwrap_or_default();
+            Some(claude_touch::Fingerprint(
+                String::from_utf8_lossy(&contents).into_owned(),
+            ))
+        }
+        fn spawn(&self) -> Option<Box<dyn claude_touch::TouchChild>> {
+            self.spawns.fetch_add(1, Ordering::SeqCst);
+            if let Some(body) = &self.writes_on_spawn {
+                fs::write(&self.path, body).expect("write refreshed credentials");
+            }
+            Some(Box::new(NoopChild))
+        }
+        fn sleep(&self, _interval: std::time::Duration) {}
+    }
+
+    /// A touch world that fails the test if the source so much as looks at
+    /// it — for the paths that must never reach the touch.
+    struct UntouchableEnv;
+
+    impl claude_touch::TouchEnvironment for UntouchableEnv {
+        fn binary_present(&self) -> bool {
+            panic!("this fetch must never reach the touch");
+        }
+        fn fingerprint(&self) -> Option<claude_touch::Fingerprint> {
+            panic!("this fetch must never reach the touch");
+        }
+        fn spawn(&self) -> Option<Box<dyn claude_touch::TouchChild>> {
+            panic!("this fetch must never reach the touch");
+        }
+        fn sleep(&self, _interval: std::time::Duration) {}
+    }
+
+    /// A transport that counts `usage` calls, for the retry-once assertions.
+    struct CountingTransport {
+        usage_calls: Arc<AtomicUsize>,
+        usage_result: Result<String, ProviderUsageError>,
+    }
+
+    impl AnthropicTransport for CountingTransport {
+        fn usage(&self, _access_token: &str) -> Result<String, ProviderUsageError> {
+            self.usage_calls.fetch_add(1, Ordering::SeqCst);
+            self.usage_result.clone()
+        }
+        fn profile(&self, _access_token: &str) -> Option<String> {
+            None
+        }
+    }
+
+    /// The seconds-relative-to-now the touch tests stamp credentials with.
+    fn real_now_secs() -> i64 {
+        OffsetDateTime::now_utc().unix_timestamp()
+    }
+
+    #[test]
+    fn an_expired_credential_touches_the_cli_verifies_and_retries_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".credentials.json");
+        fs::write(
+            &path,
+            credentials_file((real_now_secs() - 3_600) * 1_000, "max"),
+        )
+        .expect("write expired credentials");
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let usage_calls = Arc::new(AtomicUsize::new(0));
+        let source = ClaudeDirectFetch::at_with_touch(
+            path.clone(),
+            Box::new(CountingTransport {
+                usage_calls: Arc::clone(&usage_calls),
+                usage_result: Ok(LIVE_USAGE_BODY.to_string()),
+            }),
+            Box::new(FileTouchEnv {
+                path: path.clone(),
+                binary_present: true,
+                writes_on_spawn: Some(credentials_file((real_now_secs() + 3_600) * 1_000, "max")),
+                spawns: Arc::clone(&spawns),
+            }),
+        );
+
+        let outcome = source.fetch(USER_MAX_AGE);
+
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.snapshots.len(), 1);
+        assert_eq!(outcome.snapshots[0].source.label, "Asked Claude directly");
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+        // The retry is exactly one usage call — the secret was re-read once
+        // and used once.
+        assert_eq!(usage_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_touch_that_never_settles_stays_an_authentication_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".credentials.json");
+        fs::write(
+            &path,
+            credentials_file((real_now_secs() - 3_600) * 1_000, "max"),
+        )
+        .expect("write expired credentials");
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let usage_calls = Arc::new(AtomicUsize::new(0));
+        let source = ClaudeDirectFetch::at_with_touch(
+            path.clone(),
+            Box::new(CountingTransport {
+                usage_calls: Arc::clone(&usage_calls),
+                usage_result: Ok(LIVE_USAGE_BODY.to_string()),
+            }),
+            // The CLI runs but writes nothing: the fingerprint never moves.
+            Box::new(FileTouchEnv {
+                path,
+                binary_present: true,
+                writes_on_spawn: None,
+                spawns: Arc::clone(&spawns),
+            }),
+        );
+
+        let outcome = source.fetch(USER_MAX_AGE);
+
+        assert_eq!(outcome.error, Some(ProviderUsageError::Authentication));
+        assert!(outcome.snapshots.is_empty());
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+        assert_eq!(usage_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn an_absent_claude_binary_keeps_the_plain_authentication_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".credentials.json");
+        fs::write(
+            &path,
+            credentials_file((real_now_secs() - 3_600) * 1_000, "max"),
+        )
+        .expect("write expired credentials");
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let source = ClaudeDirectFetch::at_with_touch(
+            path.clone(),
+            Box::new(UnreachableTransport),
+            Box::new(FileTouchEnv {
+                path,
+                binary_present: false,
+                writes_on_spawn: Some("never written".to_owned()),
+                spawns: Arc::clone(&spawns),
+            }),
+        );
+
+        let outcome = source.fetch(USER_MAX_AGE);
+
+        assert_eq!(outcome.error, Some(ProviderUsageError::Authentication));
+        assert_eq!(spawns.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_background_poll_never_reaches_the_touch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".credentials.json");
+        fs::write(
+            &path,
+            credentials_file((real_now_secs() - 3_600) * 1_000, "max"),
+        )
+        .expect("write expired credentials");
+        let source = ClaudeDirectFetch::at_with_touch(
+            path,
+            Box::new(UnreachableTransport),
+            Box::new(UntouchableEnv),
+        );
+
+        // `TEST_MAX_AGE` is the background monitor's shape — well past the
+        // user-initiated ceiling — so the expired credential reports plain
+        // authentication and `UntouchableEnv` proves no touch path ran.
+        let outcome = source.fetch(TEST_MAX_AGE);
+
+        assert_eq!(outcome.error, Some(ProviderUsageError::Authentication));
+    }
+
+    #[test]
+    fn the_pi_carrier_alone_never_triggers_a_touch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        // An expired Pi entry: a carrier, but not a native one.
+        fs::write(
+            &path,
+            r#"{"anthropic": {"type": "oauth", "access": "synthetic-access",
+              "refresh": "synthetic-refresh", "expires": 1000}}"#,
+        )
+        .expect("write pi auth");
+        let source = ClaudeDirectFetch::at_pi_only(
+            path,
+            Box::new(UnreachableTransport),
+            Box::new(UntouchableEnv),
+        );
+
+        let outcome = source.fetch(USER_MAX_AGE);
+
+        assert_eq!(outcome.error, Some(ProviderUsageError::Authentication));
+    }
+
+    #[test]
+    fn a_refresh_that_settles_dead_is_terminal_until_the_material_changes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".credentials.json");
+        fs::write(
+            &path,
+            credentials_file((real_now_secs() - 3_600) * 1_000, "max"),
+        )
+        .expect("write expired credentials");
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let usage_calls = Arc::new(AtomicUsize::new(0));
+        // The CLI writes the carrier — the fingerprint settles — but the
+        // credential it leaves behind is still expired: `invalid_grant`.
+        let dead_body = format!(
+            r#"{{"claudeAiOauth": {{"accessToken": "rotated-but-dead",
+              "expiresAt": {}}}}}"#,
+            (real_now_secs() - 60) * 1_000
+        );
+        let source = ClaudeDirectFetch::at_with_touch(
+            path.clone(),
+            Box::new(CountingTransport {
+                usage_calls: Arc::clone(&usage_calls),
+                usage_result: Ok(LIVE_USAGE_BODY.to_string()),
+            }),
+            Box::new(FileTouchEnv {
+                path: path.clone(),
+                binary_present: true,
+                writes_on_spawn: Some(dead_body),
+                spawns: Arc::clone(&spawns),
+            }),
+        );
+
+        let outcome = source.fetch(USER_MAX_AGE);
+        assert_eq!(outcome.error, Some(ProviderUsageError::Authentication));
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+        assert_eq!(usage_calls.load(Ordering::SeqCst), 0);
+
+        // Both cooldowns opened, the material unchanged: the terminal gate
+        // alone must keep the next user-initiated fetch from spawning again.
+        source.cooldown.open_for_test();
+        source.touch_gate.open_cooldown_for_test();
+        let outcome = source.fetch(USER_MAX_AGE);
+        assert_eq!(outcome.error, Some(ProviderUsageError::Authentication));
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+
+        // The reader signs in with the CLI — the material changes to a live
+        // credential — and the ordinary path recovers without any touch.
+        fs::write(
+            &path,
+            credentials_file((real_now_secs() + 3_600) * 1_000, "max"),
+        )
+        .expect("write re-login credentials");
+        source.cooldown.open_for_test();
+        let outcome = source.fetch(USER_MAX_AGE);
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.snapshots.len(), 1);
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+        assert_eq!(usage_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_user_initiated_ceiling_splits_the_popover_from_the_monitor() {
+        // The popover asks with fifty seconds; the background monitor with
+        // its five-minute tick. The ceiling must keep splitting them.
+        assert!(user_initiated(std::time::Duration::from_secs(50)));
+        assert!(!user_initiated(std::time::Duration::from_secs(300)));
+        assert!(!user_initiated(USER_INITIATED_MAX_AGE));
     }
 }
