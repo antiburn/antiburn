@@ -1,8 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidatePattern('^[0-9A-Za-z.-]+$')]
-    [string] $Version = $env:ANTIBURN_VERSION
+    [string] $Version
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,6 +37,20 @@ function Write-InstallerBanner {
     $Host.UI.WriteLine('antiburn reads your coding agent sessions locally, finds what')
     $Host.UI.WriteLine('burns tokens, and nudges you before you hit a limit.')
     $Host.UI.WriteLine('')
+}
+
+# Read the version from the parameter, then from the environment.
+# The param block holds no validation attribute. The documented install
+# command pipes this file into `iex`. PowerShell then adds each param
+# attribute to a variable. PowerShell rejects an empty value.
+function Resolve-RequestedVersion {
+    param([string] $Version)
+
+    $requested = if ($Version) { $Version } else { $env:ANTIBURN_VERSION }
+    if ($requested -and $requested -notmatch '^[0-9A-Za-z.-]+$') {
+        throw "Invalid version: $requested"
+    }
+    return $requested
 }
 
 function Get-AntiburnRelease {
@@ -150,6 +163,8 @@ function Test-WindowsArchitecture {
 function Invoke-AntiburnInstall {
     param([string] $RequestedVersion)
 
+    $resolvedVersion = Resolve-RequestedVersion -Version $RequestedVersion
+
     if ($PSVersionTable.PSVersion.Major -lt 6) {
         $protocol = [Net.ServicePointManager]::SecurityProtocol
         [Net.ServicePointManager]::SecurityProtocol = $protocol -bor [Net.SecurityProtocolType]::Tls12
@@ -157,7 +172,7 @@ function Invoke-AntiburnInstall {
 
     Write-InstallerBanner
     Test-WindowsArchitecture
-    $release = Get-AntiburnRelease -RequestedVersion $RequestedVersion
+    $release = Get-AntiburnRelease -RequestedVersion $resolvedVersion
     $assetName = "antiburn_$($release.Version)_x64-setup.exe"
     $baseUrl = "$script:GitHubUrl/releases/download/$($release.Tag)"
     $temporaryDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("antiburn-install-" + [guid]::NewGuid())

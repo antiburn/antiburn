@@ -83,11 +83,12 @@ dependencies = [
 
 [[package]]
 name = "antiburn"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "antiburn-anchored-window",
  "antiburn-hud",
  "antiburn-local",
+ "antiburn-main-window",
  "antiburn-nudge",
  "antiburn-sound",
  "antiburn-trace",
@@ -97,6 +98,7 @@ dependencies = [
  "block2",
  "getrandom 0.4.3",
  "hmac",
+ "libc",
  "notify",
  "objc2",
  "objc2-app-kit",
@@ -114,6 +116,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-prevent-default",
+ "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tempfile",
  "time",
@@ -150,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "antiburn-local"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -164,6 +167,14 @@ dependencies = [
  "tracing",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "antiburn-main-window"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tauri",
 ]
 
 [[package]]
@@ -3187,6 +3198,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-services"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "583300ad934cba24ff5292aee751ecc070f7ca6b39a574cc21b7b5e588e06a0b"
+dependencies = [
+ "dispatch2",
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-security",
+]
+
+[[package]]
 name = "objc2-core-text"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3237,6 +3260,7 @@ dependencies = [
  "libc",
  "objc2",
  "objc2-core-foundation",
+ "objc2-core-services",
 ]
 
 [[package]]
@@ -5270,6 +5294,22 @@ dependencies = [
  "strum",
  "tauri",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "tauri-plugin-single-instance"
+version = "2.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5cd0cb5c412a5071b69bab6a6df1583cbb89460d4a83b6a24769b08d15b6b1e1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "windows-sys 0.60.2",
+ "zbus",
 ]
 
 [[package]]

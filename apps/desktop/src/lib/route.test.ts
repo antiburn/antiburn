@@ -60,4 +60,12 @@ describe("applyRouteAttribute", () => {
 
     expect(root.getAttribute("data-route")).toBe("settings")
   })
+
+  it("publishes the dedicated main-window route", () => {
+    const root = document.createElement("html")
+
+    applyRouteAttribute(root, "main")
+
+    expect(root.getAttribute("data-route")).toBe("main")
+  })
 })

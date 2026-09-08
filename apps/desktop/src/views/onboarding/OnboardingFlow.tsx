@@ -128,7 +128,7 @@ function Welcome() {
           antiburn reads your coding agent session logs and analyses them locally.
         </p>
         <p className="mt-2 text-balance type-body text-label-secondary">
-          No account needed, and nothing from your sessions is ever uploaded.
+          No account needed, and your session content is never uploaded.
         </p>
       </div>
     </div>

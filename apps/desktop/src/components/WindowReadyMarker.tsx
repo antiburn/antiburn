@@ -8,24 +8,39 @@ declare global {
   }
 }
 
-function reportReady(node: HTMLSpanElement | null): void {
+export type WindowReadyReporter = (generation: number) => Promise<void>
+
+function reportReady(node: HTMLSpanElement | null, reporter: WindowReadyReporter): void {
   const generation = window.__ANTIBURN_WINDOW_GENERATION__
   if (node && typeof generation === "number" && Number.isSafeInteger(generation)) {
-    void windowReady(generation).catch(() => undefined)
+    void reporter(generation).catch(() => undefined)
   }
 }
 
 /** Reports readiness after React commits the window shell. */
-function WindowReadyMarker() {
-  return <span ref={reportReady} hidden aria-hidden data-window-ready-marker />
+function WindowReadyMarker({ reporter }: { reporter: WindowReadyReporter }) {
+  return (
+    <span
+      ref={(node) => reportReady(node, reporter)}
+      hidden
+      aria-hidden
+      data-window-ready-marker
+    />
+  )
 }
 
 /** Places the readiness marker after every callback ref in the window view. */
-export function WindowReadyBoundary({ children }: { children: ReactNode }) {
+export function WindowReadyBoundary({
+  children,
+  reporter = windowReady,
+}: {
+  children: ReactNode
+  reporter?: WindowReadyReporter
+}) {
   return (
     <>
       {children}
-      <WindowReadyMarker />
+      <WindowReadyMarker reporter={reporter} />
     </>
   )
 }

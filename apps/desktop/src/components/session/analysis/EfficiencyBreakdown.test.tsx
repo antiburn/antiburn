@@ -22,6 +22,20 @@ function totals(over: Partial<SessionEfficiency> = {}): SessionEfficiency {
 }
 
 describe("EfficiencyBreakdown", () => {
+  it.each([
+    { totalUsd: 5, figure: "$20.00", band: "good", ink: "text-label" },
+    { totalUsd: 10, figure: "$40.00", band: "ok", ink: "text-label" },
+    { totalUsd: 25, figure: "$100.00", band: "bad", ink: "text-brand" },
+  ])("uses $ink for a $band efficiency hero", ({ totalUsd, figure, band, ink }) => {
+    const metrics = efficiencyMetrics(totals({ totalUsd }), "claude-code")
+    expect(metrics.costPerMTok?.band).toBe(band)
+    render(<EfficiencyBreakdown metrics={metrics} section="cost" layout="wide" />)
+    expect(screen.getByText(figure)).toHaveClass(ink)
+    expect(screen.getByText(figure)).not.toHaveClass(
+      ink === "text-label" ? "text-brand" : "text-label",
+    )
+  })
+
   it("renders the headline and three spend rows with their values", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
     expect(screen.getByText("$/MTok")).toBeTruthy()
@@ -150,18 +164,56 @@ describe("EfficiencyBreakdown", () => {
     expect(screen.queryByText(/fresh input and output/)).toBeNull()
   })
 
-  it("prints the cost reading's guidance inline under its scale", () => {
+  it("prints the cost reading's guidance inline under its scale as one paragraph", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
 
-    const guidance = within(screen.getByTestId("cost-guidance"))
-    expect(guidance.getByText(/average cost for each million tokens/)).toHaveClass(
-      "text-label-secondary",
+    const guidance = screen.getByTestId("cost-guidance")
+    // One quiet paragraph, so the sentences wrap at the pane's width instead
+    // of each taking a line.
+    expect(guidance.querySelectorAll("p")).toHaveLength(1)
+    const paragraph = within(guidance).getByText(/average cost for each million tokens/)
+    expect(paragraph).toHaveClass("text-label-tertiary")
+    expect(paragraph).not.toHaveClass("font-medium")
+    expect(paragraph).toHaveTextContent(
+      "For Claude, aim for below $33. Above $80 is too high. Craft tight workflows",
     )
-    expect(
-      guidance.getByText("For Claude, aim for below $33. Above $80 is too high."),
-    ).toHaveClass("text-label-tertiary")
-    expect(guidance.getByText(/Context tab shows/)).toBeInTheDocument()
+    expect(paragraph).toHaveTextContent(/Context tab shows/)
+    expect(guidance).not.toHaveClass("max-w-prose")
     // The cost row is plain text now, not a tooltip trigger.
     expect(screen.getByTestId("cost-row")).not.toHaveAttribute("tabindex")
+  })
+
+  it("draws the wide bar above stacked legend rows", () => {
+    render(
+      <EfficiencyBreakdown
+        metrics={efficiencyMetrics(totals(), "claude-code")}
+        layout="wide"
+      />,
+    )
+
+    const track = screen.getByTestId("efficiency-composition")
+    expect(track.dataset.height).toBe("bar")
+    expect(track).toHaveClass("h-6", "rounded-control")
+
+    const legend = screen.getByTestId("composition-legend")
+    expect(legend).toHaveClass("flex", "flex-col")
+    // Each cell keeps its share, its name, its band word, and its tooltip.
+    const realWork = screen.getByTestId("share-row-realWorkShare")
+    expect(realWork).toHaveTextContent("34%")
+    expect(realWork).toHaveTextContent("Real Work %")
+    expect(realWork).toHaveAttribute("tabindex", "0")
+    fireEvent.focus(realWork)
+    expect(screen.getAllByText(/fresh input and output/).length).toBeGreaterThan(0)
+
+    expect(screen.getByTestId("cost-guidance")).not.toHaveClass("max-w-prose")
+    expect(screen.getByText("per million tokens")).toBeTruthy()
+  })
+
+  it("keeps the popover's hairline track and stacked rows by default", () => {
+    render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
+    const track = screen.getByTestId("efficiency-composition")
+    expect(track.dataset.height).toBe("hairline")
+    expect(track).toHaveClass("h-1", "rounded-full")
+    expect(screen.getByTestId("composition-legend")).toHaveClass("flex-col")
   })
 })
