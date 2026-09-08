@@ -11,7 +11,9 @@
 //!
 //! Each agent lists its discovery roots and indexed-title files.
 //! The watcher observes title files through their parent directories.
-//! A periodic re-check adds roots that appear later.
+//! A periodic re-check adds roots that appear later. The supervisor retries
+//! watcher creation, registration, and callback failures with capped backoff.
+//! Each health change reaches the scheduler so its cadence can recover.
 //!
 //! # Debouncing
 //!
@@ -45,6 +47,8 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::{AppHandle, Manager};
 use tokio::sync::Notify;
 use tokio::sync::mpsc::{Receiver, Sender, error::TrySendError};
+use tokio::sync::oneshot;
+use tokio::sync::watch as health_watch;
 use tokio::time::Instant;
 
 /// Quiet period after the last relevant event before a pass is requested.
@@ -54,13 +58,22 @@ pub const QUIET_WINDOW: Duration = Duration::from_millis(1500);
 pub const MAX_WAIT: Duration = Duration::from_secs(5);
 
 /// Tick while the watcher is not fully healthy: it failed to start, or one or
-/// more existing roots could not be watched. Polling alone must still find
-/// new sessions at a reasonable cadence.
+/// more roots lost watcher coverage. Polling alone must still find new sessions
+/// at a reasonable cadence.
 pub const FALLBACK_TICK: Duration = Duration::from_secs(15);
 
 /// How often the watcher re-lists every agent's roots and watches any that
 /// now exist but did not when it started (or at the last re-check).
 const ROOT_RECHECK_INTERVAL: Duration = super::TICK;
+
+/// The first delay after watcher creation, registration, or callback failure.
+const WATCH_RETRY_INITIAL: Duration = Duration::from_secs(1);
+
+/// Persistent failures retry no faster than the normal root re-check.
+const WATCH_RETRY_MAX: Duration = ROOT_RECHECK_INTERVAL;
+
+/// Healthy operation must last this long before failure backoff resets.
+const WATCH_STABLE_INTERVAL: Duration = FALLBACK_TICK;
 
 /// The most native events waiting for the debounce task.
 const EVENT_CHANNEL_CAPACITY: usize = 128;
@@ -71,14 +84,13 @@ const MAX_EVENT_PATHS: usize = 16;
 /// The most encoded path bytes retained from one native event.
 const MAX_EVENT_PATH_BYTES: usize = 16 * 1024;
 
-/// What starting the watcher produced. The scheduler reads this once, right
-/// after start, to pick its tick.
+/// The watcher's current ability to accelerate session discovery.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WatcherStatus {
     /// Whether the OS watcher itself started.
     pub active: bool,
-    /// Existing roots the watcher could not watch. Discovery still reads
-    /// them on the tick; only the acceleration is missing.
+    /// Roots the watcher cannot cover. Discovery still checks them on the
+    /// tick; only the acceleration is missing.
     pub failed_roots: Vec<PathBuf>,
 }
 
@@ -90,14 +102,12 @@ impl WatcherStatus {
     }
 }
 
-/// Start the filesystem watcher and its debounce task. Returns immediately;
-/// the debounce loop and the periodic root re-check outlive this call and run
-/// until the process exits.
-pub fn spawn_watcher(app: &AppHandle) -> WatcherStatus {
+/// Start the watcher supervisor and return its live health receiver.
+pub async fn spawn_watcher(app: &AppHandle) -> health_watch::Receiver<WatcherStatus> {
     let Some(home) = home_dir() else {
         // No resolvable home means discovery itself finds nothing either;
         // report inactive so the scheduler falls back to the faster tick.
-        return WatcherStatus::default();
+        return health_watch::channel(WatcherStatus::default()).1;
     };
     let app = app.clone();
     spawn_watcher_over(home, move |burst: WatchBurst| {
@@ -106,6 +116,7 @@ pub fn spawn_watcher(app: &AppHandle) -> WatcherStatus {
         // a full pass here.
         app.state::<crate::scan::ScanController>().push_burst(burst);
     })
+    .await
 }
 
 /// Return every discovery root and indexed-title parent for a home.
@@ -126,40 +137,22 @@ fn all_watch_roots(home: &Path) -> Vec<WatchRoot> {
     roots
 }
 
-/// Testable core of [`spawn_watcher`]: build the roots, start the OS watcher,
-/// and spawn the tasks that debounce events into `on_relevant_change` calls.
-/// Kept separate from Tauri so the debounce timing can be driven directly in
-/// tests, under `tokio::time::pause()`, without a running app.
-fn spawn_watcher_over(
+/// Start the testable watcher core without Tauri managed state.
+async fn spawn_watcher_over(
     home: PathBuf,
     on_relevant_change: impl Fn(WatchBurst) + Send + Sync + 'static,
-) -> WatcherStatus {
-    let roots = all_watch_roots(&home);
-    let (ingress, rx, overflow) = event_ingress_channel();
-    let mut watcher = match RecommendedWatcher::new(
-        move |result: notify::Result<Event>| {
-            ingress.submit(result);
-        },
-        notify::Config::default(),
-    ) {
-        Ok(watcher) => watcher,
-        Err(_) => return WatcherStatus::default(),
-    };
-
-    let mut watched = HashSet::new();
-    let failed_roots = watch_new_roots(&mut watcher, &roots, &mut watched);
-
-    // Plain `tokio::spawn`, not `tauri::async_runtime::spawn`: this function
-    // is called from inside the scheduler's own task, so the ambient runtime
-    // is already the app's, and a plain spawn keeps this testable with
-    // `#[tokio::test(start_paused = true)]` under its own runtime.
-    tokio::spawn(run_debounce_loop(rx, overflow, on_relevant_change));
-    tokio::spawn(run_root_recheck_loop(watcher, home, watched));
-
-    WatcherStatus {
-        active: true,
-        failed_roots,
-    }
+) -> health_watch::Receiver<WatcherStatus> {
+    let (health_tx, health_rx) = health_watch::channel(WatcherStatus::default());
+    let (initial_tx, initial_rx) = oneshot::channel();
+    let on_relevant_change = Arc::new(on_relevant_change);
+    tokio::spawn(run_watcher_supervisor(
+        home,
+        on_relevant_change,
+        WatcherLifecycle::new(health_tx),
+        Some(initial_tx),
+    ));
+    let _ = initial_rx.await;
+    health_rx
 }
 
 /// The nonblocking boundary between the native callback and the async task.
@@ -167,6 +160,8 @@ struct EventIngress {
     events: Sender<IngressEvent>,
     /// A retained permit wakes reconciliation after the event queue drains.
     overflow: Arc<Notify>,
+    /// One bounded signal asks the supervisor to replace a failed watcher.
+    failure: Sender<()>,
 }
 
 #[derive(Debug)]
@@ -178,8 +173,12 @@ struct IngressEvent {
 impl EventIngress {
     /// Submit one callback result without waiting for channel capacity.
     fn submit(&self, result: notify::Result<Event>) {
-        let Ok(mut event) = result else {
-            return;
+        let mut event = match result {
+            Ok(event) => event,
+            Err(_) => {
+                let _ = self.failure.try_send(());
+                return;
+            }
         };
         if matches!(event.kind, EventKind::Access(_)) {
             return;
@@ -199,16 +198,24 @@ impl EventIngress {
     }
 }
 
-fn event_ingress_channel() -> (EventIngress, Receiver<IngressEvent>, Arc<Notify>) {
+fn event_ingress_channel() -> (
+    EventIngress,
+    Receiver<IngressEvent>,
+    Arc<Notify>,
+    Receiver<()>,
+) {
     let (events, receiver) = tokio::sync::mpsc::channel(EVENT_CHANNEL_CAPACITY);
     let overflow = Arc::new(Notify::new());
+    let (failure, failure_rx) = tokio::sync::mpsc::channel(1);
     (
         EventIngress {
             events,
             overflow: overflow.clone(),
+            failure,
         },
         receiver,
         overflow,
+        failure_rx,
     )
 }
 
@@ -265,23 +272,209 @@ fn watch_new_roots(
     failed
 }
 
-/// Owns the [`RecommendedWatcher`] for the process's life. On each
-/// [`ROOT_RECHECK_INTERVAL`], re-lists every agent's roots and watches any
-/// that appeared since the last check — a freshly installed agent, or a root
-/// that failed to watch earlier because it did not exist yet.
-async fn run_root_recheck_loop(
-    mut watcher: RecommendedWatcher,
+type BurstCallback = Arc<dyn Fn(WatchBurst) + Send + Sync>;
+
+/// Own the current watcher and replace it after a runtime callback failure.
+async fn run_watcher_supervisor(
     home: PathBuf,
-    mut watched: HashSet<PathBuf>,
+    on_relevant_change: BurstCallback,
+    mut lifecycle: WatcherLifecycle,
+    mut initial_attempt: Option<oneshot::Sender<()>>,
 ) {
-    let mut ticks = tokio::time::interval(ROOT_RECHECK_INTERVAL);
-    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    // The first tick fires immediately; the roots are already watched.
-    ticks.tick().await;
+    let owner = lifecycle.health.clone();
     loop {
-        ticks.tick().await;
+        let (ingress, events, overflow, mut failure) = event_ingress_channel();
+        let mut watcher = match RecommendedWatcher::new(
+            move |result: notify::Result<Event>| ingress.submit(result),
+            notify::Config::default(),
+        ) {
+            Ok(watcher) => watcher,
+            Err(_) => {
+                let retry = lifecycle.failed();
+                signal_initial_attempt(&mut initial_attempt);
+                if sleep_until_retry_or_closed(&owner, retry).await {
+                    return;
+                }
+                continue;
+            }
+        };
+        let callback = on_relevant_change.clone();
+        let debounce = tokio::spawn(run_debounce_loop(events, overflow, move |burst| {
+            callback(burst);
+        }));
+
+        let mut watched = HashSet::new();
         let roots = all_watch_roots(&home);
-        watch_new_roots(&mut watcher, &roots, &mut watched);
+        let failed_roots = watch_new_roots(&mut watcher, &roots, &mut watched);
+        if failure.try_recv().is_ok() {
+            let retry = lifecycle.failed();
+            signal_initial_attempt(&mut initial_attempt);
+            drop(watcher);
+            let _ = debounce.await;
+            if sleep_until_retry_or_closed(&owner, retry).await {
+                return;
+            }
+            continue;
+        }
+        let fully_healthy = failed_roots.is_empty();
+        let retry = lifecycle.registered(failed_roots);
+        signal_initial_attempt(&mut initial_attempt);
+        let mut next_recheck = Instant::now() + retry;
+        let mut stable_due = fully_healthy.then(|| Instant::now() + WATCH_STABLE_INTERVAL);
+
+        loop {
+            tokio::select! {
+                () = tokio::time::sleep_until(next_recheck) => {
+                    forget_missing_roots(&mut watcher, &mut watched);
+                    let roots = all_watch_roots(&home);
+                    let failed_roots = watch_new_roots(&mut watcher, &roots, &mut watched);
+                    let retry_needed = !failed_roots.is_empty();
+                    let retry = lifecycle.registered(failed_roots);
+                    let now = Instant::now();
+                    next_recheck = now + retry;
+                    stable_due = if retry_needed {
+                        None
+                    } else {
+                        stable_due.or(Some(now + WATCH_STABLE_INTERVAL))
+                    };
+                }
+                () = sleep_until_optional(stable_due) => {
+                    lifecycle.stable();
+                    stable_due = None;
+                }
+                _ = failure.recv() => {
+                    let retry = lifecycle.failed();
+                    drop(watcher);
+                    let _ = debounce.await;
+                    if sleep_until_retry_or_closed(&owner, retry).await {
+                        return;
+                    }
+                    break;
+                }
+                () = owner.closed() => {
+                    drop(watcher);
+                    let _ = debounce.await;
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn signal_initial_attempt(initial_attempt: &mut Option<oneshot::Sender<()>>) {
+    if let Some(initial_attempt) = initial_attempt.take() {
+        let _ = initial_attempt.send(());
+    }
+}
+
+async fn sleep_until_optional(due: Option<Instant>) {
+    match due {
+        Some(due) => tokio::time::sleep_until(due).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Wait for a retry delay or report that the scheduler released the watcher.
+async fn sleep_until_retry_or_closed(
+    owner: &health_watch::Sender<WatcherStatus>,
+    retry: Duration,
+) -> bool {
+    tokio::select! {
+        () = tokio::time::sleep(retry) => false,
+        () = owner.closed() => true,
+    }
+}
+
+/// Remove watches whose roots no longer exist.
+fn forget_missing_roots(watcher: &mut RecommendedWatcher, watched: &mut HashSet<PathBuf>) {
+    let missing: Vec<PathBuf> = watched
+        .iter()
+        .filter(|path| !path.exists())
+        .cloned()
+        .collect();
+    for path in &missing {
+        let _ = watcher.unwatch(path);
+        watched.remove(path);
+    }
+}
+
+struct WatcherLifecycle {
+    health: health_watch::Sender<WatcherStatus>,
+    backoff: RetryBackoff,
+}
+
+impl WatcherLifecycle {
+    fn new(health: health_watch::Sender<WatcherStatus>) -> Self {
+        Self {
+            health,
+            backoff: RetryBackoff::default(),
+        }
+    }
+
+    /// Publish an inactive watcher and return its next retry delay.
+    fn failed(&mut self) -> Duration {
+        self.publish(WatcherStatus::default());
+        self.backoff.failure_delay()
+    }
+
+    /// Publish registration health and return the next re-check delay.
+    fn registered(&mut self, mut failed_roots: Vec<PathBuf>) -> Duration {
+        failed_roots.sort();
+        failed_roots.dedup();
+        let retry_needed = !failed_roots.is_empty();
+        self.publish(WatcherStatus {
+            active: true,
+            failed_roots,
+        });
+        if retry_needed {
+            self.backoff.failure_delay()
+        } else {
+            ROOT_RECHECK_INTERVAL
+        }
+    }
+
+    fn stable(&mut self) {
+        self.backoff.reset();
+    }
+
+    fn publish(&self, status: WatcherStatus) {
+        let active = status.active;
+        let failed_roots = status.failed_roots.len();
+        let changed = self.health.send_if_modified(|current| {
+            if *current == status {
+                false
+            } else {
+                *current = status.clone();
+                true
+            }
+        });
+        if changed {
+            ::tracing::debug!(event = "watcher_health_changed", active, failed_roots,);
+        }
+    }
+}
+
+struct RetryBackoff {
+    next: Duration,
+}
+
+impl Default for RetryBackoff {
+    fn default() -> Self {
+        Self {
+            next: WATCH_RETRY_INITIAL,
+        }
+    }
+}
+
+impl RetryBackoff {
+    fn failure_delay(&mut self) -> Duration {
+        let delay = self.next;
+        self.next = self.next.saturating_mul(2).min(WATCH_RETRY_MAX);
+        delay
+    }
+
+    fn reset(&mut self) {
+        self.next = WATCH_RETRY_INITIAL;
     }
 }
 
@@ -476,14 +669,14 @@ mod tests {
     fn spawn_test_debouncer(
         on_relevant_change: impl Fn(WatchBurst) + Send + 'static,
     ) -> EventIngress {
-        let (ingress, events, overflow) = event_ingress_channel();
+        let (ingress, events, overflow, _failure) = event_ingress_channel();
         tokio::spawn(run_debounce_loop(events, overflow, on_relevant_change));
         ingress
     }
 
     #[test]
     fn native_ingress_bounds_each_event_by_path_count_and_bytes() {
-        let (ingress, mut events, _overflow) = event_ingress_channel();
+        let (ingress, mut events, _overflow, _failure) = event_ingress_channel();
         let mut many_paths = Event::new(EventKind::Modify(ModifyKind::Any));
         for index in 0..=MAX_EVENT_PATHS {
             many_paths = many_paths.add_path(PathBuf::from(format!("/tmp/path-{index}")));
@@ -526,7 +719,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_ingress_flood_stays_bounded_and_requests_one_reconciliation() {
-        let (ingress, rx, overflow) = event_ingress_channel();
+        let (ingress, rx, overflow, _failure) = event_ingress_channel();
         for _ in 0..EVENT_CHANNEL_CAPACITY + 10_000 {
             ingress.submit(Ok(modify_event(Path::new("/tmp/flood"))));
         }
@@ -549,7 +742,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_full_channel_signal_survives_a_concurrent_drain() {
-        let (ingress, mut events, overflow) = event_ingress_channel();
+        let (ingress, mut events, overflow, _failure) = event_ingress_channel();
         for _ in 0..EVENT_CHANNEL_CAPACITY {
             ingress
                 .events
@@ -629,7 +822,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn repeated_overflow_signals_do_not_starve_the_maximum_wait() {
-        let (_ingress, mut events, overflow) = event_ingress_channel();
+        let (_ingress, mut events, overflow, _failure) = event_ingress_channel();
         let fires = Arc::new(AtomicUsize::new(0));
         let counter = fires.clone();
         let producer = overflow.clone();
@@ -746,6 +939,138 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_startup_failure_publishes_recovery_after_registration_succeeds() {
+        let (health_tx, mut health) = health_watch::channel(WatcherStatus::default());
+        let mut lifecycle = WatcherLifecycle::new(health_tx);
+
+        assert_eq!(lifecycle.failed(), WATCH_RETRY_INITIAL);
+        assert!(!health.borrow_and_update().is_healthy());
+        assert_eq!(lifecycle.registered(Vec::new()), ROOT_RECHECK_INTERVAL);
+        health.changed().await.unwrap();
+
+        assert!(health.borrow_and_update().is_healthy());
+        lifecycle.registered(Vec::new());
+        assert!(!health.has_changed().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_later_callback_failure_degrades_and_then_recovers_health() {
+        let (health_tx, mut health) = health_watch::channel(WatcherStatus::default());
+        let mut lifecycle = WatcherLifecycle::new(health_tx);
+        lifecycle.registered(Vec::new());
+        health.changed().await.unwrap();
+        assert!(health.borrow_and_update().is_healthy());
+
+        lifecycle.failed();
+        health.changed().await.unwrap();
+        assert!(!health.borrow_and_update().is_healthy());
+
+        lifecycle.registered(Vec::new());
+        health.changed().await.unwrap();
+        assert!(health.borrow_and_update().is_healthy());
+    }
+
+    #[tokio::test]
+    async fn equivalent_failed_root_sets_publish_only_one_health_change() {
+        let (health_tx, mut health) = health_watch::channel(WatcherStatus::default());
+        let mut lifecycle = WatcherLifecycle::new(health_tx);
+        let first = PathBuf::from("/tmp/first");
+        let second = PathBuf::from("/tmp/second");
+
+        lifecycle.registered(vec![second.clone(), first.clone()]);
+        health.changed().await.unwrap();
+        assert_eq!(
+            health.borrow_and_update().failed_roots,
+            vec![first.clone(), second.clone()]
+        );
+
+        lifecycle.registered(vec![first.clone(), second, first]);
+        assert!(!health.has_changed().unwrap());
+    }
+
+    #[test]
+    fn callback_flapping_increases_backoff_until_health_is_stable() {
+        let (health_tx, _health) = health_watch::channel(WatcherStatus::default());
+        let mut lifecycle = WatcherLifecycle::new(health_tx);
+        lifecycle.registered(Vec::new());
+        assert_eq!(lifecycle.failed(), Duration::from_secs(1));
+        lifecycle.registered(Vec::new());
+        assert_eq!(lifecycle.failed(), Duration::from_secs(2));
+        lifecycle.registered(Vec::new());
+        assert_eq!(lifecycle.failed(), Duration::from_secs(4));
+
+        lifecycle.stable();
+
+        assert_eq!(lifecycle.failed(), Duration::from_secs(1));
+    }
+
+    #[test]
+    fn persistent_failure_backoff_reaches_its_cap() {
+        let mut backoff = RetryBackoff::default();
+        let expected = [1, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300];
+
+        for seconds in expected {
+            assert_eq!(backoff.failure_delay(), Duration::from_secs(seconds));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_callback_error_before_supervisor_wait_is_retained_and_bounded() {
+        let (ingress, _events, _overflow, mut failure) = event_ingress_channel();
+
+        for _ in 0..100 {
+            ingress.submit(Err(notify::Error::generic("synthetic callback failure")));
+        }
+
+        assert_eq!(failure.len(), 1);
+        assert_eq!(failure.recv().await, Some(()));
+    }
+
+    #[tokio::test]
+    async fn dropping_the_health_receiver_releases_the_supervisor_callback() {
+        struct DropSignal(Option<oneshot::Sender<()>>);
+
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                if let Some(signal) = self.0.take() {
+                    let _ = signal.send(());
+                }
+            }
+        }
+
+        let home = tempfile::TempDir::new().unwrap();
+        let (released_tx, released_rx) = oneshot::channel();
+        let resource = DropSignal(Some(released_tx));
+        let health = spawn_watcher_over(home.path().to_path_buf(), move |_burst| {
+            let _ = &resource;
+        })
+        .await;
+
+        drop(health);
+
+        tokio::time::timeout(Duration::from_secs(5), released_rx)
+            .await
+            .expect("the supervisor stops after its health receiver closes")
+            .expect("the callback resource reports its release");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn replacing_a_watcher_drains_its_queued_burst_before_exit() {
+        let (ingress, events, overflow, _failure) = event_ingress_channel();
+        let fires = Arc::new(AtomicUsize::new(0));
+        let counter = fires.clone();
+        tokio::spawn(run_debounce_loop(events, overflow, move |_burst| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        ingress.submit(Ok(modify_event(Path::new("/tmp/pending"))));
+
+        drop(ingress);
+        tokio::task::yield_now().await;
+
+        assert_eq!(fires.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn codex_title_stores_add_one_shallow_parent_root() {
         let home = Path::new("/home/avery");
@@ -783,6 +1108,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_disappeared_optional_root_stays_healthy_and_is_watched_after_it_returns() {
+        let home = tempfile::TempDir::new().unwrap();
+        let root = home.path().join("sessions");
+        std::fs::create_dir(&root).unwrap();
+        let (tx, _rx) = std::sync::mpsc::sync_channel::<Event>(EVENT_CHANNEL_CAPACITY);
+        let mut watcher = RecommendedWatcher::new(
+            move |result: notify::Result<Event>| {
+                if let Ok(event) = result {
+                    let _ = tx.try_send(event);
+                }
+            },
+            notify::Config::default(),
+        )
+        .unwrap();
+        let roots = vec![WatchRoot::recursive(root.clone())];
+        let mut watched = HashSet::new();
+        let (health_tx, mut health) = health_watch::channel(WatcherStatus::default());
+        let mut lifecycle = WatcherLifecycle::new(health_tx);
+        lifecycle.registered(watch_new_roots(&mut watcher, &roots, &mut watched));
+        assert!(health.borrow_and_update().is_healthy());
+
+        std::fs::remove_dir(&root).unwrap();
+        forget_missing_roots(&mut watcher, &mut watched);
+        assert!(watched.is_empty());
+        lifecycle.registered(watch_new_roots(&mut watcher, &roots, &mut watched));
+        assert!(!health.has_changed().unwrap());
+        assert!(health.borrow_and_update().is_healthy());
+
+        std::fs::create_dir(&root).unwrap();
+        assert!(watch_new_roots(&mut watcher, &roots, &mut watched).is_empty());
+        assert!(watched.contains(&root));
+    }
+
     #[tokio::test]
     async fn the_watcher_requests_a_pass_after_a_claude_transcript_is_created() {
         let home = tempfile::TempDir::new().unwrap();
@@ -791,9 +1150,11 @@ mod tests {
 
         let fired = Arc::new(AtomicUsize::new(0));
         let counter = fired.clone();
-        let status = spawn_watcher_over(home.path().to_path_buf(), move |_burst: WatchBurst| {
+        let health = spawn_watcher_over(home.path().to_path_buf(), move |_burst: WatchBurst| {
             counter.fetch_add(1, Ordering::SeqCst);
-        });
+        })
+        .await;
+        let status = health.borrow().clone();
         assert!(status.active);
         assert!(status.failed_roots.is_empty());
 
@@ -819,9 +1180,11 @@ mod tests {
         std::fs::create_dir_all(&codex).unwrap();
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let status = spawn_watcher_over(home.path().to_path_buf(), move |burst| {
+        let health = spawn_watcher_over(home.path().to_path_buf(), move |burst| {
             let _ = tx.send(burst);
-        });
+        })
+        .await;
+        let status = health.borrow().clone();
         assert!(status.active);
         assert!(status.failed_roots.is_empty());
 

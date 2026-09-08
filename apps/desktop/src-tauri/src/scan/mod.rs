@@ -353,6 +353,7 @@ enum Wake {
     Kick,
     Tick,
     Deferred,
+    Health(Option<watch::WatcherStatus>),
 }
 
 /// Start the scheduler. The returned handle is aborted when the app exits.
@@ -362,7 +363,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         crate::runtime_pricing::wait_until_ready(&app).await;
         // The watcher starts here, before the launch pass: a session written
         // between this line and the first tick still reaches the debouncer.
-        let tick = tick_for(&watch::spawn_watcher(&app));
+        let mut watcher_health = watch::spawn_watcher(&app).await;
         // A fresh install has nothing to scan until the reader picks sources.
         if scheduled_scanning_allowed(&app) {
             run_pass(&app, None, ScanTrigger::Launch, PassScope::Full).await;
@@ -377,10 +378,13 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         let mut pending_work = scoped::ScopedWork::default();
         let mut retry_work = scoped::ScopedWork::default();
         let mut deferred_due: Option<tokio::time::Instant> = None;
+        let mut last_full_pass = tokio::time::Instant::now();
         // The tick is a fixed deadline, not a sleep restarted on every
         // wake. A scoped wake every few seconds must not push the
         // reconciliation pass back forever.
-        let mut next_tick = tokio::time::Instant::now() + tick;
+        let mut watcher_is_healthy = watcher_health.borrow_and_update().is_healthy();
+        let mut next_tick = tokio::time::Instant::now() + tick_for_health(watcher_is_healthy);
+        let mut watcher_health_open = true;
 
         loop {
             let controller = app.state::<ScanController>();
@@ -388,9 +392,29 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 () = controller.kick.notified() => Wake::Kick,
                 () = tokio::time::sleep_until(next_tick) => Wake::Tick,
                 () = sleep_until_due(deferred_due) => Wake::Deferred,
+                result = watcher_health.changed(), if watcher_health_open => {
+                    let status = result
+                        .ok()
+                        .map(|()| watcher_health.borrow_and_update().clone());
+                    Wake::Health(status)
+                },
             };
+            if let Wake::Health(status) = &woke {
+                let healthy = status
+                    .as_ref()
+                    .is_some_and(watch::WatcherStatus::is_healthy);
+                next_tick = deadline_after_health_change(
+                    next_tick,
+                    last_full_pass,
+                    watcher_is_healthy,
+                    healthy,
+                );
+                watcher_is_healthy = healthy;
+                watcher_health_open = status.is_some();
+                continue;
+            }
             if matches!(woke, Wake::Tick) {
-                next_tick = tokio::time::Instant::now() + tick;
+                next_tick = tokio::time::Instant::now() + tick_for_health(watcher_is_healthy);
             }
             // Checked after the wake-up rather than before the wait, so
             // resuming discovery takes effect at the next request or tick
@@ -452,6 +476,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 });
                 run_pass(&app, None, trigger, PassScope::Full).await;
                 let now = tokio::time::Instant::now();
+                last_full_pass = now;
                 floors.stamp(&pending_work, now);
                 floors.stamp(&retry_work, now);
                 pending_work = scoped::ScopedWork::default();
@@ -459,7 +484,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 deferred_due = None;
                 // A full pass just ran, so the next tick can wait a whole
                 // interval.
-                next_tick = now + tick;
+                next_tick = now + tick_for_health(watcher_is_healthy);
                 continue;
             }
 
@@ -558,17 +583,23 @@ async fn run_admitted_work(app: &AppHandle, work: scoped::ScopedWork) -> scoped:
     busy
 }
 
-/// The scheduler's fixed poll interval for this run, chosen once from the
-/// watcher's start-up status: [`TICK`] when it started clean, or
-/// [`watch::FALLBACK_TICK`] when it did not start or could not watch every
-/// existing root. The watcher's own periodic re-check (see the `watch`
-/// module doc) keeps covering roots that appear later regardless of which
-/// tick the scheduler picked here.
-fn tick_for(status: &watch::WatcherStatus) -> Duration {
-    if status.is_healthy() {
-        TICK
+fn tick_for_health(healthy: bool) -> Duration {
+    if healthy { TICK } else { watch::FALLBACK_TICK }
+}
+
+/// Update the next full-pass deadline only when watcher health changes.
+fn deadline_after_health_change(
+    current: tokio::time::Instant,
+    last_full_pass: tokio::time::Instant,
+    was_healthy: bool,
+    is_healthy: bool,
+) -> tokio::time::Instant {
+    if was_healthy == is_healthy {
+        current
+    } else if is_healthy {
+        last_full_pass + TICK
     } else {
-        watch::FALLBACK_TICK
+        current.min(last_full_pass + watch::FALLBACK_TICK)
     }
 }
 
