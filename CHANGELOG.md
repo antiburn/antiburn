@@ -20,6 +20,11 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Fixed
+
+- The Windows install command `irm https://antiburn.ai/install.ps1 | iex`
+  now runs instead of failing with a parameter validation error.
+
 ## [0.4.1] - 2026-09-08
 
 ### Changed
