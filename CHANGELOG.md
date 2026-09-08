@@ -20,6 +20,19 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-08
+
+### Changed
+
+- Session limit badges now retain cumulative estimates across provider resets,
+  keeping usage attributed in earlier periods visible alongside the current
+  provider period.
+
+### Fixed
+
+- Session rows now show `0%` when valid provider usage remains flat during a
+  percentage plateau instead of treating the allocation as missing.
+
 ## [0.4.0] - 2026-09-07
 
 ### Added
