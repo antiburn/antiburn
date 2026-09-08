@@ -680,11 +680,9 @@ pub fn map_plan(plan: Option<&str>) -> &'static str {
 
 /// Reduce a learned dollars-per-percent factor to a power-of-two band.
 ///
-/// Each band doubles the value of the band below it. Fine, doubling steps let
-/// a later reader group adjacent bands together without a change to this
-/// vocabulary. An earlier four-fold design fixed that grouping in advance,
-/// before any measured distribution existed to justify it. Non-finite and
-/// non-positive input, including a value under one, map to the lowest band.
+/// Each band doubles the band below it, so a reader can group adjacent bands
+/// later without a change to this vocabulary. Non-finite and non-positive
+/// input map to the lowest band.
 #[cfg(feature = "analytics")]
 pub fn factor_band(usd_per_percent: f64) -> &'static str {
     if usd_per_percent.is_nan() || usd_per_percent < 1.0 {
