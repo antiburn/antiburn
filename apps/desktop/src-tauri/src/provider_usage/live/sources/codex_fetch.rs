@@ -1,18 +1,17 @@
-//! Ask Codex directly for the reader's own plan usage, refreshing its token
-//! once if the provider says no, and falling back to the Codex app's own
-//! process ([`super::codex_app_server`]) if a direct request never succeeds.
+//! Ask Codex directly for the reader's own plan usage, delegating an expired
+//! token to the Codex CLI's own refresh, and falling back to the Codex app's
+//! own process ([`super::codex_app_server`]) if a direct request never
+//! succeeds.
 //!
 //! # The credential
 //!
 //! The Codex CLI keeps its tokens in `$CODEX_HOME/auth.json` when that
-//! variable is set, and `~/.codex/auth.json` otherwise. Unlike Claude's
-//! credential file, Codex's own auth flow *does* rotate its access token
-//! under this application's feet, and this source is written expecting that:
-//! a rejected token is retried once, with a token this source itself
-//! refreshes — see "Retrying with a fresh token" below. A missing or
-//! unparseable file is not an error, for the same reason it is not one for
-//! Claude: it is the ordinary state of a machine that has never signed in
-//! with Codex.
+//! variable is set, and `~/.codex/auth.json` otherwise. That file belongs to
+//! the CLI, end to end: this source reads it — exactly one in-memory
+//! snapshot per fetch attempt, never re-read mid-attempt — and never writes
+//! it. A missing or unparseable file is not an error, for the same reason it
+//! is not one for Claude: it is the ordinary state of a machine that has
+//! never signed in with Codex.
 //!
 //! # The account id
 //!
@@ -26,17 +25,37 @@
 //! authentication to be worth anything, so a forged claim only ever costs the
 //! forger a rejected request.
 //!
-//! # Retrying with a fresh token
+//! # The refresh lifecycle belongs to the CLI
 //!
-//! A first attempt that fails for *any* reason is retried exactly once, with
-//! an access token this source obtains itself from
-//! `POST https://auth.openai.com/oauth/token`. The refreshed token is kept
-//! in memory only, and only for as long as `auth.json`'s own refresh token
-//! keeps matching what it was refreshed against — a changed `auth.json`
-//! (a sign-out, a sign-in as someone else) invalidates the cache for free
-//! rather than needing its own expiry logic. It is never written back to
-//! `auth.json`: that file belongs to the Codex CLI, and this source only
-//! ever reads it.
+//! This source never redeems `auth.json`'s refresh token. The provider
+//! rotates the refresh token on every redemption, so an in-process
+//! redemption would either discard the rotated token — stranding the CLI
+//! with a stale one — or mean writing a credential store this application
+//! does not own, racing the CLI's own writes. When the provider rejects the
+//! access token as expired, this source instead asks the CLI to run its own
+//! refresh: it spawns `codex app-server` with `"refreshToken": true` — see
+//! [`super::codex_app_server::trigger_refresh`] — and lets the CLI refresh
+//! and persist its own `auth.json`.
+//!
+//! The RPC response is only a hint that the refresh ran; the proof is the
+//! file. This source fingerprints `auth.json`'s content before the spawn,
+//! then polls the file until it is *quiescent* — changed from the pre-spawn
+//! fingerprint and stable for [`RefreshWait::stable_for`] — before
+//! re-reading it through the normal parser and retrying the usage call
+//! exactly once. That re-read is the one sanctioned second read of a fetch
+//! attempt.
+//!
+//! Only an expired-credential rejection (HTTP 401) triggers this recovery.
+//! A network failure, a 5xx, a 403, or a rate limit does not: a fresh token
+//! would not change any of those answers — see [`UsageCallError`]. Before
+//! spawning, this source probes that a `codex` executable exists at all; an
+//! expired token with no CLI to refresh it is an authentication problem,
+//! not an availability one. A refresh the CLI itself rejects is terminal
+//! the same way: the reader has to run `codex` and sign in again. A file
+//! that never changes or never settles inside [`RefreshWait::deadline`] is
+//! only transient. The whole recovery runs inside the same [`Cooldown`]
+//! gate as everything else here, so a terminally broken login cannot
+//! respawn the CLI on every poll.
 //!
 //! # Falling back
 //!
@@ -63,21 +82,21 @@
 //!
 //! # Testability
 //!
-//! [`CodexTransport`] is the seam: [`fetch_direct`] is a free function over
-//! the trait, exercised in tests with a fake that never opens a socket, so
-//! the retry-and-cache logic above is covered without a mockable network at
-//! the process level.
+//! [`CodexTransport`] and [`CodexCli`] are the seams: [`fetch_direct`] is a
+//! free function over the two traits, exercised in tests with fakes that
+//! never open a socket or spawn a process, so the recovery logic above is
+//! covered without a mockable network at the process level.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use time::OffsetDateTime;
 
 use crate::provider_usage::live::codex;
 use crate::provider_usage::live::model::{
-    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, SchemaReason, UsageSource,
+    Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, UsageSource,
 };
 use crate::provider_usage::live::{LiveUsageSource, SourceOutcome};
 
@@ -92,13 +111,6 @@ const MAX_CREDENTIAL_BYTES: u64 = 256 * 1024;
 
 // aislop-ignore-next-line ai-slop/hardcoded-url -- Codex uses this fixed endpoint for plan usage.
 const WHAM_USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
-const TOKEN_ENDPOINT: &str = "https://auth.openai.com/oauth/token";
-
-/// Codex CLI's own public OAuth client id. Public in the sense every install
-/// of the CLI carries it; it identifies the client application to the
-/// authorization server, not the reader.
-// aislop-ignore-next-line ai-slop/hardcoded-id -- Codex uses this public client ID for each CLI installation.
-const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 /// The unsigned JWT claim that names the account, when `auth.json` did not
 /// state one directly.
@@ -131,7 +143,6 @@ fn default_sessions_root() -> Option<PathBuf> {
 /// What this source needs out of the CLI's own `auth.json`.
 struct CodexAuth {
     access_token: String,
-    refresh_token: String,
     account_id: Option<String>,
     /// The `chatgpt_plan_type` claim, decoded ahead of time so a later
     /// missing `plan_type` in the usage response has something to fall back
@@ -150,7 +161,9 @@ fn read_auth(path: &Path) -> Option<CodexAuth> {
     let value: Value = serde_json::from_str(&contents).ok()?;
     let tokens = value.get("tokens")?;
     let access_token = tokens.get("access_token")?.as_str()?.to_owned();
-    let refresh_token = tokens.get("refresh_token")?.as_str()?.to_owned();
+    // The refresh token is never read — the CLI owns it, see the module doc
+    // — but its presence is part of recognizing the CLI's own file shape.
+    tokens.get("refresh_token")?.as_str()?;
     let id_token = tokens.get("id_token").and_then(Value::as_str);
     let account_id = tokens
         .get("account_id")
@@ -161,7 +174,6 @@ fn read_auth(path: &Path) -> Option<CodexAuth> {
     let plan_claim = claim_from_tokens(&access_token, id_token, PLAN_CLAIM);
     Some(CodexAuth {
         access_token,
-        refresh_token,
         account_id,
         plan_claim,
     })
@@ -186,24 +198,84 @@ fn decode_jwt_claim(token: &str, claim: &str) -> Option<String> {
     value.get(claim)?.as_str().map(str::to_owned)
 }
 
-/// A prior refresh, kept only as long as it still applies. If `auth.json`'s
-/// own refresh token no longer matches, the CLI signed in as someone else (or
-/// out and back in) since this was cached, and reusing it would ask the
-/// provider about the wrong account.
-struct RefreshedToken {
-    refresh_token: String,
-    access_token: String,
+/// A failed usage call, split where the recovery rule needs it split: the
+/// one outcome that may trigger CLI recovery, and everything else.
+///
+/// The shared [`http::status_error`] mapping folds 401 and 403 into one
+/// `Authentication` category — right for reporting, too coarse for recovery:
+/// a 403 is a refusal a fresh token would not change, so only a 401 becomes
+/// [`UsageCallError::ExpiredCredential`].
+#[derive(Debug, PartialEq)]
+enum UsageCallError {
+    /// The provider rejected the credential as expired or invalid (HTTP
+    /// 401). The one shape CLI recovery may answer.
+    ExpiredCredential,
+    /// Every other failure, in the shared taxonomy.
+    Other(ProviderUsageError),
+}
+
+impl UsageCallError {
+    /// The shared-taxonomy verdict this failure reports when recovery is
+    /// not (or no longer) an option.
+    fn into_error(self) -> ProviderUsageError {
+        match self {
+            UsageCallError::ExpiredCredential => ProviderUsageError::Authentication,
+            UsageCallError::Other(error) => error,
+        }
+    }
 }
 
 /// The network calls [`fetch_direct`] needs, as a trait so a test can supply
 /// them without a socket.
 trait CodexTransport: Send + Sync {
-    fn usage(
-        &self,
-        access_token: &str,
-        account_id: Option<&str>,
-    ) -> Result<String, ProviderUsageError>;
-    fn refresh(&self, refresh_token: &str) -> Result<String, ProviderUsageError>;
+    fn usage(&self, access_token: &str, account_id: Option<&str>)
+    -> Result<String, UsageCallError>;
+}
+
+/// The Codex CLI itself, as the recovery path sees it: a probe for whether
+/// it is installed at all, and one way to ask it to refresh its own
+/// credential. A trait so tests can fake both without a process.
+trait CodexCli: Send + Sync {
+    /// Whether a `codex` executable is present to spawn at all.
+    fn is_installed(&self) -> bool;
+    /// Ask the CLI to refresh and persist its own `auth.json`. The return
+    /// value is a hint — see [`codex_app_server::trigger_refresh`].
+    fn trigger_refresh(&self) -> codex_app_server::RefreshHint;
+}
+
+/// Timing for the post-spawn quiescence poll — see "The refresh lifecycle
+/// belongs to the CLI" in the module doc. A struct so tests can shrink every
+/// duration instead of sleeping through the live ones.
+#[derive(Clone, Copy)]
+struct RefreshWait {
+    /// How long to sleep between fingerprint reads.
+    poll_interval: Duration,
+    /// How long a changed fingerprint must hold still before the file
+    /// counts as quiescent.
+    stable_for: Duration,
+    /// The bound on the whole recovery, measured from just before the
+    /// spawn. Sized so the CLI's own [`codex_app_server`] refresh timeout
+    /// fits inside it with room for the file to settle.
+    deadline: Duration,
+}
+
+impl RefreshWait {
+    /// The live timings: a quarter-second poll, a 1.5s stable window, and a
+    /// 12s overall deadline — inside the 10–15s the verification protocol
+    /// allows, and behind the [`Cooldown`]'s one-minute failure floor.
+    const LIVE: RefreshWait = RefreshWait {
+        poll_interval: Duration::from_millis(250),
+        stable_for: Duration::from_millis(1_500),
+        deadline: Duration::from_secs(12),
+    };
+
+    /// Timings small enough for a test suite to wait out for real.
+    #[cfg(test)]
+    const FAST: RefreshWait = RefreshWait {
+        poll_interval: Duration::from_millis(5),
+        stable_for: Duration::from_millis(25),
+        deadline: Duration::from_millis(500),
+    };
 }
 
 struct LiveCodexTransport;
@@ -213,7 +285,7 @@ impl CodexTransport for LiveCodexTransport {
         &self,
         access_token: &str,
         account_id: Option<&str>,
-    ) -> Result<String, ProviderUsageError> {
+    ) -> Result<String, UsageCallError> {
         let mut request = http::client()
             .get(WHAM_USAGE_ENDPOINT)
             .bearer_auth(access_token)
@@ -224,42 +296,48 @@ impl CodexTransport for LiveCodexTransport {
         }
         let response = request
             .send()
-            .map_err(|_| ProviderUsageError::Unavailable)?;
-        if let Some(error) = http::status_error(response.status()) {
-            return Err(error);
+            .map_err(|_| UsageCallError::Other(ProviderUsageError::Unavailable))?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(UsageCallError::ExpiredCredential);
         }
-        http::read_capped_body(response)
-    }
-
-    fn refresh(&self, refresh_token: &str) -> Result<String, ProviderUsageError> {
-        let response = http::client()
-            .post(TOKEN_ENDPOINT)
-            .form(&[
-                ("grant_type", "refresh_token"),
-                ("refresh_token", refresh_token),
-                ("client_id", CLIENT_ID),
-            ])
-            .send()
-            .map_err(|_| ProviderUsageError::Unavailable)?;
         if let Some(error) = http::status_error(response.status()) {
-            return Err(error);
+            return Err(UsageCallError::Other(error));
         }
-        let body = http::read_capped_body(response)?;
-        let value: Value = serde_json::from_str(&body)
-            .map_err(|_| ProviderUsageError::Schema(SchemaReason::InvalidJson))?;
-        value
-            .get("access_token")
-            .and_then(Value::as_str)
-            .filter(|token| !token.is_empty())
-            .map(str::to_owned)
-            .ok_or(ProviderUsageError::Schema(
-                SchemaReason::MissingRequiredField,
-            ))
+        http::read_capped_body(response).map_err(UsageCallError::Other)
     }
 }
 
-/// Asks `GET /backend-api/wham/usage`, retrying once with a refreshed token,
-/// then falling back to the app-server RPC if neither attempt lands.
+struct LiveCodexCli;
+
+impl CodexCli for LiveCodexCli {
+    fn is_installed(&self) -> bool {
+        codex_app_server::binary_present()
+    }
+
+    fn trigger_refresh(&self) -> codex_app_server::RefreshHint {
+        codex_app_server::trigger_refresh()
+    }
+}
+
+/// The default CLI seam for test constructors: reaching it at all means a
+/// test triggered recovery it did not mean to.
+#[cfg(test)]
+struct NeverSpawns;
+
+#[cfg(test)]
+impl CodexCli for NeverSpawns {
+    fn is_installed(&self) -> bool {
+        unreachable!("this test never reaches CLI recovery")
+    }
+
+    fn trigger_refresh(&self) -> codex_app_server::RefreshHint {
+        unreachable!("this test never reaches CLI recovery")
+    }
+}
+
+/// Asks `GET /backend-api/wham/usage`, recovering an expired token through
+/// the CLI's own refresh, then falling back to the app-server RPC if neither
+/// attempt lands.
 pub struct CodexDirectFetch {
     auth_path: Option<PathBuf>,
     pi_auth_path: Option<PathBuf>,
@@ -268,7 +346,8 @@ pub struct CodexDirectFetch {
     /// entirely — the state every test constructor below starts from.
     sessions_root: Option<PathBuf>,
     transport: Box<dyn CodexTransport>,
-    cached_refresh: Mutex<Option<RefreshedToken>>,
+    cli: Box<dyn CodexCli>,
+    wait: RefreshWait,
     cooldown: Cooldown,
 }
 
@@ -279,7 +358,8 @@ impl CodexDirectFetch {
             pi_auth_path: pi_auth::default_auth_path(),
             sessions_root: default_sessions_root(),
             transport: Box::new(LiveCodexTransport),
-            cached_refresh: Mutex::new(None),
+            cli: Box::new(LiveCodexCli),
+            wait: RefreshWait::LIVE,
             cooldown: Cooldown::new(),
         }
     }
@@ -287,14 +367,7 @@ impl CodexDirectFetch {
     /// A source rooted at an explicit path, for tests.
     #[cfg(test)]
     pub fn at(path: PathBuf) -> CodexDirectFetch {
-        CodexDirectFetch {
-            auth_path: Some(path),
-            pi_auth_path: None,
-            sessions_root: None,
-            transport: Box::new(LiveCodexTransport),
-            cached_refresh: Mutex::new(None),
-            cooldown: Cooldown::new(),
-        }
+        Self::with_paths(Some(path), None, Box::new(LiveCodexTransport))
     }
 
     #[cfg(test)]
@@ -313,7 +386,10 @@ impl CodexDirectFetch {
             pi_auth_path,
             sessions_root: None,
             transport,
-            cached_refresh: Mutex::new(None),
+            // Recovery is exercised through `fetch_direct` in tests; a
+            // source-level test that reaches the CLI seam is a test bug.
+            cli: Box::new(NeverSpawns),
+            wait: RefreshWait::FAST,
             cooldown: Cooldown::new(),
         }
     }
@@ -367,14 +443,21 @@ impl LiveUsageSource for CodexDirectFetch {
         // Read inside the cooldown gate so skipped polls do not touch disk.
         self.cooldown.poll(now, max_age, || {
             let auth = self.auth_path.as_deref().and_then(read_auth);
-            let direct_error = match &auth {
-                Some(auth) => {
-                    match fetch_direct(self.transport.as_ref(), &self.cached_refresh, auth, now) {
+            let direct_error = match (&auth, self.auth_path.as_deref()) {
+                (Some(auth), Some(path)) => {
+                    match fetch_direct(
+                        self.transport.as_ref(),
+                        self.cli.as_ref(),
+                        path,
+                        &self.wait,
+                        auth,
+                        now,
+                    ) {
                         Ok(snapshot) => return Ok(Some(snapshot)),
                         Err(error) => Some(error),
                     }
                 }
-                None => None,
+                _ => None,
             };
 
             let pi_entry = self
@@ -412,13 +495,17 @@ impl LiveUsageSource for CodexDirectFetch {
     }
 }
 
-/// Try Pi's access token once. Pi owns refresh, so this path never refreshes.
+/// Try Pi's access token once. Pi owns refresh, so this path never refreshes
+/// — not in-process, and not through the Codex CLI either: an expired Pi
+/// credential folds straight into the shared error taxonomy.
 fn fetch_pi(
     transport: &dyn CodexTransport,
     entry: &pi_auth::PiOauth,
     now: OffsetDateTime,
 ) -> Result<ProviderUsageSnapshot, ProviderUsageError> {
-    let body = transport.usage(&entry.access_token, entry.account_id.as_deref())?;
+    let body = transport
+        .usage(&entry.access_token, entry.account_id.as_deref())
+        .map_err(UsageCallError::into_error)?;
     let plan_claim = claim_from_tokens(&entry.access_token, None, PLAN_CLAIM);
     build_snapshot(&body, entry.account_id.clone(), plan_claim, now)
 }
@@ -480,47 +567,116 @@ fn rollout_snapshot(
     }
 }
 
-/// One attempt, with the single retry-with-a-refreshed-token this source
-/// allows. A free function over [`CodexTransport`] rather than a method, so a
-/// test can call it with a fake transport and nothing else this source owns.
+/// One attempt, with the single CLI-delegated recovery this source allows —
+/// see "The refresh lifecycle belongs to the CLI" in the module doc. A free
+/// function over [`CodexTransport`] and [`CodexCli`] rather than a method,
+/// so a test can call it with fakes and nothing else this source owns.
 fn fetch_direct(
     transport: &dyn CodexTransport,
-    cached_refresh: &Mutex<Option<RefreshedToken>>,
+    cli: &dyn CodexCli,
+    auth_path: &Path,
+    wait: &RefreshWait,
     auth: &CodexAuth,
     now: OffsetDateTime,
 ) -> Result<ProviderUsageSnapshot, ProviderUsageError> {
-    let primary = effective_access_token(cached_refresh, auth);
-    if let Ok(body) = transport.usage(&primary, auth.account_id.as_deref()) {
-        return build_snapshot(&body, auth.account_id.clone(), auth.plan_claim.clone(), now);
+    match transport.usage(&auth.access_token, auth.account_id.as_deref()) {
+        Ok(body) => {
+            return build_snapshot(&body, auth.account_id.clone(), auth.plan_claim.clone(), now);
+        }
+        // The one failure CLI recovery may answer. Everything else —
+        // network, 5xx, 403, rate limit — returns as-is: a fresh token
+        // would not change those answers, and spawning the CLI for them
+        // would burn a process on a problem it cannot fix.
+        Err(UsageCallError::ExpiredCredential) => {}
+        Err(other) => return Err(other.into_error()),
     }
 
-    let refreshed = transport.refresh(&auth.refresh_token)?;
-    {
-        let mut cache = cached_refresh
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *cache = Some(RefreshedToken {
-            refresh_token: auth.refresh_token.clone(),
-            access_token: refreshed.clone(),
-        });
-    }
-    let body = transport.usage(&refreshed, auth.account_id.as_deref())?;
-    build_snapshot(&body, auth.account_id.clone(), auth.plan_claim.clone(), now)
+    let recovered = recover_expired(cli, auth_path, wait)?;
+    let body = transport
+        .usage(&recovered.access_token, recovered.account_id.as_deref())
+        .map_err(UsageCallError::into_error)?;
+    build_snapshot(
+        &body,
+        recovered.account_id.clone(),
+        recovered.plan_claim.clone(),
+        now,
+    )
 }
 
-/// The access token to try first: a still-applicable cached refresh, or
-/// `auth.json`'s own token when there is no such cache.
-fn effective_access_token(
-    cached_refresh: &Mutex<Option<RefreshedToken>>,
-    auth: &CodexAuth,
-) -> String {
-    let cache = cached_refresh
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match cache.as_ref() {
-        Some(cached) if cached.refresh_token == auth.refresh_token => cached.access_token.clone(),
-        _ => auth.access_token.clone(),
+/// Ask the CLI to refresh its own `auth.json`, verify against the file that
+/// it did, and re-read the result — the recovery half of [`fetch_direct`].
+///
+/// [`ProviderUsageError::Authentication`] here is terminal: no CLI to spawn,
+/// or a CLI that rejected its own refresh — either way the reader has to run
+/// `codex` and sign in again. [`ProviderUsageError::Unavailable`] is
+/// transient: the file never changed or never settled inside the deadline,
+/// and the next off-cooldown poll may do better.
+fn recover_expired(
+    cli: &dyn CodexCli,
+    auth_path: &Path,
+    wait: &RefreshWait,
+) -> Result<CodexAuth, ProviderUsageError> {
+    if !cli.is_installed() {
+        return Err(ProviderUsageError::Authentication);
     }
+    let before = fingerprint(auth_path);
+    let deadline = Instant::now() + wait.deadline;
+    match cli.trigger_refresh() {
+        codex_app_server::RefreshHint::Rejected => return Err(ProviderUsageError::Authentication),
+        // A hint either way; the file poll below is the real verdict.
+        codex_app_server::RefreshHint::Answered | codex_app_server::RefreshHint::Unknown => {}
+    }
+    wait_for_quiescent_change(auth_path, before, deadline, wait)?;
+    // The CLI wrote something this parser cannot read: transient, the same
+    // category as "never settled" — a later poll sees whatever it writes
+    // next.
+    read_auth(auth_path).ok_or(ProviderUsageError::Unavailable)
+}
+
+/// Poll `auth.json` until it is quiescent: its fingerprint has changed from
+/// `before` *and* held still for [`RefreshWait::stable_for`]. The CLI may
+/// write the file more than once around its RPC response, so one changed
+/// read is not enough to trust.
+fn wait_for_quiescent_change(
+    auth_path: &Path,
+    before: Option<u64>,
+    deadline: Instant,
+    wait: &RefreshWait,
+) -> Result<(), ProviderUsageError> {
+    let mut observed: Option<(Option<u64>, Instant)> = None;
+    loop {
+        let read_at = Instant::now();
+        let current = fingerprint(auth_path);
+        match observed {
+            Some((fingerprint, since)) if fingerprint == current => {
+                if current.is_some() && current != before && read_at - since >= wait.stable_for {
+                    return Ok(());
+                }
+            }
+            _ => observed = Some((current, read_at)),
+        }
+        if Instant::now() >= deadline {
+            return Err(ProviderUsageError::Unavailable);
+        }
+        std::thread::sleep(wait.poll_interval);
+    }
+}
+
+/// A content fingerprint of `auth.json`: a hash of its bytes, `None` when
+/// the file is missing, unreadable, or over the credential size cap.
+///
+/// Content, not mtime alone: the CLI may rewrite the file faster than the
+/// filesystem's timestamp granularity can distinguish.
+fn fingerprint(path: &Path) -> Option<u64> {
+    use std::hash::{Hash as _, Hasher as _};
+    let metadata = fs::metadata(path).ok()?;
+    if metadata.len() > MAX_CREDENTIAL_BYTES {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Some(hasher.finish())
 }
 
 fn build_snapshot(
@@ -578,102 +734,238 @@ mod tests {
         OffsetDateTime::from_unix_timestamp(NOW).unwrap()
     }
 
-    fn auth(refresh_token: &str) -> CodexAuth {
+    fn auth() -> CodexAuth {
         CodexAuth {
             access_token: "stale-token".into(),
-            refresh_token: refresh_token.into(),
             account_id: Some("acct-123".into()),
             plan_claim: None,
         }
     }
 
-    /// A transport whose `usage` call fails until it is called with
-    /// `refreshed-token`, and whose `refresh` call always succeeds.
-    struct RefreshSucceeds {
-        usage_calls: AtomicUsize,
-        refresh_calls: AtomicUsize,
+    /// The `auth.json` shape [`read_auth`] parses, carrying `access_token`.
+    fn auth_json(access_token: &str) -> String {
+        format!(
+            r#"{{"tokens": {{"access_token": "{access_token}", "refresh_token": "r", "account_id": "acct-1"}}}}"#
+        )
     }
 
-    impl CodexTransport for RefreshSucceeds {
+    /// A transport that answers only `fresh-token`, rejecting every other
+    /// access token as expired — the shape of a real 401 on a stale token.
+    struct AnswersFreshTokenOnly {
+        usage_calls: AtomicUsize,
+    }
+
+    impl AnswersFreshTokenOnly {
+        fn new() -> AnswersFreshTokenOnly {
+            AnswersFreshTokenOnly {
+                usage_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl CodexTransport for AnswersFreshTokenOnly {
         fn usage(
             &self,
             access_token: &str,
             _account_id: Option<&str>,
-        ) -> Result<String, ProviderUsageError> {
+        ) -> Result<String, UsageCallError> {
             self.usage_calls.fetch_add(1, Ordering::SeqCst);
-            if access_token == "refreshed-token" {
+            if access_token == "fresh-token" {
                 Ok(WHAM_BODY.to_string())
             } else {
-                Err(ProviderUsageError::Authentication)
+                Err(UsageCallError::ExpiredCredential)
             }
         }
-        fn refresh(&self, _refresh_token: &str) -> Result<String, ProviderUsageError> {
-            self.refresh_calls.fetch_add(1, Ordering::SeqCst);
-            Ok("refreshed-token".into())
+    }
+
+    /// A CLI fake that, when asked to refresh, rewrites `auth.json` with
+    /// `fresh-token` — the observable effect a real CLI refresh has.
+    struct WritesFreshAuth {
+        auth_path: PathBuf,
+        trigger_calls: AtomicUsize,
+    }
+
+    impl CodexCli for WritesFreshAuth {
+        fn is_installed(&self) -> bool {
+            true
+        }
+        fn trigger_refresh(&self) -> codex_app_server::RefreshHint {
+            self.trigger_calls.fetch_add(1, Ordering::SeqCst);
+            fs::write(&self.auth_path, auth_json("fresh-token")).expect("write refreshed auth");
+            codex_app_server::RefreshHint::Answered
+        }
+    }
+
+    /// A CLI fake that answers the RPC but never touches the file — the
+    /// shape of a refresh whose write never lands.
+    struct NeverWrites;
+    impl CodexCli for NeverWrites {
+        fn is_installed(&self) -> bool {
+            true
+        }
+        fn trigger_refresh(&self) -> codex_app_server::RefreshHint {
+            codex_app_server::RefreshHint::Answered
+        }
+    }
+
+    /// A CLI fake for a machine without the `codex` binary at all.
+    struct NotInstalled {
+        trigger_calls: AtomicUsize,
+    }
+    impl CodexCli for NotInstalled {
+        fn is_installed(&self) -> bool {
+            false
+        }
+        fn trigger_refresh(&self) -> codex_app_server::RefreshHint {
+            self.trigger_calls.fetch_add(1, Ordering::SeqCst);
+            codex_app_server::RefreshHint::Unknown
+        }
+    }
+
+    /// A CLI fake whose own refresh reports failure — a broken login.
+    struct RejectsRefresh;
+    impl CodexCli for RejectsRefresh {
+        fn is_installed(&self) -> bool {
+            true
+        }
+        fn trigger_refresh(&self) -> codex_app_server::RefreshHint {
+            codex_app_server::RefreshHint::Rejected
         }
     }
 
     #[test]
-    fn a_rejected_token_is_retried_once_with_a_refreshed_one() {
-        let transport = RefreshSucceeds {
-            usage_calls: AtomicUsize::new(0),
-            refresh_calls: AtomicUsize::new(0),
+    fn an_expired_token_recovers_through_the_cli_and_retries_exactly_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        fs::write(&auth_path, auth_json("stale-token")).expect("write");
+        let transport = AnswersFreshTokenOnly::new();
+        let cli = WritesFreshAuth {
+            auth_path: auth_path.clone(),
+            trigger_calls: AtomicUsize::new(0),
         };
-        let cache = Mutex::new(None);
-        let snapshot = fetch_direct(&transport, &cache, &auth("refresh-a"), now()).expect("ok");
 
+        let auth = read_auth(&auth_path).expect("parses");
+        let snapshot = fetch_direct(
+            &transport,
+            &cli,
+            &auth_path,
+            &RefreshWait::FAST,
+            &auth,
+            now(),
+        )
+        .expect("recovers");
+
+        assert_eq!(cli.trigger_calls.load(Ordering::SeqCst), 1);
         assert_eq!(transport.usage_calls.load(Ordering::SeqCst), 2);
-        assert_eq!(transport.refresh_calls.load(Ordering::SeqCst), 1);
         assert_eq!(snapshot.windows.len(), 2);
         assert_eq!(snapshot.plan.as_deref(), Some("plus"));
     }
 
     #[test]
-    fn a_refreshed_token_is_cached_and_reused_without_refreshing_again() {
-        let transport = RefreshSucceeds {
-            usage_calls: AtomicUsize::new(0),
-            refresh_calls: AtomicUsize::new(0),
-        };
-        let cache = Mutex::new(None);
-        fetch_direct(&transport, &cache, &auth("refresh-a"), now()).expect("ok");
-        fetch_direct(&transport, &cache, &auth("refresh-a"), now()).expect("ok");
+    fn a_file_that_never_changes_times_out_as_transient_not_terminal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        fs::write(&auth_path, auth_json("stale-token")).expect("write");
+        let transport = AnswersFreshTokenOnly::new();
 
-        // The second call's `usage` succeeds on the very first try because the
-        // cached refreshed token from the first call is tried first.
-        assert_eq!(transport.usage_calls.load(Ordering::SeqCst), 3);
-        assert_eq!(transport.refresh_calls.load(Ordering::SeqCst), 1);
+        let auth = read_auth(&auth_path).expect("parses");
+        let result = fetch_direct(
+            &transport,
+            &NeverWrites,
+            &auth_path,
+            &RefreshWait::FAST,
+            &auth,
+            now(),
+        );
+
+        assert_eq!(result, Err(ProviderUsageError::Unavailable));
+        // The one usage call is the expired first attempt; a retry with the
+        // same stale token would only burn a request.
+        assert_eq!(transport.usage_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
-    fn a_changed_refresh_token_invalidates_the_cached_one() {
-        let transport = RefreshSucceeds {
-            usage_calls: AtomicUsize::new(0),
-            refresh_calls: AtomicUsize::new(0),
+    fn an_expired_token_without_a_codex_binary_is_an_authentication_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        fs::write(&auth_path, auth_json("stale-token")).expect("write");
+        let transport = AnswersFreshTokenOnly::new();
+        let cli = NotInstalled {
+            trigger_calls: AtomicUsize::new(0),
         };
-        let cache = Mutex::new(None);
-        fetch_direct(&transport, &cache, &auth("refresh-a"), now()).expect("ok");
-        // A different `auth.json` — a sign-out and back in as someone else —
-        // must not reuse the previous account's cached token.
-        fetch_direct(&transport, &cache, &auth("refresh-b"), now()).expect("ok");
 
-        assert_eq!(transport.refresh_calls.load(Ordering::SeqCst), 2);
+        let auth = read_auth(&auth_path).expect("parses");
+        let result = fetch_direct(
+            &transport,
+            &cli,
+            &auth_path,
+            &RefreshWait::FAST,
+            &auth,
+            now(),
+        );
+
+        // Not `Unavailable`: nothing was unreachable, the reader has to run
+        // `codex` and sign in again.
+        assert_eq!(result, Err(ProviderUsageError::Authentication));
+        assert_eq!(cli.trigger_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(transport.usage_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_refresh_the_cli_rejects_is_terminal_without_waiting_on_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        fs::write(&auth_path, auth_json("stale-token")).expect("write");
+        let transport = AnswersFreshTokenOnly::new();
+
+        let auth = read_auth(&auth_path).expect("parses");
+        let started = std::time::Instant::now();
+        let result = fetch_direct(
+            &transport,
+            &RejectsRefresh,
+            &auth_path,
+            &RefreshWait::FAST,
+            &auth,
+            now(),
+        );
+
+        assert_eq!(result, Err(ProviderUsageError::Authentication));
+        // Terminal means no quiescence poll: well inside `FAST.deadline`.
+        assert!(started.elapsed() < RefreshWait::FAST.deadline);
+        assert_eq!(transport.usage_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_non_expired_failure_never_touches_the_cli() {
+        struct RateLimits;
+        impl CodexTransport for RateLimits {
+            fn usage(&self, _: &str, _: Option<&str>) -> Result<String, UsageCallError> {
+                Err(UsageCallError::Other(ProviderUsageError::RateLimited))
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.json");
+        fs::write(&auth_path, auth_json("stale-token")).expect("write");
+
+        let auth = read_auth(&auth_path).expect("parses");
+        // `NeverSpawns` panics on any CLI call, so passing means no spawn.
+        let result = fetch_direct(
+            &RateLimits,
+            &NeverSpawns,
+            &auth_path,
+            &RefreshWait::FAST,
+            &auth,
+            now(),
+        );
+        assert_eq!(result, Err(ProviderUsageError::RateLimited));
     }
 
     struct AlwaysFails;
     impl CodexTransport for AlwaysFails {
-        fn usage(&self, _: &str, _: Option<&str>) -> Result<String, ProviderUsageError> {
-            Err(ProviderUsageError::RateLimited)
+        fn usage(&self, _: &str, _: Option<&str>) -> Result<String, UsageCallError> {
+            Err(UsageCallError::Other(ProviderUsageError::RateLimited))
         }
-        fn refresh(&self, _: &str) -> Result<String, ProviderUsageError> {
-            Err(ProviderUsageError::Unavailable)
-        }
-    }
-
-    #[test]
-    fn a_failed_refresh_surfaces_the_refresh_failure() {
-        let cache = Mutex::new(None);
-        let result = fetch_direct(&AlwaysFails, &cache, &auth("refresh-a"), now());
-        assert_eq!(result, Err(ProviderUsageError::Unavailable));
     }
 
     /// Writes a rollout file under `sessions_root` carrying one qualifying
@@ -781,11 +1073,8 @@ mod tests {
 
         struct WorksFirstTry;
         impl CodexTransport for WorksFirstTry {
-            fn usage(&self, _: &str, _: Option<&str>) -> Result<String, ProviderUsageError> {
+            fn usage(&self, _: &str, _: Option<&str>) -> Result<String, UsageCallError> {
                 Ok(WHAM_BODY.to_string())
-            }
-            fn refresh(&self, _: &str) -> Result<String, ProviderUsageError> {
-                unreachable!("a successful first attempt never refreshes")
             }
         }
 
@@ -857,23 +1146,27 @@ mod tests {
 
         struct WorksFirstTry;
         impl CodexTransport for WorksFirstTry {
-            fn usage(&self, _: &str, _: Option<&str>) -> Result<String, ProviderUsageError> {
+            fn usage(&self, _: &str, _: Option<&str>) -> Result<String, UsageCallError> {
                 Ok(WHAM_BODY_WITHOUT_PLAN.to_string())
-            }
-            fn refresh(&self, _: &str) -> Result<String, ProviderUsageError> {
-                unreachable!("a successful first attempt never refreshes")
             }
         }
 
         let token = jwt_with_claims(serde_json::json!({
             "https://api.openai.com/auth/chatgpt_plan_type": "team"
         }));
-        let mut auth = auth("refresh-a");
+        let mut auth = auth();
         auth.access_token = token;
         auth.plan_claim = Some("team".into());
 
-        let cache = Mutex::new(None);
-        let snapshot = fetch_direct(&WorksFirstTry, &cache, &auth, now()).expect("ok");
+        let snapshot = fetch_direct(
+            &WorksFirstTry,
+            &NeverSpawns,
+            Path::new("/nonexistent/auth.json"),
+            &RefreshWait::FAST,
+            &auth,
+            now(),
+        )
+        .expect("ok");
         assert_eq!(snapshot.plan.as_deref(), Some("team"));
     }
 
@@ -888,20 +1181,17 @@ mod tests {
         .expect("write");
         struct PiOnly(Arc<AtomicUsize>);
         impl CodexTransport for PiOnly {
-            fn usage(
-                &self,
-                token: &str,
-                account: Option<&str>,
-            ) -> Result<String, ProviderUsageError> {
+            fn usage(&self, token: &str, account: Option<&str>) -> Result<String, UsageCallError> {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 if token == "pi-access" && account == Some("synthetic-account") {
                     Ok(WHAM_BODY.to_owned())
                 } else {
-                    Err(ProviderUsageError::Authentication)
+                    // An expired verdict here must still never trigger CLI
+                    // recovery on the Pi path: `fetch_pi` folds it into the
+                    // shared taxonomy, and the `NeverSpawns` CLI seam every
+                    // test constructor installs panics on any spawn.
+                    Err(UsageCallError::ExpiredCredential)
                 }
-            }
-            fn refresh(&self, _: &str) -> Result<String, ProviderUsageError> {
-                unreachable!("Pi owns token refresh")
             }
         }
         let calls = Arc::new(AtomicUsize::new(0));
@@ -928,11 +1218,8 @@ mod tests {
         .expect("write");
         struct Never;
         impl CodexTransport for Never {
-            fn usage(&self, _: &str, _: Option<&str>) -> Result<String, ProviderUsageError> {
+            fn usage(&self, _: &str, _: Option<&str>) -> Result<String, UsageCallError> {
                 unreachable!("expired Pi credentials are absent")
-            }
-            fn refresh(&self, _: &str) -> Result<String, ProviderUsageError> {
-                unreachable!("Pi credentials are never refreshed")
             }
         }
         let source = CodexDirectFetch::with_paths(None, Some(pi_path), Box::new(Never));
