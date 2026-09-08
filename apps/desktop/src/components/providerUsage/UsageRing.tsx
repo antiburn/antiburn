@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react"
+
 import type { BrandMark } from "../../lib/brandMarks"
 
 /**
@@ -9,6 +11,18 @@ import type { BrandMark } from "../../lib/brandMarks"
  * than sitting in it.
  */
 const MARK_EXTENT = 16.8
+
+/**
+ * The share of the ring that blinks while a session is live.
+ *
+ * A meter blinks one segment of 32. One thirty-second of a 26px ring is two
+ * pixels, which the eye misses. An eighth is the smallest arc that reads as
+ * a blink at that size without covering the reading.
+ */
+const BLINK_FRACTION = 1 / 8
+
+/** The colour of the ring's track, the blinking arc's off state. */
+const TRACK_COLOR = "var(--color-surface-tertiary)"
 
 /**
  * Centre a mark in the ring's 32-unit box at {@link MARK_EXTENT}.
@@ -39,6 +53,10 @@ function markTransform(mark: BrandMark): string {
  * - **Indeterminate.** A provider that reports a window but no figure for it.
  *   A dashed track and no arc — visibly a ring with nothing in it rather than
  *   a ring at zero, which would be a claim.
+ *
+ * `blink` blinks the next eighth of a determinate ring, past the arc's end,
+ * the way a meter blinks its next segment. A full ring blinks its last
+ * eighth. The indeterminate ring has no next share to blink.
  */
 export function UsageRing({
   percent,
@@ -46,6 +64,7 @@ export function UsageRing({
   mark,
   size = 16,
   className = "",
+  blink = false,
 }: {
   /** Consumed capacity, 0–100. `null` renders the indeterminate ring. */
   percent: number | null
@@ -61,12 +80,17 @@ export function UsageRing({
   mark?: BrandMark | undefined
   size?: number
   className?: string
+  /** Blink the next eighth of the ring while a session is live. */
+  blink?: boolean
 }) {
   // Geometry in a fixed 32-unit box, scaled by `size`. Keeping the viewBox
   // constant means the stroke stays proportional at every call site.
   const radius = 13
   const circumference = 2 * Math.PI * radius
   const clamped = percent == null ? null : Math.min(100, Math.max(0, percent))
+  // Where the blinking arc starts, as a share of the ring: at the arc's end,
+  // pulled back so a full ring blinks its last eighth and not nothing.
+  const blinkStart = clamped == null ? 0 : Math.min(clamped / 100, 1 - BLINK_FRACTION)
 
   return (
     <svg
@@ -103,7 +127,7 @@ export function UsageRing({
             r={radius}
             fill="none"
             strokeWidth="2.5"
-            stroke="var(--color-surface-tertiary)"
+            stroke={TRACK_COLOR}
             data-testid="usage-ring-track"
           />
           <circle
@@ -121,6 +145,23 @@ export function UsageRing({
             transform="rotate(-90 16 16)"
             data-testid="usage-ring-arc"
           />
+          {blink && (
+            // Drawn over the arc and the track, so at a full ring it sits on
+            // the arc's last eighth and alternates with the track colour.
+            <circle
+              cx="16"
+              cy="16"
+              r={radius}
+              fill="none"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              className="led-blink"
+              style={{ "--led-rest": TRACK_COLOR } as CSSProperties}
+              strokeDasharray={`${circumference * BLINK_FRACTION} ${circumference}`}
+              transform={`rotate(${-90 + blinkStart * 360} 16 16)`}
+              data-testid="usage-ring-blink"
+            />
+          )}
         </>
       )}
       {mark && (

@@ -7,7 +7,10 @@ status: draft
 # HUD sees a session write within two seconds, and blinks even at zero usage
 
 - **Date:** 2026-09-08
-- **Branch:** `claude/hud-active-session-notification-cbf342`
+- **Branch:** `feat/session-lifecycle-bus` (the bus), with
+  `feat/hud-session-blink` (the surfaces) stacked on it. The original build
+  branch `claude/hud-active-session-notification-cbf342` holds the same work
+  as three phase commits.
 - **Origin:** Keith's HUD note plus Chris's Slack idea (2026-09-08): fire
   `session_active` / `session_cold` style events from the session watching
   code through a single-producer, multi-consumer channel, so the HUD and the
@@ -23,8 +26,13 @@ status: draft
 | C | HUD and popover meter read the bus; the idle task folds into the actor | ~300 lines | built 2026-09-08, in review |
 | D | Session list and other consumers move onto the bus | follow-up | not planned here |
 
-Each phase is one pull request. A stacks on nothing. B stacks on nothing. C
-stacks on B.
+Two pull requests (agreed 2026-09-08). The first, `feat/session-lifecycle-bus`,
+is the wiring: phase B and the shell half of phase C (the bridge to the
+webview, `get_live_sessions`, the idle task folded into the actor). It keeps
+`get_latest_session_activity` so the HUD on `main` still works against it.
+The second, `feat/hud-session-blink`, stacks on the first and holds the
+surfaces: phase A, the renderer half of phase C, and the ring blink. It
+removes `get_latest_session_activity`.
 
 ## Two problems
 
@@ -231,8 +239,11 @@ Built 2026-09-08, three small departures:
 - The popover meter blinks the *next unlit* segment, not the last lit one: a
   lit meter segment is already the brand tint, so only the segment past the
   reading can alternate (brand on, the zone's track tint off). At zero both
-  rules land on the first segment. Only the first meter of the first provider
-  blinks, and only in the expanded view; the closed bar's rings do not.
+  rules land on the first segment. Only the first provider blinks: its first
+  meter on the open bar, and on the closed bar its ring, which blinks the
+  next eighth past the arc's end (agreed 2026-09-08, "yeah blink them"). A
+  thirty-second of a 26px ring is two pixels, so the ring's blink is an
+  eighth.
 - Both renderers re-read `get_live_sessions` on `scan:finished` and
   `sessions:invalidated` (the popover also on show), so a lagged bus reader
   recovers within one pass.
@@ -254,7 +265,7 @@ Built 2026-09-08, three small departures:
 | Decision | Proposal |
 |---|---|
 | Blink colour | brand orange as the on state in every case, alternating with the segment's resting colour (agreed 2026-09-08) |
-| Live window and surfaces | one 180 s window from the bus, no separate 90 s timer; both the HUD and the popover's usage meter flash (agreed 2026-09-08; "main one" read as the popover, correct me if you meant the hover detail window) |
+| Live window and surfaces | one 180 s window from the bus, no separate 90 s timer; the HUD, the popover's usage meter, and the closed bar's ring all flash (agreed 2026-09-08; "main one" is the popover) |
 | Discovery paused | the watcher still runs, so the HUD still blinks while paused; paused means no indexing work, not a dark light (agreed 2026-09-08) |
 
 ## How it is built
