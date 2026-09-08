@@ -295,6 +295,56 @@ Phases 1 and 2 ship in the same release; there is no release between them.
   stored on the observation; plan change drops earlier samples and appends a
   point.
 
+#### Decisions (implementation, 2026-09-08)
+
+The document above did not settle these; they were decided during the phase 1
+build and kept for phase 2 to build on.
+
+- **`window_start` gating checks the period, not only the lane.** The
+  document's rule is "no delta sample yet for the lane." Read literally, a
+  period whose own two readings already form a delta pair would *also* emit a
+  `window_start` sample from its first reading, because the lane-wide "a delta
+  exists" flag is only checked once, before that period is processed. Phase 1
+  adds one clause: a period only produces `window_start` when it cannot
+  produce a delta pair of its own (zero or one usable reading). A period with
+  a real pair never needs the fallback its own data has already outgrown.
+- **`store::Store::lock` widened from private to `pub(crate)`.** The plan asks
+  for factor-learning tests that build synthetic turns, periods, and
+  observations the way the store's own lifecycle tests do. Those existing
+  tests live inside the `store` module tree and can already reach the private
+  connection lock; `provider_usage::factor`'s tests live outside it. Widening
+  `lock` to `pub(crate)` (still crate-only, no new public surface) let the
+  factor tests reuse the same direct-SQL fixture style instead of duplicating
+  it through a second accessor.
+- **`provider_usage::attribute`, `has_tokens`, and `Attributed::models` widened
+  to `pub(crate)`.** `store::provider_limit`'s attributed-dollars query needs
+  the same per-model provider routing `provider_usage::allocation::weighted_turns`
+  already does, so it calls the same function rather than re-implementing
+  routing rules a second place they could drift apart.
+- **`factor_point_at` (point lookup at an epoch) is used by phase 1, not left
+  for phase 2 alone.** The document lists it as a phase 1 storage primitive
+  with no phase 1 caller, which is dead code under this repository's
+  no-suppression rule. `compute_residual` uses it to price a period's residual
+  against the factor in effect at that period's own latest observation, rather
+  than always the newest point overall — arguably more correct than reading
+  the single newest point directly, since a plan change between the reading
+  and "now" would otherwise restate an old period's residual under today's
+  factor.
+- **Residual is computed once per (provider, account, lane) touched in a
+  pass, from the most-recently-observed period among those already loaded**,
+  not from a separate "current period per lane" scan. Candidate-period
+  selection already sorts by `last_observed_epoch` descending, so the first
+  period seen per lane in a pass is already its current one; reusing it keeps
+  the residual step inside the same bounded per-pass work instead of adding
+  another unbounded query.
+- **Candidate-period selection uses one rule for both bootstrap and
+  recompute:** a period qualifies when it carries a primary lane and its
+  `last_observed_epoch` is at or after `now - 15 minutes`. A brand-new period
+  and a just-refreshed one both leave a fresh `last_observed_epoch`, so one
+  query serves both cases. This assumes `learn` runs close to when
+  observations are written, which holds today: it runs right after
+  `record_provider_usage_snapshots` and on every background tick.
+
 ### Phase 2: read from the factor, delete the allocator
 
 - `get_session_limit_allocations` computes from session cost and factor
