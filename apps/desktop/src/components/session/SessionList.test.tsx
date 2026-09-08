@@ -984,3 +984,86 @@ describe("SessionList — empty state", () => {
     expect(screen.queryByTestId("activity-pinned-group-label")).toBeNull()
   })
 })
+
+describe("SessionList — controlled main-window selection", () => {
+  it("selects without invoking popover navigation and focuses detail on Enter", () => {
+    const onSelect = vi.fn()
+    const onOpenDetail = vi.fn()
+    const onOpenSession = vi.fn()
+    list({ entries: entries(3), selectedKey: null, onSelect, onOpenDetail, onOpenSession })
+    const first = screen.getByRole("button", { name: /Fixture session 0/ })
+    fireEvent.click(first)
+    expect(first).toHaveFocus()
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-0" }))
+    expect(onOpenSession).not.toHaveBeenCalled()
+    fireEvent.keyDown(first, { key: "Enter" })
+    expect(onOpenDetail).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "session-0" }),
+    )
+  })
+
+  it("moves selection across virtualized rows and lets Tab leave the collection", async () => {
+    const onSelect = vi.fn()
+    list({ entries: entries(225), selectedKey: null, onSelect })
+    const first = screen.getByRole("button", { name: /Fixture session 0/ })
+    first.focus()
+    fireEvent.keyDown(first, { key: "End" })
+    expect(onSelect).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sessionId: "session-224" }),
+    )
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Fixture session 224/ })).toHaveFocus(),
+    )
+    fireEvent.keyDown(document.activeElement!, { key: "Home" })
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Fixture session 0/ })).toHaveFocus(),
+    )
+    expect(fireEvent.keyDown(document.activeElement!, { key: "Tab" })).toBe(true)
+  })
+
+  it("pauses hygiene work and active row motion while hidden", () => {
+    const { container } = list({
+      entries: [entry({ isActive: true })],
+      active: false,
+      onSelect: vi.fn(),
+    })
+    expect(getSessionHygiene).not.toHaveBeenCalled()
+    expect(container.querySelector(".activity-row-active")).toBeNull()
+  })
+})
+
+describe("SessionList — virtualized tab entry", () => {
+  it("retains one row tab stop after scrolling away while focus is elsewhere", async () => {
+    const { container } = list({ entries: entries(225), selectedKey: null, onSelect: vi.fn() })
+    const viewport = container.querySelector<HTMLElement>(".ui-scroll-viewport")!
+    viewport.scrollTop = 20_000
+    fireEvent.scroll(viewport)
+    await waitFor(() => expect(screen.getByText("Fixture session 224")).toBeTruthy())
+    expect(screen.getByRole("button", { name: /Fixture session 0/ })).toHaveAttribute(
+      "tabindex",
+      "0",
+    )
+    expect(container.querySelectorAll('[data-session-row][tabindex="0"]')).toHaveLength(1)
+    expect(container.querySelectorAll("[data-session-row]").length).toBeLessThan(20)
+  })
+})
+
+describe("SessionList — native drag header", () => {
+  it("opts in without marking session rows or metric buttons draggable", () => {
+    const props = {
+      entries: [entry({ isActive: true })],
+      days: 7,
+      onBadgeMetricChange: vi.fn(),
+    }
+    const { container, rerender } = render(<SessionList {...props} />)
+    expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
+    rerender(<SessionList {...props} draggableHeader />)
+    expect(screen.getByTestId("activity-pinned-group-label")).toHaveAttribute(
+      "data-tauri-drag-region",
+      "deep",
+    )
+    for (const control of container.querySelectorAll("button, [role=option]")) {
+      expect(control).not.toHaveAttribute("data-tauri-drag-region")
+    }
+  })
+})
