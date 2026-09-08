@@ -76,15 +76,15 @@ quiet login on an upgraded installation. macOS uses the native login event.
 
 ## Navigation shell
 
-Check the 900×600 default and 800×560 minimum with light and dark themes.
+Check the 1100×600 default and 1000×560 minimum with light and dark themes.
 
 - The sidebar remains visible throughout resizing; no compact navigation mode appears.
-- Activity is the only selected main section; no Settings or Quit sidebar action appears.
-- The existing Settings window remains accessible through the tray and native menus.
+- Activity is the main section with an empty collection and detail workspace. Settings appears at the bottom; no Quit action appears.
+- The Settings sidebar action and Command+, (Control+, on Windows/Linux) open the existing Settings window.
 - Check readable 28px rows and independent vertical content scrolling without horizontal overflow.
-- Restore an older saved 560×420 window; it expands to at least 800×560 when the display allows.
+- Restore an older saved 560×420 window; it expands to at least 1000×560 when the display allows.
 - Close and reopen the main window; the selected section persists.
-- The first macOS row starts below the 40px drag strip. Buttons must not drag the window.
+- The first macOS sidebar row starts below the 40px drag strip. The collection and detail panes have no top gap. Buttons must not drag the window.
 - The title strip still drags and toggles maximize on double-click.
 
 ## Opening measurements

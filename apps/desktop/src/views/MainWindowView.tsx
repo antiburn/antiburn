@@ -1,60 +1,107 @@
-import { Activity } from "lucide-react"
+import { Activity, Settings } from "lucide-react"
+import { useState, type ReactNode } from "react"
 
-import { ScrollPane } from "../components/ui/ScrollPane"
+import { openSettingsWindow } from "../lib/ipc"
+import { useGlobalKeydown } from "../lib/useGlobalKeydown"
 import { SidebarNav, type SidebarNavItem } from "../components/ui/SidebarNav"
-import { isMacOS } from "../lib/platform"
+import { CollectionDetailPane } from "./main-window/CollectionDetailPane"
+import { MainWindowLayout } from "./main-window/MainWindowLayout"
 
-const NAVIGATION_ITEMS = [
-  { id: "activity", label: "Activity", icon: Activity },
-] as const satisfies readonly SidebarNavItem[]
+export interface MainWindowSection extends SidebarNavItem {
+  render: (context: { active: boolean }) => ReactNode
+}
 
-/** The retained application window shell. Feature views replace its honest placeholders later. */
-export function MainWindowView() {
-  const macOS = isMacOS()
-
+/** A section supplies its panes without changing the main window's native lifecycle. */
+export function MainWindowView({ sections }: { sections?: readonly MainWindowSection[] }) {
+  const [settingsError, setSettingsError] = useState(false)
+  async function openSettings(): Promise<void> {
+    setSettingsError(false)
+    try {
+      await openSettingsWindow()
+    } catch {
+      setSettingsError(true)
+    }
+  }
+  useGlobalKeydown(true, (event) => {
+    if (
+      (event.metaKey || event.ctrlKey) &&
+      event.key === "," &&
+      !event.altKey &&
+      !event.shiftKey
+    ) {
+      event.preventDefault()
+      if (!event.repeat) void openSettings()
+    }
+  })
+  const availableSections: readonly MainWindowSection[] = sections ?? [
+    {
+      id: "activity",
+      label: "Activity",
+      icon: Activity,
+      render: () => (
+        <CollectionDetailPane
+          title="Activity"
+          items={[]}
+          emptyMessage="No activity yet"
+          detailEmptyMessage="Select an item to view its details."
+          renderDetail={() => null}
+        />
+      ),
+    },
+  ]
+  const [selectedId, setSelectedId] = useState(() => availableSections[0]?.id ?? "")
+  const [visited, setVisited] = useState(
+    () => new Set(availableSections.slice(0, 1).map((section) => section.id)),
+  )
+  function selectSection(id: string): void {
+    if (!availableSections.some((section) => section.id === id)) return
+    setSelectedId(id)
+    setVisited((previous) => new Set(previous).add(id))
+  }
+  const selected =
+    availableSections.find((section) => section.id === selectedId) ?? availableSections[0]
   return (
-    <main
-      className={`main-window${macOS ? " main-window-macos" : ""}`}
-      aria-label="antiburn main window"
-    >
-      {macOS && (
-        <div className="main-window-titlebar" data-tauri-drag-region aria-hidden="true" />
-      )}
-
-      <div className="main-window-navigation">
+    <MainWindowLayout
+      sidebar={
         <SidebarNav
-          items={NAVIGATION_ITEMS}
-          value="activity"
-          onChange={() => {}}
+          items={availableSections}
+          value={selected?.id ?? ""}
+          onChange={selectSection}
           ariaLabel="Main sections"
           className="main-window-sidebar min-h-0 flex-1"
+          footer={
+            <>
+              {settingsError && (
+                <p role="alert" className="px-2 pb-2 type-caption text-label-secondary">
+                  Could not open Settings. Try again.
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={() => void openSettings()}
+                className="flex h-7 w-full items-center gap-2 rounded-control px-2 type-body text-label hover:bg-surface-hover"
+              >
+                <Settings size={14} strokeWidth={2} aria-hidden="true" />
+                <span>Settings</span>
+              </button>
+            </>
+          }
         />
-      </div>
-
-      <div className={`main-window-content${macOS ? " main-window-content-macos" : ""}`}>
-        <ScrollPane className="min-h-0" viewportClassName="main-window-scroll-viewport">
-          <section
-            id="activity-panel"
-            role="tabpanel"
-            aria-labelledby="activity-tab"
-            tabIndex={0}
-            className="main-window-pane"
-          >
-            <div className="main-window-placeholder">
-              <Activity
-                size={24}
-                strokeWidth={1.5}
-                className="text-label-secondary"
-                aria-hidden="true"
-              />
-              <h1 className="type-title-2 text-label">Activity</h1>
-              <p className="type-body text-label-secondary">
-                Activity will appear here. Current activity remains available from the menu bar.
-              </p>
-            </div>
-          </section>
-        </ScrollPane>
-      </div>
-    </main>
+      }
+    >
+      {availableSections.map((section) => (
+        <div
+          key={section.id}
+          id={`${section.id}-panel`}
+          role="tabpanel"
+          aria-labelledby={`${section.id}-tab`}
+          hidden={section.id !== selected?.id}
+          className="main-window-section"
+        >
+          {(visited.has(section.id) || section.id === selected?.id) &&
+            section.render({ active: section.id === selected?.id })}
+        </div>
+      ))}
+    </MainWindowLayout>
   )
 }

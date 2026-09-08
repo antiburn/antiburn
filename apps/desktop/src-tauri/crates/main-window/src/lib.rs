@@ -11,11 +11,11 @@ pub const LABEL: &str = "main";
 /// The dedicated frontend entry.
 pub const URL: &str = "main.html";
 /// The first inner width in logical pixels.
-pub const DEFAULT_WIDTH: f64 = 900.0;
+pub const DEFAULT_WIDTH: f64 = 1100.0;
 /// The first inner height in logical pixels.
 pub const DEFAULT_HEIGHT: f64 = 600.0;
 /// The minimum inner width in logical pixels.
-pub const MIN_WIDTH: f64 = 800.0;
+pub const MIN_WIDTH: f64 = 1000.0;
 /// The minimum inner height in logical pixels.
 pub const MIN_HEIGHT: f64 = 560.0;
 
@@ -394,9 +394,9 @@ mod tests {
         assert_eq!(
             validated_placement(None, &[PRIMARY], Some(PRIMARY), 1.0, 0, 0),
             Placement {
-                x: 270,
+                x: 170,
                 y: 162,
-                width: 900,
+                width: 1100,
                 height: 600,
                 maximized: false,
                 scale_factor: 1.0,
@@ -438,7 +438,7 @@ mod tests {
             scale_factor: 1.0,
         };
         let restored = validated_placement(Some(&saved), &[PRIMARY], Some(PRIMARY), 1.0, 0, 0);
-        assert_eq!((restored.width, restored.height), (800, 560));
+        assert_eq!((restored.width, restored.height), (1000, 560));
     }
 
     #[test]
@@ -518,7 +518,7 @@ mod tests {
             height: 1_920,
         };
         let placement = validated_placement(None, &[retina], Some(retina), 2.0, 0, 0);
-        assert_eq!((placement.width, placement.height), (1_800, 1_200));
+        assert_eq!((placement.width, placement.height), (2_200, 1_200));
         assert!(!placement.maximized);
     }
 
@@ -593,7 +593,10 @@ mod tests {
                 0,
                 0
             ),
-            normalized
+            Placement {
+                width: 2_000,
+                ..normalized
+            }
         );
     }
 }

@@ -9,6 +9,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
     "allow-get-settings",
+    "allow-open-settings-window",
     "allow-main-window-ready"
   ]
 }
