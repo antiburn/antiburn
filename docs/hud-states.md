@@ -177,6 +177,10 @@ switch and in Mission Control.
 - Each LED bar has 20 segments.
 - Only the first bar blinks during a live session, and only on the HUD. The
   detail window does not blink.
+- The blink sits on the last lit segment, or on the first segment when usage
+  is too low to light one. Its on state is the brand tint and its off state
+  is the segment's resting colour: the bar colour when lit, the unlit grey
+  when not.
 - A transcript write stays live for 90 seconds.
 - The renderer reads liveness once when shown. Session and scan events push
   later changes, and one timer clears the live state at its expiry.

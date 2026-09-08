@@ -7,6 +7,11 @@ import type { CSSProperties } from "react"
  * the popover: a tick at how far through the window's period the clock has
  * travelled. It separates 60% used at 30% elapsed from 60% used at 90%
  * elapsed. With no fraction there is no notch.
+ *
+ * `blinkLast` marks a live session on the last lit segment, or on the first
+ * segment when usage is too low to light one. The blink shows the brand tint
+ * as its on state and the segment's resting colour as its off state, so
+ * "live" reads as its own fact and not as a shorter bar.
  */
 export function LedBar({
   split,
@@ -32,7 +37,7 @@ export function LedBar({
     segments,
     Math.round(Math.min(1, Math.max(0, accumulated)) * segments),
   )
-  const blinkIndex = blinkLast && litCount > 0 ? litCount - 1 : -1
+  const blinkIndex = blinkLast ? Math.max(0, litCount - 1) : -1
 
   return (
     <div
@@ -42,19 +47,20 @@ export function LedBar({
       {Array.from({ length: segments }, (_, index) => {
         const midpoint = (index + 0.5) / segments
         const hit = cutoffs.find((cutoff) => midpoint <= cutoff.upTo)
+        const blinking = index === blinkIndex
         return (
           <span
             key={index}
-            className={`h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "" : "bg-led-off"} ${index === blinkIndex ? "led-blink" : ""}`.trimEnd()}
+            className={`h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "" : "bg-led-off"} ${blinking ? "led-blink" : ""}`.trimEnd()}
             style={
-              hit
-                ? index === blinkIndex
-                  ? ({
-                      backgroundColor: hit.color,
-                      "--led-on": hit.color,
-                    } as CSSProperties)
-                  : { backgroundColor: hit.color }
-                : undefined
+              blinking
+                ? ({
+                    ...(hit ? { backgroundColor: hit.color } : {}),
+                    "--led-rest": hit ? hit.color : "var(--color-led-off)",
+                  } as CSSProperties)
+                : hit
+                  ? { backgroundColor: hit.color }
+                  : undefined
             }
           />
         )

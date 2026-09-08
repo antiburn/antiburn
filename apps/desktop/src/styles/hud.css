@@ -136,6 +136,14 @@ body[data-transparent-window] #root {
     0 0 0 0.5px rgb(0 0 0 / 0.04);
 }
 
+/*
+ * The live-session blink. The on state is the brand tint, not the bar's
+ * colour, so a blink reads as "a session is writing" and not as the bar
+ * losing a segment. The off state is `--led-rest`, which the segment sets
+ * inline: its own bar colour when lit, the unlit grey when not. The brand
+ * tint holds one value in both themes, so it survives any desktop behind the
+ * HUD the way `led-off` does.
+ */
 .led-blink {
   animation: led-blink 3s steps(1, end) infinite;
 }
@@ -143,12 +151,12 @@ body[data-transparent-window] #root {
 @keyframes led-blink {
   0%,
   49.9% {
-    background-color: var(--led-on);
+    background-color: var(--color-brand-tint);
   }
 
   50%,
   100% {
-    background-color: var(--color-led-off);
+    background-color: var(--led-rest, var(--color-led-off));
   }
 }
 
