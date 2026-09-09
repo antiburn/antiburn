@@ -464,7 +464,8 @@ Notes for what isn't expressible as a token:
 - **Session Detail style rules** — the detail view matches the home screen's density of styles.
   One data size per tab: every figure, row, and data label is `type-body`; hierarchy comes from ink
   and weight, and size changes are reserved for the hero title (`type-title-3`), guidance prose
-  (`type-callout`), and footnotes. No heading that restates its content, and no caption label over
+  (`type-callout`), footnotes, and the wide Cost card's component table (`type-callout`, so it
+  sits beside the total at the minimum window width). No heading that restates its content, and no caption label over
   a self-evident value — identification that is genuinely needed uses an icon with a tooltip, the
   session-row fork-glyph pattern. Every horizontal bar uses the usage meter (`SegmentedMeter`)
   silhouette; judgment is carried by the band word's ink, never by a multi-color bar. Color only

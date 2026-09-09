@@ -89,16 +89,11 @@
   }
 }
 
-/* The Cost tab widens its card and its checks grid at 30rem. The cost pane
-   of the default 1100px window is about 32rem wide, so the default window
-   gets both two-column layouts. The 1000px minimum window falls back to
-   one column. */
-.session-detail-cost {
-  container-type: inline-size;
-}
-/* The checks grid is a table: a name column and a verdict column for each
-   half. Each row is a subgrid over one name and verdict pair, so the verdicts
-   line up under each other at the width of the longest name. */
+/* The checks grid takes two columns from 28.5rem. Each half sizes to its
+   own longest name, and the two longest check names need about 28.25rem
+   together. The cost pane of the default 1100px window is about 28.75rem
+   wide, so the default window gets two columns and the 1000px minimum
+   window gets one. */
 .session-checks-grid {
   grid-template-columns: minmax(0, max-content) max-content;
   justify-content: start;
@@ -107,18 +102,16 @@
   grid-column: span 2;
   grid-template-columns: subgrid;
 }
-@container (min-width: 30rem) {
+@container (min-width: 28.5rem) {
   .session-checks-grid {
     grid-template-columns: repeat(2, minmax(0, max-content) max-content);
   }
 }
 
+/* The cost card keeps the total beside its component table at every wide
+   width. The total column takes the width of its own caption, and the table
+   takes the rest. */
 .session-cost-summary {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: max-content minmax(0, 1fr);
   align-items: start;
-}
-@container (min-width: 30rem) {
-  .session-cost-summary {
-    grid-template-columns: minmax(8rem, 1fr) minmax(0, 3fr);
-  }
 }
