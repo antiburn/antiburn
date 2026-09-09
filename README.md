@@ -77,15 +77,17 @@ See the [desktop guide](apps/desktop/README.md) for app commands and the
 
 ## Privacy
 
-antiburn needs no account, server, or backend operated by the project. It can contact coding-agent providers with credentials already held by your tools to read current usage. Release builds also check GitHub Releases for updates.
+antiburn uses no account, server, or backend. It hits agent provider APIs from your machine, using the same methods your harnesses already do.
 
-antiburn has analytics that we use to improve the app, but analytics events never include sessions, prompts, file paths, repository names, or credentials. Builds from a clean checkout have no analytics endpoint. Point your coding agent at this repo to check exactly what data leaves the device, if you're worried. See the complete [analytics contract](docs/analytics.md).
+antiburn has analytics that we use to improve the app, but analytics events never include anything you care about: sessions, prompts, file paths, repository names, credentials, etc. You can turn analytics off, and builds from a clean checkout have no analytics endpoint. See the complete [analytics contract](docs/analytics.md).
+
+Open source, so if you're worried, point your coding agent at this repo to audit exactly what data leaves the device.
 
 ## Community
 
-Questions, fixes, what's burning: join the
-[antiburn Slack](https://antiburn.ai/slack). Bugs and feature requests go in
-[GitHub issues](https://github.com/antiburn/antiburn/issues).
+Questions, fixes, what's burning: join the [antiburn Slack](https://antiburn.ai/slack).
+
+Bugs and feature requests go in [GitHub issues](https://github.com/antiburn/antiburn/issues).
 
 ## Project links
 
