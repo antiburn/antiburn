@@ -33,9 +33,9 @@
 //! Pi's OAuth store is a third, read-only carrier — see [`super::pi_auth`].
 //! The same rule holds: its token is never refreshed here. When that entry
 //! has expired, the one recovery lever is delegating the refresh to Pi's
-//! own SDK through [`super::pi_refresh`], which runs Pi's own locked
-//! refresh-and-write; when that lever is unavailable the expired entry
-//! reads exactly as it did before the lever existed.
+//! own `auth check` command through [`super::pi_refresh`], which runs Pi's
+//! own locked refresh-and-write; when that lever is unavailable the
+//! expired entry reads exactly as it did before the lever existed.
 //!
 //! Finding neither carrier — no Keychain item, no credentials file, or
 //! either one in a shape this parser does not recognize — is not an error.

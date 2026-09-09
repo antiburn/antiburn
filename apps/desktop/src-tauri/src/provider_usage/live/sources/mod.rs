@@ -28,8 +28,8 @@
 //! the retry-and-last-good-reading contract both sources are built on.
 //! [`pi_refresh`] is the delegated recovery lever both direct-fetch sources
 //! reach for when Pi's own stored token — read by [`pi_auth`] — has expired:
-//! it runs Pi's own SDK to refresh the credential rather than redeeming the
-//! refresh token itself.
+//! it runs Pi's own `auth check` command to refresh the credential rather
+//! than redeeming the refresh token itself.
 //!
 //! # Picking one reading
 //!

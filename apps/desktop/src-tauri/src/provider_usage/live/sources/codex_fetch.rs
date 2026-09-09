@@ -43,9 +43,9 @@
 //! Pi's OAuth store is a second, read-only carrier for the same account
 //! kind — see [`super::pi_auth`]. Its token is tried once, never refreshed
 //! here: Pi owns that lifecycle. When the entry has already expired, the
-//! one recovery lever is delegating the refresh to Pi's own SDK through
-//! [`super::pi_refresh`]; when that lever is unavailable the entry reads as
-//! absent, exactly as it did before the lever existed.
+//! one recovery lever is delegating the refresh to Pi's own `auth check`
+//! command through [`super::pi_refresh`]; when that lever is unavailable
+//! the entry reads as absent, exactly as it did before the lever existed.
 //!
 //! # Falling back
 //!

@@ -1,4 +1,4 @@
-//! Delegate an expired Pi credential's refresh to Pi's own SDK.
+//! Delegate an expired Pi credential's refresh to Pi's own CLI.
 //!
 //! [`super::pi_auth`] reads Pi's OAuth store as a read-only carrier, and
 //! that module never refreshes a token. It must not: Anthropic and OpenAI
@@ -7,42 +7,49 @@
 //! token. On a machine where only Pi is installed, an expired entry
 //! therefore means both usage rows go dark until the reader next uses Pi.
 //!
-//! This module is the interim lever for that machine, until an upstream
-//! `pi auth refresh` command exists. It does not redeem the refresh token
-//! either. Instead it runs Pi's own code: the public SDK's
-//! `ModelRuntime.getAuth(providerId)` refreshes an expired OAuth token
-//! inside `CredentialStore.modify` — a serialized read-modify-write under a
-//! **cross-process file lock**, so it cannot double-refresh against a live
-//! Pi session — and Pi itself persists the rotated credential to
-//! `auth.json`. The owner's code performs the redeem and the write; this
-//! module only asks. `getAuth` makes no model request and spends no tokens.
+//! This module is the lever for that machine. It does not redeem the
+//! refresh token either. Instead it runs Pi's own upstream command,
+//! `pi auth check --provider <p> --json`, which — by default, without
+//! `--no-refresh` — refreshes an expired OAuth token through the SDK's
+//! `ModelRuntime.getAuth(providerId)`, inside `CredentialStore.modify` — a
+//! serialized read-modify-write under a **cross-process file lock**, so it
+//! cannot double-refresh against a live Pi session — and Pi itself
+//! persists the rotated credential to `auth.json`. The owner's code
+//! performs the redeem and the write; this module only asks. `auth check`
+//! makes no model request and spends no tokens.
 //!
 //! # The exchange
 //!
-//! 1. Locate the installed pi package (see [`locate_package_entry_in`]) and
+//! 1. Locate the installed pi package (see [`locate_package_cli_in`]) and
 //!    a `node` binary — node is present on any machine that has Pi, because
 //!    Pi is a Node.js package.
-//! 2. Write the bundled ESM script ([`REFRESH_SCRIPT`]) to a temp file and
-//!    spawn `node script.mjs <pi-entry> <provider>` under [`TIMEOUT`].
+//! 2. Spawn `node <pi-cli> auth check --provider <provider> --json` under
+//!    [`TIMEOUT`]. Without `--no-refresh`, `auth check` refreshes an
+//!    expired OAuth credential through `ModelRuntime.getAuth` — the same
+//!    locked SDK path described above — and reports `{"status":...}` on
+//!    stdout. The CLI is Pi's own stable surface for exactly this ask, so
+//!    no SDK import of ours can drift out from under it.
 //! 3. Verify: the store's bytes are fingerprinted before the spawn, and read
 //!    once more after a clean exit. The process exit *is* the completion
-//!    signal — `getAuth` resolves only after the locked write has landed —
-//!    so no quiescence polling is needed. A changed fingerprint means a
+//!    signal — the CLI exits only after `getAuth`'s locked write has landed
+//!    — so no quiescence polling is needed. A changed fingerprint means a
 //!    rotated credential: the caller re-reads the entry and retries its
 //!    usage call once. An unchanged fingerprint on a clean exit means the
 //!    token was already valid, and the current entry proceeds as-is.
 //!
 //! # Failure is always "lever unavailable"
 //!
-//! pi not found, a package-name mismatch, no node, an import error, an SDK
-//! shape change, a timeout, a crash, a non-zero exit — every one of these
-//! reads as [`Recovery::Unavailable`], and the caller falls through to
-//! exactly today's behavior. This lever is strictly additive; its worst
-//! case must equal its absence. The one exception is a clean exit that
-//! *answers* `{"ok":false}`: Pi's own SDK ran to completion and could not
-//! produce a credential, which is a terminal rejection, not a transient
-//! failure. That maps to [`Recovery::SignInWithPi`] — the fix is signing in
-//! again with Pi, and the caller reports it as an authentication failure.
+//! pi not found, a package-name mismatch, no node, a CLI too old to know
+//! `auth check`, an `"invalid"` runtime state, a timeout, a crash, an
+//! unrecognized answer — every one of these reads as
+//! [`Recovery::Unavailable`], and the caller falls through to exactly
+//! today's behavior. This lever is strictly additive; its worst case must
+//! equal its absence. The one exception is an answer of
+//! `{"status":"not_ready"}`: Pi's own CLI ran to completion, tried the
+//! refresh, and could not produce a credential, which is a terminal
+//! rejection, not a transient failure. That maps to
+//! [`Recovery::SignInWithPi`] — the fix is signing in again with Pi, and
+//! the caller reports it as an authentication failure.
 //!
 //! # Not a request storm
 //!
@@ -64,7 +71,6 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -73,15 +79,11 @@ use serde_json::Value;
 use super::cooldown;
 use super::pi_auth;
 
-/// The bundled ESM script, written to a temp file at runtime. See the file
-/// itself for why executing Pi's own `getAuth` is safe.
-const REFRESH_SCRIPT: &str = include_str!("pi_refresh.mjs");
-
 /// The npm package name the located install must carry. Anything else on
 /// the reader's PATH that happens to be called `pi` is not asked to run.
 const PI_PACKAGE_NAME: &str = "@earendil-works/pi-coding-agent";
 
-/// The whole delegated exchange — node start, SDK import, one locked
+/// The whole delegated exchange — node start, one `auth check`, one locked
 /// refresh — must land inside this. Past it, the child is killed and the
 /// lever reads as unavailable.
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -91,8 +93,8 @@ const TIMEOUT: Duration = Duration::from_secs(20);
 /// that constant already governs, so it never waits less than they do.
 const REFRESH_COOLDOWN: Duration = cooldown::FAILURE_COOLDOWN;
 
-/// A cap on the script's stdout. It legitimately prints one short JSON
-/// line; anything near this cap is not that.
+/// A cap on the child's stdout. `auth check --json` legitimately prints
+/// one short JSON line; anything near this cap is not that.
 const MAX_STDOUT_BYTES: usize = 64 * 1024;
 
 /// Matches [`pi_auth`]'s own read cap — the store this fingerprints is the
@@ -107,10 +109,12 @@ const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 /// [`RefreshRunner`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {
-    /// Clean exit, `{"ok":true}`: `getAuth` resolved a credential.
+    /// Exit 0, `{"status":"ready"}`: the CLI resolved a credential,
+    /// refreshing it first when it had expired.
     Completed,
-    /// Clean exit, `{"ok":false}`: Pi's own SDK ran and answered that no
-    /// credential could be produced. Terminal, not transient.
+    /// `{"status":"not_ready"}`: Pi's own CLI ran, tried the refresh, and
+    /// answered that no credential could be produced. Terminal, not
+    /// transient.
     Rejected,
     /// Everything else. The lever could not run; behave as if it does not
     /// exist.
@@ -253,13 +257,13 @@ struct LiveRunner;
 
 impl RefreshRunner for LiveRunner {
     fn run(&self, provider_key: &str) -> RunOutcome {
-        let Some(package_entry) = locate_package_entry_in(&candidate_dirs()) else {
+        let Some(cli) = locate_package_cli_in(&candidate_dirs()) else {
             return RunOutcome::Unavailable;
         };
         let Some(node) = locate_node(&candidate_dirs()) else {
             return RunOutcome::Unavailable;
         };
-        run_delegated(&node, &package_entry, provider_key)
+        run_delegated(&node, &cli, provider_key)
     }
 }
 
@@ -291,7 +295,7 @@ fn candidate_dirs() -> Vec<PathBuf> {
 /// The bin names a pi install answers to, across platforms.
 const PI_BIN_NAMES: [&str; 3] = ["pi", "pi.cmd", "pi.exe"];
 
-/// Find the installed pi package's entry-point file, searching `dirs`.
+/// Find the installed pi package's own CLI script, searching `dirs`.
 ///
 /// Two strategies per directory, in order:
 ///
@@ -304,32 +308,34 @@ const PI_BIN_NAMES: [&str; 3] = ["pi", "pi.cmd", "pi.exe"];
 ///    cannot follow.
 ///
 /// Either way the name check is the guard: a stray binary called `pi` that
-/// does not resolve to this exact package never runs.
-fn locate_package_entry_in(dirs: &[PathBuf]) -> Option<PathBuf> {
+/// does not resolve to this exact package never runs. The verified
+/// install's own CLI script is what gets spawned — never the shim itself —
+/// so the thing that runs is the thing that was verified.
+fn locate_package_cli_in(dirs: &[PathBuf]) -> Option<PathBuf> {
     for dir in dirs {
         for name in PI_BIN_NAMES {
             if let Ok(real) = fs::canonicalize(dir.join(name))
-                && let Some(entry) = real.ancestors().skip(1).find_map(verified_entry)
+                && let Some(cli) = real.ancestors().skip(1).find_map(verified_cli)
             {
-                return Some(entry);
+                return Some(cli);
             }
         }
         for root in [
             dir.join("../lib/node_modules").join(PI_PACKAGE_NAME),
             dir.join("node_modules").join(PI_PACKAGE_NAME),
         ] {
-            if let Some(entry) = verified_entry(&root) {
-                return Some(entry);
+            if let Some(cli) = verified_cli(&root) {
+                return Some(cli);
             }
         }
     }
     None
 }
 
-/// The verified entry point under `root`, or `None` when `root` is not a pi
-/// package install: no manifest, the wrong package name, an entry shape
-/// this resolver does not know, or an entry file that does not exist.
-fn verified_entry(root: &Path) -> Option<PathBuf> {
+/// The verified CLI script under `root`, or `None` when `root` is not a pi
+/// package install: no manifest, the wrong package name, a `bin` shape
+/// this resolver does not know, or a script file that does not exist.
+fn verified_cli(root: &Path) -> Option<PathBuf> {
     let manifest_path = root.join("package.json");
     let metadata = fs::metadata(&manifest_path).ok()?;
     if metadata.len() > MAX_MANIFEST_BYTES {
@@ -340,32 +346,20 @@ fn verified_entry(root: &Path) -> Option<PathBuf> {
     if manifest.get("name").and_then(Value::as_str) != Some(PI_PACKAGE_NAME) {
         return None;
     }
-    let entry = root.join(manifest_entry(&manifest)?);
-    entry.is_file().then_some(entry)
+    let cli = root.join(manifest_cli(&manifest)?);
+    cli.is_file().then_some(cli)
 }
 
-/// Read the package's entry point out of its manifest: `exports` first —
-/// as a bare string, as the `"."` subpath (a string or a conditional
-/// object), or as a top-level conditional object — then `main`. Any shape
-/// beyond these reads as `None` rather than a guess: an SDK layout this
-/// resolver does not recognize is a lever that is not available.
-fn manifest_entry(manifest: &Value) -> Option<&str> {
-    if let Some(exports) = manifest.get("exports") {
-        if let Some(entry) = exports.as_str() {
-            return Some(entry);
-        }
-        for conditional in [exports.get("."), Some(exports)].into_iter().flatten() {
-            if let Some(entry) = conditional.as_str() {
-                return Some(entry);
-            }
-            for condition in ["import", "default", "require"] {
-                if let Some(entry) = conditional.get(condition).and_then(Value::as_str) {
-                    return Some(entry);
-                }
-            }
-        }
+/// Read the package's `pi` CLI script out of its manifest's `bin` field —
+/// a bare string, or an object keyed by bin name. Any shape beyond these
+/// reads as `None` rather than a guess: a layout this resolver does not
+/// recognize is a lever that is not available.
+fn manifest_cli(manifest: &Value) -> Option<&str> {
+    let bin = manifest.get("bin")?;
+    if let Some(script) = bin.as_str() {
+        return Some(script);
     }
-    manifest.get("main").and_then(Value::as_str)
+    bin.get("pi").and_then(Value::as_str)
 }
 
 /// Find a `node` binary in `dirs`. Node is present on any machine that has
@@ -383,25 +377,16 @@ fn locate_node(dirs: &[PathBuf]) -> Option<PathBuf> {
     None
 }
 
-/// A per-process counter so two concurrent script files never collide.
-static SCRIPT_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Write the bundled script to a temp file, run it under [`TIMEOUT`], and
-/// classify what came back. The temp file is removed whatever happens.
-fn run_delegated(node: &Path, package_entry: &Path, provider_key: &str) -> RunOutcome {
-    let script = std::env::temp_dir().join(format!(
-        "antiburn-pi-refresh-{}-{}.mjs",
-        std::process::id(),
-        SCRIPT_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    if fs::write(&script, REFRESH_SCRIPT).is_err() {
-        return RunOutcome::Unavailable;
-    }
+/// Run `node <cli> auth check --provider <provider> --json` under
+/// [`TIMEOUT`] and classify what came back. Without `--no-refresh`, this
+/// command refreshes an expired OAuth credential through Pi's own locked
+/// `getAuth` path and persists the rotation itself.
+fn run_delegated(node: &Path, cli: &Path, provider_key: &str) -> RunOutcome {
     let mut command = antiburn_local::platform::process::headless_std_command(node);
-    command.arg(&script).arg(package_entry).arg(provider_key);
-    let run = bounded_run(&mut command, TIMEOUT);
-    let _ = fs::remove_file(&script);
-    match run {
+    command
+        .arg(cli)
+        .args(["auth", "check", "--provider", provider_key, "--json"]);
+    match bounded_run(&mut command, TIMEOUT) {
         BoundedRun::Exited { success, stdout } => classify_output(success, &stdout),
         BoundedRun::Failed => RunOutcome::Unavailable,
     }
@@ -485,24 +470,25 @@ fn bounded_run(command: &mut std::process::Command, timeout: Duration) -> Bounde
 }
 
 /// Map an exited child to a [`RunOutcome`]. A pure function so the one
-/// distinction the sign-in-again state depends on — a clean `{"ok":false}`
-/// versus every other failure — has tests that never spawn node.
+/// distinction the sign-in-again state depends on — an answered
+/// `"not_ready"` versus every other failure — has tests that never spawn
+/// node.
 ///
-/// Only a zero exit is believed at all, and only when some stdout line is a
-/// JSON object with a boolean `ok` — the SDK may log around the answer, so
-/// each line is tried rather than the whole stream.
+/// `auth check` exits 0 for `"ready"`, 1 for `"not_ready"`, and 2 for
+/// `"invalid"`, so the answer is read off stdout — each line is tried,
+/// because the CLI may log around it — and the exit status only has to
+/// agree with `"ready"`. `"invalid"` is a broken runtime, not a refusal,
+/// and an old CLI without `auth check` prints no status at all; both read
+/// as unavailable.
 fn classify_output(success: bool, stdout: &str) -> RunOutcome {
-    if !success {
-        return RunOutcome::Unavailable;
-    }
     for line in stdout.lines() {
         if let Ok(value) = serde_json::from_str::<Value>(line.trim())
-            && let Some(ok) = value.get("ok").and_then(Value::as_bool)
+            && let Some(status) = value.get("status").and_then(Value::as_str)
         {
-            return if ok {
-                RunOutcome::Completed
-            } else {
-                RunOutcome::Rejected
+            return match status {
+                "ready" if success => RunOutcome::Completed,
+                "not_ready" => RunOutcome::Rejected,
+                _ => RunOutcome::Unavailable,
             };
         }
     }
@@ -513,7 +499,7 @@ fn classify_output(success: bool, stdout: &str) -> RunOutcome {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A store body whose entry is expired — the state every recover test
     /// starts a fixture file from.
@@ -643,28 +629,33 @@ mod tests {
     }
 
     #[test]
-    fn classify_output_believes_only_a_clean_json_answer() {
+    fn classify_output_believes_only_an_answered_status() {
+        const READY: &str =
+            "{\"status\":\"ready\",\"provider\":\"anthropic\",\"authType\":\"oauth\"}\n";
+        const NOT_READY: &str = "{\"status\":\"not_ready\",\"provider\":\"anthropic\",\"reason\":\"credentials_not_configured\"}\n";
+        assert_eq!(classify_output(true, READY), RunOutcome::Completed);
+        // `auth check` exits 1 for not_ready; the answer still counts.
+        assert_eq!(classify_output(false, NOT_READY), RunOutcome::Rejected);
+        // CLI log lines around the answer are skipped, not fatal.
         assert_eq!(
-            classify_output(true, "{\"ok\":true}\n"),
+            classify_output(true, &format!("starting runtime\n{READY}")),
             RunOutcome::Completed
         );
+        // A broken runtime is not a refusal.
         assert_eq!(
-            classify_output(true, "{\"ok\":false}\n"),
-            RunOutcome::Rejected
-        );
-        // SDK log lines around the answer are skipped, not fatal.
-        assert_eq!(
-            classify_output(true, "starting runtime\n{\"ok\":true}\n"),
-            RunOutcome::Completed
-        );
-        assert_eq!(
-            classify_output(true, "no answer\n"),
+            classify_output(
+                false,
+                "{\"status\":\"invalid\",\"reason\":\"invalid_state\"}\n"
+            ),
             RunOutcome::Unavailable
         );
+        // An old CLI that does not know `auth check` answers no status.
         assert_eq!(
-            classify_output(false, "{\"ok\":true}\n"),
+            classify_output(false, "no answer\n"),
             RunOutcome::Unavailable
         );
+        // A `ready` answer must agree with a zero exit to be believed.
+        assert_eq!(classify_output(false, READY), RunOutcome::Unavailable);
     }
 
     /// Builds a pi-shaped install under `root`: the package tree, its
@@ -678,11 +669,10 @@ mod tests {
             package.join("package.json"),
             format!(
                 r#"{{"name":"{name}","main":"./dist/index.js",
-                  "exports":{{".":{{"types":"./dist/index.d.ts","import":"./dist/index.js"}}}}}}"#
+                  "bin":{{"pi":"dist/bundle/cli.js"}}}}"#
             ),
         )
         .expect("write manifest");
-        fs::write(package.join("dist/index.js"), "// entry").expect("write entry");
         fs::write(package.join("dist/bundle/cli.js"), "// cli").expect("write cli");
         let bin_dir = root.join("bin");
         fs::create_dir_all(&bin_dir).expect("mkdir bin");
@@ -690,18 +680,18 @@ mod tests {
     }
 
     #[test]
-    fn the_npm_prefix_layout_locates_the_verified_entry() {
+    fn the_npm_prefix_layout_locates_the_verified_cli() {
         let dir = tempfile::tempdir().expect("tempdir");
         let bin_dir = write_package(dir.path(), PI_PACKAGE_NAME);
         // No bin file at all: the `../lib/node_modules` prefix strategy
         // still finds the package from the bin directory.
-        let entry = locate_package_entry_in(&[bin_dir]).expect("located");
-        assert!(entry.ends_with("dist/index.js"));
+        let cli = locate_package_cli_in(&[bin_dir]).expect("located");
+        assert!(cli.ends_with("dist/bundle/cli.js"));
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_bin_symlink_realpaths_up_to_the_verified_entry() {
+    fn a_bin_symlink_realpaths_up_to_the_verified_cli() {
         let dir = tempfile::tempdir().expect("tempdir");
         let bin_dir = write_package(dir.path(), PI_PACKAGE_NAME);
         std::os::unix::fs::symlink(
@@ -710,39 +700,36 @@ mod tests {
             bin_dir.join("pi"),
         )
         .expect("symlink");
-        let entry = locate_package_entry_in(&[bin_dir]).expect("located");
-        assert!(entry.ends_with("dist/index.js"));
+        let cli = locate_package_cli_in(&[bin_dir]).expect("located");
+        assert!(cli.ends_with("dist/bundle/cli.js"));
     }
 
     #[test]
     fn a_package_name_mismatch_is_never_run() {
         let dir = tempfile::tempdir().expect("tempdir");
         let bin_dir = write_package(dir.path(), "some-other-package");
-        assert!(locate_package_entry_in(&[bin_dir]).is_none());
+        assert!(locate_package_cli_in(&[bin_dir]).is_none());
     }
 
     #[test]
     fn an_absent_pi_locates_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
-        assert!(locate_package_entry_in(&[dir.path().to_path_buf()]).is_none());
+        assert!(locate_package_cli_in(&[dir.path().to_path_buf()]).is_none());
     }
 
     #[test]
-    fn manifest_entry_reads_every_documented_shape() {
-        let conditional: Value = serde_json::from_str(
-            r#"{"exports":{".":{"types":"./t.d.ts","import":"./dist/index.js"}}}"#,
-        )
-        .unwrap();
-        assert_eq!(manifest_entry(&conditional), Some("./dist/index.js"));
+    fn manifest_cli_reads_every_documented_bin_shape() {
+        let keyed: Value = serde_json::from_str(r#"{"bin":{"pi":"dist/bundle/cli.js"}}"#).unwrap();
+        assert_eq!(manifest_cli(&keyed), Some("dist/bundle/cli.js"));
 
-        let bare: Value = serde_json::from_str(r#"{"exports":"./entry.js"}"#).unwrap();
-        assert_eq!(manifest_entry(&bare), Some("./entry.js"));
+        let bare: Value = serde_json::from_str(r#"{"bin":"./cli.js"}"#).unwrap();
+        assert_eq!(manifest_cli(&bare), Some("./cli.js"));
 
-        let main_only: Value = serde_json::from_str(r#"{"main":"./main.js"}"#).unwrap();
-        assert_eq!(manifest_entry(&main_only), Some("./main.js"));
+        let wrong_key: Value = serde_json::from_str(r#"{"bin":{"other":"./cli.js"}}"#).unwrap();
+        assert_eq!(manifest_cli(&wrong_key), None);
 
         let nothing: Value = serde_json::from_str(r#"{"name":"x"}"#).unwrap();
-        assert_eq!(manifest_entry(&nothing), None);
+        assert_eq!(manifest_cli(&nothing), None);
     }
 
     #[cfg(unix)]
@@ -761,7 +748,7 @@ mod tests {
     #[test]
     fn a_clean_child_reports_its_stdout_inside_the_deadline() {
         let mut command = std::process::Command::new("/bin/echo");
-        command.arg("{\"ok\":true}");
+        command.arg("{\"status\":\"ready\"}");
         match bounded_run(&mut command, Duration::from_secs(5)) {
             BoundedRun::Exited { success, stdout } => {
                 assert!(success);
