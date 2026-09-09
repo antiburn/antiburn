@@ -89,22 +89,67 @@
   }
 }
 
-/* The checks grid takes two columns from 28.5rem. Each half sizes to its
-   own longest name, and the two longest check names need about 28.25rem
-   together. The cost pane of the default 1100px window is about 28.75rem
-   wide, so the default window gets two columns and the 1000px minimum
-   window gets one. */
-.session-checks-grid {
-  grid-template-columns: minmax(0, max-content) max-content;
-  justify-content: start;
+/* --- Session checks: one element at three densities ---------------------
+   The Cost tab is the query container, so the checks read the width of
+   their own pane and not the width of the window.
+
+   A narrow pane shows two columns of the check name, its verdict mark, and
+   an info glyph; the explanation stays in the tooltip. From 28rem the
+   verdict word joins the mark. From 48rem there are three columns and each
+   check also opens its summary sentence. The tooltip keeps the evidence and
+   the advice at every width.
+
+   Each check is a subgrid over one name track and one verdict track, so the
+   marks line up in a column. The cell sets its own column gap, which holds
+   a name closer to its own verdict than to the next check. */
+.session-detail-cost {
+  container-type: inline-size;
 }
-.session-checks-grid > [role="group"] {
+
+.session-checks-grid {
+  grid-template-columns: repeat(2, minmax(0, max-content) max-content);
+  justify-content: start;
+  column-gap: var(--space-2xl);
+  row-gap: var(--space-xs);
+}
+.session-check-cell {
   grid-column: span 2;
   grid-template-columns: subgrid;
 }
-@container (min-width: 28.5rem) {
+/* The verdict word leaves the flow but stays in the accessibility tree, so
+   a screen reader hears the verdict at every width. */
+.session-check-word {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.session-check-summary {
+  display: none;
+}
+
+@container (min-width: 28rem) {
+  .session-check-word {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 0;
+    overflow: visible;
+    clip-path: none;
+  }
+}
+
+@container (min-width: 48rem) {
   .session-checks-grid {
-    grid-template-columns: repeat(2, minmax(0, max-content) max-content);
+    grid-template-columns: repeat(3, minmax(0, 1fr) max-content);
+    row-gap: var(--space-lg);
+  }
+  .session-check-summary {
+    display: block;
+    grid-column: 1 / -1;
   }
 }
 

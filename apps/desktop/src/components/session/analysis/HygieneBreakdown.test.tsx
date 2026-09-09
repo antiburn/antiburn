@@ -41,7 +41,7 @@ function view() {
 }
 
 describe("HygieneBreakdown", () => {
-  it("lists every assessed check as one line and opens its guidance in a tooltip", () => {
+  it("carries each check at three densities and opens its advice in a tooltip", () => {
     const checks = sessionHygieneChecks(PAYLOAD)
     render(<HygieneBreakdown checks={checks} inlineGuidance />)
     expect(screen.queryByRole("button")).toBeNull()
@@ -51,18 +51,31 @@ describe("HygieneBreakdown", () => {
     for (const check of checks.filter((item) => item.status !== "notAssessed")) {
       const documentation = sessionHygieneDocumentation(check)
       const row = screen.getByRole("group", { name: check.name })
-      // At rest the row is the name and the verdict only.
+      // The name shows at every width. The verdict word and the summary
+      // ride along in the markup, and the stylesheet reveals each of them
+      // at the pane width that has the room for it.
       expect(row).toHaveAttribute("tabindex", "0")
-      expect(row).not.toHaveTextContent(documentation.summary)
-      expect(screen.queryByText(documentation.summary)).toBeNull()
+      expect(row).toHaveClass("session-check-cell")
+      expect(row.querySelector(".session-check-word")).toHaveTextContent(
+        check.status === "finding" ? "Failed" : "Passed",
+      )
+      expect(row.querySelector(".session-check-summary")).toHaveTextContent(
+        documentation.summary,
+      )
+      // The advice never sits in the row. It waits in the tooltip.
+      for (const advice of documentation.guidance) {
+        expect(screen.queryByText(advice)).toBeNull()
+      }
 
       fireEvent.focus(row)
-      expect(screen.getAllByText(documentation.summary).length).toBeGreaterThan(0)
+      expect(screen.getAllByText(documentation.summary).length).toBeGreaterThan(1)
       for (const advice of documentation.guidance) {
         expect(screen.getAllByText(advice).length).toBeGreaterThan(0)
       }
       fireEvent.blur(row)
-      expect(screen.queryByText(documentation.summary)).toBeNull()
+      for (const advice of documentation.guidance) {
+        expect(screen.queryByText(advice)).toBeNull()
+      }
     }
 
     // A finding names the evidence that caused it before its advice.

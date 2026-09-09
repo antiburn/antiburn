@@ -1,4 +1,4 @@
-import { ChevronRight, CircleCheck, CircleX, type LucideIcon } from "lucide-react"
+import { ChevronRight, CircleCheck, CircleX, Info, type LucideIcon } from "lucide-react"
 import { useId, useState } from "react"
 
 import { cn } from "../../../lib/cn"
@@ -160,30 +160,44 @@ function InlineHygieneTooltip({ check }: { check: AssessedHygieneCheck }) {
 }
 
 /**
- * One check as a single line: the name and its verdict. The explanation
- * opens in a tooltip on hover or focus, so the grid stays the height of its
- * rows and a wall of guidance does not sit between the reader and the
- * verdicts.
+ * One check in the wide layout. The element changes with the width of the
+ * Cost pane: a narrow pane gives the name, the verdict mark, and an info
+ * glyph; a wider pane adds the verdict word; the widest pane also opens the
+ * summary sentence under the name. `session-detail.css` holds the widths.
+ *
+ * The tooltip carries the evidence and the advice at every width, so the
+ * reader never loses the detail that the narrow pane cannot show.
  */
 function InlineHygieneRow({ check }: { check: AssessedHygieneCheck }) {
   const status = STATUS_PRESENTATION[check.status]
+  const documentation = sessionHygieneDocumentation(check)
   return (
     <Tooltip label={<InlineHygieneTooltip check={check} />} delayMs={150}>
       <div
         role="group"
         aria-label={check.name}
         tabIndex={0}
-        className="-mx-1.5 grid items-center gap-x-2 rounded-control px-1.5 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
+        className="session-check-cell group -mx-1.5 grid items-center gap-x-2 rounded-control px-1.5 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
       >
-        <span className="truncate text-label">{check.name}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="text-pretty text-label">{check.name}</span>
+          <Info
+            size={11}
+            aria-hidden="true"
+            className="shrink-0 text-label-tertiary transition-colors duration-[var(--duration-fast)] ease-out group-hover:text-label-secondary"
+          />
+        </span>
         <span className={cn("inline-flex items-center gap-1 type-callout", status.wordClass)}>
           <status.Icon
             size={STATUS_ICON_SIZE}
             aria-hidden="true"
             className={status.textClass}
           />
-          {status.label}
+          <span className="session-check-word">{status.label}</span>
         </span>
+        <p className="session-check-summary mt-1 text-pretty type-callout text-label-secondary">
+          {documentation.summary}
+        </p>
       </div>
     </Tooltip>
   )
@@ -231,10 +245,7 @@ export function HygieneBreakdown({
 
   if (inlineGuidance) {
     return (
-      <div
-        className="session-checks-grid grid gap-x-4 gap-y-0.5"
-        aria-label="Session hygiene checks"
-      >
+      <div className="session-checks-grid grid" aria-label="Session hygiene checks">
         {[...findings, ...passing].map((check) => (
           <InlineHygieneRow key={check.id} check={check} />
         ))}
