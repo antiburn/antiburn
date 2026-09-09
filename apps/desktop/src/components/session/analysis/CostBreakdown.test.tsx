@@ -39,6 +39,26 @@ function result(totalCostUsd = 2.4, over: Partial<LocalSessionCost> = {}): Local
 }
 
 describe("CostBreakdown", () => {
+  it("pairs a single total with component rows in the wide layout", () => {
+    render(<CostBreakdown cost={result()} layout="wide" />)
+    expect(screen.getAllByText("$2.40")).toHaveLength(1)
+    expect(screen.getByText("10 tokens")).toBeTruthy()
+    expect(screen.getByText("Input")).toBeTruthy()
+    expect(screen.getByText("Cache write")).toBeTruthy()
+  })
+
+  it("explains a wide row from a tooltip on the row, not an info button", () => {
+    render(<CostBreakdown cost={result()} layout="wide" />)
+    expect(screen.queryByRole("button", { name: "About Input" })).toBeNull()
+    const row = screen.getByText("Input").closest("[tabindex]")!
+    expect(row).toHaveAttribute("tabindex", "0")
+    expect(screen.queryByText(/Fresh tokens sent to the model/)).toBeNull()
+    fireEvent.focus(row)
+    expect(screen.getAllByText(/Fresh tokens sent to the model/).length).toBeGreaterThan(0)
+    fireEvent.blur(row)
+    expect(screen.queryByText(/Fresh tokens sent to the model/)).toBeNull()
+  })
+
   it("renders the total and its four billable component rows", () => {
     render(<CostBreakdown cost={result()} />)
     expect(screen.getByText("Input")).toBeTruthy()

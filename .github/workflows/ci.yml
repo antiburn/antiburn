@@ -50,7 +50,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test the CI control plane
-        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/mem-report.test.mjs scripts/verify-linux-appimage.test.mjs scripts/third-party-notices.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs
+        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/mem-report.test.mjs scripts/window-open-report.test.mjs scripts/verify-linux-appimage.test.mjs scripts/third-party-notices.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs
 
       # The drift guard runs here, not in a classified job. It reads the
       # contract, the stylesheets, and the popover window's own corner
@@ -201,6 +201,10 @@ jobs:
         working-directory: apps/desktop/src-tauri/crates/hud
         run: cargo fmt --check
 
+      - name: Check main-window crate formatting
+        working-directory: apps/desktop/src-tauri/crates/main-window
+        run: cargo fmt --check
+
   desktop-backend-checks:
     name: desktop app (backend, ${{ matrix.check.name }}, ${{ matrix.workspace.name }}, ${{ matrix.platform.name }})
     needs: classify
@@ -231,6 +235,9 @@ jobs:
             tauri: false
           - name: HUD
             directory: apps/desktop/src-tauri/crates/hud
+            tauri: true
+          - name: main-window
+            directory: apps/desktop/src-tauri/crates/main-window
             tauri: true
     runs-on: ${{ matrix.platform.os }}
     steps:
@@ -280,8 +287,13 @@ jobs:
         working-directory: ${{ matrix.workspace.directory }}
         run: cargo ${{ matrix.check.command }}
 
+      - name: Check the analytics-enabled shell
+        if: matrix.workspace.name == 'shell' && matrix.check.name == 'Clippy'
+        working-directory: apps/desktop/src-tauri
+        run: cargo clippy --all-targets --locked --features analytics -- -D warnings
+
       - name: Test the analytics-enabled shell
-        if: matrix.platform.name == 'linux' && matrix.workspace.name == 'shell' && matrix.check.name == 'Tests'
+        if: matrix.workspace.name == 'shell' && matrix.check.name == 'Tests'
         working-directory: apps/desktop/src-tauri
         env:
           ANTIBURN_ANALYTICS_URL: http://127.0.0.1:8787

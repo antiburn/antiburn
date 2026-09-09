@@ -58,15 +58,15 @@ fn remediation(id: &str, target: &str, state: RemediationState, now: i64) -> Rem
 }
 
 #[test]
-fn v40_adds_remediation_and_model_attribution() {
+fn v43_adds_remediation_and_model_attribution() {
     let connection = Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..39] {
+    for &sql in &super::schema::MIGRATIONS[..42] {
         connection.execute_batch(sql).unwrap();
     }
-    connection.pragma_update(None, "user_version", 39).unwrap();
+    connection.pragma_update(None, "user_version", 42).unwrap();
     let store =
-        Store::from_connection(connection, Path::new("/tmp/remediation-v40").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 40);
+        Store::from_connection(connection, Path::new("/tmp/remediation-v43").into()).unwrap();
+    assert_eq!(store.schema_version().unwrap(), 43);
     let connection = store.lock();
     let columns: i64 = connection
         .query_row(

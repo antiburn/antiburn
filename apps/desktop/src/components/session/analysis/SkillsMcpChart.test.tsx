@@ -135,4 +135,23 @@ describe("SkillsMcpChart", () => {
     expect(screen.getAllByText(/^(Skill|MCP|Tool)$/)).toHaveLength(total)
     expect(screen.queryByText(/^Show/)).toBeNull()
   })
+
+  it("keeps one column unless asked for two, and keeps rank order across them", () => {
+    const { unmount } = render(<SkillsMcpChart breakdown={breakdown(manyRows(3))} />)
+    const single = screen.getByTestId("skills-mcp-list")
+    expect(single.dataset.columns).toBe("1")
+    expect(single).toHaveClass("grid-cols-1")
+    unmount()
+
+    render(<SkillsMcpChart breakdown={breakdown(manyRows(3))} columns={2} />)
+    const double = screen.getByTestId("skills-mcp-list")
+    expect(double.dataset.columns).toBe("2")
+    expect(double).toHaveClass("grid-cols-2")
+    // A grid fills row by row, so the DOM order is the rank order.
+    expect(Array.from(double.children).map((cell) => cell.textContent)).toEqual([
+      expect.stringContaining("skill-0"),
+      expect.stringContaining("skill-1"),
+      expect.stringContaining("skill-2"),
+    ])
+  })
 })

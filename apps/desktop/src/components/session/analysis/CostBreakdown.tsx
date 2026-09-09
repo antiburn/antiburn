@@ -1,5 +1,7 @@
 import { ChevronDown, ChevronRight } from "lucide-react"
 
+import { cn } from "../../../lib/cn"
+
 import {
   costBreakdownRows,
   costFigureLabel,
@@ -13,6 +15,7 @@ import {
 } from "../../../lib/presentation/sessionCosts"
 import { modelRunShortNames } from "../../../lib/presentation/models"
 import type { SubagentMember } from "../../../lib/types/session"
+import { Tooltip } from "../../presentation/Tooltip"
 import { TruncatedText } from "../../presentation/TruncatedText"
 import { RowInfo } from "./RowInfo"
 import { toggleSubagentsExpanded, useSubagentsExpanded } from "./subagentsExpandedStore"
@@ -36,6 +39,8 @@ export interface CostBreakdownProps {
    * subject, so the rows always sum to the total shown.
    */
   cost: LocalSessionCost
+  /** The wide layout pairs the total with its component table. */
+  layout?: "popover" | "wide"
   /**
    * Parent/sub-agents split, for an inclusive orchestration result. Omit it
    * for any other subject, where there is nothing to break apart.
@@ -45,7 +50,8 @@ export interface CostBreakdownProps {
   onOpenSubagent?: (subagentId: string, label: string) => void
 }
 
-/* One sentence per billable component, for that row's info button. */
+/* One sentence per billable component. The popover row shows it from an
+   info button. The wide row shows it from a tooltip on the whole row. */
 const COST_ROW_HELP: Record<string, string> = {
   Input: "Fresh tokens sent to the model, billed at the full input price.",
   Output: "Tokens the model wrote back. The highest price per token.",
@@ -70,24 +76,38 @@ function formatSharePct(usd: number, totalUsd: number): string {
   return `${Math.round(pct)}%`
 }
 
-/** One row: a label, its token count, its USD cost, and its share of the total. */
+/**
+ * One row: a label, its token count, its USD cost, and its share of the total.
+ *
+ * The wide row is one type step smaller than the popover row, and it carries
+ * its help as a tooltip on the whole row instead of an info button. Both
+ * changes let the table sit beside the total at the minimum window width.
+ */
 function CostRowLine({
   label,
   usd,
   tokens,
   totalUsd,
+  wide = false,
 }: {
   label: string
   usd: number
   tokens: number
   totalUsd: number
+  wide?: boolean
 }) {
   const help = COST_ROW_HELP[label]
-  return (
-    <div className="group col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 py-0.5 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
+  const row = (
+    <div
+      tabIndex={wide && help ? 0 : undefined}
+      className={cn(
+        "group col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 py-0.5 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover",
+        wide ? "type-callout focus-visible:bg-surface-hover" : "type-body",
+      )}
+    >
       <span className="flex min-w-0 items-center gap-1 text-label-tertiary">
         <span className="truncate">{label}</span>
-        {help && <RowInfo label={label} body={help} />}
+        {help && !wide && <RowInfo label={label} body={help} />}
       </span>
       <span className="text-right text-label-tertiary tabular-nums">
         {formatTokensShort(tokens)}
@@ -97,6 +117,12 @@ function CostRowLine({
         {formatSharePct(usd, totalUsd)}
       </span>
     </div>
+  )
+  if (!wide || !help) return row
+  return (
+    <Tooltip label={help} delayMs={150}>
+      {row}
+    </Tooltip>
   )
 }
 
@@ -127,11 +153,13 @@ function SubagentMemberRow({
   totalUsd,
   sessionStartedAtEpoch,
   onOpenSubagent,
+  wide = false,
 }: {
   member: SubagentMember
   totalUsd: number
   sessionStartedAtEpoch: number | null
   onOpenSubagent?: ((subagentId: string, label: string) => void) | undefined
+  wide?: boolean
 }) {
   const modelLabel = modelRunShortNames(member.modelRuns).join(" · ")
   const tokens = memberTokenTotal(member)
@@ -142,7 +170,10 @@ function SubagentMemberRow({
       type="button"
       aria-label={`Open the analysis for ${member.label}`}
       onClick={() => onOpenSubagent?.(member.subagentId, member.label)}
-      className="group col-span-full grid grid-cols-subgrid gap-y-0.5 text-label-tertiary type-body py-2 border-t border-separator transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover"
+      className={cn(
+        "group col-span-full grid grid-cols-subgrid gap-y-0.5 text-label-tertiary py-2 border-t border-separator transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover",
+        wide ? "type-callout" : "type-body",
+      )}
     >
       <span className="col-span-full flex min-w-0 items-center gap-x-1 text-left">
         <span className="tabular-nums">
@@ -187,6 +218,7 @@ function SubagentsSplitRow({
   members,
   sessionStartedAtEpoch,
   onOpenSubagent,
+  wide = false,
 }: {
   label: string
   usd: number
@@ -195,11 +227,14 @@ function SubagentsSplitRow({
   members: SubagentMember[]
   sessionStartedAtEpoch: number | null
   onOpenSubagent?: ((subagentId: string, label: string) => void) | undefined
+  wide?: boolean
 }) {
   const expanded = useSubagentsExpanded()
 
   if (members.length === 0) {
-    return <CostRowLine label={label} usd={usd} tokens={tokens} totalUsd={totalUsd} />
+    return (
+      <CostRowLine label={label} usd={usd} tokens={tokens} totalUsd={totalUsd} wide={wide} />
+    )
   }
 
   const Chevron = expanded ? ChevronDown : ChevronRight
@@ -210,7 +245,10 @@ function SubagentsSplitRow({
         type="button"
         onClick={toggleSubagentsExpanded}
         aria-expanded={expanded}
-        className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 my-1 px-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover"
+        className={cn(
+          "col-span-full grid grid-cols-subgrid rounded-control -mx-1 my-1 px-1 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover",
+          wide ? "type-callout" : "type-body",
+        )}
       >
         <span className="min-w-0 flex items-center gap-x-1 text-label-tertiary">
           <Chevron size={12} aria-hidden="true" className="shrink-0" />
@@ -233,6 +271,7 @@ function SubagentsSplitRow({
             totalUsd={totalUsd}
             sessionStartedAtEpoch={sessionStartedAtEpoch}
             onOpenSubagent={onOpenSubagent}
+            wide={wide}
           />
         ))}
     </>
@@ -248,12 +287,25 @@ function SubagentsSplitRow({
  * that do not add up. The token and percent columns share that same subject,
  * so every row's percent reads as a share of the one total shown in the footer.
  */
-export function CostBreakdown({ cost, split, onOpenSubagent }: CostBreakdownProps) {
+export function CostBreakdown({
+  cost,
+  split,
+  onOpenSubagent,
+  layout = "popover",
+}: CostBreakdownProps) {
+  const wide = layout === "wide"
   const rows = costBreakdownRows(resultComponentCost(cost))
   const totalUsd = cost.totalCostUsd
 
-  return (
-    <div className="grid grid-cols-[1fr_max-content_max-content_max-content] gap-x-3 gap-y-1">
+  const table = (
+    <div
+      className={cn(
+        "grid min-w-0 gap-y-1",
+        wide
+          ? "w-full max-w-[640px] gap-x-2 justify-self-end justify-end grid-cols-[fit-content(12rem)_max-content_max-content_max-content]"
+          : "gap-x-3 grid-cols-[1fr_max-content_max-content_max-content]",
+      )}
+    >
       {split && (
         <div className="col-span-full grid grid-cols-subgrid mb-1 border-b border-separator pb-1">
           <CostRowLine
@@ -261,6 +313,7 @@ export function CostBreakdown({ cost, split, onOpenSubagent }: CostBreakdownProp
             usd={split.parent.totalCostUsd}
             tokens={split.parent.totalTokens}
             totalUsd={totalUsd}
+            wide={wide}
           />
           <SubagentsSplitRow
             label={`${split.subagentCount} sub-agent${split.subagentCount === 1 ? "" : "s"}`}
@@ -270,6 +323,7 @@ export function CostBreakdown({ cost, split, onOpenSubagent }: CostBreakdownProp
             members={split.members}
             sessionStartedAtEpoch={split.sessionStartedAtEpoch}
             onOpenSubagent={onOpenSubagent}
+            wide={wide}
           />
         </div>
       )}
@@ -281,23 +335,44 @@ export function CostBreakdown({ cost, split, onOpenSubagent }: CostBreakdownProp
           usd={row.usd}
           tokens={row.tokens ?? 0}
           totalUsd={totalUsd}
+          wide={wide}
         />
       ))}
 
-      <div className="col-span-full grid grid-cols-subgrid mt-1 border-t border-separator pt-1 type-body">
-        <span className="text-label-tertiary">{costFigureLabel(cost.isActive)}</span>
-        <span className="text-right text-label-tertiary tabular-nums">
-          {formatTokensShort(cost.totalTokens)}
-        </span>
-        <span className="flex justify-end">
-          <span className="flex shrink-0 items-center rounded-full bg-surface-secondary px-1.5 py-px type-body font-medium text-label tabular-nums">
-            {formatCost(cost.totalCostUsd)}
+      {!wide && (
+        <div className="col-span-full grid grid-cols-subgrid mt-1 border-t border-separator pt-1 type-body">
+          <span className="text-label-tertiary">{costFigureLabel(cost.isActive)}</span>
+          <span className="text-right text-label-tertiary tabular-nums">
+            {formatTokensShort(cost.totalTokens)}
           </span>
+          <span className="flex justify-end">
+            <span className="flex shrink-0 items-center rounded-full bg-surface-secondary px-1.5 py-px type-body font-medium text-label tabular-nums">
+              {formatCost(cost.totalCostUsd)}
+            </span>
+          </span>
+          <span className="text-right text-label-tertiary tabular-nums">
+            {formatSharePct(cost.totalCostUsd, totalUsd)}
+          </span>
+        </div>
+      )}
+    </div>
+  )
+  if (!wide) return table
+
+  return (
+    <div className="session-cost-summary grid w-full gap-x-4 gap-y-3 rounded-popover bg-surface-card/50 p-4 font-mono">
+      <div className="flex min-w-0 flex-col gap-1">
+        <span className="type-large-title font-semibold! text-label tabular-nums">
+          {formatCost(totalUsd)}
         </span>
-        <span className="text-right text-label-tertiary tabular-nums">
-          {formatSharePct(cost.totalCostUsd, totalUsd)}
+        <span className="type-callout text-label-secondary">
+          {costFigureLabel(cost.isActive)}
+        </span>
+        <span className="type-callout text-label-tertiary">
+          {formatTokensShort(cost.totalTokens)} tokens
         </span>
       </div>
+      {table}
     </div>
   )
 }

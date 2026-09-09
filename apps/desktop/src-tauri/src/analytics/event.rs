@@ -61,6 +61,15 @@ pub enum EventName {
     /// A provider state appeared on a visible usage surface.
     #[cfg(feature = "analytics")]
     LiveUsageStateObserved,
+    /// An ordinary live-usage refresh published a changed coarse usage band.
+    #[cfg(feature = "analytics")]
+    UsageObserved,
+    /// A learning pass produced a first or changed coarse limit factor.
+    #[cfg(feature = "analytics")]
+    LimitFactorObserved,
+    /// One hourly summary describes the shell's coarse resource use.
+    #[cfg(feature = "analytics")]
+    ResourceUsageObserved,
 }
 
 /// Every event this application may send.
@@ -87,6 +96,9 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::SettingsPaneViewed,
     EventName::SurfaceStateObserved,
     EventName::LiveUsageStateObserved,
+    EventName::UsageObserved,
+    EventName::LimitFactorObserved,
+    EventName::ResourceUsageObserved,
 ];
 
 #[cfg(feature = "analytics")]
@@ -107,6 +119,9 @@ impl EventName {
             EventName::SettingsPaneViewed => "antiburn.settings_pane_viewed",
             EventName::SurfaceStateObserved => "antiburn.surface_state_observed",
             EventName::LiveUsageStateObserved => "antiburn.live_usage_state_observed",
+            EventName::UsageObserved => "antiburn.usage_observed",
+            EventName::LimitFactorObserved => "antiburn.limit_factor_observed",
+            EventName::ResourceUsageObserved => "antiburn.resource_usage_observed",
         }
     }
 }
@@ -207,6 +222,18 @@ pub struct Properties {
     /// Whether Claude returned a next-availability timestamp.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_reset_available: Option<&'static str>,
+    /// A learned limit factor's mapped plan name, or `unknown` or `other`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<&'static str>,
+    /// A learned limit factor's coarse dollars-per-percent band.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub factor_band: Option<&'static str>,
+    /// How far the meter and the factor's own estimate disagree, banded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub residual_band: Option<&'static str>,
+    /// These bands describe process and local-store resource use for one bounded window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_usage: Option<super::resources::schema::ResourceUsageSummary>,
 }
 
 /// What a caller may attach to an event.
@@ -234,6 +261,11 @@ pub struct Facts {
     pub reset_availability: Option<&'static str>,
     pub resets_per_week: Option<&'static str>,
     pub next_reset_available: Option<&'static str>,
+    pub plan: Option<&'static str>,
+    pub factor_band: Option<&'static str>,
+    pub residual_band: Option<&'static str>,
+    #[cfg(feature = "analytics")]
+    pub resource_usage: Option<super::resources::schema::ResourceUsageSummary>,
 }
 
 #[cfg(feature = "analytics")]
@@ -546,6 +578,28 @@ wire_values!(LiveUsageProvider, {
 });
 
 #[cfg(feature = "analytics")]
+impl LiveUsageProvider {
+    /// The provider category for a canonical provider id, from
+    /// [`crate::provider_usage::providers`].
+    ///
+    /// `antiburn.usage_observed` reports for the same providers
+    /// `antiburn.live_usage_state_observed` does, so both read this one
+    /// closed mapping rather than keeping two vocabularies in step by hand.
+    /// An id outside the three known providers returns `None`, so a future
+    /// source cannot silently widen what a label can say.
+    pub fn from_provider_id(provider: &str) -> Option<LiveUsageProvider> {
+        match provider {
+            id if id == crate::provider_usage::providers::ANTHROPIC => {
+                Some(LiveUsageProvider::Anthropic)
+            }
+            id if id == crate::provider_usage::providers::OPENAI => Some(LiveUsageProvider::Openai),
+            id if id == crate::provider_usage::providers::GOOGLE => Some(LiveUsageProvider::Google),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "analytics")]
 wire_values!(LiveUsageState, {
     LiveUsageState::Fresh => "fresh",
     LiveUsageState::Stale => "stale",
@@ -596,6 +650,82 @@ pub fn bucket(count: u64) -> &'static str {
     }
 }
 
+/// Map a provider-reported plan name to the closed vocabulary
+/// `antiburn.limit_factor_observed` sends.
+///
+/// The raw string never leaves this machine: it names a plan the reader
+/// chose, which is exactly the kind of value this file's own module docs say
+/// has nowhere to be put. `None` (no plan reported) and an empty or
+/// all-whitespace string both become `unknown`; a plan name outside the
+/// listed set becomes `other`, so a provider renaming or adding a plan tier
+/// widens no vocabulary a reader was not already told about.
+#[cfg(feature = "analytics")]
+pub fn map_plan(plan: Option<&str>) -> &'static str {
+    let Some(plan) = plan else {
+        return "unknown";
+    };
+    match plan.trim().to_lowercase().as_str() {
+        "" => "unknown",
+        "free" => "free",
+        "pro" => "pro",
+        "max" => "max",
+        "team" => "team",
+        "enterprise" => "enterprise",
+        "plus" => "plus",
+        "business" => "business",
+        "edu" => "edu",
+        _ => "other",
+    }
+}
+
+/// Reduce a learned dollars-per-percent factor to a power-of-two band.
+///
+/// Each band doubles the band below it, so a reader can group adjacent bands
+/// later without a change to this vocabulary. Non-finite and non-positive
+/// input map to the lowest band.
+#[cfg(feature = "analytics")]
+pub fn factor_band(usd_per_percent: f64) -> &'static str {
+    if usd_per_percent.is_nan() || usd_per_percent < 1.0 {
+        "under_1"
+    } else if usd_per_percent < 2.0 {
+        "1_to_under_2"
+    } else if usd_per_percent < 4.0 {
+        "2_to_under_4"
+    } else if usd_per_percent < 8.0 {
+        "4_to_under_8"
+    } else if usd_per_percent < 16.0 {
+        "8_to_under_16"
+    } else if usd_per_percent < 32.0 {
+        "16_to_under_32"
+    } else if usd_per_percent < 64.0 {
+        "32_to_under_64"
+    } else if usd_per_percent < 128.0 {
+        "64_to_under_128"
+    } else {
+        "128_and_over"
+    }
+}
+
+/// Reduce a period's residual to a coarse band: how far the meter and the
+/// factor's own estimate for the same span disagree.
+///
+/// `None` (no residual computed yet for this lane) is `unknown`, not `0`,
+/// so a missing measurement is never read as a perfect one.
+#[cfg(feature = "analytics")]
+pub fn residual_band(residual: Option<(f64, f64)>) -> &'static str {
+    let Some((meter_percent, estimated_percent)) = residual else {
+        return "unknown";
+    };
+    let difference = (meter_percent - estimated_percent).abs();
+    if difference <= 5.0 {
+        "within_5"
+    } else if difference <= 20.0 {
+        "within_20"
+    } else {
+        "over_20"
+    }
+}
+
 /// The surface class the collector partitions on. antiburn is a desktop
 /// application, and the contract's vocabulary has one value for that.
 #[cfg(feature = "analytics")]
@@ -615,7 +745,28 @@ pub fn arch() -> &'static str {
 
 #[cfg(all(test, feature = "analytics"))]
 mod tests {
+    use super::super::resources::schema::{
+        CoverageBand, CpuBand, IoRateBand, MemoryBand, ResourceUsageSummary,
+    };
     use super::*;
+
+    fn resource_summary() -> ResourceUsageSummary {
+        ResourceUsageSummary {
+            memory_mean: MemoryBand::From100ToUnder250Mib,
+            memory_max: MemoryBand::From250ToUnder500Mib,
+            memory_coverage: CoverageBand::Full,
+            cpu_average: CpuBand::From10ToUnder25Percent,
+            cpu_coverage: CoverageBand::Partial,
+            read_rate_average: IoRateBand::Zero,
+            read_coverage: CoverageBand::Full,
+            write_rate_average: IoRateBand::Unavailable,
+            write_coverage: CoverageBand::None,
+            database_size: MemoryBand::From50ToUnder100Mib,
+            database_coverage: CoverageBand::Full,
+            wal_size: MemoryBand::Under50Mib,
+            wal_coverage: CoverageBand::Partial,
+        }
+    }
 
     fn sample() -> Event {
         Event {
@@ -640,6 +791,10 @@ mod tests {
                 reset_availability: Some("available"),
                 resets_per_week: Some("1"),
                 next_reset_available: Some("present"),
+                plan: Some("max"),
+                factor_band: Some("2_to_under_4"),
+                residual_band: Some("within_5"),
+                resource_usage: Some(resource_summary()),
             },
             context: Context {
                 app_version: "antiburn:1.2.3".into(),
@@ -657,6 +812,64 @@ mod tests {
         assert_eq!(bucket(4_000), "1000+");
     }
 
+    /// A recognized plan name maps case- and whitespace-insensitively; an
+    /// absent plan is `unknown`; anything else, including an empty string, is
+    /// `other` rather than the raw text.
+    #[test]
+    fn an_unlisted_plan_name_maps_to_other_rather_than_leaking_its_text() {
+        assert_eq!(map_plan(None), "unknown");
+        assert_eq!(map_plan(Some("")), "unknown");
+        assert_eq!(map_plan(Some("   ")), "unknown");
+        assert_eq!(map_plan(Some("Max")), "max");
+        assert_eq!(map_plan(Some(" pro ")), "pro");
+        assert_eq!(map_plan(Some("FREE")), "free");
+        assert_eq!(map_plan(Some("team")), "team");
+        assert_eq!(map_plan(Some("enterprise")), "enterprise");
+        assert_eq!(map_plan(Some("plus")), "plus");
+        assert_eq!(map_plan(Some("business")), "business");
+        assert_eq!(map_plan(Some("edu")), "edu");
+        assert_eq!(map_plan(Some("some-future-plan")), "other");
+    }
+
+    #[test]
+    fn the_factor_band_boundaries_step_by_powers_of_two() {
+        assert_eq!(factor_band(f64::NAN), "under_1");
+        assert_eq!(factor_band(f64::NEG_INFINITY), "under_1");
+        assert_eq!(factor_band(-1.0), "under_1");
+        assert_eq!(factor_band(0.0), "under_1");
+        assert_eq!(factor_band(0.99), "under_1");
+        assert_eq!(factor_band(1.0), "1_to_under_2");
+        assert_eq!(factor_band(1.99), "1_to_under_2");
+        assert_eq!(factor_band(2.0), "2_to_under_4");
+        assert_eq!(factor_band(3.99), "2_to_under_4");
+        assert_eq!(factor_band(4.0), "4_to_under_8");
+        assert_eq!(factor_band(7.99), "4_to_under_8");
+        assert_eq!(factor_band(8.0), "8_to_under_16");
+        assert_eq!(factor_band(15.99), "8_to_under_16");
+        assert_eq!(factor_band(16.0), "16_to_under_32");
+        assert_eq!(factor_band(31.99), "16_to_under_32");
+        assert_eq!(factor_band(32.0), "32_to_under_64");
+        assert_eq!(factor_band(63.99), "32_to_under_64");
+        assert_eq!(factor_band(64.0), "64_to_under_128");
+        assert_eq!(factor_band(127.99), "64_to_under_128");
+        assert_eq!(factor_band(128.0), "128_and_over");
+        assert_eq!(factor_band(1_000.0), "128_and_over");
+        assert_eq!(factor_band(f64::INFINITY), "128_and_over");
+    }
+
+    #[test]
+    fn the_residual_band_boundaries_match_the_absolute_difference() {
+        assert_eq!(residual_band(None), "unknown");
+        assert_eq!(residual_band(Some((50.0, 50.0))), "within_5");
+        assert_eq!(residual_band(Some((50.0, 45.0))), "within_5");
+        assert_eq!(residual_band(Some((50.0, 44.9))), "within_20");
+        assert_eq!(residual_band(Some((50.0, 30.0))), "within_20");
+        assert_eq!(residual_band(Some((50.0, 29.9))), "over_20");
+        // Order does not matter: a factor that under- or over-estimates by
+        // the same amount lands in the same band.
+        assert_eq!(residual_band(Some((29.9, 50.0))), "over_20");
+    }
+
     /// The complete wire surface, pinned.
     ///
     /// This test cannot read the Privacy pane, so it does not pretend to: it
@@ -669,7 +882,7 @@ mod tests {
     /// `apps/desktop/src/views/settings/PrivacyPane.tsx` is the bug this
     /// comment exists to prevent.
     #[test]
-    fn the_wire_payload_is_exactly_these_twenty_three_fields() {
+    fn the_wire_payload_is_exactly_these_twenty_seven_fields() {
         let json = serde_json::to_value(sample()).expect("serializes");
         let object = json.as_object().expect("an object");
         let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
@@ -703,13 +916,17 @@ mod tests {
                 "detail",
                 "eligibility",
                 "experiment",
+                "factorBand",
                 "ineligibleReason",
                 "label",
                 "nextResetAvailable",
                 "origin",
+                "plan",
                 "resetArm",
                 "resetAvailability",
                 "resetsPerWeek",
+                "residualBand",
+                "resourceUsage",
                 "responseShape",
                 "usageBand",
             ]
@@ -762,11 +979,54 @@ mod tests {
         event.properties.reset_availability = None;
         event.properties.resets_per_week = None;
         event.properties.next_reset_available = None;
+        event.properties.plan = None;
+        event.properties.factor_band = None;
+        event.properties.residual_band = None;
+        event.properties.resource_usage = None;
         let json = serde_json::to_string(&event).expect("serializes");
         assert!(!json.contains("bucket"), "{json}");
         assert!(!json.contains("label"), "{json}");
         assert!(!json.contains("detail"), "{json}");
         assert!(!json.contains("\"origin\""), "{json}");
+        assert!(!json.contains("\"plan\""), "{json}");
+        assert!(!json.contains("factorBand"), "{json}");
+        assert!(!json.contains("residualBand"), "{json}");
+        assert!(!json.contains("resourceUsage"), "{json}");
+    }
+
+    #[test]
+    fn resource_usage_has_only_the_typed_nested_allowlist() {
+        let mut event = sample();
+        event.event = EventName::ResourceUsageObserved.as_str().into();
+        event.properties.resource_usage = Some(resource_summary());
+
+        let json = serde_json::to_value(event).expect("serializes");
+        let resource = json["properties"]["resourceUsage"]
+            .as_object()
+            .expect("resourceUsage object");
+        let mut keys: Vec<_> = resource.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "cpuAverage",
+                "cpuCoverage",
+                "databaseCoverage",
+                "databaseSize",
+                "memoryCoverage",
+                "memoryMax",
+                "memoryMean",
+                "readCoverage",
+                "readRateAverage",
+                "walCoverage",
+                "walSize",
+                "writeCoverage",
+                "writeRateAverage",
+            ]
+        );
+        assert_eq!(resource["cpuAverage"], "from10_to_under25_percent");
+        assert_eq!(resource["readRateAverage"], "zero");
+        assert_eq!(resource["writeRateAverage"], "unavailable");
     }
 
     /// The compiler, not a reviewer, keeps [`EVERY_EVENT`] complete.
@@ -791,12 +1051,15 @@ mod tests {
                 | EventName::SettingsPaneViewed
                 | EventName::SurfaceStateObserved
                 | EventName::LiveUsageStateObserved
-                | EventName::ClaudeLimitResetObserved => true,
+                | EventName::ClaudeLimitResetObserved
+                | EventName::UsageObserved
+                | EventName::LimitFactorObserved
+                | EventName::ResourceUsageObserved => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            14,
+            17,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -853,6 +1116,7 @@ mod tests {
             14 => "fourteen",
             22 => "twenty-two",
             23 => "twenty-three",
+            27 => "twenty-seven",
             other => panic!("no word for {other} fields; add one and update the documents"),
         };
 
@@ -913,6 +1177,30 @@ mod tests {
         assert_eq!(facts.label, Some("google"));
         assert_eq!(facts.detail, Some("rate_limited"));
         assert_eq!(facts.origin, None);
+    }
+
+    /// `usage_observed` reads the same closed vocabulary
+    /// `live_usage_state_observed` does, rather than trusting a new source's
+    /// provider id outright. A provider this build does not recognize maps to
+    /// `None`, so the caller skips it instead of inventing a fourth label.
+    #[test]
+    fn an_unrecognised_provider_id_has_no_usage_observed_label() {
+        assert_eq!(
+            LiveUsageProvider::from_provider_id(crate::provider_usage::providers::ANTHROPIC),
+            Some(LiveUsageProvider::Anthropic)
+        );
+        assert_eq!(
+            LiveUsageProvider::from_provider_id(crate::provider_usage::providers::OPENAI),
+            Some(LiveUsageProvider::Openai)
+        );
+        assert_eq!(
+            LiveUsageProvider::from_provider_id(crate::provider_usage::providers::GOOGLE),
+            Some(LiveUsageProvider::Google)
+        );
+        assert_eq!(
+            LiveUsageProvider::from_provider_id("some-future-provider"),
+            None
+        );
     }
 
     /// The renderer cannot invent a value. This is the whole reason the IPC

@@ -141,8 +141,8 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             4px to the left of everything it introduces. */}
         <p className="type-body px-1 text-pretty text-label-secondary">
           antiburn reads the session files your coding agents already keep on this machine and
-          keeps the data it needs locally. Your sessions, prompts, and file paths never leave
-          it.{" "}
+          keeps the data it needs locally. Your session content, prompts, and file paths never
+          leave it.{" "}
           {analyticsSupported
             ? "The one thing antiburn reports to us is anonymised product analytics, which you can turn off below."
             : "This build sends no analytics at all."}{" "}
@@ -172,16 +172,16 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
           </Disclosure>
           <Disclosure label="Your work is never uploaded">
             There is no antiburn account, and nothing of ours you have to reach for the app to
-            work. Nothing derived from your sessions — no transcript, prompt, title, file path,
-            repository name, token count, or cost figure — is sent anywhere, ever. antiburn does
-            make requests of its own: it downloads public model prices from models.dev at
-            startup and hourly while running; it asks GitHub Releases whether a newer version
-            exists; where a source is enabled, it can ask a provider for your current plan
-            limits using the credentials your own tools already stored; and, in a released build
-            with the switch below on, it sends the anonymised product analytics listed below.
-            Handing a provider back a credential it issued you is not a disclosure — it already
-            has it. Those analytics are the one thing that goes to us; they are listed field by
-            field below, and they contain none of your work. This build
+            work. No session content — such as a transcript, prompt, title, file path,
+            repository name, token count, or cost figure — is sent anywhere. antiburn does make
+            requests of its own: it downloads public model prices from models.dev at startup and
+            hourly while running; it asks GitHub Releases whether a newer version exists; where
+            a source is enabled, it can ask a provider for your current plan limits using the
+            credentials your own tools already stored; and, in a released build with the switch
+            below on, it sends the anonymised product analytics listed below. Handing a provider
+            back a credential it issued you is not a disclosure — it already has it. Those
+            analytics are the one thing that goes to us; they are listed field by field below,
+            and they contain none of your work. This build
             {analyticsSupported
               ? " can send them."
               : " has no analytics endpoint, so it cannot send them at all."}
@@ -215,7 +215,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   ? "Off for this launch because ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use this setting."
                   : loaded && !settings.analyticsEnabled
                     ? "Off. Antiburn deleted its analytics identifier and anything waiting to be sent."
-                    : `Sends app launches, onboarding progress, feature use, error categories, and coarse Claude reset status${
+                    : `Sends app launches, onboarding progress, feature use, error categories, coarse Claude reset status, and hourly bands for antiburn's own resource use${
                         operator ? ` to ${operator}` : ""
                       }. Never prompts, sessions, source code, filenames, or paths.`
               }
@@ -244,7 +244,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   the promise below stops being true.
 
                   The list lets a reader count every field. */}
-              <p>The schema has twenty-three fields, and these are all of them:</p>
+              <p>The schema has twenty-seven fields, and these are all of them:</p>
               {/* `pl-7`, not the `pl-4` this started as. Root font-size here
                   is 13px, so `pl-4` is 13px of padding — less than the disc
                   marker's own 17.5px advance, which left the bullets painting
@@ -278,6 +278,22 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 <li>Claude&rsquo;s reset availability state.</li>
                 <li>Claude&rsquo;s weekly reset count rounded to zero, one, or two-plus.</li>
                 <li>Whether Claude supplied a next-reset date, never the date itself.</li>
+                <li>
+                  A learned session-limit factor&rsquo;s plan, mapped to a fixed list &mdash;
+                  never the provider&rsquo;s own plan string.
+                </li>
+                <li>
+                  That factor&rsquo;s dollars-per-percent value, reduced to a coarse band.
+                </li>
+                <li>
+                  How far that factor&rsquo;s estimate and the provider&rsquo;s own meter
+                  disagree, also reduced to a coarse band.
+                </li>
+                <li>
+                  An hourly summary of antiburn&rsquo;s own CPU, memory, process I/O, local
+                  database size, and database log size. Every value is a fixed range, with a
+                  coverage state that distinguishes missing measurements from zero.
+                </li>
                 <li>The app version.</li>
                 <li>Your operating system.</li>
               </ul>
@@ -286,10 +302,11 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   one question, and answering it two accordions apart made them
                   open both to find out. */}
               <p className="mt-2">
-                Never your sessions, transcripts, prompts, titles, file paths, repository or
-                branch names, token counts, costs, credentials, name, or email address. Not even
-                exact counts: a precise number, repeated week after week, identifies a machine
-                on its own.
+                Never your session content, transcripts, prompts, titles, file paths, repository
+                or branch names, token counts, costs, credentials, name, or email address. Not
+                even exact counts: a precise number, repeated week after week, identifies a
+                machine on its own. Resource ranges can reveal coarse app work intensity and
+                local data volume, but not the work itself.
               </p>
             </Disclosure>
             {/* Both identifiers stay in one place with the timestamp effect.

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, render, screen } from "@testing-library/react"
 import {
   cloneElement,
   isValidElement,
@@ -13,6 +13,10 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type { ContextTokenPoint } from "../../../lib/presentation/sessionAnalysis"
 import type { SessionBucket } from "../../../lib/types/session"
 import { ContextTokensChart, ContextTokensTooltip } from "./ContextTokensChart"
+
+const resizeHarness = vi.hoisted(() => ({
+  onResize: undefined as ((width: number, height: number) => void) | undefined,
+}))
 
 afterEach(cleanup)
 
@@ -38,23 +42,28 @@ vi.mock("recharts", async (importOriginal) => {
       children,
       className,
       style,
+      onResize,
     }: {
+      onResize?: (width: number, height: number) => void
       children: ReactNode
       className?: string
       style?: CSSProperties
-    }) => (
-      <div
-        className={`recharts-responsive-container ${className ?? ""}`}
-        style={{ ...style, width: 600, height: 160 }}
-      >
-        {isValidElement(children)
-          ? cloneElement(children as ReactElement<{ width?: number; height?: number }>, {
-              width: 600,
-              height: 160,
-            })
-          : children}
-      </div>
-    ),
+    }) => {
+      resizeHarness.onResize = onResize
+      return (
+        <div
+          className={`recharts-responsive-container ${className ?? ""}`}
+          style={{ ...style, width: 600, height: 160 }}
+        >
+          {isValidElement(children)
+            ? cloneElement(children as ReactElement<{ width?: number; height?: number }>, {
+                width: 600,
+                height: 160,
+              })
+            : children}
+        </div>
+      )
+    },
   }
 })
 
@@ -86,6 +95,38 @@ function bucket(over: Partial<SessionBucket> = {}): SessionBucket {
 }
 
 describe("ContextTokensChart", () => {
+  it("updates resized geometry without replaying the entrance and animates new data together", () => {
+    const buckets = [bucket({ contextTokens: 100_000 }), bucket({ contextTokens: 120_000 })]
+    const { container, rerender } = render(
+      <ContextTokensChart buckets={buckets} contextWindow={200_000} />,
+    )
+    act(() => resizeHarness.onResize?.(600, 240))
+    expect(container.querySelectorAll('g[data-animation-active="true"]')).toHaveLength(4)
+    act(() => resizeHarness.onResize?.(600, 240))
+    expect(container.querySelectorAll('g[data-animation-active="true"]')).toHaveLength(4)
+    act(() => resizeHarness.onResize?.(720, 300))
+    expect(container.querySelectorAll('g[data-animation-active="false"]')).toHaveLength(4)
+    expect(
+      container
+        .querySelector<HTMLElement>(".recharts-responsive-container")
+        ?.style.getPropertyValue("--chart-mark-delay"),
+    ).toBe("0ms")
+    rerender(
+      <ContextTokensChart
+        buckets={[...buckets, bucket({ contextTokens: 140_000 })]}
+        contextWindow={200_000}
+      />,
+    )
+    expect(container.querySelectorAll('g[data-animation-active="true"]')).toHaveLength(4)
+    expect(
+      [...container.querySelectorAll("g[data-animation-begin]")].every(
+        (node) => node.getAttribute("data-animation-begin") === "0",
+      ),
+    ).toBe(true)
+    act(() => resizeHarness.onResize?.(720, 320))
+    expect(container.querySelectorAll('g[data-animation-active="false"]')).toHaveLength(4)
+  })
+
   it("plays the first bucket set in as a sequence and animates a replacement set", () => {
     const initialBuckets = [
       bucket({ contextTokens: 100_000 }),

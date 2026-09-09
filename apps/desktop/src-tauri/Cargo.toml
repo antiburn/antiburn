@@ -10,11 +10,11 @@
 # neither member nor excluded aborts resolution outright ("multiple workspace
 # roots found in the same workspace").
 [workspace]
-exclude = ["crates/anchored-window", "crates/hud", "crates/nudge", "crates/sound", "crates/trace"]
+exclude = ["crates/anchored-window", "crates/hud", "crates/main-window", "crates/nudge", "crates/sound", "crates/trace"]
 
 [package]
 name = "antiburn"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.97"
 description = "antiburn desktop application: a tray/menu-bar shell over the local antiburn engine."
@@ -33,7 +33,12 @@ path = "src/lib.rs"
 distribution = []
 # Include the first-party analytics client. Source builds omit it unless the
 # builder selects this feature explicitly.
-analytics = []
+analytics = [
+  "dep:libc",
+  "windows-sys/Win32_Foundation",
+  "windows-sys/Win32_System_ProcessStatus",
+  "windows-sys/Win32_System_Threading",
+]
 # Add local memory fixtures and WebContent PID diagnostics.
 memory-probe = []
 
@@ -54,6 +59,9 @@ antiburn-nudge = { path = "crates/nudge" }
 # The floating usage HUD window: mechanism only. The shell owns its session
 # activity policy and IPC commands.
 antiburn-hud = { path = "crates/hud" }
+# The ordinary application window mechanism. The shell owns persistence,
+# readiness, startup intent, and IPC policy.
+antiburn-main-window = { path = "crates/main-window" }
 # Reusable anchored companion window mechanism. The shell owns targets and IPC policy.
 antiburn-anchored-window = { path = "crates/anchored-window" }
 # The notification chime uses samples synthesized in-process. It has no audio
@@ -117,6 +125,9 @@ tauri-plugin-opener = "2"
 # The plugin prevents browser-only menus and shortcuts in application webviews.
 # The explicit policy in `src/webview_defaults.rs` keeps focus traversal intact.
 tauri-plugin-prevent-default = "5"
+# Must be registered before other plugins so a repeated launch exits before it
+# can start another background scan scheduler.
+tauri-plugin-single-instance = "2"
 # Emits structured shell events through the process subscriber.
 tracing = "0.1"
 # RFC 3339 stamps for the store's own timestamps.
@@ -137,6 +148,15 @@ getrandom = "0.4"
 # backend each OS needs, with no extra channel crate (`crossbeam-channel`,
 # `flume`) — the watcher forwards events over a `std::sync::mpsc` channel.
 notify = "8"
+# A cross-platform PTY for the Claude credential-refresh touch
+# (`provider_usage/live/sources/claude_touch.rs`). Nothing already in the tree
+# can allocate a PTY, and the Claude CLI refreshes its token only when it runs
+# interactively — see that module's doc for the crate choice.
+portable-pty = "0.9.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Reads clock-tick and page-size units for the bounded analytics process sample.
+libc = { version = "0.2", optional = true }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Desktop-only: GitHub Releases update checks. Registered in release builds
@@ -155,11 +175,11 @@ smappservice-rs = "0.1"
 # popover (`src/global_click.rs`). Feature lists are the exact set those files
 # touch.
 objc2 = "0.6"
-# Block construction for the global monitor and the resign-active observer
+# Block construction for the global monitor and the activation observers
 # (the `block2` features below).
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSCell", "NSControl", "NSView", "NSResponder", "NSColor", "NSFont", "NSFontDescriptor", "NSAttributedString", "NSEvent", "block2"] }
-objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAttributedString", "NSDictionary", "NSValue", "NSObject", "NSURL", "NSError", "NSNotification", "NSOperation", "block2"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAppleEventDescriptor", "NSAppleEventManager", "NSAttributedString", "NSDictionary", "NSValue", "NSObject", "NSURL", "NSError", "NSNotification", "NSOperation", "block2", "objc2-core-services"] }
 # Subclasses the popover into a non-activating NSPanel (`src/popover/panel.rs`),
 # so opening it does not deactivate the frontmost application. The rev must
 # match the nudge crate's pin so both share one plugin registration.

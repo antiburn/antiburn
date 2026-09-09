@@ -436,28 +436,6 @@ pub struct UsageEvidenceRecord {
     pub provider_accounts_json: String,
 }
 
-/// One session and its published turns for limit-share estimates.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SessionUsageRecord {
-    pub key: SessionKey,
-    pub wsl_distro: Option<String>,
-    pub provider_hints_json: Option<String>,
-    pub provider_accounts_json: String,
-    pub turns: Vec<SessionUsageTurnRecord>,
-}
-
-/// One timestamped turn used by a session limit estimate.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SessionUsageTurnRecord {
-    pub ts_ms: Option<i64>,
-    pub model: Option<String>,
-    pub speed: Option<String>,
-    pub input_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_write_tokens: u64,
-    pub output_tokens: u64,
-}
-
 /// A session [`super::Store::sessions_owning_turn_uuids`] found already
 /// holding a published turn row for one of the queried uuids.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -8,7 +8,11 @@ import { useCallback, useRef, useState, type ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
-import { agentDisplayName, type AgentSurface } from "../../lib/presentation/agents"
+import {
+  agentDisplayName,
+  agentProvider,
+  type AgentSurface,
+} from "../../lib/presentation/agents"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import {
@@ -34,6 +38,7 @@ import { countGroupedItems, groupActivityByDay } from "../activity/activityFeedG
 import { useActivityGroupPinning, type ViewportRef } from "../activity/useActivityGroupPinning"
 import type {
   LiveUsageSummaryPayload,
+  LiveUsageWindowPayload,
   SessionLimitAllocationPayload,
   SessionLimitAllocationSummaryPayload,
 } from "../../lib/ipc"
@@ -86,6 +91,16 @@ export interface SessionListProps {
   emptyDescription?: string
   /** Open a session's analysis. Omitted leaves rows inert. */
   onOpenSession?: (entry: SessionListEntry) => void
+  /** Select one session without opening it. This enables arrow-key navigation. */
+  onSelect?: (entry: SessionListEntry) => void
+  /** Move focus to the selected session's detail pane. */
+  onOpenDetail?: (entry: SessionListEntry) => void
+  /** Stable local identity for the selected session. */
+  selectedKey?: string | null
+  /** Pause hidden presentation work while keeping the list mounted. */
+  active?: boolean
+  /** Let a window host use the list header as a native drag region. */
+  draggableHeader?: boolean
   /** The scrolling viewport, for a host that needs to observe it. */
   viewportRef?: ViewportRef
   initialScrollOffset?: number | (() => number)
@@ -132,26 +147,71 @@ function hasDisplayedFiveHourWindow(live: LiveUsageSummaryPayload | undefined): 
     : false
 }
 
+/** Whether a window reports the metric a session limit badge shows. */
+function windowMatchesMetric(
+  provider: string,
+  window: LiveUsageWindowPayload,
+  metric: Exclude<BadgeMetric, "cost">,
+): boolean {
+  return metric === "weeklyPercent"
+    ? window.kind === "weekly"
+    : isFiveHourWindow(provider, window.id)
+}
+
+/**
+ * Whether `live` affirmatively shows the provider that bills `agent` has no
+ * window of `metric`.
+ *
+ * This can say so only when `live` has loaded and the agent resolves to one
+ * fixed provider. Neither condition proves absence on its own: a missing
+ * summary just has not loaded yet, and an agent with no fixed provider (its
+ * route depends on the model) has no single provider to check.
+ */
+function providerConfirmsNoWindow(
+  live: LiveUsageSummaryPayload | undefined,
+  agent: string,
+  metric: Exclude<BadgeMetric, "cost">,
+): boolean {
+  if (!live) return false
+  const provider = agentProvider(agent)
+  if (!provider) return false
+  return !liveDisplayableProviders(live).some(
+    (entry) =>
+      entry.provider === provider &&
+      liveWindows(entry).some((window) => windowMatchesMetric(provider, window, metric)),
+  )
+}
+
 function sessionLimitBadge(
   metric: Exclude<BadgeMetric, "cost">,
+  agent: string,
+  liveUsage: LiveUsageSummaryPayload | undefined,
   allocation?: SessionLimitAllocationPayload,
 ): {
   label: string
   percent: number | null
   provider?: string
   windowId?: string
+  unknown?: boolean
 } {
-  if (!allocation || !Number.isFinite(allocation.percent)) {
+  if (allocation && Number.isFinite(allocation.percent)) {
+    return {
+      label: `Estimated share of your ${allocation.displayName} ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit.`,
+      percent: allocation.percent,
+      provider: allocation.provider,
+      windowId: allocation.windowId,
+    }
+  }
+  if (providerConfirmsNoWindow(liveUsage, agent, metric)) {
     return {
       label: `No ${metric === "weeklyPercent" ? "weekly" : "5h"} limit for this session.`,
       percent: null,
     }
   }
   return {
-    label: `Estimated share of your ${allocation.displayName} ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit.`,
-    percent: allocation.percent,
-    provider: allocation.provider,
-    windowId: allocation.windowId,
+    label: `Share of your ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit is not known for this session.`,
+    percent: null,
+    unknown: true,
   }
 }
 
@@ -203,6 +263,11 @@ interface SessionRowProps {
   entry: SessionListEntry
   hygiene: SessionHygienePayload
   onOpen?: () => void
+  onSelect?: () => void
+  onOpenDetail?: () => void
+  selected?: boolean
+  tabIndex?: number
+  active?: boolean
   renderAgentIcon?: SessionAgentIconRenderer | undefined
   wslIcon?: ReactNode | undefined
   showCost?: boolean
@@ -212,6 +277,7 @@ interface SessionRowProps {
         percent: number | null
         provider?: string
         windowId?: string
+        unknown?: boolean
       }
     | undefined
 }
@@ -227,12 +293,18 @@ function SessionRow({
   entry,
   hygiene,
   onOpen,
+  onSelect,
+  onOpenDetail,
+  selected = false,
+  tabIndex,
+  active = true,
   renderAgentIcon,
   wslIcon,
   limitBadge,
   showCost = true,
 }: SessionRowProps) {
-  const clickable = !!entry.sessionId && !!onOpen
+  const selectionMode = !!entry.sessionId && !!onSelect
+  const clickable = !!entry.sessionId && (!!onOpen || selectionMode)
   const primary = primaryLine(entry)
   const hasRepo = entry.repo !== ""
   const modelRuns = entry.modelRuns ?? []
@@ -245,17 +317,32 @@ function SessionRow({
         "group relative",
         "w-full grid grid-cols-[14px_minmax(0,1fr)] gap-x-2 gap-y-1",
         "items-center",
-        "rounded-[var(--radius-popover)] bg-surface-card/50 px-3 py-3",
+        "rounded-[var(--radius-popover)] px-3 py-3",
+        selected ? "bg-surface-selected/60" : "bg-surface-card/50",
         "transition-colors duration-[var(--duration-fast)] ease-out",
-        entry.isActive && "activity-row-active",
+        entry.isActive && active && "activity-row-active",
+        clickable && "cursor-pointer",
         clickable &&
-          "cursor-pointer hover:bg-surface-secondary/50 [&:has([data-state*=open])]:bg-surface-secondary/50",
+          !selected &&
+          "hover:bg-surface-secondary/50 [&:has([data-state*=open])]:bg-surface-secondary/50",
       )}
       {...(clickable
         ? {
             role: "button" as const,
-            tabIndex: 0,
-            onClick: onOpen,
+            tabIndex: tabIndex ?? 0,
+            "aria-current": selected ? ("true" as const) : undefined,
+            "data-session-row": "",
+            onClick: selectionMode
+              ? (event: React.MouseEvent<HTMLDivElement>) => {
+                  const target = event.target as Element
+                  const nestedControl = target.closest(
+                    'button, a, input, select, textarea, [role="button"]',
+                  )
+                  if (nestedControl && nestedControl !== event.currentTarget) return
+                  event.currentTarget.focus()
+                  onSelect?.()
+                }
+              : onOpen,
             onKeyDown: (event: React.KeyboardEvent) => {
               // Only when the row itself has focus: a nested control's Enter
               // belongs to that control, not to the card behind it.
@@ -264,7 +351,12 @@ function SessionRow({
                 (event.key === "Enter" || event.key === " ")
               ) {
                 event.preventDefault()
-                onOpen?.()
+                if (selectionMode) {
+                  if (event.key === "Enter") onOpenDetail?.()
+                  else onSelect?.()
+                } else {
+                  onOpen?.()
+                }
               }
             },
           }
@@ -292,7 +384,7 @@ function SessionRow({
           className="min-w-0 mt-px mb-0.5 type-body-large text-label"
           text={primary}
           lines={2}
-          shimmer={entry.isActive}
+          shimmer={entry.isActive && active}
         />
 
         {entry.hasForkParent && (
@@ -400,6 +492,11 @@ export function SessionList({
   emptyTitle,
   emptyDescription = "Coding sessions appear here as they are discovered on this machine.",
   onOpenSession,
+  onSelect,
+  onOpenDetail,
+  selectedKey,
+  active = true,
+  draggableHeader = false,
   viewportRef,
   initialScrollOffset = 0,
   initialMeasurementsCache,
@@ -456,20 +553,33 @@ export function SessionList({
     })),
   ])
   const rowIndexes = virtualItems.flatMap((item, index) => (item.type === "row" ? [index] : []))
-  const hygieneSessions = groups.flatMap((group) =>
-    group.items.flatMap(({ entry }) =>
-      entry.sessionId
-        ? [
-            {
-              agent: entry.agent,
-              sessionId: entry.sessionId,
-              wslDistro: entry.wslDistro ?? null,
-            },
-          ]
-        : [],
-    ),
+  const selectableRowIndexes = virtualItems.flatMap((item, index) =>
+    item.type === "row" && item.item.entry.sessionId ? [index] : [],
   )
+  const hygieneSessions = active
+    ? groups.flatMap((group) =>
+        group.items.flatMap(({ entry }) =>
+          entry.sessionId
+            ? [
+                {
+                  agent: entry.agent,
+                  sessionId: entry.sessionId,
+                  wslDistro: entry.wslDistro ?? null,
+                },
+              ]
+            : [],
+        ),
+      )
+    : []
   const hygieneBySession = useSessionHygiene(hygieneSessions)
+  const firstSelectableKey = groups
+    .flatMap((group) => group.items)
+    .find((item) => item.entry.sessionId)?.key
+  const rovingKey = groups.some((group) =>
+    group.items.some((item) => item.entry.sessionId && item.key === selectedKey),
+  )
+    ? selectedKey
+    : firstSelectableKey
 
   const { assignViewportRef, registerHeading, pinnedLabel } = useActivityGroupPinning(
     groups.map((group) => group.label),
@@ -500,6 +610,12 @@ export function SessionList({
         if (item.type === "heading") indexes.add(index)
       })
       if (pendingFocusIndex !== null) indexes.add(pendingFocusIndex)
+      if (onSelect && rovingKey) {
+        const tabStopIndex = virtualItems.findIndex(
+          (item) => item.type === "row" && item.item.key === rovingKey,
+        )
+        if (tabStopIndex >= 0) indexes.add(tabStopIndex)
+      }
 
       const activeElement = document.activeElement
       if (activeElement && scrollElementRef.current?.contains(activeElement)) {
@@ -521,32 +637,72 @@ export function SessionList({
     (node: HTMLDivElement | null) => {
       virtualizer.measureElement(node)
       if (!node || Number(node.dataset.index) !== pendingFocusIndex) return
-      node.querySelector<HTMLElement>('[role="button"][tabindex="0"]')?.focus()
+      node.querySelector<HTMLElement>("[data-session-row]")?.focus()
       setPendingFocusIndex(null)
     },
     [pendingFocusIndex, virtualizer],
   )
+  const focusVirtualRow = useCallback(
+    (index: number) => {
+      const nextRow = scrollElementRef.current?.querySelector<HTMLElement>(
+        `[data-virtual-kind="row"][data-index="${index}"]`,
+      )
+      if (nextRow) {
+        nextRow.querySelector<HTMLElement>("[data-session-row]")?.focus()
+        return
+      }
+      setPendingFocusIndex(index)
+      virtualizer.scrollToIndex(index, { align: "auto" })
+    },
+    [virtualizer],
+  )
   const moveVirtualFocus = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) return
       const target = event.target instanceof Element ? event.target : null
       const currentItem = target?.closest<HTMLElement>('[data-virtual-kind="row"]')
-      if (!currentItem || !target?.closest('[role="button"][tabindex="0"]')) return
+      const sessionRow = target?.closest<HTMLElement>("[data-session-row]")
+      if (!currentItem || !sessionRow) return
+
+      if (
+        onSelect &&
+        target === sessionRow &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
+      ) {
+        const currentIndex = Number(currentItem.dataset.index)
+        const currentPosition = selectableRowIndexes.indexOf(currentIndex)
+        let nextIndex: number | undefined
+        if (event.key === "Home") nextIndex = selectableRowIndexes[0]
+        else if (event.key === "End") nextIndex = selectableRowIndexes.at(-1)
+        else {
+          const offset = event.key === "ArrowDown" ? 1 : -1
+          nextIndex = selectableRowIndexes[currentPosition + offset]
+        }
+        const nextItem = nextIndex === undefined ? undefined : virtualItems[nextIndex]
+        if (
+          nextIndex === undefined ||
+          nextItem?.type !== "row" ||
+          !nextItem.item.entry.sessionId
+        )
+          return
+        event.preventDefault()
+        onSelect(nextItem.item.entry)
+        focusVirtualRow(nextIndex)
+        return
+      }
+
+      if (onSelect) return
+      if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) return
+      if (!target?.closest('[role="button"][tabindex="0"]')) return
       const currentPosition = rowIndexes.indexOf(Number(currentItem.dataset.index))
       const nextIndex = rowIndexes[currentPosition + (event.shiftKey ? -1 : 1)]
       if (nextIndex === undefined) return
-      const nextRow = scrollElementRef.current?.querySelector<HTMLElement>(
-        `[data-virtual-kind="row"][data-index="${nextIndex}"]`,
-      )
       event.preventDefault()
-      if (nextRow) {
-        nextRow.querySelector<HTMLElement>('[role="button"][tabindex="0"]')?.focus()
-        return
-      }
-      setPendingFocusIndex(nextIndex)
-      virtualizer.scrollToIndex(nextIndex, { align: "auto" })
+      focusVirtualRow(nextIndex)
     },
-    [rowIndexes, virtualizer],
+    [focusVirtualRow, onSelect, rowIndexes, selectableRowIndexes, virtualItems],
   )
   const assignVirtualViewportRef = useCallback(
     (node: HTMLDivElement | null) => {
@@ -568,6 +724,7 @@ export function SessionList({
   return (
     <section
       aria-label="Sessions"
+      data-tauri-drag-region={draggableHeader ? "" : undefined}
       className="flex h-full min-h-0 flex-col pt-2"
       onKeyDownCapture={moveVirtualFocus}
     >
@@ -578,6 +735,7 @@ export function SessionList({
       {topLabel && (
         <div
           data-testid="activity-pinned-group-label"
+          data-tauri-drag-region={draggableHeader ? "deep" : undefined}
           // The inset matches the cards, so the label sits on their left
           // edge. The type matches the usage view's group labels.
           className="mb-1 flex h-7 shrink-0 items-center justify-between gap-2 px-3 type-caption font-medium tracking-wide uppercase text-label-tertiary"
@@ -664,6 +822,20 @@ export function SessionList({
                             ) : (
                               <SessionRow
                                 entry={virtualItem.item.entry}
+                                active={active}
+                                selected={virtualItem.item.key === selectedKey}
+                                {...(onSelect && virtualItem.item.entry.sessionId
+                                  ? {
+                                      tabIndex: virtualItem.item.key === rovingKey ? 0 : -1,
+                                      onSelect: () => onSelect(virtualItem.item.entry),
+                                      ...(onOpenDetail
+                                        ? {
+                                            onOpenDetail: () =>
+                                              onOpenDetail(virtualItem.item.entry),
+                                          }
+                                        : {}),
+                                    }
+                                  : {})}
                                 showCost={selectedMetric === "cost"}
                                 hygiene={
                                   virtualItem.item.entry.sessionId
@@ -688,6 +860,8 @@ export function SessionList({
                                   ? {
                                       limitBadge: sessionLimitBadge(
                                         selectedMetric,
+                                        virtualItem.item.entry.agent,
+                                        liveUsage,
                                         virtualItem.item.entry.sessionId
                                           ? allocationBySession.get(
                                               `${localSessionKey(

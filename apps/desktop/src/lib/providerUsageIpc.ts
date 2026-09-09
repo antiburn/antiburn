@@ -57,7 +57,8 @@ export interface ProviderUsageSummaryPayload {
 
 export type SessionLimitMetricPayload = "weekly" | "fiveHour"
 
-/** One session's cumulative estimate summed across retained provider periods. */
+/** One session's estimated share of a provider account's learned
+ * dollars-per-percent limit factor. Mirrors Rust `SessionLimitAllocation`. */
 export interface SessionLimitAllocationPayload {
   agent: string
   sessionId: string
@@ -66,11 +67,13 @@ export interface SessionLimitAllocationPayload {
   provider: string
   displayName: string
   accountKey: string | null
+  /** The lane the factor belongs to (`weekly` or `fiveHour`), not a
+   * specific provider window. */
   windowId: string
-  resetsAt: string | null
   percent: number
-  coverage: "complete" | "partial"
-  periodCount: number
+  /** `learned` from a meter delta, `seeded` from a single first-reading
+   * estimate. Either way the percentage is an estimate, never a bill. */
+  confidence: "learned" | "seeded"
 }
 
 export interface SessionLimitAllocationSummaryPayload {

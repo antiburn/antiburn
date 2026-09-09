@@ -1,0 +1,27 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Bounded permissions for the ordinary main window. Data and privileged work stay behind explicit shell commands.",
+  "windows": ["main"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "dialog:allow-confirm",
+    "allow-delete-session-data",
+    "allow-get-live-usage",
+    "allow-get-main-window-visible",
+    "allow-get-session-analysis",
+    "allow-get-session-hygiene",
+    "allow-get-session-limit-allocations",
+    "allow-get-settings",
+    "allow-get-subagent-analysis",
+    "allow-list-recent-sessions",
+    "allow-main-window-ready",
+    "allow-take-main-window-session-target",
+    "allow-open-settings-window",
+    "allow-reveal-source",
+    "allow-set-settings"
+  ]
+}

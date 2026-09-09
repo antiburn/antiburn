@@ -7,6 +7,7 @@ import {
   sessionHygieneExplainers,
   type SessionHygieneCheck,
 } from "../../../lib/presentation/sessionHygiene"
+import { Tooltip } from "../../presentation/Tooltip"
 import { RowInfo } from "./RowInfo"
 
 export interface HygieneBreakdownProps {
@@ -17,6 +18,8 @@ export interface HygieneBreakdownProps {
    * own.
    */
   collapsePassing?: boolean
+  /** Show all assessed checks with guidance below each label. */
+  inlineGuidance?: boolean
 }
 
 interface HygieneStatusPresentation {
@@ -136,7 +139,74 @@ function HygieneRow({
   )
 }
 
-export function HygieneBreakdown({ checks, collapsePassing = true }: HygieneBreakdownProps) {
+/** The body of one inline check's tooltip: what went wrong, the summary, the advice. */
+function InlineHygieneTooltip({ check }: { check: AssessedHygieneCheck }) {
+  const documentation = sessionHygieneDocumentation(check)
+  return (
+    <div className="space-y-1 text-pretty">
+      {documentation.findingDetails.map((sentence) => (
+        <p key={sentence} className="text-share-waste-text">
+          {sentence}
+        </p>
+      ))}
+      <p className="text-label">{documentation.summary}</p>
+      {documentation.guidance.map((sentence) => (
+        <p key={sentence} className="text-label-secondary">
+          {sentence}
+        </p>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * One check in the wide layout, as a card.
+ *
+ * The card is what groups the name with the verdict. Without it the two
+ * held opposite ends of an open row and read as unrelated columns.
+ *
+ * The verdict is the mark alone. The word beside it said no more than the
+ * mark, and an info glyph on every card said less: the whole card opens its
+ * explanation, so a separate affordance only added marks to read. The word
+ * stays in the accessibility tree for a screen reader.
+ *
+ * The card answers the width of the Cost pane: the widest pane opens the
+ * summary sentence under the name. `session-detail.css` holds the widths.
+ * The tooltip carries the evidence and the advice at every width.
+ */
+function InlineHygieneRow({ check }: { check: AssessedHygieneCheck }) {
+  const status = STATUS_PRESENTATION[check.status]
+  const documentation = sessionHygieneDocumentation(check)
+  return (
+    <Tooltip label={<InlineHygieneTooltip check={check} />} delayMs={150}>
+      <div
+        role="group"
+        aria-label={check.name}
+        tabIndex={0}
+        className="session-check-cell flex flex-col rounded-control bg-surface-card/50 px-3 py-2 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
+      >
+        <div className="flex items-baseline justify-between gap-x-3">
+          <span className="min-w-0 text-pretty text-label">{check.name}</span>
+          <status.Icon
+            size={STATUS_ICON_SIZE}
+            aria-hidden="true"
+            className={cn("shrink-0 self-center", status.textClass)}
+          />
+          <span className="session-check-word">{status.label}</span>
+        </div>
+        <p className="session-check-summary mt-1.5 text-pretty type-callout text-label-secondary">
+          {documentation.summary}
+        </p>
+      </div>
+    </Tooltip>
+  )
+}
+
+export function HygieneBreakdown({
+  checks,
+  collapsePassing = true,
+  inlineGuidance = false,
+}: HygieneBreakdownProps) {
   const [rollupOpen, setRollupOpen] = useState(false)
   const [openCheck, setOpenCheck] = useState<SessionHygieneCheck["id"] | null>(null)
   const assessedChecks = checks.filter(isAssessed)
@@ -171,6 +241,16 @@ export function HygieneBreakdown({ checks, collapsePassing = true }: HygieneBrea
   const shownChecks = collapsePassing ? findings : [...findings, ...rolledChecks]
 
   if (assessedCount === 0) return null
+
+  if (inlineGuidance) {
+    return (
+      <div className="session-checks-grid grid" aria-label="Session hygiene checks">
+        {[...findings, ...passing].map((check) => (
+          <InlineHygieneRow key={check.id} check={check} />
+        ))}
+      </div>
+    )
+  }
 
   return (
     <div className="grid gap-y-0.5" aria-label="Session hygiene checks">

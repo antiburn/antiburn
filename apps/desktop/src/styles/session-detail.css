@@ -17,3 +17,125 @@
 .chart-key-stat:not(:disabled):active {
   transform: scale(0.98);
 }
+
+/* The toolbar groups the view picker and the session actions. */
+.session-detail-wide .session-detail-tabs,
+.session-detail-actions {
+  height: calc(var(--space-2xl) + var(--space-xs) * 2);
+  padding: var(--space-xs);
+}
+.session-detail-wide .session-detail-tabs button {
+  min-height: var(--space-2xl);
+  padding-inline: var(--space-md);
+}
+.session-detail-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--space-2xl);
+  padding: var(--space-xs);
+}
+.session-detail-actions svg {
+  width: var(--space-lg);
+  height: var(--space-lg);
+}
+.session-detail-key {
+  margin-inline: 0;
+}
+.session-detail-wide .chart-key-stat {
+  padding: var(--space-md);
+}
+.session-detail-wide [data-testid="skills-mcp-list"] {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: var(--space-md);
+}
+.session-detail-wide [data-testid="skills-mcp-list"] > div {
+  padding: var(--space-lg);
+  gap: var(--space-xs);
+}
+.session-detail-wide .session-detail-cost .group {
+  padding-block: var(--space-xs);
+}
+
+.session-detail-wide .session-detail-tabs button::before {
+  display: none;
+}
+/* The selected view takes the accent fill and white ink, the same as the
+   session list's metric picker, so both pickers in the window read alike. */
+.session-detail-wide .session-detail-tabs button[aria-selected="true"] {
+  background-color: var(--color-accent-fill);
+  color: white;
+  box-shadow: var(--shadow-raised);
+}
+.session-detail-wide .session-detail-tabs button {
+  font-weight: 400 !important;
+  font-size: inherit;
+  letter-spacing: inherit;
+}
+/* The toolbar and the floating section picker share one light material
+   without an outlined control track, so the picker reads as part of the
+   chrome while it floats over the content. */
+.session-detail-toolbar,
+.session-detail-floating-tabs {
+  backdrop-filter: blur(var(--space-lg)) saturate(120%);
+  -webkit-backdrop-filter: blur(var(--space-lg)) saturate(120%);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .session-detail-toolbar,
+  .session-detail-floating-tabs {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background-color: var(--color-surface-window);
+  }
+}
+
+/* --- Session checks: cards that answer their own pane width -------------
+   The Cost tab is the query container, so the checks read the width of
+   their own pane and not the width of the window.
+
+   Each check sits in its own card. The card is what groups a name with its
+   verdict mark: the two can hold opposite edges without reading as
+   separate columns, because the card boundary contains the space between
+   them. Two cards to a row, and three from 48rem, where each card also
+   opens its summary sentence. The tooltip keeps the evidence and the
+   advice at every width. */
+.session-detail-cost {
+  container-type: inline-size;
+}
+
+.session-checks-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm);
+}
+/* The verdict word never shows: the mark says the same thing in less
+   space. It stays in the accessibility tree, so a screen reader still
+   hears the verdict. */
+.session-check-word {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.session-check-summary {
+  display: none;
+}
+
+@container (min-width: 48rem) {
+  .session-checks-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .session-check-summary {
+    display: block;
+  }
+}
+
+/* The cost card keeps the total beside its component table at every wide
+   width. The total column takes the width of its own caption, and the table
+   takes the rest. */
+.session-cost-summary {
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+}

@@ -1,0 +1,21 @@
+# Standalone package. The shell excludes this nested workspace and uses it as a
+# path dependency. This crate owns only the ordinary main window mechanism.
+[workspace]
+
+[package]
+name = "antiburn-main-window"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "The ordinary main window mechanism for the antiburn desktop app."
+license = "MIT"
+repository = "https://github.com/antiburn/antiburn"
+publish = false
+
+[lib]
+name = "antiburn_main_window"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = ["macos-private-api"] }

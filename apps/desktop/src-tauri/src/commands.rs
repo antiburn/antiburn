@@ -10,18 +10,20 @@
 //! returns an empty success instead, because the views have states for those and
 //! an error banner would be a lie.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, SessionEvidence, SourceAcceptance,
+    ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION, ProviderHint, SessionEvidence,
+    SourceAcceptance, price_breakdown,
 };
 use antiburn_local::insights::{
     BadgeId, BadgeStatus, NotAssessedReason, ReportCatalogs, session_badges,
 };
 use antiburn_local::paths::scan_roots as engine_scan_roots;
 use antiburn_local::paths::{home_dir, protected};
+use antiburn_local::pricing::ModelTokens;
 use antiburn_local::repositories as repositories_engine;
 use antiburn_local::repositories::ConsentGrants as _;
 use antiburn_local::repositories::platform::{PlatformDiscovery as _, platform};
@@ -81,6 +83,16 @@ pub fn window_ready(window: tauri::WebviewWindow, generation: u64) {
     }
 }
 
+/// Reveal the main window after its renderer commits its shell.
+#[tauri::command]
+pub fn main_window_ready(window: tauri::WebviewWindow, generation: u64) {
+    if window.label() == crate::main_window::LABEL {
+        crate::main_window::renderer_ready(&window, generation);
+    } else {
+        ::tracing::debug!(event = "main_window_ready_ignored", window = window.label());
+    }
+}
+
 /// Record when the popover's first activity and cached usage state settle.
 #[tauri::command]
 pub fn popover_content_ready(window: tauri::WebviewWindow, generation: u64) {
@@ -113,6 +125,7 @@ pub fn take_settings_pane(app: tauri::AppHandle) -> Option<String> {
 /// background tasks are aborted on the way out.
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
+    crate::main_window::flush_placement(&app);
     app.exit(0);
 }
 
@@ -804,7 +817,8 @@ pub(crate) fn provider_usage_summary(
     Ok(summary)
 }
 
-/// Estimate each recent session's share of current provider allowance windows.
+/// Estimate each recent session's share of its provider account's learned
+/// dollars-per-percent limit factor.
 #[tauri::command]
 pub async fn get_session_limit_allocations(
     app: tauri::AppHandle,
@@ -817,45 +831,169 @@ pub async fn get_session_limit_allocations(
         let sessions = store
             .recent_sessions_excluding(since, MAX_ACTIVITY_ROWS, &settings.disabled_agents)
             .map_err(fail)?;
-        let keys = sessions
-            .iter()
-            .map(|session| session.key.clone())
-            .collect::<Vec<_>>();
-        let allocations = store
-            .cumulative_session_limit_allocations(&keys)
-            .map_err(fail)?;
+        let allocations = session_limit_allocations(&store, &sessions).map_err(fail)?;
         Ok(SessionLimitAllocationSummary {
-            allocations: allocations
-                .into_iter()
-                .map(|allocation| SessionLimitAllocation {
-                    agent: allocation.key.agent,
-                    session_id: allocation.key.session_id,
-                    wsl_distro: allocation.wsl_distro,
-                    metric: match allocation.metric.as_str() {
-                        "weekly" => crate::dto::SessionLimitMetric::Weekly,
-                        _ => crate::dto::SessionLimitMetric::FiveHour,
-                    },
-                    provider: allocation.provider.clone(),
-                    display_name: provider_usage::providers::display_name(&allocation.provider)
-                        .to_string(),
-                    account_key: Some(allocation.account_key),
-                    window_id: allocation.window_id,
-                    resets_at: None,
-                    percent: allocation.percent,
-                    coverage: if allocation.partial {
-                        "partial"
-                    } else {
-                        "complete"
-                    }
-                    .to_string(),
-                    period_count: allocation.period_count,
-                })
-                .collect(),
+            allocations,
             generated_at: crate::store::iso_from_epoch(Some(now)),
         })
     })
     .await
     .map_err(fail)?
+}
+
+/// Per-provider token maps ready for [`price_breakdown`], keyed the same way
+/// `pricing_breakdown_json` keys its entries, so a fast-mode turn prices at
+/// its fast rate instead of the base rate the factor was not learned at.
+///
+/// `pricing_breakdown_json` keys are `turn_pricing_key(model, speed)`
+/// (`crates/antiburn-local/src/analysis/pricing.rs`): the model as
+/// `model_breakdown_json` names it, with `-fast` appended when the turn ran
+/// fast and the model's own name does not already end that way. A pricing key
+/// belongs to a provider when it names one of that provider's attributed
+/// models directly, or with a trailing `-fast` removed.
+///
+/// Falls back to pricing `model_breakdown_json`'s own attribution directly
+/// when `pricing_breakdown_json` is empty or does not parse, since that is
+/// the only breakdown available then.
+fn provider_priced_models(
+    attributed: &BTreeMap<&'static str, provider_usage::Attributed>,
+    pricing_breakdown_json: &str,
+) -> HashMap<&'static str, HashMap<String, ModelTokens>> {
+    let pricing: BTreeMap<String, ModelTokens> =
+        serde_json::from_str(pricing_breakdown_json).unwrap_or_default();
+    if pricing.is_empty() {
+        return attributed
+            .iter()
+            .map(|(&provider, attributed)| {
+                let priced: HashMap<String, ModelTokens> = attributed
+                    .models
+                    .iter()
+                    .map(|(model, tokens)| (model.clone(), tokens.clone()))
+                    .collect();
+                (provider, priced)
+            })
+            .collect();
+    }
+    let mut provider_for_model: HashMap<&str, &'static str> = HashMap::new();
+    for (&provider, attributed) in attributed {
+        for model in attributed.models.keys() {
+            provider_for_model.insert(model.as_str(), provider);
+        }
+    }
+    let mut by_provider: HashMap<&'static str, HashMap<String, ModelTokens>> = HashMap::new();
+    for (key, tokens) in &pricing {
+        let provider = provider_for_model.get(key.as_str()).copied().or_else(|| {
+            key.strip_suffix("-fast")
+                .and_then(|base| provider_for_model.get(base).copied())
+        });
+        if let Some(provider) = provider {
+            by_provider
+                .entry(provider)
+                .or_default()
+                .insert(key.clone(), tokens.clone());
+        }
+    }
+    by_provider
+}
+
+/// One row per session, provider, and lane: the session's inclusive dollars
+/// divided by the factor point in effect at its last activity.
+///
+/// A session with no resolved account for a provider its usage attributes
+/// to, or a lane with no factor point yet, contributes no row for that
+/// provider or lane. A session that spends under more than one provider
+/// (a bring-your-own agent that switched models) contributes one row per
+/// provider.
+pub(crate) fn session_limit_allocations(
+    store: &Store,
+    sessions: &[SessionRecord],
+) -> anyhow::Result<Vec<SessionLimitAllocation>> {
+    let keys: Vec<SessionKey> = sessions.iter().map(|session| session.key.clone()).collect();
+    let bound = store.session_bound_accounts(&keys)?;
+    let analyses = store.analyses(&keys)?;
+    let mut known_accounts: HashMap<&'static str, HashMap<String, BTreeSet<String>>> =
+        HashMap::new();
+
+    let mut allocations = Vec::new();
+    for session in sessions {
+        let Some(updated_at_epoch) = session.updated_at_epoch else {
+            continue;
+        };
+        let Some(analysis) = analyses.get(&session.key) else {
+            continue;
+        };
+        let models: BTreeMap<String, ModelTokens> =
+            serde_json::from_str(&analysis.model_breakdown_json).unwrap_or_default();
+        if models.is_empty() {
+            continue;
+        }
+        let hints: Vec<ProviderHint> = analysis
+            .provider_hints_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok())
+            .unwrap_or_default();
+        let attributed = provider_usage::attribute(&session.key.agent, models, &hints);
+        let priced_by_provider =
+            provider_priced_models(&attributed, &analysis.pricing_breakdown_json);
+        for &provider in attributed.keys() {
+            let Some(priced) = priced_by_provider.get(provider) else {
+                continue;
+            };
+            let Some(cost) = price_breakdown(priced) else {
+                continue;
+            };
+            if !(cost.total_usd.is_finite() && cost.total_usd > 0.0) {
+                continue;
+            }
+            let known = known_accounts
+                .entry(provider)
+                .or_insert_with(|| store.provider_known_accounts(provider).unwrap_or_default());
+            let bound_for = bound.get(&(session.key.clone(), provider.to_string()));
+            let Some(account_key) = crate::store::provider_limit::resolve_bound_account(
+                bound_for,
+                known.get(&session.key.agent),
+            ) else {
+                continue;
+            };
+            for (lane, metric) in [
+                (
+                    crate::store::provider_limit::LANE_WEEKLY,
+                    crate::dto::SessionLimitMetric::Weekly,
+                ),
+                (
+                    crate::store::provider_limit::LANE_FIVE_HOUR,
+                    crate::dto::SessionLimitMetric::FiveHour,
+                ),
+            ] {
+                let Ok(Some(point)) =
+                    store.factor_point_at(provider, &account_key, lane, updated_at_epoch)
+                else {
+                    continue;
+                };
+                if !(point.usd_per_percent.is_finite() && point.usd_per_percent > 0.0) {
+                    continue;
+                }
+                allocations.push(SessionLimitAllocation {
+                    agent: session.key.agent.clone(),
+                    session_id: session.key.session_id.clone(),
+                    wsl_distro: session.wsl_distro.clone(),
+                    metric,
+                    provider: provider.to_string(),
+                    display_name: provider_usage::providers::display_name(provider).to_string(),
+                    account_key: Some(account_key.clone()),
+                    window_id: lane.to_string(),
+                    percent: cost.total_usd / point.usd_per_percent,
+                    confidence: if point.method == "delta" {
+                        "learned"
+                    } else {
+                        "seeded"
+                    }
+                    .to_string(),
+                });
+            }
+        }
+    }
+    Ok(allocations)
 }
 
 /// How fresh a reading the refresh command asks each source's cooldown for.
@@ -1916,7 +2054,11 @@ pub fn delete_session_data(
     wsl_distro: Option<String>,
 ) -> CommandResult<bool> {
     let key = SessionKey::for_session(&agent, &session_id, wsl_distro.as_deref());
-    app.state::<Store>().delete_session(&key).map_err(fail)
+    let removed = app.state::<Store>().delete_session(&key).map_err(fail)?;
+    if removed {
+        let _ = app.emit(SESSIONS_INVALIDATED_EVENT, ());
+    }
+    Ok(removed)
 }
 
 /// Forget all session data in antiburn's local store.
@@ -2707,6 +2849,319 @@ mod tests {
                 "{root} should sit under {}",
                 home.display()
             );
+        }
+    }
+
+    mod session_limit_allocations_tests {
+        use std::path::Path;
+
+        use rusqlite::params;
+
+        use super::*;
+        use crate::store::AnalysisRecord;
+        use crate::store::provider_limit::{FactorPoint, LANE_FIVE_HOUR, LANE_WEEKLY};
+
+        const PROVIDER: &str = "anthropic";
+        const AGENT: &str = "claude-code";
+        const MODEL: &str = "claude-sonnet-5";
+
+        fn account(character: char) -> String {
+            character.to_string().repeat(64)
+        }
+
+        fn memory_store() -> Store {
+            Store::open_in_memory(Path::new("/tmp/antiburn-session-limit-allocations-test"))
+                .expect("opens store")
+        }
+
+        fn synthetic_session(
+            store: &Store,
+            session_id: &str,
+            updated_at_epoch: i64,
+        ) -> SessionRecord {
+            let record = SessionRecord {
+                key: SessionKey::new("native", AGENT, session_id),
+                source_kind: "inline".to_string(),
+                source_label: "synthetic".to_string(),
+                wsl_distro: None,
+                title: None,
+                title_source: None,
+                cwd: None,
+                surface: "unknown".to_string(),
+                updated_at_epoch: Some(updated_at_epoch),
+                activity_cursor: "synthetic".to_string(),
+                activity_source: "event".to_string(),
+                subagent_count: 0,
+                fork_parent_session_id: None,
+                source_fingerprint: Some("synthetic".to_string()),
+            };
+            store
+                .upsert_sessions(std::slice::from_ref(&record), &[])
+                .expect("stores synthetic session");
+            record
+        }
+
+        /// Give a session an inclusive breakdown of one model, priced through
+        /// the test pricing fixture. `model_breakdown_json` and
+        /// `pricing_breakdown_json` share the same key, as they do for a
+        /// session with no fast-mode turns.
+        fn save_breakdown(store: &Store, key: &SessionKey, input_tokens: u64) {
+            save_breakdown_with_pricing_key(store, key, MODEL, MODEL, input_tokens);
+        }
+
+        /// Give a session an inclusive breakdown that routes under
+        /// `routing_model` (`model_breakdown_json`) but prices under
+        /// `pricing_key` (`pricing_breakdown_json`), the way a fast-mode turn
+        /// does: routing sees the plain model name, pricing sees the
+        /// `-fast`-suffixed catalog key.
+        fn save_breakdown_with_pricing_key(
+            store: &Store,
+            key: &SessionKey,
+            routing_model: &str,
+            pricing_key: &str,
+            input_tokens: u64,
+        ) {
+            let tokens = ModelTokens {
+                input_tokens,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                cache_creation_1h_tokens: 0,
+            };
+            let model_breakdown =
+                std::collections::HashMap::from([(routing_model.to_string(), tokens.clone())]);
+            let pricing_breakdown =
+                std::collections::HashMap::from([(pricing_key.to_string(), tokens)]);
+            store
+                .save_analysis(
+                    &AnalysisRecord {
+                        key: key.clone(),
+                        model_breakdown_json: serde_json::to_string(&model_breakdown)
+                            .expect("serializes the routing breakdown"),
+                        pricing_breakdown_json: serde_json::to_string(&pricing_breakdown)
+                            .expect("serializes the pricing breakdown"),
+                        inclusive_models_json: "[]".to_string(),
+                        initial_context_json: None,
+                        source_summaries_json: None,
+                        provider_hints_json: None,
+                        source_fingerprint: "synthetic".to_string(),
+                        pricing_generation: 0,
+                        analyzed_generation: 0,
+                        parser_revision: 0,
+                        analyzer_revision: 0,
+                        metrics_schema_revision: 0,
+                    },
+                    None,
+                )
+                .expect("saves synthetic analysis");
+        }
+
+        fn bind_account(store: &Store, key: &SessionKey, account_key: &str) {
+            store
+                .lock()
+                .execute(
+                    "INSERT INTO session_provider_account (
+                         environment_key, agent, session_id, provider, account_key,
+                         provenance, confidence, first_seen_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, 'provider_live', 'direct', '2026-01-01T00:00:00Z')",
+                    params![
+                        key.environment_key,
+                        key.agent,
+                        key.session_id,
+                        PROVIDER,
+                        account_key
+                    ],
+                )
+                .expect("binds synthetic account");
+        }
+
+        fn seen_account(store: &Store, account_key: &str) {
+            store
+                .lock()
+                .execute(
+                    "INSERT INTO provider_account_seen (
+                         agent, provider, account_key, first_seen_epoch, last_seen_epoch
+                     ) VALUES (?1, ?2, ?3, 1, 1)",
+                    params![AGENT, PROVIDER, account_key],
+                )
+                .expect("records a seen account");
+        }
+
+        fn insert_point(
+            store: &Store,
+            account_key: &str,
+            lane: &str,
+            effective_at_epoch: i64,
+            usd_per_percent: f64,
+            method: &str,
+        ) {
+            store
+                .upsert_factor_point(&FactorPoint {
+                    id: 0,
+                    provider: PROVIDER.to_string(),
+                    account_key: account_key.to_string(),
+                    lane: lane.to_string(),
+                    effective_at_epoch,
+                    usd_per_percent,
+                    method: method.to_string(),
+                    sample_count: 1,
+                    plan: None,
+                    plan_tier: None,
+                })
+                .expect("stores a synthetic factor point");
+        }
+
+        #[test]
+        fn percent_divides_session_cost_by_the_point_at_the_session_end() {
+            let store = memory_store();
+            let account_key = account('a');
+            let session = synthetic_session(&store, "session-1", 1_000);
+            save_breakdown(&store, &session.key, 1_000_000);
+            bind_account(&store, &session.key, &account_key);
+            insert_point(&store, &account_key, LANE_WEEKLY, 500, 2.0, "delta");
+
+            let allocations = session_limit_allocations(&store, std::slice::from_ref(&session))
+                .expect("computes rows");
+            let weekly = allocations
+                .iter()
+                .find(|allocation| allocation.metric == crate::dto::SessionLimitMetric::Weekly)
+                .expect("a weekly row for the bound account");
+            let cost = price_breakdown(&std::collections::HashMap::from([(
+                MODEL.to_string(),
+                ModelTokens {
+                    input_tokens: 1_000_000,
+                    ..Default::default()
+                },
+            )]))
+            .expect("the fixture model is priced");
+            assert_eq!(weekly.percent, cost.total_usd / 2.0);
+            assert_eq!(weekly.confidence, "learned");
+            assert_eq!(weekly.account_key, Some(account_key));
+        }
+
+        #[test]
+        fn an_older_session_uses_the_earliest_point() {
+            let store = memory_store();
+            let account_key = account('b');
+            let session = synthetic_session(&store, "session-old", 100);
+            save_breakdown(&store, &session.key, 1_000_000);
+            bind_account(&store, &session.key, &account_key);
+            // The session ends well before either point; both fall back to
+            // the earliest one.
+            insert_point(&store, &account_key, LANE_WEEKLY, 5_000, 4.0, "delta");
+            insert_point(&store, &account_key, LANE_WEEKLY, 10_000, 8.0, "delta");
+
+            let allocations = session_limit_allocations(&store, &[session]).expect("computes rows");
+            let weekly = allocations
+                .iter()
+                .find(|allocation| allocation.metric == crate::dto::SessionLimitMetric::Weekly)
+                .expect("a weekly row");
+            let cost = price_breakdown(&std::collections::HashMap::from([(
+                MODEL.to_string(),
+                ModelTokens {
+                    input_tokens: 1_000_000,
+                    ..Default::default()
+                },
+            )]))
+            .expect("the fixture model is priced");
+            assert_eq!(weekly.percent, cost.total_usd / 4.0);
+        }
+
+        #[test]
+        fn a_missing_factor_yields_no_row() {
+            let store = memory_store();
+            let account_key = account('c');
+            let session = synthetic_session(&store, "session-no-factor", 1_000);
+            save_breakdown(&store, &session.key, 1_000_000);
+            bind_account(&store, &session.key, &account_key);
+
+            let allocations = session_limit_allocations(&store, &[session]).expect("computes rows");
+            assert!(allocations.is_empty());
+        }
+
+        #[test]
+        fn an_unattributed_session_yields_no_row() {
+            let store = memory_store();
+            let session = synthetic_session(&store, "session-ambiguous", 1_000);
+            save_breakdown(&store, &session.key, 1_000_000);
+            // Two accounts seen for the agent, none bound: the two-step rule
+            // cannot resolve one.
+            seen_account(&store, &account('d'));
+            seen_account(&store, &account('e'));
+            insert_point(&store, &account('d'), LANE_WEEKLY, 500, 2.0, "delta");
+
+            let allocations = session_limit_allocations(&store, &[session]).expect("computes rows");
+            assert!(allocations.is_empty());
+        }
+
+        #[test]
+        fn confidence_follows_the_points_method() {
+            let store = memory_store();
+            let account_key = account('f');
+            let session = synthetic_session(&store, "session-seeded", 1_000);
+            save_breakdown(&store, &session.key, 1_000_000);
+            bind_account(&store, &session.key, &account_key);
+            insert_point(
+                &store,
+                &account_key,
+                LANE_FIVE_HOUR,
+                500,
+                2.0,
+                "window_start",
+            );
+
+            let allocations = session_limit_allocations(&store, &[session]).expect("computes rows");
+            let five_hour = allocations
+                .iter()
+                .find(|allocation| allocation.metric == crate::dto::SessionLimitMetric::FiveHour)
+                .expect("a five-hour row");
+            assert_eq!(five_hour.confidence, "seeded");
+        }
+
+        #[test]
+        fn a_fast_mode_session_prices_at_the_fast_rate() {
+            // The fixture catalog prices "gpt-5.6-sol" and its "-fast" tier
+            // differently, so this model shows whether the badge reads the
+            // speed-aware catalog key or the plain routing name.
+            const FAST_MODEL: &str = "gpt-5.6-sol";
+            let store = memory_store();
+            let account_key = account('g');
+            let session = synthetic_session(&store, "session-fast", 1_000);
+            save_breakdown_with_pricing_key(
+                &store,
+                &session.key,
+                FAST_MODEL,
+                "gpt-5.6-sol-fast",
+                1_000_000,
+            );
+            bind_account(&store, &session.key, &account_key);
+            insert_point(&store, &account_key, LANE_WEEKLY, 500, 2.0, "delta");
+
+            let allocations = session_limit_allocations(&store, std::slice::from_ref(&session))
+                .expect("computes rows");
+            let weekly = allocations
+                .iter()
+                .find(|allocation| allocation.metric == crate::dto::SessionLimitMetric::Weekly)
+                .expect("a weekly row for the bound account");
+            let tokens = ModelTokens {
+                input_tokens: 1_000_000,
+                ..Default::default()
+            };
+            let fast_cost = price_breakdown(&std::collections::HashMap::from([(
+                "gpt-5.6-sol-fast".to_string(),
+                tokens.clone(),
+            )]))
+            .expect("the fixture fast tier is priced");
+            let base_cost = price_breakdown(&std::collections::HashMap::from([(
+                FAST_MODEL.to_string(),
+                tokens,
+            )]))
+            .expect("the fixture base tier is priced");
+            assert_ne!(
+                fast_cost.total_usd, base_cost.total_usd,
+                "the fixture must price the fast tier differently for this test to mean anything"
+            );
+            assert_eq!(weekly.percent, fast_cost.total_usd / 2.0);
         }
     }
 }

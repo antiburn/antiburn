@@ -196,7 +196,7 @@ fallback, or a forced positive minimum.
 
 ### Persistence and work scheduling
 
-Desktop migration V40 is the final unreleased remediation schema. It stores
+Desktop migration V43 is the final unreleased remediation schema. It stores
 exactly two versioned JSON envelopes: `definition_json` and `result_json`. Each
 envelope has a 32 KiB database and application limit. Indexed columns retain
 target identity, lifecycle state, `dirty_revision`, `evaluated_revision`, the
@@ -236,9 +236,9 @@ Acceptance validation passed on 2026-09-09:
 
 - Engine formatting and strict Clippy passed. The engine ran 1,366 unit tests,
   all integration suites, and its doctest. Two ignored unit tests did not run.
-- Desktop Rust formatting and strict Clippy passed. All 1,039 tests passed.
+- Desktop Rust formatting and strict Clippy passed. All 1,107 tests passed.
 - The check coverage contract ran four tests and passed.
-- Desktop lint, type checks, all 1,223 frontend tests, and the production build
+- Desktop lint, type checks, all 1,294 frontend tests, and the production build
   passed. The existing large-chunk warning remains non-failing.
 - The full quality scan, secrets scan, and whitespace checks passed.
 

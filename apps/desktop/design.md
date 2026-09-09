@@ -11,6 +11,7 @@ sources:
   - src/styles/motion.css
   - src/styles/platform-controls.css
   - src/styles/hud.css
+  - src/styles/main-window.css
   - src/styles/session-analysis-colors.css
   - src/styles/session-rows.css
   - src/styles/session-detail.css
@@ -244,6 +245,7 @@ fonts:
   sans: "-apple-system, BlinkMacSystemFont, SF Pro Text, system-ui, sans-serif"
   mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" # via `font-mono`
 typography:
+  display: { fontSize: 40px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.36px" }
   # class .type-<name> · [fontSize, fontWeight, lineHeight, letterSpacing] · family = fonts.sans
   large-title: { fontSize: 26px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.36px" }
   title-1: { fontSize: 22px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.35px" }
@@ -276,6 +278,9 @@ sizes:
   --space-lg: 16px
   --space-xl: 20px
   --space-2xl: 24px # group separation in a settings-style pane
+  # Local geometry that stays in its component. The wide Session Detail
+  # (`layout="wide"` in src/components/session/SessionDetailPresentation.tsx)
+  # lets the context chart fill the tab, with a min-h-48 floor.
 rounded:
   small: 4px
   control: 5px
@@ -459,10 +464,116 @@ Notes for what isn't expressible as a token:
 - **Session Detail style rules** — the detail view matches the home screen's density of styles.
   One data size per tab: every figure, row, and data label is `type-body`; hierarchy comes from ink
   and weight, and size changes are reserved for the hero title (`type-title-3`), guidance prose
-  (`type-callout`), and footnotes. No heading that restates its content, and no caption label over
+  (`type-callout`), footnotes, and the wide Cost card's component table (`type-callout`, so it
+  sits beside the total at the minimum window width). No heading that restates its content, and no caption label over
   a self-evident value — identification that is genuinely needed uses an icon with a tooltip, the
   session-row fork-glyph pattern. Every horizontal bar uses the usage meter (`SegmentedMeter`)
   silhouette; judgment is carried by the band word's ink, never by a multi-color bar. Color only
   where it means a category: blue for context, the token series colors for in/out, yellow and
   pink for cache marks, brand orange for a compaction, teal for real work, red for waste.
-  Everything else stays greyscale until the pointer names a layer.
+  Everything else stays greyscale until the pointer names a layer. The wide Cost tab is a query
+  container, and its burn checks answer their own pane width. Each check is a card, which is what
+  groups its name with its verdict; the verdict is the mark alone, with the word kept for a screen
+  reader, and the card itself is the affordance that opens the explanation. Two cards to a row, and
+  three from 48rem where each card also shows its summary sentence. The tooltip holds the evidence
+  and the advice at every width.
+- **Main window** — the retained main window opens at 1100 × 600 logical pixels with a normal
+  minimum of 1000 × 560. The initial outer frame uses at most 85% of each usable display dimension,
+  including native chrome. A smaller work area takes precedence over the normal minimum. Saved
+  user sizes can exceed the initial cap and remain constrained to the usable work area. It paints the opaque
+  `surface-window` canvas. On macOS its 40px overlay drag region spans only the sidebar and leaves the
+  native traffic lights visible. The collection and detail panes start at the top of the window,
+  without titlebar clearance. On macOS the list header and detail toolbar supply drag regions;
+  their controls remain interactive. The empty detail uses a 40px drag region without layout clearance. Double-clicking this strip toggles maximize and restore through
+  Tauri's drag-region handler. Windows and Linux retain their native bars, so this surface adds no
+  top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
+  Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
+  These local geometry rules use the spacing tokens in `main-window.css`; other source lists
+  retain their current density. Sessions is the main sidebar section. A Settings action at the bottom opens the existing Settings window. Command+, (Control+, on Windows and Linux) also opens Settings without changing the selected section.
+  The first sidebar row starts at 48px on macOS, clear of the drag strip. The content region scrolls
+  independently of the title strip. A view switch is immediate: the window does not animate navigation. Use the
+  documented type scale and keyboard-only focus treatment. Hidden or minimized main windows suspend
+  presentation work; blur alone does not suspend it. Native close hides this renderer for reuse.
+
+### Main window collection and detail architecture
+
+The 220px navigation sidebar, 340px collection pane, and flexible detail pane remain visible
+at every supported window size. Each pane owns its scroll viewport. Generic pane labels are visually hidden;
+the session detail owns its toolbar and scroll area. At the 1000px minimum window width,
+the detail retains 440px; at the 1100px default width, it receives 540px.
+Selection is immediate, with no navigation animation. The generic collection does not auto-select.
+Sessions initially selects the newest active session, or the newest session from today in the
+local timezone. Older sessions leave the detail empty. Refreshes preserve the user’s selection;
+clearing or deleting a selection does not trigger another automatic selection.
+The default collection uses 40px minimum rows, semantic selected fills, and the shared
+keyboard-only focus treatment. Arrow keys, Home, and End select rows; Enter focuses the detail
+region. Visited sections retain their state and scroll position while hidden.
+
+`MainWindowLayout` owns chrome and columns. `CollectionDetailPane` owns selection and detail
+slots; a custom collection slot owns its own viewport, including any virtualization. These
+components do not load data or subscribe to events. Sessions supplies the existing virtualized
+`SessionList` and shared session detail in embedded mode. Selected session rows use `surface-selected/60` for a softer fill in both themes;
+hover and tooltip states retain that fill. This yields a 5.4% black tint in light mode and
+an 8.4% white tint in dark mode, without reducing text or badge opacity. Sidebar and generic
+collection selections keep their full-strength token;
+row density, grouping, badges, and tooltips match the menu-bar list. The 340px collection uses
+existing title truncation rather than a responsive layout change. The detail toolbar shows the
+session title; Back appears only for related-session history. Embedded shortcuts stay inside
+the detail pane. Hidden panes pause hygiene reads, relative-time clocks, and active-row motion.
+The menu-bar list keeps its existing navigation and presentation defaults.
+
+The unselected Sessions detail uses a centered, quiet empty state: a decorative 24px
+`MessagesSquare` icon on a soft circular surface, a `type-title-2` heading, and a short
+`type-body` description in secondary text. Keep the heading balanced and the description
+pretty-wrapped. Use no entry animation or extra action; selecting a list row is the action.
+The main-window collection slot owns this presentation; menu-bar empty states remain unchanged.
+
+#### Session card state treatment
+
+| State                 | Fill                             | Behavior                                                        |
+| --------------------- | -------------------------------- | --------------------------------------------------------------- |
+| Rest                  | `surface-card/50`                | Quiet background; text and badges retain their normal contrast. |
+| Hover or open tooltip | `surface-secondary/50`           | Applies only to an unselected card.                             |
+| Selected              | `surface-selected/60`            | Persists through hover and open tooltips.                       |
+| Keyboard focus        | Existing focus-visible treatment | Remains independent of the selected fill.                       |
+
+Apply this treatment to main-window session selection. Do not change the shared color
+tokens or the menu-bar list's default appearance to achieve it.
+
+- **Wide Session Detail** — the fixed toolbar holds the compact session summary and
+  callout-size section picker. The repo uses `font-mono`. The toolbar uses surface at
+  80% opacity, 16px backdrop blur, and 120% saturation. Reduced transparency uses a
+  solid surface-window with no blur. Rounded controls have no outline; the active
+  tab uses surface and the raised shadow. Tab labels use regular weight.
+  The section picker and action group are both 32px tall, with 24px inner controls.
+  Typography matches the session list: row names use body-large (13.5px), figures and
+  table rows use body (13px), and descriptions use callout (12px). Section headings
+  are screen-reader-only; caption is reserved for compact toolbar metadata.
+  There are no inherited size overrides. Content has 40px side padding.
+  Cost composition closes the Context tab, below the plot and its key.
+  The context plot fills available height with a 192px minimum. Both efficiency tracks
+  are 24px tall. Scale labels use the primary data size. The chart key uses three
+  equal columns. The composition legend stacks three rows beneath the bar, with
+  names on the left and percentages and ratings aligned on the right.
+  Cost, Checks, and Efficiency stack vertically. Checks use two equal columns when
+  the content reaches 40rem, and one column below that width. The top cost block pairs
+  a large-title total with a component table; it stacks below 40rem. The card fills
+  the content width, while its table caps at 640px. A shared surface-card/50 background,
+  rounded-popover corners, and 16px padding group the total and table. The table
+  label column fits its text up to 12rem, with 12px gaps before the numeric columns.
+  The table columns sit together at the card’s right edge. The whole cost card uses
+  font-mono, including the total, captions, row labels, and figures.
+  Checks show documentation as callout
+  subtext by default, with findings first and the status beside each name.
+  Efficiency guidance uses the full content width. Tools and efficiency figures use
+  display without a background. Tools uses brand orange; efficiency uses label ink
+  for good and ok readings, and brand orange only for bad readings. Tool cells use
+  16px padding.
+  These rules apply only to `.session-detail-wide`.
+
+  The Context chart updates geometry without animation when its measured size changes.
+  New bucket data can still animate together, without the entrance stagger.
+
+  Efficiency sits at the bottom of the Cost pane when content fits, and follows the
+  checks in normal scroll order otherwise. The total appears once in the top cost
+  block; the popover retains its total row.

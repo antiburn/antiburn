@@ -13,6 +13,7 @@
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
     V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
+    V41, V42, V43,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -742,11 +743,142 @@ CREATE INDEX session_source_lookup
     ON session (source_label, environment_key, agent, source_kind);
 "#;
 
-/// v39 preserves request routes for compatible cache accounting.
-const V39: &str = antiburn_local::analysis::TURN_SCHEMA_V7_SQL;
+/// v39 adds plan tracking to observations, and the tables the learned
+/// dollars-per-percent factor lives in.
+///
+/// A sample and a point outlive the observations that produced them. Sample
+/// retention deletes rows older than the session retention setting, capped at
+/// 365 days; points are never deleted. `store::provider_limit` nulls a
+/// sample's `period_id` before period retention removes the period, so that
+/// deletion needs no `ON DELETE` action here. The same step deletes that
+/// period's cursor row, so period retention itself needs no change.
+///
+/// `provider_limit_learn_cursor` marks how far a period's observations have
+/// been read into samples, so a pass can find a period whose readings are
+/// old — from bootstrap on upgrade or from a backfill — instead of only one
+/// observed in the last 15 minutes.
+const V39: &str = r#"
+ALTER TABLE provider_usage_observation ADD COLUMN plan TEXT;
+ALTER TABLE provider_usage_observation ADD COLUMN plan_tier TEXT;
 
-/// v40 stores the final durable remediation watch lifecycle.
+CREATE TABLE provider_limit_factor_sample (
+    id                  INTEGER PRIMARY KEY,
+    provider            TEXT NOT NULL,
+    account_key         TEXT NOT NULL,
+    lane                TEXT NOT NULL CHECK (lane IN ('weekly', 'fiveHour')),
+    kind                TEXT NOT NULL CHECK (kind IN ('delta', 'window_start', 'unattributed', 'rollout')),
+    period_id           INTEGER REFERENCES provider_usage_period(id),
+    from_epoch          INTEGER NOT NULL,
+    to_epoch            INTEGER NOT NULL,
+    from_percent        REAL NOT NULL,
+    to_percent          REAL NOT NULL,
+    input_usd           REAL NOT NULL,
+    output_usd          REAL NOT NULL,
+    cache_read_usd      REAL NOT NULL,
+    cache_write_usd     REAL NOT NULL,
+    turn_count          INTEGER NOT NULL,
+    plan                TEXT,
+    plan_tier           TEXT,
+    source_id           TEXT NOT NULL,
+    computed_at_epoch   INTEGER NOT NULL,
+    UNIQUE (provider, account_key, lane, from_epoch, to_epoch)
+) STRICT;
+
+CREATE INDEX provider_limit_factor_sample_lane_recent
+    ON provider_limit_factor_sample (provider, account_key, lane, to_epoch DESC);
+CREATE INDEX provider_limit_factor_sample_period
+    ON provider_limit_factor_sample (period_id);
+
+CREATE TABLE provider_limit_factor_point (
+    id                  INTEGER PRIMARY KEY,
+    provider            TEXT NOT NULL,
+    account_key         TEXT NOT NULL,
+    lane                TEXT NOT NULL CHECK (lane IN ('weekly', 'fiveHour')),
+    effective_at_epoch  INTEGER NOT NULL,
+    usd_per_percent     REAL NOT NULL,
+    method              TEXT NOT NULL CHECK (method IN ('delta', 'window_start')),
+    sample_count        INTEGER NOT NULL,
+    plan                TEXT,
+    plan_tier           TEXT,
+    UNIQUE (provider, account_key, lane, effective_at_epoch)
+) STRICT;
+
+CREATE INDEX provider_limit_factor_point_lane_recent
+    ON provider_limit_factor_point (provider, account_key, lane, effective_at_epoch DESC);
+
+CREATE TABLE provider_limit_residual (
+    period_id           INTEGER PRIMARY KEY REFERENCES provider_usage_period(id),
+    computed_at_epoch   INTEGER NOT NULL,
+    meter_percent       REAL NOT NULL,
+    estimated_percent   REAL NOT NULL
+) STRICT;
+
+CREATE TABLE provider_limit_learn_cursor (
+    period_id            INTEGER PRIMARY KEY REFERENCES provider_usage_period(id),
+    learned_through_epoch INTEGER NOT NULL
+) STRICT;
+"#;
+
+/// v40 removes the durable per-session allocator (phase 2 of the limit-factor
+/// plan). The session limit badge now prices straight from
+/// `provider_limit_factor_point`, computed at read time from the session's
+/// own cost — see `commands::session_limit_allocations`.
+///
+/// The dirty queue and its generation counter, and the materialized
+/// per-session rows, drop first because both reference
+/// `provider_usage_period`. `allocation_frozen` drops last, once nothing
+/// references it.
 const V40: &str = r#"
+DROP TABLE provider_usage_allocation_dirty;
+DROP TABLE provider_usage_allocation_revision;
+DROP TABLE provider_usage_session_allocation;
+
+ALTER TABLE provider_usage_period DROP COLUMN allocation_frozen;
+"#;
+
+/// v41 adds the checkpoint the bounded Codex rollout history reader keeps
+/// per session, so a large rollout file resumes from its last read byte
+/// instead of rereading it every pass. Keyed by session and provider, not
+/// by account: the checkpoint tracks how far a file has been read, which
+/// does not depend on which account a later pass resolves the session to.
+///
+/// `FOREIGN KEY ... ON DELETE CASCADE` removes a session's checkpoint row
+/// when the session itself is deleted, the same way `session_provider_account`
+/// relies on the cascade rather than an explicit delete in
+/// `Store::delete_session` or `Store::clear_local_session_data`.
+///
+/// Readers: `store::codex_rollout_checkpoint`,
+/// `provider_usage::codex_rollout_history`.
+const V41: &str = r#"
+CREATE TABLE provider_usage_rollout_checkpoint (
+    environment_key       TEXT NOT NULL,
+    agent                 TEXT NOT NULL,
+    session_id            TEXT NOT NULL,
+    provider              TEXT NOT NULL,
+    source_label          TEXT NOT NULL,
+    cursor_bytes          INTEGER NOT NULL DEFAULT 0 CHECK (cursor_bytes >= 0),
+    source_bytes          INTEGER NOT NULL DEFAULT 0 CHECK (source_bytes >= 0),
+    source_modified_epoch INTEGER,
+    source_identity       TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL CHECK (status IN ('pending', 'retry', 'complete')),
+    retry_count           INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+    next_attempt_epoch    INTEGER NOT NULL DEFAULT 0,
+    updated_at_epoch      INTEGER NOT NULL,
+    completed_at_epoch    INTEGER,
+    PRIMARY KEY (environment_key, agent, session_id, provider),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session(environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX provider_usage_rollout_checkpoint_ready
+    ON provider_usage_rollout_checkpoint (status, next_attempt_epoch, updated_at_epoch);
+"#;
+
+/// v42 preserves request routes for compatible cache accounting.
+const V42: &str = antiburn_local::analysis::TURN_SCHEMA_V7_SQL;
+
+/// v43 stores the final durable remediation watch lifecycle.
+const V43: &str = r#"
 ALTER TABLE session_evidence ADD COLUMN effective_model_target_hash TEXT;
 ALTER TABLE session_evidence ADD COLUMN effective_model_scope TEXT
     CHECK (effective_model_scope IN ('global', 'project'));

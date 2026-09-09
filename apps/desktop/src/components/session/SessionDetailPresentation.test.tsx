@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { INITIAL_SESSION_HYGIENE } from "../../lib/presentation/sessionHygiene"
@@ -682,6 +682,149 @@ describe("SessionDetailPresentation — session facts", () => {
   })
 })
 
+describe("SessionDetailPresentation — wide layout", () => {
+  const efficiency = {
+    totalUsd: 10,
+    newWorkUsd: 3.4,
+    carryUsd: 5.4,
+    rewriteUsd: 1.2,
+    growthTokens: 200_000,
+    outputTokens: 50_000,
+    pricedTurns: 12,
+    unpricedTurns: 0,
+  }
+
+  function wideView(over: Partial<SessionDetailPresentationProps> = {}) {
+    const props = presentationProps({ layout: "wide", cost: cost(), efficiency, ...over })
+    delete props.onBack
+    return render(<SessionDetailPresentation {...props} />)
+  }
+
+  it("keeps the summary and host actions in the toolbar and floats the section picker over the content", () => {
+    const onDeleteSession = vi.fn()
+    const onRevealSource = vi.fn()
+    const { container } = wideView({ onDeleteSession, onRevealSource, refreshing: true })
+
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull()
+    expect(screen.queryByText("Session Detail")).toBeNull()
+
+    const toolbar = container.querySelector<HTMLElement>(".session-detail-toolbar")!
+    expect(toolbar).toHaveClass("flex", "px-10")
+    expect(within(toolbar).getByText("Fix the flaky test")).toBeTruthy()
+    expect(within(toolbar).getByLabelText("Session summary")).toBeTruthy()
+    fireEvent.click(within(toolbar).getByLabelText("Delete this session"))
+    fireEvent.click(within(toolbar).getByLabelText("Reveal in file manager"))
+    expect(onDeleteSession).toHaveBeenCalledTimes(1)
+    expect(onRevealSource).toHaveBeenCalledTimes(1)
+    expect(within(toolbar).getByRole("status")).toBeTruthy()
+
+    // The picker sits over the bottom of the tab panel, not in the toolbar,
+    // and the panel keeps room under its last row for it.
+    const tablist = screen.getByRole("tablist", { name: "Session detail sections" })
+    expect(within(toolbar).queryByRole("tablist")).toBeNull()
+    const panel = screen.getByRole("tabpanel")
+    expect(panel.parentElement).toBe(tablist.parentElement!.parentElement)
+    expect(panel.parentElement).toHaveClass("relative")
+    expect(panel).toHaveClass("pb-20")
+    expect(tablist.parentElement).toHaveClass("absolute", "bottom-0", "justify-center")
+    expect(tablist).toHaveClass("session-detail-floating-tabs", "pointer-events-auto")
+  })
+
+  it.each([
+    { loading: true, error: false },
+    { loading: false, error: true },
+    { loading: false, error: false },
+  ])("keeps the toolbar usable without analysis: %j", (state) => {
+    const onBack = vi.fn()
+    const onDeleteSession = vi.fn()
+    view({ layout: "wide", embedded: true, summary: null, onBack, onDeleteSession, ...state })
+    expect(screen.getByRole("heading", { name: "Fix the flaky test" })).toBeTruthy()
+    expect(screen.queryByRole("tablist")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Back" }))
+    fireEvent.click(screen.getByRole("button", { name: "Delete this session" }))
+    expect(onBack).toHaveBeenCalledOnce()
+    expect(onDeleteSession).toHaveBeenCalledOnce()
+  })
+
+  it("separates the toolbar and gives the tab bar its content width", () => {
+    const { container } = wideView()
+    expect(container.querySelector(".session-detail-toolbar")).toHaveClass("border-separator")
+    expect(screen.getByRole("tablist", { name: "Session detail sections" })).toHaveClass(
+      "inline-grid",
+    )
+  })
+
+  it("places composition below the growing chart and its key", () => {
+    const { container } = wideView()
+    const key = screen.getByTestId("chart-key")
+    expect(key.dataset.layout).toBe("wide")
+    expect(
+      Array.from(screen.getByRole("tabpanel").querySelectorAll("h3")).map(
+        (heading) => heading.textContent,
+      ),
+    ).toEqual(["Context over time", "Cost composition"])
+    expect(key).toHaveClass("grid")
+    expect(key).toHaveClass("grid-cols-3")
+    expect(container.querySelector(".min-h-48")).toHaveClass("flex-1")
+    expect(screen.getByTestId("efficiency-composition").dataset.height).toBe("bar")
+    expect(screen.getByTestId("composition-legend")).toHaveClass("flex-col")
+  })
+
+  it("keeps the Cost tab's sections apart with spacing, not rules", () => {
+    const { container } = wideView()
+    fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
+    expect(screen.getByRole("heading", { name: "Checks" })).toHaveClass("sr-only")
+    expect(screen.getByText("Efficiency")).toBeTruthy()
+    // The cost table keeps the rule over its total row. The sections that
+    // hold the table, the checks, and the scale draw none of their own.
+    const sections = Array.from(container.querySelectorAll("section"))
+    expect(sections).toHaveLength(3)
+    expect(sections.map((section) => section.querySelector("h3")?.textContent)).toEqual([
+      "Cost",
+      "Checks",
+      "Efficiency",
+    ])
+    for (const section of sections) expect(section).not.toHaveClass("border-separator")
+  })
+
+  it("lays the Tools tab out in two columns", () => {
+    wideView({
+      summary: summary({
+        sessions: [
+          metrics({
+            initialContext: {
+              sources: [
+                {
+                  source: "skill_instructions",
+                  sourceName: "research",
+                  tokenCount: 12_000,
+                  useCount: 1,
+                },
+                {
+                  source: "skill_instructions",
+                  sourceName: "deploy",
+                  tokenCount: 8_000,
+                  useCount: 0,
+                },
+              ],
+            },
+          }),
+        ],
+      }),
+    })
+    fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
+    expect(screen.getByTestId("skills-mcp-list").dataset.columns).toBe("2")
+  })
+
+  it("leaves the popover layout as it was", () => {
+    const { container } = view({ cost: cost(), efficiency })
+    expect(screen.getByRole("button", { name: "Back" })).toBeTruthy()
+    expect(screen.getByTestId("chart-key").dataset.layout).toBe("popover")
+    expect(screen.getByRole("tablist", { name: "Session detail sections" })).toHaveClass("grid")
+    expect(container.querySelectorAll(".border-separator").length).toBeGreaterThan(0)
+  })
+})
+
 describe("SessionDetailPresentation — host actions", () => {
   it("always shows delete, but only shows reveal when it is available", () => {
     view()
@@ -721,3 +864,76 @@ describe("SessionDetailPresentation — host actions", () => {
     expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 14)
   })
 })
+
+describe.each(["popover", "wide"] as const)(
+  "SessionDetailPresentation — embedded pane (%s)",
+  (layout) => {
+    it("omits popover chrome and Back while retaining session content", () => {
+      const { container } = view({ layout, embedded: true, onBack: undefined })
+      expect(screen.queryByRole("button", { name: "Back" })).toBeNull()
+      expect(container.firstElementChild).not.toHaveClass("rounded-popover")
+      expect(screen.queryByText("Session Detail")).toBeNull()
+      expect(screen.getByRole("heading", { name: "Fix the flaky test" })).toBeTruthy()
+    })
+
+    it("limits adjacent navigation to the active detail pane", () => {
+      const onNext = vi.fn()
+      const props = presentationProps({ layout, embedded: true, onNext })
+      const { container, rerender } = render(<SessionDetailPresentation {...props} />)
+      fireEvent.keyDown(window, { key: "ArrowRight" })
+      expect(onNext).not.toHaveBeenCalled()
+      fireEvent.keyDown(container.firstElementChild!, { key: "ArrowRight" })
+      expect(onNext).toHaveBeenCalledOnce()
+      rerender(<SessionDetailPresentation {...props} active={false} />)
+      fireEvent.keyDown(container.firstElementChild!, { key: "ArrowRight" })
+      expect(onNext).toHaveBeenCalledOnce()
+    })
+  },
+)
+
+describe.each(["popover", "wide"] as const)(
+  "SessionDetailPresentation — deferred keyboard entry (%s)",
+  (layout) => {
+    it("accepts focus when a lazy detail replaces the focused loading pane", () => {
+      const { container, rerender } = render(<section data-detail-pane tabIndex={-1} />)
+      const pane = container.firstElementChild as HTMLElement
+      pane.focus()
+      rerender(
+        <section data-detail-pane tabIndex={-1}>
+          <SessionDetailPresentation {...presentationProps({ layout, embedded: true })} />
+        </section>,
+      )
+      expect(container.querySelector("[data-detail-focus-target]")).toHaveFocus()
+    })
+  },
+)
+
+describe.each(["popover", "wide"] as const)(
+  "SessionDetailPresentation — native drag toolbar (%s)",
+  (layout) => {
+    it("only enables the embedded macOS toolbar, leaving controls interactive", () => {
+      const agent = vi.spyOn(window.navigator, "userAgent", "get").mockReturnValue("Macintosh")
+      try {
+        const props = presentationProps({ layout })
+        const { container, rerender, unmount } = render(
+          <SessionDetailPresentation {...props} />,
+        )
+        expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
+        rerender(<SessionDetailPresentation {...props} embedded />)
+        const toolbar = screen
+          .getByRole("heading", { name: "Fix the flaky test" })
+          .closest("[data-tauri-drag-region]")
+        expect(toolbar).toHaveAttribute("data-tauri-drag-region", "deep")
+        expect(screen.getByRole("button", { name: "Delete this session" })).not.toHaveAttribute(
+          "data-tauri-drag-region",
+        )
+        unmount()
+        agent.mockReturnValue("Windows NT")
+        const windows = render(<SessionDetailPresentation {...props} embedded />)
+        expect(windows.container.querySelector("[data-tauri-drag-region]")).toBeNull()
+      } finally {
+        agent.mockRestore()
+      }
+    })
+  },
+)

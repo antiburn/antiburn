@@ -59,6 +59,13 @@ version and refuses the release if there is none.
   stream all selected values across the accepted session, message, and part
   cluster, so content-only row changes invalidate prior work.
 
+## [0.6.1] - 2026-09-08
+
+### Added
+
+- API support notes now identify the batch-analysis, repository-orchestration,
+  and serialized-metrics interfaces retained for external embeddings.
+
 ## [0.6.0] - 2026-09-07
 
 ### Added
