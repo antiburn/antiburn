@@ -54,6 +54,13 @@
 //! in user context, so any Keychain prompt the OS ever judges owed appears
 //! while the reader is looking at the screen.
 //!
+//! Pi's OAuth store is a third, read-only carrier — see [`super::pi_auth`].
+//! The same rule holds: its token is never refreshed here. When that entry
+//! has expired, the one recovery lever is delegating the refresh to Pi's
+//! own `auth check` command through [`super::pi_refresh`], which runs Pi's
+//! own locked refresh-and-write; when that lever is unavailable the
+//! expired entry reads exactly as it did before the lever existed.
+//!
 //! Finding neither carrier — no Keychain item, no credentials file, or
 //! either one in a shape this parser does not recognize — is not an error.
 //! It is the ordinary state of a machine where the CLI has never signed in.
@@ -120,6 +127,7 @@ use super::claude_touch;
 use super::cooldown::{self, Cooldown, FetchFailure};
 use super::http;
 use super::pi_auth;
+use super::pi_refresh::{PiRefresher, Recovery};
 
 /// The credentials file is a small, purpose-built OAuth token store, not a
 /// general state file — cap the read defensively rather than trust that.
@@ -396,6 +404,10 @@ pub struct ClaudeDirectFetch {
     config_cache_path: Option<PathBuf>,
     transport: Box<dyn AnthropicTransport>,
     cooldown: Cooldown,
+    /// The delegated recovery lever for an expired Pi entry — see
+    /// `pi_refresh` for the contract, and `read_carriers` for the one
+    /// trigger that reaches it.
+    pi_refresh: PiRefresher,
     /// The world the expired-credential touch runs in — see [`claude_touch`]
     /// and the module doc's "Delegating refresh to the CLI" section. `None`
     /// disables the touch outright; the ordinary state for a test whose
@@ -494,6 +506,7 @@ impl ClaudeDirectFetch {
             config_cache_path: claude_config_cache::default_config_path(),
             transport: Box::new(LiveAnthropicTransport),
             cooldown: Cooldown::new(),
+            pi_refresh: PiRefresher::new(),
             touch_env: Some(Box::new(claude_touch::CliTouchEnvironment::new(
                 default_credentials_path(),
             ))),
@@ -520,6 +533,7 @@ impl ClaudeDirectFetch {
             config_cache_path: None,
             transport: Box::new(LiveAnthropicTransport),
             cooldown: Cooldown::new(),
+            pi_refresh: PiRefresher::unavailable(),
             touch_env: None,
             touch_gate: claude_touch::TouchGate::new(),
             #[cfg(target_os = "macos")]
@@ -547,6 +561,7 @@ impl ClaudeDirectFetch {
             config_cache_path: None,
             transport,
             cooldown: Cooldown::new(),
+            pi_refresh: PiRefresher::unavailable(),
             touch_env: Some(touch_env),
             touch_gate: claude_touch::TouchGate::new(),
             #[cfg(target_os = "macos")]
@@ -573,6 +588,7 @@ impl ClaudeDirectFetch {
             config_cache_path: None,
             transport,
             cooldown: Cooldown::new(),
+            pi_refresh: PiRefresher::unavailable(),
             touch_env: Some(touch_env),
             touch_gate: claude_touch::TouchGate::new(),
             #[cfg(target_os = "macos")]
@@ -604,6 +620,34 @@ impl ClaudeDirectFetch {
             config_cache_path: Some(config_cache_path),
             transport,
             cooldown: Cooldown::new(),
+            pi_refresh: PiRefresher::unavailable(),
+            touch_env: None,
+            touch_gate: claude_touch::TouchGate::new(),
+            #[cfg(target_os = "macos")]
+            keychain_credentials: std::sync::Mutex::new(None),
+            #[cfg(feature = "analytics")]
+            limit_reset_diagnostic: LimitResetDiagnosticState::default(),
+        }
+    }
+
+    /// A source reading only the Pi carrier, with explicit transport and
+    /// refresher — for tests that exercise the delegated refresh lever.
+    #[cfg(test)]
+    fn with_pi(
+        pi_auth_path: PathBuf,
+        transport: Box<dyn AnthropicTransport>,
+        pi_refresh: PiRefresher,
+    ) -> ClaudeDirectFetch {
+        ClaudeDirectFetch {
+            credentials_path: None,
+            pi_auth_path: Some(pi_auth_path),
+            claude_json_path: None,
+            #[cfg(target_os = "macos")]
+            try_keychain: false,
+            config_cache_path: None,
+            transport,
+            cooldown: Cooldown::new(),
+            pi_refresh,
             touch_env: None,
             touch_gate: claude_touch::TouchGate::new(),
             #[cfg(target_os = "macos")]
@@ -676,12 +720,29 @@ impl ClaudeDirectFetch {
             native_carriers.push(credentials.clone());
             carriers.push(credentials);
         }
-        if let Some(entry) = self
-            .pi_auth_path
-            .as_deref()
-            .and_then(|path| pi_auth::read_entry(path, pi_auth::ANTHROPIC_KEY))
-            .filter(|entry| !entry.refresh_token.is_empty())
+        if let Some(path) = self.pi_auth_path.as_deref()
+            && let Some(entry) = pi_auth::read_entry(path, pi_auth::ANTHROPIC_KEY)
+                .filter(|entry| !entry.refresh_token.is_empty())
         {
+            // An expired entry's one recovery lever is Pi's own SDK — see
+            // `pi_refresh`. Expiry is the only trigger: a network or 5xx
+            // failure later in the fetch never reaches it.
+            let entry = if entry.is_live(OffsetDateTime::now_utc()) {
+                entry
+            } else {
+                match self.pi_refresh.recover(path, pi_auth::ANTHROPIC_KEY) {
+                    // The rotated entry is the one retry this lever earns.
+                    Recovery::Fresh(fresh) => fresh,
+                    // Every other verdict keeps the expired entry as a
+                    // carrier, exactly as before the lever existed:
+                    // `fetch_from_carriers` reports an all-expired set as
+                    // an authentication failure, which is already the
+                    // sign-in-again state a terminal rejection asks for.
+                    Recovery::AlreadyValid | Recovery::SignInWithPi | Recovery::Unavailable => {
+                        entry
+                    }
+                }
+            };
             carriers.push(ClaudeCredentials {
                 access_token: entry.access_token,
                 expires_at_ms: entry.expires_at_ms,
@@ -1710,6 +1771,87 @@ mod tests {
         assert_eq!(identity.email.as_deref(), Some("reader@example.test"));
         assert_eq!(identity.plan, None);
         assert_eq!(identity.tier.as_deref(), Some("synthetic-tier"));
+    }
+
+    #[test]
+    fn an_expired_pi_entry_recovers_through_the_delegated_refresh_and_retries_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pi_path = dir.path().join("pi-auth.json");
+        fs::write(
+            &pi_path,
+            r#"{"anthropic":{"type":"oauth","access":"stale-access","refresh":"pi-refresh","expires":1}}"#,
+        )
+        .expect("write");
+
+        /// Rewrites the Pi store the way Pi's own locked write would, then
+        /// answers a clean completion.
+        struct RotatingRunner(PathBuf);
+        impl super::super::pi_refresh::RefreshRunner for RotatingRunner {
+            fn run(&self, _: &str) -> super::super::pi_refresh::RunOutcome {
+                fs::write(
+                    &self.0,
+                    r#"{"anthropic":{"type":"oauth","access":"rotated-access","refresh":"rotated-refresh","expires":9223372036854775807}}"#,
+                )
+                .expect("rewrite pi store");
+                super::super::pi_refresh::RunOutcome::Completed
+            }
+        }
+
+        struct RotatedOnly(Arc<AtomicUsize>);
+        impl AnthropicTransport for RotatedOnly {
+            fn usage(&self, token: &str) -> Result<String, ProviderUsageError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                if token == "rotated-access" {
+                    Ok(LIVE_USAGE_BODY.to_owned())
+                } else {
+                    Err(ProviderUsageError::Authentication)
+                }
+            }
+            fn profile(&self, _: &str) -> Option<String> {
+                None
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let source = ClaudeDirectFetch::with_pi(
+            pi_path.clone(),
+            Box::new(RotatedOnly(Arc::clone(&calls))),
+            PiRefresher::with_runner(Box::new(RotatingRunner(pi_path))),
+        );
+
+        let outcome = source.fetch(TEST_MAX_AGE);
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.snapshots.len(), 1);
+        // Exactly one usage call: the rotated entry is the single retry.
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_live_pi_entry_never_triggers_the_delegated_refresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pi_path = dir.path().join("pi-auth.json");
+        fs::write(
+            &pi_path,
+            r#"{"anthropic":{"type":"oauth","access":"pi-access","refresh":"pi-refresh","expires":9223372036854775807}}"#,
+        )
+        .expect("write");
+        struct PanicRunner;
+        impl super::super::pi_refresh::RefreshRunner for PanicRunner {
+            fn run(&self, _: &str) -> super::super::pi_refresh::RunOutcome {
+                panic!("a live Pi entry must never spawn the refresh")
+            }
+        }
+        let source = ClaudeDirectFetch::with_pi(
+            pi_path,
+            Box::new(FakeTransport {
+                usage_result: Ok(LIVE_USAGE_BODY.to_string()),
+            }),
+            PiRefresher::with_runner(Box::new(PanicRunner)),
+        );
+
+        let outcome = source.fetch(TEST_MAX_AGE);
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.snapshots.len(), 1);
     }
 
     #[test]

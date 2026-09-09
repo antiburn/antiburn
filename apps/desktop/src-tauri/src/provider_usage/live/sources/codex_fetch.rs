@@ -57,6 +57,15 @@
 //! gate as everything else here, so a terminally broken login cannot
 //! respawn the CLI on every poll.
 //!
+//! # The Pi carrier
+//!
+//! Pi's OAuth store is a second, read-only carrier for the same account
+//! kind — see [`super::pi_auth`]. Its token is tried once, never refreshed
+//! here: Pi owns that lifecycle. When the entry has already expired, the
+//! one recovery lever is delegating the refresh to Pi's own `auth check`
+//! command through [`super::pi_refresh`]; when that lever is unavailable
+//! the entry reads as absent, exactly as it did before the lever existed.
+//!
 //! # Falling back
 //!
 //! If the retried attempt also fails, this source asks the same question a
@@ -104,6 +113,7 @@ use super::codex_app_server;
 use super::cooldown::{Cooldown, FetchFailure};
 use super::http;
 use super::pi_auth;
+use super::pi_refresh::{PiRefresher, Recovery};
 
 /// `auth.json` is a small, purpose-built token store — cap the read
 /// defensively rather than trust that.
@@ -349,6 +359,10 @@ pub struct CodexDirectFetch {
     cli: Box<dyn CodexCli>,
     wait: RefreshWait,
     cooldown: Cooldown,
+    /// The delegated recovery lever for an expired Pi entry — see
+    /// `pi_refresh` for the contract, and the fetch closure below for the
+    /// one trigger that reaches it.
+    pi_refresh: PiRefresher,
 }
 
 impl CodexDirectFetch {
@@ -361,6 +375,7 @@ impl CodexDirectFetch {
             cli: Box::new(LiveCodexCli),
             wait: RefreshWait::LIVE,
             cooldown: Cooldown::new(),
+            pi_refresh: PiRefresher::new(),
         }
     }
 
@@ -391,7 +406,18 @@ impl CodexDirectFetch {
             cli: Box::new(NeverSpawns),
             wait: RefreshWait::FAST,
             cooldown: Cooldown::new(),
+            // Tests must never reach a real node spawn; the ones that
+            // exercise the lever install their own runner.
+            pi_refresh: PiRefresher::unavailable(),
         }
+    }
+
+    /// The same source, recovering expired Pi entries through an explicit
+    /// refresher instead of the never-available test default.
+    #[cfg(test)]
+    fn with_pi_refresh(mut self, pi_refresh: PiRefresher) -> CodexDirectFetch {
+        self.pi_refresh = pi_refresh;
+        self
     }
 
     /// The same source, reading its seed from `sessions_root` instead of
@@ -464,16 +490,39 @@ impl LiveUsageSource for CodexDirectFetch {
                 .pi_auth_path
                 .as_deref()
                 .and_then(|path| pi_auth::read_entry(path, pi_auth::CODEX_KEY))
-                .filter(|entry| !entry.refresh_token.is_empty())
-                .filter(|entry| {
-                    i128::from(entry.expires_at_ms) > now.unix_timestamp_nanos() / 1_000_000
-                });
+                .filter(|entry| !entry.refresh_token.is_empty());
+            // An expired entry's one recovery lever is Pi's own SDK — see
+            // `pi_refresh`. Expiry is the only trigger: a network or 5xx
+            // failure below never reaches it.
+            let (pi_entry, pi_lever_error) = match pi_entry {
+                Some(entry) if entry.is_live(now) => (Some(entry), None),
+                Some(entry) => match self
+                    .pi_auth_path
+                    .as_deref()
+                    .map(|path| self.pi_refresh.recover(path, pi_auth::CODEX_KEY))
+                    .unwrap_or(Recovery::Unavailable)
+                {
+                    // The rotated entry is the one retry this lever earns.
+                    Recovery::Fresh(fresh) => (Some(fresh), None),
+                    // A clean run without a write: the token was already
+                    // valid, so the current entry proceeds.
+                    Recovery::AlreadyValid => (Some(entry), None),
+                    // Pi's own SDK terminally rejected the refresh: the fix
+                    // is signing in again with Pi, which is an
+                    // authentication failure, not a transient one.
+                    Recovery::SignInWithPi => (None, Some(ProviderUsageError::Authentication)),
+                    // The lever is unavailable: today's behavior, where an
+                    // expired entry is simply absent.
+                    Recovery::Unavailable => (None, None),
+                },
+                None => (None, None),
+            };
             let pi_error = match &pi_entry {
                 Some(entry) => match fetch_pi(self.transport.as_ref(), entry, now) {
                     Ok(snapshot) => return Ok(Some(snapshot)),
                     Err(error) => Some(error),
                 },
-                None => None,
+                None => pi_lever_error,
             };
 
             let carrier_error = match (direct_error, pi_error) {
@@ -1207,6 +1256,121 @@ mod tests {
         );
     }
 
+    /// A runner standing in for a real node spawn: it rewrites the Pi
+    /// store the way Pi's own locked write would, then answers a fixed
+    /// outcome.
+    struct FakePiRunner {
+        rewrite: Option<(PathBuf, &'static str)>,
+        outcome: super::super::pi_refresh::RunOutcome,
+    }
+
+    impl super::super::pi_refresh::RefreshRunner for FakePiRunner {
+        fn run(&self, _provider_key: &str) -> super::super::pi_refresh::RunOutcome {
+            if let Some((path, body)) = &self.rewrite {
+                fs::write(path, body).expect("rewrite pi store");
+            }
+            self.outcome
+        }
+    }
+
+    #[test]
+    fn an_expired_pi_entry_recovers_through_the_delegated_refresh_and_retries_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pi_path = dir.path().join("pi-auth.json");
+        fs::write(
+            &pi_path,
+            r#"{"openai-codex":{"type":"oauth","access":"stale-access","refresh":"pi-refresh","expires":1}}"#,
+        )
+        .expect("write");
+        struct RotatedOnly(Arc<AtomicUsize>);
+        impl CodexTransport for RotatedOnly {
+            fn usage(&self, token: &str, _: Option<&str>) -> Result<String, UsageCallError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                if token == "rotated-access" {
+                    Ok(WHAM_BODY.to_owned())
+                } else {
+                    Err(UsageCallError::ExpiredCredential)
+                }
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let source = CodexDirectFetch::with_paths(
+            None,
+            Some(pi_path.clone()),
+            Box::new(RotatedOnly(Arc::clone(&calls))),
+        )
+        .with_pi_refresh(PiRefresher::with_runner(Box::new(FakePiRunner {
+            rewrite: Some((
+                pi_path,
+                r#"{"openai-codex":{"type":"oauth","access":"rotated-access","refresh":"rotated-refresh","expires":9223372036854775807}}"#,
+            )),
+            outcome: super::super::pi_refresh::RunOutcome::Completed,
+        })));
+
+        let outcome = source.fetch(TEST_MAX_AGE);
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.snapshots.len(), 1);
+        // Exactly one usage call: the rotated entry is the single retry.
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_terminally_rejected_pi_refresh_reports_sign_in_again() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pi_path = dir.path().join("pi-auth.json");
+        fs::write(
+            &pi_path,
+            r#"{"openai-codex":{"type":"oauth","access":"stale-access","refresh":"pi-refresh","expires":1}}"#,
+        )
+        .expect("write");
+        struct Never;
+        impl CodexTransport for Never {
+            fn usage(&self, _: &str, _: Option<&str>) -> Result<String, UsageCallError> {
+                unreachable!("a rejected refresh leaves no entry to try")
+            }
+        }
+        let source = CodexDirectFetch::with_paths(None, Some(pi_path), Box::new(Never))
+            .with_pi_refresh(PiRefresher::with_runner(Box::new(FakePiRunner {
+                rewrite: None,
+                outcome: super::super::pi_refresh::RunOutcome::Rejected,
+            })));
+
+        let outcome = source.fetch(TEST_MAX_AGE);
+        // Authentication, not Unavailable: the reader's fix is signing in
+        // again with Pi, which is an actionable, distinct state.
+        assert_eq!(outcome.error, Some(ProviderUsageError::Authentication));
+        assert!(outcome.snapshots.is_empty());
+    }
+
+    #[test]
+    fn a_live_pi_entry_never_triggers_the_delegated_refresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pi_path = dir.path().join("pi-auth.json");
+        fs::write(
+            &pi_path,
+            r#"{"openai-codex":{"type":"oauth","access":"pi-access","refresh":"pi-refresh","expires":9223372036854775807}}"#,
+        )
+        .expect("write");
+        struct PiOnly;
+        impl CodexTransport for PiOnly {
+            fn usage(&self, _: &str, _: Option<&str>) -> Result<String, UsageCallError> {
+                Ok(WHAM_BODY.to_owned())
+            }
+        }
+        struct PanicRunner;
+        impl super::super::pi_refresh::RefreshRunner for PanicRunner {
+            fn run(&self, _: &str) -> super::super::pi_refresh::RunOutcome {
+                panic!("a live Pi entry must never spawn the refresh")
+            }
+        }
+        let source = CodexDirectFetch::with_paths(None, Some(pi_path), Box::new(PiOnly))
+            .with_pi_refresh(PiRefresher::with_runner(Box::new(PanicRunner)));
+
+        let outcome = source.fetch(TEST_MAX_AGE);
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.snapshots.len(), 1);
+    }
+
     #[test]
     fn an_expired_pi_entry_is_absent_without_network_or_refresh() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1222,6 +1386,8 @@ mod tests {
                 unreachable!("expired Pi credentials are absent")
             }
         }
+        // The test default's refresh lever is never available, so this
+        // covers exactly today's behavior: an expired entry is absent.
         let source = CodexDirectFetch::with_paths(None, Some(pi_path), Box::new(Never));
         let outcome = source.fetch(TEST_MAX_AGE);
         assert!(outcome.snapshots.is_empty());

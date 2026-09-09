@@ -28,6 +28,10 @@
 //! is the plumbing they share — one client, one response cap, one mapping
 //! from an HTTP status to this module's error taxonomy — and [`cooldown`] is
 //! the retry-and-last-good-reading contract both sources are built on.
+//! [`pi_refresh`] is the delegated recovery lever both direct-fetch sources
+//! reach for when Pi's own stored token — read by [`pi_auth`] — has expired:
+//! it runs Pi's own `auth check` command to refresh the credential rather
+//! than redeeming the refresh token itself.
 //!
 //! # Picking one reading
 //!
@@ -50,6 +54,7 @@ pub(crate) mod codex_rollout;
 mod cooldown;
 pub(crate) mod http;
 mod pi_auth;
+mod pi_refresh;
 
 use std::time::Duration;
 
