@@ -175,17 +175,20 @@ function SubagentMemberRow({
         wide ? "type-callout" : "type-body",
       )}
     >
-      <span className="col-span-full flex min-w-0 items-center gap-x-1 text-left">
+      {/* The title stays in the label column. A title that spans every column
+          makes the grid spread its width across the number columns, and the
+          label column then gets almost no width. */}
+      <span className="col-start-1 flex min-w-0 items-center gap-x-1 text-left">
         <span className="tabular-nums">
           [{formatMemberStart(member, sessionStartedAtEpoch)}]
         </span>
         <TruncatedText className="min-w-0 flex-1" text={member.label} />
-        <ChevronRight
-          size={12}
-          aria-hidden="true"
-          className="shrink-0 transition-transform duration-[var(--duration-fast)] ease-out group-hover:translate-x-0.5"
-        />
       </span>
+      <ChevronRight
+        size={12}
+        aria-hidden="true"
+        className="col-start-4 self-center justify-self-end transition-transform duration-[var(--duration-fast)] ease-out group-hover:translate-x-0.5"
+      />
 
       <span className="truncate text-left">{modelLabel}</span>
       <span className="text-right tabular-nums">
@@ -252,7 +255,7 @@ function SubagentsSplitRow({
       >
         <span className="min-w-0 flex items-center gap-x-1 text-label-tertiary">
           <Chevron size={12} aria-hidden="true" className="shrink-0" />
-          {label}
+          <span className="truncate">{label}</span>
         </span>
         <span className="text-right text-label-tertiary tabular-nums">
           {formatTokensShort(tokens)}
@@ -302,7 +305,7 @@ export function CostBreakdown({
       className={cn(
         "grid min-w-0 gap-y-1",
         wide
-          ? "w-full max-w-[640px] gap-x-2 justify-self-end justify-end grid-cols-[fit-content(12rem)_max-content_max-content_max-content]"
+          ? "w-full max-w-[640px] gap-x-2 justify-self-end justify-end grid-cols-[fit-content(24rem)_max-content_max-content_max-content]"
           : "gap-x-3 grid-cols-[1fr_max-content_max-content_max-content]",
       )}
     >
