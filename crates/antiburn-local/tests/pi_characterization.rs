@@ -7,10 +7,10 @@ use std::sync::Arc;
 use antiburn_local::analysis::{
     AppendOnlyGuarantee, CompositeSink, EvidenceCoverage, EvidenceSource, EvidenceValue,
     MAX_RECORD_BYTES, MemoryTurnRowStore, NormalizedRecord, NormalizedSession, PartialReason,
-    PiAdapter, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionEvidence,
-    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
-    SourceCapabilities, SourceClaim, SourceKind, TurnFacts, TurnRowSink, TurnRowStore,
-    VendorAdapter, VisitOutcome, adapter_for, analyze_session, append_only_guarantee,
+    PiSessionReader, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionEvidence,
+    SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionReader,
+    SessionSummary, SourceCapabilities, SourceClaim, SourceKind, TurnFacts, TurnRowSink,
+    TurnRowStore, VisitOutcome, analyze_session, append_only_guarantee, reader_for,
 };
 use antiburn_local::discovery::source_version::{
     FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
@@ -172,7 +172,7 @@ fn input(name: &str) -> SessionInput {
 
 fn collect(input: &SessionInput) -> (RecordCoverage, BTreeSet<PartialReason>, NormalizedSession) {
     let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
-    PiAdapter
+    PiSessionReader
         .visit(input, &mut collector)
         .expect("Pi fixture must stream");
     let coverage = collector.coverage();
@@ -182,13 +182,13 @@ fn collect(input: &SessionInput) -> (RecordCoverage, BTreeSet<PartialReason>, No
 }
 
 fn composite(input: &SessionInput) -> (SessionEvidence, SessionMetricsAccumulator) {
-    composite_with(input, SourceCapabilities::pi(), &PiAdapter)
+    composite_with(input, SourceCapabilities::pi(), &PiSessionReader)
 }
 
 fn composite_with(
     input: &SessionInput,
     capabilities: SourceCapabilities,
-    adapter: &dyn VendorAdapter,
+    adapter: &dyn SessionReader,
 ) -> (SessionEvidence, SessionMetricsAccumulator) {
     let metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
@@ -278,21 +278,23 @@ impl RecordSink for SummarySink {
 
 fn summary(name: &str) -> SessionSummary {
     let mut sink = SummarySink::default();
-    PiAdapter.visit(&input(name), &mut sink).unwrap();
+    PiSessionReader.visit(&input(name), &mut sink).unwrap();
     sink.summary.expect("Pi stream must finish")
 }
 
 #[test]
-fn pi_registry_uses_the_dedicated_adapter() {
-    assert_eq!(adapter_for("pi").agent(), "pi");
-    assert_eq!(adapter_for("PI").agent(), "pi");
+fn pi_registry_uses_the_dedicated_reader() {
+    assert_eq!(reader_for("pi").agent(), "pi");
+    assert_eq!(reader_for("PI").agent(), "pi");
 }
 
 #[test]
 fn streaming_and_batch_normalization_match_for_every_fixture() {
     for name in fixture_names() {
         let input = input(name);
-        let parsed = PiAdapter.normalize(&input).expect("fixture must normalize");
+        let parsed = PiSessionReader
+            .normalize(&input)
+            .expect("fixture must normalize");
         let (_, _, streamed) = collect(&input);
         assert_eq!(streamed, parsed, "normalized fixture {name}");
     }
@@ -461,14 +463,168 @@ fn every_recognized_inert_family_fails_closed_on_hidden_signals() {
 }
 
 #[test]
-fn skill_arguments_never_become_pi_tool_or_skill_evidence() {
+fn explicit_skill_identity_does_not_expose_other_arguments_or_imply_inventory() {
     let (evidence, metrics) = composite(&input("skill_tool_privacy"));
     let EvidenceValue::Complete(tools) = evidence.tools else {
         panic!("Pi tool evidence must be complete");
     };
-    assert!(tools.by_name.contains_key("Skill"));
+    assert!(tools.by_name.contains_key("review-code"));
     assert!(!tools.by_name.contains_key("synthetic-private-skill-marker"));
-    assert_eq!(metrics.metrics().skill_uses[0].name, "skill");
+    assert_eq!(metrics.metrics().skill_uses[0].name, "review-code");
+    assert!(!evidence.capabilities.skill_inventory);
+    assert!(matches!(
+        evidence.context_sources,
+        EvidenceValue::Unsupported
+    ));
+}
+
+// Reviewed upstream: https://github.com/badlogic/pi-mono/blob/b2602be77cb7b0de45dd616407fd210daa48aa75/packages/coding-agent/src/core/skills.ts
+// validateName defines the safe subset. Pi loads invalid names with warnings; this reader does not retain them.
+#[test]
+fn pi_skill_identity_rejects_paths_commands_prompts_and_oversized_names() {
+    for arguments in [
+        json!({"skill": "/synthetic/private/SKILL.md"}),
+        json!({"skill": "C:\\synthetic\\private\\SKILL.md"}),
+        json!({"skill": "private prompt text"}),
+        json!({"skill": "private\nprompt"}),
+        json!({"skill": "x".repeat(65)}),
+        json!({"skill": "-invalid"}),
+        json!({"skill": "invalid--name"}),
+        json!({"path": "/synthetic/private/SKILL.md"}),
+        json!({"command": "/private prompt"}),
+        json!({"name": "private"}),
+        json!("{\"skill\":\"private\"}"),
+    ] {
+        let input = SessionInput {
+            source: RawSource::Jsonl(json!({
+                "type": "message", "id": "a", "parentId": null, "timestamp": 1,
+                "message": {"role": "assistant", "content": [
+                    {"type": "toolCall", "name": "Skill", "arguments": arguments},
+                    {"type": "toolCall", "name": "read", "arguments": {"path": "/synthetic/private/SKILL.md"}},
+                    {"type": "toolCall", "name": "skill", "arguments": {"skill": "review-code", "prompt": "private prompt"}}
+                ]}
+            }).to_string()),
+            ..input("skill_tool_privacy")
+        };
+        let (_, _, session) = collect(&input);
+        assert_eq!(session.events[0].tools[0].detail, None);
+        assert_eq!(
+            session.events[0].tools[2].detail.as_deref(),
+            Some("review-code")
+        );
+        let (evidence, metrics) = composite(&input);
+        let retained =
+            serde_json::to_string(&json!({"evidence": evidence, "metrics": metrics.metrics()}))
+                .unwrap();
+        assert!(!retained.contains("private"));
+        assert!(!retained.contains("synthetic/"));
+    }
+}
+
+// Reviewed upstream: https://github.com/badlogic/pi-mono/blob/b2602be77cb7b0de45dd616407fd210daa48aa75/packages/ai/src/types.ts
+// AssistantMessage.providerThinkingLevel is provider effort, not the selected thinking_level_change policy.
+#[test]
+fn pi_native_policy_drives_checks_without_borrowing_provider_effort_or_routes() {
+    for (provider, api, model) in [
+        ("openai", "openai-responses", "gpt-5.6"),
+        ("openai-codex", "openai-codex-responses", "gpt-5.6"),
+        ("anthropic", "anthropic-messages", "claude-sonnet-4.6"),
+        ("google", "google-generative-ai", "gemini-3.8-pro"),
+    ] {
+        for level in ["off", "minimal", "low", "medium", "high", "xhigh", "max"] {
+            let input = SessionInput {
+                source: RawSource::Jsonl(format!(
+                    "{}\n{}",
+                    json!({
+                        "type": "thinking_level_change", "id": "a", "parentId": null,
+                        "timestamp": 1, "thinkingLevel": level
+                    }),
+                    json!({
+                        "type": "message", "id": "b", "parentId": "a", "timestamp": 2,
+                        "message": {"role": "assistant", "provider": provider, "api": api, "model": model,
+                            "providerThinkingLevel": "max", "content": [],
+                            "usage": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0}}
+                    })
+                )),
+                ..input("minimal_session")
+            };
+            let (_, _, session) = collect(&input);
+            assert_eq!(session.events[0].thinking_mode.as_deref(), Some(level));
+            let (evidence, _) = composite(&input);
+            let badge = session_badges(&evidence, &ReportCatalogs::default())
+                .into_iter()
+                .find(|badge| badge.id == BadgeId::ModelOverthinking)
+                .unwrap();
+            assert_eq!(
+                badge.status,
+                if matches!(level, "xhigh" | "max") {
+                    BadgeStatus::Finding
+                } else {
+                    BadgeStatus::Clean
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn pi_missing_policy_or_route_is_not_filled_from_provider_effort_or_an_earlier_model() {
+    for (level, provider, api, expected) in [
+        (
+            None,
+            Some("openai"),
+            Some("openai-responses"),
+            NotAssessedReason::SignalMissing,
+        ),
+        (
+            Some("low"),
+            None,
+            Some("openai-responses"),
+            NotAssessedReason::EvidenceContractIncomplete,
+        ),
+        (
+            Some("low"),
+            Some("openai"),
+            None,
+            NotAssessedReason::EvidenceContractIncomplete,
+        ),
+        (
+            Some("future-level"),
+            Some("openai"),
+            Some("openai-responses"),
+            NotAssessedReason::EvidenceContractIncomplete,
+        ),
+    ] {
+        let mut rows = vec![json!({"type": "model_change", "id": "a", "parentId": null,
+            "timestamp": 1, "provider": "openai", "modelId": "gpt-5.6"})];
+        if let Some(level) = level {
+            rows.push(
+                json!({"type": "thinking_level_change", "id": "b", "parentId": "a",
+                "timestamp": 2, "thinkingLevel": level}),
+            );
+        }
+        rows.push(
+            json!({"type": "message", "id": "c", "parentId": if level.is_some() {"b"} else {"a"},
+            "timestamp": 3, "message": {"role": "assistant", "model": "gpt-5.6",
+                "provider": provider, "api": api, "providerThinkingLevel": "max", "content": [],
+                "usage": {"input": 1, "output": 1, "cacheRead": 0, "cacheWrite": 0}}}),
+        );
+        let input = SessionInput {
+            source: RawSource::Jsonl(
+                rows.iter()
+                    .map(Value::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            ..input("minimal_session")
+        };
+        let (evidence, _) = composite(&input);
+        let badge = session_badges(&evidence, &ReportCatalogs::default())
+            .into_iter()
+            .find(|badge| badge.id == BadgeId::ModelOverthinking)
+            .unwrap();
+        assert_eq!(badge.status, BadgeStatus::NotAssessed(expected));
+    }
 }
 
 #[test]
@@ -590,7 +746,7 @@ fn claimed_reads_accept_stable_files_and_reject_changes_without_finishing() {
         fork_parent_session_id: None,
     };
     let mut collector = SessionCollector::new("pi", "claimed");
-    let outcome = PiAdapter
+    let outcome = PiSessionReader
         .visit_claimed(
             &input,
             &claim,
@@ -618,7 +774,7 @@ fn claimed_reads_accept_stable_files_and_reject_changes_without_finishing() {
         fork_parent_session_id: None,
     };
     let mut collector = SessionCollector::new("pi", "changed");
-    let outcome = PiAdapter
+    let outcome = PiSessionReader
         .visit_claimed(
             &changed_input,
             &changed_claim,
@@ -650,7 +806,7 @@ fn claimed_reads_reject_short_or_replaced_sources_without_finishing() {
         fork_parent_session_id: None,
     };
     let mut short_collector = SessionCollector::new("pi", "short");
-    let outcome = PiAdapter
+    let outcome = PiSessionReader
         .visit_claimed(
             &short_input,
             &short_claim,
@@ -674,7 +830,7 @@ fn claimed_reads_reject_short_or_replaced_sources_without_finishing() {
         fork_parent_session_id: None,
     };
     let mut replaced_collector = SessionCollector::new("pi", "replaced");
-    let outcome = PiAdapter
+    let outcome = PiSessionReader
         .visit_claimed(
             &replaced_input,
             &replaced_claim,
@@ -700,7 +856,7 @@ fn claimed_reads_honor_cancellation_without_publishing() {
         fork_parent_session_id: None,
     };
     let mut collector = SessionCollector::new("pi", "cancelled");
-    let error = PiAdapter
+    let error = PiSessionReader
         .visit_claimed(
             &input,
             &claim,
@@ -887,11 +1043,13 @@ fn image_and_other_private_payloads_do_not_reach_evidence() {
 #[test]
 fn pi_capabilities_match_published_evidence_and_session_cache_support() {
     let expected = SourceCapabilities {
+        source_format: antiburn_local::analysis::SourceFormat::PiV3Jsonl,
         request_context_tokens: true,
         cache_write_tokens: true,
         timestamps_and_order: true,
         tool_invocations: true,
-        skill_mcp_attribution: false,
+        skill_inventory: false,
+        mcp_inventory: false,
         tool_definitions: false,
         model_identity: true,
         token_classes: true,
@@ -906,14 +1064,14 @@ fn pi_capabilities_match_published_evidence_and_session_cache_support() {
         linear_record_order: false,
         quota_incidents: false,
         harness_version: false,
+        repeated_context_accounting: None,
     };
     assert_eq!(SourceCapabilities::pi(), expected);
 
     for name in fixture_names() {
         let (evidence, _) = composite(&input(name));
-        let expected_cache = name != "mixed_api";
-        assert_eq!(
-            evidence.capabilities.cache_write_tokens, expected_cache,
+        assert!(
+            evidence.capabilities.cache_write_tokens,
             "cache support for {name}"
         );
         assert!(is_supported(&evidence.context));
@@ -953,14 +1111,11 @@ fn pi_badges_follow_the_merged_session_coverage_policy() {
             // zero eligible turns means the effort signal is missing.
             BadgeStatus::NotAssessed(NotAssessedReason::SignalMissing),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            // The reviewed production registry is non-empty, and this
-            // fixture observes zero models, so no catalogued model can
-            // have run.
-            BadgeStatus::Clean,
+            // The fixture has model-eligible turns without model identity.
+            BadgeStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            // Record identity now qualifies cache churn for Pi, and this
-            // fixture shows no churn.
-            BadgeStatus::Clean,
+            // Pi V3 does not identify which persisted input tokens repeat.
+            BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
         ]
     );
 
@@ -982,9 +1137,7 @@ fn pi_badges_follow_the_merged_session_coverage_policy() {
             // same incomplete session coverage keeps this unassessed.
             BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
             BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
-            // Record identity now qualifies cache churn for Pi, but the
-            // same incomplete coverage keeps it unassessed too.
-            BadgeStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+            BadgeStatus::NotAssessed(NotAssessedReason::CapabilityMissing),
         ]
     );
 }
@@ -1008,13 +1161,11 @@ fn pi_detector_eligibility_is_frozen() {
             DetectorId::SessionsOverDepth,
             DetectorId::ModelOverthinking,
             DetectorId::OldModelUsage,
-            DetectorId::CacheChurn,
         ]
     );
 }
 
-/// The generic fallback claims no cache-write support for any vendor. It uses
-/// uncached-input accounting. This matches Pi when Pi reports no write support.
+/// The generic reader produces the same metrics when Pi records no cache write.
 #[test]
 fn provider_cache_miss_behavior_matches_the_generic_fallback_without_cache_writes() {
     for name in fixture_names() {
@@ -1023,7 +1174,7 @@ fn provider_cache_miss_behavior_matches_the_generic_fallback_without_cache_write
         }
         let input = input(name);
         let (_, pi_metrics) = composite(&input);
-        let generic = adapter_for("pi-generic-fallback");
+        let generic = reader_for("pi-generic-fallback");
         let (_, generic_metrics) = composite_with(&input, SourceCapabilities::pi(), generic);
         assert_eq!(
             pi_metrics.metrics().cache_rehydration_count,
@@ -1037,18 +1188,20 @@ fn provider_cache_miss_behavior_matches_the_generic_fallback_without_cache_write
         );
     }
 
-    // `mixed_api` reports cache-write support unavailable because its two
-    // API families disagree on whether they report cache writes at all. Pi
-    // and the generic fallback both fall back to uncached-input accounting
-    // and read the same provider cache miss count from it.
+    // The source contract stays stable when records omit cache-write values.
     let (evidence, pi_metrics) = composite(&input("mixed_api"));
-    assert!(!evidence.capabilities.cache_write_tokens);
+    assert!(evidence.capabilities.cache_write_tokens);
+    assert!(matches!(
+        evidence.cache,
+        EvidenceValue::Complete(ref cache)
+            if matches!(cache.repeated_context, EvidenceValue::Unsupported)
+    ));
     assert_eq!(pi_metrics.metrics().cache_rehydration_count, 0);
     assert_eq!(pi_metrics.metrics().cache_routing_miss_count, 1);
     let (_, generic_metrics) = composite_with(
         &input("mixed_api"),
         SourceCapabilities::pi(),
-        adapter_for("pi-generic-fallback"),
+        reader_for("pi-generic-fallback"),
     );
     assert_eq!(generic_metrics.metrics().cache_rehydration_count, 0);
     assert_eq!(generic_metrics.metrics().cache_routing_miss_count, 1);
@@ -1073,7 +1226,7 @@ fn composite_with_store(input: &SessionInput) -> (SessionEvidence, Arc<MemoryTur
         None,
     );
     let mut sink = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = PiAdapter
+    let outcome = PiSessionReader
         .visit(input, &mut sink)
         .expect("Pi fixture must stream into both sinks");
     sink.observe_source_outcome(outcome);

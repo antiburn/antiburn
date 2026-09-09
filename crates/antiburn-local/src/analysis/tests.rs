@@ -11,8 +11,8 @@ use crate::analysis::{
     CompositeSink, ContextWindowSource, EvidenceSource, EvidenceValue, NormalizedRecord,
     PartialReason, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionCoverageRecord,
     SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SessionSummary, SourceCapabilities, SourceKind, VisitOutcome, adapter_for, analyze_sources,
-    normalize_source,
+    SessionSummary, SourceCapabilities, SourceKind, VisitOutcome, analyze_sources,
+    normalize_source, reader_for,
 };
 
 /// Runs `jsonl` through the Claude adapter into a [`CompositeSink`], the
@@ -32,7 +32,7 @@ fn claude_composite(jsonl: &str) -> CompositeSink {
         }),
         turn_rows,
     );
-    let outcome = adapter_for("claude")
+    let outcome = reader_for("claude")
         .visit(&input, &mut composite)
         .expect("Claude source must parse");
     composite.observe_source_outcome(outcome);
@@ -379,7 +379,7 @@ fn the_characterization_fixtures_report_their_expected_coverage() {
                 fork_parent_session_id: None,
             };
             let mut collector = SessionCollector::new("claude", name);
-            adapter_for("claude")
+            reader_for("claude")
                 .visit(&input, &mut collector)
                 .expect("fixture must be visited");
             (
@@ -649,7 +649,7 @@ fn a_legacy_adapter_read_reports_unvalidated() {
     );
     let mut sink = CountingSink::default();
 
-    let outcome = adapter_for("cursor")
+    let outcome = reader_for("cursor")
         .visit(&input, &mut sink)
         .expect("legacy visit must complete");
 
@@ -665,7 +665,7 @@ fn a_legacy_adapter_stream_is_unchanged() {
         r#"{"timestamp":"2024-06-01T12:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10}}}}"#,
     );
     let input = jsonl_input("codex", source);
-    let adapter = adapter_for("codex");
+    let adapter = reader_for("codex");
     let expected = adapter
         .normalize(&input)
         .expect("Codex source must normalize");
@@ -695,7 +695,7 @@ fn a_non_claude_adapter_visits_through_the_default_implementation() {
         r#"{"timestamp":"2024-06-01T12:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"model_context_window":258400,"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10}}}}"#,
     );
     let input = jsonl_input("codex", source);
-    let adapter = adapter_for("codex");
+    let adapter = reader_for("codex");
     let expected = adapter
         .normalize(&input)
         .expect("Codex source must normalize");

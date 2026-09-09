@@ -1,10 +1,8 @@
 /**
  * Agent display registry.
  *
- * Maps the kebab-case slug the engine emits for an agent onto the three facts
- * the UI needs about it: what to call it, which icon slot it asks for, where
- * its sessions come from, and whether the analysis engine has a dedicated
- * adapter for its transcript format.
+ * Maps each engine slug to its display name, icon slot, session surface, and
+ * usable session analysis support.
  *
  * The registry holds an icon *name*, never artwork. Rendering an icon is the
  * caller's job: components in this app take a `renderAgentIcon` slot and are
@@ -25,10 +23,8 @@ interface AgentInfo {
    */
   defaultSurface: AgentSurface
   /**
-   * Whether the analysis engine has a dedicated adapter for this agent's
-   * transcript format. Agents on the generic fallback report `false`, and the
-   * UI uses that to explain an empty analysis view instead of implying the
-   * session was uninteresting.
+   * Whether the engine has a usable session parser for this agent.
+   * Passive source registration does not enable analysis.
    */
   supportsAnalysis: boolean
 }
@@ -135,8 +131,7 @@ export function defaultAgentSurface(slug: string): AgentSurface {
 }
 
 /**
- * Whether the analysis engine has a dedicated adapter for this agent. Agents
- * on the generic fallback (and unknown slugs) return false.
+ * Whether the engine has a usable session parser for this agent.
  */
 export function agentSupportsAnalysis(slug: string): boolean {
   return AGENTS[slug]?.supportsAnalysis ?? false

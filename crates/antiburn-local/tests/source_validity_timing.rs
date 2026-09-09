@@ -3,8 +3,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use antiburn_local::analysis::{
-    AppendOnlyGuarantee, ClaudeAdapter, NormalizedRecord, RawSource, RecordSink, SessionCollector,
-    SessionInput, SessionSummary, SourceChangedReason, SourceClaim, VisitOutcome,
+    AppendOnlyGuarantee, ClaudeSessionReader, NormalizedRecord, RawSource, RecordSink,
+    SessionCollector, SessionInput, SessionSummary, SourceChangedReason, SourceClaim, VisitOutcome,
     append_only_guarantee,
 };
 use antiburn_local::discovery::source_version::{
@@ -70,7 +70,7 @@ fn a_replacement_before_pinning_streams_nothing() {
     std::fs::rename(replacement, &path).expect("replace source path");
     let mut sink = CountingSink::default();
 
-    let outcome = ClaudeAdapter
+    let outcome = ClaudeSessionReader
         .visit_claimed(
             &file_input(&path),
             &claim,
@@ -98,7 +98,7 @@ fn a_rename_after_pinning_is_accepted_on_the_original_inode() {
     let claim = claim_for_path(&path);
     let mut sink = RenameSink::new(&path, replacement);
 
-    let outcome = ClaudeAdapter
+    let outcome = ClaudeSessionReader
         .visit_claimed(
             &file_input(&path),
             &claim,
@@ -132,7 +132,7 @@ fn a_rewritten_record_after_the_head_region_passes_the_recheck() {
     let claim = claim_for_path(&path);
     let mut sink = RewriteSink::new(&path, rewrite_offset);
 
-    let outcome = ClaudeAdapter
+    let outcome = ClaudeSessionReader
         .visit_claimed(
             &file_input(&path),
             &claim,
@@ -159,7 +159,7 @@ fn two_reads_of_the_same_identity_and_boundary_are_byte_identical() {
     let claim = claim_for_path(&path);
     let input = file_input(&path);
     let mut first = SessionCollector::new("claude", "claimed-session");
-    let first_outcome = ClaudeAdapter
+    let first_outcome = ClaudeSessionReader
         .visit_claimed(
             &input,
             &claim,
@@ -175,7 +175,7 @@ fn two_reads_of_the_same_identity_and_boundary_are_byte_identical() {
         .write_all(record("second", 1).as_bytes())
         .expect("append source");
     let mut second = SessionCollector::new("claude", "claimed-session");
-    let second_outcome = ClaudeAdapter
+    let second_outcome = ClaudeSessionReader
         .visit_claimed(
             &input,
             &claim,
@@ -206,7 +206,7 @@ fn an_absent_guarantee_accepts_a_stable_full_read() {
     let claim = claim_for_path(&path);
     let mut collector = SessionCollector::new("claude", "claimed-session");
 
-    let outcome = ClaudeAdapter
+    let outcome = ClaudeSessionReader
         .visit_claimed(
             &file_input(&path),
             &claim,
@@ -233,7 +233,7 @@ fn an_absent_guarantee_takes_the_full_reprocess_path() {
         .expect("append source");
     let mut collector = SessionCollector::new("claude", "claimed-session");
 
-    let outcome = ClaudeAdapter
+    let outcome = ClaudeSessionReader
         .visit_claimed(
             &file_input(&path),
             &claim,
@@ -263,7 +263,7 @@ fn an_evidenced_guarantee_reads_a_pinned_prefix() {
         .expect("append source");
     let mut collector = SessionCollector::new("claude", "claimed-session");
 
-    let outcome = ClaudeAdapter
+    let outcome = ClaudeSessionReader
         .visit_claimed(
             &file_input(&path),
             &claim,

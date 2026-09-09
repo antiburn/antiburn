@@ -1240,7 +1240,34 @@ async fn stat_activity_cursor(log: &SessionLog) -> Option<String> {
         let child_size = tokio::fs::metadata(child).await.ok().map(|meta| meta.len());
         child_sizes.push((child.clone(), child_size));
     }
-    Some(activity_cursor(path, size, &child_sizes))
+    source_activity_cursor(log.agent_type, path, size, child_sizes).await
+}
+
+/// Include Claude delegation metadata without changing other agents' activity cursors.
+async fn source_activity_cursor(
+    agent: AgentKind,
+    parent: &std::path::Path,
+    size: u64,
+    children: Vec<(std::path::PathBuf, Option<u64>)>,
+) -> Option<String> {
+    let cursor = activity_cursor(parent, size, &children);
+    if agent != AgentKind::Claude || children.is_empty() {
+        return Some(cursor);
+    }
+    tokio::task::spawn_blocking(move || {
+        let sidecars = children
+            .iter()
+            .map(|(path, _)| {
+                antiburn_local::discovery::source_version::claude_sidecar_fingerprint(path)
+                    .map(|fingerprint| (path, fingerprint))
+            })
+            .collect::<std::io::Result<Vec<_>>>()
+            .ok()?;
+        Some(serde_json::to_string(&(cursor, sidecars)).expect("source cursor is serializable"))
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Reuse a previous record when its source has not changed.
@@ -1292,7 +1319,9 @@ async fn semantic_activity_for_log(
         let child_size = tokio::fs::metadata(child).await.ok().map(|meta| meta.len());
         child_sizes.push((child.clone(), child_size));
     }
-    let cursor = activity_cursor(path, size, &child_sizes);
+    let cursor = source_activity_cursor(log.agent_type, path, size, child_sizes)
+        .await
+        .unwrap_or_default();
 
     let unchanged_event = previous
         .is_some_and(|state| state.activity_source == "event" && state.activity_cursor == cursor);

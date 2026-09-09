@@ -3,12 +3,12 @@
 //!
 //! The finding is an absence claim about invocation: a definition
 //! occupies the session's context but the transcript never calls it.
-//! Absence can only be read from a complete, named catalogue, so partial
-//! or missing evidence never permits a finding.
+//! Findings require complete invocation coverage for the named definitions.
+//! The catalogue does not prove the full historical inventory, so the report cannot claim clean.
 //!
 //! Partial-evidence rules:
 //! - No partial evidence permits a finding. The rule needs complete
-//!   `context_sources`, `tools`, and `eligibility` groups, and needs the
+//!   `tools` and `eligibility` groups, and needs the
 //!   nested `tool_definitions` map itself `Complete` (not `Partial`): a
 //!   partial map may have missed the invoking record, and a
 //!   never-invoked flag from it would be a false positive.
@@ -18,7 +18,7 @@
 //!   session's harness version or model did not resolve against the
 //!   built-in tool catalogue. That reports `SignalMissing`, not clean
 //!   and not a finding.
-//! - Partial evidence in any required group prevents clean.
+//! - An unrelated partial resource group does not block a finding.
 //!
 //! Exclusions: a situational tool (one that enters the request only
 //! when used, such as `Skill` or `enter_plan_mode`) carries no idle
@@ -31,12 +31,19 @@ use std::collections::BTreeMap;
 
 use crate::analysis::tool_catalog::{comparable_tool_name, situational_tools};
 use crate::analysis::{EvidenceValue, SessionEvidence, ToolDefinition};
+use crate::remediation::{BuiltInToolTokens, FindingCause};
 
 use super::{Observation, complete};
 
 pub(crate) fn evaluate(evidence: &SessionEvidence) -> Observation {
     let (Some(sources), Some(_tools), Some(eligibility)) = (
-        complete(&evidence.context_sources),
+        match &evidence.context_sources {
+            EvidenceValue::Complete(sources)
+            | EvidenceValue::Partial {
+                observed: sources, ..
+            } => Some(sources),
+            EvidenceValue::Unsupported => None,
+        },
         complete(&evidence.tools),
         complete(&evidence.eligibility),
     ) else {
@@ -72,6 +79,32 @@ fn has_unused_definition(agent: &str, definitions: &BTreeMap<String, ToolDefinit
             && !definition.invoked
             && !situational.contains(&comparable_tool_name(name))
     })
+}
+
+pub(super) fn finding_causes(evidence: &SessionEvidence) -> Vec<FindingCause> {
+    let Some(sources) = super::observed(&evidence.context_sources) else {
+        return Vec::new();
+    };
+    let Some(definitions) = super::complete(&sources.tool_definitions) else {
+        return Vec::new();
+    };
+    let situational: Vec<String> = situational_tools(&evidence.identity.agent)
+        .iter()
+        .map(|name| comparable_tool_name(name))
+        .collect();
+    definitions
+        .iter()
+        .filter(|(name, definition)| {
+            definition.tokens > 0
+                && !definition.deferred
+                && !definition.invoked
+                && !situational.contains(&comparable_tool_name(name))
+        })
+        .map(|(tool, definition)| FindingCause::UnusedBuiltInTool {
+            tool: tool.clone(),
+            tokens: BuiltInToolTokens::Definition(u64::from(definition.tokens)),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -111,6 +144,19 @@ mod tests {
             evaluate(&with_definition("bash", unused(100))),
             Observation::Finding
         );
+    }
+
+    #[test]
+    fn incomplete_resource_inventory_does_not_block_built_in_tools() {
+        let mut evidence = with_definition("bash", unused(100));
+        let EvidenceValue::Complete(sources) = evidence.context_sources else {
+            unreachable!()
+        };
+        evidence.context_sources = EvidenceValue::Partial {
+            observed: sources,
+            reason: CoverageReason::AttributionIncomplete,
+        };
+        assert_eq!(evaluate(&evidence), Observation::Finding);
     }
 
     #[test]

@@ -301,6 +301,12 @@ pub struct NormalizedEvent {
     /// falls back to the session's headline model.
     #[serde(default)]
     pub model: Option<String>,
+    /// The model API provider saved on this request, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The provider API saved on this request, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<String>,
     /// The model's thinking mode for this turn, when the transcript records it.
     #[serde(default)]
     pub thinking_mode: Option<String>,
@@ -388,6 +394,8 @@ impl NormalizedEvent {
             usage: Usage::default(),
             tools: Vec::new(),
             model: None,
+            provider: None,
+            api: None,
             thinking_mode: None,
             speed: None,
             has_thinking: false,

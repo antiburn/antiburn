@@ -20,6 +20,107 @@ pub struct SessionKey {
     pub session_id: String,
 }
 
+/// The durable lifecycle state for one remediation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemediationState {
+    Reserved,
+    Writing,
+    RecoveryNeeded,
+    Watching,
+    Fixed,
+    Recurred,
+}
+
+impl RemediationState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reserved => "reserved",
+            Self::Writing => "writing",
+            Self::RecoveryNeeded => "recoveryNeeded",
+            Self::Watching => "watching",
+            Self::Fixed => "fixed",
+            Self::Recurred => "recurred",
+        }
+    }
+}
+
+impl std::str::FromStr for RemediationState {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "reserved" => Ok(Self::Reserved),
+            "writing" => Ok(Self::Writing),
+            "recoveryNeeded" => Ok(Self::RecoveryNeeded),
+            "watching" => Ok(Self::Watching),
+            "fixed" => Ok(Self::Fixed),
+            "recurred" => Ok(Self::Recurred),
+            _ => Err("unknown remediation state"),
+        }
+    }
+}
+
+/// Values needed to create one durable remediation watch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remediation {
+    pub remediation_id: String,
+    pub target_key: String,
+    pub environment_key: String,
+    pub agent: String,
+    pub scope_kind: String,
+    pub scope_key: String,
+    pub state: RemediationState,
+    pub definition_json: String,
+    pub result_json: String,
+    pub created_at_epoch: i64,
+    pub effective_boundary_ms: Option<i64>,
+}
+
+/// One exact evidence identity checked in the watch creation transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemediationEvidenceGuard {
+    pub environment_key: String,
+    pub agent: String,
+    pub session_id: String,
+    pub source_generation: i64,
+    pub published_fence: i64,
+    pub source_fingerprint: Option<String>,
+    pub processed_fingerprint: Option<String>,
+    pub parser_revision: i64,
+    pub analyzer_revision: i64,
+    pub evidence_schema_revision: i64,
+}
+
+/// One persisted remediation and its current verification revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemediationRecord {
+    pub remediation_id: String,
+    pub target_key: String,
+    pub state: RemediationState,
+    pub environment_key: String,
+    pub agent: String,
+    pub scope_kind: String,
+    pub scope_key: String,
+    pub definition_json: String,
+    pub result_json: String,
+    pub dirty_revision: i64,
+    pub evaluated_revision: i64,
+    pub created_at_epoch: i64,
+    pub updated_at_epoch: i64,
+    pub effective_boundary_ms: Option<i64>,
+    pub verified_at_epoch: Option<i64>,
+    pub recurred_at_epoch: Option<i64>,
+}
+
+/// A remediation verification result ready for guarded persistence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemediationResult {
+    pub state: RemediationState,
+    pub result_json: String,
+    pub evaluated_at_epoch: i64,
+    pub transition_at_epoch: Option<i64>,
+}
+
 impl SessionKey {
     pub fn new(
         environment_key: impl Into<String>,

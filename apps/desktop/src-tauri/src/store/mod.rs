@@ -25,6 +25,7 @@ pub(crate) mod codex_rollout_checkpoint;
 pub mod model;
 pub(crate) mod provider_limit;
 pub(crate) mod provider_usage_history;
+mod remediation;
 mod schema;
 
 #[cfg(test)]
@@ -59,7 +60,8 @@ pub use model::{
     EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters,
     MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement,
     OwningSession, ProjectionRevisions, PublishedEvidence, RETAIN_SESSION_DATA_FOREVER,
-    RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey, SessionBadgeMetric,
+    RelationKind, RelationRecord, Remediation, RemediationEvidenceGuard, RemediationRecord,
+    RemediationResult, RemediationState, RepositoryRecord, SessionActivityKey, SessionBadgeMetric,
     SessionKey, SessionRecord, SourcePublishMode, SourcePublishOutcome, SourceVersionState,
     ThemePreference, UsageEvidenceRecord,
 };
@@ -805,9 +807,9 @@ impl Store {
                 upsert_session_in(&tx, record)?;
             let generation_increased =
                 previous_generation.is_none_or(|previous| source_generation > previous);
-            if evidence_agents.contains(&record.key.agent.as_str())
-                && (generation_increased || activity_cursor_changed || source_returned)
-            {
+            let evidence_marked_pending = evidence_agents.contains(&record.key.agent.as_str())
+                && (generation_increased || activity_cursor_changed || source_returned);
+            if evidence_marked_pending {
                 mark_evidence_pending_in(&tx, &record.key)?;
             }
         }
@@ -1303,9 +1305,8 @@ impl Store {
             .iter()
             .map(|agent| rusqlite::types::Value::Text((*agent).to_string()))
             .collect();
-        let enrolled = transaction.execute(
-            &format!(
-                "INSERT INTO session_evidence (environment_key, agent, session_id)
+        let enroll_sql = format!(
+            "INSERT INTO session_evidence (environment_key, agent, session_id)
                  SELECT session.environment_key, session.agent, session.session_id
                    FROM session
                   WHERE session.agent IN ({agent_placeholders})
@@ -1313,11 +1314,18 @@ impl Store {
                         SELECT 1 FROM session_evidence
                          WHERE session_evidence.environment_key = session.environment_key
                            AND session_evidence.agent = session.agent
-                           AND session_evidence.session_id = session.session_id
-                    )"
-            ),
-            rusqlite::params_from_iter(agent_values.iter()),
-        )?;
+                            AND session_evidence.session_id = session.session_id
+                     )
+                 RETURNING environment_key, agent"
+        );
+        let mut enroll_statement = transaction.prepare(&enroll_sql)?;
+        let enrolled_scopes = enroll_statement
+            .query_map(rusqlite::params_from_iter(agent_values.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let enrolled = enrolled_scopes.len();
+        drop(enroll_statement);
 
         let parser_parameter = agents.len() + 1;
         let analyzer_parameter = agents.len() + 2;
@@ -1356,7 +1364,8 @@ impl Store {
                                   AND analysis.metrics_schema_revision = ?{metrics_parameter}
                            ))
                        )
-                )"
+                 )
+             RETURNING environment_key, agent"
         );
         let mut update_values = agent_values;
         update_values.extend([
@@ -1365,10 +1374,14 @@ impl Store {
             rusqlite::types::Value::Integer(revisions.metrics_schema_revision),
             rusqlite::types::Value::Integer(revisions.evidence_schema_revision),
         ]);
-        let requeued = transaction.execute(
-            &update_sql,
-            rusqlite::params_from_iter(update_values.iter()),
-        )?;
+        let mut update_statement = transaction.prepare(&update_sql)?;
+        let requeued_scopes = update_statement
+            .query_map(rusqlite::params_from_iter(update_values.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let requeued = requeued_scopes.len();
+        drop(update_statement);
         transaction.commit()?;
         Ok(enrolled + requeued)
     }
@@ -1519,12 +1532,13 @@ impl Store {
         failure: EvidenceFailure,
         last_error: &str,
     ) -> Result<bool> {
-        let connection = self.lock();
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
         let updated = match failure {
             EvidenceFailure::Retry {
                 next_attempt_at_epoch,
                 counts_as_attempt,
-            } => connection.execute(
+            } => transaction.execute(
                 "UPDATE session_evidence AS evidence
                     SET status = 'pending', retry_count = retry_count + ?8,
                         last_error = ?6, claimed_at_epoch = NULL,
@@ -1550,7 +1564,7 @@ impl Store {
                     i64::from(counts_as_attempt),
                 ],
             )?,
-            EvidenceFailure::Failed { revisions } => connection.execute(
+            EvidenceFailure::Failed { revisions } => transaction.execute(
                 "UPDATE session_evidence AS evidence
                     SET status = 'failed', retry_count = retry_count + 1,
                         analyzed_generation = ?5, parser_revision = ?7,
@@ -1581,6 +1595,7 @@ impl Store {
                 ],
             )?,
         };
+        transaction.commit()?;
         Ok(updated > 0)
     }
 
@@ -1605,6 +1620,7 @@ impl Store {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         tx.execute("DELETE FROM session_relation", [])?;
+        tx.execute("DELETE FROM remediation", [])?;
         tx.execute("DELETE FROM session_analysis", [])?;
         tx.execute("DELETE FROM session_evidence", [])?;
         tx.execute("DELETE FROM turn_content", [])?;
@@ -1667,6 +1683,12 @@ impl Store {
         relations: &[RelationRecord],
         sources: &[SourcePublishOutcome],
     ) -> Result<bool> {
+        let model_attribution = crate::remediation::publication_model_attribution(
+            self,
+            &record.key,
+            completion.status,
+            &completion.evidence_json,
+        )?;
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
         // The fence every source's rows will share once this pass
@@ -1737,7 +1759,9 @@ impl Store {
                     evidence_json = ?10,
                     analyzed_at_epoch = ?11, retry_count = 0, last_error = NULL,
                     claimed_at_epoch = NULL, lease_expires_at_epoch = NULL,
-                    next_attempt_at_epoch = NULL, published_fence = ?12
+                     next_attempt_at_epoch = NULL, published_fence = ?12,
+                     effective_model_target_hash = ?14,
+                     effective_model_scope = ?15, effective_model = ?16
               WHERE evidence.environment_key = ?1
                 AND evidence.agent = ?2 AND evidence.session_id = ?3
                 AND evidence.status = 'processing' AND evidence.claim_fence = ?13
@@ -1762,6 +1786,9 @@ impl Store {
                 time::OffsetDateTime::now_utc().unix_timestamp(),
                 target_fence,
                 completion.claim_fence,
+                model_attribution.as_ref().map(|value| value.0.as_str()),
+                model_attribution.as_ref().map(|value| value.1.as_str()),
+                model_attribution.as_ref().map(|value| value.2.as_str()),
             ],
         )?;
         if updated == 0 {
@@ -1920,6 +1947,14 @@ impl Store {
         // so on a resumed pass this finds nothing left to delete.
         delete_turn_rows_except_fence(&transaction, &key, target_fence)?;
         replace_relations_in(&transaction, &record.key, RelationKind::Subagent, relations)?;
+        if completion.status == PublishedEvidence::Ready {
+            remediation::mark_remediations_dirty_in(
+                &transaction,
+                &record.key.environment_key,
+                &record.key.agent,
+                time::OffsetDateTime::now_utc().unix_timestamp(),
+            )?;
+        }
         transaction.commit()?;
         Ok(true)
     }
@@ -1933,8 +1968,11 @@ impl Store {
     /// transcript's. Idempotent: requeuing a session already `pending` (or
     /// already claimed) just clears its retry state again.
     pub fn requeue_session_evidence(&self, key: &SessionKey) -> Result<()> {
-        let connection = self.lock();
-        mark_evidence_pending_in(&connection, key)
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        mark_evidence_pending_in(&transaction, key)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Counts one session's turn rows stamped with `claim_fence`.

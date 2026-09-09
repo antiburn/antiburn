@@ -27,7 +27,7 @@ use crate::analysis::source_validity::ResumePoint;
 
 /// Vendor-specific adapter state, opaque to everything but the adapter that
 /// produced it. Keeps [`StreamSnapshot`] vendor-neutral: each adapter picks
-/// its own serialization inside this envelope (`ClaudeAdapter` uses
+/// its own serialization inside this envelope (`ClaudeSessionReader` uses
 /// `postcard`, matching [`StreamSnapshot::encode`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdapterSnapshot(pub Vec<u8>);

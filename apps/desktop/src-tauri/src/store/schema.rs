@@ -13,7 +13,7 @@
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
     V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
-    V41,
+    V41, V42, V43,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -872,4 +872,68 @@ CREATE TABLE provider_usage_rollout_checkpoint (
 
 CREATE INDEX provider_usage_rollout_checkpoint_ready
     ON provider_usage_rollout_checkpoint (status, next_attempt_epoch, updated_at_epoch);
+"#;
+
+/// v42 preserves request routes for compatible cache accounting.
+const V42: &str = antiburn_local::analysis::TURN_SCHEMA_V7_SQL;
+
+/// v43 stores the final durable remediation watch lifecycle.
+const V43: &str = r#"
+ALTER TABLE session_evidence ADD COLUMN effective_model_target_hash TEXT;
+ALTER TABLE session_evidence ADD COLUMN effective_model_scope TEXT
+    CHECK (effective_model_scope IN ('global', 'project'));
+ALTER TABLE session_evidence ADD COLUMN effective_model TEXT;
+
+CREATE TABLE remediation (
+    remediation_id TEXT PRIMARY KEY NOT NULL CHECK (length(remediation_id) BETWEEN 1 AND 256),
+    target_key TEXT NOT NULL CHECK (length(target_key) BETWEEN 1 AND 256),
+    environment_key TEXT NOT NULL CHECK (length(environment_key) BETWEEN 1 AND 256),
+    agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 256),
+    scope_kind TEXT NOT NULL CHECK (scope_kind IN ('global', 'project', 'session')),
+    scope_key TEXT NOT NULL CHECK (length(scope_key) BETWEEN 1 AND 256),
+    state TEXT NOT NULL CHECK (state IN ('reserved', 'writing', 'recoveryNeeded', 'watching', 'fixed', 'recurred')),
+    dirty_revision INTEGER NOT NULL DEFAULT 1 CHECK (dirty_revision >= 1),
+    evaluated_revision INTEGER NOT NULL DEFAULT 0 CHECK (evaluated_revision BETWEEN 0 AND dirty_revision),
+    definition_json TEXT NOT NULL CHECK (
+        length(CAST(definition_json AS BLOB)) BETWEEN 1 AND 32768
+        AND json_valid(definition_json)
+        AND json_type(definition_json, '$.version') IS 'integer'
+        AND json_extract(definition_json, '$.version') > 0),
+    result_json TEXT NOT NULL CHECK (
+        length(CAST(result_json AS BLOB)) BETWEEN 1 AND 32768
+        AND json_valid(result_json)
+        AND json_type(result_json, '$.version') IS 'integer'
+        AND json_extract(result_json, '$.version') > 0),
+    created_at_epoch INTEGER NOT NULL CHECK (created_at_epoch >= 0),
+    updated_at_epoch INTEGER NOT NULL CHECK (updated_at_epoch >= created_at_epoch),
+    effective_boundary_ms INTEGER CHECK (effective_boundary_ms IS NULL OR effective_boundary_ms >= 0),
+    verified_at_epoch INTEGER CHECK (verified_at_epoch IS NULL OR verified_at_epoch BETWEEN created_at_epoch AND updated_at_epoch),
+    recurred_at_epoch INTEGER CHECK (recurred_at_epoch IS NULL OR recurred_at_epoch BETWEEN verified_at_epoch AND updated_at_epoch),
+    CHECK ((state IN ('reserved', 'writing', 'recoveryNeeded') AND effective_boundary_ms IS NULL AND verified_at_epoch IS NULL AND recurred_at_epoch IS NULL)
+        OR (state = 'watching' AND verified_at_epoch IS NULL AND recurred_at_epoch IS NULL)
+        OR (state = 'fixed' AND verified_at_epoch IS NOT NULL AND recurred_at_epoch IS NULL)
+        OR (state = 'recurred' AND verified_at_epoch IS NOT NULL AND recurred_at_epoch IS NOT NULL))
+) STRICT;
+
+CREATE INDEX remediation_dirty
+    ON remediation (updated_at_epoch, remediation_id)
+    WHERE evaluated_revision < dirty_revision AND state IN ('watching', 'fixed');
+CREATE INDEX remediation_scope
+    ON remediation (environment_key, agent, scope_kind, scope_key, updated_at_epoch);
+CREATE UNIQUE INDEX remediation_active_target
+    ON remediation (environment_key, agent, target_key)
+    WHERE state != 'recurred';
+CREATE TRIGGER remediation_state_transition
+BEFORE UPDATE OF state ON remediation
+WHEN NOT (
+    (OLD.state = 'reserved' AND NEW.state IN ('writing', 'watching'))
+    OR (OLD.state = 'watching' AND NEW.state = 'reserved')
+    OR (OLD.state = 'writing' AND NEW.state IN ('recoveryNeeded', 'watching'))
+    OR (OLD.state = 'recoveryNeeded' AND NEW.state IN ('recoveryNeeded', 'watching'))
+    OR (OLD.state = 'watching' AND NEW.state IN ('watching', 'fixed'))
+    OR (OLD.state = 'fixed' AND NEW.state IN ('fixed', 'recurred'))
+)
+BEGIN
+    SELECT RAISE(ABORT, 'invalid remediation state transition');
+END;
 "#;

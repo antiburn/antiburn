@@ -8,6 +8,34 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const FINGERPRINT_HEAD_BYTES: usize = 64 * 1024;
 
+/// Fingerprint a Claude child sidecar with reads bounded to the metadata parser's 64 KiB limit.
+pub fn claude_sidecar_fingerprint(transcript: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+
+    let file = match std::fs::File::open(transcript.with_extension("meta.json")) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok("missing".to_owned());
+        }
+        Err(error) => return Err(error),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::other(
+            "Claude sidecar is not a regular file",
+        ));
+    }
+    let stat = SourceStat::from_open_std_metadata(&file, &metadata);
+    let mut bytes = Vec::new();
+    file.take(FINGERPRINT_HEAD_BYTES as u64)
+        .read_to_end(&mut bytes)?;
+    Ok(FingerprintInputs {
+        stat,
+        head_hash: Some(head_hash_of(&bytes)),
+    }
+    .fingerprint())
+}
+
 pub(crate) fn provider_db_fingerprint(latest: u64, rows: u64) -> String {
     format!("sv1:db:{latest}:{rows}")
 }
@@ -90,7 +118,7 @@ impl super::Explorers {
                 Some(SourceVersion {
                     fingerprint: FingerprintInputs {
                         stat,
-                        head_hash: Some(head_hash_of(content.as_bytes())),
+                        head_hash: Some(content_hash_of(content.as_bytes())),
                     }
                     .fingerprint(),
                     estimated_bytes: Some(content.len() as u64),
@@ -249,15 +277,20 @@ impl FingerprintInputs {
 }
 
 pub fn head_hash_of(bytes: &[u8]) -> u64 {
+    hash_bytes(bytes.iter().take(FINGERPRINT_HEAD_BYTES))
+}
+
+fn content_hash_of(bytes: &[u8]) -> u64 {
+    hash_bytes(bytes.iter())
+}
+
+fn hash_bytes<'a>(bytes: impl Iterator<Item = &'a u8>) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x100_0000_01b3;
 
-    bytes
-        .iter()
-        .take(FINGERPRINT_HEAD_BYTES)
-        .fold(OFFSET_BASIS, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
-        })
+    bytes.fold(OFFSET_BASIS, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
+    })
 }
 
 fn optional_i128(value: Option<i128>) -> String {
@@ -306,6 +339,23 @@ mod tests {
             format!("{:016x}", head_hash_of(b"foobar")),
             "85944171f73967e8"
         );
+    }
+
+    #[test]
+    fn claude_sidecar_fingerprint_bounds_content_reads() {
+        let directory = TempDir::new().unwrap();
+        let transcript = directory.path().join("agent-child.jsonl");
+        let sidecar = transcript.with_extension("meta.json");
+        assert_eq!(claude_sidecar_fingerprint(&transcript).unwrap(), "missing");
+        let file = std::fs::File::create(&sidecar).unwrap();
+        file.set_len(1024 * 1024 * 1024).unwrap();
+        let fingerprint = claude_sidecar_fingerprint(&transcript).unwrap();
+        assert!(fingerprint.ends_with(&format!(
+            ":{:016x}",
+            head_hash_of(&vec![0; FINGERPRINT_HEAD_BYTES])
+        )));
+        std::fs::remove_file(&sidecar).unwrap();
+        assert_eq!(claude_sidecar_fingerprint(&transcript).unwrap(), "missing");
     }
 
     #[test]
@@ -490,9 +540,41 @@ mod tests {
             format!(
                 "sv1:-:{}:-:-:{:016x}",
                 content.len(),
-                head_hash_of(content.as_bytes())
+                content_hash_of(content.as_bytes())
             )
         );
+    }
+
+    #[tokio::test]
+    async fn an_inline_rewrite_after_the_file_head_changes_the_fingerprint() {
+        let content = "a".repeat(FINGERPRINT_HEAD_BYTES + 1);
+        let first = descriptor(
+            AgentKind::Claude,
+            SessionSource::Inline {
+                label: "inline-1".to_string(),
+                content: content.clone(),
+            },
+        );
+        let mut rewritten = content;
+        rewritten.replace_range(FINGERPRINT_HEAD_BYTES.., "b");
+        let second = descriptor(
+            AgentKind::Claude,
+            SessionSource::Inline {
+                label: "inline-1".to_string(),
+                content: rewritten,
+            },
+        );
+
+        let first = super::super::Explorers::DISK
+            .source_version(&first, None)
+            .await
+            .expect("first version");
+        let second = super::super::Explorers::DISK
+            .source_version(&second, None)
+            .await
+            .expect("second version");
+
+        assert_ne!(first.fingerprint, second.fingerprint);
     }
 
     #[tokio::test]
@@ -527,7 +609,8 @@ mod tests {
             .await
             .expect("source version");
 
-        assert_eq!(version.fingerprint, "sv1:db:120:1");
+        assert!(version.fingerprint.starts_with("sv1:db:"));
+        assert!(version.fingerprint.ends_with(":1"));
         assert_eq!(version.estimated_bytes, None);
         assert_eq!(version.streamability, Streamability::DatabaseRows);
     }

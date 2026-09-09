@@ -20,6 +20,22 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Changed
+
+- Burn Checks now use stronger evidence contracts for supported Claude Code,
+  Codex, OpenCode, Pi, and Antigravity sessions. Findings keep exact provider
+  routes and supported checks decline clean results when required evidence is
+  incomplete.
+
+### Fixed
+
+- Cache churn now uses the correct Claude or OpenAI accounting policy in mixed
+  model sessions. Token-burn estimates stay unknown when prices or total-token
+  evidence is unavailable.
+- Session changes are detected more reliably for bounded inline sources and
+  OpenCode databases, including edits that do not change row counts or saved
+  timestamps.
+
 ## [0.5.0] - 2026-09-09
 
 ### Added

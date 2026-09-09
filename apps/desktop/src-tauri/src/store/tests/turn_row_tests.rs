@@ -11,10 +11,10 @@ use super::*;
 #[test]
 fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pin the count so each new migration requires an explicit test update.
-    assert_eq!(super::schema::MIGRATIONS.len(), 41);
+    assert_eq!(super::schema::MIGRATIONS.len(), 43);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 41);
+    assert_eq!(store.schema_version().unwrap(), 43);
     let index_exists = store
         .lock()
         .query_row(
@@ -56,19 +56,19 @@ fn v32_indexes_existing_assistant_turns() {
             [],
         )
         .unwrap();
-    let mut user_turn = turn_row(1);
-    user_turn.role = "user";
-    insert_turn_rows(
-        &connection,
-        &TurnSessionKey {
-            environment_key: "native",
-            agent: "claude-code",
-            session_id: "indexed",
-        },
-        7,
-        &[turn_row(0), user_turn],
-    )
-    .unwrap();
+    for (index, role) in [(0, "assistant"), (1, "user")] {
+        connection
+            .execute(
+                "INSERT INTO turn (
+                environment_key, agent, session_id, claim_fence, source_key, thread_id,
+                turn_index, scope, role, input_tokens, cache_read_tokens,
+                cache_write_tokens, output_tokens, is_compaction_boundary
+            ) VALUES ('native', 'claude-code', 'indexed', 7, 's1', 's1', ?1,
+                      'main', ?2, 10, 0, 0, 5, 0)",
+                params![index, role],
+            )
+            .unwrap();
+    }
 
     let store = Store::from_connection(
         connection,
@@ -109,6 +109,14 @@ fn v32_indexes_existing_assistant_turns() {
 
     assert_eq!(assistant_rows, 1);
     assert_eq!(all_rows, 2);
+    let unknown_routes: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM turn WHERE provider IS NULL AND api IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(unknown_routes, 2);
     assert!(query_plan.contains("USING INDEX turn_assistant_session"));
 }
 

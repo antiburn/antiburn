@@ -8,6 +8,7 @@ use antiburn_local::analysis::{
 
 use super::*;
 use crate::store::EvidenceStatus;
+use crate::store::{Remediation, RemediationEvidenceGuard, RemediationState};
 
 mod resume_tests;
 
@@ -42,6 +43,87 @@ fn claim(store: &Store, id: &str, now: i64) -> EvidenceClaim {
         .claim_next_evidence(&crate::agents::evidence_cohort(), now, LEASE_SECS)
         .unwrap()
         .unwrap()
+}
+
+fn seed_dirty_remediation(store: &Store) {
+    let claim = claim(store, "remediation-baseline", 10);
+    let source = store.session(&claim.key).unwrap().unwrap();
+    let mut pass = published_pass(&source);
+    pass.analysis.analyzed_generation = claim.source_generation;
+    assert!(apply_outcome(store, &claim, &pass, 10).unwrap());
+    let evidence = store.evidence(&claim.key).unwrap().unwrap();
+    let guard = RemediationEvidenceGuard {
+        environment_key: "native".into(),
+        agent: "claude-code".into(),
+        session_id: "remediation-baseline".into(),
+        source_generation: claim.source_generation,
+        published_fence: evidence.published_fence.unwrap(),
+        source_fingerprint: Some("sv1:remediation-baseline".into()),
+        processed_fingerprint: evidence.processed_fingerprint,
+        parser_revision: evidence.parser_revision.unwrap(),
+        analyzer_revision: evidence.analyzer_revision.unwrap(),
+        evidence_schema_revision: evidence.evidence_schema_revision.unwrap(),
+    };
+    assert!(store.create_or_reuse_remediation(&Remediation {
+        remediation_id: "worker-remediation".into(), target_key: "worker-target".into(),
+        environment_key: "native".into(), agent: "claude-code".into(),
+        scope_kind: "session".into(), scope_key: "scope".into(), state: RemediationState::Watching,
+        definition_json: r#"{"version":1,"detector":"unused_skills","canonicalIdentity":"target","sourceFormat":"ClaudeJsonl","workspaceKey":null,"provider":null,"api":null,"oldModel":null,"replacement":null,"physicalTargetKey":null,"verificationMethodRevision":1,"savingsMethodRevision":1,"pricingRevision":null,"oldPricing":null,"replacementPricing":null}"#.into(),
+        result_json: r#"{"version":1}"#.into(), created_at_epoch: 10, effective_boundary_ms: Some(10_000),
+    }, &[guard]).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_dirty_watch_has_priority_and_a_restart_loses_no_work() {
+    let temporary = tempfile::tempdir().unwrap();
+    let store = Store::open(temporary.path()).unwrap();
+    seed_dirty_remediation(&store);
+    store
+        .upsert_sessions(
+            &[record("priority-evidence")],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let passes = AtomicUsize::new(0);
+    let runner = |record: &SessionRecord, _: PassSignal, _: i64| {
+        passes.fetch_add(1, Ordering::SeqCst);
+        let pass = published_pass(record);
+        Box::pin(async move { pass }) as PassFuture
+    };
+    assert!(
+        process_next_work(&store, &|| 100, &runner, &|_| {})
+            .await
+            .unwrap()
+    );
+    assert_eq!(passes.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        store
+            .remediation("worker-remediation")
+            .unwrap()
+            .unwrap()
+            .evaluated_revision,
+        1
+    );
+    drop(store);
+
+    let restarted = Store::open(temporary.path()).unwrap();
+    let no_evidence = |record: &SessionRecord, _: PassSignal, _: i64| {
+        let pass = published_pass(record);
+        Box::pin(async move { pass }) as PassFuture
+    };
+    assert!(
+        process_next_work(&restarted, &|| 101, &no_evidence, &|_| {})
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        restarted
+            .remediation("worker-remediation")
+            .unwrap()
+            .unwrap()
+            .state,
+        RemediationState::Watching
+    );
 }
 
 fn failed_pass(outcome: PassOutcome) -> EvidencePass {
@@ -141,11 +223,13 @@ fn evidence_with(capabilities: SourceCapabilities) -> SessionEvidence {
 
 fn no_capabilities() -> SourceCapabilities {
     SourceCapabilities {
+        source_format: antiburn_local::analysis::SourceFormat::Uncharacterized,
         request_context_tokens: false,
         cache_write_tokens: false,
         timestamps_and_order: false,
         tool_invocations: false,
-        skill_mcp_attribution: false,
+        skill_inventory: false,
+        mcp_inventory: false,
         tool_definitions: false,
         model_identity: false,
         token_classes: false,
@@ -160,6 +244,7 @@ fn no_capabilities() -> SourceCapabilities {
         linear_record_order: false,
         quota_incidents: false,
         harness_version: false,
+        repeated_context_accounting: None,
     }
 }
 
@@ -1260,10 +1345,10 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
     let stored = store.evidence(&pi.key).unwrap().unwrap();
     assert_eq!(stored.status, EvidenceStatus::Ready);
     let evidence_json = stored.evidence_json.as_deref().unwrap();
-    assert!(evidence_json.contains("\"schemaRevision\":14"));
+    assert!(evidence_json.contains("\"schemaRevision\":18"));
     let evidence: SessionEvidence = serde_json::from_str(evidence_json).unwrap();
     assert_eq!(evidence.capabilities, SourceCapabilities::pi());
-    assert_eq!(evidence.schema_revision, 14);
+    assert_eq!(evidence.schema_revision, 18);
 
     let report = crate::insights_report::reduce_report(
         data_dir.path().to_path_buf(),
@@ -1291,6 +1376,10 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
     );
     assert_eq!(
         report.detectors[DetectorId::OldModelUsage.index()].assessed,
+        0
+    );
+    assert_eq!(
+        report.detectors[DetectorId::OldModelUsage.index()].unavailable,
         1
     );
 }

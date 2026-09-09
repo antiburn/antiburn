@@ -7,7 +7,7 @@ use std::sync::Arc;
 use antiburn_local::analysis::{
     CompositeSink, EvidenceSource, MemoryTurnRowStore, RawSource, SessionEvidenceAccumulator,
     SessionInput, SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnRowSink,
-    TurnRowStore, adapter_for,
+    TurnRowStore, reader_for,
 };
 
 pub fn read_fixture(name: &str) -> String {
@@ -55,7 +55,7 @@ fn stream_input(input: SessionInput) -> CompositeSink {
         None,
     );
     let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for("claude")
+    let outcome = reader_for("claude")
         .visit(&input, &mut composite)
         .expect("synthetic Claude fixture must stream");
     composite.observe_source_outcome(outcome);

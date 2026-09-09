@@ -17,13 +17,16 @@
           "state": "unsupported"
         },
         "repeatedContext": {
-          "state": "complete",
+          "state": "partial",
           "value": {
-            "accounting": "uncached_input",
-            "paidTokens": 400,
-            "pairsConsidered": 3,
-            "pairsSkipped": 0,
-            "repeatedTokens": 0
+            "observed": {
+              "accounting": "uncached_input",
+              "paidTokens": 0,
+              "pairsConsidered": 0,
+              "pairsSkipped": 1,
+              "repeatedTokens": 0
+            },
+            "reason": "attribution_incomplete"
           }
         },
         "userControlledChurn": {
@@ -32,24 +35,27 @@
       }
     },
     "capabilities": {
-      "cacheWriteTokens": false,
+      "cacheWriteTokens": true,
       "compactionBoundaries": true,
       "fastTier": true,
-      "harnessVersion": false,
+      "harnessVersion": true,
       "linearRecordOrder": true,
+      "mcpInventory": false,
       "modelIdentity": true,
       "quotaIncidents": false,
       "reasoningEffortTier": true,
       "recordIdentity": false,
+      "repeatedContextAccounting": "uncached_input",
       "requestContextTokens": true,
       "serviceTier": false,
-      "skillMcpAttribution": false,
+      "skillInventory": false,
+      "sourceFormat": "codex_rollout_jsonl",
       "subagentModels": true,
       "subagentRelationships": true,
       "threadIdentity": true,
       "timestampsAndOrder": true,
       "tokenClasses": true,
-      "toolDefinitions": false,
+      "toolDefinitions": true,
       "toolInvocations": true
     },
     "compactions": {
@@ -79,7 +85,34 @@
       }
     },
     "contextSources": {
-      "state": "unsupported"
+      "state": "complete",
+      "value": {
+        "mcpCoverage": {
+          "state": "unsupported"
+        },
+        "mcpServers": {},
+        "skillCoverage": {
+          "state": "complete",
+          "value": null
+        },
+        "skills": {
+          "verify": {
+            "available": true,
+            "configured": false,
+            "description": null,
+            "injected": false,
+            "invoked": false,
+            "origin": {
+              "state": "complete",
+              "value": "user"
+            },
+            "tokenCount": 22
+          }
+        },
+        "toolDefinitions": {
+          "state": "unsupported"
+        }
+      }
     },
     "coverage": "complete",
     "diagnostics": {
@@ -122,6 +155,20 @@
             "turns": 4
           }
         },
+        "controlObservations": [
+          {
+            "api": null,
+            "effort": "medium",
+            "lastTsMs": 1785578408000,
+            "model": "gpt-test",
+            "provider": null,
+            "speed": null,
+            "turns": {
+              "delegated": 0,
+              "mainLoop": 4
+            }
+          }
+        ],
         "dominantMainModel": "gpt-test",
         "effortSignal": {
           "eligibleTurns": 4,
@@ -133,7 +180,16 @@
             "mainLoop": 8
           }
         },
+        "effortTiersByModel": {
+          "gpt-test": {
+            "medium": {
+              "delegated": 0,
+              "mainLoop": 4
+            }
+          }
+        },
         "fastModes": {},
+        "fastModesByModel": {},
         "serviceTiers": {
           "state": "unsupported"
         },
@@ -145,20 +201,21 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 18,
-      "evidenceSchemaRevision": 14,
+      "analyzerRevision": 21,
+      "evidenceSchemaRevision": 18,
       "harnessVersion": {
-        "state": "unsupported"
+        "state": "complete",
+        "value": null
       },
       "ordering": "monotonic",
-      "parserRevision": 28,
+      "parserRevision": 31,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 14,
+    "schemaRevision": 18,
     "subagents": {
       "state": "complete",
       "value": {

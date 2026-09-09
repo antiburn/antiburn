@@ -377,6 +377,38 @@ fn a_vanished_source_has_its_rows_and_resume_dropped_on_the_next_publish() {
 }
 
 #[test]
+fn current_resume_revisions_reject_each_prior_batch_revision() {
+    let current = crate::analysis::resume_revisions();
+    assert_eq!(current.snapshot_revision, 6);
+    assert_eq!(current.parser_revision, 31);
+    assert_eq!(current.analyzer_revision, 21);
+    assert_eq!(current.metrics_schema_revision, 8);
+    assert_eq!(current.evidence_schema_revision, 18);
+    assert_eq!(current.coverage_schema_revision, 4);
+    let mut stored = sample_resume("current");
+    stored.snapshot_revision = current.snapshot_revision;
+    stored.parser_revision = current.parser_revision;
+    stored.analyzer_revision = current.analyzer_revision;
+    stored.metrics_schema_revision = current.metrics_schema_revision;
+    stored.evidence_schema_revision = current.evidence_schema_revision;
+    stored.coverage_schema_revision = current.coverage_schema_revision;
+    assert!(current.matches(&stored));
+    for field in 0..6 {
+        let mut stale = stored.clone();
+        match field {
+            0 => stale.snapshot_revision = 5,
+            1 => stale.parser_revision = 30,
+            2 => stale.analyzer_revision = 20,
+            3 => stale.metrics_schema_revision = 7,
+            4 => stale.evidence_schema_revision = 16,
+            5 => stale.coverage_schema_revision = 3,
+            _ => unreachable!(),
+        }
+        assert!(!current.matches(&stale), "accepted stale revision {field}");
+    }
+}
+
+#[test]
 fn purge_stale_source_resume_removes_only_mismatched_revisions() {
     let store = store();
     let (record, _claim) = claimed_projection(&store, "resume-purge", 100, 60);
