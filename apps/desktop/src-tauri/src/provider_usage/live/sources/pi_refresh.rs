@@ -269,9 +269,13 @@ impl RefreshRunner for LiveRunner {
 
 /// Every directory a pi or node binary is looked for in: the process PATH
 /// first, then the shim locations a GUI app's thin PATH tends to miss —
-/// volta, bun, npm-global, and the common Homebrew and system prefixes. The
-/// volta package image's own `bin` is included directly because volta's
-/// PATH shim is a dispatcher binary, not a symlink a realpath can follow.
+/// volta, bun, npm-global, nvm, and the common Homebrew and system
+/// prefixes. The volta package image's own `bin` is included directly
+/// because volta's PATH shim is a dispatcher binary, not a symlink a
+/// realpath can follow. nvm has no shim at all — each node version is its
+/// own prefix, put on PATH by a shell profile a GUI app never sources — so
+/// its per-version `bin` directories are included directly too; both the
+/// `node` binary and a globally installed pi live under them.
 fn candidate_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
@@ -285,11 +289,49 @@ fn candidate_dirs() -> Vec<PathBuf> {
                 .join(PI_PACKAGE_NAME)
                 .join("bin"),
         );
+        dirs.extend(nvm_bin_dirs(&home.join(".nvm/versions/node")));
     }
     for fixed in ["/usr/local/bin", "/opt/homebrew/bin"] {
         dirs.push(PathBuf::from(fixed));
     }
     dirs
+}
+
+/// A cap on how many nvm version directories are considered. A reader with
+/// more installed node versions than this is served by the newest ones;
+/// the cap only keeps a pathological directory from bloating every search.
+const MAX_NVM_VERSIONS: usize = 16;
+
+/// The per-version `bin` directories under an nvm-style root, newest
+/// version first — the version the reader most recently installed pi into
+/// is the most likely place to find it, and its node is the best one to
+/// run. Order is decided by [`version_key`], numerically, because
+/// lexicographic order would put `v9` after `v20`.
+fn nvm_bin_dirs(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut versions: Vec<(Vec<u64>, PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let key = version_key(&name.to_string_lossy())?;
+            Some((key, entry.path().join("bin")))
+        })
+        .collect();
+    versions.sort_by(|left, right| right.0.cmp(&left.0));
+    versions.truncate(MAX_NVM_VERSIONS);
+    versions.into_iter().map(|(_, dir)| dir).collect()
+}
+
+/// The numeric sort key of a `vMAJOR.MINOR.PATCH` directory name, or
+/// `None` for a name that is not one — nvm's `node` alias symlink, say.
+fn version_key(name: &str) -> Option<Vec<u64>> {
+    let digits = name.strip_prefix('v')?;
+    digits
+        .split('.')
+        .map(|part| part.parse::<u64>().ok())
+        .collect()
 }
 
 /// The bin names a pi install answers to, across platforms.
@@ -715,6 +757,49 @@ mod tests {
     fn an_absent_pi_locates_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
         assert!(locate_package_cli_in(&[dir.path().to_path_buf()]).is_none());
+    }
+
+    #[test]
+    fn nvm_version_directories_sort_numerically_newest_first() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for version in ["v9.1.0", "v20.11.1", "v18.20.3"] {
+            fs::create_dir_all(dir.path().join(version).join("bin")).expect("mkdir");
+        }
+        // nvm keeps non-version entries alongside the versions; they are
+        // skipped, not sorted.
+        fs::create_dir_all(dir.path().join("alias")).expect("mkdir");
+
+        let dirs = nvm_bin_dirs(dir.path());
+        let names: Vec<String> = dirs
+            .iter()
+            .map(|bin| {
+                bin.parent()
+                    .and_then(Path::file_name)
+                    .expect("version dir")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        // Numeric, not lexicographic: v20 outranks v9.
+        assert_eq!(names, ["v20.11.1", "v18.20.3", "v9.1.0"]);
+    }
+
+    #[test]
+    fn a_missing_nvm_root_contributes_no_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(nvm_bin_dirs(&dir.path().join("not-there")).is_empty());
+    }
+
+    #[test]
+    fn an_nvm_prefix_locates_the_verified_cli_through_its_bin_directory() {
+        // nvm's per-version prefix is the Unix npm layout: `bin` and
+        // `lib/node_modules` side by side, which the locator's
+        // `../lib/node_modules` strategy already reads.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let version_root = dir.path().join("v20.11.1");
+        write_package(&version_root, PI_PACKAGE_NAME);
+        let cli = locate_package_cli_in(&nvm_bin_dirs(dir.path())).expect("located");
+        assert!(cli.ends_with("dist/bundle/cli.js"));
     }
 
     #[test]
