@@ -78,6 +78,24 @@ describe("EfficiencyBreakdown", () => {
     expect(screen.getByTestId("cost-row").querySelector(".rounded")).toBeNull()
   })
 
+  it("drops the middle range in the wide pane, where the picker floats", () => {
+    render(
+      <EfficiencyBreakdown
+        metrics={efficiencyMetrics(totals(), "claude-code")}
+        layout="wide"
+      />,
+    )
+
+    const cost = screen.getByTestId("thermometer-costPerMTok")
+    const ok = within(cost).getByTestId("cost-band-word-ok")
+    // The middle band keeps its word. Its range would print under the
+    // floating section picker, and the outer ranges name both of its edges.
+    expect(ok).toHaveTextContent("ok")
+    expect(ok).not.toHaveTextContent("$33 – $80")
+    expect(within(cost).getByTestId("cost-band-word-good")).toHaveTextContent("under $33")
+    expect(within(cost).getByTestId("cost-band-word-bad")).toHaveTextContent("over $80")
+  })
+
   it("draws the three shares as one composition track whose runs fill the width", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
 

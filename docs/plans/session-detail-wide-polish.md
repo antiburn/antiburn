@@ -19,6 +19,8 @@ Source: four Notate stills of the wide session detail pane (Context, Cost ×2, T
 
 | 10 | Keith: "lets just remove the (i)s completely for these checks in this view. Also, remove the 'passed' word" | Every card carried an info glyph and a verdict word, and neither said anything the card and the mark did not already say | Both go. The card itself is the affordance that opens the explanation, and the mark is the verdict. The word stays clipped in the accessibility tree so a screen reader still hears it. The 28rem density goes with the word, leaving two: two cards to a row, three with summaries from 48rem | built |
 
+| 11 | Keith, on the $/MTok scale: "this is just a bit too tight with the tab control. lets remove the $33-$80 text under the 'ok' one" | The middle band's range printed at the bottom centre of the tab panel, the same place the floating section picker sits | The wide scale drops the middle range. The band keeps its word, and `under $33` and `over $80` already name both edges of it. The popover keeps all three ranges: it has no floating picker | built |
+
 
 ## 1 — Blue selected tab
 

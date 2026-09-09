@@ -164,7 +164,9 @@ function CostScaleBar({
 }) {
   const scale = efficiencyThermometer(metric.value, "costPerMTok", profile)
   const [, low, high] = scale.ticks
-  const ranges = [`under ${low}`, `${low} – ${high}`, `over ${high}`]
+  // The wide pane drops the middle range. It printed under the floating
+  // section picker, and the two outer ranges already name both of its edges.
+  const ranges = [`under ${low}`, wide ? null : `${low} – ${high}`, `over ${high}`]
   const last = scale.segments.length - 1
   return (
     <div
@@ -208,7 +210,7 @@ function CostScaleBar({
             <span className={cn("font-medium", band === metric.band && "text-label")}>
               {efficiencyBandWord(band, "costPerMTok")}
             </span>
-            <span>{ranges[index]}</span>
+            {ranges[index] && <span>{ranges[index]}</span>}
           </span>
         ))}
       </div>
