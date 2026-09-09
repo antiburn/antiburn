@@ -246,5 +246,6 @@ rather than staying silent.
 
 If an agent on this list is not discovered on a supported platform, that is a bug —
 please open an issue with the agent, its version, your platform, and where its
-session files live. Security issues go to the private channel in
-[`SECURITY.md`](../SECURITY.md) instead.
+session files live. Not sure it is a bug? Ask in the
+[antiburn Slack](https://antiburn.ai/slack) first. Security issues go to the
+private channel in [`SECURITY.md`](../SECURITY.md) instead.
