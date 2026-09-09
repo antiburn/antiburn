@@ -464,13 +464,19 @@ Notes for what isn't expressible as a token:
 - **Session Detail style rules** — the detail view matches the home screen's density of styles.
   One data size per tab: every figure, row, and data label is `type-body`; hierarchy comes from ink
   and weight, and size changes are reserved for the hero title (`type-title-3`), guidance prose
-  (`type-callout`), and footnotes. No heading that restates its content, and no caption label over
+  (`type-callout`), footnotes, and the wide Cost card's component table (`type-callout`, so it
+  sits beside the total at the minimum window width). No heading that restates its content, and no caption label over
   a self-evident value — identification that is genuinely needed uses an icon with a tooltip, the
   session-row fork-glyph pattern. Every horizontal bar uses the usage meter (`SegmentedMeter`)
   silhouette; judgment is carried by the band word's ink, never by a multi-color bar. Color only
   where it means a category: blue for context, the token series colors for in/out, yellow and
   pink for cache marks, brand orange for a compaction, teal for real work, red for waste.
-  Everything else stays greyscale until the pointer names a layer.
+  Everything else stays greyscale until the pointer names a layer. The wide Cost tab is a query
+  container, and its burn checks answer their own pane width. Each check is a card, which is what
+  groups its name with its verdict; the verdict is the mark alone, with the word kept for a screen
+  reader, and the card itself is the affordance that opens the explanation. Two cards to a row, and
+  three from 48rem where each card also shows its summary sentence. The tooltip holds the evidence
+  and the advice at every width.
 - **Main window** — the retained main window opens at 1100 × 600 logical pixels with a normal
   minimum of 1000 × 560. The initial outer frame uses at most 85% of each usable display dimension,
   including native chrome. A smaller work area takes precedence over the normal minimum. Saved

@@ -894,7 +894,7 @@ export function SessionDetailPresentation({
       {wide && (
         <div
           data-tauri-drag-region={embedded && isMacOS() ? "deep" : undefined}
-          className="session-detail-toolbar flex shrink-0 flex-wrap items-center gap-4 border-b border-separator bg-surface/80 px-6 py-3"
+          className="session-detail-toolbar flex shrink-0 flex-wrap items-center gap-4 border-b border-separator bg-surface/80 px-10 py-3"
         >
           {onBack && (
             <button
@@ -907,24 +907,11 @@ export function SessionDetailPresentation({
             </button>
           )}
           {sessionSummary}
-          {ready && !error && !empty && (
-            <SegmentedControl
-              className="session-detail-tabs type-callout shrink-0 rounded-full! bg-surface-card! [&_button]:rounded-full!"
-              options={DETAIL_TABS}
-              value={tab}
-              onChange={setTab}
-              ariaLabel="Session detail sections"
-              semantics="tabs"
-              variant="native-tabs"
-              equalWidth={false}
-              idPrefix="session-detail-tabs"
-            />
-          )}
           {hostActions}
         </div>
       )}
 
-      <div key={sessionIdentityKey(session)} className="flex min-h-0 flex-1 flex-col">
+      <div key={sessionIdentityKey(session)} className="relative flex min-h-0 flex-1 flex-col">
         {(showSkeleton || (ready && (error || empty))) && (
           <div className="min-h-0 flex-1 overflow-y-auto py-3">
             {showSkeleton && <SessionDetailSkeleton />}
@@ -1004,7 +991,9 @@ export function SessionDetailPresentation({
               aria-labelledby={`session-detail-tabs-${tab}`}
               className={cn(
                 "min-h-0 flex-1 overflow-y-auto py-4",
-                wide ? "px-10 pb-10" : "px-4",
+                // The wide pane leaves room under the last row for the
+                // floating section picker that overlays its bottom edge.
+                wide ? "px-10 pb-20" : "px-4",
               )}
             >
               {/* The chart fills the remaining space around its fixed summaries. */}
@@ -1091,6 +1080,26 @@ export function SessionDetailPresentation({
                   </p>
                 ))}
             </div>
+
+            {/* The wide pane floats its section picker over the bottom of the
+                content, in reach of the reading it switches, instead of in
+                the toolbar beside the title. The wrapper lets pointer events
+                through to the content on either side of the pill. */}
+            {wide && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-6">
+                <SegmentedControl
+                  className="session-detail-tabs session-detail-floating-tabs pointer-events-auto type-callout shrink-0 rounded-full! bg-surface/80! shadow-raised [&_button]:rounded-full!"
+                  options={DETAIL_TABS}
+                  value={tab}
+                  onChange={setTab}
+                  ariaLabel="Session detail sections"
+                  semantics="tabs"
+                  variant="native-tabs"
+                  equalWidth={false}
+                  idPrefix="session-detail-tabs"
+                />
+              </div>
+            )}
           </>
         )}
       </div>

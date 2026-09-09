@@ -143,10 +143,10 @@ function shareSegments(metrics: EfficiencyMetrics): ShareSegment[] {
 
 /**
  * The $/MTok scale as a bullet graph. Three grey bands mark good, middle,
- * and bad at fixed thirds, a thin brand measure runs from zero to this
- * session's reading, and a dark line marks the edge of the good band. Under
- * each band sit its word and its dollar range, so the scale labels itself
- * and the reading needs no tag.
+ * and bad at fixed thirds, and a thin brand measure runs from zero to this
+ * session's reading. Under each band sit its word and its dollar range, so
+ * the scale labels itself and the reading needs no tag. The band steps and
+ * the ranges already mark every edge, so no separate target line is drawn.
  *
  * A fill that grows to the reading was the wrong form for this metric: a low
  * $/MTok is a good result, so a good session drew almost nothing. The question
@@ -164,11 +164,10 @@ function CostScaleBar({
 }) {
   const scale = efficiencyThermometer(metric.value, "costPerMTok", profile)
   const [, low, high] = scale.ticks
-  const ranges = [`under ${low}`, `${low} – ${high}`, `over ${high}`]
+  // The wide pane drops the middle range. It printed under the floating
+  // section picker, and the two outer ranges already name both of its edges.
+  const ranges = [`under ${low}`, wide ? null : `${low} – ${high}`, `over ${high}`]
   const last = scale.segments.length - 1
-  // The good band ends at the first edge when lower is better, and starts at
-  // the second edge when higher is better.
-  const targetPosition = scale.segments[0] === "good" ? 1 / 3 : 2 / 3
   return (
     <div
       data-testid="thermometer-costPerMTok"
@@ -193,11 +192,6 @@ function CostScaleBar({
           className="absolute inset-y-1 left-0 rounded-e-sm bg-brand-tint"
           style={{ width: `${scale.position * 100}%` }}
         />
-        <span
-          data-testid="cost-target"
-          className="absolute -inset-y-0.5 w-0.5 -translate-x-1/2 bg-label"
-          style={{ left: `${targetPosition * 100}%` }}
-        />
       </div>
       <div className="mt-1 flex">
         {scale.segments.map((band, index) => (
@@ -216,7 +210,7 @@ function CostScaleBar({
             <span className={cn("font-medium", band === metric.band && "text-label")}>
               {efficiencyBandWord(band, "costPerMTok")}
             </span>
-            <span>{ranges[index]}</span>
+            {ranges[index] && <span>{ranges[index]}</span>}
           </span>
         ))}
       </div>
@@ -267,9 +261,10 @@ function CompositionTrack({
  *
  * The composition rows keep their guidance in a tooltip so the block stays
  * the height of its readings. A panel that grows and shrinks under the rows
- * moves everything below it every time the pointer crosses a row. The cost
- * reading stands alone on its tab, so it prints the same guidance inline, as
- * one quiet paragraph that wraps at the width of its pane.
+ * moves everything below it every time the pointer crosses a row. The wide
+ * cost reading does the same from its hero figure. The popover's cost row
+ * prints the guidance inline, as one quiet paragraph that wraps at the width
+ * of its pane.
  */
 function MetricGuidance({
   metricKey,
@@ -311,10 +306,11 @@ const ROW_CLASS =
   "-mx-1.5 rounded-control px-1.5 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
 
 /**
- * The $/MTok reading: label and figure on one baseline, its scale underneath,
- * and its guidance printed below the scale. This metric is not part of the
- * composition, so it keeps the scale the other readings gave up, and it has
- * the room on its own tab to explain itself without a tooltip.
+ * The $/MTok reading: label and figure on one baseline, and its scale
+ * underneath. This metric is not part of the composition, so it keeps the
+ * scale the other readings gave up. The wide pane keeps the guidance in a
+ * tooltip on the hero figure, so the scale and its labels are the whole
+ * reading at rest. The popover prints the guidance under the scale.
  */
 function CostRowLine({
   metric,
@@ -328,20 +324,30 @@ function CostRowLine({
   return (
     <div className="type-body" data-testid="cost-row">
       {wide ? (
-        <div className="my-2 flex flex-wrap items-center gap-x-4 gap-y-1 pb-3">
-          <span
-            className={cn(
-              "type-display font-semibold! tabular-nums",
-              metric.band === "bad" ? "text-brand" : "text-label",
-            )}
+        <Tooltip
+          label={<MetricGuidance metricKey="costPerMTok" profile={profile} />}
+          side="bottom"
+          delayMs={150}
+        >
+          <div
+            data-testid="cost-hero"
+            tabIndex={0}
+            className={cn(ROW_CLASS, "my-2 flex flex-wrap items-center gap-x-4 gap-y-1 pb-3")}
           >
-            {formatCostPerMTok(metric.value)}
-          </span>
-          <span className="flex flex-col type-callout">
-            <span className="font-semibold text-label">per million tokens</span>
-            <span className="text-label-secondary">of context growth and output</span>
-          </span>
-        </div>
+            <span
+              className={cn(
+                "type-display font-semibold! tabular-nums",
+                metric.band === "bad" ? "text-brand" : "text-label",
+              )}
+            >
+              {formatCostPerMTok(metric.value)}
+            </span>
+            <span className="flex flex-col type-callout">
+              <span className="font-semibold text-label">per million tokens</span>
+              <span className="text-label-secondary">of context growth and output</span>
+            </span>
+          </div>
+        </Tooltip>
       ) : (
         <span className="flex items-baseline justify-between gap-3 pb-3">
           <span className="truncate text-label-secondary">$/MTok</span>
@@ -351,9 +357,11 @@ function CostRowLine({
         </span>
       )}
       <CostScaleBar metric={metric} profile={profile} wide={wide} />
-      <div className="mt-3" data-testid="cost-guidance">
-        <MetricGuidance metricKey="costPerMTok" profile={profile} inline />
-      </div>
+      {!wide && (
+        <div className="mt-3" data-testid="cost-guidance">
+          <MetricGuidance metricKey="costPerMTok" profile={profile} inline />
+        </div>
+      )}
     </div>
   )
 }
