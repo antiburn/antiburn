@@ -96,12 +96,20 @@
 .session-detail-cost {
   container-type: inline-size;
 }
+/* The checks grid is a table: a name column and a verdict column for each
+   half. Each row is a subgrid over one name and verdict pair, so the verdicts
+   line up under each other at the width of the longest name. */
 .session-checks-grid {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, max-content) max-content;
+  justify-content: start;
+}
+.session-checks-grid > [role="group"] {
+  grid-column: span 2;
+  grid-template-columns: subgrid;
 }
 @container (min-width: 30rem) {
   .session-checks-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, max-content) max-content);
   }
 }
 
