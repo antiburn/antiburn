@@ -20,23 +20,35 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
-### Fixed
+## [0.5.0] - 2026-09-09
 
-- The Windows install command `irm https://antiburn.ai/install.ps1 | iex`
-  now runs instead of failing with a parameter validation error.
+### Added
 
-## [0.4.1] - 2026-09-08
+- A persistent main window now provides an Activity sidebar and a Sessions
+  workspace. Sessions can be browsed beside their details, opened from the tray
+  popover, navigated by keyboard, and followed through related-session links.
 
 ### Changed
 
-- Session limit badges now retain cumulative estimates across provider resets,
-  keeping usage attributed in earlier periods visible alongside the current
-  provider period.
+- Session limit badges now use learned estimates for each provider account and
+  limit window. Estimates cover sessions from before installation and while
+  antiburn was closed, retain cumulative use across provider resets, and
+  distinguish an unknown share from a provider without that limit.
+- Session Details in the main window uses a responsive desktop layout with a
+  fixed toolbar, more room for Context, Cost, and Tools, and clearer cost
+  breakdowns.
+- Settings diagnostics exports now include coarse learned provider-limit
+  details without account keys to help investigate session estimates.
 
 ### Fixed
 
 - Session rows now show `0%` when valid provider usage remains flat during a
   percentage plateau instead of treating the allocation as missing.
+- Expired Codex and Claude credentials now refresh through their owning CLI
+  before antiburn retries live usage.
+- The Windows install command `irm https://antiburn.ai/install.ps1 | iex`
+  now runs instead of failing with a parameter validation error, and the
+  installation instructions use HTTPS.
 
 ## [0.4.0] - 2026-09-07
 
