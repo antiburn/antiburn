@@ -472,9 +472,11 @@ Notes for what isn't expressible as a token:
   where it means a category: blue for context, the token series colors for in/out, yellow and
   pink for cache marks, brand orange for a compaction, teal for real work, red for waste.
   Everything else stays greyscale until the pointer names a layer. The wide Cost tab is a query
-  container, and its burn checks answer their own pane width: two columns of name, verdict mark,
-  and info glyph at rest; the verdict word from 28rem; three columns with each check's summary
-  sentence from 48rem. The tooltip holds the evidence and the advice at every width.
+  container, and its burn checks answer their own pane width. Each check is a card, which is what
+  groups its name with its verdict; the info glyph follows the last word of the name rather than
+  taking a column. Two cards to a row at rest, the verdict word from 28rem, and three cards to a
+  row with each check's summary sentence from 48rem. The tooltip holds the evidence and the advice
+  at every width.
 - **Main window** — the retained main window opens at 1100 × 600 logical pixels with a normal
   minimum of 1000 × 560. The initial outer frame uses at most 85% of each usable display dimension,
   including native chrome. A smaller work area takes precedence over the normal minimum. Saved

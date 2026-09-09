@@ -160,13 +160,17 @@ function InlineHygieneTooltip({ check }: { check: AssessedHygieneCheck }) {
 }
 
 /**
- * One check in the wide layout. The element changes with the width of the
- * Cost pane: a narrow pane gives the name, the verdict mark, and an info
- * glyph; a wider pane adds the verdict word; the widest pane also opens the
- * summary sentence under the name. `session-detail.css` holds the widths.
+ * One check in the wide layout, as a card.
  *
- * The tooltip carries the evidence and the advice at every width, so the
- * reader never loses the detail that the narrow pane cannot show.
+ * The card is what groups the name with the verdict. Without it the two
+ * held opposite ends of an open row and read as unrelated columns. The info
+ * glyph follows the last word of the name, so it belongs to the name and
+ * does not open a column of its own.
+ *
+ * The card answers the width of the Cost pane: a narrow pane gives the name
+ * and the verdict mark, a wider pane adds the verdict word, and the widest
+ * pane opens the summary sentence under both. `session-detail.css` holds
+ * the widths. The tooltip carries the evidence and the advice throughout.
  */
 function InlineHygieneRow({ check }: { check: AssessedHygieneCheck }) {
   const status = STATUS_PRESENTATION[check.status]
@@ -177,25 +181,32 @@ function InlineHygieneRow({ check }: { check: AssessedHygieneCheck }) {
         role="group"
         aria-label={check.name}
         tabIndex={0}
-        className="session-check-cell group -mx-1.5 grid items-center gap-x-2 rounded-control px-1.5 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
+        className="session-check-cell group flex flex-col rounded-control bg-surface-card/50 px-3 py-2 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
       >
-        <span className="flex min-w-0 items-center gap-1.5">
-          <span className="text-pretty text-label">{check.name}</span>
-          <Info
-            size={11}
-            aria-hidden="true"
-            className="shrink-0 text-label-tertiary transition-colors duration-[var(--duration-fast)] ease-out group-hover:text-label-secondary"
-          />
-        </span>
-        <span className={cn("inline-flex items-center gap-1 type-callout", status.wordClass)}>
-          <status.Icon
-            size={STATUS_ICON_SIZE}
-            aria-hidden="true"
-            className={status.textClass}
-          />
-          <span className="session-check-word">{status.label}</span>
-        </span>
-        <p className="session-check-summary mt-1 text-pretty type-callout text-label-secondary">
+        <div className="flex items-baseline justify-between gap-x-3">
+          <span className="min-w-0 text-pretty text-label">
+            {check.name}
+            <Info
+              size={11}
+              aria-hidden="true"
+              className="ml-1 inline align-[-1px] text-label-tertiary transition-colors duration-[var(--duration-fast)] ease-out group-hover:text-label-secondary"
+            />
+          </span>
+          <span
+            className={cn(
+              "inline-flex shrink-0 items-center gap-1 type-callout",
+              status.wordClass,
+            )}
+          >
+            <status.Icon
+              size={STATUS_ICON_SIZE}
+              aria-hidden="true"
+              className={status.textClass}
+            />
+            <span className="session-check-word">{status.label}</span>
+          </span>
+        </div>
+        <p className="session-check-summary mt-1.5 text-pretty type-callout text-label-secondary">
           {documentation.summary}
         </p>
       </div>
