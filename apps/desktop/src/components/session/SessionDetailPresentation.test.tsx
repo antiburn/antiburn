@@ -700,23 +700,34 @@ describe("SessionDetailPresentation — wide layout", () => {
     return render(<SessionDetailPresentation {...props} />)
   }
 
-  it("groups the section picker and host actions in the toolbar", () => {
+  it("keeps the summary and host actions in the toolbar and floats the section picker over the content", () => {
     const onDeleteSession = vi.fn()
     const onRevealSource = vi.fn()
-    wideView({ onDeleteSession, onRevealSource, refreshing: true })
+    const { container } = wideView({ onDeleteSession, onRevealSource, refreshing: true })
 
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull()
     expect(screen.queryByText("Session Detail")).toBeNull()
 
-    const line = screen.getByRole("tablist").parentElement!
-    expect(line).toHaveClass("flex")
-    expect(within(line).getByText("Fix the flaky test")).toBeTruthy()
-    expect(within(line).getByLabelText("Session summary")).toBeTruthy()
-    fireEvent.click(within(line).getByLabelText("Delete this session"))
-    fireEvent.click(within(line).getByLabelText("Reveal in file manager"))
+    const toolbar = container.querySelector<HTMLElement>(".session-detail-toolbar")!
+    expect(toolbar).toHaveClass("flex", "px-10")
+    expect(within(toolbar).getByText("Fix the flaky test")).toBeTruthy()
+    expect(within(toolbar).getByLabelText("Session summary")).toBeTruthy()
+    fireEvent.click(within(toolbar).getByLabelText("Delete this session"))
+    fireEvent.click(within(toolbar).getByLabelText("Reveal in file manager"))
     expect(onDeleteSession).toHaveBeenCalledTimes(1)
     expect(onRevealSource).toHaveBeenCalledTimes(1)
-    expect(within(line).getByRole("status")).toBeTruthy()
+    expect(within(toolbar).getByRole("status")).toBeTruthy()
+
+    // The picker sits over the bottom of the tab panel, not in the toolbar,
+    // and the panel keeps room under its last row for it.
+    const tablist = screen.getByRole("tablist", { name: "Session detail sections" })
+    expect(within(toolbar).queryByRole("tablist")).toBeNull()
+    const panel = screen.getByRole("tabpanel")
+    expect(panel.parentElement).toBe(tablist.parentElement!.parentElement)
+    expect(panel.parentElement).toHaveClass("relative")
+    expect(panel).toHaveClass("pb-20")
+    expect(tablist.parentElement).toHaveClass("absolute", "bottom-0", "justify-center")
+    expect(tablist).toHaveClass("session-detail-floating-tabs", "pointer-events-auto")
   })
 
   it.each([

@@ -60,8 +60,11 @@
 .session-detail-wide .session-detail-tabs button::before {
   display: none;
 }
+/* The selected view takes the accent fill and white ink, the same as the
+   session list's metric picker, so both pickers in the window read alike. */
 .session-detail-wide .session-detail-tabs button[aria-selected="true"] {
-  background-color: var(--color-surface);
+  background-color: var(--color-accent-fill);
+  color: white;
   box-shadow: var(--shadow-raised);
 }
 .session-detail-wide .session-detail-tabs button {
@@ -69,13 +72,17 @@
   font-size: inherit;
   letter-spacing: inherit;
 }
-/* The toolbar uses a light material without an outlined control track. */
-.session-detail-toolbar {
+/* The toolbar and the floating section picker share one light material
+   without an outlined control track, so the picker reads as part of the
+   chrome while it floats over the content. */
+.session-detail-toolbar,
+.session-detail-floating-tabs {
   backdrop-filter: blur(var(--space-lg)) saturate(120%);
   -webkit-backdrop-filter: blur(var(--space-lg)) saturate(120%);
 }
 @media (prefers-reduced-transparency: reduce) {
-  .session-detail-toolbar {
+  .session-detail-toolbar,
+  .session-detail-floating-tabs {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
     background-color: var(--color-surface-window);

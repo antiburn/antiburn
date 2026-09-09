@@ -7,6 +7,7 @@ import {
   sessionHygieneExplainers,
   type SessionHygieneCheck,
 } from "../../../lib/presentation/sessionHygiene"
+import { Tooltip } from "../../presentation/Tooltip"
 import { RowInfo } from "./RowInfo"
 
 export interface HygieneBreakdownProps {
@@ -138,12 +139,42 @@ function HygieneRow({
   )
 }
 
-function InlineHygieneRow({ check }: { check: AssessedHygieneCheck }) {
-  const status = STATUS_PRESENTATION[check.status]
+/** The body of one inline check's tooltip: what went wrong, the summary, the advice. */
+function InlineHygieneTooltip({ check }: { check: AssessedHygieneCheck }) {
   const documentation = sessionHygieneDocumentation(check)
   return (
-    <div className="py-2" role="group" aria-label={check.name}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 type-body">
+    <div className="space-y-1 text-pretty">
+      {documentation.findingDetails.map((sentence) => (
+        <p key={sentence} className="text-share-waste-text">
+          {sentence}
+        </p>
+      ))}
+      <p className="text-label">{documentation.summary}</p>
+      {documentation.guidance.map((sentence) => (
+        <p key={sentence} className="text-label-secondary">
+          {sentence}
+        </p>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * One check as a single line: the name and its verdict. The explanation
+ * opens in a tooltip on hover or focus, so the grid stays the height of its
+ * rows and a wall of guidance does not sit between the reader and the
+ * verdicts.
+ */
+function InlineHygieneRow({ check }: { check: AssessedHygieneCheck }) {
+  const status = STATUS_PRESENTATION[check.status]
+  return (
+    <Tooltip label={<InlineHygieneTooltip check={check} />} delayMs={150}>
+      <div
+        role="group"
+        aria-label={check.name}
+        tabIndex={0}
+        className="-mx-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-control px-1.5 py-1.5 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
+      >
         <span className="type-body-large text-label">{check.name}</span>
         <span className={cn("inline-flex items-center gap-1 type-callout", status.wordClass)}>
           <status.Icon
@@ -154,13 +185,7 @@ function InlineHygieneRow({ check }: { check: AssessedHygieneCheck }) {
           {status.label}
         </span>
       </div>
-      <div className="mt-1 space-y-1 type-callout text-label-secondary">
-        {documentation.findingDetails.length > 0 && (
-          <p className="text-share-waste-text">{documentation.findingDetails.join(" ")}</p>
-        )}
-        <p>{[documentation.summary, ...documentation.guidance].join(" ")}</p>
-      </div>
-    </div>
+    </Tooltip>
   )
 }
 

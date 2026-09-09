@@ -53,9 +53,8 @@ describe("EfficiencyBreakdown", () => {
   it("draws the cost reading as a bullet graph that labels its own scale", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
 
-    // The bands sit at fixed thirds, so the scale never changes length. The
-    // measure runs to this session's reading and the target marks the edge
-    // of the good band.
+    // The bands sit at fixed thirds, so the scale never changes length, and
+    // the measure runs to this session's reading.
     const cost = screen.getByTestId("thermometer-costPerMTok")
     expect(cost.dataset.position).toBe("0.383")
     expect(cost.querySelector('[data-testid="cost-band-good"]')).toBeTruthy()
@@ -64,8 +63,8 @@ describe("EfficiencyBreakdown", () => {
 
     const measure = cost.querySelector<HTMLElement>('[data-testid="cost-measure"]')
     expect(Number.parseFloat(measure!.style.width)).toBeCloseTo(38.3, 1)
-    const target = cost.querySelector<HTMLElement>('[data-testid="cost-target"]')
-    expect(Number.parseFloat(target!.style.left)).toBeCloseTo(33.3, 1)
+    // The band steps and the ranges mark every edge, so no target line draws.
+    expect(cost.querySelector('[data-testid="cost-target"]')).toBeNull()
 
     // Each band names itself and its dollar range, and the current band is
     // the one in the label ink. The reading carries no tag of its own.
@@ -205,8 +204,22 @@ describe("EfficiencyBreakdown", () => {
     fireEvent.focus(realWork)
     expect(screen.getAllByText(/fresh input and output/).length).toBeGreaterThan(0)
 
-    expect(screen.getByTestId("cost-guidance")).not.toHaveClass("max-w-prose")
-    expect(screen.getByText("per million tokens")).toBeTruthy()
+    // The wide pane keeps the cost guidance in a tooltip on the hero figure,
+    // so at rest the scale and its labels are the whole reading.
+    expect(screen.queryByTestId("cost-guidance")).toBeNull()
+    expect(screen.queryByText(/average cost for each million tokens/)).toBeNull()
+    const hero = screen.getByTestId("cost-hero")
+    expect(hero).toHaveTextContent("per million tokens")
+    expect(hero).toHaveAttribute("tabindex", "0")
+    fireEvent.focus(hero)
+    expect(screen.getAllByText(/average cost for each million tokens/).length).toBeGreaterThan(
+      0,
+    )
+    expect(
+      screen.getAllByText("For Claude, aim for below $33. Above $80 is too high.").length,
+    ).toBeGreaterThan(0)
+    fireEvent.blur(hero)
+    expect(screen.queryByText(/average cost for each million tokens/)).toBeNull()
   })
 
   it("keeps the popover's hairline track and stacked rows by default", () => {

@@ -41,21 +41,35 @@ function view() {
 }
 
 describe("HygieneBreakdown", () => {
-  it("shows guidance for all assessed checks without disclosure controls in inline mode", () => {
+  it("lists every assessed check as one line and opens its guidance in a tooltip", () => {
     const checks = sessionHygieneChecks(PAYLOAD)
     render(<HygieneBreakdown checks={checks} inlineGuidance />)
     expect(screen.queryByRole("button")).toBeNull()
     expect(screen.getAllByRole("group")).toHaveLength(5)
+    expect(screen.queryByText("Overpowered subagents")).toBeNull()
+
     for (const check of checks.filter((item) => item.status !== "notAssessed")) {
       const documentation = sessionHygieneDocumentation(check)
-      expect(screen.getByRole("group", { name: check.name })).toHaveTextContent(
-        documentation.summary,
-      )
+      const row = screen.getByRole("group", { name: check.name })
+      // At rest the row is the name and the verdict only.
+      expect(row).toHaveAttribute("tabindex", "0")
+      expect(row).not.toHaveTextContent(documentation.summary)
+      expect(screen.queryByText(documentation.summary)).toBeNull()
+
+      fireEvent.focus(row)
+      expect(screen.getAllByText(documentation.summary).length).toBeGreaterThan(0)
       for (const advice of documentation.guidance) {
-        expect(screen.getByRole("group", { name: check.name })).toHaveTextContent(advice)
+        expect(screen.getAllByText(advice).length).toBeGreaterThan(0)
       }
+      fireEvent.blur(row)
+      expect(screen.queryByText(documentation.summary)).toBeNull()
     }
-    expect(screen.queryByText("Overpowered subagents")).toBeNull()
+
+    // A finding names the evidence that caused it before its advice.
+    const finding = screen.getByRole("group", { name: "Session overdepth" })
+    fireEvent.focus(finding)
+    expect(screen.getAllByText(/475,000 tokens/).length).toBeGreaterThan(0)
+    fireEvent.blur(finding)
   })
 
   it("omits unavailable checks from the summary and detail rows", () => {
