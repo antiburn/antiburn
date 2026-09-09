@@ -1,4 +1,4 @@
-import { ChevronRight, CircleCheck, CircleX, Info, type LucideIcon } from "lucide-react"
+import { ChevronRight, CircleCheck, CircleX, type LucideIcon } from "lucide-react"
 import { useId, useState } from "react"
 
 import { cn } from "../../../lib/cn"
@@ -163,14 +163,16 @@ function InlineHygieneTooltip({ check }: { check: AssessedHygieneCheck }) {
  * One check in the wide layout, as a card.
  *
  * The card is what groups the name with the verdict. Without it the two
- * held opposite ends of an open row and read as unrelated columns. The info
- * glyph follows the last word of the name, so it belongs to the name and
- * does not open a column of its own.
+ * held opposite ends of an open row and read as unrelated columns.
  *
- * The card answers the width of the Cost pane: a narrow pane gives the name
- * and the verdict mark, a wider pane adds the verdict word, and the widest
- * pane opens the summary sentence under both. `session-detail.css` holds
- * the widths. The tooltip carries the evidence and the advice throughout.
+ * The verdict is the mark alone. The word beside it said no more than the
+ * mark, and an info glyph on every card said less: the whole card opens its
+ * explanation, so a separate affordance only added marks to read. The word
+ * stays in the accessibility tree for a screen reader.
+ *
+ * The card answers the width of the Cost pane: the widest pane opens the
+ * summary sentence under the name. `session-detail.css` holds the widths.
+ * The tooltip carries the evidence and the advice at every width.
  */
 function InlineHygieneRow({ check }: { check: AssessedHygieneCheck }) {
   const status = STATUS_PRESENTATION[check.status]
@@ -181,30 +183,16 @@ function InlineHygieneRow({ check }: { check: AssessedHygieneCheck }) {
         role="group"
         aria-label={check.name}
         tabIndex={0}
-        className="session-check-cell group flex flex-col rounded-control bg-surface-card/50 px-3 py-2 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
+        className="session-check-cell flex flex-col rounded-control bg-surface-card/50 px-3 py-2 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
       >
         <div className="flex items-baseline justify-between gap-x-3">
-          <span className="min-w-0 text-pretty text-label">
-            {check.name}
-            <Info
-              size={11}
-              aria-hidden="true"
-              className="ml-1 inline align-[-1px] text-label-tertiary transition-colors duration-[var(--duration-fast)] ease-out group-hover:text-label-secondary"
-            />
-          </span>
-          <span
-            className={cn(
-              "inline-flex shrink-0 items-center gap-1 type-callout",
-              status.wordClass,
-            )}
-          >
-            <status.Icon
-              size={STATUS_ICON_SIZE}
-              aria-hidden="true"
-              className={status.textClass}
-            />
-            <span className="session-check-word">{status.label}</span>
-          </span>
+          <span className="min-w-0 text-pretty text-label">{check.name}</span>
+          <status.Icon
+            size={STATUS_ICON_SIZE}
+            aria-hidden="true"
+            className={cn("shrink-0 self-center", status.textClass)}
+          />
+          <span className="session-check-word">{status.label}</span>
         </div>
         <p className="session-check-summary mt-1.5 text-pretty type-callout text-label-secondary">
           {documentation.summary}

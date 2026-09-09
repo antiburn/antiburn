@@ -17,6 +17,8 @@ Source: four Notate stills of the wide session detail pane (Context, Cost ×2, T
 
 | 9 | Keith, on the three-density checks: "gestalt is a bit loose here. how about we put the Session overdepth (etc) into containers. move the (i) inline at end of each text line" | The subgrid table put the info glyph in a column of its own between the name and the verdict, so every check carried two open gaps and the name and its verdict read as unrelated columns | Each check becomes a card. The card boundary groups the name with the verdict, so the two can hold opposite edges without reading apart. The info glyph follows the last word of the name inline. The grid drops the subgrid for plain equal columns: two cards to a row, three from 48rem | built |
 
+| 10 | Keith: "lets just remove the (i)s completely for these checks in this view. Also, remove the 'passed' word" | Every card carried an info glyph and a verdict word, and neither said anything the card and the mark did not already say | Both go. The card itself is the affordance that opens the explanation, and the mark is the verdict. The word stays clipped in the accessibility tree so a screen reader still hears it. The 28rem density goes with the word, leaving two: two cards to a row, three with summaries from 48rem | built |
+
 
 ## 1 — Blue selected tab
 

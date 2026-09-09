@@ -89,17 +89,14 @@
   }
 }
 
-/* --- Session checks: one element at three densities ---------------------
+/* --- Session checks: cards that answer their own pane width -------------
    The Cost tab is the query container, so the checks read the width of
    their own pane and not the width of the window.
 
    Each check sits in its own card. The card is what groups a name with its
-   verdict: the two can hold opposite edges without reading as separate
-   columns, because the card boundary contains the space between them.
-
-   A narrow pane shows two cards to a row, each with the check name, an
-   inline info glyph, and the verdict mark. From 28rem the verdict word
-   joins the mark. From 48rem there are three cards to a row and each one
+   verdict mark: the two can hold opposite edges without reading as
+   separate columns, because the card boundary contains the space between
+   them. Two cards to a row, and three from 48rem, where each card also
    opens its summary sentence. The tooltip keeps the evidence and the
    advice at every width. */
 .session-detail-cost {
@@ -110,8 +107,9 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-sm);
 }
-/* The verdict word leaves the flow but stays in the accessibility tree, so
-   a screen reader hears the verdict at every width. */
+/* The verdict word never shows: the mark says the same thing in less
+   space. It stays in the accessibility tree, so a screen reader still
+   hears the verdict. */
 .session-check-word {
   position: absolute;
   width: 1px;
@@ -123,17 +121,6 @@
 }
 .session-check-summary {
   display: none;
-}
-
-@container (min-width: 28rem) {
-  .session-check-word {
-    position: static;
-    width: auto;
-    height: auto;
-    margin: 0;
-    overflow: visible;
-    clip-path: none;
-  }
 }
 
 @container (min-width: 48rem) {
