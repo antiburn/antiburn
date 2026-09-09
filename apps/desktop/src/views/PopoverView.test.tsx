@@ -345,9 +345,9 @@ describe("PopoverView", () => {
             displayName: "Claude",
             accountKey: "work",
             metric: "weekly",
-            windowId: "weekly-main",
-            resetsAt: "2027-01-20T08:00:00Z",
+            windowId: "weekly",
             percent: 12.345,
+            confidence: "learned",
           },
         ],
       },
@@ -357,7 +357,7 @@ describe("PopoverView", () => {
 
     expect(await screen.findByText("12.3%")).toHaveAttribute(
       "data-session-limit-window",
-      "weekly-main",
+      "weekly",
     )
     expect(invoke).toHaveBeenCalledWith("get_session_limit_allocations")
   })
@@ -402,9 +402,9 @@ describe("PopoverView", () => {
           displayName: "Claude",
           accountKey: null,
           metric: "weekly",
-          windowId: "weekly-main",
-          resetsAt: "2027-01-20T08:00:00Z",
+          windowId: "weekly",
           percent: 12.5,
+          confidence: "learned",
         },
       ],
     }

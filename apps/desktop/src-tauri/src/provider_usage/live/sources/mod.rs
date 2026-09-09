@@ -8,7 +8,9 @@
 //!
 //! [`anthropic_fetch`] first reads the Claude CLI's own cached reading of its
 //! usage endpoint — see [`claude_config_cache`] — before asking that endpoint
-//! itself with the credential the CLI already keeps on this machine;
+//! itself with the credential the CLI already keeps on this machine — and,
+//! on a user-initiated refresh that finds every credential expired, delegates
+//! the refresh to the reader's own `claude` CLI via [`claude_touch`];
 //! [`codex_fetch`] asks the analogous endpoint for Codex directly, retrying
 //! once with a token it refreshes itself before
 //! falling back to [`codex_app_server`] — the Codex CLI's own process, asked
@@ -45,9 +47,10 @@ pub mod anthropic_fetch;
 pub mod antigravity_fetch;
 mod antigravity_local;
 mod claude_config_cache;
+mod claude_touch;
 mod codex_app_server;
 pub mod codex_fetch;
-mod codex_rollout;
+pub(crate) mod codex_rollout;
 mod cooldown;
 pub(crate) mod http;
 mod pi_auth;

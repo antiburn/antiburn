@@ -106,61 +106,6 @@ mod history_tests {
     }
 
     #[test]
-    fn retention_freezes_a_materialized_period_before_a_pricing_requeue() {
-        let store = store();
-        store.upsert_sessions(&[session()], &[]).unwrap();
-        let reset = NOW - 90 * 86_400 - 1;
-        let period_id = store
-            .record_provider_usage_snapshots(&[snapshot(
-                ACCOUNT_A,
-                reset - 1,
-                "five-hour",
-                Some(reset - 18_000),
-                Some(reset),
-                Some(40.0),
-            )])
-            .unwrap()[0];
-        store
-            .replace_provider_usage_period_allocations(
-                period_id,
-                &[
-                    crate::store::provider_usage_ledger::SessionPeriodAllocation {
-                        key: SessionKey::new("native", "claude-code", "session"),
-                        metric: "fiveHour".to_string(),
-                        percent: 40.0,
-                        basis: "tokens".to_string(),
-                        partial: false,
-                    },
-                ],
-                NOW,
-            )
-            .unwrap();
-        {
-            let connection = store.lock();
-            Store::apply_provider_usage_retention_in(&connection, 90, NOW).unwrap();
-        }
-        assert!(
-            store
-                .provider_usage_period_allocation_frozen(period_id)
-                .unwrap()
-        );
-        store
-            .enqueue_all_provider_usage_allocation_periods(NOW)
-            .unwrap();
-        crate::provider_usage::ledger::reconcile(&store, NOW);
-        let connection = store.lock();
-        let (percent, partial): (f64, i64) = connection
-            .query_row(
-                "SELECT percent, partial FROM provider_usage_session_allocation WHERE period_id = ?1",
-                [period_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(percent, 40.0);
-        assert_eq!(partial, 1);
-    }
-
-    #[test]
     fn reset_jitter_keeps_one_period_and_raw_observations() {
         let store = store();
         let first = snapshot(
@@ -194,6 +139,44 @@ mod history_tests {
         assert_eq!(
             history.observations[1].reported_resets_at_epoch,
             Some(NOW + 1)
+        );
+    }
+
+    #[test]
+    fn reset_jitter_merges_two_codex_rollout_readings_into_one_period() {
+        // Same mechanism as `reset_jitter_keeps_one_period_and_raw_observations`,
+        // exercised with a rollout-sourced reading pair: consecutive Codex
+        // rollout events routinely restate a reset a couple of seconds apart
+        // from the server clock, and phase 4's history import must not split
+        // them into separate periods.
+        let store = store();
+        let mut first = snapshot(
+            ACCOUNT_A,
+            NOW - 60,
+            "five-hour",
+            None,
+            Some(NOW),
+            Some(20.0),
+        );
+        first.provider = "openai";
+        first.source.id = "codex-rollout-backfill";
+        let mut second = snapshot(ACCOUNT_A, NOW, "five-hour", None, Some(NOW + 3), Some(30.0));
+        second.provider = "openai";
+        second.source.id = "codex-rollout-backfill";
+
+        let first_id = store.record_provider_usage_snapshots(&[first]).unwrap()[0];
+        assert_eq!(
+            store.record_provider_usage_snapshots(&[second]).unwrap(),
+            [first_id]
+        );
+        let history = store
+            .provider_usage_period_history(first_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            history.observations.len(),
+            2,
+            "both readings join the same period despite the 3-second reset drift"
         );
     }
 
@@ -486,6 +469,46 @@ mod history_tests {
         assert_eq!(remaining, 0);
     }
 
+    /// Retention used to keep an orphaned period alive whenever a
+    /// materialized allocation row or a dirty-queue entry still pointed at
+    /// it. Both checks are gone with the allocator; a period with no
+    /// remaining observations must still disappear on its own.
+    #[test]
+    fn retention_deletes_an_orphaned_period_and_its_observations_after_the_allocation_checks_are_gone()
+     {
+        let store = store();
+        let old = snapshot(
+            ACCOUNT_A,
+            NOW - 91 * 86_400,
+            "five-hour",
+            Some(NOW - 91 * 86_400 - 18_000),
+            Some(NOW - 91 * 86_400),
+            Some(10.0),
+        );
+        let changed = store.record_provider_usage_snapshots(&[old]).unwrap();
+        let period_id = changed[0];
+
+        store.apply_session_retention(NOW).unwrap();
+
+        let connection = store.lock();
+        let observations: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM provider_usage_observation WHERE period_id = ?1",
+                [period_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(observations, 0);
+        let period_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM provider_usage_period WHERE id = ?1)",
+                [period_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!period_exists, "an orphaned period is deleted, not kept");
+    }
+
     #[test]
     fn a_raw_account_key_is_not_persisted() {
         let store = store();
@@ -602,5 +625,34 @@ mod history_tests {
         );
         let new_id = store.record_provider_usage_snapshots(&[new]).unwrap()[0];
         assert!(new_id > old_id);
+    }
+
+    #[test]
+    fn the_plan_and_plan_tier_a_snapshot_states_are_stored_on_its_observation() {
+        let store = store();
+        store.upsert_sessions(&[session()], &[]).unwrap();
+        let mut reading = snapshot(
+            ACCOUNT_A,
+            NOW,
+            "five-hour",
+            Some(NOW - 18_000),
+            Some(NOW),
+            Some(40.0),
+        );
+        reading.plan = Some("pro".to_string());
+        reading.plan_tier = Some("standard".to_string());
+
+        let period_id = store.record_provider_usage_snapshots(&[reading]).unwrap()[0];
+
+        let history = store
+            .provider_usage_period_history(period_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(history.observations.len(), 1);
+        assert_eq!(history.observations[0].plan.as_deref(), Some("pro"));
+        assert_eq!(
+            history.observations[0].plan_tier.as_deref(),
+            Some("standard")
+        );
     }
 }

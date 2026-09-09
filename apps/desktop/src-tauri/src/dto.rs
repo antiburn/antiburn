@@ -434,7 +434,8 @@ pub enum SessionLimitMetric {
     FiveHour,
 }
 
-/// One session's cumulative estimated share of provider allowance periods.
+/// One session's estimated share of a provider account's learned
+/// dollars-per-percent limit factor.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionLimitAllocation {
@@ -445,18 +446,15 @@ pub struct SessionLimitAllocation {
     pub provider: String,
     pub display_name: String,
     pub account_key: Option<String>,
+    /// The lane the factor belongs to (`weekly` or `fiveHour`). No longer a
+    /// specific provider window: the factor is a standing property of the
+    /// account and lane, not of one allowance period.
     pub window_id: String,
-    /// The active period reset when this is a live-only estimate.
-    ///
-    /// Durable cumulative values deliberately leave this empty. They do not
-    /// expire when a provider starts another period.
-    pub resets_at: Option<String>,
     pub percent: f64,
-    /// `partial` means the retained provider history cannot cover every
-    /// relevant period. The percentage remains an estimate, never a bill.
-    pub coverage: String,
-    /// Provider periods included in this cumulative estimate.
-    pub period_count: u32,
+    /// `learned` when the factor point came from a meter delta, `seeded`
+    /// when it came from a single first-reading estimate. The percentage
+    /// remains an estimate, never a bill, either way.
+    pub confidence: String,
 }
 
 /// Materialized per-session allowance estimates.
