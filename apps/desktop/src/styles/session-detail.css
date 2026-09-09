@@ -89,14 +89,17 @@
   }
 }
 
-/* Checks share a row only when each explanation has enough reading width. */
+/* The Cost tab widens its card and its checks grid at 30rem. The cost pane
+   of the default 1100px window is about 32rem wide, so the default window
+   gets both two-column layouts. The 1000px minimum window falls back to
+   one column. */
 .session-detail-cost {
   container-type: inline-size;
 }
 .session-checks-grid {
   grid-template-columns: minmax(0, 1fr);
 }
-@container (min-width: 40rem) {
+@container (min-width: 30rem) {
   .session-checks-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -106,7 +109,7 @@
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
 }
-@container (min-width: 40rem) {
+@container (min-width: 30rem) {
   .session-cost-summary {
     grid-template-columns: minmax(8rem, 1fr) minmax(0, 3fr);
   }

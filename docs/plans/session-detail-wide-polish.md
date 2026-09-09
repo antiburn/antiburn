@@ -2,7 +2,7 @@
 
 **Branch:** `feat/session-detail-polish` · **Worktree:** `.claude/worktrees/feat-session-detail-polish` · **Status:** approved and built 2026-09-09; lint, type-check, tests, and design-drift check green; awaiting Keith's in-app look. No PR until asked.
 
-Source: four Notate stills of the wide session detail pane (Context, Cost ×2, Tools tabs) taken 10:41–10:44 AEST. Everything below is the **wide** layout only. The popover layout does not change.
+Source: four Notate stills of the wide session detail pane (Context, Cost ×2, Tools tabs) taken 10:41–10:44 AEST, plus one follow-up from the first in-app look (row 6). The Notate stills came from a 1506×861 window; the follow-up is what the default 1100×600 window showed. Everything below is the **wide** layout only. The popover layout does not change.
 
 | # | Pin | Where it lives today | Fix | Status |
 |---|-----|----------------------|-----|--------|
@@ -11,6 +11,7 @@ Source: four Notate stills of the wide session detail pane (Context, Cost ×2, T
 | 3 | "Move this text into tooltip" (burn‑check descriptions) | `HygieneBreakdown.tsx` `InlineHygieneRow` prints summary + guidance under every check name | Row shows name + verdict only; the copy moves into a hover tooltip on the row | built |
 | 4 | "What is this vert line here?" + "Let's put this in tooltip" | `EfficiencyBreakdown.tsx` `CostScaleBar` draws `cost-target`, a 2px `bg-label` line at the good/ok edge; `CostRowLine` prints the guidance paragraph under the scale | Remove the line. Move the paragraph into a tooltip on the `$16.86 per million tokens` hero | built |
 | 5 | "Should margin/inset be the same on the toolbar as the content?" | Toolbar is `px-6` (24px); the tab panel is `px-10` (40px) | Yes, same inset. Toolbar goes to `px-10` so the title's left edge lines up with the content below it | built |
+| 6 | Keith, on the first in-app look at 1100×600: "dollars are all low, checks have huge vert space, and line chart at bottom gets pushed below the fold" | `session-detail.css` gates the cost card's two columns and the checks grid's two columns behind `@container (min-width: 40rem)`; the cost pane of the default window is ~32rem, so both fall to one column and push the Efficiency section past the fold | Breakpoint drops to 30rem so the default window gets both two-column layouts (the 1000px minimum still stacks). Check rows tighten to `py-1` + `gap-y-0.5`, the same rhythm as the popover's check rows | built |
 
 ## 1 — Blue selected tab
 
