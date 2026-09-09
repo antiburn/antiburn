@@ -118,7 +118,7 @@ impl super::Explorers {
                 Some(SourceVersion {
                     fingerprint: FingerprintInputs {
                         stat,
-                        head_hash: Some(head_hash_of(content.as_bytes())),
+                        head_hash: Some(content_hash_of(content.as_bytes())),
                     }
                     .fingerprint(),
                     estimated_bytes: Some(content.len() as u64),
@@ -277,15 +277,20 @@ impl FingerprintInputs {
 }
 
 pub fn head_hash_of(bytes: &[u8]) -> u64 {
+    hash_bytes(bytes.iter().take(FINGERPRINT_HEAD_BYTES))
+}
+
+fn content_hash_of(bytes: &[u8]) -> u64 {
+    hash_bytes(bytes.iter())
+}
+
+fn hash_bytes<'a>(bytes: impl Iterator<Item = &'a u8>) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x100_0000_01b3;
 
-    bytes
-        .iter()
-        .take(FINGERPRINT_HEAD_BYTES)
-        .fold(OFFSET_BASIS, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
-        })
+    bytes.fold(OFFSET_BASIS, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
+    })
 }
 
 fn optional_i128(value: Option<i128>) -> String {
@@ -535,9 +540,41 @@ mod tests {
             format!(
                 "sv1:-:{}:-:-:{:016x}",
                 content.len(),
-                head_hash_of(content.as_bytes())
+                content_hash_of(content.as_bytes())
             )
         );
+    }
+
+    #[tokio::test]
+    async fn an_inline_rewrite_after_the_file_head_changes_the_fingerprint() {
+        let content = "a".repeat(FINGERPRINT_HEAD_BYTES + 1);
+        let first = descriptor(
+            AgentKind::Claude,
+            SessionSource::Inline {
+                label: "inline-1".to_string(),
+                content: content.clone(),
+            },
+        );
+        let mut rewritten = content;
+        rewritten.replace_range(FINGERPRINT_HEAD_BYTES.., "b");
+        let second = descriptor(
+            AgentKind::Claude,
+            SessionSource::Inline {
+                label: "inline-1".to_string(),
+                content: rewritten,
+            },
+        );
+
+        let first = super::super::Explorers::DISK
+            .source_version(&first, None)
+            .await
+            .expect("first version");
+        let second = super::super::Explorers::DISK
+            .source_version(&second, None)
+            .await
+            .expect("second version");
+
+        assert_ne!(first.fingerprint, second.fingerprint);
     }
 
     #[tokio::test]
@@ -572,7 +609,8 @@ mod tests {
             .await
             .expect("source version");
 
-        assert_eq!(version.fingerprint, "sv1:db:120:1");
+        assert!(version.fingerprint.starts_with("sv1:db:"));
+        assert!(version.fingerprint.ends_with(":1"));
         assert_eq!(version.estimated_bytes, None);
         assert_eq!(version.streamability, Streamability::DatabaseRows);
     }

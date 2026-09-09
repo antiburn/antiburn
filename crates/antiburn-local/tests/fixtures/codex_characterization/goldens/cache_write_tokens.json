@@ -145,6 +145,7 @@
           {
             "api": null,
             "effort": "medium",
+            "lastTsMs": 1787652603000,
             "model": "gpt-test",
             "provider": null,
             "speed": null,
@@ -187,7 +188,7 @@
     },
     "provenance": {
       "analyzerRevision": 21,
-      "evidenceSchemaRevision": 17,
+      "evidenceSchemaRevision": 18,
       "harnessVersion": {
         "state": "complete",
         "value": null
@@ -200,7 +201,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 17,
+    "schemaRevision": 18,
     "subagents": {
       "state": "complete",
       "value": {

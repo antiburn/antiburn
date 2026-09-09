@@ -383,7 +383,7 @@ fn current_resume_revisions_reject_each_prior_batch_revision() {
     assert_eq!(current.parser_revision, 31);
     assert_eq!(current.analyzer_revision, 21);
     assert_eq!(current.metrics_schema_revision, 8);
-    assert_eq!(current.evidence_schema_revision, 17);
+    assert_eq!(current.evidence_schema_revision, 18);
     assert_eq!(current.coverage_schema_revision, 4);
     let mut stored = sample_resume("current");
     stored.snapshot_revision = current.snapshot_revision;

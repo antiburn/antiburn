@@ -199,10 +199,10 @@ pub fn run() {
             ) {
                 ::tracing::error!(event = "evidence_reconcile_failed", error = %error);
             }
-            if let Err(error) = app.state::<store::Store>().reconcile_remediation_revisions(
-                &remediation::revisions_json(),
-                time::OffsetDateTime::now_utc().unix_timestamp(),
-            ) {
+            if let Err(error) = app
+                .state::<store::Store>()
+                .reconcile_remediations(time::OffsetDateTime::now_utc().unix_timestamp())
+            {
                 ::tracing::error!(event = "remediation_reconcile_failed", error = %error);
             }
             if let Err(error) = app

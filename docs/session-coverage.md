@@ -1,6 +1,6 @@
 # Session Parsing Coverage
 
-Audit date: 2026-09-08.
+Audit date: 2026-09-09.
 
 This document records how Antiburn discovers and parses local session sources.
 It covers source identity, framing, companion data, normalized facts, and
@@ -37,6 +37,13 @@ release range: an accepted schema, header, or pinned producer commit with
 synthetic fixtures can define its contract. This does not prove all historical
 versions. Full and resumed reads must agree where resume is supported.
 
+Inline materialized sources use a fingerprint of the full bounded content, not
+only a head region. The content is already materialized and size-bounded before
+this fingerprint is calculated. OpenCode SQLite fingerprints stream every
+selected value from the accepted root and descendant `session`, `message`, and
+`part` cluster in stable table and row order. This detects a content change even
+when row counts and saved timestamps do not change.
+
 ## Review Scope
 
 The reviewed targets are OpenCode, Pi, Codex, Claude Code, and Antigravity.
@@ -55,7 +62,7 @@ The table lists all 26 `SourceFormat` names from
 | `ClaudeJsonl` | Claude Code | `~/.claude/projects/<workspace>/*.jsonl` | Native discovery; bounded JSONL with source claims; resume supported | Usage, token classes, time, models, request controls/routes, calls, observed resource injection, thread links, compactions, exact Task/Agent child pairing | Characterized accepted core; observed resources are not full inventories |
 | `CodexRolloutJsonl` | Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | Native discovery with child rollouts; bounded JSONL; resume supported | Usage, time, models, provider/control inheritance, service tier, tools, harness version, spawn records, selected skill documents, exact tool-search MCP exposure, compactions | Characterized accepted core; resource subsets only |
 | `OpenCodeJsonl` | OpenCode | Legacy exported session JSONL | Native or WSL export discovery; bounded JSONL with validated history wrappers/order | Usage, time, models, provider/API fields where saved, raw variants, task proof, selected skills, tools, compactions, session/message identities | Characterized accepted export; no historical effort map or resource inventory |
-| `OpenCodeSqliteV2` | OpenCode | `~/.local/share/opencode/opencode.db` or platform equivalent | Read-only snapshot of `session`, `message`, `part`; validated creation-time/message-ID order | Native messages and parts, task metadata joined to child models, selected skills, usage, provider/API fields, compactions, identities | Characterized table contract; not CoreV2 `session_message` |
+| `OpenCodeSqliteV2` | OpenCode | `~/.local/share/opencode/opencode.db` or platform equivalent | Read-only snapshot of the root and descendant `session`, `message`, `part` cluster; row-streamed content fingerprint; validated creation-time/message-ID order | Native messages and parts, task metadata joined to child models, selected skills, usage, provider/API fields, compactions, identities | Characterized table contract; not CoreV2 `session_message` |
 | `PiV3Jsonl` | Pi | `~/.pi/agent/sessions/**/*.jsonl` or `PI_AGENT_DIR` | Native discovery; version 3 header; bounded JSONL; resume supported | Usage, time, provider/API/model, agent-selected thinking policy, branch/fork state, tools, links, compactions, official example-extension nested worker results | Characterized core; extension delegation is finding-only, not arbitrary extension support |
 | `CursorJsonl` | Cursor | In-memory or compatibility JSONL without a source marker | Dedicated reader with bounded JSONL; native surface is unknown | Generic Cursor role, content, timestamp, model, tool call, and record ID fields | Uncharacterized compatibility format |
 | `CursorCliAgentJsonl` | Cursor | `.cursor/projects/*/agent-transcripts/**` with chat metadata | Native discovery; transcript and metadata synthesis; bounded JSONL reader | Role, content, timestamps, models, tool calls, and selected record IDs | Partial |
@@ -113,6 +120,12 @@ parser/analyzer/evidence/coverage/resume revisions are 31/21/17/4/6. Existing
 revision gates invalidate old projections and snapshots; JSON and binary
 evidence round trips and full/resumed replay are covered by tests.
 
+The evidence accumulator retains at most 512 distinct thread UUIDs. Each UUID
+must be at most 256 bytes. A new UUID after the set is full, or an oversized
+UUID, makes attribution incomplete and records `Partial(CapExceeded)`. Resume
+deserialization rejects an oversized set or UUID. Defensive reconstruction also
+caps invalid in-memory resume state and keeps the evidence partial.
+
 ## Companion Sources
 
 | Agent | Companion | Current use | Required contract |
@@ -131,6 +144,14 @@ evidence round trips and full/resumed replay are covered by tests.
 Mutable current configuration can support a reviewed model or tool catalog. It
 cannot prove what a historical request exposed unless the session records the
 inputs needed to select that catalog entry.
+
+The desktop can add nullable remediation metadata when it publishes `Ready`
+evidence for Claude Code or Codex. It hashes the physical model target and saves
+the effective scope and model only when the current effective configuration
+value matches an actual model observed in the completed evidence. This is
+publication-time derived metadata. It is not source evidence or historical
+truth. Later remediation uses it only to select and verify the exact config
+scope.
 
 ## Known Contract Gaps
 

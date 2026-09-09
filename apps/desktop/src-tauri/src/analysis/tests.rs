@@ -96,7 +96,7 @@ fn inline_input(content: String, id: &str) -> SessionInput {
     }
 }
 
-fn opencode_database() -> (tempfile::TempDir, std::path::PathBuf, String) {
+fn opencode_database() -> (tempfile::TempDir, std::path::PathBuf) {
     let directory = tempfile::TempDir::new().expect("tempdir");
     let path = directory.path().join("opencode.db");
     let connection = rusqlite::Connection::open(&path).expect("database");
@@ -123,7 +123,7 @@ fn opencode_database() -> (tempfile::TempDir, std::path::PathBuf, String) {
         )
         .expect("OpenCode fixture");
     drop(connection);
-    (directory, path, "sv1:db:120:2".to_owned())
+    (directory, path)
 }
 
 fn antigravity_database() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -200,7 +200,7 @@ fn antigravity_database() -> (tempfile::TempDir, std::path::PathBuf) {
 
 #[tokio::test]
 async fn an_opencode_provider_database_stays_native() {
-    let (_directory, path, _) = opencode_database();
+    let (_directory, path) = opencode_database();
     let source = SessionSource::ProviderDb {
         agent: AgentKind::OpenCode,
         db_path: path.clone(),
@@ -263,9 +263,14 @@ async fn a_claimed_antigravity_database_stays_native_and_publishes() {
     assert!(!observed(&evidence.models).by_model.is_empty());
 }
 
-#[test]
-fn a_claimed_opencode_database_publishes_from_the_validated_snapshot() {
-    let (_directory, path, fingerprint) = opencode_database();
+#[tokio::test]
+async fn a_claimed_opencode_database_publishes_from_the_validated_snapshot() {
+    let (_directory, path) = opencode_database();
+    let (latest, rows) = Explorers::DISK
+        .provider_db_fingerprint(&AgentKind::OpenCode, &path, "root")
+        .await
+        .expect("database fingerprint");
+    let fingerprint = format!("sv1:db:{latest}:{rows}");
     let input = SessionInput {
         agent: "opencode".to_owned(),
         session_id: "root".to_owned(),

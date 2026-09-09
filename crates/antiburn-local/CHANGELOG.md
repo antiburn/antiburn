@@ -17,6 +17,16 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+### Added
+
+- Typed per-detector finding causes now support exact target grouping and
+  deterministic remediation prompts bounded to 8 KiB, eight identities, and
+  256 bytes per display identity.
+- Old-model remediation APIs verify actual replacement use and recurrence on an
+  exact provider, API, model, replacement, and scope. They calculate cumulative
+  API-equivalent savings from pinned token-class rates and report unknown when
+  evidence, rates, or a pricing revision is unavailable.
+
 ### Changed
 
 - **Breaking:** Session readers replace `VendorAdapter`, `ClaudeAdapter`,
@@ -28,6 +38,11 @@ version and refuses the release if there is none.
 - Partial Cursor and Antigravity source contracts preserve direct findings but
   cannot prove clean results. Unsupported parser wrappers no longer advertise
   usable session analysis.
+- Old-model finding causes keep provider and API routes separate and include the
+  reviewed replacement in their stable identity.
+- Thread resume evidence retains at most 512 UUIDs of at most 256 bytes each.
+  Overflow marks attribution partial, and oversized serialized resume state is
+  rejected.
 
 ### Fixed
 
@@ -35,6 +50,14 @@ version and refuses the release if there is none.
 - Require native OpenCode task proof instead of session ancestry for delegation.
 - Distinguish available skill listings from injected skill documents.
 - Invalidate earlier resume snapshots after changing resumable evidence state.
+- Select cache-churn policy from `RepeatedContextAccounting`: `CacheWrite` uses
+  Claude policy and `UncachedInput` uses OpenAI policy, including mixed-family
+  sessions. Causes now select a model from the matching family.
+- Keep token-burn estimates unknown when prices or the denominator are missing.
+  Do not add a percentage fallback or force a positive minimum.
+- Fingerprint all bytes of bounded inline content. OpenCode SQLite fingerprints
+  stream all selected values across the accepted session, message, and part
+  cluster, so content-only row changes invalidate prior work.
 
 ## [0.6.0] - 2026-09-07
 

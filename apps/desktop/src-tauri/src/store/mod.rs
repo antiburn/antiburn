@@ -59,11 +59,10 @@ pub use model::{
     EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters,
     MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement,
     OwningSession, ProjectionRevisions, PublishedEvidence, RETAIN_SESSION_DATA_FOREVER,
-    RelationKind, RelationRecord, Remediation, RemediationCursor, RemediationEvidenceVersion,
-    RemediationOrigin, RemediationPage, RemediationRecord, RemediationResult, RemediationState,
-    RepositoryRecord, SessionActivityKey, SessionBadgeMetric, SessionKey, SessionRecord,
-    SessionUsageRecord, SessionUsageTurnRecord, SourcePublishMode, SourcePublishOutcome,
-    SourceVersionState, ThemePreference, UsageEvidenceRecord,
+    RelationKind, RelationRecord, Remediation, RemediationEvidenceGuard, RemediationRecord,
+    RemediationResult, RemediationState, RepositoryRecord, SessionActivityKey, SessionBadgeMetric,
+    SessionKey, SessionRecord, SessionUsageRecord, SessionUsageTurnRecord, SourcePublishMode,
+    SourcePublishOutcome, SourceVersionState, ThemePreference, UsageEvidenceRecord,
 };
 
 /// Evidence rows that still wait for, or sit in, processing.
@@ -882,13 +881,6 @@ impl Store {
                 && (generation_increased || activity_cursor_changed || source_returned);
             if evidence_marked_pending {
                 mark_evidence_pending_in(&tx, &record.key)?;
-            } else if generation_increased {
-                remediation::mark_remediations_dirty_in(
-                    &tx,
-                    &record.key.environment_key,
-                    &record.key.agent,
-                    time::OffsetDateTime::now_utc().unix_timestamp(),
-                )?;
             }
         }
         tx.commit()?;
@@ -1383,7 +1375,6 @@ impl Store {
             .iter()
             .map(|agent| rusqlite::types::Value::Text((*agent).to_string()))
             .collect();
-        let mut dirty_scopes = HashSet::new();
         let enroll_sql = format!(
             "INSERT INTO session_evidence (environment_key, agent, session_id)
                  SELECT session.environment_key, session.agent, session.session_id
@@ -1404,7 +1395,6 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let enrolled = enrolled_scopes.len();
-        dirty_scopes.extend(enrolled_scopes);
         drop(enroll_statement);
 
         let parser_parameter = agents.len() + 1;
@@ -1461,17 +1451,7 @@ impl Store {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let requeued = requeued_scopes.len();
-        dirty_scopes.extend(requeued_scopes);
         drop(update_statement);
-        let now_epoch = time::OffsetDateTime::now_utc().unix_timestamp();
-        for (environment_key, agent) in dirty_scopes {
-            remediation::mark_remediations_dirty_in(
-                &transaction,
-                &environment_key,
-                &agent,
-                now_epoch,
-            )?;
-        }
         transaction.commit()?;
         Ok(enrolled + requeued)
     }
@@ -1624,7 +1604,6 @@ impl Store {
     ) -> Result<bool> {
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
-        let marks_remediations_dirty = matches!(failure, EvidenceFailure::Retry { .. });
         let updated = match failure {
             EvidenceFailure::Retry {
                 next_attempt_at_epoch,
@@ -1686,14 +1665,6 @@ impl Store {
                 ],
             )?,
         };
-        if updated > 0 && marks_remediations_dirty {
-            remediation::mark_remediations_dirty_in(
-                &transaction,
-                &claim.key.environment_key,
-                &claim.key.agent,
-                time::OffsetDateTime::now_utc().unix_timestamp(),
-            )?;
-        }
         transaction.commit()?;
         Ok(updated > 0)
     }
@@ -1783,6 +1754,12 @@ impl Store {
         relations: &[RelationRecord],
         sources: &[SourcePublishOutcome],
     ) -> Result<bool> {
+        let model_attribution = crate::remediation::publication_model_attribution(
+            self,
+            &record.key,
+            completion.status,
+            &completion.evidence_json,
+        )?;
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
         // The fence every source's rows will share once this pass
@@ -1853,7 +1830,9 @@ impl Store {
                     evidence_json = ?10,
                     analyzed_at_epoch = ?11, retry_count = 0, last_error = NULL,
                     claimed_at_epoch = NULL, lease_expires_at_epoch = NULL,
-                    next_attempt_at_epoch = NULL, published_fence = ?12
+                     next_attempt_at_epoch = NULL, published_fence = ?12,
+                     effective_model_target_hash = ?14,
+                     effective_model_scope = ?15, effective_model = ?16
               WHERE evidence.environment_key = ?1
                 AND evidence.agent = ?2 AND evidence.session_id = ?3
                 AND evidence.status = 'processing' AND evidence.claim_fence = ?13
@@ -1878,6 +1857,9 @@ impl Store {
                 time::OffsetDateTime::now_utc().unix_timestamp(),
                 target_fence,
                 completion.claim_fence,
+                model_attribution.as_ref().map(|value| value.0.as_str()),
+                model_attribution.as_ref().map(|value| value.1.as_str()),
+                model_attribution.as_ref().map(|value| value.2.as_str()),
             ],
         )?;
         if updated == 0 {
@@ -2041,12 +2023,14 @@ impl Store {
             &record.key,
             time::OffsetDateTime::now_utc().unix_timestamp(),
         )?;
-        remediation::mark_remediations_dirty_in(
-            &transaction,
-            &record.key.environment_key,
-            &record.key.agent,
-            time::OffsetDateTime::now_utc().unix_timestamp(),
-        )?;
+        if completion.status == PublishedEvidence::Ready {
+            remediation::mark_remediations_dirty_in(
+                &transaction,
+                &record.key.environment_key,
+                &record.key.agent,
+                time::OffsetDateTime::now_utc().unix_timestamp(),
+            )?;
+        }
         transaction.commit()?;
         Ok(true)
     }
@@ -3427,22 +3411,11 @@ fn mark_evidence_pending_in(connection: &Connection, key: &SessionKey) -> Result
              next_attempt_at_epoch = NULL, retry_count = 0",
         params![key.environment_key, key.agent, key.session_id],
     )?;
-    remediation::mark_remediations_dirty_in(
-        connection,
-        &key.environment_key,
-        &key.agent,
-        time::OffsetDateTime::now_utc().unix_timestamp(),
-    )?;
     Ok(())
 }
 
 fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<bool> {
     let parameters = params![key.environment_key, key.agent, key.session_id];
-    connection.execute(
-        "DELETE FROM remediation
-          WHERE environment_key = ?1 AND agent = ?2 AND baseline_session_id = ?3",
-        parameters,
-    )?;
     connection.execute(
         "DELETE FROM session_relation
           WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",

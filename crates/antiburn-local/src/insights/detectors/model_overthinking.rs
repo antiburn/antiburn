@@ -38,7 +38,7 @@ use super::{Observation, ReportCatalogs, observed};
 
 pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) -> Observation {
     if let Some(models) = observed(&evidence.models) {
-        let catalog = ReviewedModelCatalog::new(catalogs.clone());
+        let catalog = ReviewedModelCatalog::new(catalogs);
         let mut contract_incomplete = false;
         if !models.control_observations.is_empty() {
             for observation in &models.control_observations {
@@ -162,7 +162,7 @@ pub(super) fn finding_causes(
     let Some(models) = observed(&evidence.models) else {
         return Vec::new();
     };
-    let catalog = ReviewedModelCatalog::new(catalogs.clone());
+    let catalog = ReviewedModelCatalog::new(catalogs);
     let mut grouped =
         std::collections::BTreeMap::<(Option<String>, Option<String>, String, String), u64>::new();
     if !models.control_observations.is_empty() {
@@ -348,6 +348,7 @@ mod tests {
                 model: "claude-sonnet-5".to_owned(),
                 effort: Some(effort.to_owned()),
                 speed: None,
+                last_ts_ms: 200,
                 turns: TurnCounts {
                     main_loop: 1,
                     delegated: 0,

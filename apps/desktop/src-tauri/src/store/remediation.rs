@@ -1,100 +1,220 @@
 use anyhow::{Context, Result, ensure};
-use rusqlite::{OptionalExtension, named_params, params};
+use rusqlite::{OptionalExtension, params};
 
 use super::{
-    Remediation, RemediationCursor, RemediationEvidenceVersion, RemediationOrigin, RemediationPage,
-    RemediationRecord, RemediationResult, RemediationState, Store,
+    Remediation, RemediationEvidenceGuard, RemediationRecord, RemediationResult, RemediationState,
+    Store,
 };
 
-const DEFAULT_PAGE_SIZE: u32 = 50;
-const MAX_PAGE_SIZE: u32 = 100;
-const MAX_JSON_BYTES: usize = 65_536;
-
-const REMEDIATION_COLUMNS: &str = "remediation_id, target_key, state, origin,
-    environment_key, agent, source_format, workspace_key, baseline_session_id,
-    baseline_source_generation, baseline_published_fence, baseline_source_fingerprint,
-    baseline_processed_fingerprint, baseline_parser_revision, baseline_analyzer_revision,
-    baseline_evidence_schema_revision, finding_json, change_json, boundary_json,
-    verification_json, savings_json, revisions_json, verification_input_revision,
-    evaluated_input_revision, created_at_epoch, updated_at_epoch, applied_at_epoch,
+const MAX_JSON_BYTES: usize = 32_768;
+const REMEDIATION_COLUMNS: &str = "remediation_id, target_key, environment_key, agent,
+    scope_kind, scope_key, state, dirty_revision, evaluated_revision, definition_json,
+    result_json, created_at_epoch, updated_at_epoch, effective_boundary_ms,
     verified_at_epoch, recurred_at_epoch";
 
 impl Store {
-    /// Insert a remediation only while its ready baseline evidence remains current.
-    ///
-    /// Returns `false` when the evidence changed or the target already has an active remediation.
-    pub fn insert_awaiting_remediation(&self, remediation: &Remediation) -> Result<bool> {
-        validate_remediation_json(remediation)?;
-        let connection = self.lock();
-        let inserted = connection.execute(
-            "INSERT INTO remediation (
-                remediation_id, target_key, state, origin, environment_key, agent,
-                source_format, workspace_key, baseline_session_id,
-                baseline_source_generation, baseline_published_fence,
-                baseline_source_fingerprint, baseline_processed_fingerprint,
-                baseline_parser_revision, baseline_analyzer_revision,
-                baseline_evidence_schema_revision, finding_json, change_json, boundary_json,
-                verification_json, savings_json, revisions_json, created_at_epoch,
-                updated_at_epoch, applied_at_epoch
-             )
-             SELECT :id, :target, 'awaitingVerification', :origin, :environment, :agent,
-                    :format, :workspace, :session, :generation, :fence,
-                    :source_fingerprint, :processed_fingerprint, :parser_revision,
-                    :analyzer_revision, :evidence_revision, :finding, :change, :boundary,
-                    :verification, :savings, :revisions, :created, :created, :applied
-               FROM session AS source
-               JOIN session_evidence AS evidence
-                 ON evidence.environment_key = source.environment_key
-                AND evidence.agent = source.agent
-                AND evidence.session_id = source.session_id
-              WHERE source.environment_key = :environment AND source.agent = :agent
-                AND source.session_id = :session AND source.source_generation = :generation
-                AND source.source_fingerprint IS :source_fingerprint
-                AND evidence.status = 'ready'
-                AND evidence.analyzed_generation = :generation
-                AND evidence.published_fence = :fence
-                AND evidence.processed_fingerprint IS :processed_fingerprint
-                AND evidence.parser_revision = :parser_revision
-                AND evidence.analyzer_revision = :analyzer_revision
-                AND evidence.evidence_schema_revision = :evidence_revision
-                AND NOT EXISTS (
-                    SELECT 1 FROM remediation
-                     WHERE remediation_id = :id
-                        OR (environment_key = :environment AND agent = :agent
-                            AND target_key = :target AND state != 'recurred'))",
-            named_params! {
-                ":id": remediation.remediation_id,
-                ":target": remediation.target_key,
-                ":origin": RemediationOrigin::as_str(remediation.origin),
-                ":environment": remediation.environment_key,
-                ":agent": remediation.agent,
-                ":format": remediation.source_format,
-                ":workspace": remediation.workspace_key,
-                ":session": remediation.baseline_session_id,
-                ":generation": remediation.baseline_source_generation,
-                ":fence": remediation.baseline_published_fence,
-                ":source_fingerprint": remediation.baseline_source_fingerprint,
-                ":processed_fingerprint": remediation.baseline_processed_fingerprint,
-                ":parser_revision": remediation.baseline_parser_revision,
-                ":analyzer_revision": remediation.baseline_analyzer_revision,
-                ":evidence_revision": remediation.baseline_evidence_schema_revision,
-                ":finding": remediation.finding_json,
-                ":change": remediation.change_json,
-                ":boundary": remediation.boundary_json,
-                ":verification": remediation.verification_json,
-                ":savings": remediation.savings_json,
-                ":revisions": remediation.revisions_json,
-                ":created": remediation.created_at_epoch,
-                ":applied": remediation.applied_at_epoch,
-            },
+    /// Creates or reuses one exact watch after all source identities pass in one transaction.
+    pub fn create_or_reuse_remediation(
+        &self,
+        remediation: &Remediation,
+        guards: &[RemediationEvidenceGuard],
+    ) -> Result<Option<RemediationRecord>> {
+        validate_json("definition_json", &remediation.definition_json)?;
+        validate_json("result_json", &remediation.result_json)?;
+        ensure!(
+            !guards.is_empty(),
+            "a remediation requires current evidence"
+        );
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        for guard in guards {
+            let current: bool = transaction.query_row(
+                "SELECT EXISTS (
+                    SELECT 1 FROM session s JOIN session_evidence e USING (environment_key, agent, session_id)
+                     WHERE s.environment_key = ?1 AND s.agent = ?2 AND s.session_id = ?3
+                       AND s.source_generation = ?4 AND e.published_fence = ?5
+                       AND s.source_fingerprint IS ?6 AND e.processed_fingerprint IS ?7
+                       AND e.parser_revision = ?8 AND e.analyzer_revision = ?9
+                       AND e.evidence_schema_revision = ?10 AND e.status = 'ready'
+                       AND e.analyzed_generation = s.source_generation)",
+                params![guard.environment_key, guard.agent, guard.session_id,
+                    guard.source_generation, guard.published_fence, guard.source_fingerprint,
+                    guard.processed_fingerprint, guard.parser_revision, guard.analyzer_revision,
+                    guard.evidence_schema_revision],
+                |row| row.get(0),
+            )?;
+            if !current {
+                return Ok(None);
+            }
+        }
+        let existing = transaction.query_row(
+            &format!("SELECT {REMEDIATION_COLUMNS} FROM remediation
+                WHERE environment_key = ?1 AND agent = ?2 AND target_key = ?3 AND state != 'recurred'"),
+            params![remediation.environment_key, remediation.agent, remediation.target_key],
+            remediation_from_row,
+        ).optional()?;
+        if let Some(existing) = existing {
+            if remediation.state == RemediationState::Reserved
+                && existing.state == RemediationState::Watching
+            {
+                let prior_result: serde_json::Value = serde_json::from_str(&existing.result_json)?;
+                let reserved_result = serde_json::json!({
+                    "version": 1,
+                    "verification": {"status": "reserved"},
+                    "savings": {"status": "pending"},
+                    "reservationKind": "upgraded",
+                    "priorResult": prior_result,
+                    "priorBoundaryMs": existing.effective_boundary_ms,
+                });
+                transaction.execute(
+                    "UPDATE remediation SET state = 'reserved', result_json = ?2,
+                        definition_json = ?3, effective_boundary_ms = NULL,
+                        updated_at_epoch = MAX(updated_at_epoch, ?4)
+                      WHERE remediation_id = ?1 AND state = 'watching'",
+                    params![
+                        existing.remediation_id,
+                        reserved_result.to_string(),
+                        remediation.definition_json,
+                        remediation.created_at_epoch
+                    ],
+                )?;
+            }
+            transaction.commit()?;
+            drop(connection);
+            return self.remediation(&existing.remediation_id);
+        }
+        let result_json = if remediation.state == RemediationState::Reserved {
+            serde_json::json!({
+                "version": 1,
+                "verification": {"status": "reserved"},
+                "savings": {"status": "pending"},
+                "reservationKind": "new",
+            })
+            .to_string()
+        } else {
+            remediation.result_json.clone()
+        };
+        transaction.execute(
+            "INSERT INTO remediation (remediation_id, target_key, environment_key, agent,
+                scope_kind, scope_key, state, definition_json, result_json, created_at_epoch,
+                updated_at_epoch, effective_boundary_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11)",
+            params![
+                remediation.remediation_id,
+                remediation.target_key,
+                remediation.environment_key,
+                remediation.agent,
+                remediation.scope_kind,
+                remediation.scope_key,
+                remediation.state.as_str(),
+                remediation.definition_json,
+                result_json,
+                remediation.created_at_epoch,
+                remediation.effective_boundary_ms
+            ],
         )?;
-        Ok(inserted == 1)
+        transaction.commit()?;
+        drop(connection);
+        self.remediation(&remediation.remediation_id)
     }
 
-    /// Return one remediation by its opaque id.
+    pub fn begin_remediation_write(&self, remediation_id: &str, now: i64) -> Result<bool> {
+        Ok(self.lock().execute(
+            "UPDATE remediation SET state = 'writing', updated_at_epoch = MAX(updated_at_epoch, ?2)
+              WHERE remediation_id = ?1 AND state = 'reserved'",
+            params![remediation_id, now],
+        )? == 1)
+    }
+
+    pub fn finalize_remediation_write(
+        &self,
+        remediation_id: &str,
+        boundary_ms: i64,
+        now: i64,
+    ) -> Result<bool> {
+        Ok(self.lock().execute(
+            "UPDATE remediation SET state = 'watching', effective_boundary_ms = ?2,
+                result_json = '{\"version\":1,\"verification\":{\"status\":\"watching\"},\"savings\":{\"status\":\"pending\"}}',
+                dirty_revision = dirty_revision + 1, updated_at_epoch = MAX(updated_at_epoch, ?3)
+              WHERE remediation_id = ?1 AND state IN ('writing', 'recoveryNeeded')",
+            params![remediation_id, boundary_ms, now],
+        )? == 1)
+    }
+
+    pub fn cancel_remediation_reservation(&self, remediation_id: &str) -> Result<bool> {
+        self.restore_or_delete_reservation(remediation_id, "reserved")
+    }
+
+    pub fn cancel_pre_replacement_write(&self, remediation_id: &str) -> Result<bool> {
+        self.restore_or_delete_reservation(remediation_id, "writing")
+    }
+
+    pub fn mark_remediation_recovery_needed(
+        &self,
+        remediation_id: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<bool> {
+        let result = serde_json::json!({
+            "version": 1,
+            "verification": {"status": "recoveryNeeded", "reason": reason},
+            "savings": {"status": "pending"}
+        })
+        .to_string();
+        Ok(self.lock().execute(
+            "UPDATE remediation SET state = 'recoveryNeeded', result_json = ?2,
+                updated_at_epoch = MAX(updated_at_epoch, ?3)
+              WHERE remediation_id = ?1 AND state IN ('writing', 'recoveryNeeded')",
+            params![remediation_id, result, now],
+        )? == 1)
+    }
+
+    pub(crate) fn mark_remediation_recovery_checked(
+        &self,
+        remediation_id: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<bool> {
+        let result = serde_json::json!({
+            "version": 1,
+            "verification": {"status": "recoveryNeeded", "reason": reason, "checkedAtEpoch": now},
+            "savings": {"status": "pending"}
+        })
+        .to_string();
+        Ok(self.lock().execute(
+            "UPDATE remediation SET state = 'recoveryNeeded', result_json = ?2,
+                updated_at_epoch = MAX(updated_at_epoch, ?3)
+              WHERE remediation_id = ?1 AND state IN ('writing', 'recoveryNeeded')",
+            params![remediation_id, result, now],
+        )? == 1)
+    }
+
+    pub(crate) fn defer_remediation_recovery(
+        &self,
+        remediation_id: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<bool> {
+        let result = serde_json::json!({
+            "version": 1,
+            "verification": {
+                "status": "recoveryNeeded",
+                "reason": reason,
+                "retryAfterEpoch": now.saturating_add(60)
+            },
+            "savings": {"status": "pending"}
+        })
+        .to_string();
+        Ok(self.lock().execute(
+            "UPDATE remediation SET state = 'recoveryNeeded', result_json = ?2,
+                updated_at_epoch = MAX(updated_at_epoch, ?3)
+              WHERE remediation_id = ?1 AND state IN ('writing', 'recoveryNeeded')",
+            params![remediation_id, result, now],
+        )? == 1)
+    }
+
     pub fn remediation(&self, remediation_id: &str) -> Result<Option<RemediationRecord>> {
-        let connection = self.lock();
-        connection
+        self.lock()
             .query_row(
                 &format!("SELECT {REMEDIATION_COLUMNS} FROM remediation WHERE remediation_id = ?1"),
                 [remediation_id],
@@ -104,73 +224,51 @@ impl Store {
             .map_err(Into::into)
     }
 
-    /// List remediations with a bounded exclusive keyset cursor.
-    pub fn remediations(
+    pub fn latest_remediation_for_target(
         &self,
-        environment_key: &str,
-        cursor: Option<&RemediationCursor>,
-        limit: Option<u32>,
-    ) -> Result<RemediationPage> {
-        let limit = limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
-        let connection = self.lock();
-        let sql = format!(
-            "SELECT {REMEDIATION_COLUMNS} FROM remediation
-              WHERE environment_key = ?1
-                AND (?2 IS NULL OR created_at_epoch < ?2
-                     OR (created_at_epoch = ?2 AND remediation_id < ?3))
-              ORDER BY created_at_epoch DESC, remediation_id DESC
-              LIMIT ?4"
-        );
-        let mut statement = connection.prepare(&sql)?;
-        let (cursor_epoch, cursor_id) = cursor
-            .map(|value| {
-                (
-                    Some(value.created_at_epoch),
-                    Some(value.remediation_id.as_str()),
-                )
-            })
-            .unwrap_or((None, None));
-        let mut remediations = statement
-            .query_map(
-                params![
-                    environment_key,
-                    cursor_epoch,
-                    cursor_id,
-                    i64::from(limit) + 1
-                ],
-                remediation_from_row,
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let has_more = remediations.len() > limit as usize;
-        remediations.truncate(limit as usize);
-        let next_cursor = has_more.then(|| {
-            let last = remediations
-                .last()
-                .expect("a page with more rows has a last remediation");
-            RemediationCursor {
-                created_at_epoch: last.created_at_epoch,
-                remediation_id: last.remediation_id.clone(),
-            }
-        });
-        Ok(RemediationPage {
-            remediations,
-            next_cursor,
-        })
-    }
-
-    /// Read the oldest dirty remediation and its observed input revision.
-    ///
-    /// A repeated read can duplicate work, but the revision guard rejects stale results.
-    pub fn next_dirty_remediation(&self) -> Result<Option<RemediationRecord>> {
-        let connection = self.lock();
-        connection
+        environment: &str,
+        agent: &str,
+        target_key: &str,
+    ) -> Result<Option<RemediationRecord>> {
+        self.lock()
             .query_row(
                 &format!(
                     "SELECT {REMEDIATION_COLUMNS} FROM remediation
-                      WHERE evaluated_input_revision < verification_input_revision
-                        AND state != 'recurred'
-                      ORDER BY updated_at_epoch, remediation_id
-                      LIMIT 1"
+                      WHERE environment_key = ?1 AND agent = ?2 AND target_key = ?3
+                      ORDER BY (state != 'recurred') DESC, updated_at_epoch DESC,
+                               remediation_id DESC LIMIT 1"
+                ),
+                params![environment, agent, target_key],
+                remediation_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn next_remediation_write_recovery(&self, now: i64) -> Result<Option<RemediationRecord>> {
+        self.lock()
+            .query_row(
+                &format!(
+                    "SELECT {REMEDIATION_COLUMNS} FROM remediation
+                WHERE state IN ('writing', 'recoveryNeeded')
+                  AND json_type(result_json, '$.verification.checkedAtEpoch') IS NULL
+                  AND COALESCE(json_extract(result_json, '$.verification.retryAfterEpoch'), 0) <= ?1
+                ORDER BY updated_at_epoch, remediation_id LIMIT 1"
+                ),
+                [now],
+                remediation_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn next_dirty_remediation(&self) -> Result<Option<RemediationRecord>> {
+        self.lock()
+            .query_row(
+                &format!(
+                    "SELECT {REMEDIATION_COLUMNS} FROM remediation
+                WHERE evaluated_revision < dirty_revision AND state IN ('watching', 'fixed')
+                ORDER BY updated_at_epoch, remediation_id LIMIT 1"
                 ),
                 [],
                 remediation_from_row,
@@ -179,119 +277,93 @@ impl Store {
             .map_err(Into::into)
     }
 
-    /// Replace a verification result only when its observed inputs are current.
     pub fn replace_remediation_result(
         &self,
         remediation_id: &str,
-        observed_input_revision: i64,
-        observed_evidence: &RemediationEvidenceVersion,
+        observed_revision: i64,
         result: &RemediationResult,
     ) -> Result<bool> {
-        validate_versioned_json("verification_json", &result.verification_json)?;
-        validate_versioned_json("savings_json", &result.savings_json)?;
-        let connection = self.lock();
-        let updated = connection.execute(
-            "UPDATE remediation AS remediation
-                SET state = ?3, verification_json = ?4, savings_json = ?5,
-                    evaluated_input_revision = ?2, updated_at_epoch = ?6,
-                    verified_at_epoch = CASE
-                        WHEN ?3 IN ('verified', 'recurred')
-                        THEN COALESCE(verified_at_epoch, ?6)
-                        ELSE verified_at_epoch END,
-                    recurred_at_epoch = CASE
-                        WHEN ?3 = 'recurred' THEN COALESCE(recurred_at_epoch, ?6)
-                        ELSE recurred_at_epoch END
-              WHERE remediation_id = ?1 AND verification_input_revision = ?2
-                AND evaluated_input_revision < ?2 AND ?6 >= created_at_epoch
-                AND ((state = 'awaitingVerification'
-                      AND ?3 IN ('awaitingVerification', 'verified'))
-                  OR (state = 'verified' AND ?3 IN ('verified', 'recurred')))
-                AND EXISTS (
-                    SELECT 1 FROM session AS source
-                    JOIN session_evidence AS evidence
-                      ON evidence.environment_key = source.environment_key
-                     AND evidence.agent = source.agent
-                     AND evidence.session_id = source.session_id
-                    WHERE source.environment_key = remediation.environment_key
-                      AND source.agent = remediation.agent
-                      AND source.session_id = remediation.baseline_session_id
-                      AND source.source_generation = ?7
-                      AND source.source_fingerprint IS ?9
-                      AND evidence.status = 'ready'
-                      AND evidence.analyzed_generation = ?7
-                      AND evidence.published_fence = ?8
-                      AND evidence.processed_fingerprint IS ?10
-                      AND evidence.parser_revision = ?11
-                      AND evidence.analyzer_revision = ?12
-                      AND evidence.evidence_schema_revision = ?13)",
-            params![
-                remediation_id,
-                observed_input_revision,
-                RemediationState::as_str(result.state),
-                result.verification_json,
-                result.savings_json,
-                result.evaluated_at_epoch,
-                observed_evidence.source_generation,
-                observed_evidence.published_fence,
-                observed_evidence.source_fingerprint,
-                observed_evidence.processed_fingerprint,
-                observed_evidence.parser_revision,
-                observed_evidence.analyzer_revision,
-                observed_evidence.evidence_schema_revision,
-            ],
-        )?;
-        Ok(updated == 1)
+        validate_json("result_json", &result.result_json)?;
+        Ok(self.lock().execute(
+            "UPDATE remediation SET state = ?3, result_json = ?4, evaluated_revision = ?2,
+                updated_at_epoch = MAX(updated_at_epoch, ?5),
+                verified_at_epoch = CASE WHEN ?3 = 'fixed' THEN COALESCE(verified_at_epoch, ?6) ELSE verified_at_epoch END,
+                recurred_at_epoch = CASE WHEN ?3 = 'recurred' THEN COALESCE(recurred_at_epoch, ?6) ELSE recurred_at_epoch END
+              WHERE remediation_id = ?1 AND dirty_revision = ?2 AND evaluated_revision < ?2
+                AND ((state = 'watching' AND ?3 IN ('watching', 'fixed'))
+                  OR (state = 'fixed' AND ?3 IN ('fixed', 'recurred')))",
+            params![remediation_id, observed_revision, result.state.as_str(), result.result_json, result.evaluated_at_epoch, result.transition_at_epoch],
+        )? == 1)
     }
 
-    /// Mark active remediations dirty when their stored revision set is stale.
-    pub fn reconcile_remediation_revisions(
-        &self,
-        revisions_json: &str,
-        now_epoch: i64,
-    ) -> Result<usize> {
-        validate_versioned_json("revisions_json", revisions_json)?;
+    /// Reconciles crash states and makes active watches eligible after startup.
+    pub fn reconcile_remediations(&self, now: i64) -> Result<usize> {
         let connection = self.lock();
+        connection.execute(
+            "UPDATE remediation SET state = 'watching',
+                result_json = json_extract(result_json, '$.priorResult'),
+                effective_boundary_ms = json_extract(result_json, '$.priorBoundaryMs')
+              WHERE state = 'reserved' AND json_extract(result_json, '$.reservationKind') = 'upgraded'",
+            [],
+        )?;
+        connection.execute("DELETE FROM remediation WHERE state = 'reserved'", [])?;
+        connection.execute(
+            "UPDATE remediation SET state = 'recoveryNeeded',
+                result_json = '{\"version\":1,\"verification\":{\"status\":\"recoveryNeeded\",\"reason\":\"writeOutcomeUnknown\"},\"savings\":{\"status\":\"pending\"}}',
+                updated_at_epoch = MAX(updated_at_epoch, ?1) WHERE state = 'writing'",
+            [now],
+        )?;
+        connection.execute(
+            "UPDATE remediation SET
+                result_json = '{\"version\":1,\"verification\":{\"status\":\"recoveryNeeded\",\"reason\":\"writeOutcomeUnknown\"},\"savings\":{\"status\":\"pending\"}}'
+              WHERE state = 'recoveryNeeded'",
+            [],
+        )?;
         Ok(connection.execute(
-            "UPDATE remediation
-                SET revisions_json = ?1,
-                    verification_input_revision = verification_input_revision + 1,
-                    updated_at_epoch = ?2
-              WHERE state != 'recurred' AND revisions_json != ?1",
-            params![revisions_json, now_epoch],
+            "UPDATE remediation SET dirty_revision = dirty_revision + 1,
+                definition_json = json_set(definition_json, '$.verificationMethodRevision', ?1)
+              WHERE state IN ('watching', 'fixed')
+                AND COALESCE(json_extract(definition_json, '$.verificationMethodRevision'), 0) != ?1",
+            [i64::from(antiburn_local::remediation::VERIFICATION_METHOD_REVISION)],
         )?)
+    }
+
+    fn restore_or_delete_reservation(&self, remediation_id: &str, state: &str) -> Result<bool> {
+        let connection = self.lock();
+        let restored = connection.execute(
+            "UPDATE remediation SET state = 'watching',
+                result_json = json_extract(result_json, '$.priorResult'),
+                effective_boundary_ms = json_extract(result_json, '$.priorBoundaryMs')
+              WHERE remediation_id = ?1 AND state = ?2
+                AND json_extract(result_json, '$.reservationKind') = 'upgraded'",
+            params![remediation_id, state],
+        )?;
+        if restored == 1 {
+            return Ok(true);
+        }
+        Ok(connection.execute(
+            "DELETE FROM remediation WHERE remediation_id = ?1 AND state = ?2
+                AND json_extract(result_json, '$.reservationKind') = 'new'",
+            params![remediation_id, state],
+        )? == 1)
     }
 }
 
 pub(super) fn mark_remediations_dirty_in(
     connection: &rusqlite::Connection,
-    environment_key: &str,
+    environment: &str,
     agent: &str,
-    now_epoch: i64,
+    now: i64,
 ) -> Result<usize> {
     Ok(connection.execute(
-        "UPDATE remediation
-            SET verification_input_revision = verification_input_revision + 1,
-                updated_at_epoch = ?3
-          WHERE environment_key = ?1 AND agent = ?2 AND state != 'recurred'",
-        params![environment_key, agent, now_epoch],
+        "UPDATE remediation SET dirty_revision = dirty_revision + 1,
+            updated_at_epoch = MAX(updated_at_epoch, ?3)
+          WHERE environment_key = ?1 AND agent = ?2 AND state IN ('watching', 'fixed')",
+        params![environment, agent, now],
     )?)
 }
 
-fn validate_remediation_json(remediation: &Remediation) -> Result<()> {
-    for (name, value) in [
-        ("finding_json", remediation.finding_json.as_str()),
-        ("change_json", remediation.change_json.as_str()),
-        ("boundary_json", remediation.boundary_json.as_str()),
-        ("verification_json", remediation.verification_json.as_str()),
-        ("savings_json", remediation.savings_json.as_str()),
-        ("revisions_json", remediation.revisions_json.as_str()),
-    ] {
-        validate_versioned_json(name, value)?;
-    }
-    Ok(())
-}
-
-fn validate_versioned_json(name: &str, value: &str) -> Result<()> {
+fn validate_json(name: &str, value: &str) -> Result<()> {
     ensure!(
         value.len() <= MAX_JSON_BYTES,
         "{name} exceeds {MAX_JSON_BYTES} bytes"
@@ -302,50 +374,33 @@ fn validate_versioned_json(name: &str, value: &str) -> Result<()> {
         parsed
             .get("version")
             .and_then(serde_json::Value::as_u64)
-            .is_some_and(|version| version > 0),
-        "{name} must contain a positive integer version"
+            .is_some_and(|value| value > 0),
+        "{name} has no version"
     );
     Ok(())
 }
 
 fn remediation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemediationRecord> {
     let state = row
-        .get::<_, String>(2)?
-        .parse()
-        .map_err(|_| rusqlite::Error::InvalidQuery)?;
-    let origin = row
-        .get::<_, String>(3)?
+        .get::<_, String>(6)?
         .parse()
         .map_err(|_| rusqlite::Error::InvalidQuery)?;
     Ok(RemediationRecord {
         remediation_id: row.get(0)?,
         target_key: row.get(1)?,
+        environment_key: row.get(2)?,
+        agent: row.get(3)?,
+        scope_kind: row.get(4)?,
+        scope_key: row.get(5)?,
         state,
-        origin,
-        environment_key: row.get(4)?,
-        agent: row.get(5)?,
-        source_format: row.get(6)?,
-        workspace_key: row.get(7)?,
-        baseline_session_id: row.get(8)?,
-        baseline_source_generation: row.get(9)?,
-        baseline_published_fence: row.get(10)?,
-        baseline_source_fingerprint: row.get(11)?,
-        baseline_processed_fingerprint: row.get(12)?,
-        baseline_parser_revision: row.get(13)?,
-        baseline_analyzer_revision: row.get(14)?,
-        baseline_evidence_schema_revision: row.get(15)?,
-        finding_json: row.get(16)?,
-        change_json: row.get(17)?,
-        boundary_json: row.get(18)?,
-        verification_json: row.get(19)?,
-        savings_json: row.get(20)?,
-        revisions_json: row.get(21)?,
-        verification_input_revision: row.get(22)?,
-        evaluated_input_revision: row.get(23)?,
-        created_at_epoch: row.get(24)?,
-        updated_at_epoch: row.get(25)?,
-        applied_at_epoch: row.get(26)?,
-        verified_at_epoch: row.get(27)?,
-        recurred_at_epoch: row.get(28)?,
+        dirty_revision: row.get(7)?,
+        evaluated_revision: row.get(8)?,
+        definition_json: row.get(9)?,
+        result_json: row.get(10)?,
+        created_at_epoch: row.get(11)?,
+        updated_at_epoch: row.get(12)?,
+        effective_boundary_ms: row.get(13)?,
+        verified_at_epoch: row.get(14)?,
+        recurred_at_epoch: row.get(15)?,
     })
 }

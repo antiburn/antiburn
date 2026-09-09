@@ -569,7 +569,7 @@ impl<'a> TokenBurnTurnAccumulator<'a> {
         {
             self.overpowered_subagents = checked_accumulate(
                 self.overpowered_subagents,
-                priced_or_assumed_saving(&turn, &canonical_model, replacement),
+                priced_saving(&turn, &canonical_model, replacement),
             );
         }
         if let Some(replacement) = self
@@ -583,7 +583,7 @@ impl<'a> TokenBurnTurnAccumulator<'a> {
         {
             self.old_model = checked_accumulate(
                 self.old_model,
-                priced_or_assumed_saving(&turn, &canonical_model, &replacement.replacement),
+                priced_saving(&turn, &canonical_model, &replacement.replacement),
             );
         }
         if turn.scope == "delegated"
@@ -821,20 +821,19 @@ fn report_turn_pricing(
     lookup_turn_pricing(model, speed).or_else(|| lookup_turn_pricing(canonical_model, speed))
 }
 
-fn priced_or_assumed_saving(
+fn priced_saving(
     turn: &TokenBurnTurnEvidence,
     canonical_model: &str,
     replacement: &str,
 ) -> Option<u128> {
     let replacement_canonical = canonical_model_key(replacement);
-    let priced = report_turn_pricing(&turn.model, canonical_model, turn.speed.as_deref())
+    report_turn_pricing(&turn.model, canonical_model, turn.speed.as_deref())
         .zip(report_turn_pricing(
             replacement,
             &replacement_canonical,
             turn.speed.as_deref(),
         ))
-        .and_then(|(actual, replacement)| cost_saving_tokens(turn, &actual, &replacement));
-    priced.or_else(|| percentage_of_tokens(turn.total_tokens()?, 10))
+        .and_then(|(actual, replacement)| cost_saving_tokens(turn, &actual, &replacement))
 }
 
 fn model_family_from_canonical(canonical: &str) -> detectors::ModelFamily {
@@ -879,14 +878,13 @@ fn fast_mode_saving(turn: &TokenBurnTurnEvidence, canonical_model: &str) -> Opti
     let standard_canonical = canonical_model
         .strip_suffix("-fast")
         .unwrap_or(canonical_model);
-    let priced = report_turn_pricing(standard_model, standard_canonical, Some("fast"))
+    report_turn_pricing(standard_model, standard_canonical, Some("fast"))
         .zip(report_turn_pricing(
             standard_model,
             standard_canonical,
             None,
         ))
-        .and_then(|(fast, standard)| cost_saving_tokens(turn, &fast, &standard));
-    priced.or_else(|| percentage_of_tokens(turn.total_tokens()?, 10))
+        .and_then(|(fast, standard)| cost_saving_tokens(turn, &fast, &standard))
 }
 
 #[derive(Default)]
@@ -1133,21 +1131,18 @@ impl TokenBurnAccumulator {
                 })
         };
         let estimates = core::array::from_fn(|index| match &statuses[index] {
-            DetectorStatus::Findings(_) => numerators[index]
-                .and_then(percentage)
-                .map_or(Some(1), |value| Some(value.max(1))),
+            DetectorStatus::Findings(_) => numerators[index].and_then(percentage),
             DetectorStatus::Clean => Some(0),
             DetectorStatus::NotAssessed(_) => None,
         });
-        let has_findings = statuses
-            .iter()
-            .any(|status| matches!(status, DetectorStatus::Findings(_)));
-        let combined = if has_findings {
+        let has_measured_finding = statuses.iter().enumerate().any(|(index, status)| {
+            matches!(status, DetectorStatus::Findings(_)) && numerators[index].is_some()
+        });
+        let combined = if has_measured_finding {
             combined_by_session
                 .into_iter()
                 .try_fold(0_u128, u128::checked_add)
                 .and_then(percentage)
-                .map_or(Some(1), |value| Some(value.max(1)))
         } else {
             None
         };
@@ -1527,7 +1522,7 @@ mod tests {
         assert_eq!(
             report.detector_estimated_token_burn_basis_points
                 [DetectorId::ModelOverthinking.index()],
-            Some(1)
+            None
         );
         assert_eq!(
             report.detector_estimated_token_burn_basis_points[DetectorId::UnusedSkills.index()],
@@ -1652,7 +1647,7 @@ mod tests {
     }
 
     #[test]
-    fn findings_use_the_floor_when_no_denominator_is_available() {
+    fn findings_without_a_denominator_have_no_estimate() {
         let complete = evidence_with_work("complete");
         let mut unattributed = evidence_with_work("unattributed");
         unattributed.context = EvidenceValue::Complete(ContextEvidence {
@@ -1676,9 +1671,9 @@ mod tests {
         assert_eq!(
             report.detector_estimated_token_burn_basis_points
                 [DetectorId::SessionsOverDepth.index()],
-            Some(1)
+            None
         );
-        assert_eq!(report.estimated_token_burn_basis_points, Some(1));
+        assert_eq!(report.estimated_token_burn_basis_points, None);
     }
 
     #[test]
@@ -1820,7 +1815,7 @@ mod tests {
     }
 
     #[test]
-    fn every_finding_has_a_positive_numeric_estimate() {
+    fn findings_without_supported_prices_remain_unknown() {
         let all_findings = DetectorId::ALL;
         let mut token_burn = TokenBurnAccumulator::new();
         let mut token_evidence = turn_evidence(
@@ -1857,15 +1852,12 @@ mod tests {
         let (combined, estimates) = token_burn.finish(&finding_statuses(&all_findings));
 
         assert_eq!(combined, Some(800));
-        for detector in all_findings {
-            assert!(estimates[detector.index()].is_some_and(|value| value > 0));
-        }
         assert_eq!(
             estimates,
             [
                 Some(800),
                 Some(350),
-                Some(500),
+                None,
                 Some(100),
                 Some(100),
                 Some(100),
@@ -1915,7 +1907,7 @@ mod tests {
     }
 
     #[test]
-    fn model_mechanisms_fall_back_to_ten_percent_without_prices() {
+    fn model_mechanisms_do_not_guess_savings_without_prices() {
         let catalogs = ReportCatalogs::default();
         let premium = token_turn("delegated", "gpt-5.5", None, None, 1_000);
         let fast = token_turn("delegated", "unpriced-model", None, Some("fast"), 1_000);
@@ -1923,10 +1915,10 @@ mod tests {
 
         assert_eq!(
             turn_evidence([premium], &catalogs).overpowered_subagents,
-            Some(100)
+            None
         );
-        assert_eq!(turn_evidence([fast], &catalogs).fast_mode, Some(100));
-        assert_eq!(turn_evidence([old], &catalogs).old_model, Some(100));
+        assert_eq!(turn_evidence([fast], &catalogs).fast_mode, None);
+        assert_eq!(turn_evidence([old], &catalogs).old_model, None);
     }
 
     #[test]
@@ -2290,8 +2282,8 @@ mod tests {
 
         let (combined, estimates) = token_burn.finish(&statuses);
 
-        assert_eq!(combined, Some(1));
-        assert_eq!(estimates[DetectorId::UnusedMcpServers.index()], Some(1));
+        assert_eq!(combined, None);
+        assert_eq!(estimates[DetectorId::UnusedMcpServers.index()], None);
     }
 
     #[test]

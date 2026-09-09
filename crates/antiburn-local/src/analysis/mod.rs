@@ -244,7 +244,7 @@ pub const METRICS_SCHEMA_REVISION: i64 = 8;
 // harness version, and model-associated speed and effort evidence.
 // +1 for source-surface formats and fail-closed skill alias attribution.
 // +1 for nested resource evidence and paired parent-call and child-model observations.
-pub const EVIDENCE_SCHEMA_REVISION: i64 = 17;
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 18;
 /// Versions [`evidence::SessionCoverageRecord`]'s own shape, separately
 /// from [`EVIDENCE_SCHEMA_REVISION`]: the record is an internal input to
 /// evidence replay, not the published `SessionEvidence` shape itself.

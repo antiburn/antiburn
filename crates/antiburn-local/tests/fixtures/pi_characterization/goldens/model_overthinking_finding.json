@@ -122,6 +122,7 @@
           {
             "api": "anthropic-messages",
             "effort": "max",
+            "lastTsMs": 1767312301000,
             "model": "claude-opus-4-6",
             "provider": "anthropic",
             "speed": null,
@@ -164,7 +165,7 @@
     },
     "provenance": {
       "analyzerRevision": 21,
-      "evidenceSchemaRevision": 17,
+      "evidenceSchemaRevision": 18,
       "harnessVersion": {
         "state": "unsupported"
       },
@@ -176,7 +177,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 17,
+    "schemaRevision": 18,
     "subagents": {
       "state": "unsupported"
     },

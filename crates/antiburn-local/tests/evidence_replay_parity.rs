@@ -249,7 +249,7 @@ fn run_fixture_and_replay(
     });
     let replayed = evidence_from_facts(&facts, &record);
     assert_eq!(record.coverage_schema_revision, 4);
-    assert_eq!(replayed.schema_revision, 17);
+    assert_eq!(replayed.schema_revision, 18);
     let json_evidence: SessionEvidence =
         serde_json::from_str(&serde_json::to_string(&replayed).unwrap()).unwrap();
     assert_eq!(replayed, json_evidence);

@@ -91,7 +91,18 @@ mod tests {
 
     #[test]
     fn loaded_and_never_invoked_server_is_a_finding() {
-        assert_eq!(evaluate(&with_server(false)), Observation::Finding);
+        let mut evidence = with_server(false);
+        let EvidenceValue::Complete(sources) = &mut evidence.context_sources else {
+            unreachable!()
+        };
+        sources.mcp_servers.get_mut("server-a").unwrap().token_count = Some(123);
+        assert_eq!(evaluate(&evidence), Observation::Finding);
+        assert_eq!(
+            finding_causes(&evidence),
+            vec![FindingCause::UnusedMcpServer {
+                server: "server-a".into(),
+            }]
+        );
     }
 
     #[test]

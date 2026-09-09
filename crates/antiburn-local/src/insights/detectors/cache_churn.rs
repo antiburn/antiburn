@@ -8,12 +8,9 @@
 //! efficiency bound. The token totals are summed per session rather
 //! than per user over 30 days.
 //!
-//! The bound comes from `catalogs.families[family]
-//! .cache_overpay_multiple_threshold`, where `family` is
-//! `ModelEvidence::dominant_main_model`'s family, falling back to the
-//! family of the first model key in `by_model` (`BTreeMap` order) when
-//! no dominant model was computed. Neither present, or the resolved
-//! family has no reviewed cache policy, the detector reports a contract gap.
+//! The bound comes from the reviewed family for the repeated-context
+//! accounting contract. Cache-write accounting uses the Claude policy;
+//! uncached-input accounting uses the OpenAI policy.
 //!
 //! The finding fires only when `repeated_tokens > 0` and the multiple
 //! reaches the bound.
@@ -48,9 +45,7 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         return Observation::NoFinding;
     }
 
-    let Some(family) = dominant_family(evidence) else {
-        return Observation::ContractIncomplete;
-    };
+    let family = accounting_family(repeated_context.accounting);
     let Some(policy) = catalogs.families.get(&family) else {
         return Observation::ContractIncomplete;
     };
@@ -82,18 +77,22 @@ pub(super) fn finding_causes(
     let Some(repeated) = observed(&cache.repeated_context) else {
         return Vec::new();
     };
-    let Some(models) = observed(&evidence.models) else {
-        return Vec::new();
-    };
-    let Some(model) = models
-        .dominant_main_model
-        .as_ref()
-        .or_else(|| models.by_model.keys().next())
-    else {
-        return Vec::new();
-    };
-    let family = model_family(model);
+    let family = accounting_family(repeated.accounting);
     let Some(policy) = catalogs.families.get(&family) else {
+        return Vec::new();
+    };
+    let Some(model) = observed(&evidence.models).and_then(|models| {
+        models
+            .dominant_main_model
+            .as_ref()
+            .filter(|model| model_family(model) == family)
+            .or_else(|| {
+                models
+                    .by_model
+                    .keys()
+                    .find(|model| model_family(model) == family)
+            })
+    }) else {
         return Vec::new();
     };
     vec![FindingCause::CacheChurn {
@@ -104,17 +103,11 @@ pub(super) fn finding_causes(
     }]
 }
 
-/// Resolves the model family the overpay bound is judged under:
-/// `ModelEvidence::dominant_main_model`'s family, or, when that is
-/// absent, the family of the first model key in `by_model` (`BTreeMap`
-/// order, so this is deterministic). `None` when neither is present.
-fn dominant_family(evidence: &SessionEvidence) -> Option<ModelFamily> {
-    let models = observed(&evidence.models)?;
-    if let Some(dominant) = models.dominant_main_model.as_deref() {
-        return Some(model_family(dominant));
+fn accounting_family(accounting: crate::analysis::RepeatedContextAccounting) -> ModelFamily {
+    match accounting {
+        crate::analysis::RepeatedContextAccounting::CacheWrite => ModelFamily::Claude,
+        crate::analysis::RepeatedContextAccounting::UncachedInput => ModelFamily::OpenAi,
     }
-    let first_model = models.by_model.keys().next()?;
-    Some(model_family(first_model))
 }
 
 #[cfg(test)]
@@ -291,37 +284,16 @@ mod tests {
     }
 
     #[test]
-    fn unknown_family_is_a_contract_gap_even_above_the_claude_bound() {
-        let mut evidence = claude_evidence("unknown-family");
+    fn cache_write_accounting_uses_the_claude_policy_in_a_mixed_family_session() {
+        let mut evidence = claude_evidence("mixed-cache-write-family");
         edit_cache(&mut evidence, false, |cache| {
             cache.repeated_context = EvidenceValue::Complete(repeated_context(
                 RepeatedContextAccounting::CacheWrite,
-                300,
-                400,
+                120,
+                220,
             ));
         });
-        set_dominant_main_model(&mut evidence, "some-unlisted-model");
-
-        assert_eq!(
-            evaluate(&evidence, &ReportCatalogs::default()),
-            Observation::ContractIncomplete
-        );
-    }
-
-    #[test]
-    fn no_dominant_model_falls_back_to_the_first_by_model_key() {
-        let mut evidence = claude_evidence("fallback-family");
-        edit_cache(&mut evidence, false, |cache| {
-            // multiple = 400 / (400 - 300) = 4.0, above the Claude bound.
-            cache.repeated_context = EvidenceValue::Complete(repeated_context(
-                RepeatedContextAccounting::CacheWrite,
-                300,
-                400,
-            ));
-        });
-        // `dominant_main_model` stays `None` (the fixture's default);
-        // only `by_model` carries a key, so the fallback must resolve
-        // the family from it.
+        set_dominant_main_model(&mut evidence, "gpt-5.6-sol");
         let EvidenceValue::Complete(mut models) = evidence.models.clone() else {
             unreachable!()
         };
@@ -332,12 +304,42 @@ mod tests {
 
         assert_eq!(
             evaluate(&evidence, &ReportCatalogs::default()),
-            Observation::Finding
+            Observation::NoFinding
         );
     }
 
     #[test]
-    fn no_present_family_at_all_is_a_contract_gap() {
+    fn uncached_input_accounting_uses_openai_policy_in_a_mixed_family_session() {
+        let mut evidence = claude_evidence("mixed-family");
+        edit_cache(&mut evidence, false, |cache| {
+            // The 2.1 multiple exceeds the OpenAI bound but not the Claude bound.
+            cache.repeated_context = EvidenceValue::Complete(repeated_context(
+                RepeatedContextAccounting::UncachedInput,
+                110,
+                210,
+            ));
+        });
+        set_dominant_main_model(&mut evidence, "claude-sonnet-4-6");
+        let EvidenceValue::Complete(mut models) = evidence.models.clone() else {
+            unreachable!()
+        };
+        models
+            .by_model
+            .insert("gpt-5.6-sol".to_owned(), ModelTokens::default());
+        evidence.models = EvidenceValue::Complete(models);
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::Finding
+        );
+        assert!(matches!(
+            finding_causes(&evidence, &ReportCatalogs::default()).as_slice(),
+            [FindingCause::CacheChurn { model, .. }] if model == "gpt-5.6-sol"
+        ));
+    }
+
+    #[test]
+    fn policy_selection_does_not_require_model_evidence() {
         let mut evidence = claude_evidence("no-family");
         edit_cache(&mut evidence, false, |cache| {
             cache.repeated_context = EvidenceValue::Complete(repeated_context(
@@ -350,7 +352,7 @@ mod tests {
 
         assert_eq!(
             evaluate(&evidence, &ReportCatalogs::default()),
-            Observation::ContractIncomplete
+            Observation::Finding
         );
     }
 

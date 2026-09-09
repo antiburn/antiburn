@@ -71,22 +71,47 @@ pub(super) fn finding_causes(
     models
         .by_model
         .iter()
-        .filter_map(|(model, tokens)| {
+        .flat_map(|(model, tokens)| {
             if tokens.turns == 0 || tokens.last_ts_ms == 0 {
-                return None;
+                return Vec::new();
             }
             let Support::Supported(ModelState::Obsolete(replacement)) =
                 reviewed_model_state(&catalogs.model_replacements, model)
             else {
-                return None;
+                return Vec::new();
             };
-            (tokens.last_ts_ms >= replacement.available_since_ts_ms).then(|| {
-                FindingCause::OldModelUsage {
-                    model: model.clone(),
-                    replacement: replacement.replacement.clone(),
-                    turns: tokens.turns,
+            let mut routes = std::collections::BTreeMap::new();
+            for observation in &models.control_observations {
+                if observation.model != *model {
+                    continue;
                 }
-            })
+                let turns = observation
+                    .turns
+                    .main_loop
+                    .saturating_add(observation.turns.delegated);
+                if turns > 0 {
+                    let route = (observation.provider.clone(), observation.api.clone());
+                    let grouped = routes.entry(route).or_insert((0_u64, 0_i64));
+                    grouped.0 = grouped.0.saturating_add(turns);
+                    grouped.1 = grouped.1.max(observation.last_ts_ms);
+                }
+            }
+            if routes.is_empty() {
+                routes.insert((None, None), (tokens.turns, tokens.last_ts_ms));
+            }
+            routes
+                .into_iter()
+                .filter(|(_, (_, last_ts_ms))| *last_ts_ms >= replacement.available_since_ts_ms)
+                .map(
+                    |((provider, api), (turns, _))| FindingCause::OldModelUsage {
+                        provider,
+                        api,
+                        model: model.clone(),
+                        replacement: replacement.replacement.clone(),
+                        turns,
+                    },
+                )
+                .collect()
         })
         .collect()
 }
@@ -96,7 +121,9 @@ mod tests {
     use super::super::test_support::claude_evidence;
     use super::super::{ModelRegistry, ModelReplacementEntry};
     use super::*;
-    use crate::analysis::{CoverageReason, EvidenceValue, ModelTokens};
+    use crate::analysis::{
+        CoverageReason, EvidenceValue, ModelControlObservation, ModelTokens, TurnCounts,
+    };
 
     fn catalogs() -> ReportCatalogs {
         let mut entries = std::collections::BTreeMap::new();
@@ -175,6 +202,99 @@ mod tests {
             evaluate(&with_model("old-model-1", 200, true), &catalogs()),
             Observation::Finding
         );
+    }
+
+    #[test]
+    fn causes_keep_exact_routes_separate() {
+        let mut evidence = with_model("old-model-1", 200, false);
+        let EvidenceValue::Complete(models) = &mut evidence.models else {
+            unreachable!()
+        };
+        models.control_observations = vec![
+            ModelControlObservation {
+                provider: Some("anthropic".to_owned()),
+                api: Some("messages".to_owned()),
+                model: "old-model-1".to_owned(),
+                effort: None,
+                speed: None,
+                last_ts_ms: 200,
+                turns: TurnCounts {
+                    main_loop: 2,
+                    delegated: 0,
+                },
+            },
+            ModelControlObservation {
+                provider: Some("gateway".to_owned()),
+                api: Some("messages".to_owned()),
+                model: "old-model-1".to_owned(),
+                effort: None,
+                speed: None,
+                last_ts_ms: 200,
+                turns: TurnCounts {
+                    main_loop: 1,
+                    delegated: 1,
+                },
+            },
+        ];
+
+        assert_eq!(
+            finding_causes(&evidence, &catalogs()),
+            vec![
+                FindingCause::OldModelUsage {
+                    provider: Some("anthropic".to_owned()),
+                    api: Some("messages".to_owned()),
+                    model: "old-model-1".to_owned(),
+                    replacement: "new-model-2".to_owned(),
+                    turns: 2,
+                },
+                FindingCause::OldModelUsage {
+                    provider: Some("gateway".to_owned()),
+                    api: Some("messages".to_owned()),
+                    model: "old-model-1".to_owned(),
+                    replacement: "new-model-2".to_owned(),
+                    turns: 2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn causes_apply_replacement_timing_to_each_exact_route() {
+        let mut evidence = with_model("old-model-1", 200, false);
+        let EvidenceValue::Complete(models) = &mut evidence.models else {
+            unreachable!()
+        };
+        models.control_observations = vec![
+            ModelControlObservation {
+                provider: Some("anthropic".to_owned()),
+                api: Some("messages".to_owned()),
+                model: "old-model-1".to_owned(),
+                effort: None,
+                speed: None,
+                last_ts_ms: 200,
+                turns: TurnCounts {
+                    main_loop: 1,
+                    delegated: 0,
+                },
+            },
+            ModelControlObservation {
+                provider: Some("gateway".to_owned()),
+                api: Some("messages".to_owned()),
+                model: "old-model-1".to_owned(),
+                effort: None,
+                speed: None,
+                last_ts_ms: 50,
+                turns: TurnCounts {
+                    main_loop: 1,
+                    delegated: 0,
+                },
+            },
+        ];
+        assert_eq!(finding_causes(&evidence, &catalogs()).len(), 1);
+        assert!(matches!(
+            &finding_causes(&evidence, &catalogs())[0],
+            FindingCause::OldModelUsage { provider: Some(provider), .. } if provider == "anthropic"
+        ));
     }
 
     #[test]

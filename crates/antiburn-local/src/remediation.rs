@@ -12,26 +12,11 @@ pub const DETECTOR_REVISION: u32 = 1;
 pub const FINDING_SCHEMA_REVISION: u32 = 1;
 pub const REMEDIATION_POLICY_REVISION: u32 = 1;
 pub const PROMPT_TEMPLATE_REVISION: u32 = 1;
+pub const VERIFICATION_METHOD_REVISION: u32 = 1;
+pub const SAVINGS_METHOD_REVISION: u32 = 1;
 pub const MAX_PROMPT_BYTES: usize = 8 * 1024;
 pub const MAX_PROMPT_IDENTITIES: usize = 8;
 pub const MAX_DISPLAY_LABEL_BYTES: usize = 256;
-
-/// One supported configuration change intent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChangeOperation {
-    SetModel,
-    SetReasoning,
-    SetWorkerModel,
-    SetWorkerServiceTier,
-    DisableMcpServer,
-}
-
-/// A future automatic change shown before explicit approval.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChangePreview {
-    pub operation: ChangeOperation,
-    pub summary: String,
-}
 
 /// A deterministic prompt that contains no private source content.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,15 +41,6 @@ impl RemediationPrompt {
     }
 }
 
-/// States why automatic remediation is not available for a finding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AutomaticUnavailableReason {
-    ReviewRequired,
-    ExactTargetUnavailable,
-    NativeEditorUnavailable,
-    CausalSettingUnknown,
-}
-
 /// States why no safe recommendation can be returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemediationUnavailableReason {
@@ -73,22 +49,6 @@ pub enum RemediationUnavailableReason {
     DeferredAgent,
     UnsupportedSourceFormat,
     CheckUnsupportedForAgent,
-}
-
-/// One recommendation for a verified finding.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Recommendation {
-    Automatic {
-        preview: ChangePreview,
-        fallback_prompt: RemediationPrompt,
-    },
-    Prompt {
-        prompt: RemediationPrompt,
-        automatic_unavailable: AutomaticUnavailableReason,
-    },
-    Unavailable {
-        reason: RemediationUnavailableReason,
-    },
 }
 
 /// One bounded request fact that contributed to a finding.
@@ -115,7 +75,7 @@ pub enum FindingCause {
         maximum_tokens: u64,
         limit_tokens: u64,
         requests: Vec<RequestFact>,
-        omitted_requests: u64,
+        omitted_requests: Option<u64>,
     },
     ModelOverthinking {
         provider: Option<String>,
@@ -141,6 +101,8 @@ pub enum FindingCause {
         skill: String,
     },
     OldModelUsage {
+        provider: Option<String>,
+        api: Option<String>,
         model: String,
         replacement: String,
         turns: u64,
@@ -197,12 +159,21 @@ impl FindingCause {
                 worker_model,
                 ..
             } => vec![parent_model, worker_model],
-            Self::UnusedMcpServer { server } => vec![server],
+            Self::UnusedMcpServer { server, .. } => vec![server],
             Self::UnusedBuiltInTool { tool, .. } => vec![tool],
             Self::UnusedSkill { skill } => vec![skill],
             Self::OldModelUsage {
-                model, replacement, ..
-            } => vec![model, replacement],
+                provider,
+                api,
+                model,
+                replacement,
+                ..
+            } => provider
+                .iter()
+                .chain(api.iter())
+                .map(String::as_str)
+                .chain([model.as_str(), replacement.as_str()])
+                .collect(),
             Self::OveruseOfFastMode {
                 provider,
                 api,
@@ -223,12 +194,10 @@ impl FindingCause {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
     pub detector: DetectorId,
-    pub detector_key: &'static str,
     pub source_format: SourceFormat,
     agent: String,
     session_id: String,
     cause: FindingCause,
-    recommendation: Recommendation,
 }
 
 impl Finding {
@@ -247,9 +216,82 @@ impl Finding {
         &self.cause
     }
 
-    /// Returns the recommendation without exposing its exact selector.
-    pub fn recommendation(&self) -> &Recommendation {
-        &self.recommendation
+    /// Returns the exact stable identity for grouping and later verification.
+    pub fn canonical_identity(&self, scope: &str) -> String {
+        let base = |kind: &str| {
+            serde_json::json!({
+                "detector": self.detector.key(),
+                "sourceFormat": self.source_format,
+                "agent": self.agent,
+                "kind": kind,
+            })
+        };
+        match &self.cause {
+            FindingCause::SessionsOverDepth { .. } => serde_json::json!({
+                "base": base("session"), "sessionId": self.session_id,
+            })
+            .to_string(),
+            FindingCause::ModelOverthinking {
+                provider,
+                api,
+                model,
+                reasoning,
+                ..
+            } => serde_json::json!({
+                "base": base("route"), "scope": scope, "provider": provider,
+                "api": api, "model": model, "reasoning": reasoning,
+            })
+            .to_string(),
+            FindingCause::OverpoweredSubagents {
+                parent_model,
+                worker_model,
+                worker_ordinal,
+                parent_call_id,
+            } => serde_json::json!({
+                "base": base("worker"), "sessionId": self.session_id,
+                "parentModel": parent_model, "workerModel": worker_model,
+                "workerOrdinal": worker_ordinal, "parentCallId": parent_call_id,
+            })
+            .to_string(),
+            FindingCause::UnusedMcpServer { server, .. } => serde_json::json!({
+                "base": base("resource"), "scope": scope, "resource": server,
+            })
+            .to_string(),
+            FindingCause::UnusedBuiltInTool { tool, .. } => serde_json::json!({
+                "base": base("resource"), "scope": scope, "resource": tool,
+            })
+            .to_string(),
+            FindingCause::UnusedSkill { skill } => serde_json::json!({
+                "base": base("resource"), "scope": scope, "resource": skill,
+            })
+            .to_string(),
+            FindingCause::OldModelUsage {
+                provider,
+                api,
+                model,
+                replacement,
+                ..
+            } => serde_json::json!({
+                "base": base("route"), "scope": scope, "provider": provider,
+                "api": api, "model": model, "replacement": replacement,
+            })
+            .to_string(),
+            FindingCause::OveruseOfFastMode {
+                provider,
+                api,
+                model,
+                ..
+            } => serde_json::json!({
+                "base": base("delegatedWorker"), "scope": scope,
+                "provider": provider, "api": api, "model": model,
+            })
+            .to_string(),
+            FindingCause::CacheChurn { model, .. } => serde_json::json!({
+                "base": base("sessionRoute"), "sessionId": self.session_id,
+                "model": model,
+            })
+            .to_string(),
+        }
     }
 
     /// Builds the only finding shape intended for display or IPC conversion.
@@ -258,12 +300,10 @@ impl Finding {
             display_agent(&self.agent).ok_or(RemediationUnavailableReason::DeferredAgent)?;
         Ok(FindingDisplay {
             detector: self.detector,
-            detector_key: self.detector_key,
             agent,
             source_format: self.source_format,
             observation: prompt_parts(&self.cause).0,
-            facts: display_facts(&self.cause)?,
-            recommendation: self.recommendation.clone(),
+            facts: display_facts(&self.cause),
         })
     }
 }
@@ -272,12 +312,10 @@ impl Finding {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FindingDisplay {
     pub detector: DetectorId,
-    pub detector_key: &'static str,
     pub agent: AgentKind,
     pub source_format: SourceFormat,
     pub observation: String,
     pub facts: DisplayFacts,
-    pub recommendation: Recommendation,
 }
 
 /// Sanitized labels and omission count for display and IPC conversion.
@@ -305,10 +343,288 @@ pub enum FindingAssessment {
     Unavailable(FindingUnavailableReason),
 }
 
-/// All nine detector results for one session.
+/// The lifecycle state before a pure verification pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationStage {
+    Watching,
+    Fixed,
+}
+
+/// The exact old-model target of the verification method.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionAssessment {
-    pub detectors: [FindingAssessment; 9],
+pub struct OldModelVerificationTarget {
+    pub scope: String,
+    pub provider: Option<String>,
+    pub api: Option<String>,
+    pub old_model: String,
+    pub replacement: String,
+}
+
+/// One actual model use observed after or before an activation boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelVerificationObservation {
+    pub timestamp_ms: i64,
+    pub scope: String,
+    pub provider: Option<String>,
+    pub api: Option<String>,
+    pub model: String,
+}
+
+/// States why supported evidence cannot yet verify a remediation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationUnknownReason {
+    MissingPostBoundaryEvidence,
+}
+
+/// The pure result of one post-boundary verification pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerificationOutcome {
+    Fixed,
+    StillUnresolved,
+    Recurred,
+    Unknown(VerificationUnknownReason),
+}
+
+/// One verifier result pinned to the method revision that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationResult {
+    pub method_revision: u32,
+    pub outcome: VerificationOutcome,
+    pub observed_at_ms: Option<i64>,
+}
+
+/// Verifies an old-model remediation against actual normalized model uses.
+pub fn verify_old_model(
+    target: &OldModelVerificationTarget,
+    stage: VerificationStage,
+    boundary_ms: i64,
+    observations: &[ModelVerificationObservation],
+) -> VerificationResult {
+    let (outcome, observed_at_ms) =
+        verify_old_model_outcome(target, stage, boundary_ms, observations);
+    VerificationResult {
+        method_revision: VERIFICATION_METHOD_REVISION,
+        outcome,
+        observed_at_ms,
+    }
+}
+
+fn verify_old_model_outcome(
+    target: &OldModelVerificationTarget,
+    stage: VerificationStage,
+    boundary_ms: i64,
+    observations: &[ModelVerificationObservation],
+) -> (VerificationOutcome, Option<i64>) {
+    let mut matching = observations
+        .iter()
+        .filter(|observation| {
+            observation.timestamp_ms > boundary_ms
+                && observation.scope == target.scope
+                && observation.provider == target.provider
+                && observation.api == target.api
+                && (observation.model == target.old_model
+                    || observation.model == target.replacement)
+        })
+        .collect::<Vec<_>>();
+    matching.sort_by_key(|observation| observation.timestamp_ms);
+    if stage == VerificationStage::Fixed {
+        return matching
+            .into_iter()
+            .find(|observation| observation.model == target.old_model)
+            .map_or(
+                (
+                    VerificationOutcome::Unknown(
+                        VerificationUnknownReason::MissingPostBoundaryEvidence,
+                    ),
+                    None,
+                ),
+                |observation| {
+                    (
+                        VerificationOutcome::Recurred,
+                        Some(observation.timestamp_ms),
+                    )
+                },
+            );
+    }
+    if let Some(latest_ms) = matching.last().map(|observation| observation.timestamp_ms) {
+        let latest_uses_replacement = matching.iter().any(|observation| {
+            observation.timestamp_ms == latest_ms && observation.model == target.replacement
+        });
+        let latest_uses_old = matching.iter().any(|observation| {
+            observation.timestamp_ms == latest_ms && observation.model == target.old_model
+        });
+        if latest_uses_replacement && !latest_uses_old {
+            return (VerificationOutcome::Fixed, Some(latest_ms));
+        }
+        return (VerificationOutcome::StillUnresolved, Some(latest_ms));
+    }
+    (
+        VerificationOutcome::Unknown(VerificationUnknownReason::MissingPostBoundaryEvidence),
+        None,
+    )
+}
+
+/// One complete detector assessment for an exact canonical target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetAssessment {
+    pub observed_at_ms: i64,
+    pub identity: String,
+    pub target_present: bool,
+    pub complete: bool,
+}
+
+/// Verifies a prompt watch from complete, fresh detector assessments.
+pub fn verify_prompt_watch(
+    identity: &str,
+    stage: VerificationStage,
+    boundary_ms: i64,
+    assessments: &[TargetAssessment],
+) -> VerificationResult {
+    if stage == VerificationStage::Fixed
+        && let Some(recurrence) = assessments
+            .iter()
+            .filter(|assessment| {
+                assessment.observed_at_ms > boundary_ms
+                    && assessment.identity == identity
+                    && assessment.target_present
+            })
+            .min_by_key(|assessment| assessment.observed_at_ms)
+    {
+        return VerificationResult {
+            method_revision: VERIFICATION_METHOD_REVISION,
+            outcome: VerificationOutcome::Recurred,
+            observed_at_ms: Some(recurrence.observed_at_ms),
+        };
+    }
+    let latest = assessments
+        .iter()
+        .filter(|assessment| {
+            assessment.observed_at_ms > boundary_ms && assessment.identity == identity
+        })
+        .max_by_key(|assessment| assessment.observed_at_ms);
+    let (outcome, observed_at_ms) = match latest {
+        Some(assessment) if assessment.target_present => (
+            VerificationOutcome::StillUnresolved,
+            Some(assessment.observed_at_ms),
+        ),
+        Some(assessment) if assessment.complete => {
+            (VerificationOutcome::Fixed, Some(assessment.observed_at_ms))
+        }
+        _ => (
+            VerificationOutcome::Unknown(VerificationUnknownReason::MissingPostBoundaryEvidence),
+            None,
+        ),
+    };
+    VerificationResult {
+        method_revision: VERIFICATION_METHOD_REVISION,
+        outcome,
+        observed_at_ms,
+    }
+}
+
+/// The effective activity interval represented by a savings aggregate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SavingsInterval {
+    pub boundary_ms: i64,
+    pub measured_through_ms: i64,
+    pub recurrence_ms: Option<i64>,
+}
+
+/// Input for one idempotent old-model savings recomputation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OldModelSavingsInput {
+    pub interval: SavingsInterval,
+    pub tokens: Option<crate::pricing::ModelTokens>,
+    pub old_pricing: Option<crate::pricing::ModelPricing>,
+    pub replacement_pricing: Option<crate::pricing::ModelPricing>,
+    pub pricing_revision: Option<String>,
+}
+
+/// Supported API-equivalent savings. Negative cost means the replacement costs more.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OldModelSavings {
+    pub method_revision: u32,
+    pub pricing_revision: String,
+    pub api_equivalent_cost_avoided_usd: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OldModelSavingsUnknownReason {
+    MissingRates,
+    MissingEvidence,
+    MissingRevision,
+    ArithmeticOverflow,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OldModelSavingsEstimate {
+    Known(OldModelSavings),
+    Unknown(OldModelSavingsUnknownReason),
+}
+
+/// Recomputes cumulative old-model savings without I/O or retained state.
+pub fn estimate_old_model_savings(input: &OldModelSavingsInput) -> OldModelSavingsEstimate {
+    if !valid_savings_interval(input.interval) {
+        return OldModelSavingsEstimate::Unknown(OldModelSavingsUnknownReason::MissingEvidence);
+    }
+    let Some(pricing_revision) = input
+        .pricing_revision
+        .as_ref()
+        .filter(|revision| !revision.is_empty())
+    else {
+        return OldModelSavingsEstimate::Unknown(OldModelSavingsUnknownReason::MissingRevision);
+    };
+    let Some(tokens) = input.tokens.as_ref() else {
+        return OldModelSavingsEstimate::Unknown(OldModelSavingsUnknownReason::MissingEvidence);
+    };
+    let (Some(old_pricing), Some(replacement_pricing)) = (
+        input.old_pricing.as_ref(),
+        input.replacement_pricing.as_ref(),
+    ) else {
+        return OldModelSavingsEstimate::Unknown(OldModelSavingsUnknownReason::MissingRates);
+    };
+    if !valid_pricing(old_pricing) || !valid_pricing(replacement_pricing) {
+        return OldModelSavingsEstimate::Unknown(OldModelSavingsUnknownReason::MissingRates);
+    }
+    let old_cost = pricing_cost(tokens, old_pricing);
+    let replacement_cost = pricing_cost(tokens, replacement_pricing);
+    let difference = old_cost - replacement_cost;
+    if !old_cost.is_finite() || !replacement_cost.is_finite() || !difference.is_finite() {
+        return OldModelSavingsEstimate::Unknown(OldModelSavingsUnknownReason::ArithmeticOverflow);
+    }
+    OldModelSavingsEstimate::Known(OldModelSavings {
+        method_revision: SAVINGS_METHOD_REVISION,
+        pricing_revision: pricing_revision.clone(),
+        api_equivalent_cost_avoided_usd: difference,
+    })
+}
+
+fn valid_savings_interval(interval: SavingsInterval) -> bool {
+    interval.measured_through_ms > interval.boundary_ms
+        && interval.recurrence_ms.is_none_or(|recurrence_ms| {
+            recurrence_ms > interval.boundary_ms && interval.measured_through_ms <= recurrence_ms
+        })
+}
+
+fn pricing_cost(
+    tokens: &crate::pricing::ModelTokens,
+    pricing: &crate::pricing::ModelPricing,
+) -> f64 {
+    tokens.input_tokens as f64 * pricing.input_cost_per_token
+        + tokens.output_tokens as f64 * pricing.output_cost_per_token
+        + tokens.cache_read_tokens as f64 * pricing.cache_read_cost_per_token
+        + crate::pricing::calc::calculate_cache_write_cost(tokens, pricing)
+}
+
+fn valid_pricing(pricing: &crate::pricing::ModelPricing) -> bool {
+    [
+        pricing.input_cost_per_token,
+        pricing.output_cost_per_token,
+        pricing.cache_read_cost_per_token,
+        pricing.cache_write_cost_per_token,
+    ]
+    .into_iter()
+    .all(|rate| rate.is_finite() && rate >= 0.0)
 }
 
 impl DetectorId {
@@ -328,70 +644,132 @@ impl DetectorId {
     }
 }
 
-/// Assesses one session using only persisted evidence.
-pub fn assess_session(evidence: &SessionEvidence, catalogs: &ReportCatalogs) -> SessionAssessment {
-    assess_session_with_source_evidence(evidence, catalogs, None)
+/// Assesses one selected detector and builds details only for that detector.
+pub fn assess_detector(
+    detector: DetectorId,
+    evidence: &SessionEvidence,
+    catalogs: &ReportCatalogs,
+) -> FindingAssessment {
+    assess_detector_with_source_evidence(detector, evidence, catalogs, None)
 }
 
-/// Assesses one session with optional report-time source attribution.
-pub fn assess_session_with_source_evidence(
+/// Assesses one selected detector with optional report-time source attribution.
+pub fn assess_detector_with_source_evidence(
+    detector: DetectorId,
     evidence: &SessionEvidence,
     catalogs: &ReportCatalogs,
     source_evidence: Option<&SessionTokenBurnEvidence>,
-) -> SessionAssessment {
-    let detectors = core::array::from_fn(|index| {
-        let detector = DetectorId::ALL[index];
-        if !crate::insights::detectors::in_denominator(detector, evidence)
-            || (detector == DetectorId::UnusedBuiltInTools
-                && complete_assistant_turns(evidence) == Some(0))
-        {
-            return FindingAssessment::NotApplicable;
-        }
-        if !eligible(detector, evidence)
-            && !crate::insights::detectors::built_in_source_assessable(
-                detector,
-                evidence,
-                source_evidence,
-            )
-        {
-            return FindingAssessment::Unavailable(FindingUnavailableReason::CapabilityMissing);
-        }
-        let evaluation = crate::insights::detectors::evaluate_with_source_evidence(
+) -> FindingAssessment {
+    if !crate::insights::detectors::in_denominator(detector, evidence)
+        || (detector == DetectorId::UnusedBuiltInTools
+            && complete_assistant_turns(evidence) == Some(0))
+    {
+        return FindingAssessment::NotApplicable;
+    }
+    if !eligible(detector, evidence)
+        && !crate::insights::detectors::built_in_source_assessable(
+            detector,
+            evidence,
+            source_evidence,
+        )
+    {
+        return FindingAssessment::Unavailable(FindingUnavailableReason::CapabilityMissing);
+    }
+    let observation = crate::insights::detectors::evaluate_with_source_evidence(
+        detector,
+        evidence,
+        catalogs,
+        source_evidence,
+    )
+    .observation;
+    if observation == crate::insights::detectors::Observation::Finding {
+        let causes = crate::insights::detectors::finding_causes_with_source_evidence(
             detector,
             evidence,
             catalogs,
             source_evidence,
         );
-        if !evaluation.causes.is_empty() {
-            return FindingAssessment::Findings(
-                evaluation
-                    .causes
-                    .into_iter()
-                    .map(|cause| finding(evidence, cause))
-                    .collect(),
+        if causes.is_empty() {
+            return FindingAssessment::Unavailable(
+                FindingUnavailableReason::EvidenceContractIncomplete,
             );
         }
-        match evaluation.observation {
-            crate::insights::detectors::Observation::Finding => {
-                FindingAssessment::Unavailable(FindingUnavailableReason::EvidenceContractIncomplete)
-            }
-            crate::insights::detectors::Observation::NoFinding
-                if clean_facts_complete(detector, evidence) =>
-            {
-                FindingAssessment::Clean
-            }
-            crate::insights::detectors::Observation::NoFinding => {
-                FindingAssessment::Unavailable(FindingUnavailableReason::IncompleteEvidence)
-            }
-            crate::insights::detectors::Observation::ContractIncomplete => {
-                FindingAssessment::Unavailable(FindingUnavailableReason::EvidenceContractIncomplete)
-            }
-            crate::insights::detectors::Observation::SignalMissing => {
-                FindingAssessment::Unavailable(FindingUnavailableReason::SignalMissing)
-            }
+        return FindingAssessment::Findings(
+            causes
+                .into_iter()
+                .map(|cause| finding(evidence, cause))
+                .collect(),
+        );
+    }
+    match observation {
+        crate::insights::detectors::Observation::Finding => {
+            FindingAssessment::Unavailable(FindingUnavailableReason::EvidenceContractIncomplete)
         }
-    });
-    SessionAssessment { detectors }
+        crate::insights::detectors::Observation::NoFinding
+            if clean_facts_complete(detector, evidence) =>
+        {
+            FindingAssessment::Clean
+        }
+        crate::insights::detectors::Observation::NoFinding => {
+            FindingAssessment::Unavailable(FindingUnavailableReason::IncompleteEvidence)
+        }
+        crate::insights::detectors::Observation::ContractIncomplete => {
+            FindingAssessment::Unavailable(FindingUnavailableReason::EvidenceContractIncomplete)
+        }
+        crate::insights::detectors::Observation::SignalMissing => {
+            FindingAssessment::Unavailable(FindingUnavailableReason::SignalMissing)
+        }
+    }
+}
+
+/// Returns true when this evidence can prove that an exact detector target is absent.
+pub fn can_verify_target_absence(
+    detector: DetectorId,
+    evidence: &SessionEvidence,
+    resource: Option<&str>,
+) -> bool {
+    let Some(resource) = resource else {
+        return clean_facts_complete(detector, evidence);
+    };
+    let (crate::analysis::EvidenceValue::Complete(tools), Some(sources)) = (
+        &evidence.tools,
+        match &evidence.context_sources {
+            crate::analysis::EvidenceValue::Complete(sources)
+            | crate::analysis::EvidenceValue::Partial {
+                observed: sources, ..
+            } => Some(sources),
+            crate::analysis::EvidenceValue::Unsupported => None,
+        },
+    ) else {
+        return false;
+    };
+    match detector {
+        DetectorId::UnusedMcpServers => {
+            matches!(
+                sources.mcp_coverage,
+                crate::analysis::EvidenceValue::Complete(())
+            ) && !sources.mcp_servers.contains_key(resource)
+                && !tools.by_name.iter().any(|(name, tool)| {
+                    tool.class == crate::analysis::ToolClass::Mcp
+                        && (name == resource || name.starts_with(&format!("mcp__{resource}__")))
+                })
+        }
+        DetectorId::UnusedSkills => {
+            matches!(
+                sources.skill_coverage,
+                crate::analysis::EvidenceValue::Complete(())
+            ) && !sources.skills.contains_key(resource)
+                && !tools.by_name.iter().any(|(name, tool)| {
+                    tool.class == crate::analysis::ToolClass::Skill && name == resource
+                })
+        }
+        DetectorId::UnusedBuiltInTools => {
+            matches!(&sources.tool_definitions, crate::analysis::EvidenceValue::Complete(definitions)
+                if !definitions.contains_key(resource))
+                && !tools.by_name.contains_key(resource)
+        }
+        _ => clean_facts_complete(detector, evidence),
+    }
 }
 
 fn complete_assistant_turns(evidence: &SessionEvidence) -> Option<u64> {
@@ -402,43 +780,22 @@ fn complete_assistant_turns(evidence: &SessionEvidence) -> Option<u64> {
 }
 
 fn finding(evidence: &SessionEvidence, cause: FindingCause) -> Finding {
-    let recommendation = recommendation(
-        &evidence.identity.agent,
-        evidence.capabilities.source_format,
-        &cause,
-    );
     let detector = cause.detector();
     Finding {
         detector,
-        detector_key: detector.key(),
         source_format: evidence.capabilities.source_format,
         agent: evidence.identity.agent.clone(),
         session_id: evidence.identity.session_id.clone(),
         cause,
-        recommendation,
     }
 }
 
-fn recommendation(agent: &str, source: SourceFormat, cause: &FindingCause) -> Recommendation {
-    let agent = match recommendation_support(agent, source, cause.detector()) {
-        Ok(agent) => agent,
-        Err(reason) => return Recommendation::Unavailable { reason },
-    };
-    let automatic_unavailable = match cause {
-        FindingCause::SessionsOverDepth { .. }
-        | FindingCause::UnusedBuiltInTool { .. }
-        | FindingCause::UnusedSkill { .. } => AutomaticUnavailableReason::ReviewRequired,
-        FindingCause::CacheChurn { .. } => AutomaticUnavailableReason::CausalSettingUnknown,
-        FindingCause::UnusedMcpServer { .. } => AutomaticUnavailableReason::ReviewRequired,
-        _ => AutomaticUnavailableReason::NativeEditorUnavailable,
-    };
-    match build_prompt(agent, source, cause) {
-        Ok(prompt) => Recommendation::Prompt {
-            prompt,
-            automatic_unavailable,
-        },
-        Err(reason) => Recommendation::Unavailable { reason },
-    }
+/// Builds a bounded prompt on demand for one selected finding.
+pub fn remediation_prompt(
+    finding: &Finding,
+) -> Result<RemediationPrompt, RemediationUnavailableReason> {
+    let agent = recommendation_support(finding.agent(), finding.source_format, finding.detector)?;
+    build_prompt(agent, finding.source_format, finding.cause())
 }
 
 fn build_prompt(
@@ -446,7 +803,10 @@ fn build_prompt(
     source: SourceFormat,
     cause: &FindingCause,
 ) -> Result<RemediationPrompt, RemediationUnavailableReason> {
-    let facts = display_facts(cause)?;
+    let facts = display_facts(cause);
+    if facts.labels.is_empty() && !matches!(cause, FindingCause::SessionsOverDepth { .. }) {
+        return Err(RemediationUnavailableReason::EssentialIdentityUnavailable);
+    }
     let identities = facts
         .labels
         .iter()
@@ -471,20 +831,17 @@ fn build_prompt(
     RemediationPrompt::new(text)
 }
 
-fn display_facts(cause: &FindingCause) -> Result<DisplayFacts, RemediationUnavailableReason> {
+fn display_facts(cause: &FindingCause) -> DisplayFacts {
     let labels: BTreeSet<String> = cause
         .display_labels()
         .into_iter()
         .filter_map(sanitize_label)
         .collect();
-    if labels.is_empty() && !matches!(cause, FindingCause::SessionsOverDepth { .. }) {
-        return Err(RemediationUnavailableReason::EssentialIdentityUnavailable);
-    }
     let total = labels.len();
-    Ok(DisplayFacts {
+    DisplayFacts {
         labels: labels.into_iter().take(MAX_PROMPT_IDENTITIES).collect(),
         omitted: total.saturating_sub(MAX_PROMPT_IDENTITIES) as u64,
-    })
+    }
 }
 
 fn prompt_parts(cause: &FindingCause) -> (String, &'static str, &'static str) {
@@ -494,14 +851,20 @@ fn prompt_parts(cause: &FindingCause) -> (String, &'static str, &'static str) {
             limit_tokens,
             requests,
             omitted_requests,
-        } => (
-            format!(
-                "The session reached {maximum_tokens} context tokens, above the reviewed limit of {limit_tokens}. {} bounded request facts are included and {omitted_requests} are omitted.",
-                requests.len()
-            ),
-            "Propose a bounded handoff or context-policy review that retains necessary task state.",
-            "Check that relevant new requests remain below the reviewed limit without treating the historical maximum as removed.",
-        ),
+        } => {
+            let omitted = omitted_requests.map_or_else(
+                || "Additional request facts may be omitted.".to_owned(),
+                |count| format!("{count} request facts are omitted."),
+            );
+            (
+                format!(
+                    "The session reached {maximum_tokens} context tokens, above the reviewed limit of {limit_tokens}. {} bounded request facts are included. {omitted}",
+                    requests.len()
+                ),
+                "Propose a bounded handoff or context-policy review that retains necessary task state.",
+                "Check that relevant new requests remain below the reviewed limit without treating the historical maximum as removed.",
+            )
+        }
         FindingCause::ModelOverthinking { turns, .. } => (
             format!("The observed model used an above-cap reasoning level for {turns} turns."),
             "Review the observed reasoning level for this task and exact model scope.",
@@ -546,7 +909,7 @@ fn prompt_parts(cause: &FindingCause) -> (String, &'static str, &'static str) {
         FindingCause::OveruseOfFastMode {
             delegated_turns, ..
         } => (
-            format!("Fast service was observed on {delegated_turns} delegated turns."),
+            format!("The fast tier was observed on {delegated_turns} delegated turns."),
             "Review speed needs for the identified worker without changing global service by default.",
             "Require explicit standard-tier controls on post-change delegated requests, not a missing tier.",
         ),
@@ -576,11 +939,12 @@ fn recommendation_support(
     }
     let supported = match agent {
         AgentKind::Claude => true,
-        AgentKind::Codex => detector != DetectorId::UnusedSkills,
+        AgentKind::Codex => true,
         AgentKind::OpenCode => matches!(
             detector,
             DetectorId::SessionsOverDepth
                 | DetectorId::OverpoweredSubagents
+                | DetectorId::UnusedSkills
                 | DetectorId::OldModelUsage
                 | DetectorId::CacheChurn
         ),
@@ -676,8 +1040,8 @@ fn coverage_limitation(
         (AgentKind::Claude | AgentKind::Codex, DetectorId::UnusedBuiltInTools) => {
             "The source proves only catalog-backed scoped definitions and complete calls, not the full tool inventory."
         }
-        (AgentKind::Claude, DetectorId::UnusedSkills) => {
-            "Claude proves only the named full injected document and its invocation state, not a full skill inventory."
+        (AgentKind::Claude | AgentKind::Codex | AgentKind::OpenCode, DetectorId::UnusedSkills) => {
+            "The source proves only the named full injected document and its invocation state, not a full skill inventory."
         }
         (AgentKind::OpenCode, DetectorId::CacheChurn) => {
             "OpenCode requires compatible ordered requests. Its parentID is not request-predecessor evidence."
@@ -767,7 +1131,7 @@ mod tests {
                     timestamp_ms: Some(1),
                     value: 500_000,
                 }],
-                omitted_requests: 0,
+                omitted_requests: Some(0),
             },
             FindingCause::ModelOverthinking {
                 provider: Some("provider-a".to_owned()),
@@ -793,6 +1157,8 @@ mod tests {
                 skill: "skill-a".to_owned(),
             },
             FindingCause::OldModelUsage {
+                provider: Some("provider-a".to_owned()),
+                api: Some("api-a".to_owned()),
                 model: "model-a".to_owned(),
                 replacement: "model-b".to_owned(),
                 turns: 2,
@@ -869,13 +1235,6 @@ mod tests {
     }
 
     #[test]
-    fn assessment_uses_all_nine_slots() {
-        let evidence = crate::insights::detectors::test_support::claude_evidence("assessment");
-        let assessment = assess_session(&evidence, &ReportCatalogs::default());
-        assert_eq!(assessment.detectors.len(), DetectorId::ALL.len());
-    }
-
-    #[test]
     fn prompt_uses_no_more_than_eight_identities() {
         let cause = FindingCause::SessionsOverDepth {
             maximum_tokens: 500_000,
@@ -887,9 +1246,9 @@ mod tests {
                     value: 500_000,
                 })
                 .collect(),
-            omitted_requests: 0,
+            omitted_requests: Some(0),
         };
-        let facts = display_facts(&cause).unwrap();
+        let facts = display_facts(&cause);
         assert_eq!(facts.labels.len(), MAX_PROMPT_IDENTITIES);
         assert_eq!(facts.omitted, 12);
     }
@@ -921,18 +1280,14 @@ mod tests {
     }
 
     #[test]
-    fn recommendation_matrix_matches_the_five_phase_two_targets() {
+    fn prompt_support_matrix_matches_all_five_phase_one_agents() {
         let supported = [
             ("claude", SourceFormat::ClaudeJsonl, [true; 9]),
-            (
-                "codex",
-                SourceFormat::CodexRolloutJsonl,
-                [true, true, true, true, true, false, true, true, true],
-            ),
+            ("codex", SourceFormat::CodexRolloutJsonl, [true; 9]),
             (
                 "opencode",
                 SourceFormat::OpenCodeSqliteV2,
-                [true, false, true, false, false, false, true, false, true],
+                [true, false, true, false, false, true, true, false, true],
             ),
             (
                 "pi",
@@ -945,13 +1300,17 @@ mod tests {
                 [true, false, false, false, false, false, true, false, false],
             ),
         ];
+        let causes = causes();
         for (agent, source, expected) in supported {
             for (index, detector) in DetectorId::ALL.into_iter().enumerate() {
-                assert_eq!(
-                    recommendation_support(agent, source, detector).is_ok(),
-                    expected[index],
-                    "{agent} {detector:?}"
-                );
+                let support = recommendation_support(agent, source, detector);
+                assert_eq!(support.is_ok(), expected[index], "{agent} {detector:?}");
+                if let Ok(agent) = support {
+                    assert!(
+                        build_prompt(agent, source, &causes[index]).is_ok(),
+                        "{agent:?} {detector:?}"
+                    );
+                }
             }
         }
 
@@ -978,6 +1337,8 @@ mod tests {
         let finding = finding(
             &deferred,
             FindingCause::OldModelUsage {
+                provider: None,
+                api: None,
                 model: "old-model".to_owned(),
                 replacement: "new-model".to_owned(),
                 turns: 1,
@@ -985,10 +1346,8 @@ mod tests {
         );
         assert_eq!(finding.display().unwrap().agent, AgentKind::Cursor);
         assert_eq!(
-            finding.recommendation(),
-            &Recommendation::Unavailable {
-                reason: RemediationUnavailableReason::DeferredAgent,
-            }
+            remediation_prompt(&finding),
+            Err(RemediationUnavailableReason::DeferredAgent)
         );
     }
 
@@ -1001,6 +1360,8 @@ mod tests {
             build_prompt(AgentKind::Claude, SourceFormat::ClaudeJsonl, &empty),
             Err(RemediationUnavailableReason::EssentialIdentityUnavailable)
         );
+        let evidence = crate::insights::detectors::test_support::claude_evidence("empty-label");
+        assert!(finding(&evidence, empty).display().is_ok());
 
         for sensitive in [
             "Authorization: Bearer private",
@@ -1032,7 +1393,7 @@ mod tests {
                     value: u64::MAX,
                 })
                 .collect(),
-            omitted_requests: u64::MAX,
+            omitted_requests: None,
         };
         let first = build_prompt(AgentKind::Claude, SourceFormat::ClaudeJsonl, &cause).unwrap();
         let second = build_prompt(AgentKind::Claude, SourceFormat::ClaudeJsonl, &cause).unwrap();
@@ -1043,5 +1404,445 @@ mod tests {
                 .as_str()
                 .contains("12 additional identities were omitted")
         );
+        assert!(
+            first
+                .as_str()
+                .contains("Additional request facts may be omitted")
+        );
+    }
+
+    fn old_model_target() -> OldModelVerificationTarget {
+        OldModelVerificationTarget {
+            scope: "workspace-a".to_owned(),
+            provider: Some("anthropic".to_owned()),
+            api: Some("messages".to_owned()),
+            old_model: "claude-opus-4-8".to_owned(),
+            replacement: "claude-opus-5".to_owned(),
+        }
+    }
+
+    fn model_observation(
+        timestamp_ms: i64,
+        scope: &str,
+        provider: &str,
+        api: &str,
+        model: &str,
+    ) -> ModelVerificationObservation {
+        ModelVerificationObservation {
+            timestamp_ms,
+            scope: scope.to_owned(),
+            provider: Some(provider.to_owned()),
+            api: Some(api.to_owned()),
+            model: model.to_owned(),
+        }
+    }
+
+    #[test]
+    fn old_model_verification_requires_post_boundary_exact_route_and_model() {
+        let observations = vec![
+            model_observation(100, "workspace-a", "anthropic", "messages", "claude-opus-5"),
+            model_observation(101, "workspace-b", "anthropic", "messages", "claude-opus-5"),
+            model_observation(101, "workspace-a", "gateway", "messages", "claude-opus-5"),
+            model_observation(
+                101,
+                "workspace-a",
+                "anthropic",
+                "responses",
+                "claude-opus-5",
+            ),
+            model_observation(101, "workspace-a", "anthropic", "messages", "other-model"),
+        ];
+        assert_eq!(
+            verify_old_model(
+                &old_model_target(),
+                VerificationStage::Watching,
+                100,
+                &observations,
+            )
+            .outcome,
+            VerificationOutcome::Unknown(VerificationUnknownReason::MissingPostBoundaryEvidence)
+        );
+
+        let observations = [model_observation(
+            101,
+            "workspace-a",
+            "anthropic",
+            "messages",
+            "claude-opus-5",
+        )];
+        assert_eq!(
+            verify_old_model(
+                &old_model_target(),
+                VerificationStage::Watching,
+                100,
+                &observations,
+            )
+            .outcome,
+            VerificationOutcome::Fixed
+        );
+        assert_eq!(
+            verify_old_model(
+                &old_model_target(),
+                VerificationStage::Watching,
+                100,
+                &observations,
+            )
+            .method_revision,
+            VERIFICATION_METHOD_REVISION
+        );
+    }
+
+    #[test]
+    fn a_matching_bad_model_recurs_only_after_the_fix_was_verified() {
+        let observations = [model_observation(
+            101,
+            "workspace-a",
+            "anthropic",
+            "messages",
+            "claude-opus-4-8",
+        )];
+        assert_eq!(
+            verify_old_model(
+                &old_model_target(),
+                VerificationStage::Watching,
+                100,
+                &observations,
+            )
+            .outcome,
+            VerificationOutcome::StillUnresolved
+        );
+        assert_eq!(
+            verify_old_model(
+                &old_model_target(),
+                VerificationStage::Fixed,
+                100,
+                &observations,
+            )
+            .outcome,
+            VerificationOutcome::Recurred
+        );
+    }
+
+    #[test]
+    fn latest_exact_observation_determines_the_watching_result() {
+        let observations = [
+            model_observation(
+                101,
+                "workspace-a",
+                "anthropic",
+                "messages",
+                "claude-opus-4-8",
+            ),
+            model_observation(102, "workspace-a", "anthropic", "messages", "claude-opus-5"),
+        ];
+        assert_eq!(
+            verify_old_model(
+                &old_model_target(),
+                VerificationStage::Watching,
+                100,
+                &observations,
+            )
+            .outcome,
+            VerificationOutcome::Fixed
+        );
+        assert_eq!(
+            verify_old_model(
+                &old_model_target(),
+                VerificationStage::Fixed,
+                102,
+                &observations,
+            )
+            .outcome,
+            VerificationOutcome::Unknown(VerificationUnknownReason::MissingPostBoundaryEvidence)
+        );
+
+        let regressed = [
+            model_observation(101, "workspace-a", "anthropic", "messages", "claude-opus-5"),
+            model_observation(
+                102,
+                "workspace-a",
+                "anthropic",
+                "messages",
+                "claude-opus-4-8",
+            ),
+        ];
+        assert_eq!(
+            verify_old_model(
+                &old_model_target(),
+                VerificationStage::Watching,
+                100,
+                &regressed,
+            )
+            .outcome,
+            VerificationOutcome::StillUnresolved
+        );
+    }
+
+    #[test]
+    fn old_model_rows_before_the_qualifying_replacement_do_not_recur() {
+        let observations = [
+            model_observation(
+                101,
+                "workspace-a",
+                "anthropic",
+                "messages",
+                "claude-opus-4-8",
+            ),
+            model_observation(102, "workspace-a", "anthropic", "messages", "claude-opus-5"),
+        ];
+        let fixed = verify_old_model(
+            &old_model_target(),
+            VerificationStage::Watching,
+            100,
+            &observations,
+        );
+        assert_eq!(fixed.outcome, VerificationOutcome::Fixed);
+        assert_eq!(fixed.observed_at_ms, Some(102));
+        assert_eq!(
+            verify_old_model(
+                &old_model_target(),
+                VerificationStage::Fixed,
+                fixed.observed_at_ms.unwrap(),
+                &observations,
+            )
+            .outcome,
+            VerificationOutcome::Unknown(VerificationUnknownReason::MissingPostBoundaryEvidence)
+        );
+    }
+
+    #[test]
+    fn exact_resource_absence_requires_complete_target_exposure_and_calls() {
+        let mut evidence = crate::insights::detectors::test_support::claude_evidence("resource");
+        if let crate::analysis::EvidenceValue::Complete(sources) = &mut evidence.context_sources {
+            sources.skill_coverage = crate::analysis::EvidenceValue::Complete(());
+            sources.mcp_coverage = crate::analysis::EvidenceValue::Complete(());
+            sources.tool_definitions = crate::analysis::EvidenceValue::Complete(Default::default());
+        }
+        for (detector, resource) in [
+            (DetectorId::UnusedSkills, "removed-skill"),
+            (DetectorId::UnusedMcpServers, "removed-server"),
+            (DetectorId::UnusedBuiltInTools, "removed-tool"),
+        ] {
+            assert!(can_verify_target_absence(
+                detector,
+                &evidence,
+                Some(resource)
+            ));
+        }
+        if let crate::analysis::EvidenceValue::Complete(sources) = &mut evidence.context_sources {
+            sources.skill_coverage = crate::analysis::EvidenceValue::Unsupported;
+        }
+        assert!(!can_verify_target_absence(
+            DetectorId::UnusedSkills,
+            &evidence,
+            Some("removed-skill")
+        ));
+    }
+
+    #[test]
+    fn generic_verification_handles_exact_targets_and_positive_only_evidence() {
+        for identity in ["session", "resource", "worker"] {
+            let fixed = verify_prompt_watch(
+                identity,
+                VerificationStage::Watching,
+                100,
+                &[TargetAssessment {
+                    observed_at_ms: 101,
+                    identity: identity.to_owned(),
+                    target_present: false,
+                    complete: true,
+                }],
+            );
+            assert_eq!(fixed.outcome, VerificationOutcome::Fixed);
+            assert_eq!(fixed.observed_at_ms, Some(101));
+        }
+        let positive_only = verify_prompt_watch(
+            "resource",
+            VerificationStage::Watching,
+            100,
+            &[TargetAssessment {
+                observed_at_ms: 101,
+                identity: "resource".to_owned(),
+                target_present: false,
+                complete: false,
+            }],
+        );
+        assert_eq!(
+            positive_only.outcome,
+            VerificationOutcome::Unknown(VerificationUnknownReason::MissingPostBoundaryEvidence)
+        );
+        let recurred = verify_prompt_watch(
+            "resource",
+            VerificationStage::Fixed,
+            100,
+            &[
+                TargetAssessment {
+                    observed_at_ms: 103,
+                    identity: "resource".to_owned(),
+                    target_present: false,
+                    complete: true,
+                },
+                TargetAssessment {
+                    observed_at_ms: 101,
+                    identity: "resource".to_owned(),
+                    target_present: true,
+                    complete: true,
+                },
+            ],
+        );
+        assert_eq!(recurred.outcome, VerificationOutcome::Recurred);
+        assert_eq!(recurred.observed_at_ms, Some(101));
+    }
+
+    #[test]
+    fn canonical_identity_includes_source_format_and_exact_resource_scope() {
+        let mut evidence = crate::insights::detectors::test_support::claude_evidence("session-a");
+        let cause = FindingCause::UnusedSkill {
+            skill: "review".to_owned(),
+        };
+        let first = finding(&evidence, cause.clone()).canonical_identity("project-a");
+        evidence.capabilities.source_format = SourceFormat::OpenCodeJsonl;
+        evidence.identity.agent = "opencode".to_owned();
+        let second = finding(&evidence, cause).canonical_identity("project-a");
+        assert_ne!(first, second);
+        assert!(first.contains("claude_jsonl"));
+        assert!(first.contains("project-a"));
+        assert!(first.contains("review"));
+    }
+
+    fn pricing(input: f64) -> crate::pricing::ModelPricing {
+        crate::pricing::ModelPricing {
+            input_cost_per_token: input,
+            output_cost_per_token: 0.0,
+            cache_read_cost_per_token: 0.0,
+            cache_write_cost_per_token: 0.0,
+        }
+    }
+
+    fn old_model_savings(old_rate: f64, replacement_rate: f64) -> OldModelSavingsEstimate {
+        estimate_old_model_savings(&OldModelSavingsInput {
+            interval: savings_interval(),
+            tokens: Some(crate::pricing::ModelTokens {
+                input_tokens: 100,
+                ..crate::pricing::ModelTokens::default()
+            }),
+            old_pricing: Some(pricing(old_rate)),
+            replacement_pricing: Some(pricing(replacement_rate)),
+            pricing_revision: Some("pricing-7".to_owned()),
+        })
+    }
+
+    fn savings_interval() -> SavingsInterval {
+        SavingsInterval {
+            boundary_ms: 100,
+            measured_through_ms: 200,
+            recurrence_ms: None,
+        }
+    }
+
+    #[test]
+    fn old_model_savings_preserve_positive_zero_and_negative_differences() {
+        for (old_rate, replacement_rate, expected_cost) in
+            [(2.0, 1.0, 100.0), (1.0, 1.0, 0.0), (1.0, 2.0, -100.0)]
+        {
+            let OldModelSavingsEstimate::Known(savings) =
+                old_model_savings(old_rate, replacement_rate)
+            else {
+                panic!("expected known savings");
+            };
+            assert_eq!(savings.method_revision, SAVINGS_METHOD_REVISION);
+            assert_eq!(savings.pricing_revision, "pricing-7");
+            assert_eq!(savings.api_equivalent_cost_avoided_usd, expected_cost);
+        }
+    }
+
+    #[test]
+    fn savings_return_typed_unknown_for_missing_inputs_and_overflow() {
+        let missing_rates = OldModelSavingsInput {
+            interval: savings_interval(),
+            tokens: Some(crate::pricing::ModelTokens::default()),
+            old_pricing: None,
+            replacement_pricing: Some(pricing(1.0)),
+            pricing_revision: Some("pricing-7".to_owned()),
+        };
+        assert_eq!(
+            estimate_old_model_savings(&missing_rates),
+            OldModelSavingsEstimate::Unknown(OldModelSavingsUnknownReason::MissingRates)
+        );
+        let missing_evidence = OldModelSavingsInput {
+            tokens: None,
+            old_pricing: Some(pricing(1.0)),
+            ..missing_rates.clone()
+        };
+        assert_eq!(
+            estimate_old_model_savings(&missing_evidence),
+            OldModelSavingsEstimate::Unknown(OldModelSavingsUnknownReason::MissingEvidence)
+        );
+        let missing_revision = OldModelSavingsInput {
+            pricing_revision: None,
+            tokens: Some(crate::pricing::ModelTokens::default()),
+            old_pricing: Some(pricing(1.0)),
+            ..missing_rates.clone()
+        };
+        assert_eq!(
+            estimate_old_model_savings(&missing_revision),
+            OldModelSavingsEstimate::Unknown(OldModelSavingsUnknownReason::MissingRevision)
+        );
+        let overflow = OldModelSavingsInput {
+            interval: savings_interval(),
+            tokens: Some(crate::pricing::ModelTokens {
+                input_tokens: u64::MAX,
+                ..crate::pricing::ModelTokens::default()
+            }),
+            old_pricing: Some(pricing(f64::MAX)),
+            replacement_pricing: Some(pricing(0.0)),
+            pricing_revision: Some("pricing-7".to_owned()),
+        };
+        assert_eq!(
+            estimate_old_model_savings(&overflow),
+            OldModelSavingsEstimate::Unknown(OldModelSavingsUnknownReason::ArithmeticOverflow)
+        );
+    }
+
+    #[test]
+    fn zero_tokens_preserve_known_zero_savings() {
+        let estimate = estimate_old_model_savings(&OldModelSavingsInput {
+            interval: savings_interval(),
+            tokens: Some(crate::pricing::ModelTokens::default()),
+            old_pricing: Some(pricing(2.0)),
+            replacement_pricing: Some(pricing(1.0)),
+            pricing_revision: Some("pricing-7".to_owned()),
+        });
+        let OldModelSavingsEstimate::Known(savings) = estimate else {
+            panic!("expected known savings");
+        };
+        assert_eq!(savings.api_equivalent_cost_avoided_usd, 0.0);
+    }
+
+    #[test]
+    fn savings_require_a_valid_interval() {
+        for interval in [
+            SavingsInterval {
+                boundary_ms: 100,
+                measured_through_ms: 100,
+                recurrence_ms: None,
+            },
+            SavingsInterval {
+                boundary_ms: 100,
+                measured_through_ms: 201,
+                recurrence_ms: Some(200),
+            },
+        ] {
+            assert_eq!(
+                estimate_old_model_savings(&OldModelSavingsInput {
+                    interval,
+                    tokens: Some(crate::pricing::ModelTokens::default()),
+                    old_pricing: Some(pricing(1.0)),
+                    replacement_pricing: Some(pricing(0.5)),
+                    pricing_revision: Some("pricing-7".to_owned()),
+                }),
+                OldModelSavingsEstimate::Unknown(OldModelSavingsUnknownReason::MissingEvidence)
+            );
+        }
     }
 }

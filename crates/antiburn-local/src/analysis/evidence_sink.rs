@@ -1,18 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::mem::size_of;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::analysis::evidence::{
     CacheEvidence, ChurnCounts, CompactionEvidence, ContextEvidence, ContextSourceEvidence,
-    CoverageReason, EvidenceCoverage, EvidenceSource, EvidenceValue, LoadedSource,
-    MAX_CONTEXT_SOURCES, MAX_EVIDENCE_EXAMPLES, MAX_SUBAGENT_CHILDREN, MAX_TOOL_NAMES,
-    MAX_UNRECOGNIZED_TYPES, ModelControlObservation, ModelEvidence, OrderingObservation,
-    ParseDiagnostics, RelationConfidence, RepeatedContext, RepeatedContextAccounting,
-    SessionCoverageRecord, SessionEvidence, SessionEvidenceIdentity, SessionProvenance,
-    SourceAcceptance, SourceCapabilities, SourceKind, SubagentChild, SubagentEvidence,
-    SubagentExample, ToolClass, ToolDefinition, ToolEvidence, ToolUse, cap_string,
-    insert_diagnostic_field, record_diagnostic_set_cap,
+    CoverageReason, EVIDENCE_STRING_CAP, EvidenceCoverage, EvidenceSource, EvidenceValue,
+    LoadedSource, MAX_CONTEXT_SOURCES, MAX_EVIDENCE_EXAMPLES, MAX_SUBAGENT_CHILDREN,
+    MAX_TOOL_NAMES, MAX_UNRECOGNIZED_TYPES, ModelControlObservation, ModelEvidence,
+    OrderingObservation, ParseDiagnostics, RelationConfidence, RepeatedContext,
+    RepeatedContextAccounting, SessionCoverageRecord, SessionEvidence, SessionEvidenceIdentity,
+    SessionProvenance, SourceAcceptance, SourceCapabilities, SourceKind, SubagentChild,
+    SubagentEvidence, SubagentExample, ToolClass, ToolDefinition, ToolEvidence, ToolUse,
+    cap_string, insert_diagnostic_field, record_diagnostic_set_cap,
 };
 use crate::analysis::evidence_query::TurnFacts;
 use crate::analysis::initial_context::{InitialContextTokenSource, SourceOrigin};
@@ -29,6 +30,7 @@ use crate::analysis::{
     ANALYZER_REVISION, COVERAGE_SCHEMA_REVISION, EVIDENCE_SCHEMA_REVISION, PARSER_REVISION,
     RESUME_SNAPSHOT_REVISION, SessionMetrics,
 };
+use crate::model_catalog::{ModelCatalog, ReviewedModelCatalog, Support, model_control_target};
 
 /// The most frequently observed full model id in `facts.by_model`, by
 /// turn count, or `None` when the transcript never named one. A bare
@@ -54,6 +56,8 @@ pub const RETAINED_EVIDENCE_BYTES_BOUND: usize = 256 * 1_024;
 /// pointers and per-node slack — on top of its own key or value bytes.
 const BTREE_ENTRY_OVERHEAD_BYTES: usize = 48;
 const MAX_MODEL_CONTROL_OBSERVATIONS: usize = 128;
+const MAX_TRACKED_THREAD_UUIDS: usize = 512;
+const THREAD_UUIDS_DIAGNOSTIC: &str = "thread_link.seen_uuids";
 
 /// The two fields [`SessionEvidenceAccumulator::coverage_record`] leaves
 /// out because a closed pass's record already carries their final effect.
@@ -64,7 +68,43 @@ const MAX_MODEL_CONTROL_OBSERVATIONS: usize = 128;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EvidenceResumeState {
     pub last_ts_ms: Option<i64>,
+    #[serde(deserialize_with = "deserialize_thread_uuids")]
     pub seen_thread_uuids: HashSet<String>,
+}
+
+fn deserialize_thread_uuids<'de, D>(deserializer: D) -> Result<HashSet<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct ThreadUuidsVisitor;
+
+    impl<'de> Visitor<'de> for ThreadUuidsVisitor {
+        type Value = HashSet<String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a bounded set of thread UUIDs")
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut uuids = HashSet::with_capacity(MAX_TRACKED_THREAD_UUIDS);
+            while let Some(uuid) = sequence.next_element::<String>()? {
+                if uuid.len() > EVIDENCE_STRING_CAP
+                    || (uuids.len() == MAX_TRACKED_THREAD_UUIDS && !uuids.contains(&uuid))
+                {
+                    return Err(serde::de::Error::custom(
+                        "thread UUID resume state exceeds its bound",
+                    ));
+                }
+                uuids.insert(uuid);
+            }
+            Ok(uuids)
+        }
+    }
+
+    deserializer.deserialize_seq(ThreadUuidsVisitor)
 }
 
 /// [`Clone`] lets a caller keep one input's residual as its own
@@ -216,34 +256,58 @@ impl SessionEvidenceAccumulator {
     }
 
     fn observe_model_control(&mut self, event: &NormalizedEvent) {
-        if !matches!(event.role, crate::analysis::Role::Assistant)
-            || (event.thinking_mode.is_none() && event.speed.is_none())
-        {
+        if !matches!(event.role, crate::analysis::Role::Assistant) {
             return;
         }
         let Some(model) = event.model.as_deref() else {
             return;
         };
+        let reviewed_route = if event.thinking_mode.is_none() && event.speed.is_none() {
+            let target = model_control_target(
+                &self.identity.agent,
+                event.provider.as_deref(),
+                event.api.as_deref(),
+                model,
+            );
+            matches!(
+                ReviewedModelCatalog::default().resolve(&target),
+                Support::Supported(_)
+            )
+            .then_some((target.provider, target.api))
+        } else {
+            None
+        };
+        if event.thinking_mode.is_none() && event.speed.is_none() && reviewed_route.is_none() {
+            return;
+        }
         let truncated_before = self.diagnostics.truncated_strings.len();
         let model = cap_string(
             "models.control_observations.model",
             model,
             &mut self.diagnostics,
         );
-        let provider = event.provider.as_deref().map(|value| {
-            cap_string(
-                "models.control_observations.provider",
-                value,
-                &mut self.diagnostics,
-            )
-        });
-        let api = event.api.as_deref().map(|value| {
-            cap_string(
-                "models.control_observations.api",
-                value,
-                &mut self.diagnostics,
-            )
-        });
+        let provider = reviewed_route
+            .as_ref()
+            .map(|(provider, _)| provider.as_str())
+            .or(event.provider.as_deref())
+            .map(|value| {
+                cap_string(
+                    "models.control_observations.provider",
+                    value,
+                    &mut self.diagnostics,
+                )
+            });
+        let api = reviewed_route
+            .as_ref()
+            .map(|(_, api)| api.as_str())
+            .or(event.api.as_deref())
+            .map(|value| {
+                cap_string(
+                    "models.control_observations.api",
+                    value,
+                    &mut self.diagnostics,
+                )
+            });
         let effort = event.thinking_mode.as_deref().map(|value| {
             cap_string(
                 "models.control_observations.effort",
@@ -277,6 +341,7 @@ impl SessionEvidenceAccumulator {
                 crate::analysis::EventSource::Subagent => &mut observation.turns.delegated,
             };
             *count = count.saturating_add(1);
+            observation.last_ts_ms = observation.last_ts_ms.max(event.ts_ms.unwrap_or_default());
             return;
         }
         if self.model_control_observations.len() == MAX_MODEL_CONTROL_OBSERVATIONS {
@@ -296,6 +361,7 @@ impl SessionEvidenceAccumulator {
                 model,
                 effort,
                 speed,
+                last_ts_ms: event.ts_ms.unwrap_or_default(),
                 turns,
             });
     }
@@ -350,7 +416,7 @@ impl SessionEvidenceAccumulator {
                     self.thread_parent_unresolved = true;
                 }
                 if let Some(uuid) = uuid {
-                    self.seen_thread_uuids.insert(uuid.clone());
+                    self.observe_thread_uuid(uuid);
                 }
             }
             EvidenceObservation::RecordTimestamp { ts_ms } => {
@@ -413,6 +479,19 @@ impl SessionEvidenceAccumulator {
                 }
             }
         }
+    }
+
+    fn observe_thread_uuid(&mut self, uuid: &str) {
+        if uuid.len() > EVIDENCE_STRING_CAP
+            || (self.seen_thread_uuids.len() == MAX_TRACKED_THREAD_UUIDS
+                && !self.seen_thread_uuids.contains(uuid))
+        {
+            self.session_cap_exceeded = true;
+            self.thread_parent_unresolved = true;
+            self.note_collection_cap(THREAD_UUIDS_DIAGNOSTIC);
+            return;
+        }
+        self.seen_thread_uuids.insert(uuid.to_owned());
     }
 
     fn observe_subagent_spawn(
@@ -659,6 +738,7 @@ impl SessionEvidenceAccumulator {
                     && existing.speed == observation.speed
             }) {
                 existing.turns.delegated = existing.turns.delegated.saturating_add(delegated);
+                existing.last_ts_ms = existing.last_ts_ms.max(observation.last_ts_ms);
             } else if self.model_control_observations.len() == MAX_MODEL_CONTROL_OBSERVATIONS {
                 self.session_cap_exceeded = true;
                 self.note_collection_cap("models.control_observations");
@@ -858,17 +938,38 @@ impl SessionEvidenceAccumulator {
     /// it.
     pub fn from_coverage_record_with_resume(
         record: SessionCoverageRecord,
-        resume: EvidenceResumeState,
+        mut resume: EvidenceResumeState,
     ) -> Self {
+        let resume_overflowed = resume.seen_thread_uuids.len() > MAX_TRACKED_THREAD_UUIDS
+            || resume
+                .seen_thread_uuids
+                .iter()
+                .any(|uuid| uuid.len() > EVIDENCE_STRING_CAP);
+        if resume_overflowed {
+            resume
+                .seen_thread_uuids
+                .retain(|uuid| uuid.len() <= EVIDENCE_STRING_CAP);
+            resume.seen_thread_uuids = resume
+                .seen_thread_uuids
+                .into_iter()
+                .take(MAX_TRACKED_THREAD_UUIDS)
+                .collect();
+        }
+        let mut diagnostics = record.diagnostics;
+        if resume_overflowed
+            && insert_diagnostic_field(&mut diagnostics.capped_collections, THREAD_UUIDS_DIAGNOSTIC)
+        {
+            record_diagnostic_set_cap(&mut diagnostics, "diagnostics.capped_collections");
+        }
         Self {
             identity: record.identity,
             capabilities: record.capabilities,
             source_kind: record.source_kind,
             source_acceptance: record.source_acceptance,
             ordering: record.ordering,
-            diagnostics: record.diagnostics,
+            diagnostics,
             record_loss_reason: record.record_loss_reason,
-            session_cap_exceeded: record.session_cap_exceeded,
+            session_cap_exceeded: record.session_cap_exceeded || resume_overflowed,
             last_ts_ms: resume.last_ts_ms,
             tools: record.tools,
             invoked_skills: record.invoked_skills,
@@ -883,7 +984,7 @@ impl SessionEvidenceAccumulator {
             subagents_cap_exceeded: record.subagents_cap_exceeded,
             subagent_linkage_incomplete: record.subagent_linkage_incomplete,
             seen_thread_uuids: resume.seen_thread_uuids,
-            thread_parent_unresolved: record.thread_parent_unresolved,
+            thread_parent_unresolved: record.thread_parent_unresolved || resume_overflowed,
             harness_version: record.harness_version,
             deferred_tools: record.deferred_tools,
             summary_observed: record.summary_observed,
@@ -3039,6 +3140,75 @@ mod tests {
                 reason: CoverageReason::AttributionIncomplete,
             }
         );
+    }
+
+    #[test]
+    fn thread_identity_tracking_is_bounded_and_degrades_coverage() {
+        let mut accumulator = accumulator(true);
+        for index in 0..=MAX_TRACKED_THREAD_UUIDS {
+            accumulator.record(NormalizedRecord::Observation(Box::new(
+                EvidenceObservation::ThreadLink {
+                    uuid: Some(format!("u-{index}")),
+                    parent_uuid: None,
+                },
+            )));
+        }
+
+        assert_eq!(
+            accumulator.resume_state().seen_thread_uuids.len(),
+            MAX_TRACKED_THREAD_UUIDS
+        );
+        let evidence = accumulator.evidence(&TurnFacts::default());
+        assert_eq!(
+            evidence.coverage,
+            EvidenceCoverage::Partial(CoverageReason::CapExceeded)
+        );
+        assert_eq!(
+            evidence_reason(&evidence.cache),
+            Some(CoverageReason::AttributionIncomplete)
+        );
+        assert_capped_collection(&evidence, THREAD_UUIDS_DIAGNOSTIC);
+        assert!(accumulator.retained_bytes() < RETAINED_EVIDENCE_BYTES_BOUND);
+    }
+
+    #[test]
+    fn oversized_resume_thread_state_is_bounded_and_degrades_coverage() {
+        let accumulator = accumulator(true);
+        let record = accumulator.coverage_record();
+        let resume = EvidenceResumeState {
+            last_ts_ms: Some(10),
+            seen_thread_uuids: (0..=MAX_TRACKED_THREAD_UUIDS)
+                .map(|index| format!("u-{index}"))
+                .collect(),
+        };
+
+        let restored = SessionEvidenceAccumulator::from_coverage_record_with_resume(record, resume);
+        assert_eq!(
+            restored.resume_state().seen_thread_uuids.len(),
+            MAX_TRACKED_THREAD_UUIDS
+        );
+        let evidence = restored.evidence(&TurnFacts::default());
+        assert_eq!(
+            evidence.coverage,
+            EvidenceCoverage::Partial(CoverageReason::CapExceeded)
+        );
+        assert_eq!(
+            evidence_reason(&evidence.cache),
+            Some(CoverageReason::AttributionIncomplete)
+        );
+    }
+
+    #[test]
+    fn serialized_resume_thread_state_rejects_overflow() {
+        let resume = EvidenceResumeState {
+            last_ts_ms: None,
+            seen_thread_uuids: (0..=MAX_TRACKED_THREAD_UUIDS)
+                .map(|index| format!("u-{index}"))
+                .collect(),
+        };
+        let encoded = serde_json::to_vec(&resume).unwrap();
+
+        assert!(serde_json::from_slice::<EvidenceResumeState>(&encoded).is_err());
     }
 
     #[test]

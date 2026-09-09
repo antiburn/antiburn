@@ -12,13 +12,17 @@ use antiburn_local::insights::{
     ReportCatalogs, ReportContext, ReportWindow, SessionTokenBurnEvidence, TokenBurnSourceEvidence,
     TokenBurnTurnAccumulator, TokenBurnTurnEvidence,
 };
-use antiburn_local::remediation::{Finding, FindingAssessment};
+use antiburn_local::pricing::ModelTokens;
+use antiburn_local::remediation::{Finding, FindingAssessment, ModelVerificationObservation};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, params};
 
-use crate::store::open_read_only;
+use crate::remediation::WatchDefinition;
+use crate::store::{RemediationRecord, open_read_only};
 
 const REPORT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const CURRENT_FINDING_SESSION_SCAN_BUDGET: usize = 512;
+const CURRENT_FINDING_LIMIT: usize = 512;
 
 const CURRENT_EVIDENCE_PREDICATE: &str = "
     e.status = 'ready'
@@ -92,7 +96,8 @@ SELECT e.evidence_json, s.environment_key, s.agent, s.session_id,
        s.source_generation, e.published_fence, s.source_fingerprint,
        e.processed_fingerprint, e.parser_revision, e.analyzer_revision,
        e.evidence_schema_revision, a.metrics_schema_revision,
-       s.started_at_epoch, s.cwd, a.initial_context_json
+       s.started_at_epoch, s.cwd, a.initial_context_json,
+       e.effective_model_target_hash, e.effective_model_scope, e.effective_model
   FROM session s
   JOIN session_evidence e
     ON e.environment_key = s.environment_key
@@ -109,21 +114,17 @@ SELECT e.evidence_json, s.environment_key, s.agent, s.session_id,
  WHERE s.environment_key = ?1
    AND s.started_at_epoch >= ?2
    AND s.started_at_epoch < ?3
-   AND {current}
-   AND (
-       ?8 IS NULL
-       OR s.started_at_epoch < ?8
-       OR (s.started_at_epoch = ?8 AND s.agent < ?9)
-       OR (s.started_at_epoch = ?8 AND s.agent = ?9 AND s.session_id <= ?10)
-   )
- ORDER BY s.started_at_epoch DESC, s.agent DESC, s.session_id DESC";
+    AND {current}
+  ORDER BY s.started_at_epoch DESC, s.agent DESC, s.session_id DESC
+  LIMIT ?8";
 
 const CURRENT_FINDING_BY_KEY_SQL: &str = "
 SELECT e.evidence_json, s.environment_key, s.agent, s.session_id,
        s.source_generation, e.published_fence, s.source_fingerprint,
        e.processed_fingerprint, e.parser_revision, e.analyzer_revision,
        e.evidence_schema_revision, a.metrics_schema_revision,
-       s.started_at_epoch, s.cwd, a.initial_context_json
+       s.started_at_epoch, s.cwd, a.initial_context_json,
+       e.effective_model_target_hash, e.effective_model_scope, e.effective_model
   FROM session s
   JOIN session_evidence e
     ON e.environment_key = s.environment_key
@@ -161,17 +162,6 @@ pub struct CurrentFindingsRequest {
     pub environment_key: String,
     pub window: ReportWindow,
     pub detector: DetectorId,
-    pub cursor: Option<CurrentFindingsCursor>,
-    pub limit: usize,
-}
-
-/// An opaque keyset position in the current finding order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CurrentFindingsCursor {
-    started_at_epoch: i64,
-    agent: String,
-    session_id: String,
-    cause_index: usize,
 }
 
 /// One trusted finding and the exact projection version that produced it.
@@ -192,7 +182,9 @@ pub struct CurrentFinding {
     pub catalog_revision: i64,
     pub started_at_epoch: i64,
     workspace_candidate: Option<PathBuf>,
-    cause_index: usize,
+    pub(crate) effective_model_target_hash: Option<String>,
+    pub(crate) effective_model_scope: Option<String>,
+    pub(crate) effective_model: Option<String>,
 }
 
 impl CurrentFinding {
@@ -202,11 +194,282 @@ impl CurrentFinding {
     }
 }
 
-/// One bounded page of current findings in newest-session order.
+/// One bounded set of current findings in newest-session order.
 #[derive(Clone, PartialEq, Eq)]
 pub struct CurrentFindingsPage {
     pub findings: Vec<CurrentFinding>,
-    pub next_cursor: Option<CurrentFindingsCursor>,
+    pub truncated: bool,
+}
+
+/// One fresh session assessment used by the generic remediation verifier.
+pub(crate) struct CurrentDetectorAssessment {
+    pub assessment: FindingAssessment,
+    pub absence_complete: bool,
+    pub observed_at_ms: i64,
+    pub workspace_candidate: Option<PathBuf>,
+    pub source_format: antiburn_local::analysis::SourceFormat,
+    pub session_id: String,
+}
+
+pub(crate) struct RemediationAssessments {
+    pub assessments: Vec<CurrentDetectorAssessment>,
+    pub truncated: bool,
+}
+
+/// Reads a bounded set of fresh post-boundary detector assessments.
+pub(crate) fn remediation_assessments(
+    data_dir: &Path,
+    environment_key: &str,
+    agent: &str,
+    detector: DetectorId,
+    resource: Option<&str>,
+    boundary_ms: i64,
+) -> Result<RemediationAssessments> {
+    let request = CurrentFindingsRequest {
+        environment_key: environment_key.to_owned(),
+        window: ReportWindow {
+            start_epoch: i64::MIN,
+            end_epoch: i64::MAX,
+        },
+        detector,
+    };
+    let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
+    let transaction = connection.unchecked_transaction()?;
+    let catalogs = ReportCatalogs::default();
+    let sql = CURRENT_FINDINGS_SQL
+        .replace("{current}", CURRENT_EVIDENCE_PREDICATE)
+        .replace("  ORDER BY", "   AND s.agent = ?8\n  ORDER BY")
+        .replace("LIMIT ?8", "LIMIT ?9");
+    let mut statement = transaction.prepare(&sql)?;
+    let mut rows = statement.query(params![
+        request.environment_key,
+        request.window.start_epoch,
+        request.window.end_epoch,
+        PARSER_REVISION,
+        ANALYZER_REVISION,
+        EVIDENCE_SCHEMA_REVISION,
+        METRICS_SCHEMA_REVISION,
+        agent,
+        CURRENT_FINDING_SESSION_SCAN_BUDGET + 1,
+    ])?;
+    let cancel = AtomicBool::new(false);
+    let mut result = Vec::new();
+    let mut sessions_scanned = 0;
+    let mut truncated = false;
+    while let Some(row) = rows.next()? {
+        let session = current_finding_session(row)?;
+        sessions_scanned += 1;
+        if sessions_scanned > CURRENT_FINDING_SESSION_SCAN_BUDGET {
+            truncated = true;
+            break;
+        }
+        let observed_at_ms = match &session.evidence.time_range {
+            antiburn_local::analysis::EvidenceValue::Complete(range) => range.last_ts_ms,
+            _ => continue,
+        };
+        if observed_at_ms <= boundary_ms {
+            continue;
+        }
+        let assessment = assess_current_detector(
+            &transaction,
+            &session,
+            detector,
+            &catalogs,
+            &cancel,
+            &mut || {},
+        )?;
+        result.push(CurrentDetectorAssessment {
+            absence_complete: antiburn_local::remediation::can_verify_target_absence(
+                detector,
+                &session.evidence,
+                resource,
+            ),
+            assessment,
+            observed_at_ms,
+            workspace_candidate: session.workspace_candidate,
+            source_format: session.evidence.capabilities.source_format,
+            session_id: session.session_id,
+        });
+    }
+    Ok(RemediationAssessments {
+        assessments: result,
+        truncated,
+    })
+}
+
+/// A read-only aggregate for one exact old-model watch.
+#[derive(Debug)]
+pub(crate) struct OldModelRemediationEvidence {
+    pub observations: Vec<ModelVerificationObservation>,
+    pub replacement_tokens: Option<ModelTokens>,
+    pub measured_through_ms: Option<i64>,
+    pub recurrence_ms: Option<i64>,
+    pub evidence_revision: String,
+    pub token_overflow: bool,
+}
+
+/// Reads one stable evidence snapshot without loading transcript content.
+pub(crate) fn old_model_remediation_evidence(
+    data_dir: &Path,
+    remediation: &RemediationRecord,
+    definition: &WatchDefinition,
+    boundary_ms: i64,
+    fixed_at_ms: Option<i64>,
+) -> Result<OldModelRemediationEvidence> {
+    let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
+    let transaction = connection.unchecked_transaction()?;
+    let mut observations = Vec::new();
+    let mut replacement_tokens = ModelTokens::default();
+    let mut replacement_evidence = false;
+    let mut measured_through_ms: Option<i64> = None;
+    let mut recurrence_ms: Option<i64> = None;
+    let mut token_overflow = false;
+    let mut max_fence = 0_i64;
+    let mut turns = transaction.prepare(
+        "SELECT t.ts_ms, t.provider, t.api, t.model, t.effort, t.input_tokens,
+                t.output_tokens, t.cache_read_tokens, t.cache_write_tokens,
+                s.session_id, s.started_at_epoch, s.cwd, e.published_fence,
+                e.effective_model_target_hash, e.effective_model_scope,
+                e.effective_model
+           FROM turn t
+           JOIN session s USING (environment_key, agent, session_id)
+           JOIN session_evidence e USING (environment_key, agent, session_id)
+          WHERE t.environment_key = ?1 AND t.agent = ?2 AND t.role = 'assistant'
+            AND t.scope = 'main' AND t.ts_ms IS NOT NULL AND t.ts_ms > ?3
+            AND e.status = 'ready' AND e.analyzed_generation = s.source_generation
+            AND e.published_fence = t.claim_fence AND e.parser_revision = ?4
+            AND e.analyzer_revision = ?5 AND e.evidence_schema_revision = ?6
+          ORDER BY t.ts_ms, t.rowid",
+    )?;
+    let mut turn_rows = turns.query(params![
+        remediation.environment_key,
+        remediation.agent,
+        boundary_ms,
+        PARSER_REVISION,
+        ANALYZER_REVISION,
+        EVIDENCE_SCHEMA_REVISION
+    ])?;
+    while let Some(turn) = turn_rows.next()? {
+        let timestamp_ms: i64 = turn.get(0)?;
+        let started_at_epoch: Option<i64> = turn.get(10)?;
+        let fence: i64 = turn.get(12)?;
+        if !started_at_epoch.is_some_and(|started| started.saturating_mul(1_000) > boundary_ms) {
+            continue;
+        }
+        let attributed_target: Option<String> = turn.get(13)?;
+        let attributed_scope: Option<String> = turn.get(14)?;
+        let attributed_model: Option<String> = turn.get(15)?;
+        let applies = model_attribution_matches(
+            definition,
+            &remediation.scope_kind,
+            attributed_target.as_deref(),
+            attributed_scope.as_deref(),
+            attributed_model.as_deref(),
+        );
+        if !applies {
+            continue;
+        }
+        max_fence = max_fence.max(fence);
+        measured_through_ms = Some(timestamp_ms);
+        let model: Option<String> = turn.get(3)?;
+        let Some(model) = model else { continue };
+        let observation = ModelVerificationObservation {
+            timestamp_ms,
+            scope: remediation.scope_key.clone(),
+            provider: turn.get(1)?,
+            api: turn.get(2)?,
+            model: model.clone(),
+        };
+        let route_matches =
+            observation.provider == definition.provider && observation.api == definition.api;
+        if route_matches
+            && definition.old_model.as_deref() == Some(model.as_str())
+            && fixed_at_ms.is_some_and(|fixed_at_ms| timestamp_ms > fixed_at_ms)
+        {
+            recurrence_ms.get_or_insert(timestamp_ms);
+        } else if route_matches
+            && definition.replacement.as_deref() == Some(model.as_str())
+            && recurrence_ms.is_none()
+        {
+            token_overflow |= !add_tokens(&mut replacement_tokens, turn)?;
+            replacement_evidence = !token_overflow;
+        }
+        if route_matches
+            && (definition.old_model.as_deref() == Some(model.as_str())
+                || definition.replacement.as_deref() == Some(model.as_str()))
+        {
+            observations.push(observation);
+        }
+    }
+    drop(turn_rows);
+    drop(turns);
+
+    Ok(OldModelRemediationEvidence {
+        observations,
+        replacement_tokens: replacement_evidence.then_some(replacement_tokens),
+        measured_through_ms,
+        recurrence_ms,
+        evidence_revision: format!(
+            "evidence-{}-{}-{max_fence}",
+            ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION
+        ),
+        token_overflow,
+    })
+}
+
+fn model_attribution_matches(
+    definition: &WatchDefinition,
+    scope_kind: &str,
+    target_hash: Option<&str>,
+    attributed_scope: Option<&str>,
+    model: Option<&str>,
+) -> bool {
+    target_hash == definition.physical_target_key.as_deref()
+        && attributed_scope == Some(scope_kind)
+        && model.is_some_and(|model| {
+            definition.old_model.as_deref() == Some(model)
+                || definition.replacement.as_deref() == Some(model)
+        })
+}
+
+fn add_tokens(target: &mut ModelTokens, row: &rusqlite::Row<'_>) -> rusqlite::Result<bool> {
+    Ok(checked_add_tokens(
+        target,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+    ))
+}
+
+fn checked_add_tokens(
+    target: &mut ModelTokens,
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_creation: u64,
+) -> bool {
+    let Some(input_tokens) = target.input_tokens.checked_add(input) else {
+        return false;
+    };
+    let Some(output_tokens) = target.output_tokens.checked_add(output) else {
+        return false;
+    };
+    let Some(cache_read_tokens) = target.cache_read_tokens.checked_add(cache_read) else {
+        return false;
+    };
+    let Some(cache_creation_tokens) = target.cache_creation_tokens.checked_add(cache_creation)
+    else {
+        return false;
+    };
+    *target = ModelTokens {
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+        ..target.clone()
+    };
+    true
 }
 
 struct CurrentFindingSession {
@@ -225,6 +488,9 @@ struct CurrentFindingSession {
     started_at_epoch: i64,
     workspace_candidate: Option<PathBuf>,
     initial_context: Option<InitialContextBreakdown>,
+    effective_model_target_hash: Option<String>,
+    effective_model_scope: Option<String>,
+    effective_model: Option<String>,
 }
 
 /// Marks a reduction that stopped because its caller cancelled it.
@@ -276,34 +542,22 @@ pub fn list_current_findings(
     data_dir: &Path,
     request: CurrentFindingsRequest,
 ) -> Result<CurrentFindingsPage> {
-    list_current_findings_on_snapshot(data_dir, request, &mut || {})
+    list_current_findings_on_snapshot(data_dir, request, &mut || {}, &mut || {})
 }
 
 fn list_current_findings_on_snapshot(
     data_dir: &Path,
     request: CurrentFindingsRequest,
     after_session_read: &mut dyn FnMut(),
+    turn_probe: &mut dyn FnMut(),
 ) -> Result<CurrentFindingsPage> {
     let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
     let transaction = connection.unchecked_transaction()?;
     let catalogs = ReportCatalogs::default();
-    let report_context = TokenBurnReportContext {
-        depth_cap: u128::from(catalogs.depth_cap_tokens),
-        catalogs: &catalogs,
-    };
     let sql = CURRENT_FINDINGS_SQL.replace("{current}", CURRENT_EVIDENCE_PREDICATE);
-    let cursor_started_at = request
-        .cursor
-        .as_ref()
-        .map(|cursor| cursor.started_at_epoch);
-    let cursor_agent = request.cursor.as_ref().map(|cursor| cursor.agent.as_str());
-    let cursor_session_id = request
-        .cursor
-        .as_ref()
-        .map(|cursor| cursor.session_id.as_str());
-    let limit = request.limit.clamp(1, 100);
-    let mut findings = Vec::with_capacity(limit + 1);
+    let mut findings = Vec::with_capacity(CURRENT_FINDING_LIMIT + 1);
     let cancel = AtomicBool::new(false);
+    let mut sessions_scanned = 0;
     {
         let mut statement = transaction.prepare(&sql)?;
         let mut rows = statement.query(params![
@@ -314,85 +568,57 @@ fn list_current_findings_on_snapshot(
             ANALYZER_REVISION,
             EVIDENCE_SCHEMA_REVISION,
             METRICS_SCHEMA_REVISION,
-            cursor_started_at,
-            cursor_agent,
-            cursor_session_id,
+            CURRENT_FINDING_SESSION_SCAN_BUDGET + 1,
         ])?;
         while let Some(row) = rows.next()? {
             let session = current_finding_session(row)?;
+            sessions_scanned += 1;
             after_session_read();
-            let token_evidence = token_burn_evidence(
+            let assessment = assess_current_detector(
                 &transaction,
-                TokenBurnSessionKey {
-                    environment_key: &session.environment_key,
-                    agent: &session.agent,
-                    session_id: &session.session_id,
-                    published_fence: session.published_fence,
-                    cwd: session
-                        .workspace_candidate
-                        .as_deref()
-                        .and_then(Path::to_str),
-                },
-                session.initial_context.as_ref(),
-                &session.evidence,
-                &report_context,
-                &cancel,
-                &mut || {},
-            )?;
-            let assessment = antiburn_local::remediation::assess_session_with_source_evidence(
-                &session.evidence,
+                &session,
+                request.detector,
                 &catalogs,
-                Some(&token_evidence),
-            );
-            let FindingAssessment::Findings(session_findings) =
-                &assessment.detectors[request.detector.index()]
-            else {
+                &cancel,
+                turn_probe,
+            )?;
+            let FindingAssessment::Findings(session_findings) = &assessment else {
                 continue;
             };
-            for (cause_index, finding) in session_findings.iter().enumerate() {
-                if request.cursor.as_ref().is_some_and(|cursor| {
-                    cursor.started_at_epoch == session.started_at_epoch
-                        && cursor.agent == session.agent
-                        && cursor.session_id == session.session_id
-                        && cause_index <= cursor.cause_index
-                }) {
-                    continue;
-                }
+            for finding in session_findings {
                 findings.push(current_finding(
                     &session,
                     finding.clone(),
                     catalogs.revision,
-                    cause_index,
                 ));
-                if findings.len() > limit {
+                if findings.len() > CURRENT_FINDING_LIMIT {
                     break;
                 }
             }
-            if findings.len() > limit {
+            if findings.len() > CURRENT_FINDING_LIMIT {
                 break;
             }
         }
     }
 
-    let has_more = findings.len() > limit;
-    findings.truncate(limit);
-    let next_cursor = has_more.then(|| {
-        let last = findings.last().expect("a full finding page is not empty");
-        CurrentFindingsCursor {
-            started_at_epoch: last.started_at_epoch,
-            agent: last.agent.clone(),
-            session_id: last.session_id.clone(),
-            cause_index: last.cause_index,
-        }
-    });
+    let finding_overflow = findings.len() > CURRENT_FINDING_LIMIT;
+    findings.truncate(CURRENT_FINDING_LIMIT);
     Ok(CurrentFindingsPage {
         findings,
-        next_cursor,
+        truncated: finding_overflow || sessions_scanned > CURRENT_FINDING_SESSION_SCAN_BUDGET,
     })
 }
 
 /// Recomputes one cached finding and accepts only its exact cause and freshness.
 pub fn revalidate_current_finding(data_dir: &Path, cached: &CurrentFinding) -> Result<bool> {
+    revalidate_current_finding_on_snapshot(data_dir, cached, &mut || {})
+}
+
+fn revalidate_current_finding_on_snapshot(
+    data_dir: &Path,
+    cached: &CurrentFinding,
+    turn_probe: &mut dyn FnMut(),
+) -> Result<bool> {
     let connection = open_read_only(data_dir, REPORT_BUSY_TIMEOUT)?;
     let transaction = connection.unchecked_transaction()?;
     let catalogs = ReportCatalogs::default();
@@ -418,13 +644,40 @@ pub fn revalidate_current_finding(data_dir: &Path, cached: &CurrentFinding) -> R
     let Some(session) = session.filter(|session| freshness_matches(cached, session)) else {
         return Ok(false);
     };
-    let report_context = TokenBurnReportContext {
-        depth_cap: u128::from(catalogs.depth_cap_tokens),
-        catalogs: &catalogs,
-    };
     let cancel = AtomicBool::new(false);
-    let token_evidence = token_burn_evidence(
+    let assessment = assess_current_detector(
         &transaction,
+        &session,
+        cached.finding.detector,
+        &catalogs,
+        &cancel,
+        turn_probe,
+    )?;
+    let FindingAssessment::Findings(findings) = &assessment else {
+        return Ok(false);
+    };
+    Ok(findings.iter().any(|finding| {
+        finding.detector == cached.finding.detector && finding.cause() == cached.finding.cause()
+    }))
+}
+
+fn assess_current_detector(
+    connection: &rusqlite::Connection,
+    session: &CurrentFindingSession,
+    detector: DetectorId,
+    catalogs: &ReportCatalogs,
+    cancel: &AtomicBool,
+    turn_probe: &mut dyn FnMut(),
+) -> Result<FindingAssessment> {
+    if detector != DetectorId::UnusedBuiltInTools {
+        return Ok(antiburn_local::remediation::assess_detector(
+            detector,
+            &session.evidence,
+            catalogs,
+        ));
+    }
+    let token_evidence = token_burn_evidence(
+        connection,
         TokenBurnSessionKey {
             environment_key: &session.environment_key,
             agent: &session.agent,
@@ -437,23 +690,21 @@ pub fn revalidate_current_finding(data_dir: &Path, cached: &CurrentFinding) -> R
         },
         session.initial_context.as_ref(),
         &session.evidence,
-        &report_context,
-        &cancel,
-        &mut || {},
+        &TokenBurnReportContext {
+            depth_cap: u128::from(catalogs.depth_cap_tokens),
+            catalogs,
+        },
+        cancel,
+        turn_probe,
     )?;
-    let assessment = antiburn_local::remediation::assess_session_with_source_evidence(
-        &session.evidence,
-        &catalogs,
-        Some(&token_evidence),
-    );
-    let FindingAssessment::Findings(findings) =
-        &assessment.detectors[cached.finding.detector.index()]
-    else {
-        return Ok(false);
-    };
-    Ok(findings.iter().any(|finding| {
-        finding.detector == cached.finding.detector && finding.cause() == cached.finding.cause()
-    }))
+    Ok(
+        antiburn_local::remediation::assess_detector_with_source_evidence(
+            detector,
+            &session.evidence,
+            catalogs,
+            Some(&token_evidence),
+        ),
+    )
 }
 
 fn current_finding_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<CurrentFindingSession> {
@@ -489,6 +740,9 @@ fn current_finding_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<CurrentF
         started_at_epoch: row.get(12)?,
         workspace_candidate: row.get::<_, Option<String>>(13)?.map(PathBuf::from),
         initial_context,
+        effective_model_target_hash: row.get(15)?,
+        effective_model_scope: row.get(16)?,
+        effective_model: row.get(17)?,
     })
 }
 
@@ -496,7 +750,6 @@ fn current_finding(
     session: &CurrentFindingSession,
     finding: Finding,
     catalog_revision: i64,
-    cause_index: usize,
 ) -> CurrentFinding {
     CurrentFinding {
         finding,
@@ -514,7 +767,9 @@ fn current_finding(
         catalog_revision,
         started_at_epoch: session.started_at_epoch,
         workspace_candidate: session.workspace_candidate.clone(),
-        cause_index,
+        effective_model_target_hash: session.effective_model_target_hash.clone(),
+        effective_model_scope: session.effective_model_scope.clone(),
+        effective_model: session.effective_model.clone(),
     }
 }
 
@@ -947,6 +1202,53 @@ mod tests {
         ProjectionRevisions, PublishedEvidence, SessionKey, SessionRecord, Store,
     };
 
+    #[test]
+    fn old_model_attribution_keeps_global_and_project_targets_separate() {
+        let definition = WatchDefinition {
+            version: 1,
+            detector: "old_model_usage".into(),
+            canonical_identity: "target".into(),
+            source_format: "ClaudeJsonl".into(),
+            workspace_key: Some("workspace".into()),
+            provider: Some("anthropic".into()),
+            api: Some("messages".into()),
+            old_model: Some("old".into()),
+            replacement: Some("new".into()),
+            resource: None,
+            physical_target_key: Some("global-target".into()),
+            verification_method_revision: 1,
+            savings_method_revision: 1,
+            pricing_revision: None,
+            old_pricing: None,
+            replacement_pricing: None,
+        };
+        assert!(model_attribution_matches(
+            &definition,
+            "global",
+            Some("global-target"),
+            Some("global"),
+            Some("new"),
+        ));
+        assert!(!model_attribution_matches(
+            &definition,
+            "global",
+            Some("project-target"),
+            Some("project"),
+            Some("new"),
+        ));
+    }
+
+    #[test]
+    fn remediation_token_accumulation_reports_overflow_without_mutation() {
+        let mut tokens = ModelTokens {
+            input_tokens: u64::MAX,
+            ..ModelTokens::default()
+        };
+        let before = tokens.clone();
+        assert!(!checked_add_tokens(&mut tokens, 1, 0, 0, 0));
+        assert_eq!(tokens, before);
+    }
+
     fn request() -> ReportRequest {
         ReportRequest {
             environment_key: "native".to_owned(),
@@ -1221,6 +1523,172 @@ mod tests {
         );
     }
 
+    fn publish_attributed_model_turn(
+        data_dir: &Path,
+        store: &Store,
+        session_id: &str,
+        started_at_epoch: i64,
+        timestamp_ms: i64,
+        model: &str,
+    ) {
+        publish_evidence_with_turns(
+            store,
+            session_id,
+            started_at_epoch,
+            PublishedEvidence::Ready,
+            1,
+        );
+        let connection = rusqlite::Connection::open(crate::store::database_path(data_dir)).unwrap();
+        connection
+            .execute(
+                "UPDATE turn SET ts_ms = ?1, model = ?2, provider = 'anthropic', api = 'messages'
+                  WHERE environment_key = 'native' AND agent = 'claude-code' AND session_id = ?3",
+                params![timestamp_ms, model, session_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE session_evidence SET effective_model_target_hash = 'physical',
+                    effective_model_scope = 'global', effective_model = ?1
+                  WHERE environment_key = 'native' AND agent = 'claude-code' AND session_id = ?2",
+                params![model, session_id],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn old_model_evaluation_defers_recurrence_and_keeps_cumulative_savings() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_attributed_model_turn(
+            data_dir.path(),
+            &store,
+            "old-before-fix",
+            101,
+            101_000,
+            "claude-opus-4-8",
+        );
+        publish_attributed_model_turn(
+            data_dir.path(),
+            &store,
+            "fix",
+            102,
+            102_000,
+            "claude-opus-5",
+        );
+        let definition = WatchDefinition {
+            version: 1,
+            detector: "old_model_usage".into(),
+            canonical_identity: "identity".into(),
+            source_format: "ClaudeJsonl".into(),
+            workspace_key: None,
+            provider: Some("anthropic".into()),
+            api: Some("messages".into()),
+            old_model: Some("claude-opus-4-8".into()),
+            replacement: Some("claude-opus-5".into()),
+            resource: None,
+            physical_target_key: Some("physical".into()),
+            verification_method_revision: 1,
+            savings_method_revision: 1,
+            pricing_revision: Some("test-pricing".into()),
+            old_pricing: Some(antiburn_local::pricing::ModelPricing {
+                input_cost_per_token: 2.0,
+                output_cost_per_token: 0.0,
+                cache_read_cost_per_token: 0.0,
+                cache_write_cost_per_token: 0.0,
+            }),
+            replacement_pricing: Some(antiburn_local::pricing::ModelPricing {
+                input_cost_per_token: 1.0,
+                output_cost_per_token: 0.0,
+                cache_read_cost_per_token: 0.0,
+                cache_write_cost_per_token: 0.0,
+            }),
+        };
+        rusqlite::Connection::open(crate::store::database_path(data_dir.path()))
+            .unwrap()
+            .execute(
+                "INSERT INTO remediation (remediation_id, target_key, environment_key, agent,
+                    scope_kind, scope_key, state, dirty_revision, evaluated_revision,
+                    definition_json, result_json, created_at_epoch, updated_at_epoch,
+                    effective_boundary_ms)
+                 VALUES ('interval', 'target', 'native', 'claude-code', 'global', 'physical',
+                    'watching', 1, 0, ?1,
+                    '{\"version\":1,\"verification\":{\"status\":\"watching\"},\"savings\":{\"status\":\"pending\"}}',
+                    100, 100, 100000)",
+                [serde_json::to_string(&definition).unwrap()],
+            )
+            .unwrap();
+
+        let record = store.remediation("interval").unwrap().unwrap();
+        assert!(
+            crate::remediation::evaluate_dirty_remediation(data_dir.path(), &store, &record, 102)
+                .unwrap()
+        );
+        let fixed = store.remediation("interval").unwrap().unwrap();
+        assert_eq!(fixed.state, crate::store::RemediationState::Fixed);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&fixed.result_json).unwrap()["observedAtMs"],
+            102_000
+        );
+
+        publish_attributed_model_turn(
+            data_dir.path(),
+            &store,
+            "more-savings",
+            103,
+            103_000,
+            "claude-opus-5",
+        );
+        let fixed = store.remediation("interval").unwrap().unwrap();
+        assert_eq!(fixed.verified_at_epoch, Some(102));
+        assert!(fixed.updated_at_epoch >= 104);
+        assert!(
+            crate::remediation::evaluate_dirty_remediation(data_dir.path(), &store, &fixed, 103)
+                .unwrap()
+        );
+        let cumulative = store.remediation("interval").unwrap().unwrap();
+        let cumulative_result: serde_json::Value =
+            serde_json::from_str(&cumulative.result_json).unwrap();
+        assert_eq!(
+            cumulative_result["savings"]["apiEquivalentCostAvoidedUsd"],
+            20.0
+        );
+
+        publish_attributed_model_turn(
+            data_dir.path(),
+            &store,
+            "recurrence",
+            104,
+            104_000,
+            "claude-opus-4-8",
+        );
+        let fixed = store.remediation("interval").unwrap().unwrap();
+        assert_eq!(fixed.verified_at_epoch, Some(102));
+        assert!(fixed.updated_at_epoch >= 104);
+        let snapshot = old_model_remediation_evidence(
+            data_dir.path(),
+            &fixed,
+            &definition,
+            100_000,
+            Some(102_000),
+        )
+        .unwrap();
+        assert_eq!(snapshot.recurrence_ms, Some(104_000));
+        assert!(
+            crate::remediation::evaluate_dirty_remediation(data_dir.path(), &store, &fixed, 104)
+                .unwrap()
+        );
+        let recurred = store.remediation("interval").unwrap().unwrap();
+        let recurred_result: serde_json::Value =
+            serde_json::from_str(&recurred.result_json).unwrap();
+        assert_eq!(recurred.state, crate::store::RemediationState::Recurred);
+        assert_eq!(recurred_result["observedAtMs"], 104_000);
+        assert_eq!(
+            recurred_result["savings"]["apiEquivalentCostAvoidedUsd"],
+            20.0
+        );
+    }
+
     fn publish_mcp_findings(
         store: &Store,
         session_id: &str,
@@ -1260,21 +1728,16 @@ mod tests {
         );
     }
 
-    fn finding_request(
-        limit: usize,
-        cursor: Option<CurrentFindingsCursor>,
-    ) -> CurrentFindingsRequest {
+    fn finding_request() -> CurrentFindingsRequest {
         CurrentFindingsRequest {
             environment_key: "native".to_owned(),
             window: request().window,
             detector: DetectorId::UnusedMcpServers,
-            cursor,
-            limit,
         }
     }
 
     #[test]
-    fn current_finding_reads_evidence_analysis_and_turns_from_one_snapshot() {
+    fn current_finding_reads_evidence_and_analysis_from_one_snapshot() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
         publish_mcp_findings(&store, "snapshot", 120, &["server-a"]);
@@ -1283,7 +1746,7 @@ mod tests {
 
         let page = list_current_findings_on_snapshot(
             data_dir.path(),
-            finding_request(10, None),
+            finding_request(),
             &mut || {
                 if !changed {
                     change_source(&writer, "snapshot", &[]);
@@ -1291,6 +1754,7 @@ mod tests {
                     changed = true;
                 }
             },
+            &mut || {},
         )
         .unwrap();
 
@@ -1320,8 +1784,8 @@ mod tests {
         );
         assert_eq!(page.findings[0].started_at_epoch, 120);
         assert!(page.findings[0].workspace_candidate().is_none());
-        let next = list_current_findings(data_dir.path(), finding_request(10, None)).unwrap();
-        let antiburn_local::remediation::FindingCause::UnusedMcpServer { server } =
+        let next = list_current_findings(data_dir.path(), finding_request()).unwrap();
+        let antiburn_local::remediation::FindingCause::UnusedMcpServer { server, .. } =
             next.findings[0].finding.cause()
         else {
             panic!("the MCP detector must return an MCP cause");
@@ -1331,36 +1795,66 @@ mod tests {
     }
 
     #[test]
-    fn current_finding_cursor_pages_multiple_causes_in_one_session() {
+    fn current_findings_bound_no_match_session_scans_and_continue() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
-        publish_mcp_findings(
-            &store,
-            "many-causes",
-            120,
-            &["server-a", "server-b", "server-c"],
-        );
-        let mut cursor = None;
-        let mut servers = Vec::new();
-
-        loop {
-            let page = list_current_findings(data_dir.path(), finding_request(0, cursor)).unwrap();
-            let Some(finding) = page.findings.first() else {
-                break;
-            };
-            let antiburn_local::remediation::FindingCause::UnusedMcpServer { server } =
-                finding.finding.cause()
-            else {
-                panic!("the MCP detector must return an MCP cause");
-            };
-            servers.push(server.clone());
-            cursor = page.next_cursor;
-            if cursor.is_none() {
-                break;
-            }
+        for index in 0..=CURRENT_FINDING_SESSION_SCAN_BUDGET {
+            publish_ready(&store, &format!("no-match-{index:03}"), 120);
         }
+        let mut first_scan_count = 0;
 
-        assert_eq!(servers, ["server-a", "server-b", "server-c"]);
+        let first = list_current_findings_on_snapshot(
+            data_dir.path(),
+            finding_request(),
+            &mut || first_scan_count += 1,
+            &mut || panic!("the MCP detector must not load turn evidence"),
+        )
+        .unwrap();
+
+        assert!(first.findings.is_empty());
+        assert_eq!(first_scan_count, CURRENT_FINDING_SESSION_SCAN_BUDGET + 1);
+        assert!(first.truncated);
+
+        let assessments = remediation_assessments(
+            data_dir.path(),
+            "native",
+            "claude-code",
+            DetectorId::UnusedMcpServers,
+            Some("removed-server"),
+            -1,
+        )
+        .unwrap();
+        assert_eq!(
+            assessments.assessments.len(),
+            CURRENT_FINDING_SESSION_SCAN_BUDGET
+        );
+        assert!(assessments.truncated);
+    }
+
+    #[test]
+    fn non_token_detector_skips_turn_evidence_during_listing_and_revalidation() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_mcp_findings(&store, "target", 120, &["target-server"]);
+        let mut turn_probes = 0;
+
+        let page = list_current_findings_on_snapshot(
+            data_dir.path(),
+            finding_request(),
+            &mut || {},
+            &mut || turn_probes += 1,
+        )
+        .unwrap();
+        assert_eq!(page.findings.len(), 1);
+        assert_eq!(turn_probes, 0);
+
+        assert!(
+            revalidate_current_finding_on_snapshot(data_dir.path(), &page.findings[0], &mut || {
+                turn_probes += 1
+            },)
+            .unwrap()
+        );
+        assert_eq!(turn_probes, 0);
     }
 
     #[test]
@@ -1373,11 +1867,11 @@ mod tests {
         publish_mcp_findings(&store, "pending", 122, &["pending-server"]);
         change_source(&store, "pending", &["claude-code"]);
 
-        let page = list_current_findings(data_dir.path(), finding_request(1000, None)).unwrap();
+        let page = list_current_findings(data_dir.path(), finding_request()).unwrap();
 
         assert_eq!(page.findings.len(), 1);
         assert_eq!(page.findings[0].session_id, "current");
-        assert!(page.next_cursor.is_none());
+        assert!(!page.truncated);
     }
 
     #[test]
@@ -1386,7 +1880,7 @@ mod tests {
         let store = Store::open(data_dir.path()).unwrap();
         publish_mcp_findings(&store, "target", 120, &["target-server"]);
         publish_mcp_findings(&store, "other", 121, &["other-server"]);
-        let page = list_current_findings(data_dir.path(), finding_request(10, None)).unwrap();
+        let page = list_current_findings(data_dir.path(), finding_request()).unwrap();
         let target = page
             .findings
             .iter()

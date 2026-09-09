@@ -42,7 +42,15 @@ pub(super) fn finding_causes(
         maximum_tokens: context.max_request_context_tokens,
         limit_tokens: catalogs.depth_cap_tokens,
         requests,
-        omitted_requests: 0,
+        omitted_requests: if evidence
+            .diagnostics
+            .capped_collections
+            .contains("context.top_depth_examples")
+        {
+            None
+        } else {
+            Some(0)
+        },
     }]
 }
 
@@ -51,6 +59,7 @@ mod tests {
     use super::super::test_support::claude_evidence;
     use super::*;
     use crate::analysis::{ContextEvidence, CoverageReason, EvidenceValue};
+    use crate::remediation::FindingCause;
 
     fn with_depth(depth: u64, partial: bool) -> SessionEvidence {
         let mut evidence = claude_evidence("depth");
@@ -92,5 +101,26 @@ mod tests {
             evaluate(&with_depth(catalogs.depth_cap_tokens, false), &catalogs),
             Observation::NoFinding
         );
+    }
+
+    #[test]
+    fn a_capped_depth_sample_reports_an_unknown_omitted_count() {
+        let catalogs = ReportCatalogs::default();
+        let mut evidence = with_depth(catalogs.depth_cap_tokens + 1, false);
+        evidence
+            .diagnostics
+            .capped_collections
+            .insert("context.top_depth_examples".to_owned());
+
+        let causes = finding_causes(&evidence, &catalogs);
+        let [
+            FindingCause::SessionsOverDepth {
+                omitted_requests, ..
+            },
+        ] = causes.as_slice()
+        else {
+            panic!("expected one depth cause");
+        };
+        assert_eq!(*omitted_requests, None);
     }
 }

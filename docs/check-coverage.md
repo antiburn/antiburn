@@ -1,6 +1,6 @@
 # Burn Check Source Coverage
 
-Audit date: 2026-09-08.
+Audit date: 2026-09-09.
 
 This document covers local passive evidence only. Coverage must not use hooks,
 new extensions, runtime subscriptions, or agent calls to fill evidence gaps. Existing
@@ -116,6 +116,11 @@ deny session-wide `Clean`, even when a nested observed-resource map is complete.
 A scoped finding requires complete coverage of that observed subset, calls, and
 eligible activity. An unrelated partial resource group does not block it.
 
+Thread attribution retains at most 512 distinct UUIDs, each at most 256 bytes.
+An overflow or oversized UUID records `CapExceeded`, makes attribution
+incomplete, and blocks every clean result that needs complete affected evidence.
+An oversized resume identity set is rejected instead of being trusted.
+
 Skills mean full documents injected into model context. Listings, installed
 skills, and names in tool calls do not prove unused document overhead. Resource
 identity is retained without copying private document bodies into evidence.
@@ -142,6 +147,25 @@ identity is retained without copying private document bodies into evidence.
 | Cursor | T, S, M, B, K, F, C | Broader surface characterization is deferred. Current settings, relations, inventories, and cache evidence remain partial, unknown, or unsupported as listed; no new parity claim is made. |
 | Antigravity | D, O | Brain/cascade steps and native SQLite preserve direct usage/model findings where present. Missing model/time is not filled from an earlier step or an invented database timestamp. Private identity, enum, and completeness gaps deny clean. |
 | Antigravity | T, S, M, B, K, F, C | Confirmed unsupported in the reviewed native evidence. Token classes do not establish compatible request linkage or cache cause. Runtime descriptors and unproved relationship sidecars do not establish persisted delegation, controls, or resource exposure. Workspace chat remains uncharacterized. |
+
+Cache churn selects its policy from `RepeatedContextAccounting`, not from the
+agent or the session's dominant model. `CacheWrite` uses the reviewed Claude
+family policy. `UncachedInput` uses the reviewed OpenAI family policy. This rule
+also applies to mixed-family sessions. A cache-churn cause names a model from the
+same accounting family; it does not use an unrelated dominant model.
+
+Old-model causes remain separate by provider, API, observed model, and reviewed
+replacement. Token-burn percentages are unknown when a required price or the
+total-token denominator is absent. The estimator does not use a 10 percent
+fallback and does not force a positive minimum.
+
+The remediation backend lists only findings that can produce a safe bounded
+prompt. Prompt support follows the source and check limits in this document.
+Generic prompt watches require fresh, complete post-boundary assessment before
+absence can verify a fix. Old-model watches are stricter: only actual old or
+replacement model use attributed to the same publication-time effective
+physical target, scope, provider, and API can change the result. Positive-only
+sources cannot verify absence, and missing later evidence remains `watching`.
 
 Cursor can use its explicit synthesized source-header model, but does not borrow
 the previous message's model. This preserves existing basic support without

@@ -52,7 +52,7 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         return Observation::ContractIncomplete;
     }
     if let Some(models) = observed(&evidence.models) {
-        let catalog = ReviewedModelCatalog::new(catalogs.clone());
+        let catalog = ReviewedModelCatalog::new(catalogs);
         let mut contract_incomplete = false;
         let mut delegated_fast_turns = 0_u64;
         if !models.control_observations.is_empty() {
@@ -186,7 +186,7 @@ pub(super) fn finding_causes(
     let Some(models) = observed(&evidence.models) else {
         return Vec::new();
     };
-    let catalog = ReviewedModelCatalog::new(catalogs.clone());
+    let catalog = ReviewedModelCatalog::new(catalogs);
     let mut grouped =
         std::collections::BTreeMap::<(Option<String>, Option<String>, String), u64>::new();
     if !models.control_observations.is_empty() {
@@ -381,6 +381,7 @@ mod tests {
                     model: "claude-sonnet-5".to_owned(),
                     effort: Some("low".to_owned()),
                     speed: Some("fast".to_owned()),
+                    last_ts_ms: 200,
                     turns: TurnCounts {
                         main_loop: 0,
                         delegated: 1,
@@ -392,6 +393,7 @@ mod tests {
                     model: "claude-sonnet-5".to_owned(),
                     effort: Some("high".to_owned()),
                     speed: Some(speed.to_owned()),
+                    last_ts_ms: 200,
                     turns: TurnCounts {
                         main_loop: 1 - delegated,
                         delegated,
@@ -431,6 +433,7 @@ mod tests {
             model: "claude-sonnet-5".to_owned(),
             effort: None,
             speed: Some("fast".to_owned()),
+            last_ts_ms: 200,
             turns: TurnCounts {
                 main_loop: 1,
                 delegated: 0,

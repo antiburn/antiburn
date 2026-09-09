@@ -202,6 +202,8 @@ pub struct ModelControlObservation {
     pub model: String,
     pub effort: Option<String>,
     pub speed: Option<String>,
+    #[serde(default)]
+    pub last_ts_ms: i64,
     pub turns: TurnCounts,
 }
 
@@ -1126,7 +1128,7 @@ mod tests {
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
         json!({
-            "schemaRevision": 17,
+            "schemaRevision": 18,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -1157,7 +1159,7 @@ mod tests {
             "provenance": {
                 "parserRevision": 31,
                 "analyzerRevision": 21,
-                "evidenceSchemaRevision": 17,
+                "evidenceSchemaRevision": 18,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",

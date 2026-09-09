@@ -95,20 +95,21 @@ pub trait ModelCatalog: Send + Sync {
 }
 
 /// The compiled catalog of maintainer-reviewed routes and model states.
-#[derive(Debug, Clone)]
-pub struct ReviewedModelCatalog {
-    report_catalogs: ReportCatalogs,
+#[derive(Debug, Clone, Copy)]
+pub struct ReviewedModelCatalog<'a> {
+    report_catalogs: &'a ReportCatalogs,
 }
 
-impl ReviewedModelCatalog {
-    pub fn new(report_catalogs: ReportCatalogs) -> Self {
+impl<'a> ReviewedModelCatalog<'a> {
+    pub fn new(report_catalogs: &'a ReportCatalogs) -> Self {
         Self { report_catalogs }
     }
 }
 
-impl Default for ReviewedModelCatalog {
+impl Default for ReviewedModelCatalog<'static> {
     fn default() -> Self {
-        Self::new(ReportCatalogs::default())
+        static CATALOGS: std::sync::OnceLock<ReportCatalogs> = std::sync::OnceLock::new();
+        Self::new(CATALOGS.get_or_init(ReportCatalogs::default))
     }
 }
 
@@ -237,7 +238,7 @@ pub fn reviewed_model_state(
     }
 }
 
-impl ModelCatalog for ReviewedModelCatalog {
+impl ModelCatalog for ReviewedModelCatalog<'_> {
     fn resolve(&self, target: &ModelTarget) -> Support<ModelDefinition> {
         let agent = normalized_label(&target.agent);
         let agent = if agent == "claude-code" {
@@ -424,9 +425,14 @@ mod tests {
         }
     }
 
+    fn default_catalogs() -> ReportCatalogs {
+        ReportCatalogs::default()
+    }
+
     #[test]
     fn codex_resolves_reviewed_service_tiers_and_accounting() {
-        let catalog = ReviewedModelCatalog::default();
+        let catalogs = default_catalogs();
+        let catalog = ReviewedModelCatalog::new(&catalogs);
         let mut target = ModelTarget::new("codex", "openai", "responses", "GPT-5.6-SOL");
         target.raw_effort = Some(" High ".to_owned());
         target.service_tier = Some("priority".to_owned());
@@ -448,7 +454,8 @@ mod tests {
 
     #[test]
     fn unknown_models_do_not_become_current_from_their_prefix() {
-        let catalog = ReviewedModelCatalog::default();
+        let catalogs = default_catalogs();
+        let catalog = ReviewedModelCatalog::new(&catalogs);
         let target = ModelTarget::new("codex", "openai", "responses", "gpt-unreviewed");
 
         assert_eq!(
@@ -461,7 +468,8 @@ mod tests {
 
     #[test]
     fn obsolete_models_reuse_the_reviewed_replacement_registry() {
-        let catalog = ReviewedModelCatalog::default();
+        let catalogs = default_catalogs();
+        let catalog = ReviewedModelCatalog::new(&catalogs);
         let target = ModelTarget::new("claude", "anthropic", "messages", "claude-sonnet-4.6");
 
         let resolved = definition(catalog.resolve(&target));
@@ -486,7 +494,8 @@ mod tests {
 
     #[test]
     fn the_claude_discovery_slug_resolves_an_explicit_reviewed_route() {
-        let catalog = ReviewedModelCatalog::default();
+        let catalogs = default_catalogs();
+        let catalog = ReviewedModelCatalog::new(&catalogs);
         let mut target = model_control_target(
             " Claude-Code ",
             Some("anthropic"),
@@ -505,7 +514,8 @@ mod tests {
 
     #[test]
     fn explicit_or_incomplete_routes_do_not_fall_back_to_the_fixed_route() {
-        let catalog = ReviewedModelCatalog::default();
+        let catalogs = default_catalogs();
+        let catalog = ReviewedModelCatalog::new(&catalogs);
         for agent in ["claude", "claude-code", "codex"] {
             let model = if agent == "codex" {
                 "gpt-5.6"
@@ -536,7 +546,8 @@ mod tests {
 
     #[test]
     fn opencode_variants_do_not_resolve_as_family_effort() {
-        let catalog = ReviewedModelCatalog::default();
+        let catalogs = default_catalogs();
+        let catalog = ReviewedModelCatalog::new(&catalogs);
         for (provider, api, model) in [
             ("anthropic", "messages", "claude-sonnet-5"),
             ("openai", "responses", "gpt-5.6"),
@@ -566,7 +577,8 @@ mod tests {
 
     #[test]
     fn pi_effort_resolves_only_after_the_route_and_model_resolve() {
-        let catalog = ReviewedModelCatalog::default();
+        let catalogs = default_catalogs();
+        let catalog = ReviewedModelCatalog::new(&catalogs);
         let mut target = ModelTarget::new("pi", "openai", "responses", "gpt-5.6-luna");
         target.raw_effort = Some("minimal".to_owned());
 
@@ -584,7 +596,8 @@ mod tests {
     // api/google-generative-ai.ts maps medium to HIGH for Gemini Pro and permits custom token budgets.
     #[test]
     fn pi_native_routes_preserve_agent_policy_without_provider_translation() {
-        let catalog = ReviewedModelCatalog::default();
+        let catalogs = default_catalogs();
+        let catalog = ReviewedModelCatalog::new(&catalogs);
         for (provider, api, model) in [
             ("openai", "openai-responses", "gpt-5.6"),
             ("openai-codex", "openai-codex-responses", "gpt-5.6"),
@@ -622,7 +635,8 @@ mod tests {
 
     #[test]
     fn pi_native_api_names_do_not_authorize_other_providers_or_models() {
-        let catalog = ReviewedModelCatalog::default();
+        let catalogs = default_catalogs();
+        let catalog = ReviewedModelCatalog::new(&catalogs);
         for (provider, api, model, reason) in [
             (
                 "",
@@ -665,7 +679,8 @@ mod tests {
 
     #[test]
     fn a_known_model_on_the_wrong_provider_remains_unknown() {
-        let catalog = ReviewedModelCatalog::default();
+        let catalogs = default_catalogs();
+        let catalog = ReviewedModelCatalog::new(&catalogs);
         let target = ModelTarget::new("pi", "openai", "responses", "claude-sonnet-5");
 
         assert_eq!(
@@ -678,7 +693,8 @@ mod tests {
 
     #[test]
     fn an_unreviewed_codex_service_tier_remains_unknown() {
-        let catalog = ReviewedModelCatalog::default();
+        let catalogs = default_catalogs();
+        let catalog = ReviewedModelCatalog::new(&catalogs);
         let mut target = ModelTarget::new("codex", "openai", "responses", "gpt-5.6");
         target.service_tier = Some("economy".to_owned());
 

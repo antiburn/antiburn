@@ -6,9 +6,11 @@ use antiburn_local::analysis::{
     SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
     SourceCapabilities, SourceKind, TurnRowSink, TurnRowStore, VisitOutcome, reader_for,
 };
+use antiburn_local::discovery::Explorers;
 use antiburn_local::insights::{
     CoverageCounts, DetectorId, EfficiencyReportAccumulator, ReportContext, ReportWindow,
 };
+use antiburn_local::model::AgentKind;
 use rusqlite::{Connection, params};
 use serde_json::json;
 use tempfile::TempDir;
@@ -1237,8 +1239,8 @@ fn malformed_unknown_and_oversized_rows_report_partial_without_payload() {
     assert!(!serde_json::to_string(&session).unwrap().contains(PRIVATE));
 }
 
-#[test]
-fn database_claim_is_checked_inside_the_snapshot() {
+#[tokio::test]
+async fn database_claim_is_checked_inside_the_snapshot() {
     let (_directory, path) = create_database();
     let connection = Connection::open(&path).expect("database");
     insert_session(&connection, "root", None, None, 100);
@@ -1253,9 +1255,14 @@ fn database_claim_is_checked_inside_the_snapshot() {
         .expect("check mismatch");
     assert!(matches!(outcome, VisitOutcome::SourceChanged(_)));
 
+    let (latest, rows) = Explorers::DISK
+        .provider_db_fingerprint(&AgentKind::OpenCode, &path, "root")
+        .await
+        .expect("database fingerprint");
+    let fingerprint = format!("sv1:db:{latest}:{rows}");
     let mut matching = SessionCollector::new("opencode", "root");
     let outcome = adapter
-        .visit_db_claimed(&input, "sv1:db:120:2", &|| false, &mut matching)
+        .visit_db_claimed(&input, &fingerprint, &|| false, &mut matching)
         .expect("check matching claim");
     assert_eq!(outcome, VisitOutcome::AcceptedFull);
     assert_eq!(matching.into_session().expect("finished").events.len(), 1);
