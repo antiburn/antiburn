@@ -16,7 +16,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use antiburn_local::model::AgentKind;
 use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value};
-use toml_edit::{DocumentMut, value};
+use toml_edit::DocumentMut;
+#[cfg(not(windows))]
+use toml_edit::value;
 
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 
@@ -61,12 +63,18 @@ pub struct ConfigChange {
 
 pub struct PreparedChange {
     path: PathBuf,
-    trusted_root: PathBuf,
     scope: ConfigScope,
+    #[cfg(not(windows))]
+    trusted_root: PathBuf,
+    #[cfg(not(windows))]
     original_bytes: Vec<u8>,
+    #[cfg(not(windows))]
     proposed_bytes: Vec<u8>,
+    #[cfg(not(windows))]
     identity: FileIdentity,
+    #[cfg(not(windows))]
     permissions: fs::Permissions,
+    #[cfg(not(windows))]
     format: ConfigFormat,
 }
 
@@ -229,15 +237,22 @@ impl AgentConfigEditor {
         if current != change.expected_value {
             return Err(ConfigUnavailableReason::CurrentValueMismatch);
         }
+        #[cfg(not(windows))]
         let proposed_bytes = edit_model(&file.bytes, target.format, &change.proposed_value)?;
         Ok(PreparedChange {
             path: target.path,
-            trusted_root: target.root,
             scope: target.scope,
+            #[cfg(not(windows))]
+            trusted_root: target.root,
+            #[cfg(not(windows))]
             original_bytes: file.bytes,
+            #[cfg(not(windows))]
             proposed_bytes,
+            #[cfg(not(windows))]
             identity: file.identity,
+            #[cfg(not(windows))]
             permissions: file.permissions,
+            #[cfg(not(windows))]
             format: target.format,
         })
     }
@@ -401,6 +416,7 @@ fn resolve_target(
     })
 }
 
+#[cfg(not(windows))]
 fn edit_model(
     bytes: &[u8],
     format: ConfigFormat,
@@ -475,7 +491,9 @@ fn validate_model(value: &str) -> Result<(), ConfigUnavailableReason> {
 
 struct CheckedFile {
     bytes: Vec<u8>,
+    #[cfg(not(windows))]
     identity: FileIdentity,
+    #[cfg(not(windows))]
     permissions: fs::Permissions,
 }
 
@@ -543,7 +561,9 @@ fn read_checked(path: &Path, trusted_root: &Path) -> Result<CheckedFile, ConfigU
     }
     Ok(CheckedFile {
         bytes,
+        #[cfg(not(windows))]
         identity: file_identity(&metadata),
+        #[cfg(not(windows))]
         permissions: metadata.permissions(),
     })
 }

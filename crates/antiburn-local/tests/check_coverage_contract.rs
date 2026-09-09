@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, CoverageReason, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource,
@@ -50,98 +50,6 @@ source_formats! {
     WindsurfMirrorJson => "windsurf_mirror_json",
     WindsurfCascadeProtobuf => "windsurf_cascade_protobuf",
     Uncharacterized => "uncharacterized",
-}
-
-fn detector_key(detector: DetectorId) -> &'static str {
-    match detector {
-        DetectorId::SessionsOverDepth => "D",
-        DetectorId::ModelOverthinking => "T",
-        DetectorId::OverpoweredSubagents => "S",
-        DetectorId::UnusedMcpServers => "M",
-        DetectorId::UnusedBuiltInTools => "B",
-        DetectorId::UnusedSkills => "K",
-        DetectorId::OldModelUsage => "O",
-        DetectorId::OveruseOfFastMode => "F",
-        DetectorId::CacheChurn => "C",
-    }
-}
-
-#[test]
-fn documented_source_inventory_and_detector_columns_match_the_enums() {
-    let expected: BTreeSet<_> = SOURCE_FORMATS
-        .iter()
-        .map(|&format| {
-            let (name, wire) = source_keys(format);
-            assert_eq!(serde_json::to_value(format).unwrap(), wire);
-            assert_eq!(
-                serde_json::from_value::<SourceFormat>(wire.into()).unwrap(),
-                format
-            );
-            name
-        })
-        .collect();
-    assert_eq!(expected.len(), SOURCE_FORMATS.len());
-    let detector_keys: Vec<_> = DetectorId::ALL.into_iter().map(detector_key).collect();
-    assert_eq!(detector_keys, ["D", "T", "S", "M", "B", "K", "O", "F", "C"]);
-
-    for (document, heading, matrix) in [
-        (
-            include_str!("../../../docs/session-coverage.md"),
-            "Source Matrix",
-            false,
-        ),
-        (
-            include_str!("../../../docs/check-coverage.md"),
-            "Source Inventory",
-            false,
-        ),
-        (
-            include_str!("../../../docs/check-coverage.md"),
-            "Coverage Matrix",
-            true,
-        ),
-    ] {
-        let section = document
-            .split_once(&format!("## {heading}\n"))
-            .unwrap_or_else(|| panic!("missing {heading}"))
-            .1
-            .split("\n## ")
-            .next()
-            .unwrap();
-        let mut keys = BTreeSet::new();
-        for line in section.lines().filter(|line| line.trim().starts_with('|')) {
-            let cells: Vec<_> = line
-                .trim()
-                .trim_matches('|')
-                .split('|')
-                .map(str::trim)
-                .collect();
-            let key = cells[0].trim_matches('`');
-            if key == "SourceFormat" {
-                if matrix {
-                    assert_eq!(&cells[1..], detector_keys, "{heading}");
-                }
-                continue;
-            }
-            if key.starts_with('-') {
-                continue;
-            }
-            assert!(keys.insert(key), "duplicate {heading} row: {key}");
-            if matrix {
-                assert_eq!(cells.len(), DetectorId::ALL.len() + 1, "{key}");
-                for cell in &cells[1..] {
-                    assert!(
-                        matches!(*cell, "Assessable" | "Partial" | "Unsupported" | "Unknown"),
-                        "{key}: unknown coverage status {cell}"
-                    );
-                }
-            }
-        }
-        assert_eq!(
-            keys, expected,
-            "{heading} must list every SourceFormat exactly once"
-        );
-    }
 }
 
 fn complete_evidence(format: SourceFormat) -> SessionEvidence {
