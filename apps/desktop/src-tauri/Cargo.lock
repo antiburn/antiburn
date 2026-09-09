@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "antiburn"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "antiburn-anchored-window",
  "antiburn-hud",
