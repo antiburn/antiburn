@@ -23,14 +23,14 @@ combine logs from different machines, builds, or benchmark intervals.
 ## Native smoke matrix
 
 Test a fresh profile separately from saved placement. The default content size
-is 900×600 logical pixels; the normal minimum is 800×560. The initial outer frame,
+is 1100×600 logical pixels; the normal minimum is 1000×560. The initial outer frame,
 including native chrome, occupies at most 85% of each usable display dimension.
 Small work areas may reduce the effective minimum. A valid saved user size can
 exceed this initial cap. Do not reset a user's placement to test the default.
 
 Check a Retina display, a non-Retina display, and movement between displays with
 different scale factors. On a 2× display, the uncapped default content size is
-1800×1200 physical pixels and still appears as 900×600 logical pixels. Test both
+2200×1200 physical pixels and still appears as 1100×600 logical pixels. Test both
 fresh placement on the secondary display and restoration after relaunch.
 
 For macOS minimize/restore tests, confirm that the main window leaves the window
