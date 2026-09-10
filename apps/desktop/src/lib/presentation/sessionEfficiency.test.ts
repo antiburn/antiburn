@@ -107,16 +107,35 @@ describe("efficiencyMetrics", () => {
     expect(m.realWorkShare).not.toBeNull()
   })
 
+  it("preserves Pi values without applying benchmark bands", () => {
+    const m = efficiencyMetrics(totals({ unpricedTurns: 3 }), "pi")
+
+    expect(m.costPerMTok?.value).toBeCloseTo(40)
+    expect(m.realWorkShare?.value).toBeCloseTo(0.34)
+    expect(m.rewriteShare?.value).toBeCloseTo(0.12)
+    expect(m.carryShare?.value).toBeCloseTo(0.54)
+    expect(m.costPerMTok?.band).toBeNull()
+    expect(m.realWorkShare?.band).toBeNull()
+    expect(m.rewriteShare?.band).toBeNull()
+    expect(m.carryShare?.band).toBeNull()
+    expect(m.unpricedTurns).toBe(3)
+    expect(m.profile).toBeNull()
+  })
+
   it("carries the unpriced turn count through", () => {
     expect(efficiencyMetrics(totals({ unpricedTurns: 3 }), "claude-code").unpricedTurns).toBe(3)
   })
 })
 
 describe("efficiencyProfile", () => {
-  it("uses the Claude bands for every agent but Codex", () => {
-    expect(efficiencyProfile("codex")).toBe("codex")
+  it("maps only exact supported agents to benchmark profiles", () => {
     expect(efficiencyProfile("claude-code")).toBe("claude")
-    expect(efficiencyProfile("cursor")).toBe("claude")
+    expect(efficiencyProfile("codex")).toBe("codex")
+    expect(efficiencyProfile("cursor")).toBeNull()
+    expect(efficiencyProfile("pi")).toBeNull()
+    expect(efficiencyProfile("opencode")).toBeNull()
+    expect(efficiencyProfile("antigravity")).toBeNull()
+    expect(efficiencyProfile("future-agent")).toBeNull()
   })
 })
 
@@ -153,5 +172,6 @@ describe("formatting", () => {
     expect(efficiencyThresholdGuidance("carryShare", "codex")).toEqual([
       "For Codex, aim for below 59%. Above 69% is too high.",
     ])
+    expect(efficiencyThresholdGuidance("carryShare", null)).toEqual([])
   })
 })

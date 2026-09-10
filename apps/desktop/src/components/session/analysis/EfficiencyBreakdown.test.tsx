@@ -21,6 +21,27 @@ function totals(over: Partial<SessionEfficiency> = {}): SessionEfficiency {
   }
 }
 
+function expectNoBenchmarkLanguage() {
+  expect(document.body).not.toHaveTextContent(/For (Claude|Codex)/i)
+  expect(document.body).not.toHaveTextContent(/aim for/i)
+  expect(document.body).not.toHaveTextContent(/too (high|low)/i)
+  expect(document.body).not.toHaveTextContent(/out of band/i)
+  expect(screen.queryByText(/^(good|ok|bad|high|low)$/i)).toBeNull()
+}
+
+const NEUTRAL_CASES = ["pi", "cursor", "opencode", "antigravity", "future-agent"].flatMap(
+  (agent) => [
+    { agent, layout: "popover" as const },
+    { agent, layout: "wide" as const },
+  ],
+)
+
+const SHARE_GUIDANCE = [
+  { key: "realWorkShare", summary: /share of the session's cost spent on fresh input/ },
+  { key: "rewriteShare", summary: /share of the session's cost spent rehydrating/ },
+  { key: "carryShare", summary: /share of the session's cost spent resending/ },
+]
+
 describe("EfficiencyBreakdown", () => {
   it.each([
     { totalUsd: 5, figure: "$20.00", band: "good", ink: "text-label" },
@@ -49,6 +70,48 @@ describe("EfficiencyBreakdown", () => {
     // The scale names its middle band once; each share row names its own.
     expect(screen.getAllByText("ok")).toHaveLength(4)
   })
+
+  it.each(NEUTRAL_CASES)(
+    "shows neutral $agent metrics and all guidance in the $layout layout",
+    ({ agent, layout }) => {
+      render(
+        <EfficiencyBreakdown metrics={efficiencyMetrics(totals(), agent)} layout={layout} />,
+      )
+
+      expect(screen.getByText("$40.00")).toHaveClass("text-label")
+      expect(screen.getByText("$40.00")).not.toHaveClass("text-brand")
+      expect(screen.getByText("34%")).toBeTruthy()
+      expect(screen.getByText("12%")).toBeTruthy()
+      expect(screen.getByText("54%")).toBeTruthy()
+      expect(screen.getByTestId("efficiency-composition")).toBeTruthy()
+      expect(screen.queryByTestId("thermometer-costPerMTok")).toBeNull()
+
+      if (layout === "wide") {
+        const hero = screen.getByTestId("cost-hero")
+        fireEvent.focus(hero)
+        expect(
+          screen.getAllByText(
+            "The Context tab shows how spend splits across work, rewrite, and carry.",
+          ).length,
+        ).toBeGreaterThan(0)
+        expectNoBenchmarkLanguage()
+        fireEvent.blur(hero)
+      } else {
+        expect(screen.getByTestId("cost-guidance")).toHaveTextContent(
+          "The Context tab shows how spend splits across work, rewrite, and carry.",
+        )
+        expectNoBenchmarkLanguage()
+      }
+
+      for (const { key, summary } of SHARE_GUIDANCE) {
+        const row = screen.getByTestId(`share-row-${key}`)
+        fireEvent.focus(row)
+        expect(screen.getAllByText(summary).length).toBeGreaterThan(0)
+        expectNoBenchmarkLanguage()
+        fireEvent.blur(row)
+      }
+    },
+  )
 
   it("draws the cost reading as a bullet graph that labels its own scale", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
@@ -194,7 +257,9 @@ describe("EfficiencyBreakdown", () => {
     expect(paragraph).toHaveTextContent(
       "For Claude, aim for below $33. Above $80 is too high. Craft tight workflows",
     )
-    expect(paragraph).toHaveTextContent(/Context tab shows/)
+    expect(paragraph).toHaveTextContent(
+      "The Context tab shows which of work, rewrite, and carry is out of band.",
+    )
     expect(guidance).not.toHaveClass("max-w-prose")
     // The cost row is plain text now, not a tooltip trigger.
     expect(screen.getByTestId("cost-row")).not.toHaveAttribute("tabindex")
@@ -235,6 +300,11 @@ describe("EfficiencyBreakdown", () => {
     )
     expect(
       screen.getAllByText("For Claude, aim for below $33. Above $80 is too high.").length,
+    ).toBeGreaterThan(0)
+    expect(
+      screen.getAllByText(
+        "The Context tab shows which of work, rewrite, and carry is out of band.",
+      ).length,
     ).toBeGreaterThan(0)
     fireEvent.blur(hero)
     expect(screen.queryByText(/average cost for each million tokens/)).toBeNull()

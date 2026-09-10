@@ -69,6 +69,14 @@ const METRIC_GUIDANCE: Record<MetricKey, string[]> = {
   ],
 }
 
+/** Neutral advice replaces text that requires a benchmark. */
+const NEUTRAL_GUIDANCE_OVERRIDES: Partial<Record<MetricKey, string[]>> = {
+  costPerMTok: [
+    "Craft tight workflows, and use cheaper models when they're good enough.",
+    "The Context tab shows how spend splits across work, rewrite, and carry.",
+  ],
+}
+
 interface ShareRow {
   key: ShareMetricKey
   label: string
@@ -256,15 +264,12 @@ function CompositionTrack({
 }
 
 /**
- * The guidance for one reading, as the body of its tooltip. It names what the
- * reading measures, states the band it should sit in, and says what to change.
+ * The guidance names the measurement and says what to change.
+ * Supported benchmark profiles also state the target band.
  *
- * The composition rows keep their guidance in a tooltip so the block stays
- * the height of its readings. A panel that grows and shrinks under the rows
- * moves everything below it every time the pointer crosses a row. The wide
- * cost reading does the same from its hero figure. The popover's cost row
- * prints the guidance inline, as one quiet paragraph that wraps at the width
- * of its pane.
+ * Composition rows keep guidance in a tooltip, so the block keeps a stable height.
+ * The wide cost reading opens guidance from its hero figure.
+ * The popover prints cost guidance inline as one paragraph.
  */
 function MetricGuidance({
   metricKey,
@@ -272,13 +277,14 @@ function MetricGuidance({
   inline = false,
 }: {
   metricKey: MetricKey
-  profile: EfficiencyProfile
+  profile: EfficiencyProfile | null
   inline?: boolean
 }) {
-  const advice = [
-    ...efficiencyThresholdGuidance(metricKey, profile),
-    ...METRIC_GUIDANCE[metricKey],
-  ]
+  const metricGuidance =
+    profile === null
+      ? (NEUTRAL_GUIDANCE_OVERRIDES[metricKey] ?? METRIC_GUIDANCE[metricKey])
+      : METRIC_GUIDANCE[metricKey]
+  const advice = [...efficiencyThresholdGuidance(metricKey, profile), ...metricGuidance]
   if (inline) {
     return (
       <p className="type-callout text-pretty text-label-tertiary">
@@ -306,11 +312,10 @@ const ROW_CLASS =
   "-mx-1.5 rounded-control px-1.5 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
 
 /**
- * The $/MTok reading: label and figure on one baseline, and its scale
- * underneath. This metric is not part of the composition, so it keeps the
- * scale the other readings gave up. The wide pane keeps the guidance in a
- * tooltip on the hero figure, so the scale and its labels are the whole
- * reading at rest. The popover prints the guidance under the scale.
+ * The $/MTok reading shows the label and figure on one baseline.
+ * It shows a scale only when a benchmark applies.
+ * The wide pane opens guidance from the hero figure.
+ * The popover prints guidance below the reading.
  */
 function CostRowLine({
   metric,
@@ -318,7 +323,7 @@ function CostRowLine({
   wide,
 }: {
   metric: EfficiencyMetric
-  profile: EfficiencyProfile
+  profile: EfficiencyProfile | null
   wide: boolean
 }) {
   return (
@@ -356,7 +361,7 @@ function CostRowLine({
           </span>
         </span>
       )}
-      <CostScaleBar metric={metric} profile={profile} wide={wide} />
+      {profile !== null && <CostScaleBar metric={metric} profile={profile} wide={wide} />}
       {!wide && (
         <div className="mt-3" data-testid="cost-guidance">
           <MetricGuidance metricKey="costPerMTok" profile={profile} inline />
@@ -367,16 +372,15 @@ function CostRowLine({
 }
 
 /**
- * One line of the composition legend: the slice's color, its name, its share,
- * and the band word. The run in the track above carries the size, so the row
- * carries no bar of its own.
+ * One composition line shows the slice color, name, share, and optional band word.
+ * The track shows the size, so the row has no bar.
  */
 function ShareRowLine({
   segment,
   profile,
 }: {
   segment: ShareSegment
-  profile: EfficiencyProfile
+  profile: EfficiencyProfile | null
 }) {
   return (
     <Tooltip label={<MetricGuidance metricKey={segment.key} profile={profile} />} delayMs={150}>
@@ -391,9 +395,13 @@ function ShareRowLine({
         />
         <span className="min-w-0 flex-1 truncate text-label-secondary">{segment.label}</span>
         <span className="shrink-0 text-label tabular-nums">{segment.displayPercent}</span>
-        <span className={cn("w-12 shrink-0 text-end", BAND_WORD_CLASS)}>
-          {efficiencyBandWord(segment.metric.band, segment.key)}
-        </span>
+        {segment.metric.band === null ? (
+          <span className="w-12 shrink-0" />
+        ) : (
+          <span className={cn("w-12 shrink-0 text-end", BAND_WORD_CLASS)}>
+            {efficiencyBandWord(segment.metric.band, segment.key)}
+          </span>
+        )}
       </div>
     </Tooltip>
   )
