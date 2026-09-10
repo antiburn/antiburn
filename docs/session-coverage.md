@@ -116,15 +116,18 @@ compactions, or incomplete history prevent clean. OpenCode uses validated
 ordered history, not `parentID` as a fabricated predecessor link.
 
 The route columns use engine turn migration 7 and desktop migration 39. Current
-parser/analyzer/evidence/coverage/resume revisions are 31/21/17/4/6. Existing
+parser/analyzer/evidence/coverage/resume revisions are 31/22/18/4/6. Existing
 revision gates invalidate old projections and snapshots; JSON and binary
 evidence round trips and full/resumed replay are covered by tests.
 
-The evidence accumulator retains at most 512 distinct thread UUIDs. Each UUID
+The evidence accumulator retains at most 16,384 distinct thread UUIDs. Each UUID
 must be at most 256 bytes. A new UUID after the set is full, or an oversized
 UUID, makes attribution incomplete and records `Partial(CapExceeded)`. Resume
 deserialization rejects an oversized set or UUID. Defensive reconstruction also
 caps invalid in-memory resume state and keeps the evidence partial.
+The retained evidence memory ceiling is 8 MiB per accumulator. A synthetic
+16,384-record linked chain with maximum-length identities verifies complete
+coverage and resume round trips within that ceiling.
 
 ## Companion Sources
 

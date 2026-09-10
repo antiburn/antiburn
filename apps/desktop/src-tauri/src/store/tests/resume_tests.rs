@@ -417,7 +417,7 @@ fn current_resume_revisions_reject_each_prior_batch_revision() {
     let current = crate::analysis::resume_revisions();
     assert_eq!(current.snapshot_revision, 6);
     assert_eq!(current.parser_revision, 31);
-    assert_eq!(current.analyzer_revision, 21);
+    assert_eq!(current.analyzer_revision, 22);
     assert_eq!(current.metrics_schema_revision, 8);
     assert_eq!(current.evidence_schema_revision, 18);
     assert_eq!(current.coverage_schema_revision, 4);

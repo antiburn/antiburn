@@ -177,7 +177,7 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 21,
+      "analyzerRevision": 22,
       "evidenceSchemaRevision": 18,
       "harnessVersion": {
         "state": "complete",
