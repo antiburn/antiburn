@@ -71,16 +71,27 @@
   --color-mark-routing-miss: var(--color-mark-routing-miss-val);
   --color-mark-compaction: var(--color-mark-compaction-val);
 
-  /* The three parts of the efficiency composition: real work, rewrite waste,
-     and carry. Real work takes a teal and rewrite waste a hot red, so the
-     composition reads good to bad. Carry takes a mid grey, because carry is
-     neither good nor bad. The `-text` pair is the same hue as ink for words:
-     a fill color is too light to read on the light surface. */
+  /* The reading itself, wherever the session analysis draws one: the real-work
+     run of the efficiency composition, and the measure on the cost scale. A
+     calm blue, because a reading is not a verdict. The words beside it carry
+     the judgment. */
+  --color-measure: var(--color-measure-val);
+
+  /* The words for the two verdict-bearing shares. The composition runs take
+     their fills elsewhere; these `-text` values are the same hues as ink,
+     because a fill color is too light to read on the light surface. */
   --color-share-work: var(--color-share-work-val);
   --color-share-work-text: var(--color-share-work-text-val);
   --color-share-waste: var(--color-share-waste-val);
   --color-share-waste-text: var(--color-share-waste-text-val);
   --color-share-carry: var(--color-share-carry-val);
+
+  /* The ink for a wasted-token figure that is bad, below the red that marks a
+     severe one. The light value turns the hue away from the brand orange and
+     keeps enough contrast to read on white. `--color-brand` is too dark on the
+     light surface and looks like rust, not orange. The dark value is the brand
+     orange, which needs no change against the dark surface. */
+  --color-waste-warn: var(--color-waste-warn-val);
 
   /* The one alert hue in this palette, shared by every surface that needs an
      attention step between neutral and critical states. Its own
@@ -115,11 +126,13 @@
   --color-mark-rehydration-val: hsl(45.5 96% 56.2%); /* yellow */
   --color-mark-routing-miss-val: hsl(330.3 81% 60.3%); /* pink */
   --color-mark-compaction-val: hsl(17.6 100% 58.6%); /* brand-tint */
+  --color-measure-val: hsl(191.5 83% 36.8%); /* cyan-blue */
   --color-share-work-val: hsl(173.4 80% 40%); /* teal */
   --color-share-work-text-val: hsl(174 80% 25.4%);
   --color-share-waste-val: hsl(347.9 100% 56%); /* hot red */
   --color-share-waste-text-val: hsl(348 100% 34.5%);
   --color-share-carry-val: hsl(240 5% 52%);
+  --color-waste-warn-val: hsl(24 100% 45%); /* orange, dark enough to read on white */
   --color-context-warning-val: hsl(32 95% 43.72%); /* amber-600 */
   --color-context-critical-val: hsl(0 72% 50.5%); /* red-600 */
 }
@@ -147,11 +160,13 @@
     --color-mark-rehydration-val: hsl(45.2 96% 60.1%); /* yellow */
     --color-mark-routing-miss-val: hsl(330.6 82% 64.5%); /* pink */
     --color-mark-compaction-val: hsl(17.6 100% 58.6%); /* brand-tint */
+    --color-measure-val: hsl(192 63% 47.6%); /* cyan-blue, lifted for the dark surface */
     --color-share-work-val: hsl(173.5 78% 46.4%); /* teal */
     --color-share-work-text-val: hsl(173.5 78% 46.4%);
     --color-share-waste-val: hsl(348 100% 60.5%); /* hot red */
     --color-share-waste-text-val: hsl(348 100% 60.5%);
     --color-share-carry-val: hsl(240 6% 62%);
+    --color-waste-warn-val: hsl(17.6 100% 58.6%); /* brand-tint */
     --color-context-warning-val: hsl(36.4 100% 52%); /* vivid amber */
     --color-context-critical-val: hsl(0 90% 70.7%); /* red-400 */
   }
@@ -175,11 +190,13 @@
   --color-mark-rehydration-val: hsl(45.2 96% 60.1%);
   --color-mark-routing-miss-val: hsl(330.6 82% 64.5%);
   --color-mark-compaction-val: hsl(17.6 100% 58.6%);
+  --color-measure-val: hsl(192 63% 47.6%);
   --color-share-work-val: hsl(173.5 78% 46.4%);
   --color-share-work-text-val: hsl(173.5 78% 46.4%);
   --color-share-waste-val: hsl(348 100% 60.5%);
   --color-share-waste-text-val: hsl(348 100% 60.5%);
   --color-share-carry-val: hsl(240 6% 62%);
+  --color-waste-warn-val: hsl(17.6 100% 58.6%);
   --color-context-warning-val: hsl(36.4 100% 52%);
   --color-context-critical-val: hsl(0 90% 70.7%);
 }

@@ -63,6 +63,9 @@ describe("EfficiencyBreakdown", () => {
 
     const measure = cost.querySelector<HTMLElement>('[data-testid="cost-measure"]')
     expect(Number.parseFloat(measure!.style.width)).toBeCloseTo(38.3, 1)
+    // The measure is the reading, not a verdict, so it draws in the same
+    // blue as the real-work run and leaves the judgment to the band word.
+    expect(measure!.className).toContain("bg-measure")
     // The band steps and the ranges mark every edge, so no target line draws.
     expect(cost.querySelector('[data-testid="cost-target"]')).toBeNull()
 
@@ -104,11 +107,11 @@ describe("EfficiencyBreakdown", () => {
     expect(widths.reduce((sum, width) => sum + width, 0)).toBeCloseTo(1, 5)
 
     // Each slice keeps its own color so it stays recognisable between
-    // sessions: label ink for real work, brand orange for waste, neutral
-    // for carry. No slice takes a verdict colour.
-    expect(runs[0]!.className).toContain("bg-label")
-    expect(runs[1]!.className).toContain("bg-brand-tint")
-    expect(runs[2]!.className).toContain("bg-share-carry")
+    // sessions: the measure blue for real work, neutral for waste, brand
+    // orange for carry. No slice takes a verdict colour.
+    expect(runs[0]!.className).toContain("bg-measure")
+    expect(runs[1]!.className).toContain("bg-share-carry")
+    expect(runs[2]!.className).toContain("bg-brand-tint")
 
     // No share draws a meter of its own any more.
     expect(screen.queryByTestId("share-segment-realWorkShare")).toBeNull()

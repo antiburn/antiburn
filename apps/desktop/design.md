@@ -77,6 +77,12 @@ colors:
   accent-fill: # concrete fill; use bg-accent-fill for backgrounds
     light: "hsl(210 100% 44.5%)"
     dark: "hsl(213.3 92% 48%)"
+  selected-fill: # the solid chip of a view picker; the neutral furthest from the track
+    light: "hsl(240 6% 26%)"
+    dark: "hsl(240 6% 84%)"
+  selected-ink: # the ink on that chip
+    light: "hsl(0 0% 100%)"
+    dark: "hsl(240 4% 12%)"
   brand: # antiburn orange for text and small glyphs
     light: "hsl(18 92% 39%)"
     dark: "hsl(17.6 100% 58.6%)"
@@ -220,6 +226,9 @@ colors:
   mark-compaction: # a compaction mark, lit; the brand tint in both themes
     light: "hsl(17.6 100% 58.6%)"
     dark: "hsl(17.6 100% 58.6%)"
+  measure: # the reading itself: the real-work run and the cost-scale measure; a calm blue
+    light: "hsl(191.5 83% 36.8%)"
+    dark: "hsl(192 63% 47.6%)"
   share-work: # efficiency composition, real work; teal, for fills
     light: "hsl(173.4 80% 40%)"
     dark: "hsl(173.5 78% 46.4%)"
@@ -235,6 +244,9 @@ colors:
   share-carry: # efficiency composition, carry; the mid neutral
     light: "hsl(240 5% 52%)"
     dark: "hsl(240 6% 62%)"
+  waste-warn: # a wasted-token figure that is bad, below the red for a severe one
+    light: "hsl(24 100% 45%)"
+    dark: "hsl(17.6 100% 58.6%)"
   context-warning:
     light: "hsl(32 95% 43.72%)"
     dark: "hsl(36.4 100% 52%)"
@@ -470,8 +482,15 @@ Notes for what isn't expressible as a token:
   session-row fork-glyph pattern. Every horizontal bar uses the usage meter (`SegmentedMeter`)
   silhouette; judgment is carried by the band word's ink, never by a multi-color bar. Color only
   where it means a category: blue for context, the token series colors for in/out, yellow and
-  pink for cache marks, brand orange for a compaction, teal for real work, red for waste.
-  Everything else stays greyscale until the pointer names a layer. The wide Cost tab is a query
+  pink for cache marks, brand orange for a compaction, and the `measure` blue wherever the view
+  draws a reading — the real-work run of the efficiency composition and the measure on the cost
+  scale. In that composition rewrite waste takes the mid neutral and carry takes the brand
+  orange, so the same orange means a compaction in the chart and carry in the bar below it; the
+  two never share a shape, and the legend beside each names it. The Tools tab reports its wasted
+  tokens in `waste-warn`, and in `system-red-text` when the waste is both a large share of the
+  startup context and large in absolute terms. `waste-warn` is its own token because `brand` is
+  too dark on the light surface to read as orange beside that red. Everything else stays greyscale
+  until the pointer names a layer. The wide Cost tab is a query
   container, and its burn checks answer their own pane width. Each check is a card, which is what
   groups its name with its verdict; the verdict is the mark alone, with the word kept for a screen
   reader, and the card itself is the affordance that opens the explanation. Two cards to a row, and
