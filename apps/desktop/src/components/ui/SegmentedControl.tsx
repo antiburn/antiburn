@@ -160,9 +160,15 @@ export function SegmentedControl<T extends string>({
                   ? cn(
                       "ui-segmented-native-segment relative min-w-0 rounded-control py-0.5 type-caption transition-colors duration-[var(--duration-quick)] ease-out-quart disabled:opacity-50",
                       !stretchNativeTabs && "px-4",
+                      // One weight for every segment. The track sizes its
+                      // columns to their content, so a heavier selected
+                      // segment changes the width of the whole control each
+                      // time the selection moves. The chip names the
+                      // selection instead.
+                      "font-medium!",
                       selected
-                        ? "font-semibold! text-label shadow-raised"
-                        : "font-medium! text-label-secondary hover:text-label",
+                        ? "text-label shadow-raised"
+                        : "text-label-secondary hover:text-label",
                     )
                   : raisedTabs
                     ? cn(

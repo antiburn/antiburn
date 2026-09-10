@@ -265,7 +265,7 @@ describe("SessionList — rows", () => {
     })
 
     expect(screen.getByRole("radio", { name: "$" })).toHaveAttribute("aria-checked", "false")
-    expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByRole("radio", { name: "5h" })).toHaveAttribute("aria-checked", "true")
     expect(screen.queryByLabelText("Estimated cost $1.00")).toBeNull()
     expect(
       screen.getByLabelText("Share of your 5-hour limit is not known for this session."),
@@ -352,7 +352,7 @@ describe("SessionList — rows", () => {
       },
     })
 
-    expect(screen.queryByRole("radio", { name: "% 5h" })).toBeNull()
+    expect(screen.queryByRole("radio", { name: "5h" })).toBeNull()
   })
 
   it("offers five-hour mode when the usage panel shows an empty five-hour window", () => {
@@ -402,7 +402,7 @@ describe("SessionList — rows", () => {
       },
     })
 
-    expect(screen.getByRole("radio", { name: "% 5h" })).toBeInTheDocument()
+    expect(screen.getByRole("radio", { name: "5h" })).toBeInTheDocument()
   })
 
   it("keeps a five-hour allocation badge as time passes, since the factor never expires", () => {
@@ -432,11 +432,11 @@ describe("SessionList — rows", () => {
     }
     const { rerender } = render(<SessionList {...props} />)
 
-    expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByRole("radio", { name: "5h" })).toHaveAttribute("aria-checked", "true")
     expect(screen.getByText("6.3%")).toBeInTheDocument()
 
     rerender(<SessionList {...props} now={new Date(NOW.getTime() + 3_600_001)} />)
-    expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByRole("radio", { name: "5h" })).toHaveAttribute("aria-checked", "true")
     expect(screen.getByRole("radio", { name: "$" })).toHaveAttribute("aria-checked", "false")
     expect(screen.getByText("6.3%")).toBeInTheDocument()
   })

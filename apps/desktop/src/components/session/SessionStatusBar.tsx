@@ -55,8 +55,22 @@ function verdictInk(failedShare: number, assessedCount: number): string {
   return `color-mix(in oklch, var(--color-system-red-tint) ${pct}%, var(--color-system-orange-tint))`
 }
 
-function formatLimitPercent(percent: number): string {
-  return `${roundedLimitPercent(percent)}%`
+/**
+ * Show the share as a figure and a percent sign.
+ *
+ * English style puts no space before the percent sign, so the two stay one
+ * text run: the figure and the sign are sibling text nodes, and the value
+ * copies as "17.2%". The empty element between them is a hair space. The
+ * monospace percent sign fills its cell with ink, and without that space it
+ * looks joined to the last digit.
+ */
+function LimitPercent({ percent }: { percent: number }) {
+  return (
+    <>
+      {roundedLimitPercent(percent)}
+      <span aria-hidden="true" className="inline-block w-px" />%
+    </>
+  )
 }
 
 function roundedLimitPercent(percent: number): number {
@@ -182,7 +196,10 @@ export function SessionStatusBar({
             <span
               className={
                 isHighLimitShare
-                  ? "flex shrink-0 items-center gap-0.5 rounded-full bg-brand-tint px-1.5 py-px font-mono type-footnote font-medium! leading-[13px] tracking-tight! text-white tabular-nums"
+                  ? // The pill keeps the tracking of type-footnote. Tighter
+                    // tracking moves the wide percent sign into the last digit,
+                    // because the monospace cell is already full.
+                    "flex shrink-0 items-center gap-0.5 rounded-full bg-brand-tint px-1.5 py-px font-mono type-footnote font-medium! leading-[13px] text-white tabular-nums"
                   : "font-mono type-footnote tabular-nums text-label-secondary"
               }
               data-session-limit-provider={limitBadge.provider}
@@ -196,7 +213,7 @@ export function SessionStatusBar({
               tabIndex={0}
             >
               {isHighLimitShare && <Flame size={11} className="shrink-0" aria-hidden="true" />}
-              {formatLimitPercent(limitBadge.percent)}
+              <LimitPercent percent={limitBadge.percent} />
             </span>
           </Tooltip>
         ) : limitBadge ? (

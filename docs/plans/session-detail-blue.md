@@ -118,3 +118,23 @@ clearer split.
 Options if the light case matters: use `system-red` (`hsl(354 100% 42.1%)`) instead of
 `system-red-text` for more saturation, or carry the severity in a word beside the figure
 rather than in the ink alone.
+
+## Follow-up polish
+
+Three items came from a look at the built branch.
+
+| Item | State |
+|---|---|
+| Picker changed width with the selection | done — every `native-tabs` segment now takes `font-medium`, so the track columns keep one size |
+| Metric labels shortened to `$ / week / 5h` | done — the `%` added nothing that the values do not already show |
+| Percent sign looked joined to the figure | done — see below |
+
+The limit badge sets its figures in a tabular monospace face. The percent sign fills its cell
+with ink where a digit does not, so the gap in front of it looks smaller than the gaps between
+the digits. Two changes fix it. The pill no longer takes `tracking-tight`, which had pulled the
+sign a further 0.28px into the last digit and which its own plain sibling never used. A 1px
+inline spacer then adds the hair space that the face cannot give. The spacer is an empty
+element between two text nodes, so the value still reads and copies as one run: `17.2%`.
+
+English style puts no space before a percent sign, so a real space was not an option. A space
+would also cost a full monospace cell in every row of the list.

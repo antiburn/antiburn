@@ -745,9 +745,9 @@ export function SessionList({
             <SegmentedControl
               options={[
                 { value: "cost", label: "$" },
-                { value: "weeklyPercent", label: "% week" },
+                { value: "weeklyPercent", label: "week" },
                 ...(fiveHourAvailable
-                  ? [{ value: "fiveHourPercent" as const, label: "% 5h" }]
+                  ? [{ value: "fiveHourPercent" as const, label: "5h" }]
                   : []),
               ]}
               value={selectedMetric}
