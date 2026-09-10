@@ -1,7 +1,8 @@
 /**
  * The headline efficiency metric and the three spend shares the card shows.
  *
- * Bands apply only to Claude Code and Codex because their harness behavior differs.
+ * Every session keeps the legacy visualization scale.
+ * Agent-specific threshold guidance appears only for explicitly supported agents.
  */
 
 import type { SessionEfficiency } from "../types/session"
@@ -9,13 +10,13 @@ import type { SessionEfficiency } from "../types/session"
 /** How a metric reads against its band thresholds. */
 export type EfficiencyBand = "good" | "ok" | "bad"
 
-/** The agent family whose thresholds a session reads against. */
+/** A reference family used for visualization or agent-specific guidance. */
 export type EfficiencyProfile = "claude" | "codex"
 
-/** One metric with its reading and an optional benchmark band. */
+/** One metric with its reading against the visualization scale. */
 export interface EfficiencyMetric {
   value: number
-  band: EfficiencyBand | null
+  band: EfficiencyBand
 }
 
 export interface EfficiencyMetrics {
@@ -28,13 +29,17 @@ export interface EfficiencyMetrics {
   /** Share of the spend that was carry, in the range 0 to 1. */
   carryShare: EfficiencyMetric | null
   unpricedTurns: number
-  profile: EfficiencyProfile | null
+  /** The non-null profile preserves the legacy scale and verdict visualization. */
+  profile: EfficiencyProfile
+  /** The nullable profile controls agent-specific tooltip and inline guidance. */
+  guidanceProfile: EfficiencyProfile | null
 }
 
-/** The good and bad edges for one metric. */
+/** Band edges and direction for one metric. */
 interface BandEdges {
   good: number
   bad: number
+  higherIsBetter: boolean
 }
 
 interface ProfileEdges {
@@ -44,47 +49,37 @@ interface ProfileEdges {
   carryShare: BandEdges
 }
 
-const HIGHER_IS_BETTER: Record<keyof ProfileEdges, boolean> = {
-  costPerMTok: false,
-  rewriteShare: false,
-  realWorkShare: true,
-  carryShare: false,
-}
-
 const EDGES: Record<EfficiencyProfile, ProfileEdges> = {
   claude: {
-    costPerMTok: { good: 33, bad: 80 },
-    rewriteShare: { good: 0.1, bad: 0.25 },
-    realWorkShare: { good: 0.36, bad: 0.18 },
+    costPerMTok: { good: 33, bad: 80, higherIsBetter: false },
+    rewriteShare: { good: 0.1, bad: 0.25, higherIsBetter: false },
+    realWorkShare: { good: 0.36, bad: 0.18, higherIsBetter: true },
     // Carry uses the overhead left when Real Work and Rewrite reach the same band.
-    carryShare: { good: 0.54, bad: 0.57 },
+    carryShare: { good: 0.54, bad: 0.57, higherIsBetter: false },
   },
   codex: {
-    costPerMTok: { good: 20, bad: 46 },
-    rewriteShare: { good: 0.08, bad: 0.14 },
-    realWorkShare: { good: 0.33, bad: 0.17 },
+    costPerMTok: { good: 20, bad: 46, higherIsBetter: false },
+    rewriteShare: { good: 0.08, bad: 0.14, higherIsBetter: false },
+    realWorkShare: { good: 0.33, bad: 0.17, higherIsBetter: true },
     // Carry uses the overhead left when Real Work and Rewrite reach the same band.
-    carryShare: { good: 0.59, bad: 0.69 },
+    carryShare: { good: 0.59, bad: 0.69, higherIsBetter: false },
   },
 }
 
-const PROFILE_BY_AGENT: Partial<Record<string, EfficiencyProfile>> = {
-  "claude-code": "claude",
-  codex: "codex",
-}
-
-/** The optional threshold family for an agent slug. */
+/** Return the guidance profile only for an exact supported agent slug. */
 export function efficiencyProfile(agent: string): EfficiencyProfile | null {
-  if (!Object.prototype.hasOwnProperty.call(PROFILE_BY_AGENT, agent)) return null
-  return PROFILE_BY_AGENT[agent] ?? null
+  if (agent === "claude-code") return "claude"
+  if (agent === "codex") return "codex"
+  return null
 }
 
-function bandFor(
-  value: number,
-  edges: BandEdges,
-  metricKey: keyof ProfileEdges,
-): EfficiencyBand {
-  if (HIGHER_IS_BETTER[metricKey]) {
+/** Preserve the pre-existing reference scale. This fallback does not validate agent-specific guidance. */
+function visualizationProfile(agent: string): EfficiencyProfile {
+  return agent === "codex" ? "codex" : "claude"
+}
+
+function bandFor(value: number, edges: BandEdges): EfficiencyBand {
+  if (edges.higherIsBetter) {
     if (value > edges.good) return "good"
     if (value < edges.bad) return "bad"
     return "ok"
@@ -122,7 +117,7 @@ function thermometerFor(
     position = (2 + Math.min(1, (value - high) / (top - high))) / 3
   }
   return {
-    segments: HIGHER_IS_BETTER[metricKey] ? ["bad", "ok", "good"] : ["good", "ok", "bad"],
+    segments: edges.higherIsBetter ? ["bad", "ok", "good"] : ["good", "ok", "bad"],
     position,
     ticks: [
       formatEdge(metricKey, 0),
@@ -142,38 +137,32 @@ export function efficiencyThermometer(
   return thermometerFor(value, EDGES[profile][metricKey], metricKey)
 }
 
-function metric(
-  value: number,
-  metricKey: keyof ProfileEdges,
-  profile: EfficiencyProfile | null,
-): EfficiencyMetric {
-  return {
-    value,
-    band: profile === null ? null : bandFor(value, EDGES[profile][metricKey], metricKey),
-  }
+function metric(value: number, edges: BandEdges): EfficiencyMetric {
+  return { value, band: bandFor(value, edges) }
 }
 
-/** The three metrics for one subject's totals, with applicable benchmark bands. */
+/** Build metrics with the legacy scale and separate agent-specific guidance applicability. */
 export function efficiencyMetrics(totals: SessionEfficiency, agent: string): EfficiencyMetrics {
-  const profile = efficiencyProfile(agent)
+  const profile = visualizationProfile(agent)
+  const guidanceProfile = efficiencyProfile(agent)
+  const edges = EDGES[profile]
   const denominatorTokens = totals.growthTokens + totals.outputTokens
   const hasSpend = totals.totalUsd > 0
   return {
     costPerMTok:
       hasSpend && denominatorTokens > 0
-        ? metric((totals.totalUsd / denominatorTokens) * 1e6, "costPerMTok", profile)
+        ? metric((totals.totalUsd / denominatorTokens) * 1e6, edges.costPerMTok)
         : null,
     realWorkShare: hasSpend
-      ? metric(totals.newWorkUsd / totals.totalUsd, "realWorkShare", profile)
+      ? metric(totals.newWorkUsd / totals.totalUsd, edges.realWorkShare)
       : null,
     rewriteShare: hasSpend
-      ? metric(totals.rewriteUsd / totals.totalUsd, "rewriteShare", profile)
+      ? metric(totals.rewriteUsd / totals.totalUsd, edges.rewriteShare)
       : null,
-    carryShare: hasSpend
-      ? metric(totals.carryUsd / totals.totalUsd, "carryShare", profile)
-      : null,
+    carryShare: hasSpend ? metric(totals.carryUsd / totals.totalUsd, edges.carryShare) : null,
     unpricedTurns: totals.unpricedTurns,
     profile,
+    guidanceProfile,
   }
 }
 
@@ -208,7 +197,7 @@ export function efficiencyBandWord(
   metricKey: keyof ProfileEdges,
 ): string {
   if (band !== "bad") return band
-  return HIGHER_IS_BETTER[metricKey] ? "low" : "high"
+  return EDGES.claude[metricKey].higherIsBetter ? "low" : "high"
 }
 
 /** Describe the good, bad, and neutral ranges for one metric. */
@@ -220,7 +209,7 @@ export function efficiencyThresholdGuidance(
 
   const edges = EDGES[profile][metricKey]
   const fmt = (value: number) => formatEdge(metricKey, value)
-  if (HIGHER_IS_BETTER[metricKey]) {
+  if (edges.higherIsBetter) {
     return [
       `For ${readableProfile[profile]}, aim for above ${fmt(edges.good)}. Below ${fmt(edges.bad)} is too low.`,
     ]

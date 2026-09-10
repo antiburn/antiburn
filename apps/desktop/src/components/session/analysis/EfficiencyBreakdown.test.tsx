@@ -21,15 +21,17 @@ function totals(over: Partial<SessionEfficiency> = {}): SessionEfficiency {
   }
 }
 
-function expectNoBenchmarkLanguage() {
-  expect(document.body).not.toHaveTextContent(/For (Claude|Codex)/i)
-  expect(document.body).not.toHaveTextContent(/aim for/i)
-  expect(document.body).not.toHaveTextContent(/too (high|low)/i)
-  expect(document.body).not.toHaveTextContent(/out of band/i)
-  expect(screen.queryByText(/^(good|ok|bad|high|low)$/i)).toBeNull()
+function expectNoProfileGuidance(content: HTMLElement) {
+  expect(content).not.toHaveTextContent(/Claude|Codex/i)
+  expect(content).not.toHaveTextContent(/aim for/i)
+  expect(content).not.toHaveTextContent(/too (high|low)/i)
+  expect(content).not.toHaveTextContent(/out of band/i)
+  expect(content).not.toHaveTextContent(
+    /\$(20|33|46|80)|\b(8|10|14|17|18|25|33|36|54|57|59|69)%/,
+  )
 }
 
-const NEUTRAL_CASES = ["pi", "cursor", "opencode", "antigravity", "future-agent"].flatMap(
+const NEUTRAL_CASES = ["pi", "cursor", "opencode", "antigravity", "unknown", ""].flatMap(
   (agent) => [
     { agent, layout: "popover" as const },
     { agent, layout: "wide" as const },
@@ -72,11 +74,18 @@ describe("EfficiencyBreakdown", () => {
   })
 
   it.each(NEUTRAL_CASES)(
-    "shows neutral $agent metrics and all guidance in the $layout layout",
+    "keeps the legacy visuals but uses neutral guidance for '$agent' in $layout",
     ({ agent, layout }) => {
-      render(
-        <EfficiencyBreakdown metrics={efficiencyMetrics(totals(), agent)} layout={layout} />,
-      )
+      const metrics = efficiencyMetrics(totals(), agent)
+      const baseline = efficiencyMetrics(totals(), "claude-code")
+      expect(metrics.costPerMTok).toEqual(baseline.costPerMTok)
+      expect(metrics.realWorkShare).toEqual(baseline.realWorkShare)
+      expect(metrics.rewriteShare).toEqual(baseline.rewriteShare)
+      expect(metrics.carryShare).toEqual(baseline.carryShare)
+      expect(metrics.profile).toBe(baseline.profile)
+      expect(metrics.guidanceProfile).toBeNull()
+
+      render(<EfficiencyBreakdown metrics={metrics} layout={layout} />)
 
       expect(screen.getByText("$40.00")).toHaveClass("text-label")
       expect(screen.getByText("$40.00")).not.toHaveClass("text-brand")
@@ -84,30 +93,41 @@ describe("EfficiencyBreakdown", () => {
       expect(screen.getByText("12%")).toBeTruthy()
       expect(screen.getByText("54%")).toBeTruthy()
       expect(screen.getByTestId("efficiency-composition")).toBeTruthy()
-      expect(screen.queryByTestId("thermometer-costPerMTok")).toBeNull()
+      expect(screen.getAllByText("ok")).toHaveLength(4)
+
+      const cost = screen.getByTestId("thermometer-costPerMTok")
+      expect(cost.dataset.position).toBe("0.383")
+      expect(within(cost).getByTestId("cost-band-word-good")).toHaveTextContent("under $33")
+      expect(within(cost).getByTestId("cost-band-word-bad")).toHaveTextContent("over $80")
+      if (layout === "wide") {
+        expect(within(cost).getByTestId("cost-band-word-ok")).not.toHaveTextContent("$33 – $80")
+      } else {
+        expect(within(cost).getByTestId("cost-band-word-ok")).toHaveTextContent("$33 – $80")
+      }
 
       if (layout === "wide") {
         const hero = screen.getByTestId("cost-hero")
         fireEvent.focus(hero)
-        expect(
-          screen.getAllByText(
-            "The Context tab shows how spend splits across work, rewrite, and carry.",
-          ).length,
-        ).toBeGreaterThan(0)
-        expectNoBenchmarkLanguage()
-        fireEvent.blur(hero)
-      } else {
-        expect(screen.getByTestId("cost-guidance")).toHaveTextContent(
+        const tooltip = screen.getByRole("tooltip")
+        expect(tooltip).toHaveTextContent(
           "The Context tab shows how spend splits across work, rewrite, and carry.",
         )
-        expectNoBenchmarkLanguage()
+        expectNoProfileGuidance(tooltip)
+        fireEvent.blur(hero)
+      } else {
+        const guidance = screen.getByTestId("cost-guidance")
+        expect(guidance).toHaveTextContent(
+          "The Context tab shows how spend splits across work, rewrite, and carry.",
+        )
+        expectNoProfileGuidance(guidance)
       }
 
       for (const { key, summary } of SHARE_GUIDANCE) {
         const row = screen.getByTestId(`share-row-${key}`)
         fireEvent.focus(row)
-        expect(screen.getAllByText(summary).length).toBeGreaterThan(0)
-        expectNoBenchmarkLanguage()
+        const tooltip = screen.getByRole("tooltip")
+        expect(within(tooltip).getByText(summary)).toBeTruthy()
+        expectNoProfileGuidance(tooltip)
         fireEvent.blur(row)
       }
     },

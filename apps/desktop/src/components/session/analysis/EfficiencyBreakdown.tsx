@@ -273,18 +273,18 @@ function CompositionTrack({
  */
 function MetricGuidance({
   metricKey,
-  profile,
+  guidanceProfile,
   inline = false,
 }: {
   metricKey: MetricKey
-  profile: EfficiencyProfile | null
+  guidanceProfile: EfficiencyProfile | null
   inline?: boolean
 }) {
   const metricGuidance =
-    profile === null
+    guidanceProfile === null
       ? (NEUTRAL_GUIDANCE_OVERRIDES[metricKey] ?? METRIC_GUIDANCE[metricKey])
       : METRIC_GUIDANCE[metricKey]
-  const advice = [...efficiencyThresholdGuidance(metricKey, profile), ...metricGuidance]
+  const advice = [...efficiencyThresholdGuidance(metricKey, guidanceProfile), ...metricGuidance]
   if (inline) {
     return (
       <p className="type-callout text-pretty text-label-tertiary">
@@ -312,25 +312,26 @@ const ROW_CLASS =
   "-mx-1.5 rounded-control px-1.5 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
 
 /**
- * The $/MTok reading shows the label and figure on one baseline.
- * It shows a scale only when a benchmark applies.
+ * The $/MTok reading shows the label, figure, and legacy scale.
  * The wide pane opens guidance from the hero figure.
  * The popover prints guidance below the reading.
  */
 function CostRowLine({
   metric,
   profile,
+  guidanceProfile,
   wide,
 }: {
   metric: EfficiencyMetric
-  profile: EfficiencyProfile | null
+  profile: EfficiencyProfile
+  guidanceProfile: EfficiencyProfile | null
   wide: boolean
 }) {
   return (
     <div className="type-body" data-testid="cost-row">
       {wide ? (
         <Tooltip
-          label={<MetricGuidance metricKey="costPerMTok" profile={profile} />}
+          label={<MetricGuidance metricKey="costPerMTok" guidanceProfile={guidanceProfile} />}
           side="bottom"
           delayMs={150}
         >
@@ -361,10 +362,10 @@ function CostRowLine({
           </span>
         </span>
       )}
-      {profile !== null && <CostScaleBar metric={metric} profile={profile} wide={wide} />}
+      <CostScaleBar metric={metric} profile={profile} wide={wide} />
       {!wide && (
         <div className="mt-3" data-testid="cost-guidance">
-          <MetricGuidance metricKey="costPerMTok" profile={profile} inline />
+          <MetricGuidance metricKey="costPerMTok" guidanceProfile={guidanceProfile} inline />
         </div>
       )}
     </div>
@@ -372,18 +373,21 @@ function CostRowLine({
 }
 
 /**
- * One composition line shows the slice color, name, share, and optional band word.
+ * One composition line shows the slice color, name, share, and band word.
  * The track shows the size, so the row has no bar.
  */
 function ShareRowLine({
   segment,
-  profile,
+  guidanceProfile,
 }: {
   segment: ShareSegment
-  profile: EfficiencyProfile | null
+  guidanceProfile: EfficiencyProfile | null
 }) {
   return (
-    <Tooltip label={<MetricGuidance metricKey={segment.key} profile={profile} />} delayMs={150}>
+    <Tooltip
+      label={<MetricGuidance metricKey={segment.key} guidanceProfile={guidanceProfile} />}
+      delayMs={150}
+    >
       <div
         data-testid={`share-row-${segment.key}`}
         className={cn(ROW_CLASS, "flex items-baseline gap-2")}
@@ -395,13 +399,9 @@ function ShareRowLine({
         />
         <span className="min-w-0 flex-1 truncate text-label-secondary">{segment.label}</span>
         <span className="shrink-0 text-label tabular-nums">{segment.displayPercent}</span>
-        {segment.metric.band === null ? (
-          <span className="w-12 shrink-0" />
-        ) : (
-          <span className={cn("w-12 shrink-0 text-end", BAND_WORD_CLASS)}>
-            {efficiencyBandWord(segment.metric.band, segment.key)}
-          </span>
-        )}
+        <span className={cn("w-12 shrink-0 text-end", BAND_WORD_CLASS)}>
+          {efficiencyBandWord(segment.metric.band, segment.key)}
+        </span>
       </div>
     </Tooltip>
   )
@@ -439,7 +439,12 @@ export function EfficiencyBreakdown({
   return (
     <div className="flex flex-col" data-testid="efficiency-block">
       {showCost && (
-        <CostRowLine metric={metrics.costPerMTok} profile={metrics.profile} wide={wide} />
+        <CostRowLine
+          metric={metrics.costPerMTok}
+          profile={metrics.profile}
+          guidanceProfile={metrics.guidanceProfile}
+          wide={wide}
+        />
       )}
       {showCost && showComposition && (
         <div className="my-3 border-b border-dashed border-separator" />
@@ -452,7 +457,11 @@ export function EfficiencyBreakdown({
             className={cn("flex flex-col", wide ? "mt-3" : "mt-2")}
           >
             {segments.map((segment) => (
-              <ShareRowLine key={segment.key} segment={segment} profile={metrics.profile} />
+              <ShareRowLine
+                key={segment.key}
+                segment={segment}
+                guidanceProfile={metrics.guidanceProfile}
+              />
             ))}
           </div>
         </>
