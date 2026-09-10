@@ -4,8 +4,9 @@
 //! The scan pipeline reports what it sees as an [`Observation`]: a watcher
 //! burst touched a session, or a pass indexed some sessions. The actor is the
 //! only sender on the bus. It turns observations into [`SessionEvent`]s, keeps
-//! the map of live sessions, and publishes `Idle` when a session crosses
-//! [`ACTIVE_SESSION_WINDOW_SECS`] without a write.
+//! the map of live sessions, publishes `Quiet` when a session crosses
+//! [`QUIET_WINDOW_SECS`] without a write, and `Idle` when it crosses
+//! [`ACTIVE_SESSION_WINDOW_SECS`].
 //!
 //! A `Touched` observation arrives at burst classification, before any
 //! per-session floor or describe. That is what makes the bus faster than the
@@ -36,6 +37,11 @@ const INBOX_CAPACITY: usize = 256;
 /// Slack added past a session's computed deadline, so the actor never wakes a
 /// moment early and finds the session still (barely) active.
 const EXPIRY_SLACK_SECS: i64 = 1;
+
+/// How long a session goes without a write before the bus calls it quiet.
+/// The meters animate from `Activity` to `Quiet`. The session stays active,
+/// for the session list, until [`ACTIVE_SESSION_WINDOW_SECS`].
+pub const QUIET_WINDOW_SECS: i64 = 30;
 
 /// The identity of one session, as the webview receives it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -71,6 +77,13 @@ pub enum SessionEvent {
     /// store has not indexed the session yet.
     Activity {
         session: Option<SessionRef>,
+        agent: AgentKind,
+        at: i64,
+    },
+    /// The session crossed [`QUIET_WINDOW_SECS`] without a write. It is
+    /// still active. A later write publishes `Activity` again.
+    Quiet {
+        session: SessionRef,
         agent: AgentKind,
         at: i64,
     },
@@ -112,6 +125,19 @@ pub struct LiveSession {
 struct LiveEntry {
     agent: AgentKind,
     last_activity_at: i64,
+    /// `Quiet` was published for `last_activity_at`. A newer write clears it.
+    quiet_published: bool,
+}
+
+impl LiveEntry {
+    /// The next moment this entry has something to publish.
+    fn deadline(&self) -> i64 {
+        if self.quiet_published {
+            self.last_activity_at + ACTIVE_SESSION_WINDOW_SECS
+        } else {
+            self.last_activity_at + QUIET_WINDOW_SECS
+        }
+    }
 }
 
 type LiveMap = HashMap<SessionKey, LiveEntry>;
@@ -198,6 +224,9 @@ impl SessionEvents {
                 LiveEntry {
                     agent,
                     last_activity_at,
+                    // A row already past the quiet window has no `Quiet` to
+                    // publish: the snapshot carries its epoch.
+                    quiet_published: now - last_activity_at >= QUIET_WINDOW_SECS,
                 },
             );
         }
@@ -307,13 +336,13 @@ async fn run(
     }
 }
 
-/// The earliest moment a live session can go idle, or `None` with no live
-/// session.
+/// The earliest moment a live session can go quiet or idle, or `None` with
+/// no live session.
 fn soonest_deadline(live: &Mutex<LiveMap>) -> Option<i64> {
     live.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .values()
-        .map(|entry| entry.last_activity_at + ACTIVE_SESSION_WINDOW_SECS)
+        .map(LiveEntry::deadline)
         .min()
 }
 
@@ -393,6 +422,7 @@ fn touch(live: &Mutex<LiveMap>, key: &SessionKey, agent: AgentKind, at: i64) -> 
         Some(entry) => {
             entry.last_activity_at = at;
             entry.agent = agent;
+            entry.quiet_published = false;
             Touch::Advanced
         }
         None => {
@@ -401,6 +431,7 @@ fn touch(live: &Mutex<LiveMap>, key: &SessionKey, agent: AgentKind, at: i64) -> 
                 LiveEntry {
                     agent,
                     last_activity_at: at,
+                    quiet_published: false,
                 },
             );
             Touch::Added
@@ -408,10 +439,11 @@ fn touch(live: &Mutex<LiveMap>, key: &SessionKey, agent: AgentKind, at: i64) -> 
     }
 }
 
-/// Remove every session past its window and publish `Idle` for each, oldest
-/// activity first.
+/// Publish `Quiet` for every session past the quiet window, and remove every
+/// session past the active window with an `Idle`. Oldest activity first. A
+/// session that crosses both windows in one wake gets `Idle` only.
 fn expire(events: &SessionEvents, now: i64) {
-    let expired = {
+    let (quiet, expired) = {
         let mut live = events
             .live
             .lock()
@@ -424,13 +456,33 @@ fn expire(events: &SessionEvents, now: i64) {
         for (key, _) in &expired {
             live.remove(key);
         }
-        expired.sort_by(|(a_key, a), (b_key, b)| {
+        let mut quiet = Vec::new();
+        for (key, entry) in live.iter_mut() {
+            if !entry.quiet_published && now - entry.last_activity_at >= QUIET_WINDOW_SECS {
+                entry.quiet_published = true;
+                quiet.push((key.clone(), *entry));
+            }
+        }
+        let by_activity = |(a_key, a): &(SessionKey, LiveEntry),
+                           (b_key, b): &(SessionKey, LiveEntry)| {
             a.last_activity_at
                 .cmp(&b.last_activity_at)
                 .then_with(|| a_key.session_id.cmp(&b_key.session_id))
-        });
-        expired
+        };
+        quiet.sort_by(by_activity);
+        expired.sort_by(by_activity);
+        (quiet, expired)
     };
+    for (key, entry) in quiet {
+        publish(
+            events,
+            SessionEvent::Quiet {
+                session: SessionRef::from(&key),
+                agent: entry.agent,
+                at: now,
+            },
+        );
+    }
     for (key, entry) in expired {
         publish(
             events,

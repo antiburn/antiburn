@@ -388,6 +388,15 @@ pub trait AgentExplorer: Send + Sync {
         Vec::new()
     }
 
+    /// Whether a write to `path` under one of this agent's watch roots says
+    /// nothing about the agent working. A quiet path still schedules a
+    /// rediscovery, because a new session can start with one, but the
+    /// lifecycle bus does not report it as activity. Default: no path is
+    /// quiet.
+    fn is_quiet_path(&self, _path: &Path, _home: &Path) -> bool {
+        false
+    }
+
     /// Optional per-agent hook for recovering a session ID from the on-disk
     /// path when the scanner's content parse didn't surface one. Called from
     /// `scanner::apply_metadata_from_path` only if `metadata.session_id` is
@@ -734,6 +743,11 @@ impl Explorers {
     /// resolved against `home`.
     pub fn watch_roots_for(&self, agent: &AgentKind, home: &Path) -> Vec<WatchRoot> {
         self.get(agent).watch_roots(home)
+    }
+
+    /// Whether `path` is a quiet path for `agent`: rediscovery, not activity.
+    pub fn is_quiet_path_for(&self, agent: &AgentKind, path: &Path, home: &Path) -> bool {
+        self.get(agent).is_quiet_path(path, home)
     }
 
     /// The per-agent filename-based session-id recovery hook. Called by

@@ -570,6 +570,7 @@ async fn run_admitted_work(app: &AppHandle, work: scoped::ScopedWork) -> scoped:
         .agents
         .iter()
         .chain(work.db_agents.iter())
+        .chain(work.quiet_agents.iter())
         .copied()
         .collect();
     if !rediscover.is_empty() {
@@ -581,6 +582,7 @@ async fn run_admitted_work(app: &AppHandle, work: scoped::ScopedWork) -> scoped:
         {
             busy.agents = work.agents;
             busy.db_agents = work.db_agents;
+            busy.quiet_agents = work.quiet_agents;
         }
     }
 
@@ -953,7 +955,8 @@ async fn pass(
 ///
 /// A known session (T1) reports with its key. The new-session (T3) and
 /// database-agent (T5) lanes only know the agent, so they report without
-/// one. Title-only writes (T4) are not activity and report nothing.
+/// one. Title-only writes (T4) and quiet paths are not activity and report
+/// nothing.
 fn report_touched(app: &AppHandle, store: &Store, work: &scoped::ScopedWork) {
     if work.sessions.is_empty() && work.agents.is_empty() && work.db_agents.is_empty() {
         return;

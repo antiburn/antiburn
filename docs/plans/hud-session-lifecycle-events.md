@@ -25,6 +25,7 @@ status: draft
 | B | `SessionLifecycle` actor and broadcast bus in the Tauri shell | ~400 lines | built 2026-09-08, in review |
 | C | HUD and popover meter read the bus; the idle task folds into the actor | ~300 lines | built 2026-09-08, in review |
 | D | Session list and other consumers move onto the bus | follow-up | not planned here |
+| E, F, G | The manifest stop fix, the sweep, and the 30 s `quiet` event | see `hud-live-sweep.md` | in progress 2026-09-11 |
 
 Two pull requests (agreed 2026-09-08). The first, `feat/session-lifecycle-bus`,
 is the wiring: phase B and the shell half of phase C (the bridge to the
