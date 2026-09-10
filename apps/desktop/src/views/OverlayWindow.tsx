@@ -64,11 +64,17 @@ export function OverlayWindow() {
         </button>
 
         {state.bars.length === 0 ? (
-          <div className="pointer-events-none">
+          <div
+            className={`pointer-events-none ${state.sessionLive ? "led-clock" : ""}`.trimEnd()}
+          >
             <LedBar segments={HUD_SEGMENTS} split={[]} blinkNext={state.sessionLive} />
           </div>
         ) : (
-          <div className="pointer-events-none space-y-[3px]">
+          // `led-clock` runs the one animation every blinking bar reads, so
+          // the bars turn off together whenever each bar started.
+          <div
+            className={`pointer-events-none space-y-[3px] ${state.liveProviders.length > 0 ? "led-clock" : ""}`.trimEnd()}
+          >
             {state.bars.map((bar, index) => (
               <LedBar
                 key={bar.key}

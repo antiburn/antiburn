@@ -252,9 +252,14 @@ Built 2026-09-08, three small departures:
   being effected"). The renderer maps the agent slug to its provider in
   `sessionLiveness.ts`, mirroring the fixed routes in `providers.rs`, and
   both snapshots carry `liveProviders` beside `sessionLive`. Within a
-  provider the rows turn on from the top down, 250 ms apart, and turn off
-  together: `hud.css` holds one keyframe set per step, because
-  `animation-delay` would move the off edge too. A live agent with no
+  provider the rows turn on from the top down, 100 ms apart, and turn off
+  together. One animation on an ancestor (`led-clock`) drives them all: it
+  animates a flash colour per step, and each meter paints the colour for its
+  row above its own resting colour. An animation on each meter would start
+  when the browser applied it, so a meter that began to blink later kept its
+  own clock and the rows stopped at different times. Confirmed in Chrome:
+  four rows, one joining 1.7 s late, turn on 100 ms apart and turn off on
+  the same frame. A live agent with no
   provider on the limits surfaces (Cursor, Copilot) blinks nothing on the
   bars; the empty HUD bar still blinks for it.
 - Both renderers re-read `get_live_sessions` on `scan:finished` and

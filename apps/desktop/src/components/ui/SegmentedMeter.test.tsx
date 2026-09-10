@@ -93,10 +93,9 @@ describe("SegmentedMeter", () => {
     const { container } = render(<SegmentedMeter percent={50} blinkNext />)
     const all = segments(container)
     expect(container.querySelectorAll(".led-blink")).toHaveLength(1)
+    // The zone's track class stays on the segment: the flash paints above
+    // it, so the track tint is the blink's off state.
     expect(all[16]).toHaveClass("led-blink", "bg-brand-unlit/12")
-    expect(all[16]?.style.getPropertyValue("--led-rest")).toBe(
-      "color-mix(in srgb, var(--color-brand-unlit) 12%, transparent)",
-    )
   })
 
   it("marks the blinking segment with its stagger step, capped at the last keyframe set", () => {
@@ -114,10 +113,7 @@ describe("SegmentedMeter", () => {
     const { container: zero } = render(<SegmentedMeter percent={0} blinkNext />)
     expect(segments(zero)[0]).toHaveClass("led-blink")
     const { container: full } = render(<SegmentedMeter percent={100} blinkNext />)
-    expect(segments(full)[31]).toHaveClass("led-blink")
-    expect(segments(full)[31]?.style.getPropertyValue("--led-rest")).toBe(
-      "color-mix(in srgb, var(--color-system-red-unlit) 12%, transparent)",
-    )
+    expect(segments(full)[31]).toHaveClass("led-blink", "bg-system-red-unlit/12")
   })
 
   it("blinks the segment past the mark on its own side when it fills from the right", () => {

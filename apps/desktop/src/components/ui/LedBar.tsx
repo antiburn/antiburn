@@ -1,5 +1,3 @@
-import type { CSSProperties } from "react"
-
 import { ledBlinkStep } from "../../lib/ledBlink"
 
 /**
@@ -18,7 +16,8 @@ import { ledBlinkStep } from "../../lib/ledBlink"
  * bar colour, and a provider colour close to the brand tint then alternates
  * with itself. The Claude bar is one such colour: it differs from the brand
  * tint by 3 degrees of hue and 1 point of lightness, which a 6px dot cannot
- * show. The segment past the reading has the contrast the blink needs.
+ * show. The segment past the reading has the contrast the blink needs. The
+ * blinking segment therefore keeps the unlit colour below the flash.
  *
  * At zero the rule lands on the first segment, so a bar with no lit segment
  * still shows that a session is live. A full bar keeps the blink on its last
@@ -71,14 +70,8 @@ export function LedBar({
           <span
             key={index}
             data-led-step={blinking ? ledBlinkStep(blinkStep) : undefined}
-            className={`h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "" : "bg-led-off"} ${blinking ? "led-blink" : ""}`.trimEnd()}
-            style={
-              blinking
-                ? ({ "--led-rest": "var(--color-led-off)" } as CSSProperties)
-                : hit
-                  ? { backgroundColor: hit.color }
-                  : undefined
-            }
+            className={`h-1.5 w-1.5 shrink-0 rounded-full ${hit && !blinking ? "" : "bg-led-off"} ${blinking ? "led-blink" : ""}`.trimEnd()}
+            style={!blinking && hit ? { backgroundColor: hit.color } : undefined}
           />
         )
       })}

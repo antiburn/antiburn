@@ -507,9 +507,6 @@ describe("OverlayWindow", () => {
     expect(dots).toHaveLength(20)
     expect(container.querySelectorAll(".led-blink")).toHaveLength(1)
     expect(dots[0]).toHaveClass("led-blink", "bg-led-off")
-    expect((dots[0] as HTMLElement).style.getPropertyValue("--led-rest")).toBe(
-      "var(--color-led-off)",
-    )
   })
 
   it("blinks the first segment when there are no bars", async () => {
@@ -537,6 +534,20 @@ describe("OverlayWindow", () => {
     expect(second?.dataset["ledStep"]).toBe("1")
   })
 
+  it("runs one blink clock for every bar, and only while a session is live", async () => {
+    getLiveUsage.mockResolvedValue(withSecondBar())
+    getLiveSessions.mockResolvedValue([liveSession()])
+    const { container } = render(<OverlayWindow />)
+
+    // One animation drives every bar, so the bars turn off together however
+    // late a bar started to blink.
+    await waitFor(() => expect(container.querySelector(".led-clock")).not.toBeNull())
+    expect(container.querySelectorAll(".led-clock")).toHaveLength(1)
+    expect(container.querySelector(".led-clock")?.querySelectorAll(".led-blink")).toHaveLength(
+      2,
+    )
+  })
+
   it("keeps the bars dark while the live session draws on another provider", async () => {
     getLiveSessions.mockResolvedValue([liveSession("session-1", "cursor")])
     const { container } = render(<OverlayWindow />)
@@ -556,6 +567,7 @@ describe("OverlayWindow", () => {
 
     await waitFor(() => expect(getLiveSessions).toHaveBeenCalled())
     expect(container.querySelector(".led-blink")).toBeNull()
+    expect(container.querySelector(".led-clock")).toBeNull()
   })
 
   it("blinks the next segment to light, against the unlit colour", async () => {
@@ -567,10 +579,10 @@ describe("OverlayWindow", () => {
     // 81% of 20 segments rounds to 16 lit, so the blink sits on index 16.
     expect(dots[15]).not.toHaveClass("led-blink")
     expect((dots[15] as HTMLElement).style.backgroundColor).not.toBe("")
+    // The unlit class stays on the segment: the flash paints above it, so
+    // the unlit colour is the blink's off state.
     expect(dots[16]).toHaveClass("led-blink", "bg-led-off")
-    expect((dots[16] as HTMLElement).style.getPropertyValue("--led-rest")).toBe(
-      "var(--color-led-off)",
-    )
+    expect((dots[16] as HTMLElement).style.backgroundColor).toBe("")
   })
 
   it("rests with bars only and a hidden close control", async () => {

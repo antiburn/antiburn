@@ -118,6 +118,21 @@ describe("UsageRing", () => {
     )
   })
 
+  it("draws the blink's resting arc below the flash, on the same eighth", () => {
+    const { container } = render(<UsageRing percent={50} blink />)
+    const rest = container.querySelector('[data-testid="usage-ring-blink-rest"]')
+    const flash = container.querySelector('[data-testid="usage-ring-blink"]')
+    expect(rest).not.toBeNull()
+    expect(flash).not.toBeNull()
+    // The flash is transparent in its off phase, so the arc below it holds
+    // the off colour and must match the flash's shape and place.
+    expect(rest!.getAttribute("transform")).toBe(flash!.getAttribute("transform"))
+    expect(rest!.getAttribute("stroke-dasharray")).toBe(flash!.getAttribute("stroke-dasharray"))
+    expect(
+      rest!.compareDocumentPosition(flash!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
   it("blinks from twelve o'clock at zero, and the last eighth of a full ring", () => {
     const zero = render(<UsageRing percent={0} blink />)
     expect(zero.container.querySelector('[data-testid="usage-ring-blink"]')).toHaveAttribute(

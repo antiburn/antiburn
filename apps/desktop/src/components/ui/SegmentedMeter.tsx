@@ -1,5 +1,3 @@
-import type { CSSProperties } from "react"
-
 import { cn } from "../../lib/cn"
 import { ledBlinkStep } from "../../lib/ledBlink"
 
@@ -14,11 +12,6 @@ export interface MeterZone {
   fillClassName: string
   /** Ink for an unlit segment inside the zone. */
   trackClassName: string
-  /**
-   * The unlit ink as a CSS color, for the blinking segment's off phase. It
-   * must state the same color `trackClassName` paints.
-   */
-  trackColor: string
 }
 
 /**
@@ -30,12 +23,10 @@ const METER_INK = {
   normal: {
     fillClassName: "bg-brand-tint",
     trackClassName: "bg-brand-unlit/12",
-    trackColor: "color-mix(in srgb, var(--color-brand-unlit) 12%, transparent)",
   },
   critical: {
     fillClassName: "bg-system-red-tint",
     trackClassName: "bg-system-red-unlit/12",
-    trackColor: "color-mix(in srgb, var(--color-system-red-unlit) 12%, transparent)",
   },
 } as const
 
@@ -152,13 +143,13 @@ export function SegmentedMeter({
               data-led-step={blinking ? ledBlinkStep(blinkStep) : undefined}
               className={cn(
                 "h-[7px] w-[7px] shrink-0 rounded-full",
-                lit ? zone.fillClassName : zone.trackClassName,
+                // A blinking segment keeps the track ink below the flash.
+                // Only a full meter blinks a lit segment, and the flash needs
+                // an unlit colour below it to show.
+                lit && !blinking ? zone.fillClassName : zone.trackClassName,
                 clamped == null && "opacity-50",
                 blinking && "led-blink",
               )}
-              style={
-                blinking ? ({ "--led-rest": zone.trackColor } as CSSProperties) : undefined
-              }
             />
           )
         })}

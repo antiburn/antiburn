@@ -206,6 +206,17 @@ describe("UsageLimitsBar — the live blink", () => {
     expect(rings[1]?.contains(blinking[0]!)).toBe(true)
   })
 
+  it("runs one blink clock for the whole bar, and only while a session is live", () => {
+    const live = bar({ live: twoProviders(), liveProviders: ["anthropic"], expanded: true })
+    expect(live.container.querySelector('[data-testid="usage-limits-bar"]')).toHaveClass(
+      "led-clock",
+    )
+    const dark = bar({ live: twoProviders(), expanded: true })
+    expect(dark.container.querySelector('[data-testid="usage-limits-bar"]')).not.toHaveClass(
+      "led-clock",
+    )
+  })
+
   it("keeps the bar dark while the live session draws on a provider it does not show", () => {
     const { container } = bar({ liveProviders: ["google"], expanded: false })
     expect(container.querySelector(".led-blink")).toBeNull()

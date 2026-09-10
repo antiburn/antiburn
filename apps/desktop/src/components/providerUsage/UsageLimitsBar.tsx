@@ -123,7 +123,12 @@ export function UsageLimitsBar({
   )
 
   return (
-    <div data-testid="usage-limits-bar" className="relative shrink-0">
+    // `led-clock` runs the one animation every blinking meter below reads,
+    // so the rows turn off together whenever each row started.
+    <div
+      data-testid="usage-limits-bar"
+      className={cn("relative shrink-0", liveProviders.length > 0 && "led-clock")}
+    >
       {!expanded && (
         <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
           <div className="flex min-w-0 flex-1 items-center gap-3">

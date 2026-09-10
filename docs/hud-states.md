@@ -188,9 +188,14 @@ switch and in Mission Control.
   colours sit too close to the brand tint for a 6-pixel dot to show the
   difference.
 - The blink cycle is 3 seconds, half on and half off. A provider's rows turn
-  on from the top down, 250 milliseconds apart, and turn off together. With
+  on from the top down, 100 milliseconds apart, and turn off together. With
   no bars at all, the one empty bar blinks its first segment for any live
   session.
+- One animation drives every blinking meter on a surface, and each meter
+  reads the colour for its row. A CSS animation starts when the browser
+  applies it, so a meter with its own animation keeps its own clock and
+  stops at its own time. The shared clock holds the rows together, however
+  late a row starts to blink.
 - A session stays live for 180 seconds after its last transcript write, the
   same window the session list uses. The shell's lifecycle bus keeps that
   clock and publishes `idle`; the renderer keeps no timer for a known session.

@@ -1,5 +1,3 @@
-import type { CSSProperties } from "react"
-
 import type { BrandMark } from "../../lib/brandMarks"
 
 /**
@@ -146,21 +144,36 @@ export function UsageRing({
             data-testid="usage-ring-arc"
           />
           {blink && (
-            // Drawn over the arc and the track, so at a full ring it sits on
-            // the arc's last eighth and alternates with the track colour.
-            <circle
-              cx="16"
-              cy="16"
-              r={radius}
-              fill="none"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              className="led-blink"
-              style={{ "--led-rest": TRACK_COLOR } as CSSProperties}
-              strokeDasharray={`${circumference * BLINK_FRACTION} ${circumference}`}
-              transform={`rotate(${-90 + blinkStart * 360} 16 16)`}
-              data-testid="usage-ring-blink"
-            />
+            // Two arcs of the same shape, drawn over the arc and the track.
+            // The lower one holds the track colour, which the flash above it
+            // covers and shows again. At a full ring the pair therefore sits
+            // on the arc's last eighth and still alternates with the track.
+            <>
+              <circle
+                cx="16"
+                cy="16"
+                r={radius}
+                fill="none"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                stroke={TRACK_COLOR}
+                strokeDasharray={`${circumference * BLINK_FRACTION} ${circumference}`}
+                transform={`rotate(${-90 + blinkStart * 360} 16 16)`}
+                data-testid="usage-ring-blink-rest"
+              />
+              <circle
+                cx="16"
+                cy="16"
+                r={radius}
+                fill="none"
+                strokeWidth="2.5"
+                strokeLinecap="round"
+                className="led-blink"
+                strokeDasharray={`${circumference * BLINK_FRACTION} ${circumference}`}
+                transform={`rotate(${-90 + blinkStart * 360} 16 16)`}
+                data-testid="usage-ring-blink"
+              />
+            </>
           )}
         </>
       )}

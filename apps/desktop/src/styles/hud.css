@@ -137,164 +137,136 @@ body[data-transparent-window] #root {
 }
 
 /*
- * The live-session blink. The on state is the brand tint, not the bar's
- * colour, so a blink reads as "a session is writing" and not as the bar
- * losing a segment. The off state is `--led-rest`, which the segment sets
- * inline: its own bar colour when lit, the unlit grey when not. The brand
- * tint holds one value in both themes, so it survives any desktop behind the
- * HUD the way `led-off` does.
+ * The live-session blink. One clock drives every blinking meter on a
+ * surface. `.led-clock` on an ancestor animates the flash colours, and each
+ * `.led-blink` element reads the colour for its row.
  *
- * The keyframes set `stroke` as well, so the same class blinks an SVG arc:
- * the usage ring's next eighth. Each element reads the one property it
- * paints with.
+ * A CSS animation starts when the browser applies it. An animation on each
+ * meter therefore gives a meter that starts to blink later its own clock,
+ * and the meters then turn off at different times. One animation on one
+ * ancestor keeps every row on the same clock, whenever a row starts.
+ *
+ * The flash paints over the element's resting colour: `transparent` shows
+ * that colour, and the brand tint covers it. A dot takes the flash as a
+ * background image above its background colour. The usage ring takes it as
+ * a stroke above a track arc of the same shape. The brand tint holds one
+ * value in both themes, so it survives any desktop behind the HUD.
  */
+@property --led-flash-0 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@property --led-flash-1 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@property --led-flash-2 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@property --led-flash-3 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@property --led-flash-4 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+@property --led-flash-5 {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+.led-clock {
+  animation: led-clock 3s steps(1, end) infinite;
+}
+
 .led-blink {
-  animation: led-blink 3s steps(1, end) infinite;
+  --led-flash: var(--led-flash-0);
+  background-image: linear-gradient(var(--led-flash), var(--led-flash));
+  stroke: var(--led-flash);
 }
 
 /*
  * The stagger. A provider's meters turn on from the top down, one row every
- * 250 ms, and turn off together at the half cycle. `animation-delay` would
- * move the off edge as well, so each step is its own keyframe set. Five
- * steps fit inside the 1.5 s on phase; `ledBlinkStep` in
- * `src/lib/ledBlink.ts` caps the row index to match.
+ * 100 ms, and turn off together at the half cycle. Five steps fit inside the
+ * 1.5 s on phase; `ledBlinkStep` in `src/lib/ledBlink.ts` caps the row index
+ * to match.
  */
 .led-blink[data-led-step="1"] {
-  animation-name: led-blink-1;
+  --led-flash: var(--led-flash-1);
 }
 
 .led-blink[data-led-step="2"] {
-  animation-name: led-blink-2;
+  --led-flash: var(--led-flash-2);
 }
 
 .led-blink[data-led-step="3"] {
-  animation-name: led-blink-3;
+  --led-flash: var(--led-flash-3);
 }
 
 .led-blink[data-led-step="4"] {
-  animation-name: led-blink-4;
+  --led-flash: var(--led-flash-4);
 }
 
 .led-blink[data-led-step="5"] {
-  animation-name: led-blink-5;
+  --led-flash: var(--led-flash-5);
 }
 
-@keyframes led-blink {
-  0%,
-  49.9% {
-    background-color: var(--color-brand-tint);
-    stroke: var(--color-brand-tint);
+@keyframes led-clock {
+  0% {
+    --led-flash-0: var(--color-brand-tint);
+    --led-flash-1: transparent;
+    --led-flash-2: transparent;
+    --led-flash-3: transparent;
+    --led-flash-4: transparent;
+    --led-flash-5: transparent;
+  }
+
+  3.3333% {
+    --led-flash-1: var(--color-brand-tint);
+  }
+
+  6.6667% {
+    --led-flash-2: var(--color-brand-tint);
+  }
+
+  10% {
+    --led-flash-3: var(--color-brand-tint);
+  }
+
+  13.3333% {
+    --led-flash-4: var(--color-brand-tint);
+  }
+
+  16.6667% {
+    --led-flash-5: var(--color-brand-tint);
   }
 
   50%,
   100% {
-    background-color: var(--led-rest, var(--color-led-off));
-    stroke: var(--led-rest, var(--color-led-off));
-  }
-}
-
-@keyframes led-blink-1 {
-  0%,
-  8.3% {
-    background-color: var(--led-rest, var(--color-led-off));
-    stroke: var(--led-rest, var(--color-led-off));
-  }
-
-  8.4%,
-  49.9% {
-    background-color: var(--color-brand-tint);
-    stroke: var(--color-brand-tint);
-  }
-
-  50%,
-  100% {
-    background-color: var(--led-rest, var(--color-led-off));
-    stroke: var(--led-rest, var(--color-led-off));
-  }
-}
-
-@keyframes led-blink-2 {
-  0%,
-  16.6% {
-    background-color: var(--led-rest, var(--color-led-off));
-    stroke: var(--led-rest, var(--color-led-off));
-  }
-
-  16.7%,
-  49.9% {
-    background-color: var(--color-brand-tint);
-    stroke: var(--color-brand-tint);
-  }
-
-  50%,
-  100% {
-    background-color: var(--led-rest, var(--color-led-off));
-    stroke: var(--led-rest, var(--color-led-off));
-  }
-}
-
-@keyframes led-blink-3 {
-  0%,
-  24.9% {
-    background-color: var(--led-rest, var(--color-led-off));
-    stroke: var(--led-rest, var(--color-led-off));
-  }
-
-  25%,
-  49.9% {
-    background-color: var(--color-brand-tint);
-    stroke: var(--color-brand-tint);
-  }
-
-  50%,
-  100% {
-    background-color: var(--led-rest, var(--color-led-off));
-    stroke: var(--led-rest, var(--color-led-off));
-  }
-}
-
-@keyframes led-blink-4 {
-  0%,
-  33.3% {
-    background-color: var(--led-rest, var(--color-led-off));
-    stroke: var(--led-rest, var(--color-led-off));
-  }
-
-  33.4%,
-  49.9% {
-    background-color: var(--color-brand-tint);
-    stroke: var(--color-brand-tint);
-  }
-
-  50%,
-  100% {
-    background-color: var(--led-rest, var(--color-led-off));
-    stroke: var(--led-rest, var(--color-led-off));
-  }
-}
-
-@keyframes led-blink-5 {
-  0%,
-  41.6% {
-    background-color: var(--led-rest, var(--color-led-off));
-    stroke: var(--led-rest, var(--color-led-off));
-  }
-
-  41.7%,
-  49.9% {
-    background-color: var(--color-brand-tint);
-    stroke: var(--color-brand-tint);
-  }
-
-  50%,
-  100% {
-    background-color: var(--led-rest, var(--color-led-off));
-    stroke: var(--led-rest, var(--color-led-off));
+    --led-flash-0: transparent;
+    --led-flash-1: transparent;
+    --led-flash-2: transparent;
+    --led-flash-3: transparent;
+    --led-flash-4: transparent;
+    --led-flash-5: transparent;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .led-blink {
+  .led-clock {
     animation: none;
   }
 }
