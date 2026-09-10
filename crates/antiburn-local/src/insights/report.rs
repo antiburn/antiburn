@@ -417,8 +417,8 @@ pub struct UnrecognizedRecords {
 pub struct EfficiencyReport {
     pub context: ReportContext,
     pub assessed_sessions: u64,
-    pub detectors: [DetectorCounts; 9],
-    pub detector_statuses: [DetectorStatus; 9],
+    pub detectors: [DetectorCounts; DetectorId::COUNT],
+    pub detector_statuses: [DetectorStatus; DetectorId::COUNT],
     pub quota_pressure: QuotaPressureSection,
     pub catalog_revision: i64,
     pub coverage_reasons: BTreeMap<CoverageReason, u64>,
@@ -428,7 +428,7 @@ pub struct EfficiencyReport {
     /// Token burn is estimated avoidable tokens divided by total used tokens.
     pub estimated_token_burn_basis_points: Option<u16>,
     /// Each detector's token burn uses the same ratio.
-    pub detector_estimated_token_burn_basis_points: [Option<u16>; 9],
+    pub detector_estimated_token_burn_basis_points: [Option<u16>; DetectorId::COUNT],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -905,17 +905,19 @@ struct SessionTokenContribution {
 
 #[derive(Default)]
 struct TokenBurnAccumulator {
-    complete: bool,
+    total_complete: bool,
     total_tokens: u128,
     // Exact overlap needs one compact contribution per session and source/session pair.
     sessions: Vec<SessionTokenContribution>,
     sources: [BTreeMap<(String, String), SourceAggregate>; 3],
+    source_complete: [bool; 3],
 }
 
 impl TokenBurnAccumulator {
     fn new() -> Self {
         Self {
-            complete: true,
+            total_complete: true,
+            source_complete: [true; 3],
             ..Self::default()
         }
     }
@@ -923,14 +925,14 @@ impl TokenBurnAccumulator {
     fn observe(
         &mut self,
         token_evidence: SessionTokenBurnEvidence,
-        findings: [bool; 9],
+        findings: [bool; DetectorId::COUNT],
         source_eligible: [bool; 3],
     ) {
         if let Some(session_tokens) = token_evidence.total_tokens {
             if let Some(total_tokens) = self.total_tokens.checked_add(session_tokens) {
                 self.total_tokens = total_tokens;
             } else {
-                self.complete = false;
+                self.total_complete = false;
             }
         }
         let session_index = self.sessions.len();
@@ -991,7 +993,7 @@ impl TokenBurnAccumulator {
                 }
                 let entry = aggregate.by_session.entry(session_index).or_default();
                 let Some(total) = entry.checked_add(source.replicated_tokens) else {
-                    self.complete = false;
+                    self.source_complete[index] = false;
                     continue;
                 };
                 *entry = total;
@@ -999,12 +1001,15 @@ impl TokenBurnAccumulator {
         }
     }
 
-    fn finish(self, statuses: &[DetectorStatus; 9]) -> (Option<u16>, [Option<u16>; 9]) {
-        let mut numerators = [None; 9];
+    fn finish(
+        self,
+        statuses: &[DetectorStatus; DetectorId::COUNT],
+    ) -> (Option<u16>, [Option<u16>; DetectorId::COUNT]) {
+        let mut numerators = [None; DetectorId::COUNT];
         let mut combined_by_session = vec![0_u128; self.sessions.len()];
         let mut source_combined_by_session = vec![0_u128; self.sessions.len()];
         let mut source_detector_by_session = vec![0_u128; self.sessions.len()];
-        let can_measure = self.complete && self.total_tokens > 0;
+        let can_measure = self.total_complete && self.total_tokens > 0;
 
         for (detector, value_for) in [
             (
@@ -1057,7 +1062,7 @@ impl TokenBurnAccumulator {
             let Some(total) = self.sessions.iter().try_fold(0_u128, |total, session| {
                 total.checked_add(value_for(session).unwrap_or(0))
             }) else {
-                return (None, [None; 9]);
+                return (None, [None; DetectorId::COUNT]);
             };
             numerators[detector.index()] = Some(total);
             for (index, session) in self.sessions.iter().enumerate() {
@@ -1078,7 +1083,10 @@ impl TokenBurnAccumulator {
                 numerators[detector.index()] = Some(0);
                 continue;
             }
-            if !matches!(statuses[detector.index()], DetectorStatus::Findings(_)) || !can_measure {
+            if !matches!(statuses[detector.index()], DetectorStatus::Findings(_))
+                || !can_measure
+                || !self.source_complete[source_index]
+            {
                 continue;
             }
             source_detector_by_session.fill(0);
@@ -1091,7 +1099,7 @@ impl TokenBurnAccumulator {
                 for (session, tokens) in &aggregate.by_session {
                     let Some(total) = source_detector_by_session[*session].checked_add(*tokens)
                     else {
-                        return (None, [None; 9]);
+                        return (None, [None; DetectorId::COUNT]);
                     };
                     source_detector_by_session[*session] = total;
                 }
@@ -1103,12 +1111,12 @@ impl TokenBurnAccumulator {
                 .iter()
                 .try_fold(0_u128, |total, value| total.checked_add(*value))
             else {
-                return (None, [None; 9]);
+                return (None, [None; DetectorId::COUNT]);
             };
             numerators[detector.index()] = Some(total);
             for (index, value) in source_detector_by_session.iter().enumerate() {
                 let Some(total) = source_combined_by_session[index].checked_add(*value) else {
-                    return (None, [None; 9]);
+                    return (None, [None; DetectorId::COUNT]);
                 };
                 source_combined_by_session[index] = total;
             }
@@ -1152,8 +1160,8 @@ impl TokenBurnAccumulator {
 
 pub struct EfficiencyReportAccumulator {
     assessed_sessions: u64,
-    detectors: [DetectorCounts; 9],
-    folds: [DetectorFold; 9],
+    detectors: [DetectorCounts; DetectorId::COUNT],
+    folds: [DetectorFold; DetectorId::COUNT],
     quota: QuotaPressureAccumulator,
     catalogs: ReportCatalogs,
     coverage_reasons: BTreeMap<CoverageReason, u64>,
@@ -1180,7 +1188,7 @@ impl EfficiencyReportAccumulator {
     pub fn with_catalogs(catalogs: ReportCatalogs) -> Self {
         Self {
             assessed_sessions: 0,
-            detectors: [DetectorCounts::default(); 9],
+            detectors: [DetectorCounts::default(); DetectorId::COUNT],
             folds: core::array::from_fn(|_| DetectorFold::default()),
             quota: QuotaPressureAccumulator::default(),
             catalogs,
@@ -1255,7 +1263,7 @@ impl EfficiencyReportAccumulator {
 
         // Lazily allocate the identity example only if this session has a detector gap.
         let mut bounded_example: Option<SessionExample> = None;
-        let mut findings = [false; 9];
+        let mut findings = [false; DetectorId::COUNT];
 
         for detector in DetectorId::ALL {
             let counts = &mut self.detectors[detector.index()];
@@ -1384,10 +1392,69 @@ mod tests {
         FAST_SPEED_KEY, LoadedSource, ModelTokens, PARSER_REVISION, QuotaConfidence,
         QuotaHitSeverity, QuotaIncident, QuotaLimitKind, RepeatedContext,
         RepeatedContextAccounting, SessionEvidenceAccumulator, SessionQuotaEvidence,
-        SignalCoverage, SourceCapabilities, SourceKind, ToolDefinition, TurnCounts, TurnFacts,
+        SignalCoverage, SourceCapabilities, SourceFormat, SourceKind, ToolDefinition, TurnCounts,
+        TurnFacts,
     };
     use crate::insights::detectors::{ModelFamily, ModelReplacementEntry, NotAssessedReason};
     use crate::insights::quota::QuotaPressureSection;
+
+    #[test]
+    fn source_format_serde_keys_are_stable() {
+        let formats = [
+            (SourceFormat::ClaudeJsonl, "claude_jsonl"),
+            (SourceFormat::CodexRolloutJsonl, "codex_rollout_jsonl"),
+            (SourceFormat::OpenCodeJsonl, "open_code_jsonl"),
+            (SourceFormat::OpenCodeSqliteV2, "open_code_sqlite_v2"),
+            (SourceFormat::PiV3Jsonl, "pi_v3_jsonl"),
+            (SourceFormat::CursorJsonl, "cursor_jsonl"),
+            (SourceFormat::CursorCliAgentJsonl, "cursor_cli_agent_jsonl"),
+            (SourceFormat::CursorCliStoreDb, "cursor_cli_store_db"),
+            (SourceFormat::CursorIdeComposer, "cursor_ide_composer"),
+            (
+                SourceFormat::CursorLegacyChatJson,
+                "cursor_legacy_chat_json",
+            ),
+            (SourceFormat::AntigravityJson, "antigravity_json"),
+            (
+                SourceFormat::AntigravityBrainJsonl,
+                "antigravity_brain_jsonl",
+            ),
+            (
+                SourceFormat::AntigravityCascadeJson,
+                "antigravity_cascade_json",
+            ),
+            (
+                SourceFormat::AntigravityWorkspaceChatJson,
+                "antigravity_workspace_chat_json",
+            ),
+            (SourceFormat::AntigravitySqlite, "antigravity_sqlite"),
+            (SourceFormat::CopilotCliJsonl, "copilot_cli_jsonl"),
+            (SourceFormat::CopilotIdeChatJson, "copilot_ide_chat_json"),
+            (SourceFormat::ClineSessionJson, "cline_session_json"),
+            (SourceFormat::KiroSessionJson, "kiro_session_json"),
+            (SourceFormat::KiroChat, "kiro_chat"),
+            (SourceFormat::AmpThreadJson, "amp_thread_json"),
+            (SourceFormat::AmpFileChanges, "amp_file_changes"),
+            (
+                SourceFormat::WindsurfWorkspaceJson,
+                "windsurf_workspace_json",
+            ),
+            (SourceFormat::WindsurfMirrorJson, "windsurf_mirror_json"),
+            (
+                SourceFormat::WindsurfCascadeProtobuf,
+                "windsurf_cascade_protobuf",
+            ),
+            (SourceFormat::Uncharacterized, "uncharacterized"),
+        ];
+
+        for (format, key) in formats {
+            assert_eq!(serde_json::to_value(format).unwrap(), key);
+            assert_eq!(
+                serde_json::from_str::<SourceFormat>(&format!("\"{key}\"")).unwrap(),
+                format
+            );
+        }
+    }
 
     fn evidence(session_id: &str) -> SessionEvidence {
         let mut row = SessionEvidenceAccumulator::new(EvidenceSource {
@@ -1709,7 +1776,7 @@ mod tests {
 
     #[test]
     fn combined_token_burn_uses_the_largest_overlapping_contribution() {
-        let mut findings = [false; 9];
+        let mut findings = [false; DetectorId::COUNT];
         findings[DetectorId::SessionsOverDepth.index()] = true;
         findings[DetectorId::CacheChurn.index()] = true;
 
@@ -1745,7 +1812,7 @@ mod tests {
 
     #[test]
     fn token_burn_percentage_caps_before_the_wire_type_conversion() {
-        let mut findings = [false; 9];
+        let mut findings = [false; DetectorId::COUNT];
         findings[DetectorId::SessionsOverDepth.index()] = true;
         let mut token_burn = TokenBurnAccumulator::new();
         token_burn.observe(
@@ -1768,7 +1835,7 @@ mod tests {
         );
     }
 
-    fn finding_statuses(detectors: &[DetectorId]) -> [DetectorStatus; 9] {
+    fn finding_statuses(detectors: &[DetectorId]) -> [DetectorStatus; DetectorId::COUNT] {
         let mut statuses = core::array::from_fn(|_| {
             DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
         });
@@ -1848,7 +1915,7 @@ mod tests {
             replicated_tokens: 100,
             invoked: false,
         }]);
-        token_burn.observe(token_evidence, [true; 9], [true; 3]);
+        token_burn.observe(token_evidence, [true; DetectorId::COUNT], [true; 3]);
         let (combined, estimates) = token_burn.finish(&finding_statuses(&all_findings));
 
         assert_eq!(combined, Some(800));
@@ -1866,6 +1933,105 @@ mod tests {
                 Some(700),
             ]
         );
+    }
+
+    #[test]
+    fn supported_evidence_estimates_each_check_independently() {
+        let all_findings = DetectorId::ALL;
+        let mut token_burn = TokenBurnAccumulator::new();
+        let mut token_evidence = turn_evidence(
+            [
+                token_turn("main", "claude-sonnet-5", Some("max"), None, 1_000),
+                token_turn("delegated", "gpt-6-astra", None, None, 1_000),
+                token_turn("main", "gpt-5.4-mini", None, None, 1_000),
+                token_turn("delegated", "gpt-5.6-sol", None, Some("fast"), 1_000),
+            ],
+            &ReportCatalogs::default(),
+        );
+        token_evidence.total_tokens = Some(10_000);
+        token_evidence.overdepth_avoidable_tokens = Some(800);
+        token_evidence.repeated_context_avoidable_tokens = Some(700);
+        token_evidence.overpowered_subagents = Some(880);
+        token_evidence.old_model = Some(400);
+        token_evidence.mcp_sources = Some(vec![TokenBurnSourceEvidence {
+            scope: "agent:user".to_owned(),
+            name: "server".to_owned(),
+            replicated_tokens: 100,
+            invoked: false,
+        }]);
+        token_evidence.built_in_tool_sources = Some(vec![TokenBurnSourceEvidence {
+            scope: "agent:bundled".to_owned(),
+            name: "tool".to_owned(),
+            replicated_tokens: 100,
+            invoked: false,
+        }]);
+        token_evidence.skill_sources = Some(vec![TokenBurnSourceEvidence {
+            scope: "agent:user".to_owned(),
+            name: "skill".to_owned(),
+            replicated_tokens: 100,
+            invoked: false,
+        }]);
+        token_burn.observe(token_evidence, [true; DetectorId::COUNT], [true; 3]);
+
+        let (combined, estimates) = token_burn.finish(&finding_statuses(&all_findings));
+
+        assert_eq!(combined, Some(880));
+        assert_eq!(
+            estimates,
+            [
+                Some(800),
+                Some(350),
+                Some(880),
+                Some(100),
+                Some(100),
+                Some(100),
+                Some(400),
+                Some(333),
+                Some(700),
+            ]
+        );
+    }
+
+    #[test]
+    fn source_estimate_overflow_does_not_hide_other_known_estimates() {
+        let mut findings = [false; DetectorId::COUNT];
+        findings[DetectorId::SessionsOverDepth.index()] = true;
+        findings[DetectorId::UnusedBuiltInTools.index()] = true;
+        let mut token_burn = TokenBurnAccumulator::new();
+        token_burn.observe(
+            SessionTokenBurnEvidence {
+                total_tokens: Some(1_000),
+                overdepth_avoidable_tokens: Some(100),
+                built_in_tool_sources: Some(vec![
+                    TokenBurnSourceEvidence {
+                        scope: "agent:bundled".to_owned(),
+                        name: "tool".to_owned(),
+                        replicated_tokens: u128::MAX,
+                        invoked: false,
+                    },
+                    TokenBurnSourceEvidence {
+                        scope: "agent:bundled".to_owned(),
+                        name: "tool".to_owned(),
+                        replicated_tokens: 1,
+                        invoked: false,
+                    },
+                ]),
+                ..SessionTokenBurnEvidence::default()
+            },
+            findings,
+            [false, true, false],
+        );
+
+        let (_, estimates) = token_burn.finish(&finding_statuses(&[
+            DetectorId::SessionsOverDepth,
+            DetectorId::UnusedBuiltInTools,
+        ]));
+
+        assert_eq!(
+            estimates[DetectorId::SessionsOverDepth.index()],
+            Some(1_000)
+        );
+        assert_eq!(estimates[DetectorId::UnusedBuiltInTools.index()], None);
     }
 
     #[test]
@@ -1974,7 +2140,7 @@ mod tests {
         assert_eq!(evidence.model_overthinking, Some(assumed_tokens));
 
         evidence.total_tokens = Some(409_700);
-        let mut findings = [false; 9];
+        let mut findings = [false; DetectorId::COUNT];
         findings[DetectorId::ModelOverthinking.index()] = true;
         let mut token_burn = TokenBurnAccumulator::new();
         token_burn.observe(evidence, findings, [false; 3]);
@@ -2252,7 +2418,7 @@ mod tests {
 
     #[test]
     fn any_window_invocation_suppresses_the_exact_source_estimate() {
-        let mut findings = [false; 9];
+        let mut findings = [false; DetectorId::COUNT];
         findings[DetectorId::UnusedMcpServers.index()] = true;
         let mut token_burn = TokenBurnAccumulator::new();
         for index in 0..5 {
@@ -2288,7 +2454,7 @@ mod tests {
 
     #[test]
     fn cohort_token_burn_state_keeps_one_session_entry_and_one_entry_per_source_pair() {
-        let mut findings = [false; 9];
+        let mut findings = [false; DetectorId::COUNT];
         findings[DetectorId::UnusedMcpServers.index()] = true;
         let mut token_burn = TokenBurnAccumulator::new();
         for _ in 0..100 {
@@ -2321,7 +2487,7 @@ mod tests {
 
     #[test]
     fn missing_source_projection_keeps_available_measured_tokens() {
-        let mut finding = [false; 9];
+        let mut finding = [false; DetectorId::COUNT];
         finding[DetectorId::UnusedMcpServers.index()] = true;
         let mut token_burn = TokenBurnAccumulator::new();
         token_burn.observe(
@@ -2343,7 +2509,7 @@ mod tests {
                 total_tokens: Some(1_000),
                 ..SessionTokenBurnEvidence::default()
             },
-            [false; 9],
+            [false; DetectorId::COUNT],
             [true, false, false],
         );
         let statuses = finding_statuses(&[DetectorId::UnusedMcpServers]);
@@ -2487,7 +2653,7 @@ mod tests {
 
     #[test]
     fn combined_token_burn_adds_disjoint_unused_source_types() {
-        let mut findings = [false; 9];
+        let mut findings = [false; DetectorId::COUNT];
         findings[DetectorId::UnusedMcpServers.index()] = true;
         findings[DetectorId::UnusedSkills.index()] = true;
         let mut token_burn = TokenBurnAccumulator::new();

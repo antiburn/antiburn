@@ -101,6 +101,20 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         } => {
             let _ = (provider, state, origin);
         }
+        event::Interaction::BurnCheckAutoFixReviewed { outcome } => {
+            let _ = outcome;
+        }
+        event::Interaction::BurnCheckAutoFixConfirmed => {}
+        event::Interaction::BurnCheckAutoFixCompleted { outcome } => {
+            let _ = outcome;
+        }
+        event::Interaction::BurnCheckPromptPrepared { outcome } => {
+            let _ = outcome;
+        }
+        event::Interaction::BurnCheckPromptCopied => {}
+        event::Interaction::BurnCheckOutcomeObserved { outcome, origin } => {
+            let _ = (outcome, origin);
+        }
     }
 }
 

@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest"
 
 import type { ChecksCategoryPayload, ChecksReportPayload } from "../insightsIpc"
-import { checksPresentation, formatTokenBurnPercent, tokenBurnTone } from "./checks"
+import {
+  checksHeroPresentation,
+  checksPresentation,
+  formatTokenBurnPercent,
+  tokenBurnTone,
+} from "./checks"
 
 function category(overrides: Partial<ChecksCategoryPayload> = {}): ChecksCategoryPayload {
   return {
@@ -39,6 +44,39 @@ describe("Checks presentation", () => {
       "modelOverthinking",
       "cacheChurn",
     ])
+  })
+
+  it("presents the same concise failed hero on every checks surface", () => {
+    expect(checksHeroPresentation(checksPresentation(report([category()])))).toEqual({
+      result: "16% token burn",
+      summary: "1 check failed",
+      state: "failed",
+      tone: "text-system-red-text",
+    })
+  })
+
+  it("states when clean assessed results still need more evidence", () => {
+    const presentation = checksPresentation(
+      report([
+        category({ finding: 0, clean: 8, unavailable: 2 }),
+        category({ id: "oldModelUsage", finding: 0, clean: 10, unavailable: 0 }),
+      ]),
+    )
+
+    expect(checksHeroPresentation(presentation)).toEqual({
+      result: "No issues found where assessed",
+      summary: "More evidence is needed",
+      state: "pending",
+      tone: "text-label",
+    })
+  })
+
+  it("keeps passed hero text neutral", () => {
+    const presentation = checksPresentation(
+      report([category({ finding: 0, clean: 10, unavailable: 0 })]),
+    )
+
+    expect(checksHeroPresentation(presentation).tone).toBe("text-label")
   })
 
   it("keeps confirmed clean results from partially covered categories", () => {

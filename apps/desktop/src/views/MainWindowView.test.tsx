@@ -9,6 +9,9 @@ import { openSettingsWindow } from "../lib/ipc"
 import { MainWindowView } from "./MainWindowView"
 
 vi.mock("./main-window/MainActivityView", () => ({ MainActivityView: () => <p>Sessions</p> }))
+vi.mock("./main-window/BurnChecksView", () => ({
+  BurnChecksView: () => <p>Burn checks workspace</p>,
+}))
 
 vi.mock("../lib/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof IpcModule>()),
@@ -56,14 +59,17 @@ describe("MainWindowView", () => {
     expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
   })
 
-  it("shows only Sessions in the persistent sidebar", () => {
+  it("opens Burn checks by default and keeps Sessions in the sidebar", () => {
     setWindowWidth(1000)
     render(<MainWindowView />)
-    expect(screen.getAllByRole("tab")).toHaveLength(1)
-    expect(screen.getByRole("tab", { name: "Sessions" })).toHaveAttribute(
+    expect(screen.getAllByRole("tab")).toHaveLength(2)
+    expect(screen.getByRole("tab", { name: "Burn checks" })).toHaveAttribute(
       "aria-selected",
       "true",
     )
+    expect(screen.getByRole("tabpanel", { name: "Burn checks" })).toBeVisible()
+    expect(screen.getByText("Burn checks workspace")).toBeVisible()
+    fireEvent.click(screen.getByRole("tab", { name: "Sessions" }))
     expect(screen.getByRole("tabpanel", { name: "Sessions" })).toBeVisible()
     expect(screen.getByRole("button", { name: "Settings" })).toBeVisible()
     setWindowWidth(900)
@@ -75,11 +81,12 @@ describe("MainWindowView", () => {
     render(<MainWindowView />)
     fireEvent.click(screen.getByRole("button", { name: "Settings" }))
     expect(openSettingsWindow).toHaveBeenCalledExactlyOnceWith()
-    expect(screen.getByRole("tab", { name: "Sessions" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "Burn checks" })).toHaveAttribute(
       "aria-selected",
       "true",
     )
     expect(capability.permissions).toContain("allow-open-settings-window")
+    expect(capability.permissions).toContain("allow-open-burn-check-sample")
   })
 
   it("shows a recoverable Settings error", async () => {
@@ -95,7 +102,7 @@ describe("MainWindowView", () => {
     "opens Settings with %s+comma from the detail pane",
     (modifier) => {
       render(<MainWindowView />)
-      fireEvent.keyDown(screen.getByRole("tabpanel", { name: "Sessions" }), {
+      fireEvent.keyDown(screen.getByRole("tabpanel", { name: "Burn checks" }), {
         key: ",",
         [modifier]: true,
       })

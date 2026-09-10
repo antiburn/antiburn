@@ -30,6 +30,8 @@ src/            React 19 + TypeScript frontend (Vite, Tailwind v4)
 tests/          Checks that must not live inside the tree they check
 scripts/        Icon generator (see src-tauri/icons/README.md)
 src-tauri/      The Tauri 2 shell: windows, tray, store, scan, commands
+  src/agent_config/ Safe agent config resolution and exact file edits
+  src/remediation/ Burn Check targets, watches, recovery, and vendor policy
   capabilities/ Webview permission grants
   icons/        Generated app and tray artwork
 ```
@@ -118,6 +120,11 @@ and IPC. The Rust analytics module tests consent, endpoint injection, and the
 payload schema. `cargo-deny` rejects known telemetry dependencies in the local
 engine. Release and dependency checks run through the required CI gate.
 
+Burn Check remediation stays local. It can change one reviewed existing agent
+setting only after a separate review and confirmation. See the
+[remediation guide](../../docs/remediation.md) for supported agents, safety
+checks, recovery, bounds, and privacy.
+
 ## Shell behavior
 
 See [Desktop window renderer lifecycle](../../docs/window-renderer-lifecycle.md)
@@ -134,7 +141,8 @@ Settings teardown, and the memory rules behind those policies.
   1100×600 logical pixels with a normal minimum of 1000×560. The initial outer
   frame is capped at 85% of each usable display dimension. Saved user sizes
   retain their dimensions within the available work area. The navigation shell
-  uses a persistent 220px sidebar with dense desktop rows. Sessions shows the session list and selected detail. The sidebar Settings action and
+  uses a persistent 220px sidebar with dense desktop rows. Burn checks is the
+  default section. Sessions shows the session list and selected detail. The sidebar Settings action and
   Command+, (Control+, on Windows and Linux) open the existing Settings window; see the
   [main-window validation runbook](../../docs/runbooks/main-window.md).
 - **Tray item.** Primary click toggles the popover. Secondary click opens a
@@ -273,3 +281,10 @@ cached usage, and selected analysis. This adds no scanner or provider polling.
 Shared subject identity and analysis loading live in `lib/sessionSubject.ts`. Existing
 menu-bar callers retain their defaults. Session removal broadcasts the existing invalidation
 event so both windows refresh their local views.
+
+Burn checks uses `BurnChecksSession`, a second independent external store. It owns a distinct
+Checks report consumer, combines section activity with main-window visibility, and loads target
+details only for opened checks. It coalesces refreshes, rejects stale results, and keeps prior data
+after a refresh error. Its snapshot subscription reports bounded visible-state and outcome
+analytics. Actions report only reviewed closed outcomes. They never report work data, target values,
+paths, identifiers, exact tokens, or exact costs.

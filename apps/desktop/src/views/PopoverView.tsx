@@ -17,6 +17,7 @@ import { AnchoredTriggerController } from "../lib/anchoredTrigger"
 import {
   DEFAULT_SETTINGS,
   noteInteraction,
+  openMainWindowSection,
   openMainWindowSession,
   openGithubRepo,
   openSettingsWindow,
@@ -297,6 +298,10 @@ export function PopoverView() {
                     })
                   }}
                   onLeave={() => void peekTriggers.leave()}
+                  onOpen={() => {
+                    void peekTriggers.leave()
+                    void openMainWindowSection("burnChecks")
+                  }}
                 />
               </div>
             </div>

@@ -1,12 +1,15 @@
-import { MessagesSquare, Settings } from "lucide-react"
-import { useState, type ReactNode } from "react"
+import { Flame, MessagesSquare, Settings } from "lucide-react"
+import { useState, useSyncExternalStore, type ReactNode } from "react"
 
 import { openSettingsWindow } from "../lib/ipc"
 import { useGlobalKeydown } from "../lib/useGlobalKeydown"
 import { SidebarNav, type SidebarNavItem } from "../components/ui/SidebarNav"
 import { MainActivityView } from "./main-window/MainActivityView"
 import { MainActivitySession } from "./main-window/MainActivitySession"
+import { BurnChecksView } from "./main-window/BurnChecksView"
+import { BurnChecksSession } from "./main-window/BurnChecksSession"
 import { MainWindowLayout } from "./main-window/MainWindowLayout"
+import { MainWindowNavigationSession } from "./main-window/MainWindowNavigationSession"
 
 export interface MainWindowSection extends SidebarNavItem {
   render: (context: { active: boolean }) => ReactNode
@@ -35,7 +38,20 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     }
   })
   const [activitySession] = useState(() => new MainActivitySession())
+  const [burnChecksSession] = useState(() => new BurnChecksSession())
+  const [navigationSession] = useState(() => new MainWindowNavigationSession())
+  const navigation = useSyncExternalStore(
+    navigationSession.subscribe,
+    navigationSession.getSnapshot,
+    navigationSession.getSnapshot,
+  )
   const availableSections: readonly MainWindowSection[] = sections ?? [
+    {
+      id: "burnChecks",
+      label: "Burn checks",
+      icon: Flame,
+      render: ({ active }) => <BurnChecksView active={active} session={burnChecksSession} />,
+    },
     {
       id: "activity",
       label: "Sessions",
@@ -43,14 +59,19 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       render: ({ active }) => <MainActivityView active={active} session={activitySession} />,
     },
   ]
-  const [selectedId, setSelectedId] = useState(() => availableSections[0]?.id ?? "")
-  const [visited, setVisited] = useState(
+  const [customSelectedId, setCustomSelectedId] = useState(() => availableSections[0]?.id ?? "")
+  const [customVisited, setCustomVisited] = useState(
     () => new Set(availableSections.slice(0, 1).map((section) => section.id)),
   )
+  const selectedId = sections ? customSelectedId : navigation.selected
+  const visited: ReadonlySet<string> = sections ? customVisited : new Set(navigation.visited)
   function selectSection(id: string): void {
     if (!availableSections.some((section) => section.id === id)) return
-    setSelectedId(id)
-    setVisited((previous) => new Set(previous).add(id))
+    if (sections) setCustomSelectedId(id)
+    else if (id === "activity" || id === "burnChecks") {
+      navigationSession.select(id)
+    }
+    if (sections) setCustomVisited((previous) => new Set(previous).add(id))
   }
   const selected =
     availableSections.find((section) => section.id === selectedId) ?? availableSections[0]

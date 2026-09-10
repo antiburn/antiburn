@@ -382,7 +382,8 @@ pub(crate) async fn process_next_work(
         crate::remediation::recover_uncertain_write(store, &recovery, now)?;
         return Ok(true);
     }
-    if let Some(remediation) = store.next_dirty_remediation()? {
+    let remediation_first = store.take_remediation_work_turn();
+    if remediation_first && let Some(remediation) = store.next_dirty_remediation()? {
         let _ = crate::remediation::evaluate_dirty_remediation(
             store.state_dir(),
             store,
@@ -391,7 +392,20 @@ pub(crate) async fn process_next_work(
         )?;
         return Ok(true);
     }
-    process_next(store, clock, run_pass, announce).await
+    let processed = process_next(store, clock, run_pass, announce).await?;
+    if processed {
+        return Ok(true);
+    }
+    if !remediation_first && let Some(remediation) = store.next_dirty_remediation()? {
+        let _ = crate::remediation::evaluate_dirty_remediation(
+            store.state_dir(),
+            store,
+            &remediation,
+            clock(),
+        )?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 pub(crate) async fn worker_loop(

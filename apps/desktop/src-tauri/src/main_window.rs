@@ -1,5 +1,6 @@
 //! Shell policy for the ordinary main window.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -8,7 +9,9 @@ use antiburn_main_window::Placement;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
-use crate::store::Store;
+use crate::dto::{BurnCheckSamplePayload, BurnCheckSampleSurface, OpenBurnCheckSampleOutcome};
+use crate::remediation::BurnCheckSampleSession;
+use crate::store::{SessionKey, Store};
 use crate::window_lifecycle::{self, ManagedWindowReadiness};
 use crate::window_readiness::{OpenAction, WindowReadiness, renderer_generation_script};
 
@@ -19,6 +22,29 @@ pub const VISIBILITY_CHANGED_EVENT: &str = "main:visibility-changed";
 
 /// Event carrying the latest session requested for the main window.
 pub const SESSION_TARGET_EVENT: &str = "main:session-target";
+
+/// Event carrying the latest requested main-window section.
+pub const SECTION_TARGET_EVENT: &str = "main:section-target";
+
+const SAMPLE_HANDLE_TTL: Duration = Duration::from_secs(10 * 60);
+const SAMPLE_HANDLE_LIMIT: usize = 100;
+const MISSING_SAMPLE_TITLE: &str = "Untitled session";
+
+/// A destination in the retained main window.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MainWindowSection {
+    Activity,
+    BurnChecks,
+}
+
+/// Revisioned section request shared by event and cold-renderer paths.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SectionTargetRequest {
+    revision: u64,
+    section: MainWindowSection,
+}
 
 /// Identity-only target for one local session.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -35,6 +61,19 @@ pub struct SessionTarget {
 pub struct SessionTargetRequest {
     revision: u64,
     target: SessionTarget,
+}
+
+#[derive(Clone, Debug)]
+struct SampleTarget {
+    handle: String,
+    target: SessionTarget,
+    created_at: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SampleTargetError {
+    Expired,
+    Unavailable,
 }
 
 #[cfg(target_os = "macos")]
@@ -131,6 +170,9 @@ pub struct MainWindowState {
     placement_generation: AtomicU64,
     session_target: Mutex<Option<SessionTargetRequest>>,
     session_target_revision: AtomicU64,
+    section_target: Mutex<Option<SectionTargetRequest>>,
+    section_target_revision: AtomicU64,
+    sample_targets: Mutex<VecDeque<SampleTarget>>,
 }
 
 impl MainWindowState {
@@ -146,7 +188,54 @@ impl MainWindowState {
             placement_generation: AtomicU64::new(0),
             session_target: Mutex::new(None),
             session_target_revision: AtomicU64::new(0),
+            section_target: Mutex::new(None),
+            section_target_revision: AtomicU64::new(0),
+            sample_targets: Mutex::new(VecDeque::new()),
         }
+    }
+
+    pub fn issue_sample_handle(
+        &self,
+        agent: String,
+        session_id: String,
+        wsl_distro: Option<String>,
+        now: Instant,
+    ) -> Result<String, String> {
+        let mut bytes = [0_u8; 16];
+        getrandom::fill(&mut bytes).map_err(|_| "unable to create sample handle".to_owned())?;
+        let handle: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        let mut targets = lock(&self.sample_targets);
+        targets
+            .retain(|entry| now.saturating_duration_since(entry.created_at) <= SAMPLE_HANDLE_TTL);
+        while targets.len() >= SAMPLE_HANDLE_LIMIT {
+            targets.pop_front();
+        }
+        targets.push_back(SampleTarget {
+            handle: handle.clone(),
+            target: SessionTarget {
+                agent,
+                session_id,
+                wsl_distro,
+            },
+            created_at: now,
+        });
+        Ok(handle)
+    }
+
+    pub fn resolve_sample_handle(
+        &self,
+        handle: &str,
+        now: Instant,
+    ) -> Result<SessionTarget, SampleTargetError> {
+        let targets = lock(&self.sample_targets);
+        let entry = targets
+            .iter()
+            .find(|entry| entry.handle == handle)
+            .ok_or(SampleTargetError::Unavailable)?;
+        if now.saturating_duration_since(entry.created_at) > SAMPLE_HANDLE_TTL {
+            return Err(SampleTargetError::Expired);
+        }
+        Ok(entry.target.clone())
     }
 
     fn request_session_target(&self, target: SessionTarget) -> SessionTargetRequest {
@@ -167,6 +256,32 @@ impl MainWindowState {
 
     fn clear_session_target(&self, revision: u64) {
         let mut target = lock(&self.session_target);
+        if target
+            .as_ref()
+            .is_some_and(|request| request.revision == revision)
+        {
+            *target = None;
+        }
+    }
+
+    fn request_section_target(&self, section: MainWindowSection) -> SectionTargetRequest {
+        let request = SectionTargetRequest {
+            revision: self
+                .section_target_revision
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1),
+            section,
+        };
+        *lock(&self.section_target) = Some(request.clone());
+        request
+    }
+
+    fn take_section_target(&self) -> Option<SectionTargetRequest> {
+        lock(&self.section_target).take()
+    }
+
+    fn clear_section_target(&self, revision: u64) {
+        let mut target = lock(&self.section_target);
         if target
             .as_ref()
             .is_some_and(|request| request.revision == revision)
@@ -286,13 +401,149 @@ pub fn open(app: &AppHandle, trigger: OpenTrigger) -> tauri::Result<()> {
 /// Open the main window and route its renderer to one exact session.
 #[tauri::command]
 pub fn open_main_window_session(app: AppHandle, target: SessionTarget) -> Result<(), String> {
+    route_session_target(&app, target)
+}
+
+fn route_session_target(app: &AppHandle, target: SessionTarget) -> Result<(), String> {
     let state = app.state::<MainWindowState>();
     let request = state.request_session_target(target);
-    if let Err(error) = open(&app, OpenTrigger::Interaction) {
+    let section_request = state.request_section_target(MainWindowSection::Activity);
+    if let Err(error) = open(app, OpenTrigger::Interaction) {
         state.clear_session_target(request.revision);
+        state.clear_section_target(section_request.revision);
         return Err(error.to_string());
     }
-    app.emit_to(LABEL, SESSION_TARGET_EVENT, request)
+    app.emit_to(LABEL, SECTION_TARGET_EVENT, section_request)
+        .and_then(|()| app.emit_to(LABEL, SESSION_TARGET_EVENT, request))
+        .map_err(|error| error.to_string())
+}
+
+/// Mint bounded renderer samples while retaining exact identities in Rust.
+pub fn sample_payloads(
+    app: &AppHandle,
+    samples: &[BurnCheckSampleSession],
+) -> Result<Vec<BurnCheckSamplePayload>, String> {
+    let state = app.state::<MainWindowState>();
+    let store = app.state::<Store>();
+    let now = Instant::now();
+    samples
+        .iter()
+        .filter_map(|sample| {
+            let key = SessionKey::new(
+                sample.environment_key.clone(),
+                sample.agent.clone(),
+                sample.session_id.clone(),
+            );
+            let record = match store.session(&key) {
+                Ok(Some(record)) => record,
+                Ok(None) => return None,
+                Err(error) => return Some(Err(error.to_string())),
+            };
+            Some(
+                state
+                    .issue_sample_handle(
+                        sample.agent.clone(),
+                        sample.session_id.clone(),
+                        record.wsl_distro,
+                        now,
+                    )
+                    .map(|navigation_handle| BurnCheckSamplePayload {
+                        navigation_handle,
+                        title: sample_title(record.title.as_deref()),
+                        agent: sample.agent.clone(),
+                        surface: sample_surface(&record.surface),
+                        observed_at_ms: sample.observed_at_ms,
+                    }),
+            )
+        })
+        .collect()
+}
+
+fn sample_title(title: Option<&str>) -> String {
+    title
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or(MISSING_SAMPLE_TITLE)
+        .to_owned()
+}
+
+fn sample_surface(surface: &str) -> BurnCheckSampleSurface {
+    match surface {
+        "cli" => BurnCheckSampleSurface::Cli,
+        "ide_desktop" => BurnCheckSampleSurface::IdeDesktop,
+        _ => BurnCheckSampleSurface::Unknown,
+    }
+}
+
+/// Resolve one opaque sample route and use the standard revisioned session controller.
+#[tauri::command]
+pub fn open_burn_check_sample(
+    window: WebviewWindow,
+    app: AppHandle,
+    navigation_handle: String,
+) -> Result<OpenBurnCheckSampleOutcome, String> {
+    if window.label() != LABEL {
+        return Err("burn check samples are unavailable to this window".to_owned());
+    }
+    let target = match resolve_sample_for_open(
+        &app.state::<MainWindowState>(),
+        &app.state::<Store>(),
+        &navigation_handle,
+        Instant::now(),
+    )? {
+        Ok(target) => target,
+        Err(outcome) => return Ok(outcome),
+    };
+    route_session_target(&app, target)?;
+    Ok(OpenBurnCheckSampleOutcome::Opened)
+}
+
+fn resolve_sample_for_open(
+    state: &MainWindowState,
+    store: &Store,
+    handle: &str,
+    now: Instant,
+) -> Result<Result<SessionTarget, OpenBurnCheckSampleOutcome>, String> {
+    let target = match state.resolve_sample_handle(handle, now) {
+        Ok(target) => target,
+        Err(SampleTargetError::Expired) => {
+            return Ok(Err(OpenBurnCheckSampleOutcome::Expired));
+        }
+        Err(SampleTargetError::Unavailable) => {
+            return Ok(Err(OpenBurnCheckSampleOutcome::Unavailable));
+        }
+    };
+    let exists = store
+        .session(&SessionKey::for_session(
+            &target.agent,
+            &target.session_id,
+            target.wsl_distro.as_deref(),
+        ))
+        .map_err(|error| error.to_string())?
+        .is_some();
+    if exists {
+        Ok(Ok(target))
+    } else {
+        Ok(Err(OpenBurnCheckSampleOutcome::Deleted))
+    }
+}
+
+/// Open the main window and route its renderer to a top-level section.
+#[tauri::command]
+pub fn open_main_window_section(
+    window: WebviewWindow,
+    app: AppHandle,
+    section: MainWindowSection,
+) -> Result<(), String> {
+    if window.label() != crate::popover::LABEL {
+        return Err("main-window sections are unavailable to this window".to_owned());
+    }
+    let state = app.state::<MainWindowState>();
+    let request = state.request_section_target(section);
+    if let Err(error) = open(&app, OpenTrigger::Interaction) {
+        state.clear_section_target(request.revision);
+        return Err(error.to_string());
+    }
+    app.emit_to(LABEL, SECTION_TARGET_EVENT, request)
         .map_err(|error| error.to_string())
 }
 
@@ -305,6 +556,17 @@ pub fn take_main_window_session_target(
         return Err("main-window session targets are unavailable to this window".to_owned());
     }
     Ok(window.state::<MainWindowState>().take_session_target())
+}
+
+/// Take the latest section target after the main renderer installs its listener.
+#[tauri::command]
+pub fn take_main_window_section_target(
+    window: WebviewWindow,
+) -> Result<Option<SectionTargetRequest>, String> {
+    if window.label() != LABEL {
+        return Err("main-window section targets are unavailable to this window".to_owned());
+    }
+    Ok(window.state::<MainWindowState>().take_section_target())
 }
 
 fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
@@ -554,6 +816,9 @@ mod tests {
             placement_generation: AtomicU64::new(0),
             session_target: Mutex::new(None),
             session_target_revision: AtomicU64::new(0),
+            section_target: Mutex::new(None),
+            section_target_revision: AtomicU64::new(0),
+            sample_targets: Mutex::new(VecDeque::new()),
         };
         let now = Instant::now();
         assert_eq!(
@@ -576,6 +841,9 @@ mod tests {
             placement_generation: AtomicU64::new(0),
             session_target: Mutex::new(None),
             session_target_revision: AtomicU64::new(0),
+            section_target: Mutex::new(None),
+            section_target_revision: AtomicU64::new(0),
+            sample_targets: Mutex::new(VecDeque::new()),
         };
         let first = Instant::now();
         assert_eq!(
@@ -600,6 +868,9 @@ mod tests {
             placement_generation: AtomicU64::new(0),
             session_target: Mutex::new(None),
             session_target_revision: AtomicU64::new(0),
+            section_target: Mutex::new(None),
+            section_target_revision: AtomicU64::new(0),
+            sample_targets: Mutex::new(VecDeque::new()),
         };
         state.request_session_target(SessionTarget {
             agent: "claude".to_owned(),
@@ -626,6 +897,9 @@ mod tests {
             placement_generation: AtomicU64::new(0),
             session_target: Mutex::new(None),
             session_target_revision: AtomicU64::new(0),
+            section_target: Mutex::new(None),
+            section_target_revision: AtomicU64::new(0),
+            sample_targets: Mutex::new(VecDeque::new()),
         };
         let first = state.request_session_target(SessionTarget {
             agent: "claude".to_owned(),
@@ -643,6 +917,134 @@ mod tests {
     }
 
     #[test]
+    fn section_target_keeps_only_the_latest_request() {
+        let state = MainWindowState {
+            readiness: Mutex::new(WindowReadiness::default()),
+            presentation: Mutex::new(Presentation::default()),
+            placement: Mutex::new(None),
+            placement_generation: AtomicU64::new(0),
+            session_target: Mutex::new(None),
+            session_target_revision: AtomicU64::new(0),
+            section_target: Mutex::new(None),
+            section_target_revision: AtomicU64::new(0),
+            sample_targets: Mutex::new(VecDeque::new()),
+        };
+        state.request_section_target(MainWindowSection::BurnChecks);
+        let latest = state.request_section_target(MainWindowSection::Activity);
+
+        assert_eq!(latest.revision, 2);
+        assert_eq!(state.take_section_target(), Some(latest));
+        assert_eq!(state.take_section_target(), None);
+    }
+
+    #[test]
+    fn sample_handles_are_opaque_bounded_and_expire() {
+        let state = MainWindowState {
+            readiness: Mutex::new(WindowReadiness::default()),
+            presentation: Mutex::new(Presentation::default()),
+            placement: Mutex::new(None),
+            placement_generation: AtomicU64::new(0),
+            session_target: Mutex::new(None),
+            session_target_revision: AtomicU64::new(0),
+            section_target: Mutex::new(None),
+            section_target_revision: AtomicU64::new(0),
+            sample_targets: Mutex::new(VecDeque::new()),
+        };
+        let now = Instant::now();
+        let handle = state
+            .issue_sample_handle("codex".to_owned(), "private-id".to_owned(), None, now)
+            .unwrap();
+
+        assert!(!handle.contains("private-id"));
+        assert_eq!(handle.len(), 32);
+        assert_eq!(
+            state.resolve_sample_handle("missing", now),
+            Err(SampleTargetError::Unavailable)
+        );
+        assert_eq!(
+            state.resolve_sample_handle(&handle, now + SAMPLE_HANDLE_TTL + Duration::from_secs(1)),
+            Err(SampleTargetError::Expired)
+        );
+    }
+
+    #[test]
+    fn sample_payload_titles_keep_stored_titles_and_use_a_neutral_fallback() {
+        assert_eq!(
+            sample_title(Some("Review the release")),
+            "Review the release"
+        );
+        assert_eq!(sample_title(Some("  ")), MISSING_SAMPLE_TITLE);
+        assert_eq!(sample_title(None), MISSING_SAMPLE_TITLE);
+    }
+
+    #[test]
+    fn sample_payload_surfaces_are_limited_to_safe_categories() {
+        assert_eq!(sample_surface("cli"), BurnCheckSampleSurface::Cli);
+        assert_eq!(
+            sample_surface("ide_desktop"),
+            BurnCheckSampleSurface::IdeDesktop
+        );
+        assert_eq!(
+            sample_surface("provider-private-value"),
+            BurnCheckSampleSurface::Unknown
+        );
+    }
+
+    #[test]
+    fn sample_navigation_reports_a_deleted_session() {
+        let state = MainWindowState {
+            readiness: Mutex::new(WindowReadiness::default()),
+            presentation: Mutex::new(Presentation::default()),
+            placement: Mutex::new(None),
+            placement_generation: AtomicU64::new(0),
+            session_target: Mutex::new(None),
+            session_target_revision: AtomicU64::new(0),
+            section_target: Mutex::new(None),
+            section_target_revision: AtomicU64::new(0),
+            sample_targets: Mutex::new(VecDeque::new()),
+        };
+        let store = Store::open_in_memory(std::path::Path::new("/tmp/antiburn-sample-test"))
+            .expect("open store");
+        let now = Instant::now();
+        let handle = state
+            .issue_sample_handle("codex".to_owned(), "deleted".to_owned(), None, now)
+            .unwrap();
+
+        assert!(matches!(
+            resolve_sample_for_open(&state, &store, &handle, now),
+            Ok(Err(OpenBurnCheckSampleOutcome::Deleted))
+        ));
+    }
+
+    #[test]
+    fn a_later_external_session_request_wins_over_sample_navigation() {
+        let state = MainWindowState {
+            readiness: Mutex::new(WindowReadiness::default()),
+            presentation: Mutex::new(Presentation::default()),
+            placement: Mutex::new(None),
+            placement_generation: AtomicU64::new(0),
+            session_target: Mutex::new(None),
+            session_target_revision: AtomicU64::new(0),
+            section_target: Mutex::new(None),
+            section_target_revision: AtomicU64::new(0),
+            sample_targets: Mutex::new(VecDeque::new()),
+        };
+        let sample = state.request_session_target(SessionTarget {
+            agent: "codex".to_owned(),
+            session_id: "sample".to_owned(),
+            wsl_distro: None,
+        });
+        let external = state.request_session_target(SessionTarget {
+            agent: "claude-code".to_owned(),
+            session_id: "external".to_owned(),
+            wsl_distro: None,
+        });
+
+        assert!(external.revision > sample.revision);
+        assert_eq!(state.take_session_target(), Some(external));
+    }
+
+    #[test]
     fn close_during_load_cancels_the_pending_reveal() {
         let state = MainWindowState {
             readiness: Mutex::new(WindowReadiness::default()),
@@ -651,6 +1053,9 @@ mod tests {
             placement_generation: AtomicU64::new(0),
             session_target: Mutex::new(None),
             session_target_revision: AtomicU64::new(0),
+            section_target: Mutex::new(None),
+            section_target_revision: AtomicU64::new(0),
+            sample_targets: Mutex::new(VecDeque::new()),
         };
         let started = Instant::now();
         let OpenAction::StartLoading { generation } = state.readiness().request_open(started)
@@ -686,6 +1091,9 @@ mod tests {
             placement_generation: AtomicU64::new(0),
             session_target: Mutex::new(None),
             session_target_revision: AtomicU64::new(0),
+            section_target: Mutex::new(None),
+            section_target_revision: AtomicU64::new(0),
+            sample_targets: Mutex::new(VecDeque::new()),
         };
         let now = Instant::now();
 

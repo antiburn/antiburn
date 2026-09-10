@@ -13,6 +13,11 @@ them locally. It does not upload your sessions, transcripts, prompts, messages,
 titles, source code, file contents, filenames, paths, repository or branch
 names, working directories, token counts, costs, or credentials.
 
+If you confirm an Auto Fix, Antiburn can change one existing supported coding
+agent setting on your computer. It shows the setting, scope, current value, and
+new value before the change. It does not modify a source transcript. Burn Check
+attempts, safe display facts, and verified savings stay in the local database.
+
 Antiburn does not require an account. It does not use a third-party analytics,
 telemetry, crash-reporting, or session-replay SDK.
 
@@ -31,7 +36,8 @@ The event schema contains twenty-seven fields:
 - the processor architecture, operating-system family, and app version;
 - an optional count rounded to a range;
 - optional labels selected from fixed lists in the application;
-- whether a visible state followed a user or automatic exposure;
+- whether a visible state followed a user or automatic exposure, or whether a
+  Burn Check watch started passively or from an action;
 - a range for Claude's current five-hour usage;
 - whether Claude returned reset data, null, or a malformed value;
 - Claude's reset eligibility and experiment-membership states;

@@ -525,6 +525,18 @@ describe("PopoverView", () => {
     expect(invoke).not.toHaveBeenCalledWith("get_session_analysis", expect.anything())
   })
 
+  it("opens Burn checks in the main window from the checks summary", async () => {
+    render(<PopoverView />)
+
+    fireEvent.click(await screen.findByRole("button", { name: /Burn checks/ }))
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("open_main_window_section", {
+        section: "burnChecks",
+      }),
+    )
+  })
+
   it("preserves WSL identity when opening a session in the main window", async () => {
     mockCommands({
       list_recent_sessions: [activityEntry({ wslDistro: "Ubuntu-24.04" })],
@@ -624,7 +636,7 @@ describe("PopoverView", () => {
     expect(summary).not.toHaveAttribute("title")
     const foldTarget = summary.parentElement
     expect(foldTarget).toContainElement(screen.getByTestId("usage-limits-bar"))
-    expect(foldTarget).toContainElement(screen.getByText("All checks").closest("[tabindex]"))
+    expect(foldTarget).toContainElement(screen.getByRole("button", { name: /Burn checks/ }))
     expect(foldTarget?.parentElement?.children).toHaveLength(1)
   })
 
@@ -685,7 +697,7 @@ describe("PopoverView", () => {
     render(<PopoverView />)
 
     await screen.findByText("1 check failed")
-    const trigger = (await screen.findByText("All checks")).closest("[tabindex]")!
+    const trigger = await screen.findByRole("button", { name: /Burn checks/ })
     fireEvent.mouseEnter(trigger)
 
     expect(screen.queryByRole("heading", { name: "Checks" })).not.toBeInTheDocument()
@@ -710,7 +722,7 @@ describe("PopoverView", () => {
   it("conceals the Checks preview when the Activity list scrolls", async () => {
     render(<PopoverView />)
     await screen.findByText("1 check failed")
-    fireEvent.mouseEnter((await screen.findByText("All checks")).closest("[tabindex]")!)
+    fireEvent.mouseEnter(await screen.findByRole("button", { name: /Burn checks/ }))
 
     const viewport = screen
       .getByRole("region", { name: "Sessions" })

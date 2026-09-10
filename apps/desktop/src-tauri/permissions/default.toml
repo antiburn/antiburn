@@ -45,6 +45,7 @@ permissions = [
   "allow-open-folder-access-settings",
   "allow-open-github-repo",
   "allow-open-overlay-window",
+  "allow-open-main-window-section",
   "allow-open-main-window-session",
   "allow-open-privacy-policy",
   "allow-open-settings-window",

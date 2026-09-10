@@ -17,9 +17,10 @@ successful surface and Settings-pane visibility, visible surface outcomes,
 deliberately viewed provider states, and classified setup starts and
 completions. `no_credentials` is an accepted provider-state value but remains
 dormant because the current product boundary cannot prove it. The queue now
-wakes at a bounded depth and uses protected drain and retry delays. Phase 2 and
-Phase 3 remain proposals. Collector verification, production reports, and
-cohort review remain operational work.
+wakes at a bounded depth and uses protected drain and retry delays. The reviewed
+Burn Checks part of Phase 3 is implemented as of 2026-09-10. Other Phase 2 and
+Phase 3 proposals remain unimplemented. Collector verification, production
+reports, and cohort review remain operational work.
 
 ## Coverage at the audited revision
 
@@ -205,6 +206,21 @@ failure. Do not introduce persistent operation or work identifiers.
 
 ### Phase 3: targeted diagnostics and measurement quality
 
+#### Burn Checks integration (implemented 2026-09-10)
+
+| Product question and decision                                                                                                                                          | Metric and denominator                                                                                                                                                                                                   | Trigger and closed fields                                                                                                                                                                                                                                                                                      | Suppression and maximum volume                                                                                                                                                                                                                                 |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Does deliberate Burn Checks use reach usable results? Improve discovery or report reliability.                                                                         | Distinct reporting installations with `burn_checks` `ready`, `empty`, `error`, or `loading_timeout`, divided by installations with a user-origin `burn_checks` `surface_viewed`, on app versions from 2026-09-10 onward. | The main-window section is both selected and natively visible. `surface_viewed` uses `label=burn_checks`, `detail=user`. `surface_state_observed` uses `label=burn_checks`, the four existing state values, and `origin=user`. Ready requires a finding or clean result; an all-unassessed report is empty.    | Hidden sections, stale results, remounts, and refreshes do not create exposures. Each state occurs once per exposure. Maximum: one view and four state events per exposure.                                                                                    |
+| Do readers proceed from Auto Fix review to confirmation, and what result follows? Improve review copy or operation reliability.                                        | Confirmations divided by `burn_check_auto_fix_reviewed` with `detail=ready`; each typed completion outcome divided by confirmations. Allow in-flight and late-delivery time before finalizing.                           | A Fix request completes with review `detail`: `ready`, `stale`, `expired`, `conflict`, `unavailable`, or `failed`. Apply selection emits `burn_check_auto_fix_confirmed`. Completion `detail`: `applied_awaiting_verification`, `recovery_needed`, `stale`, `expired`, `conflict`, `unavailable`, or `failed`. | Busy controls suppress duplicate concurrent requests. Each explicit retry is a new attempt. Maximum: one review event per Fix request, one confirmation and one completion per Apply request. No automatic retry emits another event.                          |
+| Does prompt preparation reach a usable clipboard result? Improve prompt preparation or clipboard handling.                                                             | Successful `burn_check_prompt_copied` divided by `burn_check_prompt_prepared` with `detail=ready`. Report preparation failures separately.                                                                               | A Copy fix prompt request emits preparation `detail`: `ready`, `stale`, `expired`, `unavailable`, or `failed`. A successful clipboard write emits `burn_check_prompt_copied` with no properties.                                                                                                               | A clipboard failure emits no copy event. Clipboard retry reuses the prepared prompt and emits no second preparation event. Busy and copied controls suppress duplicate calls. Maximum: one preparation and one successful copy for one rendered action. A non-named check submits selected current targets once. |
+| Do later improvements and recurrences become visible, and did their watch start passively or from an action? Improve verification coverage without claiming causation. | Distinct reporting installations with each `(detail, origin)` tuple among deliberate Burn Checks exposures. Use exposed installations as the denominator. Never use background transitions as visits.                    | `burn_check_outcome_observed`: `detail=verified` or `recurred`; `origin=passive` or `action`. Verified comes from the visible aggregate summary or an expanded target. Recurred comes only from a deliberately expanded visible target.                                                                        | Background evaluation, hidden sections, hidden target lists, and refresh callbacks emit nothing. Deduplicate each tuple per exposure. Maximum: four events per exposure, independent of finding count.                                                         |
+
+These events use only the existing `detail` and `origin` wire fields. They never
+include prompts, resource or model strings from work, paths, finding, action,
+watch, reference, or sample IDs, exact token or cost values, private errors, or
+evidence revisions. Product reports must segment at the 2026-09-10 app-version
+boundary and show reporting installation counts.
+
 Add scoped scan, analysis, storage, or provider diagnostics only for a named
 reliability question that visible-state events cannot answer. Use fixed error
 categories and changed-state suppression. Do not add an unconditional heartbeat
@@ -303,6 +319,7 @@ merely requires an analytics file to change in every feature PR.
    maintainer; review whether its events still support an actual decision.
 
 The historical audit changed documentation, current public disclosures, and
-contributor expectations. Phase 1 now adds runtime instrumentation and bounded
-delivery behavior. Collector configuration, dashboards, and Phase 2 and Phase 3
+contributor expectations. Phase 1 and the reviewed Burn Checks Phase 3
+integration now add runtime instrumentation with bounded delivery behavior.
+Collector configuration, dashboards, and the remaining Phase 2 and Phase 3
 implementation remain work described above.

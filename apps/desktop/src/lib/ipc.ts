@@ -223,6 +223,14 @@ export interface MainWindowSessionRequest {
   target: SessionIdentityPayload
 }
 
+export type MainWindowSectionId = "activity" | "burnChecks"
+
+/** One revisioned request to select a retained main-window section. */
+export interface MainWindowSectionRequest {
+  revision: number
+  section: MainWindowSectionId
+}
+
 /** One end of a local fork relation. */
 export interface SessionRelationPayload {
   identity: SessionIdentityPayload
@@ -524,6 +532,18 @@ export async function openMainWindowSession(target: SessionIdentityPayload): Pro
   await invoke("open_main_window_session", { target })
 }
 
+/** Open or focus the main window and select one top-level section. */
+export async function openMainWindowSection(section: MainWindowSectionId): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_main_window_section", { section })
+}
+
+/** Take the latest section that arrived before the main renderer could listen. */
+export async function takeMainWindowSectionTarget(): Promise<MainWindowSectionRequest | null> {
+  if (!hasShell()) return null
+  return invoke<MainWindowSectionRequest | null>("take_main_window_section_target")
+}
+
 /** Take the latest target that arrived before the main renderer could listen. */
 export async function takeMainWindowSessionTarget(): Promise<MainWindowSessionRequest | null> {
   if (!hasShell()) return null
@@ -785,6 +805,16 @@ export type Interaction =
       state: LiveUsageState
       origin: SurfaceOrigin
     }
+  | { kind: "burnCheckAutoFixReviewed"; outcome: AutoFixReviewAnalyticsOutcome }
+  | { kind: "burnCheckAutoFixConfirmed" }
+  | { kind: "burnCheckAutoFixCompleted"; outcome: AutoFixAnalyticsOutcome }
+  | { kind: "burnCheckPromptPrepared"; outcome: PromptPreparationAnalyticsOutcome }
+  | { kind: "burnCheckPromptCopied" }
+  | {
+      kind: "burnCheckOutcomeObserved"
+      outcome: "verified" | "recurred"
+      origin: "passive" | "action"
+    }
 
 export type Surface =
   | "activity"
@@ -794,6 +824,7 @@ export type Surface =
   | "hud"
   | "hud_detail"
   | "settings"
+  | "burn_checks"
 
 export type StateSurface = Surface | "insights"
 export type SurfaceOrigin = "user" | "automatic"
@@ -801,6 +832,18 @@ export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"
 export type LiveUsageProvider = "anthropic" | "openai" | "google"
 export type LiveUsageState =
   "fresh" | "stale" | "authentication" | "rate_limited" | "unavailable" | "no_credentials"
+export type AutoFixReviewAnalyticsOutcome =
+  "ready" | "stale" | "expired" | "conflict" | "unavailable" | "failed"
+export type AutoFixAnalyticsOutcome =
+  | "applied_awaiting_verification"
+  | "recovery_needed"
+  | "stale"
+  | "expired"
+  | "conflict"
+  | "unavailable"
+  | "failed"
+export type PromptPreparationAnalyticsOutcome =
+  "ready" | "stale" | "expired" | "unavailable" | "failed"
 
 /**
  * Report one interaction. Fire-and-forget, and silent on failure.
@@ -1268,6 +1311,9 @@ export const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
 /** Event carrying a revisioned session target to an existing main renderer. */
 export const MAIN_WINDOW_SESSION_TARGET_EVENT = "main:session-target"
 
+/** Event carrying a revisioned section target to an existing main renderer. */
+export const MAIN_WINDOW_SECTION_TARGET_EVENT = "main:section-target"
+
 /** Subscribe to main-window presentation visibility. */
 export async function onMainWindowVisibilityChanged(
   handler: (visible: boolean) => void,
@@ -1284,6 +1330,16 @@ export async function onMainWindowSessionTarget(
 ): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen<MainWindowSessionRequest>(MAIN_WINDOW_SESSION_TARGET_EVENT, (event) =>
+    handler(event.payload),
+  )
+}
+
+/** Subscribe to section targets sent to the retained main renderer. */
+export async function onMainWindowSectionTarget(
+  handler: (request: MainWindowSectionRequest) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<MainWindowSectionRequest>(MAIN_WINDOW_SECTION_TARGET_EVENT, (event) =>
     handler(event.payload),
   )
 }

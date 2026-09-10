@@ -489,7 +489,11 @@ Notes for what isn't expressible as a token:
   top strip there. Multi-pane content keeps the documented 220px sidebar visible at every size.
   Main navigation uses 28px rows, 2px vertical gaps, 14px icons, and 8px icon-to-label gaps.
   These local geometry rules use the spacing tokens in `main-window.css`; other source lists
-  retain their current density. Sessions is the main sidebar section. A Settings action at the bottom opens the existing Settings window. Command+, (Control+, on Windows and Linux) also opens Settings without changing the selected section.
+  retain their current density. Burn checks and Sessions are the main sidebar sections. Burn checks
+  is the default section, uses the 14px Lucide `Flame` mark, and opens from the checks summary in
+  the menu-bar popover. A
+  Settings action at the bottom opens the existing Settings window. Command+, (Control+, on Windows
+  and Linux) also opens Settings without changing the selected section.
   The first sidebar row starts at 48px on macOS, clear of the drag strip. The content region scrolls
   independently of the title strip. A view switch is immediate: the window does not animate navigation. Use the
   documented type scale and keyboard-only focus treatment. Hidden or minimized main windows suspend
@@ -521,6 +525,34 @@ existing title truncation rather than a responsive layout change. The detail too
 session title; Back appears only for related-session history. Embedded shortcuts stay inside
 the detail pane. Hidden panes pause hygiene reads, relative-time clocks, and active-row motion.
 The menu-bar list keeps its existing navigation and presentation defaults.
+
+Burn checks uses the workspace as one flexible pane instead of adding a collection pane. It has no
+visual page header. The scroll viewport starts with the report summary and keeps a screen-reader-only
+page heading. The viewport uses the shared top-edge fade and centers a single-column overview. The summary and grouped check
+rows extend the anchored preview. Both surfaces use the same check names, icons, assessed-session
+counts, order, token-burn percentages, summaries, and semantic status colors. This parity comes from
+shared presentation helpers. Do not copy labels or calculate percentages in either surface. Do not
+sum category percentages. Use color only for the compact status icon and metric. Other text and
+surfaces stay neutral. The main view shows failed and passed groups. It hides not-assessed rows;
+the summary states when more evidence is needed. Groups use `surface-card/50`, `rounded-control`,
+separators, and accessible disclosure buttons. Expanded failures use one short, check-specific
+finding sentence, followed by the available actions. Do not show internal target identities,
+repeated observations, repeated guidance, or detail refresh and bounded-list notices. Only unused MCP servers and unused skills show
+named resource rows. A separate nested disclosure lists bounded sample sessions. Opening a sample selects it in the
+standard Sessions collection and detail layout. Returning to Burn checks preserves the check and
+sample disclosure state. `Fix` opens a small modal that shows the effect, scope, and one
+current-to-new value. The modal traps focus, focuses Cancel first, and closes from Cancel, Escape,
+or the backdrop. At narrow widths, summaries, details, and actions stack without horizontal
+scrolling. The cold loading state uses one busy region, one screen-reader status, a summary card,
+a group label, and three shaped row skeletons. An expanded check uses the same one-region,
+one-status rule with a compact body, action, and sample skeleton. It must not announce each skeleton. The quiet
+`Your savings` disclosure appears only when at least one supported estimate exists. Place it below
+the report summary and before failed checks. Its neutral vertical list supports any number of
+contributing checks and collapses into the total. Show token and dollar savings together only when
+they cover the same scope and period.
+Clipboard success replaces `Copy fix prompt` with a disabled `Copied` button for three seconds.
+Applied fixes replace `Fix` with a disabled `Change applied` button for three seconds. A current
+finding then restores the enabled action. Do not add separate success text below the actions.
 
 The unselected Sessions detail uses a centered, quiet empty state: a decorative 24px
 `MessagesSquare` icon on a soft circular surface, a `type-title-2` heading, and a short
