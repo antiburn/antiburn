@@ -174,7 +174,10 @@ export function SessionStatusBar({
   const isHighLimitShare = roundedLimitPercent(limitBadge?.percent ?? 0) >= 5
 
   return (
-    <div className="flex w-full items-center justify-between gap-x-1.5 text-label-secondary">
+    // One height for every state. A pill badge adds a pixel of padding above
+    // and below its 13px line box, so a row that shows one would otherwise
+    // stand taller than a row that shows plain text.
+    <div className="flex h-[15px] w-full items-center justify-between gap-x-1.5 text-label-secondary">
       {showVerdict && (
         <Tooltip label={tooltip} delayMs={150}>
           <span
@@ -200,7 +203,9 @@ export function SessionStatusBar({
                     // tracking moves the wide percent sign into the last digit,
                     // because the monospace cell is already full.
                     "flex shrink-0 items-center gap-0.5 rounded-full bg-brand-tint px-1.5 py-px font-mono type-footnote font-medium! leading-[13px] text-white tabular-nums"
-                  : "font-mono type-footnote tabular-nums text-label-secondary"
+                  : // The same 13px line box as the pill, so the two states of
+                    // the badge occupy one box.
+                    "font-mono type-footnote leading-[13px] tabular-nums text-label-secondary"
               }
               data-session-limit-provider={limitBadge.provider}
               data-session-limit-window={limitBadge.windowId}
@@ -219,7 +224,7 @@ export function SessionStatusBar({
         ) : limitBadge ? (
           <Tooltip label={limitBadge.label} delayMs={150}>
             <span
-              className="font-mono type-footnote text-label-secondary opacity-50"
+              className="font-mono type-footnote leading-[13px] text-label-secondary opacity-50"
               aria-label={limitBadge.label}
               tabIndex={0}
             >
