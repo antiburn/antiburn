@@ -207,7 +207,9 @@ switch and in Mission Control.
   phase. A CSS animation starts when the browser applies it, so each
   animation takes a negative delay of the wall clock within the cycle, and
   a title shimmer and a meter sweep move in step whenever either one
-  starts. The band crosses the bar
+  starts. The sweep then holds back 0.2 seconds. The shimmer's band is soft
+  and almost a title wide, so it fades in, and this band is sharp and three
+  segments wide, so it snaps on: equal centres look early on the meter. The band crosses the bar
   in about 2 seconds, half the cycle, and the bar rests for the remainder.
   A provider's rows run 100 milliseconds apart from the top. With no bars at
   all, the one empty bar sweeps for any live session.

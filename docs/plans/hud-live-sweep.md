@@ -267,8 +267,15 @@ sweep while tokens flow, not while the agent waits.
   band runs from half a title before the text to half a title past it. One
   cycle alone was not enough, because the sweep then crossed its bar 500 ms
   before the shimmer crossed its title. Measured in Chrome: the sweep
-  position now equals the shimmer's band centre at each eighth of the
+  position then equalled the shimmer's band centre at each eighth of the
   cycle.
+- **The sweep holds back 0.2 s behind the shimmer.** Keith, on the running
+  app: "VU meter seems to start animation about 0.2 seconds before session
+  list item". The centres were equal, but the onsets are not: the shimmer's
+  band is soft and almost a title wide, so it fades in, and the meter's band
+  is sharp and three segments wide, so it snaps on. The travel starts a
+  tenth of a bar earlier and ends a tenth earlier, which delays the meter's
+  onset by 0.2 s and leaves the pace and the crossing unchanged.
 - **The gleam takes a shade of the segment's own colour.** Keith, the same
   day: the sweep must "accommodate dark mode for the various models, which
   might use white (for openAI)". The OpenAI bar takes `--color-label`, near
