@@ -279,7 +279,7 @@ sizes:
   --space-xl: 20px
   --space-2xl: 24px # group separation in a settings-style pane
   # Local geometry that stays in its component. The wide Session Detail
-  # (`layout="wide"` in src/components/session/SessionDetailPresentation.tsx)
+  # (src/components/session/SessionDetailPresentation.tsx)
   # lets the context chart fill the tab, with a min-h-48 floor.
 rounded:
   small: 4px
@@ -552,8 +552,8 @@ tokens or the menu-bar list's default appearance to achieve it.
   There are no inherited size overrides. Content has 40px side padding.
   Cost composition closes the Context tab, below the plot and its key.
   The context plot fills available height with a 192px minimum. Both efficiency tracks
-  are 24px tall. Scale labels use the primary data size. The chart key uses three
-  equal columns. The composition legend stacks three rows beneath the bar, with
+  are 24px tall. Scale labels use the primary data size. The chart key fits as many 8rem columns as the pane allows,
+  then shares the remaining width evenly. Columns shrink below 8rem when necessary. The composition legend stacks three rows beneath the bar, with
   names on the left and percentages and ratings aligned on the right.
   Cost, Checks, and Efficiency stack vertically. Checks use two equal columns when
   the content reaches 40rem, and one column below that width. The top cost block pairs
@@ -561,6 +561,7 @@ tokens or the menu-bar list's default appearance to achieve it.
   the content width, while its table caps at 640px. A shared surface-card/50 background,
   rounded-popover corners, and 16px padding group the total and table. The table
   label column fits its text up to 12rem, with 12px gaps before the numeric columns.
+  The gap between the total and the component table is 48px.
   The table columns sit together at the card’s right edge. The whole cost card uses
   font-mono, including the total, captions, row labels, and figures.
   Checks show documentation as callout
@@ -576,4 +577,4 @@ tokens or the menu-bar list's default appearance to achieve it.
 
   Efficiency sits at the bottom of the Cost pane when content fits, and follows the
   checks in normal scroll order otherwise. The total appears once in the top cost
-  block; the popover retains its total row.
+  block.

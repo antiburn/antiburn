@@ -24,3 +24,5 @@ node_modules/
 # packages. The repository keeps only the root config.yml.
 **/.aislop/*
 !/.aislop/config.yml
+
+/worktrees

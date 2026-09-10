@@ -18,8 +18,6 @@ export interface EfficiencyBreakdownProps {
    * composition under the context chart. Omit it to draw both.
    */
   section?: "cost" | "composition"
-  /** The wide layout uses taller bars and a hero figure. */
-  layout?: "popover" | "wide"
 }
 
 /* The fill for one band of the cost scale. The three bands are a fixed
@@ -156,17 +154,14 @@ function shareSegments(metrics: EfficiencyMetrics): ShareSegment[] {
 function CostScaleBar({
   metric,
   profile,
-  wide,
 }: {
   metric: EfficiencyMetric
   profile: EfficiencyProfile
-  wide: boolean
 }) {
   const scale = efficiencyThermometer(metric.value, "costPerMTok", profile)
   const [, low, high] = scale.ticks
-  // The wide pane drops the middle range. It printed under the floating
-  // section picker, and the two outer ranges already name both of its edges.
-  const ranges = [`under ${low}`, wide ? null : `${low} – ${high}`, `over ${high}`]
+  // The outer ranges show both middle boundaries and leave space for the floating section picker.
+  const ranges = [`under ${low}`, null, `over ${high}`]
   const last = scale.segments.length - 1
   return (
     <div
@@ -174,7 +169,7 @@ function CostScaleBar({
       data-position={scale.position.toFixed(3)}
       aria-hidden
     >
-      <div className={cn("relative flex", wide ? "h-6" : "h-3")}>
+      <div className="relative flex h-6">
         {scale.segments.map((band, index) => (
           <span
             key={band}
@@ -201,7 +196,7 @@ function CostScaleBar({
             data-current={band === metric.band || undefined}
             className={cn(
               "flex flex-1 flex-col text-label-tertiary tabular-nums",
-              wide ? "type-body" : "type-caption",
+              "type-body",
               index === 0 && "items-start",
               index === last && "items-end",
               index > 0 && index < last && "items-center",
@@ -218,29 +213,14 @@ function CostScaleBar({
   )
 }
 
-/**
- * The three shares as one composition. They are parts of a single whole, so
- * they draw as one track: each run takes its slice of the width, in that
- * slice's own color. Three separate meters hid the only fact that matters,
- * which is how the session divided its cost. The popover draws a hairline;
- * the wide pane draws a bar.
- */
-function CompositionTrack({
-  segments,
-  height,
-}: {
-  segments: ShareSegment[]
-  height: "hairline" | "bar"
-}) {
+/** The track shows each share as part of the total cost. */
+function CompositionTrack({ segments }: { segments: ShareSegment[] }) {
   return (
     <div
       data-testid="efficiency-composition"
-      data-height={height}
+      data-height="bar"
       aria-hidden
-      className={cn(
-        "flex gap-px overflow-hidden bg-surface-secondary",
-        height === "bar" ? "h-6 rounded-control" : "h-1 rounded-full",
-      )}
+      className="flex gap-px overflow-hidden bg-surface-secondary h-6 rounded-control"
     >
       {segments.map((segment) => (
         <span
@@ -255,37 +235,18 @@ function CompositionTrack({
   )
 }
 
-/**
- * The guidance for one reading, as the body of its tooltip. It names what the
- * reading measures, states the band it should sit in, and says what to change.
- *
- * The composition rows keep their guidance in a tooltip so the block stays
- * the height of its readings. A panel that grows and shrinks under the rows
- * moves everything below it every time the pointer crosses a row. The wide
- * cost reading does the same from its hero figure. The popover's cost row
- * prints the guidance inline, as one quiet paragraph that wraps at the width
- * of its pane.
- */
+/** The tooltip explains the reading, its expected band, and the suggested changes. */
 function MetricGuidance({
   metricKey,
   profile,
-  inline = false,
 }: {
   metricKey: MetricKey
   profile: EfficiencyProfile
-  inline?: boolean
 }) {
   const advice = [
     ...efficiencyThresholdGuidance(metricKey, profile),
     ...METRIC_GUIDANCE[metricKey],
   ]
-  if (inline) {
-    return (
-      <p className="type-callout text-pretty text-label-tertiary">
-        {[...METRIC_SUMMARY[metricKey], ...advice].join(" ")}
-      </p>
-    )
-  }
   return (
     <div className="space-y-1 text-pretty">
       {METRIC_SUMMARY[metricKey].map((sentence) => (
@@ -305,63 +266,43 @@ function MetricGuidance({
 const ROW_CLASS =
   "-mx-1.5 rounded-control px-1.5 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
 
-/**
- * The $/MTok reading: label and figure on one baseline, and its scale
- * underneath. This metric is not part of the composition, so it keeps the
- * scale the other readings gave up. The wide pane keeps the guidance in a
- * tooltip on the hero figure, so the scale and its labels are the whole
- * reading at rest. The popover prints the guidance under the scale.
- */
+/** The hero figure opens guidance in a tooltip. The scale shows the bands below it. */
 function CostRowLine({
   metric,
   profile,
-  wide,
 }: {
   metric: EfficiencyMetric
   profile: EfficiencyProfile
-  wide: boolean
 }) {
   return (
     <div className="type-body" data-testid="cost-row">
-      {wide ? (
-        <Tooltip
-          label={<MetricGuidance metricKey="costPerMTok" profile={profile} />}
-          side="bottom"
-          delayMs={150}
+      <Tooltip
+        label={<MetricGuidance metricKey="costPerMTok" profile={profile} />}
+        side="bottom"
+        delayMs={150}
+      >
+        <div
+          data-testid="cost-hero"
+          tabIndex={0}
+          className={cn(ROW_CLASS, "my-2 flex flex-wrap items-center gap-x-4 gap-y-1 pb-3")}
         >
-          <div
-            data-testid="cost-hero"
-            tabIndex={0}
-            className={cn(ROW_CLASS, "my-2 flex flex-wrap items-center gap-x-4 gap-y-1 pb-3")}
+          <span
+            className={cn(
+              "type-display font-semibold! tabular-nums",
+              metric.band === "bad" ? "text-brand" : "text-label",
+            )}
           >
-            <span
-              className={cn(
-                "type-display font-semibold! tabular-nums",
-                metric.band === "bad" ? "text-brand" : "text-label",
-              )}
-            >
-              {formatCostPerMTok(metric.value)}
-            </span>
-            <span className="flex flex-col type-callout">
-              <span className="font-semibold text-label">per million tokens</span>
-              <span className="text-label-secondary">of context growth and output</span>
-            </span>
-          </div>
-        </Tooltip>
-      ) : (
-        <span className="flex items-baseline justify-between gap-3 pb-3">
-          <span className="truncate text-label-secondary">$/MTok</span>
-          <span className="shrink-0 text-label tabular-nums">
             {formatCostPerMTok(metric.value)}
           </span>
-        </span>
-      )}
-      <CostScaleBar metric={metric} profile={profile} wide={wide} />
-      {!wide && (
-        <div className="mt-3" data-testid="cost-guidance">
-          <MetricGuidance metricKey="costPerMTok" profile={profile} inline />
+          <span className="flex flex-col type-callout">
+            <span className="font-semibold text-label">$/MTOK</span>
+            <span className="text-label-secondary">
+              per million tokens of work: context growth and output only
+            </span>
+          </span>
         </div>
-      )}
+      </Tooltip>
+      <CostScaleBar metric={metric} profile={profile} />
     </div>
   )
 }
@@ -405,7 +346,7 @@ function ShareRowPlaceholder({ row }: { row: ShareRow }) {
     <div className={cn(ROW_CLASS, "flex items-baseline gap-2")}>
       <span
         aria-hidden
-        className={cn("size-2 shrink-0 self-center rounded-full bg-surface-tertiary")}
+        className="size-2 shrink-0 self-center rounded-full bg-surface-tertiary"
       />
       <span className="min-w-0 flex-1 truncate text-label-secondary">{row.label}</span>
       <span className="shrink-0 text-label tabular-nums">—</span>
@@ -414,15 +355,10 @@ function ShareRowPlaceholder({ row }: { row: ShareRow }) {
   )
 }
 
-export function EfficiencyBreakdown({
-  metrics,
-  section,
-  layout = "popover",
-}: EfficiencyBreakdownProps) {
+export function EfficiencyBreakdown({ metrics, section }: EfficiencyBreakdownProps) {
   const segments = shareSegments(metrics)
   const showCost = section !== "composition"
   const showComposition = section !== "cost"
-  const wide = layout === "wide"
 
   if (!metrics.costPerMTok) {
     return null
@@ -430,19 +366,14 @@ export function EfficiencyBreakdown({
 
   return (
     <div className="flex flex-col" data-testid="efficiency-block">
-      {showCost && (
-        <CostRowLine metric={metrics.costPerMTok} profile={metrics.profile} wide={wide} />
-      )}
+      {showCost && <CostRowLine metric={metrics.costPerMTok} profile={metrics.profile} />}
       {showCost && showComposition && (
         <div className="my-3 border-b border-dashed border-separator" />
       )}
       {!showComposition ? null : segments.length > 0 ? (
         <>
-          <CompositionTrack segments={segments} height={wide ? "bar" : "hairline"} />
-          <div
-            data-testid="composition-legend"
-            className={cn("flex flex-col", wide ? "mt-3" : "mt-2")}
-          >
+          <CompositionTrack segments={segments} />
+          <div data-testid="composition-legend" className="flex flex-col mt-3">
             {segments.map((segment) => (
               <ShareRowLine key={segment.key} segment={segment} profile={metrics.profile} />
             ))}

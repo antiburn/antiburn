@@ -29,7 +29,7 @@ describe("EfficiencyBreakdown", () => {
   ])("uses $ink for a $band efficiency hero", ({ totalUsd, figure, band, ink }) => {
     const metrics = efficiencyMetrics(totals({ totalUsd }), "claude-code")
     expect(metrics.costPerMTok?.band).toBe(band)
-    render(<EfficiencyBreakdown metrics={metrics} section="cost" layout="wide" />)
+    render(<EfficiencyBreakdown metrics={metrics} section="cost" />)
     expect(screen.getByText(figure)).toHaveClass(ink)
     expect(screen.getByText(figure)).not.toHaveClass(
       ink === "text-label" ? "text-brand" : "text-label",
@@ -38,7 +38,7 @@ describe("EfficiencyBreakdown", () => {
 
   it("renders the headline and three spend rows with their values", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
-    expect(screen.getByText("$/MTok")).toBeTruthy()
+    expect(screen.getByText("$/MTOK")).toBeTruthy()
     expect(screen.getByText("Real Work %")).toBeTruthy()
     expect(screen.getByText("Rewrite Waste %")).toBeTruthy()
     expect(screen.getByText("Carry %")).toBeTruthy()
@@ -71,20 +71,15 @@ describe("EfficiencyBreakdown", () => {
     const good = within(cost).getByTestId("cost-band-word-good")
     const ok = within(cost).getByTestId("cost-band-word-ok")
     expect(good).toHaveTextContent("under $33")
-    expect(ok).toHaveTextContent("$33 – $80")
+    expect(ok).toHaveTextContent("ok")
     expect(within(cost).getByTestId("cost-band-word-bad")).toHaveTextContent("over $80")
     expect(ok.dataset.current).toBe("true")
     expect(good.dataset.current).toBeUndefined()
     expect(screen.getByTestId("cost-row").querySelector(".rounded")).toBeNull()
   })
 
-  it("drops the middle range in the wide pane, where the picker floats", () => {
-    render(
-      <EfficiencyBreakdown
-        metrics={efficiencyMetrics(totals(), "claude-code")}
-        layout="wide"
-      />,
-    )
+  it("drops the middle range where the picker floats", () => {
+    render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
 
     const cost = screen.getByTestId("thermometer-costPerMTok")
     const ok = within(cost).getByTestId("cost-band-word-ok")
@@ -181,32 +176,8 @@ describe("EfficiencyBreakdown", () => {
     expect(screen.queryByText(/fresh input and output/)).toBeNull()
   })
 
-  it("prints the cost reading's guidance inline under its scale as one paragraph", () => {
+  it("draws the bar above stacked legend rows", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
-
-    const guidance = screen.getByTestId("cost-guidance")
-    // One quiet paragraph, so the sentences wrap at the pane's width instead
-    // of each taking a line.
-    expect(guidance.querySelectorAll("p")).toHaveLength(1)
-    const paragraph = within(guidance).getByText(/average cost for each million tokens/)
-    expect(paragraph).toHaveClass("text-label-tertiary")
-    expect(paragraph).not.toHaveClass("font-medium")
-    expect(paragraph).toHaveTextContent(
-      "For Claude, aim for below $33. Above $80 is too high. Craft tight workflows",
-    )
-    expect(paragraph).toHaveTextContent(/Context tab shows/)
-    expect(guidance).not.toHaveClass("max-w-prose")
-    // The cost row is plain text now, not a tooltip trigger.
-    expect(screen.getByTestId("cost-row")).not.toHaveAttribute("tabindex")
-  })
-
-  it("draws the wide bar above stacked legend rows", () => {
-    render(
-      <EfficiencyBreakdown
-        metrics={efficiencyMetrics(totals(), "claude-code")}
-        layout="wide"
-      />,
-    )
 
     const track = screen.getByTestId("efficiency-composition")
     expect(track.dataset.height).toBe("bar")
@@ -222,8 +193,7 @@ describe("EfficiencyBreakdown", () => {
     fireEvent.focus(realWork)
     expect(screen.getAllByText(/fresh input and output/).length).toBeGreaterThan(0)
 
-    // The wide pane keeps the cost guidance in a tooltip on the hero figure,
-    // so at rest the scale and its labels are the whole reading.
+    // The hero figure shows cost guidance on focus.
     expect(screen.queryByTestId("cost-guidance")).toBeNull()
     expect(screen.queryByText(/average cost for each million tokens/)).toBeNull()
     const hero = screen.getByTestId("cost-hero")
@@ -238,13 +208,5 @@ describe("EfficiencyBreakdown", () => {
     ).toBeGreaterThan(0)
     fireEvent.blur(hero)
     expect(screen.queryByText(/average cost for each million tokens/)).toBeNull()
-  })
-
-  it("keeps the popover's hairline track and stacked rows by default", () => {
-    render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
-    const track = screen.getByTestId("efficiency-composition")
-    expect(track.dataset.height).toBe("hairline")
-    expect(track).toHaveClass("h-1", "rounded-full")
-    expect(screen.getByTestId("composition-legend")).toHaveClass("flex-col")
   })
 })

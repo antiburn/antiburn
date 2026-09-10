@@ -4,6 +4,7 @@
   "description": "Bounded permissions for the ordinary main window. Data and privileged work stay behind explicit shell commands.",
   "windows": ["main"],
   "permissions": [
+    "core:webview:allow-internal-toggle-devtools",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "core:window:allow-start-dragging",

@@ -659,9 +659,10 @@ mod tests {
     }
 
     #[test]
-    fn main_window_capability_includes_titlebar_actions_without_broad_defaults() {
+    fn main_window_capability_includes_window_actions_without_broad_defaults() {
         let capability = include_str!("../capabilities/main.json");
         for expected in [
+            "\"core:webview:allow-internal-toggle-devtools\"",
             "\"core:event:allow-listen\"",
             "\"core:event:allow-unlisten\"",
             "\"core:window:allow-start-dragging\"",
