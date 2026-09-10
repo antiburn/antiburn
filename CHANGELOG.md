@@ -20,8 +20,12 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-09-10
+
 ### Changed
 
+- Session Details has a simpler layout and clearer Burn Check cards that adapt
+  to the window width.
 - Burn Checks now use stronger evidence contracts for supported Claude Code,
   Codex, OpenCode, Pi, and Antigravity sessions. Findings keep exact provider
   routes and supported checks decline clean results when required evidence is
@@ -29,6 +33,16 @@ CI changes, and documentation that no user acts on stay out — see
 
 ### Fixed
 
+- Long sessions retain complete thread evidence up to 16,384 identities, so
+  crossing 512 identities no longer prevents otherwise eligible clean Burn Check
+  results. Previously analyzed sessions are reprocessed.
+- Efficiency guidance no longer gives Claude or Codex threshold recommendations
+  for agents without a dedicated guidance profile.
+- Session-detail metric pickers keep a consistent width, percentage labels have
+  clear spacing, and the status bar keeps a consistent height.
+- Expanded sub-agent rows stay aligned with the cost table columns.
+- Expired Pi credentials can refresh through Pi before antiburn retries live
+  usage, including installations managed by nvm.
 - Cache churn now uses the correct Claude or OpenAI accounting policy in mixed
   model sessions. Token-burn estimates stay unknown when prices or total-token
   evidence is unavailable.

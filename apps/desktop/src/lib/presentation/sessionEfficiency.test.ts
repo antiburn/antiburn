@@ -33,6 +33,7 @@ describe("efficiencyMetrics", () => {
     expect(m.carryShare?.value).toBeCloseTo(0.54)
     expect(m.unpricedTurns).toBe(0)
     expect(m.profile).toBe("claude")
+    expect(m.guidanceProfile).toBe("claude")
   })
 
   it("bands an ok Claude session as ok on every metric", () => {
@@ -81,6 +82,7 @@ describe("efficiencyMetrics", () => {
     // $40/MTok is ok for Claude and high for Codex.
     const m = efficiencyMetrics(totals(), "codex")
     expect(m.profile).toBe("codex")
+    expect(m.guidanceProfile).toBe("codex")
     expect(m.costPerMTok?.band).toBe("ok")
     const dear = efficiencyMetrics(totals({ totalUsd: 12, rewriteUsd: 0.6 }), "codex")
     expect(dear.costPerMTok?.band).toBe("bad")
@@ -107,16 +109,39 @@ describe("efficiencyMetrics", () => {
     expect(m.realWorkShare).not.toBeNull()
   })
 
+  it.each(["pi", "cursor", "opencode", "antigravity", "unknown", "", "__proto__"])(
+    "preserves the legacy visualization for %s without agent-specific guidance",
+    (agent) => {
+      const subjectTotals = totals({ unpricedTurns: 3 })
+      const baseline = efficiencyMetrics(subjectTotals, "claude-code")
+      const metrics = efficiencyMetrics(subjectTotals, agent)
+
+      expect(metrics.costPerMTok).toEqual(baseline.costPerMTok)
+      expect(metrics.realWorkShare).toEqual(baseline.realWorkShare)
+      expect(metrics.rewriteShare).toEqual(baseline.rewriteShare)
+      expect(metrics.carryShare).toEqual(baseline.carryShare)
+      expect(metrics.unpricedTurns).toBe(3)
+      expect(metrics.profile).toBe("claude")
+      expect(metrics.guidanceProfile).toBeNull()
+    },
+  )
+
   it("carries the unpriced turn count through", () => {
     expect(efficiencyMetrics(totals({ unpricedTurns: 3 }), "claude-code").unpricedTurns).toBe(3)
   })
 })
 
 describe("efficiencyProfile", () => {
-  it("uses the Claude bands for every agent but Codex", () => {
-    expect(efficiencyProfile("codex")).toBe("codex")
+  it("maps only exact supported agents to guidance profiles", () => {
     expect(efficiencyProfile("claude-code")).toBe("claude")
-    expect(efficiencyProfile("cursor")).toBe("claude")
+    expect(efficiencyProfile("codex")).toBe("codex")
+    expect(efficiencyProfile("cursor")).toBeNull()
+    expect(efficiencyProfile("pi")).toBeNull()
+    expect(efficiencyProfile("opencode")).toBeNull()
+    expect(efficiencyProfile("antigravity")).toBeNull()
+    expect(efficiencyProfile("unknown")).toBeNull()
+    expect(efficiencyProfile("")).toBeNull()
+    expect(efficiencyProfile("__proto__")).toBeNull()
   })
 })
 
@@ -153,5 +178,6 @@ describe("formatting", () => {
     expect(efficiencyThresholdGuidance("carryShare", "codex")).toEqual([
       "For Codex, aim for below 59%. Above 69% is too high.",
     ])
+    expect(efficiencyThresholdGuidance("carryShare", null)).toEqual([])
   })
 })

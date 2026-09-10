@@ -40,6 +40,7 @@
   height: var(--space-lg);
 }
 .session-detail-key {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr));
   margin-inline: 0;
 }
 .session-detail-wide .chart-key-stat {
@@ -60,13 +61,9 @@
 .session-detail-wide .session-detail-tabs button::before {
   display: none;
 }
-/* The selected view takes the accent fill and white ink, the same as the
-   session list's metric picker, so both pickers in the window read alike. */
-.session-detail-wide .session-detail-tabs button[aria-selected="true"] {
-  background-color: var(--color-accent-fill);
-  color: white;
-  box-shadow: var(--shadow-raised);
-}
+/* The selected view takes the solid neutral chip of `.ui-segmented-solid`,
+   the same as the session list's metric picker, so both pickers in the
+   window read alike. */
 .session-detail-wide .session-detail-tabs button {
   font-weight: 400 !important;
   font-size: inherit;

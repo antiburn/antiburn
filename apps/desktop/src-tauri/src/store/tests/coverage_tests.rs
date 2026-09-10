@@ -65,7 +65,11 @@ fn publishing_evidence_keeps_only_the_current_fence_coverage_record() {
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     let current = coverage_record("publish-current-fence-coverage");
     writer.write_coverage_record(&current).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -133,7 +137,11 @@ fn a_lost_publish_race_deletes_only_its_own_fences_coverage_record() {
             params![key.environment_key, key.agent, key.session_id],
         )
         .unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         !store

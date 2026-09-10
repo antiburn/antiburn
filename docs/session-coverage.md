@@ -63,7 +63,7 @@ The table lists all 26 `SourceFormat` names from
 | `CodexRolloutJsonl`            | Codex         | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`                             | Native discovery with child rollouts; bounded JSONL; resume supported                                                                                          | Usage, time, models, provider/control inheritance, service tier, tools, harness version, spawn records, selected skill documents, exact tool-search MCP exposure, compactions | Characterized accepted core; resource subsets only                                                |
 | `OpenCodeJsonl`                | OpenCode      | Legacy exported session JSONL                                              | Native or WSL export discovery; bounded JSONL with validated history wrappers/order                                                                            | Usage, time, models, provider/API fields where saved, raw variants, task proof, selected skills, tools, compactions, session/message identities                               | Characterized accepted export; no historical effort map or resource inventory                     |
 | `OpenCodeSqliteV2`             | OpenCode      | `~/.local/share/opencode/opencode.db` or platform equivalent               | Read-only snapshot of the root and descendant `session`, `message`, `part` cluster; row-streamed content fingerprint; validated creation-time/message-ID order | Native messages and parts, task metadata joined to child models, selected skills, usage, provider/API fields, compactions, identities                                         | Characterized table contract; not CoreV2 `session_message`                                        |
-| `PiV3Jsonl`                    | Pi            | `~/.pi/agent/sessions/**/*.jsonl` or `PI_AGENT_DIR`                        | Native discovery; version 3 header; bounded JSONL; resume supported                                                                                            | Usage, time, provider/API/model, agent-selected thinking policy, branch/fork state, tools, links, compactions, official example-extension nested worker results               | Characterized core; extension delegation is finding-only, not arbitrary extension support         |
+| `PiV3Jsonl`                    | Pi            | `~/.pi/agent/sessions/**/*.jsonl` or `PI_AGENT_DIR`                        | Native discovery; version 3 header; bounded JSONL; resume supported                                                                                            | Usage at the nested request-start timestamp, top-level event time, provider/API/model, agent-selected thinking policy, branch/fork state, tools, links, compactions, official example-extension nested worker results | Characterized core; extension delegation is finding-only, not arbitrary extension support         |
 | `CursorJsonl`                  | Cursor        | In-memory or compatibility JSONL without a source marker                   | Dedicated reader with bounded JSONL; native surface is unknown                                                                                                 | Generic Cursor role, content, timestamp, model, tool call, and record ID fields                                                                                               | Uncharacterized compatibility format                                                              |
 | `CursorCliAgentJsonl`          | Cursor        | `.cursor/projects/*/agent-transcripts/**` with chat metadata               | Native discovery; transcript and metadata synthesis; bounded JSONL reader                                                                                      | Role, content, timestamps, models, tool calls, and selected record IDs                                                                                                        | Partial                                                                                           |
 | `CursorCliStoreDb`             | Cursor        | Cursor CLI `chats/**/store.db`                                             | Read-only database extraction into marked JSONL                                                                                                                | Scalar messages, title, workspace, timestamps, model, IDs, and fork-prefix hints                                                                                              | Partial; structured records are reduced during synthesis                                          |
@@ -116,15 +116,18 @@ compactions, or incomplete history prevent clean. OpenCode uses validated
 ordered history, not `parentID` as a fabricated predecessor link.
 
 The route columns use engine turn migration 7 and desktop migration 39. Current
-parser/analyzer/evidence/coverage/resume revisions are 31/21/18/4/6. Existing
+parser/analyzer/evidence/coverage/resume revisions are 31/22/18/4/6. Existing
 revision gates invalidate old projections and snapshots; JSON and binary
 evidence round trips and full/resumed replay are covered by tests.
 
-The evidence accumulator retains at most 512 distinct thread UUIDs. Each UUID
+The evidence accumulator retains at most 16,384 distinct thread UUIDs. Each UUID
 must be at most 256 bytes. A new UUID after the set is full, or an oversized
 UUID, makes attribution incomplete and records `Partial(CapExceeded)`. Resume
 deserialization rejects an oversized set or UUID. Defensive reconstruction also
 caps invalid in-memory resume state and keeps the evidence partial.
+The retained evidence memory ceiling is 8 MiB per accumulator. A synthetic
+16,384-record linked chain with maximum-length identities verifies complete
+coverage and resume round trips within that ceiling.
 
 ## Companion Sources
 

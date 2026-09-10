@@ -244,7 +244,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   the promise below stops being true.
 
                   The list lets a reader count every field. */}
-              <p>The schema has twenty-seven fields, and these are all of them:</p>
+              <p>The schema has twenty-eight fields, and these are all of them:</p>
               {/* `pl-7`, not the `pl-4` this started as. Root font-size here
                   is 13px, so `pl-4` is 13px of padding — less than the disc
                   marker's own 17.5px advance, which left the bullets painting
@@ -296,6 +296,11 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   An hourly summary of antiburn&rsquo;s own CPU, memory, process I/O, local
                   database size, and database log size. Every value is a fixed range, with a
                   coverage state that distinguishes missing measurements from zero.
+                </li>
+                <li>
+                  Up to 16 unknown transcript record type names, sanitized before they leave
+                  this machine &mdash; a rejected name is replaced by a fixed placeholder rather
+                  than sent as typed.
                 </li>
                 <li>The app version.</li>
                 <li>Your operating system.</li>

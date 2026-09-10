@@ -47,16 +47,15 @@ fn resolved_model_id(facts: &TurnFacts) -> Option<&str> {
 }
 
 /// Tests enforce this ceiling for the accumulator's retained heap bytes.
-/// A saturated accumulator (every collection at its cap) measures about
-/// 29,900 bytes; this bound rounds that up generously (over 2x).
-pub const RETAINED_EVIDENCE_BYTES_BOUND: usize = 256 * 1_024;
+/// The bound includes 16,384 thread identities with up to 256 bytes each.
+pub const RETAINED_EVIDENCE_BYTES_BOUND: usize = 8 * 1_024 * 1_024;
 
 /// A `BTreeMap` or `BTreeSet` has no queryable capacity: each insert grows
 /// exactly one B-tree node. This estimates one entry's node overhead —
 /// pointers and per-node slack — on top of its own key or value bytes.
 const BTREE_ENTRY_OVERHEAD_BYTES: usize = 48;
 const MAX_MODEL_CONTROL_OBSERVATIONS: usize = 128;
-const MAX_TRACKED_THREAD_UUIDS: usize = 512;
+const MAX_TRACKED_THREAD_UUIDS: usize = 16_384;
 const THREAD_UUIDS_DIAGNOSTIC: &str = "thread_link.seen_uuids";
 
 /// The two fields [`SessionEvidenceAccumulator::coverage_record`] leaves
@@ -3140,6 +3139,34 @@ mod tests {
                 reason: CoverageReason::AttributionIncomplete,
             }
         );
+    }
+
+    #[test]
+    fn long_thread_identity_tracking_preserves_complete_coverage() {
+        let mut accumulator = accumulator(true);
+        for index in 0..MAX_TRACKED_THREAD_UUIDS {
+            accumulator.record(NormalizedRecord::Observation(Box::new(
+                EvidenceObservation::ThreadLink {
+                    uuid: Some(format!("{index:0256}")),
+                    parent_uuid: (index > 0).then(|| format!("{:0256}", index - 1)),
+                },
+            )));
+        }
+        let encoded = serde_json::to_vec(&accumulator.resume_state()).unwrap();
+        let resume = serde_json::from_slice(&encoded).unwrap();
+        let restored = SessionEvidenceAccumulator::from_coverage_record_with_resume(
+            accumulator.coverage_record(),
+            resume,
+        );
+        let evidence = restored.evidence(&TurnFacts::default());
+        assert_eq!(evidence.coverage, EvidenceCoverage::Complete);
+        assert!(
+            !evidence
+                .diagnostics
+                .capped_collections
+                .contains(THREAD_UUIDS_DIAGNOSTIC)
+        );
+        assert!(restored.retained_bytes() < RETAINED_EVIDENCE_BYTES_BOUND);
     }
 
     #[test]

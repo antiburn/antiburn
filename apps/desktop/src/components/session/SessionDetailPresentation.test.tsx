@@ -195,25 +195,25 @@ describe("SessionDetailPresentation — chrome", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
 
-    // Every check shows with its own verdict mark. No rollup count restates
-    // the list. Each row carries an info button that holds its explainer, so
-    // nothing changes elsewhere on the tab when the pointer moves.
+    // Each assessed check shows its verdict and opens its explanation on focus.
     const hygiene = screen.getByLabelText("Session hygiene checks")
     expect(hygiene.children).toHaveLength(5)
     expect(screen.queryByRole("button", { name: "4/5 passed" })).toBeNull()
-    fireEvent.focus(screen.getByRole("button", { name: "Overpowered subagents details" }))
+    fireEvent.focus(screen.getByRole("group", { name: "Overpowered subagents" }))
     expect(screen.queryByText(/Past about 200k tokens/)).toBeNull()
-    expect(screen.getByRole("button", { name: "About Overpowered subagents" })).toBeTruthy()
-    // The row button is an invisible layer, so the verdict is read from the row.
-    expect(
-      screen.getByRole("button", { name: "Overpowered subagents details" }).parentElement,
-    ).toHaveTextContent("Failed")
+    expect(screen.getByRole("group", { name: "Overpowered subagents" })).toHaveAttribute(
+      "tabindex",
+      "0",
+    )
+    expect(screen.getByRole("group", { name: "Overpowered subagents" })).toHaveTextContent(
+      "Failed",
+    )
 
     // A check nobody could assess leaves the list rather than claiming a verdict.
-    expect(screen.queryByRole("button", { name: "Session overdepth details" })).toBeNull()
-    expect(
-      screen.getByRole("button", { name: "Model overthinking details" }).parentElement,
-    ).toHaveTextContent("Passed")
+    expect(screen.queryByRole("group", { name: "Session overdepth" })).toBeNull()
+    expect(screen.getByRole("group", { name: "Model overthinking" })).toHaveTextContent(
+      "Passed",
+    )
   })
 
   it("keeps the Cost tab free of evidence-state chrome", () => {
@@ -278,9 +278,9 @@ describe("SessionDetailPresentation — chrome", () => {
     // The composition sits under the chart it explains. The $/MTok scale
     // lives with the cost rows.
     expect(screen.getByText("Real Work %")).toBeTruthy()
-    expect(screen.queryByText("$/MTok")).toBeNull()
+    expect(screen.queryByText("$/MTOK")).toBeNull()
     fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
-    expect(screen.getByText("$/MTok")).toBeTruthy()
+    expect(screen.getByText("$/MTOK")).toBeTruthy()
     expect(screen.queryByText("Real Work %")).toBeNull()
     expect(screen.getByText("Efficiency")).toBeTruthy()
     expect(
@@ -291,10 +291,10 @@ describe("SessionDetailPresentation — chrome", () => {
   it("omits the efficiency readings when the session is unpriced", () => {
     view({ cost: null, efficiency: null })
     fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
-    expect(screen.queryByText("$/MTok")).toBeNull()
+    expect(screen.queryByText("$/MTOK")).toBeNull()
   })
 
-  it("shows the session title on no more than two lines", () => {
+  it("keeps the session title on one line", () => {
     view({
       session: {
         agent: "claude-code",
@@ -306,9 +306,9 @@ describe("SessionDetailPresentation — chrome", () => {
     const title = screen.getByText(
       "A session title that can continue across more than one line",
     )
-    expect(title.className).toContain("truncated-text-lines")
+    expect(title.className).toContain("truncate")
     expect(title.className).toContain("break-words")
-    expect(title.style.getPropertyValue("--truncated-text-lines")).toBe("2")
+    expect(title.style.getPropertyValue("--truncated-text-lines")).toBe("")
   })
 
   it("arranges the session facts in the hero and each figure at the head of its tab", () => {
@@ -338,28 +338,26 @@ describe("SessionDetailPresentation — chrome", () => {
     fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
     expect(screen.getByRole("tabpanel")).toHaveTextContent("Estimated cost")
     expect(screen.queryByRole("button", { name: "6/6 passed" })).toBeNull()
-    expect(screen.getByRole("button", { name: "Session overdepth details" })).toBeTruthy()
-    expect(screen.getByRole("button", { name: "Model overthinking details" })).toBeTruthy()
-    expect(screen.getByRole("button", { name: "Overpowered subagents details" })).toBeTruthy()
-    expect(screen.getByRole("button", { name: "Obsolete model details" })).toBeTruthy()
-    expect(screen.getByRole("button", { name: "Fast mode overuse details" })).toBeTruthy()
-    expect(
-      screen.getByRole("button", { name: "Excess cache rehydration details" }),
-    ).toBeTruthy()
+    expect(screen.getByRole("group", { name: "Session overdepth" })).toBeTruthy()
+    expect(screen.getByRole("group", { name: "Model overthinking" })).toBeTruthy()
+    expect(screen.getByRole("group", { name: "Overpowered subagents" })).toBeTruthy()
+    expect(screen.getByRole("group", { name: "Obsolete model" })).toBeTruthy()
+    expect(screen.getByRole("group", { name: "Fast mode overuse" })).toBeTruthy()
+    expect(screen.getByRole("group", { name: "Excess cache rehydration" })).toBeTruthy()
   })
 
   it("names the back control for what it does, not for the view it leaves", () => {
     view()
     // The heading and the back control are separate elements.
     // The screen reader announces the view and the control correctly.
-    expect(screen.getByRole("heading", { name: "Session Detail" })).toBeTruthy()
+    expect(screen.getByRole("heading", { name: "Fix the flaky test" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy()
   })
 
   it("shows a header spinner while a newer analysis is on its way", () => {
     view({ refreshing: true })
     expect(screen.getByRole("status")).toHaveTextContent("Refreshing session analysis")
-    expect(screen.getByRole("heading", { name: "Session Detail" })).toBeTruthy()
+    expect(screen.getByRole("heading", { name: "Fix the flaky test" })).toBeTruthy()
   })
 
   it("navigates back through the callback", () => {
@@ -588,7 +586,7 @@ describe("SessionDetailPresentation — session facts", () => {
         },
       },
     })
-    expect(screen.getByText("Sub-agent")).toBeTruthy()
+    expect(screen.getByText("Autonomous sub-agent")).toBeTruthy()
     fireEvent.click(screen.getByText("Autonomous sub-agent"))
     fireEvent.click(screen.getByText("Ship the release"))
     expect(onOpenOrchestrator).toHaveBeenCalledOnce()
@@ -680,9 +678,55 @@ describe("SessionDetailPresentation — session facts", () => {
       screen.getByText("No startup context has been recorded for this session."),
     ).toBeTruthy()
   })
+
+  it("reddens the wasted-token figure only for a large share of a large context", () => {
+    function wastedContext(unusedTokens: number, usedTokens: number) {
+      return summary({
+        sessions: [
+          metrics({
+            initialContext: {
+              sources: [
+                {
+                  source: "skill_instructions",
+                  sourceName: "idle",
+                  tokenCount: unusedTokens,
+                  useCount: 0,
+                },
+                {
+                  source: "skill_instructions",
+                  sourceName: "busy",
+                  tokenCount: usedTokens,
+                  useCount: 1,
+                },
+              ],
+            },
+          }),
+        ],
+      })
+    }
+
+    function figureClass() {
+      fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
+      return screen.getByTestId("tools-wasted-figure").className
+    }
+
+    // Three quarters of the startup context, and far past the floor.
+    const severe = view({ summary: wastedContext(30_000, 10_000) })
+    expect(figureClass()).toContain("text-system-red-text")
+    severe.unmount()
+
+    // The same share of a context too small for the waste to matter.
+    const small = view({ summary: wastedContext(3_000, 1_000) })
+    expect(figureClass()).toContain("text-waste-warn")
+    small.unmount()
+
+    // Past the floor, but a small share of a large context.
+    view({ summary: wastedContext(12_000, 200_000) })
+    expect(figureClass()).toContain("text-waste-warn")
+  })
 })
 
-describe("SessionDetailPresentation — wide layout", () => {
+describe("SessionDetailPresentation — presentation", () => {
   const efficiency = {
     totalUsd: 10,
     newWorkUsd: 3.4,
@@ -694,8 +738,8 @@ describe("SessionDetailPresentation — wide layout", () => {
     unpricedTurns: 0,
   }
 
-  function wideView(over: Partial<SessionDetailPresentationProps> = {}) {
-    const props = presentationProps({ layout: "wide", cost: cost(), efficiency, ...over })
+  function detailView(over: Partial<SessionDetailPresentationProps> = {}) {
+    const props = presentationProps({ cost: cost(), efficiency, ...over })
     delete props.onBack
     return render(<SessionDetailPresentation {...props} />)
   }
@@ -703,7 +747,7 @@ describe("SessionDetailPresentation — wide layout", () => {
   it("keeps the summary and host actions in the toolbar and floats the section picker over the content", () => {
     const onDeleteSession = vi.fn()
     const onRevealSource = vi.fn()
-    const { container } = wideView({ onDeleteSession, onRevealSource, refreshing: true })
+    const { container } = detailView({ onDeleteSession, onRevealSource, refreshing: true })
 
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull()
     expect(screen.queryByText("Session Detail")).toBeNull()
@@ -737,7 +781,7 @@ describe("SessionDetailPresentation — wide layout", () => {
   ])("keeps the toolbar usable without analysis: %j", (state) => {
     const onBack = vi.fn()
     const onDeleteSession = vi.fn()
-    view({ layout: "wide", embedded: true, summary: null, onBack, onDeleteSession, ...state })
+    view({ embedded: true, summary: null, onBack, onDeleteSession, ...state })
     expect(screen.getByRole("heading", { name: "Fix the flaky test" })).toBeTruthy()
     expect(screen.queryByRole("tablist")).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Back" }))
@@ -747,7 +791,7 @@ describe("SessionDetailPresentation — wide layout", () => {
   })
 
   it("separates the toolbar and gives the tab bar its content width", () => {
-    const { container } = wideView()
+    const { container } = detailView()
     expect(container.querySelector(".session-detail-toolbar")).toHaveClass("border-separator")
     expect(screen.getByRole("tablist", { name: "Session detail sections" })).toHaveClass(
       "inline-grid",
@@ -755,28 +799,25 @@ describe("SessionDetailPresentation — wide layout", () => {
   })
 
   it("places composition below the growing chart and its key", () => {
-    const { container } = wideView()
+    const { container } = detailView()
     const key = screen.getByTestId("chart-key")
-    expect(key.dataset.layout).toBe("wide")
     expect(
       Array.from(screen.getByRole("tabpanel").querySelectorAll("h3")).map(
         (heading) => heading.textContent,
       ),
     ).toEqual(["Context over time", "Cost composition"])
     expect(key).toHaveClass("grid")
-    expect(key).toHaveClass("grid-cols-3")
     expect(container.querySelector(".min-h-48")).toHaveClass("flex-1")
     expect(screen.getByTestId("efficiency-composition").dataset.height).toBe("bar")
     expect(screen.getByTestId("composition-legend")).toHaveClass("flex-col")
   })
 
   it("keeps the Cost tab's sections apart with spacing, not rules", () => {
-    const { container } = wideView()
+    const { container } = detailView()
     fireEvent.click(screen.getByRole("tab", { name: /^Cost/ }))
     expect(screen.getByRole("heading", { name: "Checks" })).toHaveClass("sr-only")
     expect(screen.getByText("Efficiency")).toBeTruthy()
-    // The cost table keeps the rule over its total row. The sections that
-    // hold the table, the checks, and the scale draw none of their own.
+    // Spacing separates the cost, checks, and efficiency sections.
     const sections = Array.from(container.querySelectorAll("section"))
     expect(sections).toHaveLength(3)
     expect(sections.map((section) => section.querySelector("h3")?.textContent)).toEqual([
@@ -788,7 +829,7 @@ describe("SessionDetailPresentation — wide layout", () => {
   })
 
   it("lays the Tools tab out in two columns", () => {
-    wideView({
+    detailView({
       summary: summary({
         sessions: [
           metrics({
@@ -814,14 +855,6 @@ describe("SessionDetailPresentation — wide layout", () => {
     })
     fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
     expect(screen.getByTestId("skills-mcp-list").dataset.columns).toBe("2")
-  })
-
-  it("leaves the popover layout as it was", () => {
-    const { container } = view({ cost: cost(), efficiency })
-    expect(screen.getByRole("button", { name: "Back" })).toBeTruthy()
-    expect(screen.getByTestId("chart-key").dataset.layout).toBe("popover")
-    expect(screen.getByRole("tablist", { name: "Session detail sections" })).toHaveClass("grid")
-    expect(container.querySelectorAll(".border-separator").length).toBeGreaterThan(0)
   })
 })
 
@@ -865,75 +898,64 @@ describe("SessionDetailPresentation — host actions", () => {
   })
 })
 
-describe.each(["popover", "wide"] as const)(
-  "SessionDetailPresentation — embedded pane (%s)",
-  (layout) => {
-    it("omits popover chrome and Back while retaining session content", () => {
-      const { container } = view({ layout, embedded: true, onBack: undefined })
-      expect(screen.queryByRole("button", { name: "Back" })).toBeNull()
-      expect(container.firstElementChild).not.toHaveClass("rounded-popover")
-      expect(screen.queryByText("Session Detail")).toBeNull()
-      expect(screen.getByRole("heading", { name: "Fix the flaky test" })).toBeTruthy()
-    })
+describe("SessionDetailPresentation — embedded pane", () => {
+  it("omits popover chrome and Back while retaining session content", () => {
+    const { container } = view({ embedded: true, onBack: undefined })
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull()
+    expect(container.firstElementChild).not.toHaveClass("rounded-popover")
+    expect(screen.queryByText("Session Detail")).toBeNull()
+    expect(screen.getByRole("heading", { name: "Fix the flaky test" })).toBeTruthy()
+  })
 
-    it("limits adjacent navigation to the active detail pane", () => {
-      const onNext = vi.fn()
-      const props = presentationProps({ layout, embedded: true, onNext })
-      const { container, rerender } = render(<SessionDetailPresentation {...props} />)
-      fireEvent.keyDown(window, { key: "ArrowRight" })
-      expect(onNext).not.toHaveBeenCalled()
-      fireEvent.keyDown(container.firstElementChild!, { key: "ArrowRight" })
-      expect(onNext).toHaveBeenCalledOnce()
-      rerender(<SessionDetailPresentation {...props} active={false} />)
-      fireEvent.keyDown(container.firstElementChild!, { key: "ArrowRight" })
-      expect(onNext).toHaveBeenCalledOnce()
-    })
-  },
-)
+  it("limits adjacent navigation to the active detail pane", () => {
+    const onNext = vi.fn()
+    const props = presentationProps({ embedded: true, onNext })
+    const { container, rerender } = render(<SessionDetailPresentation {...props} />)
+    fireEvent.keyDown(window, { key: "ArrowRight" })
+    expect(onNext).not.toHaveBeenCalled()
+    fireEvent.keyDown(container.firstElementChild!, { key: "ArrowRight" })
+    expect(onNext).toHaveBeenCalledOnce()
+    rerender(<SessionDetailPresentation {...props} active={false} />)
+    fireEvent.keyDown(container.firstElementChild!, { key: "ArrowRight" })
+    expect(onNext).toHaveBeenCalledOnce()
+  })
+})
 
-describe.each(["popover", "wide"] as const)(
-  "SessionDetailPresentation — deferred keyboard entry (%s)",
-  (layout) => {
-    it("accepts focus when a lazy detail replaces the focused loading pane", () => {
-      const { container, rerender } = render(<section data-detail-pane tabIndex={-1} />)
-      const pane = container.firstElementChild as HTMLElement
-      pane.focus()
-      rerender(
-        <section data-detail-pane tabIndex={-1}>
-          <SessionDetailPresentation {...presentationProps({ layout, embedded: true })} />
-        </section>,
+describe("SessionDetailPresentation — deferred keyboard entry", () => {
+  it("accepts focus when a lazy detail replaces the focused loading pane", () => {
+    const { container, rerender } = render(<section data-detail-pane tabIndex={-1} />)
+    const pane = container.firstElementChild as HTMLElement
+    pane.focus()
+    rerender(
+      <section data-detail-pane tabIndex={-1}>
+        <SessionDetailPresentation {...presentationProps({ embedded: true })} />
+      </section>,
+    )
+    expect(container.querySelector("[data-detail-focus-target]")).toHaveFocus()
+  })
+})
+
+describe("SessionDetailPresentation — native drag toolbar", () => {
+  it("only enables the embedded macOS toolbar, leaving controls interactive", () => {
+    const agent = vi.spyOn(window.navigator, "userAgent", "get").mockReturnValue("Macintosh")
+    try {
+      const props = presentationProps({})
+      const { container, rerender, unmount } = render(<SessionDetailPresentation {...props} />)
+      expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
+      rerender(<SessionDetailPresentation {...props} embedded />)
+      const toolbar = screen
+        .getByRole("heading", { name: "Fix the flaky test" })
+        .closest("[data-tauri-drag-region]")
+      expect(toolbar).toHaveAttribute("data-tauri-drag-region", "deep")
+      expect(screen.getByRole("button", { name: "Delete this session" })).not.toHaveAttribute(
+        "data-tauri-drag-region",
       )
-      expect(container.querySelector("[data-detail-focus-target]")).toHaveFocus()
-    })
-  },
-)
-
-describe.each(["popover", "wide"] as const)(
-  "SessionDetailPresentation — native drag toolbar (%s)",
-  (layout) => {
-    it("only enables the embedded macOS toolbar, leaving controls interactive", () => {
-      const agent = vi.spyOn(window.navigator, "userAgent", "get").mockReturnValue("Macintosh")
-      try {
-        const props = presentationProps({ layout })
-        const { container, rerender, unmount } = render(
-          <SessionDetailPresentation {...props} />,
-        )
-        expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
-        rerender(<SessionDetailPresentation {...props} embedded />)
-        const toolbar = screen
-          .getByRole("heading", { name: "Fix the flaky test" })
-          .closest("[data-tauri-drag-region]")
-        expect(toolbar).toHaveAttribute("data-tauri-drag-region", "deep")
-        expect(screen.getByRole("button", { name: "Delete this session" })).not.toHaveAttribute(
-          "data-tauri-drag-region",
-        )
-        unmount()
-        agent.mockReturnValue("Windows NT")
-        const windows = render(<SessionDetailPresentation {...props} embedded />)
-        expect(windows.container.querySelector("[data-tauri-drag-region]")).toBeNull()
-      } finally {
-        agent.mockRestore()
-      }
-    })
-  },
-)
+      unmount()
+      agent.mockReturnValue("Windows NT")
+      const windows = render(<SessionDetailPresentation {...props} embedded />)
+      expect(windows.container.querySelector("[data-tauri-drag-region]")).toBeNull()
+    } finally {
+      agent.mockRestore()
+    }
+  })
+})

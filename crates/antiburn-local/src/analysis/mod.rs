@@ -170,7 +170,9 @@ pub use vendors::{has_dedicated_reader, reader_for};
 // +1 for Pi provider/API retention and Cursor native record identities.
 // Reparse existing rows to retain request provider and API fields.
 // This batch also reparses nested resources and paired subagent observations.
-pub const PARSER_REVISION: i64 = 31;
+// +1 for Pi assistant request-start timestamps: token and context buckets now
+// use `message.timestamp` while event ordering keeps the outer row timestamp.
+pub const PARSER_REVISION: i64 = 32;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
@@ -213,7 +215,8 @@ pub const PARSER_REVISION: i64 = 31;
 // +1 for reviewed route resolution in effort and speed assessment.
 // Recompute repeated context within compatible request segments.
 // This batch also reassesses nested resource use and paired subagent models.
-pub const ANALYZER_REVISION: i64 = 21;
+// Reassess sessions with the larger thread identity limit.
+pub const ANALYZER_REVISION: i64 = 22;
 // +1 for seam R2: the worker path now derives `inclusive_model_breakdown`
 // and `model_runs` from published turn rows instead of the accumulator
 // (`query_model_breakdown`, `query_model_runs`), so every session in the

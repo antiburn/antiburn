@@ -177,7 +177,7 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   and require the next package to be installed manually.
 - **Anonymised product analytics** are the one thing antiburn reports to us.
   Official release builds start with it on, including during onboarding. The Ready
-  screen explains it, and the switch is in Settings → Privacy. The event schema has twenty-seven fields and
+  screen explains it, and the switch is in Settings → Privacy. The event schema has twenty-eight fields and
   no others: the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier replaced every 30 days;
   a random analytics-session identifier; the event name; the time it happened and the time it was delivered; the
@@ -194,7 +194,10 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   reduced to a coarse band; how far that factor's estimate and the provider's
   own meter disagree, also reduced to a coarse band; a nested hourly summary of
   fixed bands and coverage for antiburn's own shell CPU, memory, process I/O,
-  database size, and database-log size; the app version; and the operating system. The payload has no
+  database size, and database-log size; up to 16 sanitized unknown transcript
+  record type names, each checked against a fixed character set and length,
+  with a rejected name replaced by a fixed placeholder instead of being sent;
+  the app version; and the operating system. The payload has no
   field able to carry anything else. The analytics-session identifier changes
   after 30 minutes without a captured analytics event, when the app restarts,
   or when the installation identifier rotates.

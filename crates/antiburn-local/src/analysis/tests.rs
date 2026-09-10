@@ -497,6 +497,43 @@ fn pi_jsonl_tool_calls_classify_into_tool_categories() {
 }
 
 #[test]
+fn pi_usage_is_placed_at_the_request_start() {
+    let pi_fixture = concat!(
+        r#"{"type":"session","version":3,"timestamp":"2024-06-01T12:00:00Z"}"#,
+        "\n",
+        r#"{"type":"message","timestamp":"2024-06-01T12:00:00Z","message":{"role":"user","content":"start"}}"#,
+        "\n",
+        r#"{"type":"message","timestamp":"2024-06-01T12:01:00Z","message":{"role":"assistant","timestamp":1717243201000,"model":"gpt-5.6-luna","usage":{"input":100,"output":10,"cacheRead":0,"cacheWrite":0},"content":[]}}"#,
+        "\n",
+        r#"{"type":"message","timestamp":"2024-06-01T12:01:01Z","message":{"role":"toolResult","toolCallId":"call","toolName":"bash","content":[]}}"#,
+        "\n",
+        r#"{"type":"message","timestamp":"2024-06-01T12:01:02Z","message":{"role":"assistant","timestamp":1717243261000,"model":"gpt-5.6-luna","usage":{"input":50,"output":5,"cacheRead":0,"cacheWrite":0},"content":[]}}"#,
+    );
+    let session = normalize_source(&jsonl_input("pi", pi_fixture)).unwrap();
+    assert_eq!(session.events[1].ts_ms, Some(1717243260000));
+    assert_eq!(session.events[1].usage_ts_ms, Some(1717243201000));
+
+    let metrics = analyze_session(&session);
+    let first_token_bucket = metrics
+        .buckets
+        .iter()
+        .position(|bucket| bucket.tokens_in > 0)
+        .expect("the first Pi response has input tokens");
+    assert!(
+        first_token_bucket < 10,
+        "usage starts in bucket {first_token_bucket}"
+    );
+    assert_eq!(
+        metrics
+            .buckets
+            .iter()
+            .map(|bucket| bucket.tokens_in)
+            .sum::<u64>(),
+        150
+    );
+}
+
+#[test]
 fn test_command_detection_is_token_aware() {
     use crate::analysis::model::is_test_command;
     assert!(is_test_command("cargo test --workspace"));

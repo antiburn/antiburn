@@ -116,10 +116,16 @@ deny session-wide `Clean`, even when a nested observed-resource map is complete.
 A scoped finding requires complete coverage of that observed subset, calls, and
 eligible activity. An unrelated partial resource group does not block it.
 
-Thread attribution retains at most 512 distinct UUIDs, each at most 256 bytes.
+Thread attribution retains at most 16,384 distinct UUIDs, each at most 256 bytes.
 An overflow or oversized UUID records `CapExceeded`, makes attribution
 incomplete, and blocks every clean result that needs complete affected evidence.
 An oversized resume identity set is rejected instead of being trusted.
+
+Maintainer confirmation (2026-09-10): raise the identity cap to 16,384 as an
+interim measure for longer sessions. Reviewed passive alternatives include
+indexed local relationship queries and bounded batch processing. Those
+alternatives remain outside this change; sessions above the cap still lose
+clean-result eligibility. Analyzer revision 22 reprocesses prior evidence.
 
 Skills mean full documents injected into model context. Listings, installed
 skills, and names in tool calls do not prove unused document overhead. Resource

@@ -1811,7 +1811,11 @@ fn publish_projections_writes_the_generation_and_revision_columns() {
         metrics_schema_revision: 3,
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -1839,7 +1843,11 @@ fn publish_projections_round_trips_initial_context_json() {
         source_summaries_json: None,
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -1870,7 +1878,11 @@ fn publish_projections_round_trips_source_summaries_json() {
         ),
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -1895,7 +1907,11 @@ fn publish_projections_round_trips_provider_hints_json() {
         provider_hints_json: Some(r#"[{"provider":"anthropic","model":"claude-opus-4-6"}]"#.into()),
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -1918,7 +1934,11 @@ fn publish_projections_round_trips_provider_hints_json() {
 fn publish_projections_never_clears_a_known_start_time() {
     let store = store();
     let (record, claim) = claimed_projection(&store, "known-start", 100, 60);
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, Some(800), &completion, &[], &[])
@@ -1936,7 +1956,11 @@ fn publish_projections_never_clears_a_known_start_time() {
         analyzed_generation: claim.source_generation,
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -2831,7 +2855,11 @@ fn analysis_from_rows_serves_a_pass_published_unsupported() {
     let key = record.key.clone();
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0)]).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Unsupported, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Unsupported,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -3387,7 +3415,7 @@ fn publishing_session_evidence_writes_both_projections_and_the_start_time() {
     let completion = evidence_completion(
         &claim,
         PublishedEvidence::Unsupported,
-        "{\"unsupported\":true}".into(),
+        crate::store::test_support::evidence_json(&claim.key),
     );
 
     assert!(
@@ -3430,7 +3458,11 @@ fn publishing_session_evidence_writes_both_projections_and_the_start_time() {
 fn published_session_evidence_and_analysis_describe_the_same_pass() {
     let store = store();
     let (record, claim) = claimed_projection(&store, "same-pass", 100, 60);
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -3473,7 +3505,11 @@ fn a_stale_generation_publishes_no_session_evidence_and_no_analysis() {
     let source_before = store.session_source_state(&record.key).unwrap().unwrap();
     let analysis_before = store.analysis(&record.key).unwrap().unwrap();
     let evidence_before = store.evidence(&record.key).unwrap().unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         !store
@@ -3509,7 +3545,11 @@ fn a_stale_fence_publishes_no_session_evidence_and_no_analysis() {
     let source_before = store.session_source_state(&record.key).unwrap().unwrap();
     let analysis_before = store.analysis(&record.key).unwrap().unwrap();
     let evidence_before = store.evidence(&record.key).unwrap().unwrap();
-    let completion = evidence_completion(&first_claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &first_claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&first_claim.key),
+    );
 
     assert!(
         !store
@@ -3542,7 +3582,7 @@ fn a_stale_claim_cannot_change_projections_or_relations() {
     let current_completion = evidence_completion(
         &current_claim,
         PublishedEvidence::Ready,
-        "{\"new\":true}".into(),
+        crate::store::test_support::evidence_json(&current_claim.key),
     );
     let current_relations = [RelationRecord {
         kind: RelationKind::Subagent,
@@ -3562,7 +3602,7 @@ fn a_stale_claim_cannot_change_projections_or_relations() {
     let stale_completion = evidence_completion(
         &first_claim,
         PublishedEvidence::Ready,
-        "{\"old\":true}".into(),
+        crate::store::test_support::evidence_json(&first_claim.key),
     );
     let stale_relations = [RelationRecord {
         kind: RelationKind::Subagent,
@@ -3612,7 +3652,11 @@ fn publication_replaces_subagent_relations_in_one_transaction() {
             }],
         )
         .unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     let new_relations = [RelationRecord {
         kind: RelationKind::Subagent,
         related_id: "new-child".into(),

@@ -35,7 +35,11 @@ fn a_winning_publish_writes_the_resume_snapshot_named_for_its_source() {
     let store = store();
     let (record, claim) = claimed_projection(&store, "resume-write", 100, 60);
     let key = record.key.clone();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     let sources = [SourcePublishOutcome {
         source_key: "resume-write".into(),
         mode: SourcePublishMode::Full,
@@ -70,7 +74,11 @@ fn a_source_with_no_resume_has_its_stored_snapshot_dropped() {
         )
         .unwrap();
     }
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     let sources = [SourcePublishOutcome {
         source_key: "resume-drop".into(),
         mode: SourcePublishMode::Full,
@@ -107,7 +115,11 @@ fn a_lost_publish_race_writes_no_resume_snapshot() {
             params![key.environment_key, key.agent, key.session_id],
         )
         .unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     let sources = [SourcePublishOutcome {
         source_key: "resume-lost-race".into(),
         mode: SourcePublishMode::Full,
@@ -140,7 +152,11 @@ fn a_resumed_source_re_stamps_only_its_own_appended_rows() {
             turn_row_for("child-1", 0),
         ])
         .unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -166,7 +182,11 @@ fn a_resumed_source_re_stamps_only_its_own_appended_rows() {
     next_writer
         .write_turn_rows(&[turn_row_for("resume-restamp", 1)])
         .unwrap();
-    let next_completion = evidence_completion(&next_claim, PublishedEvidence::Ready, "{}".into());
+    let next_completion = evidence_completion(
+        &next_claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&next_claim.key),
+    );
     let sources = [
         SourcePublishOutcome {
             source_key: "resume-restamp".into(),
@@ -225,7 +245,11 @@ fn a_full_read_source_replaces_only_its_own_published_rows() {
             turn_row_for("child-1", 0),
         ])
         .unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -251,7 +275,11 @@ fn a_full_read_source_replaces_only_its_own_published_rows() {
     next_writer
         .write_turn_rows(&[turn_row_for("resume-full-replace", 0)])
         .unwrap();
-    let next_completion = evidence_completion(&next_claim, PublishedEvidence::Ready, "{}".into());
+    let next_completion = evidence_completion(
+        &next_claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&next_claim.key),
+    );
     let sources = [
         SourcePublishOutcome {
             source_key: "resume-full-replace".into(),
@@ -301,7 +329,11 @@ fn a_vanished_source_has_its_rows_and_resume_dropped_on_the_next_publish() {
     writer
         .write_turn_rows(&[turn_row_for("resume-vanish", 0), turn_row_for("child-1", 0)])
         .unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     let sources = [
         SourcePublishOutcome {
             source_key: "resume-vanish".into(),
@@ -336,7 +368,11 @@ fn a_vanished_source_has_its_rows_and_resume_dropped_on_the_next_publish() {
     next_writer
         .write_turn_rows(&[turn_row_for("resume-vanish", 1)])
         .unwrap();
-    let next_completion = evidence_completion(&next_claim, PublishedEvidence::Ready, "{}".into());
+    let next_completion = evidence_completion(
+        &next_claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&next_claim.key),
+    );
     let next_sources = [SourcePublishOutcome {
         source_key: "resume-vanish".into(),
         mode: SourcePublishMode::Resumed,
@@ -380,8 +416,8 @@ fn a_vanished_source_has_its_rows_and_resume_dropped_on_the_next_publish() {
 fn current_resume_revisions_reject_each_prior_batch_revision() {
     let current = crate::analysis::resume_revisions();
     assert_eq!(current.snapshot_revision, 6);
-    assert_eq!(current.parser_revision, 31);
-    assert_eq!(current.analyzer_revision, 21);
+    assert_eq!(current.parser_revision, 32);
+    assert_eq!(current.analyzer_revision, 22);
     assert_eq!(current.metrics_schema_revision, 8);
     assert_eq!(current.evidence_schema_revision, 18);
     assert_eq!(current.coverage_schema_revision, 4);

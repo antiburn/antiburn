@@ -125,6 +125,33 @@ fn bounded_reducer_matches_the_retained_reference_for_small_streams() {
 }
 
 #[test]
+fn split_usage_timestamp_keeps_event_metadata_on_the_event_bucket() {
+    let mut assistant = event(Some(60_000), Role::Assistant, 10, 2);
+    assistant.usage_ts_ms = Some(0);
+    assistant.model = Some("claude-opus-4-6".to_string());
+    assistant.thinking_mode = Some("high".to_string());
+    assistant.speed = Some("fast".to_string());
+    assistant.has_thinking = true;
+    let user = event(Some(120_000), Role::User, 0, 0);
+    let events = vec![assistant, user];
+    let summary = SessionSummary {
+        context_window: Some(200_000),
+        ..SessionSummary::default()
+    };
+
+    let bounded = finished(events.clone(), summary.clone()).metrics();
+    let reference = super::reference::SessionMetricsAccumulator::from_parts(
+        "synthetic".to_string(),
+        "session".to_string(),
+        events,
+        summary,
+    )
+    .metrics();
+
+    assert_eq!(bounded, reference);
+}
+
+#[test]
 fn bounded_reducer_matches_the_reference_across_idle_gaps() {
     let mut first_assistant = event(Some(0), Role::Assistant, 10, 2);
     first_assistant.model = Some("claude-opus-4-6".to_string());

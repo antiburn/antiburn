@@ -201,14 +201,14 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 21,
+      "analyzerRevision": 22,
       "evidenceSchemaRevision": 18,
       "harnessVersion": {
         "state": "complete",
         "value": null
       },
       "ordering": "monotonic",
-      "parserRevision": 31,
+      "parserRevision": 32,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
