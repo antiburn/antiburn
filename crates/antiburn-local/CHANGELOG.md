@@ -17,6 +17,15 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-10
+
+### Fixed
+
+- Raise the retained thread identity cap from 512 to 16,384 for long sessions.
+  Overflow still marks attribution partial and blocks affected clean results.
+- Advance analyzer revision to 22 so prior evidence is reprocessed with the
+  larger identity cap.
+
 ## [0.7.0] - 2026-09-10
 
 ### Added
