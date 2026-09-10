@@ -63,7 +63,9 @@ button:active,
 }
 
 .ui-segmented-native-segment:not([aria-selected="true"]):not([aria-checked="true"])
-  + .ui-segmented-native-segment:not([aria-selected="true"]):not([aria-checked="true"])::before {
+  + .ui-segmented-native-segment:not([aria-selected="true"]):not(
+    [aria-checked="true"]
+  )::before {
   content: "";
   position: absolute;
   inset-block: 5px;
