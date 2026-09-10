@@ -38,8 +38,9 @@ grants for `ai.antiburn.desktop.debug`, not `ai.antiburn.desktop`.
 
 ## Use developer tools and logs
 
-Debug webviews keep reload and developer tools available. Focus the webview,
-then use the normal platform shortcuts:
+Debug webviews keep the context menu, reload, and developer tools available.
+Right-click the webview and select **Inspect Element**, or focus the webview
+and use the normal platform shortcuts:
 
 - macOS: `Command+Option+I` for developer tools and `Command+R` to reload.
 - Windows and Linux: `Ctrl+Shift+I` for developer tools and `Ctrl+R` to reload.

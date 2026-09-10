@@ -29,15 +29,17 @@ process-level opt-out.
 
 ## Exactly what the event schema can carry
 
-Twenty-seven fields, and this is the whole list. Fourteen are the established
+Twenty-eight fields, and this is the whole list. Fourteen are the established
 event envelope and general properties. The nine Claude reset fields are optional
 and appear only on `antiburn.claude_limit_reset_observed`. The three limit-factor
 fields are optional and appear only on `antiburn.limit_factor_observed`. One
-nested resource summary appears only on `antiburn.resource_usage_observed`. The
-payload is a closed Rust struct
+nested resource summary appears only on `antiburn.resource_usage_observed`. One
+sanitized list of record type names is optional and appears only on
+`antiburn.unrecognized_records_observed`. The payload is a closed Rust struct
 ([`analytics/event.rs`](../apps/desktop/src-tauri/src/analytics/event.rs))
-with no map and no free-form string, so there is nowhere for anything else to
-be put.
+with no map and almost no free-form string — see `properties.unrecognizedTypes`
+below for the one bounded, sanitized exception — so there is nowhere for
+anything else to be put.
 
 | Field                           | What it is                                                                                                                                                                                                                                                                      | Example                                 |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
@@ -66,6 +68,7 @@ be put.
 | `properties.factorBand`         | A learned limit factor's dollars-per-percent value, banded by powers of two: `under_1`, `1_to_under_2`, `2_to_under_4`, `4_to_under_8`, `8_to_under_16`, `16_to_under_32`, `32_to_under_64`, `64_to_under_128`, or `128_and_over`. Optional and present only on `antiburn.limit_factor_observed`. | `4_to_under_8`                          |
 | `properties.residualBand`       | How far the meter and the factor's own estimate for the current period disagree: `within_5`, `within_20`, `over_20`, or `unknown` (no residual yet). Optional and present only on `antiburn.limit_factor_observed`.                                                            | `within_5`                              |
 | `properties.resourceUsage`      | A closed hourly summary of antiburn's own process CPU, memory, read/write I/O, and logical database and WAL file sizes. Every measurement is a fixed band; coverage is `none`, `partial`, or `full`. The complete nested shape and bands are below.                             | `{ "cpuAverage": "under1_percent", … }` |
+| `properties.unrecognizedTypes`  | Up to 16 unknown transcript record type names, sanitized and sent verbatim: each is non-empty, ASCII, at most 64 bytes, and matches `[A-Za-z0-9_.:/-]`; a name that fails any of those checks is replaced by the fixed sentinel `<rejected>` (sent at most once, however many names failed). Sorted and deduplicated. Optional and present only on `antiburn.unrecognized_records_observed`. See the `inert_capped` paragraph below for the app-version boundary. | `["custom_tool_call", "<rejected>"]`    |
 | `context.appVersion`            | The application version.                                                                                                                                                                                                                                                        | `antiburn:0.1.0`                        |
 | `context.os`                    | Operating-system family.                                                                                                                                                                                                                                                        | `macos`                                 |
 
@@ -210,7 +213,7 @@ Event names are namespaced `antiburn.*`.
 | `antiburn.surface_state_observed`        | A `ready`, `empty`, `error`, or ten-second visible `loading_timeout` state is presented on a visible surface. Each distinct state is reported at most once per exposure; a later `ready` state can follow a timeout.                                                                                                                                                                                                                                                                                                                                                                                                         | `label` — the `surface_viewed` surface list plus `insights`. `detail` — `ready`, `empty`, `error`, or `loading_timeout`. `origin` — `user` or `automatic`.                                                                                                                                                                                                                                                   |
 | `antiburn.live_usage_state_observed`     | A provider state is presented on Activity, in a provider preview, or in a user-opened HUD. Automatic HUD restoration emits nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | `label` — `anthropic`, `openai`, or `google`. `detail` — `fresh`, `stale`, `authentication`, `rate_limited`, `unavailable`, or `no_credentials`. The last value is reserved but no current call site emits it.                                                                                                                                                                                               |
 | `antiburn.error_occurred`                | A full discovery pass fails, and the previous full pass had not already reported the same failure.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | `label` — a category, currently `scan_failed`. No message, no path, no backtrace.                                                                                                                                                                                                                                                                                                                            |
-| `antiburn.unrecognized_records_observed` | Settings → Insights returns a cohort containing unknown record vocabulary, and its outcome differs from the last one reported during this run.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `bucket` — sessions containing unknown types. `label` — `inert_only`, `inert_capped`, or `evidence_bearing`. No discriminator, payload, session identifier, or second dimension.                                                                                                                                                                                                                             |
+| `antiburn.unrecognized_records_observed` | Settings → Insights returns a cohort containing unknown record vocabulary, and its outcome differs from the last one reported during this run.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `bucket` — sessions containing unknown types. `label` — `inert_only`, `inert_capped`, or `evidence_bearing`. `unrecognizedTypes` — up to 16 sanitized record type names, from the next release after 0.5.0. No payload, session identifier, or second dimension.                                                                                                                                                                                                                             |
 | `antiburn.claude_limit_reset_observed`   | After an ordinary Claude usage refresh, when analytics and Claude live usage are both enabled and the observation differs from the last one queued during this run. The probe uses a separate five-minute cooldown.                                                                                                                                                                                                                                                                                                                                                                                                          | `label` — `success`, `authentication`, `rateLimited`, `unavailable`, `credential_absent`, `credential_expired`, or `credential_unavailable`. The nine reset fields listed above. No response body, credential, account identifier, exact usage percentage, or date.                                                                                                                                          |
 | `antiburn.usage_observed`                | An ordinary live-usage refresh — a background tick or a visible one — publishes a usage window for a provider that is online and not hidden. Reports the first observation for each `(provider, window role)` pair in a run, then only when that pair's band changes. A provider that fails this pass has no window to report and its last reported band is left alone. Reveals which providers are enabled, at worst a handful of times per install per day.                                                                                                                                                                | `label` — `anthropic`, `openai`, or `google`, the same vocabulary `live_usage_state_observed` uses. `detail` — `short` or `long`, the window's role. `usageBand` — `below_80`, `80_to_under_100`, `at_limit`, or `unknown`. A window without an authoritative figure still reports; the band is coarse enough to stay useful either way. No percentage, timestamp, window id, scope, account, or model name. |
 | `antiburn.limit_factor_observed` | A background factor-learning pass produces a learned dollars-per-percent factor for a `(provider, lane)` pair. Reports the first observation for each pair in this run, then only when its `(plan, factor band, residual band)` tuple changes, and never more than once every 24 hours for the same pair even across a genuine change. Reveals a coarse sense of plan mix and estimate accuracy per provider and lane, at worst a handful of times per install per day. | `label` — `anthropic`, `openai`, or `google`. `detail` — `short` or `long`, the lane. `plan` — the mapped plan vocabulary. `factorBand` — the log-spaced dollars-per-percent band. `residualBand` — how far the meter and the estimate disagree. No dollar amount, percentage, account, or timestamp. |
@@ -223,9 +226,10 @@ does not report the same failure after every full pass. What survives is the
 first full pass of each run, every crossing of a bucket boundary, and every move
 into or out of failure. Scoped watcher passes emit neither scan event and do not
 change this comparison. The unrecognized-record event likewise reports only a
-changed `(label, bucket)` outcome. A clean cohort updates that in-memory
-comparison without sending an event, so a later return to unknown vocabulary is
-visible.
+changed `(label, bucket, unrecognizedTypes)` outcome, so a newly observed type
+name is a reportable change even when the label and bucket stay the same. A
+clean cohort updates that in-memory comparison without sending an event, so a
+later return to unknown vocabulary is visible.
 
 Visible-use events start only after native visibility succeeds. A surface state
 is reported at most once per distinct state in one exposure, and hidden or stale
@@ -292,10 +296,19 @@ holds even across a genuine band change, so a factor bouncing between two
 adjacent bands cannot report more than once a day.
 
 The `inert_capped` label covers either too many distinct unknown types or one
-type name that exceeds the local string limit. The event never sends those
-names. They are runtime schema vocabulary, while analytics properties use a
-closed vocabulary reviewed in this file. New names remain visible in the local
-Insights coverage note and diagnostics only.
+type name that exceeds the local string limit. From the next release after
+0.5.0, `unrecognizedTypes` carries up to 16 of those names, sanitized rather
+than reviewed against a closed vocabulary: each must be non-empty, ASCII, at
+most 64 bytes, and drawn from `[A-Za-z0-9_.:/-]`, or it is replaced by the
+fixed sentinel `<rejected>` before it leaves this machine. This is a
+deliberate, narrow exception to the closed-vocabulary rule the rest of this
+file describes — the names are runtime schema vocabulary the local engine
+already reports in the Insights coverage note and diagnostics, not text a
+reader typed, so sending the sanitized name itself is how a maintainer learns
+which new record type an agent has started writing. Earlier app versions sent
+no names at all; an event from one of those versions has no
+`unrecognizedTypes` field, and its absence must not be read as "no unknown
+types were observed" — it means the version predates this field.
 
 This event is sampled only when a reader opens Settings → Insights. A request
 can also join a report reduction already in flight. Its buckets are therefore

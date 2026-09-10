@@ -1,11 +1,16 @@
 //! The event payload: every field that may ever leave this machine, named once.
 //!
-//! This module is the enforcement point for the promise the Privacy pane makes.
-//! [`Event`] has no free-form field — no map, no `serde_json::Value`, no
-//! `String` a caller chooses the contents of — so there is nowhere for a path,
-//! a repository name, a session title, or a credential to be put. Adding a
-//! field here is the only way to widen what is sent, which makes widening it a
-//! visible act in review rather than an accident at a call site.
+//! This module enforces the promise the Privacy pane makes. Almost every
+//! [`Event`] field is a `&'static str` the caller passes in. No caller can put
+//! a path, a repository name, a session title, or a credential here. There
+//! are two bounded exceptions, not a free-form map or a `serde_json::Value`.
+//! `properties.resourceUsage` is a closed nested struct.
+//! `properties.unrecognizedTypes` is a sanitized `Vec<String>` of transcript
+//! record type names. `analytics::sanitize_unrecognized_types` caps its count
+//! and length and filters it to a fixed character set before it reaches this
+//! struct. Adding a field here is the only way to widen what antiburn sends.
+//! That makes widening it a visible act in review, not an accident at a call
+//! site.
 //!
 //! Counts are bucketed for the same reason. An exact session count, reported
 //! repeatedly over weeks, is a fingerprint even without an identifier attached
@@ -234,6 +239,15 @@ pub struct Properties {
     /// These bands describe process and local-store resource use for one bounded window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_usage: Option<super::resources::schema::ResourceUsageSummary>,
+    /// Sanitized transcript record type names. This field appears only on
+    /// `antiburn.unrecognized_records_observed`.
+    /// `analytics::sanitize_unrecognized_types` checks each name before it
+    /// reaches this struct. It keeps at most 16 names. Each name must be
+    /// non-empty, ASCII, at most 64 bytes long, and made only of characters
+    /// in `[A-Za-z0-9_.:/-]`. A name that fails this check becomes the fixed
+    /// sentinel `<rejected>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unrecognized_types: Option<Vec<String>>,
 }
 
 /// What a caller may attach to an event.
@@ -242,7 +256,7 @@ pub struct Properties {
 /// which are indistinguishable to the compiler and so silently swappable at a
 /// call site. Naming them makes a mix-up a compile error instead of a wrong
 /// value arriving in a dashboard nobody cross-checks.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Facts {
     /// A bucketed magnitude, never an exact count.
     pub bucket: Option<&'static str>,
@@ -266,6 +280,8 @@ pub struct Facts {
     pub residual_band: Option<&'static str>,
     #[cfg(feature = "analytics")]
     pub resource_usage: Option<super::resources::schema::ResourceUsageSummary>,
+    /// Sanitized transcript record type names. See [`Properties::unrecognized_types`].
+    pub unrecognized_types: Option<Vec<String>>,
 }
 
 #[cfg(feature = "analytics")]
@@ -795,6 +811,7 @@ mod tests {
                 factor_band: Some("2_to_under_4"),
                 residual_band: Some("within_5"),
                 resource_usage: Some(resource_summary()),
+                unrecognized_types: Some(vec!["custom_event".to_string()]),
             },
             context: Context {
                 app_version: "antiburn:1.2.3".into(),
@@ -882,7 +899,7 @@ mod tests {
     /// `apps/desktop/src/views/settings/PrivacyPane.tsx` is the bug this
     /// comment exists to prevent.
     #[test]
-    fn the_wire_payload_is_exactly_these_twenty_seven_fields() {
+    fn the_wire_payload_is_exactly_these_twenty_eight_fields() {
         let json = serde_json::to_value(sample()).expect("serializes");
         let object = json.as_object().expect("an object");
         let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
@@ -928,6 +945,7 @@ mod tests {
                 "residualBand",
                 "resourceUsage",
                 "responseShape",
+                "unrecognizedTypes",
                 "usageBand",
             ]
         );
@@ -983,6 +1001,7 @@ mod tests {
         event.properties.factor_band = None;
         event.properties.residual_band = None;
         event.properties.resource_usage = None;
+        event.properties.unrecognized_types = None;
         let json = serde_json::to_string(&event).expect("serializes");
         assert!(!json.contains("bucket"), "{json}");
         assert!(!json.contains("label"), "{json}");
@@ -992,6 +1011,27 @@ mod tests {
         assert!(!json.contains("factorBand"), "{json}");
         assert!(!json.contains("residualBand"), "{json}");
         assert!(!json.contains("resourceUsage"), "{json}");
+        assert!(!json.contains("unrecognizedTypes"), "{json}");
+    }
+
+    /// `unrecognizedTypes` appears as a JSON array only on the event it
+    /// belongs to. Every other event carries `None` for this field, so the
+    /// key is absent from its wire payload.
+    #[test]
+    fn unrecognized_types_appears_only_on_its_own_event() {
+        let mut carrying = sample();
+        carrying.event = EventName::UnrecognizedRecordsObserved.as_str().into();
+        carrying.properties.unrecognized_types = Some(vec!["custom_event".to_string()]);
+        let json = serde_json::to_value(&carrying).expect("serializes");
+        let types = json["properties"]["unrecognizedTypes"]
+            .as_array()
+            .expect("unrecognizedTypes is an array");
+        assert_eq!(types, &[serde_json::json!("custom_event")]);
+
+        let mut other = sample();
+        other.properties.unrecognized_types = None;
+        let json = serde_json::to_string(&other).expect("serializes");
+        assert!(!json.contains("unrecognizedTypes"), "{json}");
     }
 
     #[test]
@@ -1117,6 +1157,7 @@ mod tests {
             22 => "twenty-two",
             23 => "twenty-three",
             27 => "twenty-seven",
+            28 => "twenty-eight",
             other => panic!("no word for {other} fields; add one and update the documents"),
         };
 

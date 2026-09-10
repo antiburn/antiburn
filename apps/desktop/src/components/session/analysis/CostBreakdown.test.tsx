@@ -39,16 +39,16 @@ function result(totalCostUsd = 2.4, over: Partial<LocalSessionCost> = {}): Local
 }
 
 describe("CostBreakdown", () => {
-  it("pairs a single total with component rows in the wide layout", () => {
-    render(<CostBreakdown cost={result()} layout="wide" />)
+  it("pairs a single total with component rows", () => {
+    render(<CostBreakdown cost={result()} />)
     expect(screen.getAllByText("$2.40")).toHaveLength(1)
     expect(screen.getByText("10 tokens")).toBeTruthy()
     expect(screen.getByText("Input")).toBeTruthy()
     expect(screen.getByText("Cache write")).toBeTruthy()
   })
 
-  it("explains a wide row from a tooltip on the row, not an info button", () => {
-    render(<CostBreakdown cost={result()} layout="wide" />)
+  it("explains a component row from a tooltip on the row, not an info button", () => {
+    render(<CostBreakdown cost={result()} />)
     expect(screen.queryByRole("button", { name: "About Input" })).toBeNull()
     const row = screen.getByText("Input").closest("[tabindex]")!
     expect(row).toHaveAttribute("tabindex", "0")
@@ -135,12 +135,11 @@ describe("CostBreakdown", () => {
     expect(screen.getByText("950")).toBeTruthy()
     expect(screen.getByText("1.2k")).toBeTruthy()
     expect(screen.getByText("14k")).toBeTruthy()
-    // Cache write tokens and the footer's total both round to the same "2.1M".
-    expect(screen.getAllByText("2.1M")).toHaveLength(2)
+    // The summary labels its total token count.
+    expect(screen.getByText("2.1M")).toBeTruthy()
+    expect(screen.getByText("2.1M tokens")).toBeTruthy()
     // Input is $0.30 of a $2.40 total.
     expect(screen.getByText("13%")).toBeTruthy()
-    // The footer always reads the full share.
-    expect(screen.getByText("100%")).toBeTruthy()
   })
 
   it("shows each split row's own token count", () => {
@@ -177,8 +176,8 @@ describe("CostBreakdown", () => {
         })}
       />,
     )
-    // Four component rows plus the footer, all sharing an undefined percent.
-    expect(screen.getAllByText("—")).toHaveLength(5)
+    // Each component has an undefined share when the total is zero.
+    expect(screen.getAllByText("—")).toHaveLength(4)
   })
 })
 
