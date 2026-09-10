@@ -156,8 +156,17 @@ async fn a_session_goes_idle_at_the_window_and_a_touch_moves_the_deadline() {
     let events = start(BASE, vec![(key("seeded"), BASE)]);
     let mut bus = events.subscribe();
 
-    // 170 s in: still 10 s left, and a touch restarts the window.
+    // 170 s in: quiet since 30 s, still 10 s left, and a touch restarts
+    // both windows.
     tokio::time::sleep(Duration::from_secs(170)).await;
+    assert_eq!(
+        bus.recv().await.unwrap(),
+        SessionEvent::Quiet {
+            session: session_ref("seeded"),
+            agent: AgentKind::Claude,
+            at: BASE + 31,
+        }
+    );
     assert_eq!(bus.try_recv().unwrap_err(), TryRecvError::Empty);
     events.report(Observation::Touched {
         session: Some(key("seeded")),
@@ -173,8 +182,17 @@ async fn a_session_goes_idle_at_the_window_and_a_touch_moves_the_deadline() {
     tokio::time::sleep(Duration::from_secs(15)).await;
     assert_eq!(bus.try_recv().unwrap_err(), TryRecvError::Empty);
 
-    // The moved deadline: 170 + 180 + 1 s of slack.
+    // The moved deadlines: quiet at 170 + 30 + 1 s of slack, then idle at
+    // 170 + 180 + 1.
     tokio::time::sleep(Duration::from_secs(170)).await;
+    assert_eq!(
+        bus.recv().await.unwrap(),
+        SessionEvent::Quiet {
+            session: session_ref("seeded"),
+            agent: AgentKind::Claude,
+            at: BASE + 201,
+        }
+    );
     assert_eq!(
         bus.recv().await.unwrap(),
         SessionEvent::Idle {
@@ -194,8 +212,20 @@ async fn sessions_expire_in_deadline_order() {
     );
     let mut bus = events.subscribe();
 
+    // The newer session, seeded inside the quiet window, goes quiet at
+    // t=20 s plus slack. The older one was seeded quiet and says nothing.
+    tokio::time::sleep(Duration::from_secs(22)).await;
+    assert_eq!(
+        bus.recv().await.unwrap(),
+        SessionEvent::Quiet {
+            session: session_ref("newer"),
+            agent: AgentKind::Claude,
+            at: BASE + 21,
+        }
+    );
+
     // The older session crosses its window at t=80 s, plus slack.
-    tokio::time::sleep(Duration::from_secs(82)).await;
+    tokio::time::sleep(Duration::from_secs(60)).await;
     assert!(matches!(
         bus.recv().await.unwrap(),
         SessionEvent::Idle { session, .. } if session == session_ref("older")
@@ -208,6 +238,45 @@ async fn sessions_expire_in_deadline_order() {
         bus.recv().await.unwrap(),
         SessionEvent::Idle { session, .. } if session == session_ref("newer")
     ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_session_goes_quiet_at_thirty_seconds_and_again_after_a_touch() {
+    let events = start(BASE, vec![(key("busy"), BASE)]);
+    let mut bus = events.subscribe();
+
+    tokio::time::sleep(Duration::from_secs(31)).await;
+    assert_eq!(
+        bus.recv().await.unwrap(),
+        SessionEvent::Quiet {
+            session: session_ref("busy"),
+            agent: AgentKind::Claude,
+            at: BASE + 31,
+        }
+    );
+    // Quiet is not idle: the session is still in the snapshot.
+    assert_eq!(events.live_sessions().len(), 1);
+
+    // A write after quiet is activity again, and starts a new quiet window.
+    events.report(Observation::Touched {
+        session: Some(key("busy")),
+        agent: AgentKind::Claude,
+        at: BASE + 40,
+    });
+    assert!(matches!(
+        bus.recv().await.unwrap(),
+        SessionEvent::Activity { .. }
+    ));
+    tokio::time::sleep(Duration::from_secs(40)).await;
+    assert_eq!(
+        bus.recv().await.unwrap(),
+        SessionEvent::Quiet {
+            session: session_ref("busy"),
+            agent: AgentKind::Claude,
+            at: BASE + 71,
+        }
+    );
+    assert_eq!(events.live_sessions().len(), 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -263,4 +332,11 @@ fn events_serialize_with_a_kind_tag_and_camel_case_fields() {
     let json = serde_json::to_value(&idle).unwrap();
     assert_eq!(json["kind"], "activity");
     assert!(json["session"].is_null());
+
+    let quiet = SessionEvent::Quiet {
+        session: session_ref("abc"),
+        agent: AgentKind::Claude,
+        at: 9,
+    };
+    assert_eq!(serde_json::to_value(&quiet).unwrap()["kind"], "quiet");
 }
