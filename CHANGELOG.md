@@ -22,8 +22,6 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [0.5.2] - 2026-09-10
 
-This release supersedes 0.5.1, which was withdrawn before publication.
-
 ### Changed
 
 - Session Details has a simpler layout and clearer Burn Check cards that adapt
@@ -42,32 +40,6 @@ This release supersedes 0.5.1, which was withdrawn before publication.
   for agents without a dedicated guidance profile.
 - Session-detail metric pickers keep a consistent width, percentage labels have
   clear spacing, and the status bar keeps a consistent height.
-
-- Expanded sub-agent rows stay aligned with the cost table columns.
-- Expired Pi credentials can refresh through Pi before antiburn retries live
-  usage, including installations managed by nvm.
-- Cache churn now uses the correct Claude or OpenAI accounting policy in mixed
-  model sessions. Token-burn estimates stay unknown when prices or total-token
-  evidence is unavailable.
-- Session changes are detected more reliably for bounded inline sources and
-  OpenCode databases, including edits that do not change row counts or saved
-  timestamps.
-
-## [0.5.1] - 2026-09-10
-
-Withdrawn before publication; superseded by 0.5.2.
-
-### Changed
-
-- Session Details has a simpler layout and clearer Burn Check cards that adapt
-  to the window width.
-- Burn Checks now use stronger evidence contracts for supported Claude Code,
-  Codex, OpenCode, Pi, and Antigravity sessions. Findings keep exact provider
-  routes and supported checks decline clean results when required evidence is
-  incomplete.
-
-### Fixed
-
 - Expanded sub-agent rows stay aligned with the cost table columns.
 - Expired Pi credentials can refresh through Pi before antiburn retries live
   usage, including installations managed by nvm.
