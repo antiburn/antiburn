@@ -81,12 +81,15 @@ function zoneAt(zones: MeterZone[], fraction: number): MeterZone {
  * elapsed from looking the same as 60% used at 90% elapsed. With no fraction
  * there is no notch — the component never draws one from an assumption.
  *
- * `live` runs the session sweep, as `LedBar` does on the HUD: a band that
- * crosses every segment in the fill direction, on the clock of the nearest
- * `led-clock` ancestor. Each segment carries its place along the sweep and
- * the meter's segment count, and `hud.css` paints the band from its distance
- * to the sweep position. `row` is the meter's row within its provider: each
- * row runs 100 ms after the one above it.
+ * `live` runs the session sweep, as `LedBar` does on the HUD: a gleam that
+ * crosses the lit segments in the fill direction, on the clock of the
+ * nearest `led-clock` ancestor. An unlit segment does not move. Each lit
+ * segment carries its place along the sweep and the meter's segment count,
+ * and `hud.css` paints the gleam from its distance to the sweep position.
+ * `row` is the meter's row within its provider: each row runs 100 ms after
+ * the one above it. A meter with no lit segment flashes the first segment
+ * in the fill direction, in the brand tint, so a session at zero still
+ * shows.
  *
  * Under reduced motion the sweep stops, and the next segment to light holds
  * the brand tint instead: a lit segment is already the brand colour, so the
@@ -146,6 +149,10 @@ export function SegmentedMeter({
           // The band runs in the fill direction, so a meter that fills from
           // the right counts its segments from that end.
           const sweepIndex = fillFrom === "end" ? segments - 1 - index : index
+          const litCount = fillFrom === "end" ? segments - filled : filled
+          // The gleam runs over the lit segments. With none lit, the first
+          // segment in the fill direction takes the sweep alone.
+          const sweeping = live && (lit || (litCount === 0 && sweepIndex === 0))
           return (
             <span
               key={index}
@@ -155,9 +162,9 @@ export function SegmentedMeter({
                 "relative h-[7px] w-[7px] shrink-0 rounded-full",
                 lit ? zone.fillClassName : zone.trackClassName,
                 clamped == null && "opacity-50",
-                live && "led-sweep-dot",
+                sweeping && "led-sweep-dot",
               )}
-              style={live ? ({ "--led-index": sweepIndex } as CSSProperties) : undefined}
+              style={sweeping ? ({ "--led-index": sweepIndex } as CSSProperties) : undefined}
             />
           )
         })}

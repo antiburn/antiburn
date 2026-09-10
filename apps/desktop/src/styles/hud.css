@@ -178,14 +178,16 @@ body[data-transparent-window] #root {
 }
 
 /*
- * A segment paints the band on a pseudo-element above its own colour, from
- * its distance to the sweep position. `--led-index` and `--led-segments`
- * come from the component; `--led-row` from the bar. `max(x, -x)` stands in
- * for `abs()`, which older WebKit lacks.
+ * A lit segment paints the gleam on a pseudo-element above its own colour,
+ * from its distance to the sweep position. An unlit segment carries no
+ * `led-sweep-dot` class and does not move. `--led-index` and
+ * `--led-segments` come from the component; `--led-row` from the bar.
+ * `max(x, -x)` stands in for `abs()`, which older WebKit lacks.
  *
- * The band is the brand tint on an unlit segment. A lit segment is already
- * near that colour, so the band on it is the shimmer white, the same gleam
- * the session list runs across a running session's title.
+ * The gleam is the shimmer white, the same highlight the session list runs
+ * across a running session's title: a lit segment is already near the brand
+ * tint, and a 6 px dot cannot show the tint above it. The one segment that
+ * sweeps unlit, the first of a bar with nothing lit, takes the brand tint.
  */
 .led-sweep-dot::after {
   --led-pos: calc(
@@ -196,7 +198,7 @@ body[data-transparent-window] #root {
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: var(--color-brand-tint);
+  background: var(--color-shimmer);
   opacity: clamp(
     0,
     calc(1 - max(var(--led-pos), -1 * var(--led-pos)) / var(--led-band, 0.15)),
@@ -204,19 +206,29 @@ body[data-transparent-window] #root {
   );
 }
 
-.led-sweep-dot[data-led-lit]::after {
-  background: var(--color-shimmer);
+.led-sweep-dot:not([data-led-lit])::after {
+  background: var(--color-brand-tint);
 }
 
 /*
- * The ring's arc laps the track once per cycle, clockwise from twelve
- * o'clock, while the bars sweep. The stylesheet owns the arc's rotation;
- * the component sets no `transform` attribute on it.
+ * The ring's gleam runs clockwise from twelve o'clock to the end of the
+ * reading's arc while the bars sweep, then fades over 0.3 s and waits for
+ * the next cycle. `--led-lap` is the sweep as a share of one lap, 0 to 1
+ * over the first half of the cycle. `--led-ring-span` is how far the gleam's
+ * start may go before its end leaves the arc; at zero the gleam holds at
+ * twelve and flashes in the brand tint. The stylesheet owns the arc's
+ * rotation; the component sets no `transform` attribute on it.
  */
 .led-sweep-ring {
+  --led-lap: calc((var(--led-sweep) + 0.25) / 2);
   stroke: var(--color-brand-tint);
   transform-origin: 16px 16px;
-  transform: rotate(calc(-90deg + (var(--led-sweep) + 0.25) * 180deg));
+  transform: rotate(calc(-90deg + clamp(0, var(--led-lap), var(--led-ring-span, 0)) * 360deg));
+  opacity: clamp(0, calc(1 - (var(--led-lap) - var(--led-ring-span, 0)) / 0.15), 1);
+}
+
+.led-sweep-ring[data-led-lit] {
+  stroke: var(--color-shimmer);
 }
 
 /*
@@ -233,13 +245,19 @@ body[data-transparent-window] #root {
     opacity: 0;
   }
 
-  .led-sweep-dot[data-led-next]::after {
+  [data-led-next]::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
     background: var(--color-brand-tint);
     opacity: 1;
   }
 
   .led-sweep-ring {
+    stroke: var(--color-brand-tint);
     transform: rotate(var(--led-ring-rest, -90deg));
+    opacity: 1;
   }
 }
 

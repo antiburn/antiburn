@@ -543,10 +543,12 @@ describe("OverlayWindow", () => {
     await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
     const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
     expect(dots).toHaveLength(20)
-    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(20)
+    // Nothing is lit, so the first segment flashes alone, in the brand tint.
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(1)
+    expect(dots[0]).toHaveClass("led-sweep-dot", "bg-led-off")
+    expect(dots[0]).not.toHaveAttribute("data-led-lit")
     expect(container.querySelectorAll("[data-led-next]")).toHaveLength(1)
     expect(dots[0]).toHaveAttribute("data-led-next", "true")
-    expect(dots[0]).toHaveClass("bg-led-off")
   })
 
   it("sweeps the one empty bar when there are no bars", async () => {
@@ -559,7 +561,8 @@ describe("OverlayWindow", () => {
     await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
     const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
     expect(dots).toHaveLength(20)
-    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(20)
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(1)
+    expect(dots[0]).toHaveClass("led-sweep-dot")
     expect(dots[0]).toHaveAttribute("data-led-next", "true")
     expect(container.querySelector("[data-led-lit]")).toBeNull()
   })
@@ -569,7 +572,8 @@ describe("OverlayWindow", () => {
     getLiveSessions.mockResolvedValue([liveSession()])
     const { container } = render(<OverlayWindow />)
 
-    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(40))
+    // 81% lights 16 of 20 on each bar; only the lit segments move.
+    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(32))
     const bars = Array.from(container.querySelectorAll<HTMLElement>("[style*='--led-row']"))
     expect(bars.map((bar) => bar.style.getPropertyValue("--led-row"))).toEqual(["0", "1"])
     expect(bars[0]?.style.getPropertyValue("--led-segments")).toBe("20")
@@ -586,7 +590,7 @@ describe("OverlayWindow", () => {
     expect(container.querySelectorAll(".led-clock")).toHaveLength(1)
     expect(
       container.querySelector(".led-clock")?.querySelectorAll(".led-sweep-dot"),
-    ).toHaveLength(40)
+    ).toHaveLength(32)
   })
 
   it("keeps the bars dark while the live session draws on another provider", async () => {
@@ -622,9 +626,12 @@ describe("OverlayWindow", () => {
     expect(dots[15]).not.toHaveAttribute("data-led-next")
     expect(dots[15]?.style.backgroundColor).not.toBe("")
     expect(dots[15]?.style.getPropertyValue("--led-index")).toBe("15")
-    // The unlit class stays on the segment: the band paints above it.
+    expect(dots[15]).toHaveClass("led-sweep-dot")
+    // The unlit segment does not move. It keeps the unlit colour and only
+    // holds the still mark under reduced motion.
     expect(dots[16]).toHaveAttribute("data-led-next", "true")
     expect(dots[16]).not.toHaveAttribute("data-led-lit")
+    expect(dots[16]).not.toHaveClass("led-sweep-dot")
     expect(dots[16]).toHaveClass("bg-led-off")
     expect(dots[16]?.style.backgroundColor).toBe("")
   })

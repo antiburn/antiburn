@@ -322,7 +322,7 @@ motion:
   anchored-content: "100ms opacity-only crossfade after native geometry commits; reduced motion uses 60ms"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
   tray-usage-meter: "launch: 1.5s column-by-column depletion; later changes: 300ms column-by-column"
-  led-sweep: "4s loop in src/styles/hud.css; a band crosses each live meter in about 1.25s, rows 100ms apart, and the ring laps once; reduced motion stops the loop and holds the brand tint on the next segment to light"
+  led-sweep: "4s loop in src/styles/hud.css; a gleam crosses the lit segments of each live meter in about 1.25s, rows 100ms apart, and runs the ring's lit arc once; unlit segments do not move; reduced motion stops the loop and holds the brand tint on the next segment to light"
 components:
   button-secondary:
     className: ui-push-button

@@ -189,7 +189,8 @@ describe("UsageLimitsBar — the live sweep", () => {
       "1",
       "2",
     ])
-    expect(region.querySelectorAll(".led-sweep-dot")).toHaveLength(3 * 32)
+    // 42% lights 13 of 32 on each of the three meters; only those move.
+    expect(region.querySelectorAll(".led-sweep-dot")).toHaveLength(3 * 13)
     // The live provider's group holds them all; the other provider stays dark.
     const groups = within(region).getAllByRole("group")
     expect(meters.every((node) => groups[0]?.contains(node))).toBe(true)

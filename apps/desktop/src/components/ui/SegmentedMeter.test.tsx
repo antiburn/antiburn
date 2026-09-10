@@ -87,10 +87,13 @@ describe("SegmentedMeter", () => {
     expect(queryByTestId("segmented-meter-notch")).not.toBeInTheDocument()
   })
 
-  it("sweeps every segment while a session is live, and marks the next one to light", () => {
+  it("sweeps the lit segments while a session is live, and marks the next one to light", () => {
     const { container } = render(<SegmentedMeter percent={50} live />)
     const all = segments(container)
-    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(32)
+    // 50% lights 16, and only those move.
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(16)
+    expect(all[16]).not.toHaveClass("led-sweep-dot")
+    expect(all[16]?.style.getPropertyValue("--led-index")).toBe("")
     // Each segment knows its place along the sweep; the meter knows its
     // length and its row. The stylesheet paints the band from those.
     expect(all[5]?.style.getPropertyValue("--led-index")).toBe("5")
@@ -117,9 +120,13 @@ describe("SegmentedMeter", () => {
     )
   })
 
-  it("marks the first segment at zero and the last at full", () => {
+  it("flashes the first segment alone at zero, and marks the last at full", () => {
     const { container: zero } = render(<SegmentedMeter percent={0} live />)
     expect(segments(zero)[0]).toHaveAttribute("data-led-next", "true")
+    // Nothing is lit, so the first segment takes the sweep by itself, unlit.
+    expect(zero.querySelectorAll(".led-sweep-dot")).toHaveLength(1)
+    expect(segments(zero)[0]).toHaveClass("led-sweep-dot")
+    expect(segments(zero)[0]).not.toHaveAttribute("data-led-lit")
     const { container: full } = render(<SegmentedMeter percent={100} live />)
     expect(segments(full)[31]).toHaveAttribute("data-led-next", "true")
     expect(segments(full)[31]).toHaveClass("bg-system-red-tint")
@@ -130,9 +137,14 @@ describe("SegmentedMeter", () => {
     const { container } = render(<SegmentedMeter percent={95} fillFrom="end" live />)
     const all = segments(container)
     expect(all[29]).toHaveAttribute("data-led-next", "true")
-    // The band runs in the fill direction: the last segment is first.
+    // The gleam runs in the fill direction: the last segment is first.
     expect(all[31]?.style.getPropertyValue("--led-index")).toBe("0")
-    expect(all[0]?.style.getPropertyValue("--led-index")).toBe("31")
+    expect(all[30]?.style.getPropertyValue("--led-index")).toBe("1")
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(2)
+    // Nothing lit from the right: the last segment flashes alone.
+    const { container: none } = render(<SegmentedMeter percent={100} fillFrom="end" live />)
+    expect(none.querySelectorAll(".led-sweep-dot")).toHaveLength(1)
+    expect(segments(none)[31]).toHaveClass("led-sweep-dot")
   })
 
   it("does not sweep without a live session", () => {

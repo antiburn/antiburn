@@ -182,12 +182,15 @@ switch and in Mission Control.
   detail window does not sweep. The popover sweeps the same providers from
   the same events: every usage meter of the provider on the open bar, and
   its ring on the closed bar.
-- The sweep is a band about six segments wide that crosses the bar from the
-  left, over lit and unlit segments alike. On an unlit segment the band is
-  the brand tint; on a lit one it is the shimmer white the session list runs
-  across a running session's title, because the bar colours sit too close to
-  the brand tint for a 6-pixel dot to show the tint above them. On the
-  closed popover bar an eighth of the ring laps the track once per cycle.
+- The sweep is a gleam about six segments wide that crosses the lit
+  segments from the left. An unlit segment does not move. The gleam is the
+  shimmer white the session list runs across a running session's title,
+  because the bar colours sit too close to the brand tint for a 6-pixel dot
+  to show the tint above them. A bar with nothing lit flashes its first
+  segment in the brand tint as the sweep passes, so a session at zero usage
+  still shows. On the closed popover bar the gleam runs from twelve o'clock
+  to the end of the ring's arc and fades there; a ring under an eighth
+  flashes its first eighth in the brand tint.
 - The cycle is 4 seconds: the band crosses the bar in about 1.25 seconds
   and the bar rests for the remainder. A provider's rows run 100
   milliseconds apart from the top. With no bars at all, the one empty bar

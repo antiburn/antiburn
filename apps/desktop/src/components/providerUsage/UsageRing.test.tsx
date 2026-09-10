@@ -115,6 +115,10 @@ describe("UsageRing", () => {
     // reduced-motion rest starts there.
     expect(arc).not.toHaveAttribute("transform")
     expect(arc?.style.getPropertyValue("--led-ring-rest")).toBe("90deg")
+    // The gleam's start may travel three eighths, so its end stays inside
+    // the half that is lit.
+    expect(arc?.style.getPropertyValue("--led-ring-span")).toBe("0.375")
+    expect(arc).toHaveAttribute("data-led-lit", "true")
     expect(arc?.getAttribute("stroke-dasharray")?.split(" ").map(Number)[0]).toBeCloseTo(
       CIRCUMFERENCE / 8,
       5,
@@ -123,11 +127,12 @@ describe("UsageRing", () => {
 
   it("rests at twelve o'clock at zero, and on the last eighth of a full ring", () => {
     const zero = render(<UsageRing percent={0} live />)
-    expect(
-      zero.container
-        .querySelector<SVGElement>('[data-testid="usage-ring-sweep"]')
-        ?.style.getPropertyValue("--led-ring-rest"),
-    ).toBe("-90deg")
+    const arc = zero.container.querySelector<SVGElement>('[data-testid="usage-ring-sweep"]')
+    expect(arc?.style.getPropertyValue("--led-ring-rest")).toBe("-90deg")
+    // Nothing lit: the gleam has no arc to run on, so it flashes at twelve
+    // in the brand tint instead.
+    expect(arc?.style.getPropertyValue("--led-ring-span")).toBe("0")
+    expect(arc).not.toHaveAttribute("data-led-lit")
     const full = render(<UsageRing percent={100} live />)
     expect(
       full.container

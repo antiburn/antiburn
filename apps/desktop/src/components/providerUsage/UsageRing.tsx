@@ -54,12 +54,15 @@ function markTransform(mark: BrandMark): string {
  *   A dashed track and no arc — visibly a ring with nothing in it rather than
  *   a ring at zero, which would be a claim.
  *
- * `live` runs the session sweep on a determinate ring: an eighth of the
- * brand tint laps the track once per cycle, on the clock of the nearest
- * `led-clock` ancestor. Under reduced motion the arc holds the next eighth
- * past the arc's end instead, the way a meter holds its next segment; a
- * full ring holds its last eighth. The indeterminate ring has no share to
- * sweep.
+ * `live` runs the session sweep on a determinate ring: a gleam an eighth
+ * long runs from twelve o'clock to the end of the reading's arc once per
+ * cycle, on the clock of the nearest `led-clock` ancestor, and fades there.
+ * The track does not move. A reading under an eighth has no room for the
+ * gleam, so the first eighth flashes in the brand tint instead, the way a
+ * bar with nothing lit flashes its first segment. Under reduced motion the
+ * arc holds the next eighth past the arc's end, the way a meter holds its
+ * next segment; a full ring holds its last eighth. The indeterminate ring
+ * has no share to sweep.
  */
 export function UsageRing({
   percent,
@@ -95,6 +98,9 @@ export function UsageRing({
   // ring: at the arc's end, pulled back so a full ring marks its last eighth
   // and not nothing.
   const restStart = clamped == null ? 0 : Math.min(clamped / 100, 1 - SWEEP_FRACTION)
+  // How far the gleam's start can travel, as a share of the ring, so that its
+  // end stays inside the reading's arc. Zero holds the flash at twelve.
+  const sweepSpan = clamped == null ? 0 : Math.max(0, clamped / 100 - SWEEP_FRACTION)
 
   return (
     <svg
@@ -152,7 +158,7 @@ export function UsageRing({
           {live && (
             // `hud.css` turns the arc with the sweep. The arc has no
             // `transform` attribute: the stylesheet owns its rotation, and
-            // reads the rest angle from the custom property below.
+            // reads its range and the rest angle from the properties below.
             <circle
               cx="16"
               cy="16"
@@ -162,7 +168,13 @@ export function UsageRing({
               strokeLinecap="round"
               className="led-sweep-ring"
               strokeDasharray={`${circumference * SWEEP_FRACTION} ${circumference}`}
-              style={{ "--led-ring-rest": `${-90 + restStart * 360}deg` } as CSSProperties}
+              style={
+                {
+                  "--led-ring-span": sweepSpan,
+                  "--led-ring-rest": `${-90 + restStart * 360}deg`,
+                } as CSSProperties
+              }
+              data-led-lit={sweepSpan > 0 || undefined}
               data-testid="usage-ring-sweep"
             />
           )}

@@ -211,12 +211,16 @@ sweep while tokens flow, not while the agent waits.
 
 ## Departures while building
 
-- **The band on a lit segment is the shimmer white, not the brand tint.**
-  The tint over an Anthropic bar's lit segments paints nothing, so a bar at
-  80% would sweep four dots. An unlit segment keeps the tint; a lit one takes
+- **Only lit segments move, and the band on them is the shimmer white.**
+  Keith, 2026-09-11, on the first build: "dont animate unlit LEDs". The tint
+  over an Anthropic bar's lit segments paints nothing, so a lit segment takes
   `--color-shimmer`, the highlight the session list already runs across a
-  running title. The ring keeps the tint alone: its arc shows over the track,
-  the remaining share, and the reduced-motion mark is unchanged.
+  running title, and an unlit segment carries no sweep at all. The one
+  exception is phase A's case: a bar with nothing lit flashes its first
+  segment in the brand tint as the sweep passes. The ring follows the same
+  rule: its gleam runs from twelve o'clock to the end of the reading's arc
+  and fades there, and a ring under an eighth flashes its first eighth in
+  the tint. The reduced-motion mark is unchanged.
 - **The renderer keeps a local 30 s clock for keyed sessions too.** The plan
   had the bus's `quiet` event end the sweep by itself. A snapshot that lists
   a session written 20 s ago, or a missed event, then needs a timer anyway,

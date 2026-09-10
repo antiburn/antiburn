@@ -8,17 +8,17 @@ import type { CSSProperties } from "react"
  * travelled. It separates 60% used at 30% elapsed from 60% used at 90%
  * elapsed. With no fraction there is no notch.
  *
- * `live` runs the session sweep: a band that crosses every segment from the
- * left, on the clock of the nearest `led-clock` ancestor. Each segment
- * carries its index and the bar's segment count, and `hud.css` paints the
- * band on the segment from its distance to the sweep position. `row` is the
- * bar's row within its provider: each row runs 100 ms after the one above it.
+ * `live` runs the session sweep: a gleam that crosses the lit segments from
+ * the left, on the clock of the nearest `led-clock` ancestor. An unlit
+ * segment does not move. Each lit segment carries its index and the bar's
+ * segment count, and `hud.css` paints the gleam on the segment from its
+ * distance to the sweep position. `row` is the bar's row within its
+ * provider: each row runs 100 ms after the one above it.
  *
- * Under reduced motion the sweep stops, and the next segment to light holds
- * the brand tint instead. At zero that is the first segment, so a bar with no
- * lit segment still shows that a session is live. A full bar marks its last
- * segment. The band on a lit segment is a lighter gleam: the bar colours sit
- * too close to the brand tint for a 6px dot to show the tint above them.
+ * A bar with no lit segment flashes its first segment in the brand tint as
+ * the sweep passes, so a session at zero usage still shows. Under reduced
+ * motion the sweep stops, and the next segment to light holds the brand tint
+ * instead; a full bar marks its last segment.
  */
 export function LedBar({
   split,
@@ -63,16 +63,19 @@ export function LedBar({
       {Array.from({ length: segments }, (_, index) => {
         const midpoint = (index + 0.5) / segments
         const hit = cutoffs.find((cutoff) => midpoint <= cutoff.upTo)
+        // The gleam runs over the lit segments. With none lit, the first
+        // segment takes the sweep alone, in the brand tint.
+        const sweeping = live && (hit != null || (litCount === 0 && index === 0))
         const style: CSSProperties = {}
         if (hit) style.backgroundColor = hit.color
-        if (live) Object.assign(style, { "--led-index": index })
+        if (sweeping) Object.assign(style, { "--led-index": index })
         return (
           <span
             key={index}
             data-led-lit={live && hit != null ? true : undefined}
             data-led-next={index === nextIndex || undefined}
-            className={`relative h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "" : "bg-led-off"} ${live ? "led-sweep-dot" : ""}`.trimEnd()}
-            style={hit || live ? style : undefined}
+            className={`relative h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "" : "bg-led-off"} ${sweeping ? "led-sweep-dot" : ""}`.trimEnd()}
+            style={hit || sweeping ? style : undefined}
           />
         )
       })}
