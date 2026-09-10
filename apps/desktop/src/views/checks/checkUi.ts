@@ -67,7 +67,7 @@ export const CHECK_UI: Record<BurnCheckDetectorId, CheckUiMetadata> = {
   },
 }
 
-export const CHECK_ICONS: Record<BurnCheckDetectorId, LucideIcon> = {
+const CHECK_ICONS: Record<BurnCheckDetectorId, LucideIcon> = {
   sessionsOverDepth: CHECK_UI.sessionsOverDepth.icon,
   modelOverthinking: CHECK_UI.modelOverthinking.icon,
   overpoweredSubagents: CHECK_UI.overpoweredSubagents.icon,
@@ -79,12 +79,12 @@ export const CHECK_ICONS: Record<BurnCheckDetectorId, LucideIcon> = {
   cacheChurn: CHECK_UI.cacheChurn.icon,
 }
 
-export function failedSessionSummary(category: ChecksCategoryPayload): string {
+function failedSessionSummary(category: ChecksCategoryPayload): string {
   const assessed = category.finding + category.clean
   return `${category.finding}/${assessed} session${assessed === 1 ? "" : "s"} failed`
 }
 
-export function tokenBurnLabel(category: ChecksCategoryPayload): string | null {
+function tokenBurnLabel(category: ChecksCategoryPayload): string | null {
   return category.estimatedTokenBurnBasisPoints == null
     ? null
     : `${formatTokenBurnPercent(category.estimatedTokenBurnBasisPoints)} token burn`

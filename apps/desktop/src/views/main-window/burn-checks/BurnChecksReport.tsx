@@ -48,6 +48,17 @@ function LoadingCheckDetail() {
   )
 }
 
+function TargetLoadError({ retry }: { retry: () => void }) {
+  return (
+    <article role="alert" className="px-4 py-4">
+      <p className="type-callout text-label-secondary">Could not load this check's details.</p>
+      <button type="button" onClick={retry} className="mt-3 ui-push-button">
+        Retry
+      </button>
+    </article>
+  )
+}
+
 function CheckRow({
   check,
   session,
@@ -144,6 +155,8 @@ function CheckRow({
             ) : (
               <BurnCheckDetail detector={detector} targets={[]} refresh={session.refresh} />
             )
+          ) : targets?.error ? (
+            <TargetLoadError retry={() => session.loadTargets(detector, true)} />
           ) : (
             <LoadingCheckDetail />
           )

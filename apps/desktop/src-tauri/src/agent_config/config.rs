@@ -93,9 +93,11 @@ impl ConfigOperation {
 }
 
 pub struct PreparedChange {
+    #[cfg(not(windows))]
     pub(super) agent: AgentKind,
     pub(super) setting: ConfigSetting,
     pub(super) selector: &'static str,
+    #[cfg(not(windows))]
     pub(super) operation: OperationSelector,
     pub(super) path: PathBuf,
     pub(super) scope: ConfigScope,

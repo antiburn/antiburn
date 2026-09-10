@@ -23,6 +23,7 @@ fn write(path: &Path, value: &str) {
     fs::write(path, value).unwrap();
 }
 
+#[cfg(not(windows))]
 fn operation(setting: ConfigSetting, expected: &str, proposed: &str) -> ConfigOperation {
     ConfigOperation {
         setting,

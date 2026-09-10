@@ -79,7 +79,10 @@ fn representative_paths(
         let Some(record) = records.iter().find(|record| record.key == key) else {
             continue;
         };
-        if record.source_kind != "file" || !Path::new(&record.source_label).is_absolute() {
+        if record.source_kind != "file"
+            || !(Path::new(&record.source_label).is_absolute()
+                || record.source_label.starts_with('/'))
+        {
             continue;
         }
         if !paths.contains(&record.source_label) {
@@ -95,7 +98,7 @@ fn representative_paths(
 const ID_TTL: Duration = Duration::from_secs(10 * 60);
 const TARGET_CACHE_LIMIT: usize = 100;
 const MAX_TARGETS: usize = 100;
-const MAX_CHECK_PROMPT_TARGETS: usize = 12;
+const MAX_CHECK_PROMPT_TARGETS: usize = 100;
 const MAX_PASSIVE_CANDIDATES: usize = 512;
 const PREPARED_CACHE_LIMIT: usize = 8;
 const PREPARED_CACHE_BYTES: usize = 4 * 1024 * 1024;

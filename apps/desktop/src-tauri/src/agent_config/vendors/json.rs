@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::fmt;
+#[cfg(not(windows))]
 use std::ops::Range;
 
 use serde::de::{Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
@@ -116,6 +117,7 @@ fn strip_comments(bytes: &[u8]) -> Result<Vec<u8>, ConfigUnavailableReason> {
     Ok(output)
 }
 
+#[cfg(not(windows))]
 fn top_level_string_range(
     bytes: &[u8],
     wanted: &str,
@@ -162,6 +164,7 @@ fn skip_space(bytes: &[u8], mut index: usize) -> usize {
     index
 }
 
+#[cfg(not(windows))]
 fn string_range(
     bytes: &[u8],
     start: usize,
@@ -184,6 +187,7 @@ fn string_range(
     Err(ConfigUnavailableReason::MalformedConfig)
 }
 
+#[cfg(not(windows))]
 fn value_end(bytes: &[u8], start: usize) -> Result<usize, ConfigUnavailableReason> {
     if bytes.get(start) == Some(&b'"') {
         return string_range(bytes, start).map(|(_, end)| end);

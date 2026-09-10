@@ -110,10 +110,11 @@ function CheckPromptAction({
   const [copied, setCopied] = useState(false)
   const [prompt, setPrompt] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  const promptTargets = targets.filter((target) => target.promptFix.status === "available")
   const currentKey =
-    targets.length === 0
+    promptTargets.length === 0
       ? `fallback:${detector}`
-      : targets.map((target) => target.actionId).join(":")
+      : promptTargets.map((target) => target.actionId).join(":")
   const key = useRef("")
   const copiedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scheduleCopiedReset = (startedKey: string) => {
@@ -143,9 +144,11 @@ function CheckPromptAction({
     try {
       if (!nextPrompt) {
         const outcome =
-          targets.length === 0
+          promptTargets.length === 0
             ? await copyPromptFixBurnCheck(detector)
-            : await copyPromptFixBurnCheckTargets(targets.map((target) => target.actionId))
+            : await copyPromptFixBurnCheckTargets(
+                promptTargets.map((target) => target.actionId),
+              )
         noteInteraction({
           kind: "burnCheckPromptPrepared",
           outcome:
@@ -210,8 +213,9 @@ function FixAction({
   refresh: () => void
 }) {
   const [choosing, setChoosing] = useState(false)
-  const [selected, setSelected] = useState<BurnCheckTargetPayload | null>(null)
+  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null)
   const eligible = targets.filter((target) => target.autoFix.status === "available")
+  const selected = eligible.find((target) => target.findingId === selectedFindingId) ?? null
   if (eligible.length === 0) return null
   if (eligible.length === 1)
     return (
@@ -220,7 +224,19 @@ function FixAction({
   return (
     <div className="mt-3">
       {selected ? (
-        <BurnCheckTargetActions target={selected} refresh={refresh} showPromptFix={false} />
+        <>
+          <BurnCheckTargetActions target={selected} refresh={refresh} showPromptFix={false} />
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedFindingId(null)
+              setChoosing(true)
+            }}
+            className="mt-2 type-footnote text-label-secondary hover:text-label"
+          >
+            Choose another change
+          </button>
+        </>
       ) : (
         <>
           <button
@@ -237,7 +253,7 @@ function FixAction({
                 <button
                   key={target.actionId}
                   type="button"
-                  onClick={() => setSelected(target)}
+                  onClick={() => setSelectedFindingId(target.findingId)}
                   className="ui-push-button"
                 >
                   {target.display.currentValue ?? "Review change"}

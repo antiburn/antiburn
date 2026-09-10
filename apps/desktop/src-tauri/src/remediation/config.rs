@@ -248,13 +248,14 @@ pub(super) fn config_context(
     }
 }
 
-pub(super) fn workspace_relative_cwd(context: &ConfigContext) -> Option<&str> {
+pub(super) fn workspace_relative_cwd(context: &ConfigContext) -> Option<String> {
     context
         .workspace_cwd
         .as_deref()?
         .strip_prefix(context.trusted_workspace_root.as_deref()?)
         .ok()?
         .to_str()
+        .map(|path| path.replace('\\', "/"))
 }
 
 pub(super) fn recovery_workspace_cwd(root: &Path, relative: Option<&str>) -> Result<PathBuf> {

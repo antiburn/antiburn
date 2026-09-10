@@ -161,7 +161,10 @@ function recurredTarget(actionId: string): BurnCheckTargetPayload {
 
 function setup(
   targetPayload:
-    BurnCheckTargetPayload | null | Promise<BurnCheckTargetPayload | null> = target,
+    | BurnCheckTargetPayload
+    | BurnCheckTargetPayload[]
+    | null
+    | Promise<BurnCheckTargetPayload | BurnCheckTargetPayload[] | null> = target,
   truncated = false,
   aggregatePayload: AggregateWinsPayload = aggregate,
   reportPayload: ChecksReportPayload | Promise<ChecksReportPayload> = namedTargetReport,
@@ -172,7 +175,14 @@ function setup(
     getAggregateWins: vi.fn().mockResolvedValue(aggregatePayload),
     getTargets: vi.fn(async () => {
       const resolvedTarget = await targetPayload
-      return { targets: resolvedTarget ? [resolvedTarget] : [], truncated }
+      return {
+        targets: Array.isArray(resolvedTarget)
+          ? resolvedTarget
+          : resolvedTarget
+            ? [resolvedTarget]
+            : [],
+        truncated,
+      }
     }),
     cancelReport: vi.fn().mockResolvedValue(undefined),
     getVisible: vi.fn().mockResolvedValue(true),
@@ -254,6 +264,23 @@ describe("BurnChecksView", () => {
     )
     expect(commands.copyBatch).toHaveBeenCalledWith(["action-fresh"])
     expect(commands.copy).not.toHaveBeenCalled()
+  })
+
+  it("includes all listed targets in a large check prompt", async () => {
+    const targets = Array.from({ length: 13 }, (_, index) => ({
+      ...target,
+      findingId: `finding-${index}`,
+      actionId: `action-${index}`,
+    }))
+    setup(targets, false, aggregate, report)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
+
+    await waitFor(() =>
+      expect(commands.copyBatch).toHaveBeenCalledWith(
+        Array.from({ length: 13 }, (_, index) => `action-${index}`),
+      ),
+    )
   })
 
   it("renders assessed checks and concise failed details", async () => {
@@ -425,6 +452,19 @@ describe("BurnChecksView", () => {
     expect(await screen.findByRole("button", { name: "Copy fix prompt" })).toBeVisible()
   })
 
+  it("shows a target load error and retries the expanded check", async () => {
+    const unavailable = Promise.reject(new Error("Unavailable"))
+    const { adapter } = setup(unavailable)
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not load this check's details.",
+    )
+    vi.mocked(adapter.getTargets).mockResolvedValueOnce({ targets: [target], truncated: false })
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+
+    expect(await screen.findByRole("button", { name: "Copy fix prompt" })).toBeVisible()
+  })
+
   it("uses backend prepare, apply, and prompt commands without duplicate actions", async () => {
     const { adapter, session } = setup()
     const fix = await screen.findByRole("button", { name: "Fix" })
@@ -506,6 +546,57 @@ describe("BurnChecksView", () => {
       expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled(),
     )
     expect(screen.getByRole("button", { name: "Fix" })).toBeEnabled()
+  })
+
+  it("returns to the chooser after the selected automatic fix changes", async () => {
+    const targets = Array.from({ length: 3 }, (_, index) => ({
+      ...target,
+      findingId: `finding-${index}`,
+      actionId: `action-${index}`,
+      display: {
+        ...target.display,
+        resourceIdentity: `model-${index}`,
+        currentValue: `model-${index}`,
+      },
+    }))
+    const { adapter } = setup(targets, false, aggregate, report)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
+    fireEvent.click(screen.getByRole("button", { name: "model-0" }))
+    fireEvent.click(screen.getByRole("button", { name: "Fix" }))
+    const dialog = await screen.findByRole("dialog", { name: "Fix model-0" })
+    vi.mocked(adapter.getTargets).mockResolvedValueOnce({
+      targets: targets.slice(1),
+      truncated: false,
+    })
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
+
+    await screen.findByRole("button", { name: "Fix" })
+    fireEvent.click(screen.getByRole("button", { name: "Fix" }))
+    expect(screen.getByRole("button", { name: "model-1" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "model-2" })).toBeVisible()
+  })
+
+  it("lets the user choose a different automatic fix before applying", async () => {
+    const targets = Array.from({ length: 2 }, (_, index) => ({
+      ...target,
+      findingId: `finding-${index}`,
+      actionId: `action-${index}`,
+      display: {
+        ...target.display,
+        resourceIdentity: `model-${index}`,
+        currentValue: `model-${index}`,
+      },
+    }))
+    setup(targets, false, aggregate, report)
+
+    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
+    fireEvent.click(screen.getByRole("button", { name: "model-0" }))
+    fireEvent.click(screen.getByRole("button", { name: "Choose another change" }))
+    fireEvent.click(screen.getByRole("button", { name: "model-1" }))
+    fireEvent.click(screen.getByRole("button", { name: "Fix" }))
+
+    await waitFor(() => expect(commands.prepare).toHaveBeenCalledWith("action-1"))
   })
 
   it("restores named target actions after their brief success state", async () => {

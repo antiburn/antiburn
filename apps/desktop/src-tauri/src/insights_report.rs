@@ -1490,6 +1490,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn opencode_and_pi_old_model_controller_applies_once_to_temporary_configs() {
         for (fixture, path, config) in [
@@ -2458,6 +2459,7 @@ mod tests {
         assert!(store.remediation_contributions(1_000).unwrap().is_empty());
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn reasoning_targets_list_and_prepare_for_supported_agents() {
         let cases = [
@@ -2548,6 +2550,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn action_origin_watching_watch_blocks_prepare_while_passive_watches_can_upgrade() {
         let data_dir = TempDir::new().unwrap();

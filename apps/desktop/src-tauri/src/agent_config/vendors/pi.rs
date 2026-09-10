@@ -271,6 +271,7 @@ fn string_property(document: &Value, key: &str) -> Result<Option<String>, Config
         .transpose()
 }
 
+#[cfg(not(windows))]
 fn split_route(route: &str) -> Result<(&str, &str), ConfigUnavailableReason> {
     let (provider, model) = route
         .split_once('/')

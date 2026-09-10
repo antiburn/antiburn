@@ -385,11 +385,14 @@ fn nested_workspace_context_round_trips_for_recovery() {
     std::fs::create_dir(&home).unwrap();
     std::fs::create_dir_all(&cwd).unwrap();
     let context = config_context(AgentKind::OpenCode, &home, Some(&cwd), Some(&root)).unwrap();
-    assert_eq!(workspace_relative_cwd(&context), Some("packages/app"));
+    assert_eq!(
+        workspace_relative_cwd(&context).as_deref(),
+        Some("packages/app")
+    );
     assert_eq!(
         recovery_workspace_cwd(
             context.trusted_workspace_root.as_deref().unwrap(),
-            workspace_relative_cwd(&context),
+            workspace_relative_cwd(&context).as_deref(),
         )
         .unwrap(),
         context.workspace_cwd.unwrap()

@@ -68,28 +68,6 @@ function noActionReason(target: BurnCheckTargetPayload): string | null {
   }
 }
 
-export function opportunityLabel(target: BurnCheckTargetPayload): string | null {
-  const opportunity = target.display.estimatedOpportunity
-  if (!opportunity) return null
-  const magnitude = Math.abs(opportunity.value).toLocaleString(undefined, {
-    maximumFractionDigits: 2,
-  })
-  const sign = opportunity.value < 0 ? "-" : ""
-  const value = `${sign}~${magnitude}`
-  switch (opportunity.unit) {
-    case "literalInputTokens":
-      return `${value} input tokens`
-    case "assumedOutputTokens":
-      return `${value} output tokens`
-    case "cacheClassTokens":
-      return `${value} cache tokens`
-    case "apiEquivalentUsd":
-      return `${sign}~$${Math.abs(opportunity.value).toFixed(2)} API-equivalent cost`
-    case "improvements":
-      return `${sign}${magnitude} improvement${opportunity.value === 1 ? "" : "s"}`
-  }
-}
-
 export function ActionLimit({ target }: { target: BurnCheckTargetPayload }) {
   const reason = noActionReason(target)
   if (!reason) return null

@@ -88,9 +88,11 @@ impl AgentConfigEditor {
         let proposed_bytes =
             vendor.edit_value(&file.bytes, &target.operation, &operation.proposed_value)?;
         Ok(PreparedChange {
+            #[cfg(not(windows))]
             agent: context.agent,
             setting: operation.setting,
             selector: target.operation.physical_selector(),
+            #[cfg(not(windows))]
             operation: target.operation,
             path: target.path,
             scope: target.scope,

@@ -44,7 +44,7 @@ pub(super) fn watch_definition(target: &CachedTarget) -> WatchDefinition {
         workspace_relative_cwd: target
             .config
             .as_ref()
-            .and_then(|config| workspace_relative_cwd(&config.context).map(str::to_owned)),
+            .and_then(|config| workspace_relative_cwd(&config.context)),
         provider,
         api,
         old_model,

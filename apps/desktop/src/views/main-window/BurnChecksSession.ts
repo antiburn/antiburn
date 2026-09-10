@@ -36,7 +36,7 @@ const productionAdapter: BurnChecksAdapter = {
   onChanged: (handler) => onChecksReportChanged(handler),
 }
 
-export interface BurnCheckTargetState {
+interface BurnCheckTargetState {
   data: BurnCheckTargetListPayload | null
   loading: boolean
   error: boolean
