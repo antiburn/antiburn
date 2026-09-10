@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-report-main-window-render-status"
+description = "Enables the report_main_window_render_status command without any pre-configured scope."
+commands.allow = ["report_main_window_render_status"]
+
+[[permission]]
+identifier = "deny-report-main-window-render-status"
+description = "Denies the report_main_window_render_status command without any pre-configured scope."
+commands.deny = ["report_main_window_render_status"]

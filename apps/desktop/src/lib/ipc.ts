@@ -1,17 +1,6 @@
 /**
- * The typed edge of the shell's IPC surface.
- *
- * Every command the Rust side exposes has exactly one wrapper here, and the
- * views call nothing else. That keeps the command names in one file, gives the
- * payloads a declared shape, and means the whole surface can be mocked at one
- * module boundary in tests.
- *
- * The bundle also has to load in a plain browser (`pnpm dev:web`, unit tests)
- * where no shell is attached. Every wrapper therefore reports *absence* rather
- * than throwing, so views render a degraded state instead of crashing.
- *
- * None of these payloads comes from a service of ours. The local engine
- * produces them on this machine.
+ * Typed shell IPC edge, including re-exported feature edges.
+ * Wrappers tolerate a browser without the shell and expose one test boundary.
  */
 
 import { invoke, isTauri } from "@tauri-apps/api/core"
@@ -31,6 +20,7 @@ import type {
   SessionLimitAllocationSummaryPayload,
 } from "./providerUsageIpc"
 
+export * from "./mainWindowIpc"
 export * from "./providerUsageIpc"
 export type { SettingsPane } from "./settingsPanes"
 
@@ -215,12 +205,6 @@ export interface SessionIdentityPayload {
   agent: string
   sessionId: string
   wslDistro: string | null
-}
-
-/** One revisioned request to show a session in the retained main window. */
-export interface MainWindowSessionRequest {
-  revision: number
-  target: SessionIdentityPayload
 }
 
 /** One end of a local fork relation. */
@@ -496,38 +480,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sessionBadgeMetric: "cost",
 }
 
-/* -------------------------------------------------------------------------
- * Commands
- * ---------------------------------------------------------------------- */
-
 /** Tell the shell that React committed this renderer generation. */
 export async function windowReady(generation: number): Promise<void> {
   if (!hasShell()) return
   await invoke("window_ready", { generation })
-}
-
-/** Tell the shell that the retained main window committed this renderer generation. */
-export async function mainWindowReady(generation: number): Promise<void> {
-  if (!hasShell()) return
-  await invoke("main_window_ready", { generation })
-}
-
-/** Whether the retained main renderer can present work. */
-export async function getMainWindowVisible(): Promise<boolean> {
-  if (!hasShell()) return true
-  return invoke<boolean>("get_main_window_visible")
-}
-
-/** Open or focus the main window and select one exact local session. */
-export async function openMainWindowSession(target: SessionIdentityPayload): Promise<void> {
-  if (!hasShell()) return
-  await invoke("open_main_window_session", { target })
-}
-
-/** Take the latest target that arrived before the main renderer could listen. */
-export async function takeMainWindowSessionTarget(): Promise<MainWindowSessionRequest | null> {
-  if (!hasShell()) return null
-  return invoke<MainWindowSessionRequest | null>("take_main_window_session_target")
 }
 
 /** Tell the shell that the popover's initial activity and usage state settled. */
@@ -536,9 +492,7 @@ export async function popoverContentReady(generation: number): Promise<void> {
   await invoke("popover_content_ready", { generation })
 }
 
-/**
- * Version stamp of the active runtime pricing catalog.
- */
+/** Version stamp of the active runtime pricing catalog. */
 export async function engineCatalogVersion(): Promise<string | null> {
   if (!hasShell()) return null
   return invoke<string>("engine_catalog_version")
@@ -1256,37 +1210,7 @@ export async function setNudgeHovered(hovered: boolean): Promise<void> {
   await invoke("nudge_set_hovered", { hovered })
 }
 
-/* -------------------------------------------------------------------------
- * Events
- * ---------------------------------------------------------------------- */
-
 const noShellUnlisten: UnlistenFn = () => undefined
-
-/** Event the shell emits when the main renderer can start or stop presenting work. */
-export const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
-
-/** Event carrying a revisioned session target to an existing main renderer. */
-export const MAIN_WINDOW_SESSION_TARGET_EVENT = "main:session-target"
-
-/** Subscribe to main-window presentation visibility. */
-export async function onMainWindowVisibilityChanged(
-  handler: (visible: boolean) => void,
-): Promise<UnlistenFn> {
-  if (!hasShell()) return noShellUnlisten
-  return listen<boolean>(MAIN_WINDOW_VISIBILITY_CHANGED_EVENT, (event) =>
-    handler(event.payload),
-  )
-}
-
-/** Subscribe to session targets sent to the retained main renderer. */
-export async function onMainWindowSessionTarget(
-  handler: (request: MainWindowSessionRequest) => void,
-): Promise<UnlistenFn> {
-  if (!hasShell()) return noShellUnlisten
-  return listen<MainWindowSessionRequest>(MAIN_WINDOW_SESSION_TARGET_EVENT, (event) =>
-    handler(event.payload),
-  )
-}
 
 /** Event names the scan emits. Mirrors `src-tauri/src/scan.rs`. */
 export const SCAN_EVENTS = {
