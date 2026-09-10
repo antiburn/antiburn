@@ -182,10 +182,11 @@ switch and in Mission Control.
   detail window does not blink. The popover blinks the same providers from
   the same events: every usage meter's next unlit segment on the open bar,
   and the next eighth of each ring on the closed bar.
-- The blink sits on the last lit segment, or on the first segment when usage
-  is too low to light one. Its on state is the brand tint and its off state
-  is the segment's resting colour: the bar colour when lit, the unlit grey
-  when not.
+- The blink sits on the next segment to light, which is the first segment
+  when usage is too low to light one. Its on state is the brand tint and its
+  off state is the unlit grey. A lit segment cannot hold the blink: the bar
+  colours sit too close to the brand tint for a 6-pixel dot to show the
+  difference.
 - The blink cycle is 3 seconds, half on and half off. A provider's rows turn
   on from the top down, 250 milliseconds apart, and turn off together. With
   no bars at all, the one empty bar blinks its first segment for any live

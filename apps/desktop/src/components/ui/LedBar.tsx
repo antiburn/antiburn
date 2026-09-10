@@ -10,25 +10,36 @@ import { ledBlinkStep } from "../../lib/ledBlink"
  * travelled. It separates 60% used at 30% elapsed from 60% used at 90%
  * elapsed. With no fraction there is no notch.
  *
- * `blinkLast` marks a live session on the last lit segment, or on the first
- * segment when usage is too low to light one. The blink shows the brand tint
- * as its on state and the segment's resting colour as its off state, so
- * "live" reads as its own fact and not as a shorter bar. `blinkStep` is the
- * bar's row within its provider: each row turns on 250 ms after the one
- * above it, and all rows turn off together.
+ * `blinkNext` marks a live session on the first unlit segment, the next one
+ * to light, as `SegmentedMeter` does in the popover. The blink alternates
+ * between the brand tint and the unlit LED colour.
+ *
+ * The blink must not sit on a lit segment. A lit segment already carries its
+ * bar colour, and a provider colour close to the brand tint then alternates
+ * with itself. The Claude bar is one such colour: it differs from the brand
+ * tint by 3 degrees of hue and 1 point of lightness, which a 6px dot cannot
+ * show. The segment past the reading has the contrast the blink needs.
+ *
+ * At zero the rule lands on the first segment, so a bar with no lit segment
+ * still shows that a session is live. A full bar keeps the blink on its last
+ * segment.
+ *
+ * `blinkStep` is the bar's row within its provider: each row turns on 250 ms
+ * after the one above it, and all rows turn off together.
  */
 export function LedBar({
   split,
   segments = 40,
   className = "",
-  blinkLast = false,
+  blinkNext = false,
   blinkStep = 0,
   expectedFraction = null,
 }: {
   split: Array<{ fraction: number; color: string }>
   segments?: number
   className?: string
-  blinkLast?: boolean
+  /** Blink the next segment to light, for a live session. */
+  blinkNext?: boolean
   /** The bar's row within its provider, for the blink stagger. */
   blinkStep?: number
   /** Elapsed share of the window's period, 0-1, or null when unknown. */
@@ -44,7 +55,8 @@ export function LedBar({
     segments,
     Math.round(Math.min(1, Math.max(0, accumulated)) * segments),
   )
-  const blinkIndex = blinkLast ? Math.max(0, litCount - 1) : -1
+  // A full bar has no next segment; the blink then stays on the last one.
+  const blinkIndex = blinkNext ? Math.min(segments - 1, litCount) : -1
 
   return (
     <div
@@ -62,10 +74,7 @@ export function LedBar({
             className={`h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "" : "bg-led-off"} ${blinking ? "led-blink" : ""}`.trimEnd()}
             style={
               blinking
-                ? ({
-                    ...(hit ? { backgroundColor: hit.color } : {}),
-                    "--led-rest": hit ? hit.color : "var(--color-led-off)",
-                  } as CSSProperties)
+                ? ({ "--led-rest": "var(--color-led-off)" } as CSSProperties)
                 : hit
                   ? { backgroundColor: hit.color }
                   : undefined

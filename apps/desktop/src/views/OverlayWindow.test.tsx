@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../lib/ipc"
 import type { LiveUsageSummaryPayload } from "../lib/ipc"
-import { providerBarColor } from "../lib/usageBars"
 import { OverlayWindow } from "./OverlayWindow"
 
 const REFRESH_TEST_MS = 60_000
@@ -559,18 +558,19 @@ describe("OverlayWindow", () => {
     expect(container.querySelector(".led-blink")).toBeNull()
   })
 
-  it("blinks the last lit segment with its own colour as the rest state", async () => {
+  it("blinks the next segment to light, against the unlit colour", async () => {
     getLiveSessions.mockResolvedValue([liveSession()])
     const { container } = render(<OverlayWindow />)
 
     await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
     const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
-    // 81% of 20 segments rounds to 16 lit, so the blink sits on index 15.
-    expect(dots[15]).toHaveClass("led-blink")
-    expect(dots[15]).not.toHaveClass("bg-led-off")
-    const lit = dots[15] as HTMLElement
-    expect(lit.style.getPropertyValue("--led-rest")).toBe(providerBarColor("anthropic"))
-    expect(lit.style.backgroundColor).not.toBe("")
+    // 81% of 20 segments rounds to 16 lit, so the blink sits on index 16.
+    expect(dots[15]).not.toHaveClass("led-blink")
+    expect((dots[15] as HTMLElement).style.backgroundColor).not.toBe("")
+    expect(dots[16]).toHaveClass("led-blink", "bg-led-off")
+    expect((dots[16] as HTMLElement).style.getPropertyValue("--led-rest")).toBe(
+      "var(--color-led-off)",
+    )
   })
 
   it("rests with bars only and a hidden close control", async () => {

@@ -65,7 +65,7 @@ export function OverlayWindow() {
 
         {state.bars.length === 0 ? (
           <div className="pointer-events-none">
-            <LedBar segments={HUD_SEGMENTS} split={[]} blinkLast={state.sessionLive} />
+            <LedBar segments={HUD_SEGMENTS} split={[]} blinkNext={state.sessionLive} />
           </div>
         ) : (
           <div className="pointer-events-none space-y-[3px]">
@@ -74,7 +74,7 @@ export function OverlayWindow() {
                 key={bar.key}
                 segments={HUD_SEGMENTS}
                 split={[{ fraction: bar.percent / 100, color: bar.color }]}
-                blinkLast={state.liveProviders.includes(bar.provider)}
+                blinkNext={state.liveProviders.includes(bar.provider)}
                 blinkStep={providerRow(state.bars, index)}
                 expectedFraction={bar.expectedFraction}
               />

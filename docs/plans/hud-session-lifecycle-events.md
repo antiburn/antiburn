@@ -37,7 +37,8 @@ removes `get_latest_session_activity`.
 ## Two problems
 
 **1. Low usage hides the live blink.** The HUD blinks the last lit LED
-while a session is live. With 20 segments, the first segment lights only
+while a session is live. (Phase C later moves the blink to the next unlit
+LED; see its departures.) With 20 segments, the first segment lights only
 when usage passes 2.5 percent. Below that `litCount` is zero, no segment
 gets `led-blink`, and a fresh window or a light day shows nothing at all.
 The empty-bars branch (no usage snapshot yet, or every meter turned off)
@@ -236,13 +237,16 @@ Built 2026-09-08, three small departures:
   indexed yet) has no `Idle` counterpart on the bus, so the renderers keep
   one local 180 second timer for that case only. A keyed session never runs
   a renderer timer.
-- The popover meter blinks the *next unlit* segment, not the last lit one: a
-  lit meter segment is already the brand tint, so only the segment past the
-  reading can alternate (brand on, the zone's track tint off). At zero both
-  rules land on the first segment. On the closed bar a provider's ring
-  blinks the next eighth past the arc's end (agreed 2026-09-08, "yeah blink
-  them"). A thirty-second of a 26px ring is two pixels, so the ring's blink
-  is an eighth.
+- Both meters blink the *next unlit* segment, not the last lit one: a lit
+  segment already carries a colour close to the brand tint, so only the
+  segment past the reading can alternate (brand on, the unlit colour off).
+  The Claude bar colour is 3 degrees of hue and 1 point of lightness from
+  the brand tint, which a 6px HUD dot cannot show, so the last-lit rule from
+  phase A made the HUD blink invisible. At zero both rules land on the first
+  segment, which keeps phase A's low-usage case. On the closed bar a
+  provider's ring blinks the next eighth past the arc's end (agreed
+  2026-09-08, "yeah blink them"). A thirty-second of a 26px ring is two
+  pixels, so the ring's blink is an eighth.
 - Every meter of the provider a live session draws on blinks, not only the
   first (agreed 2026-09-08: "flash all the usage quotas/limits that are
   being effected"). The renderer maps the agent slug to its provider in
