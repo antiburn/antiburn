@@ -165,7 +165,7 @@ describe("UsageLimitsBar — the ring row", () => {
   })
 })
 
-describe("UsageLimitsBar — the live blink", () => {
+describe("UsageLimitsBar — the live sweep", () => {
   const twoProviders = () =>
     liveSummary({
       providers: [
@@ -180,33 +180,37 @@ describe("UsageLimitsBar — the live blink", () => {
       ],
     })
 
-  it("blinks every meter of the live provider, one step apart from the top", () => {
+  it("sweeps every meter of the live provider, one row apart from the top", () => {
     bar({ live: twoProviders(), liveProviders: ["anthropic"], expanded: true })
     const region = screen.getByRole("region", { name: "Usage limits" })
-    const blinking = Array.from(region.querySelectorAll<HTMLElement>(".led-blink"))
-    expect(blinking).toHaveLength(3)
-    expect(blinking.map((node) => node.dataset["ledStep"])).toEqual([undefined, "1", "2"])
+    const meters = Array.from(region.querySelectorAll<HTMLElement>("[style*='--led-row']"))
+    expect(meters.map((node) => node.style.getPropertyValue("--led-row"))).toEqual([
+      "0",
+      "1",
+      "2",
+    ])
+    expect(region.querySelectorAll(".led-sweep-dot")).toHaveLength(3 * 32)
     // The live provider's group holds them all; the other provider stays dark.
     const groups = within(region).getAllByRole("group")
-    expect(blinking.every((node) => groups[0]?.contains(node))).toBe(true)
-    expect(groups[1]?.querySelector(".led-blink")).toBeNull()
+    expect(meters.every((node) => groups[0]?.contains(node))).toBe(true)
+    expect(groups[1]?.querySelector(".led-sweep-dot")).toBeNull()
   })
 
-  it("blinks the ring of each live provider on the closed bar", () => {
+  it("sweeps the ring of each live provider on the closed bar", () => {
     const { container } = bar({
       live: twoProviders(),
       liveProviders: ["openai"],
       expanded: false,
     })
-    const blinking = container.querySelectorAll(".led-blink")
-    expect(blinking).toHaveLength(1)
-    expect(blinking[0]).toHaveAttribute("data-testid", "usage-ring-blink")
+    const arcs = container.querySelectorAll(".led-sweep-ring")
+    expect(arcs).toHaveLength(1)
+    expect(arcs[0]).toHaveAttribute("data-testid", "usage-ring-sweep")
     const rings = screen.getAllByRole("img")
-    expect(rings[0]?.contains(blinking[0]!)).toBe(false)
-    expect(rings[1]?.contains(blinking[0]!)).toBe(true)
+    expect(rings[0]?.contains(arcs[0]!)).toBe(false)
+    expect(rings[1]?.contains(arcs[0]!)).toBe(true)
   })
 
-  it("runs one blink clock for the whole bar, and only while a session is live", () => {
+  it("runs one sweep clock for the whole bar, and only while a session is live", () => {
     const live = bar({ live: twoProviders(), liveProviders: ["anthropic"], expanded: true })
     expect(live.container.querySelector('[data-testid="usage-limits-bar"]')).toHaveClass(
       "led-clock",
@@ -219,18 +223,18 @@ describe("UsageLimitsBar — the live blink", () => {
 
   it("keeps the bar dark while the live session draws on a provider it does not show", () => {
     const { container } = bar({ liveProviders: ["google"], expanded: false })
-    expect(container.querySelector(".led-blink")).toBeNull()
+    expect(container.querySelector(".led-sweep-ring")).toBeNull()
   })
 
-  it("does not blink the rings without a live session", () => {
+  it("does not sweep the rings without a live session", () => {
     const { container } = bar({ expanded: false })
-    expect(container.querySelector(".led-blink")).toBeNull()
+    expect(container.querySelector(".led-sweep-ring")).toBeNull()
   })
 
-  it("does not blink without a live session", () => {
+  it("does not sweep without a live session", () => {
     bar({ expanded: true })
     const region = screen.getByRole("region", { name: "Usage limits" })
-    expect(region.querySelector(".led-blink")).toBeNull()
+    expect(region.querySelector(".led-sweep-dot")).toBeNull()
   })
 })
 

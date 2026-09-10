@@ -322,6 +322,7 @@ motion:
   anchored-content: "100ms opacity-only crossfade after native geometry commits; reduced motion uses 60ms"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
   tray-usage-meter: "launch: 1.5s column-by-column depletion; later changes: 300ms column-by-column"
+  led-sweep: "4s loop in src/styles/hud.css; a band crosses each live meter in about 1.25s, rows 100ms apart, and the ring laps once; reduced motion stops the loop and holds the brand tint on the next segment to light"
 components:
   button-secondary:
     className: ui-push-button
@@ -458,7 +459,9 @@ Notes for what isn't expressible as a token:
   content presenter's opacity-only handoff crossfade over 60ms instead of swapping instantly. An
   ambient loop stops instead of shortening: no duration makes a loop acceptable, so the
   activity-row title shimmer in `src/styles/session-rows.css` sets `animation: none` and keeps its
-  resting meaning — the title paints as plain primary text.
+  resting meaning — the title paints as plain primary text. The live-session sweep in
+  `src/styles/hud.css` stops the same way and holds a steady brand-tint mark on the next segment
+  to light: a colour, not movement.
 - **State** — style the headless control primitives via `[data-state]` / `[data-highlighted]`, not
   `:hover`.
 - **Scroll edges** — use the shared `ScrollPane` `topEdgeFade` prop when scrolling content needs to

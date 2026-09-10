@@ -1,7 +1,7 @@
 ---
 title: "HUD stops when the session does, and sweeps instead of blinking"
 created_at: "2026-09-11"
-status: draft
+status: built
 ---
 
 # HUD stops when the session does, and sweeps instead of blinking
@@ -12,15 +12,15 @@ status: draft
   sweep replaces the blink on its own branch instead of stacking a third.
 - **Follows:** `hud-session-lifecycle-events.md` (phases A to C, built
   2026-09-08). This plan changes two things that plan shipped.
-- **Status:** draft, awaiting review.
+- **Status:** approved 2026-09-11 ("commence plan"); E, F, and G built the same day.
 
 ## Status
 
-| Phase | What | Size | State |
-|---|---|---|---|
-| E | The Claude desktop manifest no longer keeps the HUD live | ~80 lines Rust | built 2026-09-11 on `feat/session-lifecycle-bus` |
-| F | A brand-tint sweep across the live provider's bars replaces the blink | ~250 lines | proposed |
-| G | The sweep ends 30 s after the last write; `idle` stays at 180 s | ~60 lines | actor half built 2026-09-11 on `feat/session-lifecycle-bus`; renderer half with F |
+| Phase | What                                                                  | Size           | State                                                                                                   |
+| ----- | --------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------- |
+| E     | The Claude desktop manifest no longer keeps the HUD live              | ~80 lines Rust | built 2026-09-11 on `feat/session-lifecycle-bus`                                                        |
+| F     | A brand-tint sweep across the live provider's bars replaces the blink | ~250 lines     | built 2026-09-11 on `feat/hud-session-blink`                                                            |
+| G     | The sweep ends 30 s after the last write; `idle` stays at 180 s       | ~60 lines      | built 2026-09-11: actor half on `feat/session-lifecycle-bus`, renderer half on `feat/hud-session-blink` |
 
 ## Problem 1: the HUD never stops
 
@@ -30,7 +30,7 @@ provider is live. A session is live from its first transcript write until
 window the session list uses for its active pill). The shell's lifecycle
 actor keeps that clock and publishes `idle`. One more path exists: a write
 under an agent's watch root that matches no indexed session is reported as
-*keyless* activity, and the renderer counts the agent as live for 180
+_keyless_ activity, and the renderer counts the agent as live for 180
 seconds after it. That path exists so a brand-new session shows within
 about 1.5 seconds, before the next discovery pass indexes it.
 
@@ -67,7 +67,7 @@ in it. They have no meter on the HUD, so they are out of scope here.
 
 ## Problem 2: a blink is not the right shape
 
-The blink turns one segment on and off. Keith wants a *swish*: a highlight
+The blink turns one segment on and off. Keith wants a _swish_: a highlight
 that runs left to right across the whole bar, the way the session list's
 title shimmer runs across a running session's title
 (`activity-row-title-shimmer` in `session-rows.css`). The sweep says
@@ -132,8 +132,8 @@ element whose opacity falls off with its distance from the sweep position:
 .led-sweep-dot::after {
   /* Distance from the band's centre, in dots. */
   --led-pos: calc(
-    (var(--led-sweep) - var(--led-row) * var(--led-row-lag)) * var(--led-segments)
-      - var(--led-index) - 0.5
+    (var(--led-sweep) - var(--led-row) * var(--led-row-lag)) *
+      var(--led-segments) - var(--led-index) - 0.5
   );
   opacity: clamp(0, 1 - max(var(--led-pos), calc(-1 * var(--led-pos))) / 3, 1);
   background: var(--color-brand-tint);
@@ -200,14 +200,33 @@ sweep while tokens flow, not while the agent waits.
 
 ## Decisions to confirm
 
-| Decision | Proposal |
-|---|---|
-| Stop fix | Phase E, the quiet-path lane. The renderer-side cut is the fallback. |
-| Off delay | 30 s after the last transcript write, through a `quiet` event on the bus (phase G). `idle` and the session list keep 180 s. Agreed 2026-09-11. |
-| Sweep pace | 4 s cycle, about 1.3 s crossing, from the title shimmer. One `--led-sweep-cycle` variable to tune. |
-| Band width | About six dots on the HUD, so a fifth of the bar. The same fraction on the popover's 32-segment meter. |
-| Reduced motion | Steady brand tint on the next unlit segment; the ring's next eighth. |
+| Decision       | Proposal                                                                                                                                                            |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stop fix       | Phase E, the quiet-path lane. The renderer-side cut is the fallback.                                                                                                |
+| Off delay      | 30 s after the last transcript write, through a `quiet` event on the bus (phase G). `idle` and the session list keep 180 s. Agreed 2026-09-11.                      |
+| Sweep pace     | 4 s cycle, about 1.3 s crossing, from the title shimmer. One `--led-sweep-cycle` variable to tune.                                                                  |
+| Band width     | About six dots on the HUD, so a fifth of the bar. The same fraction on the popover's 32-segment meter.                                                              |
+| Reduced motion | Steady brand tint on the next unlit segment; the ring's next eighth.                                                                                                |
 | Where it lands | E and the actor half of G on `feat/session-lifecycle-bus` (#489); F and the renderer half of G on `feat/hud-session-blink` (#490), which gets a new title and body. |
+
+## Departures while building
+
+- **The band on a lit segment is the shimmer white, not the brand tint.**
+  The tint over an Anthropic bar's lit segments paints nothing, so a bar at
+  80% would sweep four dots. An unlit segment keeps the tint; a lit one takes
+  `--color-shimmer`, the highlight the session list already runs across a
+  running title. The ring keeps the tint alone: its arc shows over the track,
+  the remaining share, and the reduced-motion mark is unchanged.
+- **The renderer keeps a local 30 s clock for keyed sessions too.** The plan
+  had the bus's `quiet` event end the sweep by itself. A snapshot that lists
+  a session written 20 s ago, or a missed event, then needs a timer anyway,
+  so each entry carries the instant its write stops counting and one timer
+  serves keyed and keyless sessions alike. `quiet` and `idle` still remove
+  the session at once.
+- **The sweep position runs in bar lengths.** The pseudo-element formula in
+  the plan multiplied by the segment count; the built one divides the
+  segment index by it instead, so the band is the same share of every bar
+  and the row lag is 100 ms on every bar length.
 
 ## Out of scope
 

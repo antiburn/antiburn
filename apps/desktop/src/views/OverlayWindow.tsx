@@ -67,11 +67,11 @@ export function OverlayWindow() {
           <div
             className={`pointer-events-none ${state.sessionLive ? "led-clock" : ""}`.trimEnd()}
           >
-            <LedBar segments={HUD_SEGMENTS} split={[]} blinkNext={state.sessionLive} />
+            <LedBar segments={HUD_SEGMENTS} split={[]} live={state.sessionLive} />
           </div>
         ) : (
-          // `led-clock` runs the one animation every blinking bar reads, so
-          // the bars turn off together whenever each bar started.
+          // `led-clock` runs the one sweep clock every live bar reads, so the
+          // bars stay in phase whenever each bar joined.
           <div
             className={`pointer-events-none space-y-[3px] ${state.liveProviders.length > 0 ? "led-clock" : ""}`.trimEnd()}
           >
@@ -80,8 +80,8 @@ export function OverlayWindow() {
                 key={bar.key}
                 segments={HUD_SEGMENTS}
                 split={[{ fraction: bar.percent / 100, color: bar.color }]}
-                blinkNext={state.liveProviders.includes(bar.provider)}
-                blinkStep={providerRow(state.bars, index)}
+                live={state.liveProviders.includes(bar.provider)}
+                row={providerRow(state.bars, index)}
                 expectedFraction={bar.expectedFraction}
               />
             ))}

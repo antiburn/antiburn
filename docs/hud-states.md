@@ -175,35 +175,41 @@ switch and in Mission Control.
 ## Data and timing
 
 - Each LED bar has 20 segments.
-- Every bar of a provider a live session draws on blinks: a live Claude Code
-  session blinks each Anthropic bar. The renderer maps the agent to its
+- Every bar of a provider a live session draws on sweeps: a live Claude Code
+  session sweeps each Anthropic bar. The renderer maps the agent to its
   provider (Claude Code to Anthropic, Codex to OpenAI, Antigravity to
-  Google); a live agent with no provider on screen blinks nothing. The
-  detail window does not blink. The popover blinks the same providers from
-  the same events: every usage meter's next unlit segment on the open bar,
-  and the next eighth of each ring on the closed bar.
-- The blink sits on the next segment to light, which is the first segment
-  when usage is too low to light one. Its on state is the brand tint and its
-  off state is the unlit grey. A lit segment cannot hold the blink: the bar
-  colours sit too close to the brand tint for a 6-pixel dot to show the
-  difference.
-- The blink cycle is 3 seconds, half on and half off. A provider's rows turn
-  on from the top down, 100 milliseconds apart, and turn off together. With
-  no bars at all, the one empty bar blinks its first segment for any live
-  session.
-- One animation drives every blinking meter on a surface, and each meter
-  reads the colour for its row. A CSS animation starts when the browser
-  applies it, so a meter with its own animation keeps its own clock and
-  stops at its own time. The shared clock holds the rows together, however
-  late a row starts to blink.
-- A session stays live for 180 seconds after its last transcript write, the
-  same window the session list uses. The shell's lifecycle bus keeps that
-  clock and publishes `idle`; the renderer keeps no timer for a known session.
+  Google); a live agent with no provider on screen sweeps nothing. The
+  detail window does not sweep. The popover sweeps the same providers from
+  the same events: every usage meter of the provider on the open bar, and
+  its ring on the closed bar.
+- The sweep is a band about six segments wide that crosses the bar from the
+  left, over lit and unlit segments alike. On an unlit segment the band is
+  the brand tint; on a lit one it is the shimmer white the session list runs
+  across a running session's title, because the bar colours sit too close to
+  the brand tint for a 6-pixel dot to show the tint above them. On the
+  closed popover bar an eighth of the ring laps the track once per cycle.
+- The cycle is 4 seconds: the band crosses the bar in about 1.25 seconds
+  and the bar rests for the remainder. A provider's rows run 100
+  milliseconds apart from the top. With no bars at all, the one empty bar
+  sweeps for any live session.
+- One animation drives every live meter on a surface, and each segment
+  reads the sweep position from it. A CSS animation starts when the browser
+  applies it, so a meter with its own animation keeps its own clock. The
+  shared clock holds the rows in phase, however late a row joins.
+- Under reduced motion the sweep stops, and the next segment to light holds
+  the brand tint instead, which is the first segment when usage is too low
+  to light one. The ring holds its next eighth.
+- A session sweeps for 30 seconds after its last transcript write. The
+  shell's lifecycle bus publishes `quiet` at that point, and the renderer
+  keeps the same 30-second clock for a snapshot or a missed event. The
+  session stays active for 180 seconds, the window the session list uses;
+  the bus publishes `idle` then.
 - The renderer reads the live set once when shown and again after each scan
-  pass. `session:lifecycle` events push activity and idle changes in between,
-  about 1.5 seconds after a write lands on disk. A write under an agent root
-  the store has not indexed yet counts as live for the same window on a local
-  timer.
+  pass. `session:lifecycle` events push activity, quiet, and idle changes in
+  between, about 1.5 seconds after a write lands on disk. A write under an
+  agent root the store has not indexed yet counts as live for the same 30
+  seconds on a local timer. A write the Claude desktop app makes to its
+  session manifest schedules a rediscovery and counts as nothing.
 - The renderer polls usage every 60 seconds while shown.
 - The native hover watcher polls every 100ms while the window is visible.
 - Hiding the HUD parks the native polls and the retained renderer's timers.

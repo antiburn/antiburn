@@ -695,11 +695,12 @@ export class PopoverSession {
     this.stopPopoverHiddenListening = unlisten
   }
 
-  // The usage meter blinks from the same bus the HUD reads. The shell applies
-  // the active window to a keyed session and publishes `idle`, so only keyless
-  // activity, a write the store has not indexed yet, expires on a timer here.
-  // The snapshot on start, on show, and on invalidation puts the set right
-  // after a missed event.
+  // The usage meter sweeps from the same bus the HUD reads. A keyed session
+  // turns on at `started` or `activity` and off at `quiet` or `idle`. The
+  // local clock closes the same 30 s window for a snapshot, a missed event,
+  // and keyless activity, a write the store has not indexed yet. The snapshot
+  // on start, on show, and on invalidation puts the set right after a missed
+  // event.
   private listenSessionLifecycle = async (generation: number): Promise<void> => {
     this.refreshLiveness(generation)
     const unlisten = await onSessionLifecycle((event) => {

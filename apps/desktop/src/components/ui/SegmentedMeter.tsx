@@ -1,5 +1,6 @@
+import type { CSSProperties } from "react"
+
 import { cn } from "../../lib/cn"
-import { ledBlinkStep } from "../../lib/ledBlink"
 
 /**
  * One colored zone of a meter track. The zone runs from `from` to the start
@@ -80,13 +81,17 @@ function zoneAt(zones: MeterZone[], fraction: number): MeterZone {
  * elapsed from looking the same as 60% used at 90% elapsed. With no fraction
  * there is no notch — the component never draws one from an assumption.
  *
- * `blinkNext` blinks the first unlit segment, the next one to light, while a
- * session is live. The HUD blinks its last lit bar between the brand color
- * and dark, but a lit segment here is already the brand color, so the
- * segment past the reading is the one that can alternate: brand on, its
- * zone's track tint off. At zero the two rules meet on the first segment.
- * `blinkStep` is the meter's row within its provider: each row turns on
- * 250 ms after the one above it, and all rows turn off together.
+ * `live` runs the session sweep, as `LedBar` does on the HUD: a band that
+ * crosses every segment in the fill direction, on the clock of the nearest
+ * `led-clock` ancestor. Each segment carries its place along the sweep and
+ * the meter's segment count, and `hud.css` paints the band from its distance
+ * to the sweep position. `row` is the meter's row within its provider: each
+ * row runs 100 ms after the one above it.
+ *
+ * Under reduced motion the sweep stops, and the next segment to light holds
+ * the brand tint instead: a lit segment is already the brand colour, so the
+ * segment past the reading is the one that can show it. At zero that is the
+ * first segment.
  */
 export function SegmentedMeter({
   percent,
@@ -97,8 +102,8 @@ export function SegmentedMeter({
   className = "",
   zones = USAGE_METER_ZONES,
   fillFrom = "start",
-  blinkNext = false,
-  blinkStep = 0,
+  live = false,
+  row = 0,
 }: {
   /** Consumed capacity, 0–100, or `null` for no stated figure. */
   percent: number | null
@@ -110,22 +115,25 @@ export function SegmentedMeter({
   zones?: MeterZone[]
   /** The end the fill and the zones start from. */
   fillFrom?: MeterFillFrom
-  /** Blink the next segment to light, for a live session. */
-  blinkNext?: boolean
-  /** The meter's row within its provider, for the blink stagger. */
-  blinkStep?: number
+  /** Run the sweep across the meter, for a live session. */
+  live?: boolean
+  /** The meter's row within its provider, for the sweep stagger. */
+  row?: number
 }) {
   const clamped = percent == null ? null : Math.min(100, Math.max(0, percent))
   const filled = clamped == null ? 0 : Math.round((clamped / 100) * segments)
-  // A full meter has no next segment; the blink then stays on the last one.
-  const blinkIndex = !blinkNext
+  // A full meter has no next segment; the still mark then stays on the last one.
+  const nextIndex = !live
     ? -1
     : fillFrom === "end"
       ? Math.max(0, filled - 1)
       : Math.min(segments - 1, filled)
+  const sweep = live
+    ? ({ "--led-segments": segments, "--led-row": row } as CSSProperties)
+    : undefined
 
   return (
-    <div aria-hidden="true" className={cn("relative", className)}>
+    <div aria-hidden="true" className={cn("relative", className)} style={sweep}>
       {/* The segments span the full row, so the track ends where the figure
           column starts. This also keeps the notch honest: the notch offset
           and the track then measure the same width. */}
@@ -135,21 +143,21 @@ export function SegmentedMeter({
           // The reading sits at the same mark either way. The fill covers the
           // side of that mark its own end is on.
           const lit = fillFrom === "end" ? index >= filled : index < filled
-          const blinking = index === blinkIndex
+          // The band runs in the fill direction, so a meter that fills from
+          // the right counts its segments from that end.
+          const sweepIndex = fillFrom === "end" ? segments - 1 - index : index
           return (
             <span
               key={index}
-              data-blinking={blinking || undefined}
-              data-led-step={blinking ? ledBlinkStep(blinkStep) : undefined}
+              data-led-lit={(live && lit) || undefined}
+              data-led-next={index === nextIndex || undefined}
               className={cn(
-                "h-[7px] w-[7px] shrink-0 rounded-full",
-                // A blinking segment keeps the track ink below the flash.
-                // Only a full meter blinks a lit segment, and the flash needs
-                // an unlit colour below it to show.
-                lit && !blinking ? zone.fillClassName : zone.trackClassName,
+                "relative h-[7px] w-[7px] shrink-0 rounded-full",
+                lit ? zone.fillClassName : zone.trackClassName,
                 clamped == null && "opacity-50",
-                blinking && "led-blink",
+                live && "led-sweep-dot",
               )}
+              style={live ? ({ "--led-index": sweepIndex } as CSSProperties) : undefined}
             />
           )
         })}

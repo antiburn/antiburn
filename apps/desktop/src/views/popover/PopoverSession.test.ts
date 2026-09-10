@@ -634,11 +634,12 @@ describe("PopoverSession live sessions", () => {
     expect(session.getSnapshot().sessionLive).toBe(false)
     expect(session.getSnapshot().liveProviders).toEqual([])
 
-    lifecycleHandler?.({ kind: "activity", session: ref, agent: "claude-code", at: 1 })
+    const at = Math.floor(Date.now() / 1000)
+    lifecycleHandler?.({ kind: "activity", session: ref, agent: "claude-code", at })
     expect(session.getSnapshot().sessionLive).toBe(true)
     expect(session.getSnapshot().liveProviders).toEqual(["anthropic"])
 
-    lifecycleHandler?.({ kind: "idle", session: ref, agent: "claude-code", at: 2 })
+    lifecycleHandler?.({ kind: "quiet", session: ref, agent: "claude-code", at: at + 30 })
     expect(session.getSnapshot().sessionLive).toBe(false)
     expect(session.getSnapshot().liveProviders).toEqual([])
 
@@ -646,9 +647,9 @@ describe("PopoverSession live sessions", () => {
     expect(lifecycleHandler).toBeNull()
   })
 
-  it("starts live when the snapshot lists a session", async () => {
+  it("starts live when the snapshot lists a session with a recent write", async () => {
     getLiveSessions.mockResolvedValue([
-      { session: ref, agent: "claude-code", lastActivityAt: 1 },
+      { session: ref, agent: "claude-code", lastActivityAt: Math.floor(Date.now() / 1000) },
     ])
     const session = new PopoverSession()
     const unsubscribe = session.subscribe(() => undefined)

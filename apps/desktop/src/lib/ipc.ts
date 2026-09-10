@@ -1008,6 +1008,8 @@ export type SessionLifecycleEvent =
       agent: string
       at: number
     }
+  /** 30 seconds after the session's last write. The session is still active. */
+  | { kind: "quiet"; session: SessionRefPayload; agent: string; at: number }
   | { kind: "idle"; session: SessionRefPayload; agent: string; at: number }
 
 /** One session inside the active window, as the snapshot command returns it. */

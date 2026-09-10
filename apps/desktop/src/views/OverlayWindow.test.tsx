@@ -234,7 +234,7 @@ function liveSession(sessionId = "session-1", agent = "claude-code") {
 }
 
 function lifecycle(
-  kind: "started" | "activity" | "idle",
+  kind: "started" | "activity" | "quiet" | "idle",
   sessionId: string | null = "session-1",
 ): Record<string, unknown> {
   return {
@@ -419,50 +419,88 @@ describe("OverlayWindow", () => {
     expect(nativeEvents.get("overlay_work_changed")?.size).toBe(1)
   })
 
-  it("turns the blink off at the bus's idle event, with no timer of its own", async () => {
+  it("ends the sweep at the bus's quiet event, and at its idle event", async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
     getLiveSessions.mockResolvedValue([liveSession()])
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
-      expect(container.querySelector(".led-blink")).not.toBeNull()
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
 
-      await advance(10 * 60_000)
-      expect(container.querySelector(".led-blink")).not.toBeNull()
+      act(() => emitNative("session:lifecycle", lifecycle("quiet")))
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
 
+      act(() => emitNative("session:lifecycle", lifecycle("activity")))
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
       act(() => emitNative("session:lifecycle", lifecycle("idle")))
-      expect(container.querySelector(".led-blink")).toBeNull()
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
       expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it("keeps blinking while another session is still live", async () => {
-    getLiveSessions.mockResolvedValue([liveSession("session-1"), liveSession("session-2")])
-    const { container } = render(<OverlayWindow />)
-    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
+  it("ends the sweep 30 seconds after a session's last write, without an event", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
+    getLiveSessions.mockResolvedValue([liveSession()])
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
 
-    act(() => emitNative("session:lifecycle", lifecycle("idle", "session-1")))
-    expect(container.querySelector(".led-blink")).not.toBeNull()
-    act(() => emitNative("session:lifecycle", lifecycle("idle", "session-2")))
-    expect(container.querySelector(".led-blink")).toBeNull()
+      await advance(29_000)
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
+      await advance(1_001)
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
+      expect(getLiveSessions).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  it("expires keyless agent activity after the active window", async () => {
+  it("starts still when the snapshot's session wrote 45 seconds ago", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
+    const older = liveSession()
+    older.lastActivityAt -= 45
+    getLiveSessions.mockResolvedValue([older])
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      expect(container.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20)
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
+      expect(container.querySelector(".led-clock")).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("keeps sweeping while another session is still live", async () => {
+    getLiveSessions.mockResolvedValue([liveSession("session-1"), liveSession("session-2")])
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
+
+    act(() => emitNative("session:lifecycle", lifecycle("quiet", "session-1")))
+    expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
+    act(() => emitNative("session:lifecycle", lifecycle("quiet", "session-2")))
+    expect(container.querySelector(".led-sweep-dot")).toBeNull()
+  })
+
+  it("expires keyless agent activity after the sweep window", async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-09-08T00:00:00Z"))
     try {
       const { container } = render(<OverlayWindow />)
       await advance(0)
-      expect(container.querySelector(".led-blink")).toBeNull()
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
 
       act(() => emitNative("session:lifecycle", lifecycle("activity", null)))
-      expect(container.querySelector(".led-blink")).not.toBeNull()
+      expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
 
-      await advance(180_001)
-      expect(container.querySelector(".led-blink")).toBeNull()
+      await advance(30_001)
+      expect(container.querySelector(".led-sweep-dot")).toBeNull()
       expect(getLiveSessions).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
@@ -483,7 +521,7 @@ describe("OverlayWindow", () => {
     await waitFor(() => expect(nativeEvents.get("session:lifecycle")?.size).toBe(1))
 
     act(() => emitNative("session:lifecycle", lifecycle("activity")))
-    expect(container.querySelector(".led-blink")).not.toBeNull()
+    expect(container.querySelector(".led-sweep-dot")).not.toBeNull()
 
     act(() => emitNative("overlay_work_changed", false))
     expect(nativeEvents.get("session:lifecycle")?.size ?? 0).toBe(0)
@@ -495,57 +533,60 @@ describe("OverlayWindow", () => {
     expect(nativeEvents.get("overlay_work_changed")?.size ?? 0).toBe(0)
   })
 
-  it("blinks the first segment when usage is too low to light one", async () => {
+  it("marks the first segment when usage is too low to light one", async () => {
     const low = summary()
     low.providers[0]!.windows[0]!.usedPercent = 1
     getLiveUsage.mockResolvedValue(low)
     getLiveSessions.mockResolvedValue([liveSession()])
     const { container } = render(<OverlayWindow />)
 
-    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
+    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
     const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
     expect(dots).toHaveLength(20)
-    expect(container.querySelectorAll(".led-blink")).toHaveLength(1)
-    expect(dots[0]).toHaveClass("led-blink", "bg-led-off")
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(20)
+    expect(container.querySelectorAll("[data-led-next]")).toHaveLength(1)
+    expect(dots[0]).toHaveAttribute("data-led-next", "true")
+    expect(dots[0]).toHaveClass("bg-led-off")
   })
 
-  it("blinks the first segment when there are no bars", async () => {
+  it("sweeps the one empty bar when there are no bars", async () => {
     const empty = summary()
     empty.providers = []
     getLiveUsage.mockResolvedValue(empty)
     getLiveSessions.mockResolvedValue([liveSession()])
     const { container } = render(<OverlayWindow />)
 
-    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
+    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
     const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
     expect(dots).toHaveLength(20)
-    expect(dots[0]).toHaveClass("led-blink")
-    expect(container.querySelectorAll(".led-blink")).toHaveLength(1)
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(20)
+    expect(dots[0]).toHaveAttribute("data-led-next", "true")
+    expect(container.querySelector("[data-led-lit]")).toBeNull()
   })
 
-  it("blinks every bar of the live provider, one step apart from the top", async () => {
+  it("sweeps every bar of the live provider, one row apart from the top", async () => {
     getLiveUsage.mockResolvedValue(withSecondBar())
     getLiveSessions.mockResolvedValue([liveSession()])
     const { container } = render(<OverlayWindow />)
 
-    await waitFor(() => expect(container.querySelectorAll(".led-blink")).toHaveLength(2))
-    const [first, second] = Array.from(container.querySelectorAll<HTMLElement>(".led-blink"))
-    expect(first?.dataset["ledStep"]).toBeUndefined()
-    expect(second?.dataset["ledStep"]).toBe("1")
+    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(40))
+    const bars = Array.from(container.querySelectorAll<HTMLElement>("[style*='--led-row']"))
+    expect(bars.map((bar) => bar.style.getPropertyValue("--led-row"))).toEqual(["0", "1"])
+    expect(bars[0]?.style.getPropertyValue("--led-segments")).toBe("20")
   })
 
-  it("runs one blink clock for every bar, and only while a session is live", async () => {
+  it("runs one sweep clock for every bar, and only while a session is live", async () => {
     getLiveUsage.mockResolvedValue(withSecondBar())
     getLiveSessions.mockResolvedValue([liveSession()])
     const { container } = render(<OverlayWindow />)
 
-    // One animation drives every bar, so the bars turn off together however
-    // late a bar started to blink.
+    // One animation drives every bar, so the bars stay in phase however
+    // late a bar joined the sweep.
     await waitFor(() => expect(container.querySelector(".led-clock")).not.toBeNull())
     expect(container.querySelectorAll(".led-clock")).toHaveLength(1)
-    expect(container.querySelector(".led-clock")?.querySelectorAll(".led-blink")).toHaveLength(
-      2,
-    )
+    expect(
+      container.querySelector(".led-clock")?.querySelectorAll(".led-sweep-dot"),
+    ).toHaveLength(40)
   })
 
   it("keeps the bars dark while the live session draws on another provider", async () => {
@@ -556,7 +597,7 @@ describe("OverlayWindow", () => {
     await waitFor(() =>
       expect(container.querySelectorAll(".pointer-events-none .rounded-full")).toHaveLength(20),
     )
-    expect(container.querySelector(".led-blink")).toBeNull()
+    expect(container.querySelector(".led-sweep-dot")).toBeNull()
   })
 
   it("keeps a low-usage bar dark without a live session", async () => {
@@ -566,23 +607,26 @@ describe("OverlayWindow", () => {
     const { container } = render(<OverlayWindow />)
 
     await waitFor(() => expect(getLiveSessions).toHaveBeenCalled())
-    expect(container.querySelector(".led-blink")).toBeNull()
+    expect(container.querySelector(".led-sweep-dot")).toBeNull()
     expect(container.querySelector(".led-clock")).toBeNull()
   })
 
-  it("blinks the next segment to light, against the unlit colour", async () => {
+  it("marks the next segment to light, and gives the lit ones the gleam", async () => {
     getLiveSessions.mockResolvedValue([liveSession()])
     const { container } = render(<OverlayWindow />)
 
-    await waitFor(() => expect(container.querySelector(".led-blink")).not.toBeNull())
-    const dots = container.querySelectorAll(".pointer-events-none .rounded-full")
-    // 81% of 20 segments rounds to 16 lit, so the blink sits on index 16.
-    expect(dots[15]).not.toHaveClass("led-blink")
-    expect((dots[15] as HTMLElement).style.backgroundColor).not.toBe("")
-    // The unlit class stays on the segment: the flash paints above it, so
-    // the unlit colour is the blink's off state.
-    expect(dots[16]).toHaveClass("led-blink", "bg-led-off")
-    expect((dots[16] as HTMLElement).style.backgroundColor).toBe("")
+    await waitFor(() => expect(container.querySelector(".led-sweep-dot")).not.toBeNull())
+    const dots = container.querySelectorAll<HTMLElement>(".pointer-events-none .rounded-full")
+    // 81% of 20 segments rounds to 16 lit, so the mark sits on index 16.
+    expect(dots[15]).toHaveAttribute("data-led-lit", "true")
+    expect(dots[15]).not.toHaveAttribute("data-led-next")
+    expect(dots[15]?.style.backgroundColor).not.toBe("")
+    expect(dots[15]?.style.getPropertyValue("--led-index")).toBe("15")
+    // The unlit class stays on the segment: the band paints above it.
+    expect(dots[16]).toHaveAttribute("data-led-next", "true")
+    expect(dots[16]).not.toHaveAttribute("data-led-lit")
+    expect(dots[16]).toHaveClass("bg-led-off")
+    expect(dots[16]?.style.backgroundColor).toBe("")
   })
 
   it("rests with bars only and a hidden close control", async () => {

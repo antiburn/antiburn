@@ -87,44 +87,59 @@ describe("SegmentedMeter", () => {
     expect(queryByTestId("segmented-meter-notch")).not.toBeInTheDocument()
   })
 
-  it("blinks the next segment to light while a session is live", () => {
-    // 50% lights 16, so the seventeenth (index 16) is the one that can
-    // alternate between brand and its zone's track tint.
-    const { container } = render(<SegmentedMeter percent={50} blinkNext />)
+  it("sweeps every segment while a session is live, and marks the next one to light", () => {
+    const { container } = render(<SegmentedMeter percent={50} live />)
     const all = segments(container)
-    expect(container.querySelectorAll(".led-blink")).toHaveLength(1)
-    // The zone's track class stays on the segment: the flash paints above
-    // it, so the track tint is the blink's off state.
-    expect(all[16]).toHaveClass("led-blink", "bg-brand-unlit/12")
+    expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(32)
+    // Each segment knows its place along the sweep; the meter knows its
+    // length and its row. The stylesheet paints the band from those.
+    expect(all[5]?.style.getPropertyValue("--led-index")).toBe("5")
+    const meter = container.firstElementChild as HTMLElement
+    expect(meter.style.getPropertyValue("--led-segments")).toBe("32")
+    expect(meter.style.getPropertyValue("--led-row")).toBe("0")
+    // 50% lights 16. The lit segments carry the gleam; the seventeenth
+    // (index 16) is the still mark under reduced motion, and keeps its
+    // track tint below it.
+    expect(all[15]).toHaveAttribute("data-led-lit", "true")
+    expect(all[16]).not.toHaveAttribute("data-led-lit")
+    expect(container.querySelectorAll("[data-led-next]")).toHaveLength(1)
+    expect(all[16]).toHaveAttribute("data-led-next", "true")
+    expect(all[16]).toHaveClass("bg-brand-unlit/12")
   })
 
-  it("marks the blinking segment with its stagger step, capped at the last keyframe set", () => {
-    const { container: first } = render(<SegmentedMeter percent={50} blinkNext />)
-    expect(segments(first)[16]?.dataset["ledStep"]).toBeUndefined()
-    const { container: third } = render(<SegmentedMeter percent={50} blinkNext blinkStep={2} />)
-    expect(segments(third)[16]?.dataset["ledStep"]).toBe("2")
-    const { container: ninth } = render(<SegmentedMeter percent={50} blinkNext blinkStep={8} />)
-    expect(segments(ninth)[16]?.dataset["ledStep"]).toBe("5")
-    const { container: still } = render(<SegmentedMeter percent={50} blinkStep={2} />)
-    expect(still.querySelector("[data-led-step]")).toBeNull()
+  it("carries its row for the sweep stagger", () => {
+    const { container } = render(<SegmentedMeter percent={50} live row={2} />)
+    const meter = container.firstElementChild as HTMLElement
+    expect(meter.style.getPropertyValue("--led-row")).toBe("2")
+    const { container: still } = render(<SegmentedMeter percent={50} row={2} />)
+    expect((still.firstElementChild as HTMLElement).style.getPropertyValue("--led-row")).toBe(
+      "",
+    )
   })
 
-  it("blinks the first segment at zero and the last at full", () => {
-    const { container: zero } = render(<SegmentedMeter percent={0} blinkNext />)
-    expect(segments(zero)[0]).toHaveClass("led-blink")
-    const { container: full } = render(<SegmentedMeter percent={100} blinkNext />)
-    expect(segments(full)[31]).toHaveClass("led-blink", "bg-system-red-unlit/12")
+  it("marks the first segment at zero and the last at full", () => {
+    const { container: zero } = render(<SegmentedMeter percent={0} live />)
+    expect(segments(zero)[0]).toHaveAttribute("data-led-next", "true")
+    const { container: full } = render(<SegmentedMeter percent={100} live />)
+    expect(segments(full)[31]).toHaveAttribute("data-led-next", "true")
+    expect(segments(full)[31]).toHaveClass("bg-system-red-tint")
   })
 
-  it("blinks the segment past the mark on its own side when it fills from the right", () => {
+  it("runs the sweep from the right, and marks past the mark on its own side, when it fills from the end", () => {
     // 95% from the right lights the last two; the next to light is index 29.
-    const { container } = render(<SegmentedMeter percent={95} fillFrom="end" blinkNext />)
-    expect(segments(container)[29]).toHaveClass("led-blink")
+    const { container } = render(<SegmentedMeter percent={95} fillFrom="end" live />)
+    const all = segments(container)
+    expect(all[29]).toHaveAttribute("data-led-next", "true")
+    // The band runs in the fill direction: the last segment is first.
+    expect(all[31]?.style.getPropertyValue("--led-index")).toBe("0")
+    expect(all[0]?.style.getPropertyValue("--led-index")).toBe("31")
   })
 
-  it("does not blink without a live session", () => {
+  it("does not sweep without a live session", () => {
     const { container } = render(<SegmentedMeter percent={50} />)
-    expect(container.querySelector(".led-blink")).toBeNull()
+    expect(container.querySelector(".led-sweep-dot")).toBeNull()
+    expect(container.querySelector("[data-led-next]")).toBeNull()
+    expect(container.querySelector("[data-led-lit]")).toBeNull()
   })
 
   it("hides itself from the accessibility tree", () => {

@@ -19,13 +19,13 @@ status: draft
 
 ## Status
 
-| Phase | What | Size | State |
-|---|---|---|---|
-| A | Leftmost LED blinks when nothing is lit | ~60 lines | built 2026-09-08, in review |
-| B | `SessionLifecycle` actor and broadcast bus in the Tauri shell | ~400 lines | built 2026-09-08, in review |
-| C | HUD and popover meter read the bus; the idle task folds into the actor | ~300 lines | built 2026-09-08, in review |
-| D | Session list and other consumers move onto the bus | follow-up | not planned here |
-| E, F, G | The manifest stop fix, the sweep, and the 30 s `quiet` event | see `hud-live-sweep.md` | in progress 2026-09-11 |
+| Phase   | What                                                                                 | Size                    | State                       |
+| ------- | ------------------------------------------------------------------------------------ | ----------------------- | --------------------------- |
+| A       | Leftmost LED blinks when nothing is lit                                              | ~60 lines               | built 2026-09-08, in review |
+| B       | `SessionLifecycle` actor and broadcast bus in the Tauri shell                        | ~400 lines              | built 2026-09-08, in review |
+| C       | HUD and popover meter read the bus; the idle task folds into the actor               | ~300 lines              | built 2026-09-08, in review |
+| D       | Session list and other consumers move onto the bus                                   | follow-up               | not planned here            |
+| E, F, G | The manifest stop fix, the sweep that replaced the blink, and the 30 s `quiet` event | see `hud-live-sweep.md` | built 2026-09-11            |
 
 Two pull requests (agreed 2026-09-08). The first, `feat/session-lifecycle-bus`,
 is the wiring: phase B and the shell half of phase C (the bridge to the
@@ -60,12 +60,12 @@ backend idle task in `scan/idle.rs` applies 180 seconds again.
 
 Latency today, from a transcript write to the HUD blink:
 
-| Step | Cost |
-|---|---|
-| `notify` event to debounced burst | 1.5 s quiet, 5 s max under a steady stream |
-| Targeted refresh per session floor | up to 10 s (`TARGETED_MIN_INTERVAL`) |
-| Re-describe (stat, head read) and upsert | tens of ms |
-| `sessions:entry-changed` to `sessionLive` | immediate |
+| Step                                      | Cost                                       |
+| ----------------------------------------- | ------------------------------------------ |
+| `notify` event to debounced burst         | 1.5 s quiet, 5 s max under a steady stream |
+| Targeted refresh per session floor        | up to 10 s (`TARGETED_MIN_INTERVAL`)       |
+| Re-describe (stat, head read) and upsert  | tens of ms                                 |
+| `sessions:entry-changed` to `sessionLive` | immediate                                  |
 
 So the first write of a burst reaches the HUD in about two seconds, but every
 later write in a busy session waits on the 10 second floor plus a describe.
@@ -238,7 +238,7 @@ Built 2026-09-08, three small departures:
   indexed yet) has no `Idle` counterpart on the bus, so the renderers keep
   one local 180 second timer for that case only. A keyed session never runs
   a renderer timer.
-- Both meters blink the *next unlit* segment, not the last lit one: a lit
+- Both meters blink the _next unlit_ segment, not the last lit one: a lit
   segment already carries a colour close to the brand tint, so only the
   segment past the reading can alternate (brand on, the unlit colour off).
   The Claude bar colour is 3 degrees of hue and 1 point of lightness from
@@ -281,11 +281,11 @@ Built 2026-09-08, three small departures:
 
 ## Decisions to confirm
 
-| Decision | Proposal |
-|---|---|
-| Blink colour | brand orange as the on state in every case, alternating with the segment's resting colour (agreed 2026-09-08) |
+| Decision                 | Proposal                                                                                                                                                                      |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Blink colour             | brand orange as the on state in every case, alternating with the segment's resting colour (agreed 2026-09-08)                                                                 |
 | Live window and surfaces | one 180 s window from the bus, no separate 90 s timer; the HUD, the popover's usage meter, and the closed bar's ring all flash (agreed 2026-09-08; "main one" is the popover) |
-| Discovery paused | the watcher still runs, so the HUD still blinks while paused; paused means no indexing work, not a dark light (agreed 2026-09-08) |
+| Discovery paused         | the watcher still runs, so the HUD still blinks while paused; paused means no indexing work, not a dark light (agreed 2026-09-08)                                             |
 
 ## How it is built
 

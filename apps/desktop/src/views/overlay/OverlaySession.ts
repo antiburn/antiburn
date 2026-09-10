@@ -369,9 +369,9 @@ export class OverlaySession {
   }
 
   // The bus is the one source of "live". A keyed session turns on at
-  // `started` or `activity` and off at `idle`; the shell applies the 180 s
-  // window, so no timer runs here for it. Only keyless activity, a write the
-  // store has not indexed yet, expires locally.
+  // `started` or `activity` and off at `quiet` or `idle`. The local clock
+  // closes the same 30 s window for a snapshot, a missed event, and keyless
+  // activity, a write the store has not indexed yet.
   private listenForActivity(generation: number): void {
     void onSessionLifecycle((event) => {
       if (!this.isCurrent(generation)) return

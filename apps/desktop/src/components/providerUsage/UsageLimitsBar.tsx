@@ -61,9 +61,9 @@ export interface UsageLimitsBarProps {
     activation: Exclude<AnchoredTriggerActivation, "idle">
   } | null
   /**
-   * The providers a live session draws on. Each of them blinks, the way the
-   * HUD's bars blink: its ring's next eighth on the closed bar, and every
-   * meter's next segment on the open one, from the top down.
+   * The providers a live session draws on. Each of them sweeps, the way the
+   * HUD's bars sweep: its ring on the closed bar, and every one of its
+   * meters on the open one, from the top down.
    */
   liveProviders?: readonly string[]
 }
@@ -123,8 +123,8 @@ export function UsageLimitsBar({
   )
 
   return (
-    // `led-clock` runs the one animation every blinking meter below reads,
-    // so the rows turn off together whenever each row started.
+    // `led-clock` runs the one sweep clock every live meter below reads, so
+    // the rows stay in phase whenever each row joined.
     <div
       data-testid="usage-limits-bar"
       className={cn("relative shrink-0", liveProviders.length > 0 && "led-clock")}
@@ -139,7 +139,7 @@ export function UsageLimitsBar({
                 displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
                 status={liveProviderStatus(live, reading)}
                 onHover={onHoverProvider}
-                blink={liveProviders.includes(reading.provider)}
+                live={liveProviders.includes(reading.provider)}
                 activation={
                   activeProvider?.provider === reading.provider
                     ? activeProvider.activation
@@ -173,7 +173,7 @@ export function UsageLimitsBar({
               status={liveProviderStatus(live, reading)}
               now={at}
               action={index === 0 ? disclosure(true) : undefined}
-              blink={liveProviders.includes(reading.provider)}
+              live={liveProviders.includes(reading.provider)}
               activation={
                 activeProvider?.provider === reading.provider ? activeProvider.activation : null
               }
@@ -276,7 +276,7 @@ function ProviderGroup({
   action,
   onHover,
   activation,
-  blink = false,
+  live = false,
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
@@ -285,8 +285,8 @@ function ProviderGroup({
   now: number
   /** The disclosure, on the topmost group only. */
   action?: ReactNode
-  /** Blink every meter for a live session on this provider, from the top down. */
-  blink?: boolean
+  /** Sweep every meter for a live session on this provider, from the top down. */
+  live?: boolean
   onHover?: (provider: string | null, anchor: AnchorRegion | null) => void
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
@@ -326,8 +326,8 @@ function ProviderGroup({
             window={window}
             now={now}
             resetOnHover
-            blink={blink}
-            blinkStep={index}
+            live={live}
+            row={index}
           />
         ))}
       </div>
@@ -345,15 +345,15 @@ function ProviderRadial({
   status,
   onHover,
   activation,
-  blink = false,
+  live = false,
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
   status: LiveProviderStatus
   onHover?: ((provider: string | null, anchor: AnchorRegion | null) => void) | undefined
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
-  /** Blink the ring's next eighth while a session is live. */
-  blink?: boolean
+  /** Sweep the ring while a session is live. */
+  live?: boolean
 }) {
   const percent = maxLiveUsedPercent(provider)
   const figure = percent != null ? `${Math.round(percent)}%` : "no stated figure"
@@ -387,7 +387,7 @@ function ProviderRadial({
         glyph={providerInitial(displayName)}
         size={RING_SIZE}
         className="block text-label-secondary"
-        blink={blink}
+        live={live}
       />
       <span
         aria-hidden="true"
@@ -469,8 +469,8 @@ function WindowMeterRow({
   window,
   now,
   resetOnHover = false,
-  blink = false,
-  blinkStep = 0,
+  live = false,
+  row = 0,
 }: {
   window: LiveUsageWindowPayload
   /** The instant the elapsed notch is measured from. */
@@ -483,10 +483,10 @@ function WindowMeterRow({
    * A surface that shows one provider keeps the reset in view instead.
    */
   resetOnHover?: boolean
-  /** Blink the next segment to light while a session is live. */
-  blink?: boolean
-  /** The row's place under its provider, for the blink stagger. */
-  blinkStep?: number
+  /** Sweep the meter while a session is live. */
+  live?: boolean
+  /** The row's place under its provider, for the sweep stagger. */
+  row?: number
 }) {
   const percent = window.usedPercent
   return (
@@ -518,8 +518,8 @@ function WindowMeterRow({
       <SegmentedMeter
         percent={percent ?? null}
         expectedFraction={liveWindowElapsed(window, now)}
-        blinkNext={blink}
-        blinkStep={blinkStep}
+        live={live}
+        row={row}
       />
     </div>
   )

@@ -137,137 +137,109 @@ body[data-transparent-window] #root {
 }
 
 /*
- * The live-session blink. One clock drives every blinking meter on a
- * surface. `.led-clock` on an ancestor animates the flash colours, and each
- * `.led-blink` element reads the colour for its row.
+ * The live-session sweep. One clock drives every live meter on a surface.
+ * `.led-clock` on an ancestor animates the sweep position, and each segment
+ * and ring reads it.
  *
  * A CSS animation starts when the browser applies it. An animation on each
- * meter therefore gives a meter that starts to blink later its own clock,
- * and the meters then turn off at different times. One animation on one
- * ancestor keeps every row on the same clock, whenever a row starts.
+ * meter therefore gives a meter that joins later its own clock, and the rows
+ * of one provider drift apart. One animation on one ancestor keeps every row
+ * in phase, whenever a row joins.
  *
- * The flash paints over the element's resting colour: `transparent` shows
- * that colour, and the brand tint covers it. A dot takes the flash as a
- * background image above its background colour. The usage ring takes it as
- * a stroke above a track arc of the same shape. The brand tint holds one
- * value in both themes, so it survives any desktop behind the HUD.
+ * The position runs in bar lengths: 0 is the left end of a bar and 1 is the
+ * right end. It travels at one bar per second from before the left end to
+ * past the right end, then holds while the bar rests. Each row starts
+ * `--led-row-lag` bar lengths after the row above it, which is 100 ms.
  */
-@property --led-flash-0 {
-  syntax: "<color>";
+@property --led-sweep {
+  syntax: "<number>";
   inherits: true;
-  initial-value: transparent;
-}
-
-@property --led-flash-1 {
-  syntax: "<color>";
-  inherits: true;
-  initial-value: transparent;
-}
-
-@property --led-flash-2 {
-  syntax: "<color>";
-  inherits: true;
-  initial-value: transparent;
-}
-
-@property --led-flash-3 {
-  syntax: "<color>";
-  inherits: true;
-  initial-value: transparent;
-}
-
-@property --led-flash-4 {
-  syntax: "<color>";
-  inherits: true;
-  initial-value: transparent;
-}
-
-@property --led-flash-5 {
-  syntax: "<color>";
-  inherits: true;
-  initial-value: transparent;
+  initial-value: 0;
 }
 
 .led-clock {
-  animation: led-clock 3s steps(1, end) infinite;
+  /* The full cycle. The band crosses a bar in about 1.25 s of it. */
+  --led-sweep-cycle: 4s;
+  --led-row-lag: 0.1;
+  /* Half the band's width, as a share of the bar: about three dots of 20. */
+  --led-band: 0.15;
+  animation: led-sweep var(--led-sweep-cycle) linear infinite;
 }
 
-.led-blink {
-  --led-flash: var(--led-flash-0);
-  background-image: linear-gradient(var(--led-flash), var(--led-flash));
-  stroke: var(--led-flash);
-}
-
-/*
- * The stagger. A provider's meters turn on from the top down, one row every
- * 100 ms, and turn off together at the half cycle. Five steps fit inside the
- * 1.5 s on phase; `ledBlinkStep` in `src/lib/ledBlink.ts` caps the row index
- * to match.
- */
-.led-blink[data-led-step="1"] {
-  --led-flash: var(--led-flash-1);
-}
-
-.led-blink[data-led-step="2"] {
-  --led-flash: var(--led-flash-2);
-}
-
-.led-blink[data-led-step="3"] {
-  --led-flash: var(--led-flash-3);
-}
-
-.led-blink[data-led-step="4"] {
-  --led-flash: var(--led-flash-4);
-}
-
-.led-blink[data-led-step="5"] {
-  --led-flash: var(--led-flash-5);
-}
-
-@keyframes led-clock {
+@keyframes led-sweep {
   0% {
-    --led-flash-0: var(--color-brand-tint);
-    --led-flash-1: transparent;
-    --led-flash-2: transparent;
-    --led-flash-3: transparent;
-    --led-flash-4: transparent;
-    --led-flash-5: transparent;
-  }
-
-  3.3333% {
-    --led-flash-1: var(--color-brand-tint);
-  }
-
-  6.6667% {
-    --led-flash-2: var(--color-brand-tint);
-  }
-
-  10% {
-    --led-flash-3: var(--color-brand-tint);
-  }
-
-  13.3333% {
-    --led-flash-4: var(--color-brand-tint);
-  }
-
-  16.6667% {
-    --led-flash-5: var(--color-brand-tint);
+    --led-sweep: -0.25;
   }
 
   50%,
   100% {
-    --led-flash-0: transparent;
-    --led-flash-1: transparent;
-    --led-flash-2: transparent;
-    --led-flash-3: transparent;
-    --led-flash-4: transparent;
-    --led-flash-5: transparent;
+    --led-sweep: 1.75;
   }
 }
 
+/*
+ * A segment paints the band on a pseudo-element above its own colour, from
+ * its distance to the sweep position. `--led-index` and `--led-segments`
+ * come from the component; `--led-row` from the bar. `max(x, -x)` stands in
+ * for `abs()`, which older WebKit lacks.
+ *
+ * The band is the brand tint on an unlit segment. A lit segment is already
+ * near that colour, so the band on it is the shimmer white, the same gleam
+ * the session list runs across a running session's title.
+ */
+.led-sweep-dot::after {
+  --led-pos: calc(
+    var(--led-sweep) - var(--led-row, 0) * var(--led-row-lag, 0.1) -
+      (var(--led-index, 0) + 0.5) / var(--led-segments, 20)
+  );
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--color-brand-tint);
+  opacity: clamp(
+    0,
+    calc(1 - max(var(--led-pos), -1 * var(--led-pos)) / var(--led-band, 0.15)),
+    1
+  );
+}
+
+.led-sweep-dot[data-led-lit]::after {
+  background: var(--color-shimmer);
+}
+
+/*
+ * The ring's arc laps the track once per cycle, clockwise from twelve
+ * o'clock, while the bars sweep. The stylesheet owns the arc's rotation;
+ * the component sets no `transform` attribute on it.
+ */
+.led-sweep-ring {
+  stroke: var(--color-brand-tint);
+  transform-origin: 16px 16px;
+  transform: rotate(calc(-90deg + (var(--led-sweep) + 0.25) * 180deg));
+}
+
+/*
+ * Reduced motion stops the loop. A steady mark stays: the next segment to
+ * light holds the brand tint, and the ring holds its next eighth. That is a
+ * colour, not movement.
+ */
 @media (prefers-reduced-motion: reduce) {
   .led-clock {
     animation: none;
+  }
+
+  .led-sweep-dot::after {
+    opacity: 0;
+  }
+
+  .led-sweep-dot[data-led-next]::after {
+    background: var(--color-brand-tint);
+    opacity: 1;
+  }
+
+  .led-sweep-ring {
+    transform: rotate(var(--led-ring-rest, -90deg));
   }
 }
 

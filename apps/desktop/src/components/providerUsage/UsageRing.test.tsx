@@ -106,51 +106,41 @@ describe("UsageRing", () => {
     )
   })
 
-  it("blinks the next eighth of the ring, from the arc's end, while a session is live", () => {
-    const { container } = render(<UsageRing percent={50} blink />)
-    const blinking = container.querySelector('[data-testid="usage-ring-blink"]')
-    expect(blinking).toHaveClass("led-blink")
-    // Half gone: the arc ends at six o'clock, and the blink starts there.
-    expect(blinking).toHaveAttribute("transform", "rotate(90 16 16)")
-    expect(blinking?.getAttribute("stroke-dasharray")?.split(" ").map(Number)[0]).toBeCloseTo(
+  it("sweeps an eighth of the ring while a session is live, with its rest past the arc's end", () => {
+    const { container } = render(<UsageRing percent={50} live />)
+    const arc = container.querySelector<SVGElement>('[data-testid="usage-ring-sweep"]')
+    expect(arc).toHaveClass("led-sweep-ring")
+    // The stylesheet owns the rotation, so the arc carries no transform of
+    // its own. Half gone: the reading's arc ends at six o'clock, and the
+    // reduced-motion rest starts there.
+    expect(arc).not.toHaveAttribute("transform")
+    expect(arc?.style.getPropertyValue("--led-ring-rest")).toBe("90deg")
+    expect(arc?.getAttribute("stroke-dasharray")?.split(" ").map(Number)[0]).toBeCloseTo(
       CIRCUMFERENCE / 8,
       5,
     )
   })
 
-  it("draws the blink's resting arc below the flash, on the same eighth", () => {
-    const { container } = render(<UsageRing percent={50} blink />)
-    const rest = container.querySelector('[data-testid="usage-ring-blink-rest"]')
-    const flash = container.querySelector('[data-testid="usage-ring-blink"]')
-    expect(rest).not.toBeNull()
-    expect(flash).not.toBeNull()
-    // The flash is transparent in its off phase, so the arc below it holds
-    // the off colour and must match the flash's shape and place.
-    expect(rest!.getAttribute("transform")).toBe(flash!.getAttribute("transform"))
-    expect(rest!.getAttribute("stroke-dasharray")).toBe(flash!.getAttribute("stroke-dasharray"))
+  it("rests at twelve o'clock at zero, and on the last eighth of a full ring", () => {
+    const zero = render(<UsageRing percent={0} live />)
     expect(
-      rest!.compareDocumentPosition(flash!) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
+      zero.container
+        .querySelector<SVGElement>('[data-testid="usage-ring-sweep"]')
+        ?.style.getPropertyValue("--led-ring-rest"),
+    ).toBe("-90deg")
+    const full = render(<UsageRing percent={100} live />)
+    expect(
+      full.container
+        .querySelector<SVGElement>('[data-testid="usage-ring-sweep"]')
+        ?.style.getPropertyValue("--led-ring-rest"),
+    ).toBe("225deg")
   })
 
-  it("blinks from twelve o'clock at zero, and the last eighth of a full ring", () => {
-    const zero = render(<UsageRing percent={0} blink />)
-    expect(zero.container.querySelector('[data-testid="usage-ring-blink"]')).toHaveAttribute(
-      "transform",
-      "rotate(-90 16 16)",
-    )
-    const full = render(<UsageRing percent={100} blink />)
-    expect(full.container.querySelector('[data-testid="usage-ring-blink"]')).toHaveAttribute(
-      "transform",
-      "rotate(225 16 16)",
-    )
-  })
-
-  it("draws no blink without a live session, or on the indeterminate ring", () => {
+  it("draws no sweep without a live session, or on the indeterminate ring", () => {
     const still = render(<UsageRing percent={50} />)
-    expect(still.container.querySelector('[data-testid="usage-ring-blink"]')).toBeNull()
-    const indeterminate = render(<UsageRing percent={null} blink />)
-    expect(indeterminate.container.querySelector('[data-testid="usage-ring-blink"]')).toBeNull()
+    expect(still.container.querySelector('[data-testid="usage-ring-sweep"]')).toBeNull()
+    const indeterminate = render(<UsageRing percent={null} live />)
+    expect(indeterminate.container.querySelector('[data-testid="usage-ring-sweep"]')).toBeNull()
   })
 
   it("is invisible to a screen reader, because its caller names it", () => {

@@ -1,4 +1,4 @@
-import { ledBlinkStep } from "../../lib/ledBlink"
+import type { CSSProperties } from "react"
 
 /**
  * Render an LED-style bar with fixed circular segments.
@@ -8,39 +8,33 @@ import { ledBlinkStep } from "../../lib/ledBlink"
  * travelled. It separates 60% used at 30% elapsed from 60% used at 90%
  * elapsed. With no fraction there is no notch.
  *
- * `blinkNext` marks a live session on the first unlit segment, the next one
- * to light, as `SegmentedMeter` does in the popover. The blink alternates
- * between the brand tint and the unlit LED colour.
+ * `live` runs the session sweep: a band that crosses every segment from the
+ * left, on the clock of the nearest `led-clock` ancestor. Each segment
+ * carries its index and the bar's segment count, and `hud.css` paints the
+ * band on the segment from its distance to the sweep position. `row` is the
+ * bar's row within its provider: each row runs 100 ms after the one above it.
  *
- * The blink must not sit on a lit segment. A lit segment already carries its
- * bar colour, and a provider colour close to the brand tint then alternates
- * with itself. The Claude bar is one such colour: it differs from the brand
- * tint by 3 degrees of hue and 1 point of lightness, which a 6px dot cannot
- * show. The segment past the reading has the contrast the blink needs. The
- * blinking segment therefore keeps the unlit colour below the flash.
- *
- * At zero the rule lands on the first segment, so a bar with no lit segment
- * still shows that a session is live. A full bar keeps the blink on its last
- * segment.
- *
- * `blinkStep` is the bar's row within its provider: each row turns on 250 ms
- * after the one above it, and all rows turn off together.
+ * Under reduced motion the sweep stops, and the next segment to light holds
+ * the brand tint instead. At zero that is the first segment, so a bar with no
+ * lit segment still shows that a session is live. A full bar marks its last
+ * segment. The band on a lit segment is a lighter gleam: the bar colours sit
+ * too close to the brand tint for a 6px dot to show the tint above them.
  */
 export function LedBar({
   split,
   segments = 40,
   className = "",
-  blinkNext = false,
-  blinkStep = 0,
+  live = false,
+  row = 0,
   expectedFraction = null,
 }: {
   split: Array<{ fraction: number; color: string }>
   segments?: number
   className?: string
-  /** Blink the next segment to light, for a live session. */
-  blinkNext?: boolean
-  /** The bar's row within its provider, for the blink stagger. */
-  blinkStep?: number
+  /** Run the sweep across the bar, for a live session. */
+  live?: boolean
+  /** The bar's row within its provider, for the sweep stagger. */
+  row?: number
   /** Elapsed share of the window's period, 0-1, or null when unknown. */
   expectedFraction?: number | null
 }) {
@@ -54,24 +48,31 @@ export function LedBar({
     segments,
     Math.round(Math.min(1, Math.max(0, accumulated)) * segments),
   )
-  // A full bar has no next segment; the blink then stays on the last one.
-  const blinkIndex = blinkNext ? Math.min(segments - 1, litCount) : -1
+  // A full bar has no next segment; the still mark then stays on the last one.
+  const nextIndex = live ? Math.min(segments - 1, litCount) : -1
+  const sweep = live
+    ? ({ "--led-segments": segments, "--led-row": row } as CSSProperties)
+    : undefined
 
   return (
     <div
       className={`relative flex w-full items-center justify-between ${className}`.trimEnd()}
+      style={sweep}
       aria-hidden="true"
     >
       {Array.from({ length: segments }, (_, index) => {
         const midpoint = (index + 0.5) / segments
         const hit = cutoffs.find((cutoff) => midpoint <= cutoff.upTo)
-        const blinking = index === blinkIndex
+        const style: CSSProperties = {}
+        if (hit) style.backgroundColor = hit.color
+        if (live) Object.assign(style, { "--led-index": index })
         return (
           <span
             key={index}
-            data-led-step={blinking ? ledBlinkStep(blinkStep) : undefined}
-            className={`h-1.5 w-1.5 shrink-0 rounded-full ${hit && !blinking ? "" : "bg-led-off"} ${blinking ? "led-blink" : ""}`.trimEnd()}
-            style={!blinking && hit ? { backgroundColor: hit.color } : undefined}
+            data-led-lit={live && hit != null ? true : undefined}
+            data-led-next={index === nextIndex || undefined}
+            className={`relative h-1.5 w-1.5 shrink-0 rounded-full ${hit ? "" : "bg-led-off"} ${live ? "led-sweep-dot" : ""}`.trimEnd()}
+            style={hit || live ? style : undefined}
           />
         )
       })}
