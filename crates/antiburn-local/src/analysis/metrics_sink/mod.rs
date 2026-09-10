@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use active::ActiveSegments;
 use cache_miss::{CacheInput, CachePatch, CacheReducer};
-use slots::{CompactionMark, ProgressSlots, ReorderWindow, SlotAggregate, SlotAxis, StampedName};
+use slots::{
+    CacheSlot, CompactionMark, ProgressSlots, ReorderWindow, SlotAggregate, SlotAxis, StampedName,
+};
 use tally::{
     IdentityKey, Interner, LateToolCandidate, MAX_BUILTIN_LATE_CANDIDATES, MAX_LATE_CANDIDATES,
     MAX_MCP_SERVERS, MAX_MODEL_RUNS, MAX_MODELS, MAX_SKILL_NAMES, MAX_SKILL_USES, MAX_SPEEDS,
@@ -371,7 +373,11 @@ impl SessionMetricsAccumulator {
             self.active.observe(timestamp);
             self.last_effective_ts = timestamp;
         }
+        if let Some(timestamp) = event.usage_ts_ms {
+            self.active.observe(timestamp);
+        }
         let effective_ts = event.ts_ms.unwrap_or(self.last_effective_ts);
+        let usage_effective_ts = event.usage_ts_ms.unwrap_or(effective_ts);
         self.efficiency.observe(EfficiencyInput {
             ordinal,
             ts_ms: event.ts_ms,
@@ -402,7 +408,7 @@ impl SessionMetricsAccumulator {
             self.observe_parent_fields(&event, ordinal, model, &mut slot);
         }
         self.observe_tools(&event, ordinal, effective_ts);
-        self.observe_model_usage(&event, effective_ts, ordinal);
+        self.observe_model_usage(&event, usage_effective_ts, ordinal);
 
         if event.source == EventSource::Parent {
             if event.role == Role::User {
@@ -414,8 +420,8 @@ impl SessionMetricsAccumulator {
             let context_tokens = event.usage.context_tokens();
             if context_tokens > 0 {
                 let (mode_1, mode_2, gap) = self.cache.observe(CacheInput {
-                    key: (effective_ts, ordinal),
-                    timestamp: event.ts_ms,
+                    key: (usage_effective_ts, ordinal),
+                    timestamp: event.usage_ts_ms.or(event.ts_ms),
                     context_tokens,
                     cache_read_tokens: event.usage.cache_read_tokens,
                     cache_write_tokens: event.usage.cache_creation_tokens,
@@ -430,6 +436,45 @@ impl SessionMetricsAccumulator {
         }
         if event.may_resolve_late_tool || event.late_tool_candidate_is_builtin {
             self.reserve_late_candidate(&event, ordinal, effective_ts);
+        }
+
+        let split_usage = event
+            .usage_ts_ms
+            .is_some_and(|timestamp| Some(timestamp) != event.ts_ms);
+        let usage_slot = if split_usage {
+            let mut usage_slot = SlotAggregate::new(ordinal, usage_effective_ts);
+            usage_slot.tokens_in = slot.tokens_in;
+            usage_slot.tokens_out = slot.tokens_out;
+            usage_slot.cache_read_tokens = slot.cache_read_tokens;
+            usage_slot.cache_write_tokens = slot.cache_write_tokens;
+            usage_slot.subagent_tokens = slot.subagent_tokens;
+            usage_slot.context_tokens = slot.context_tokens;
+            usage_slot.has_thinking = slot.has_thinking;
+            usage_slot.model = slot.model;
+            usage_slot.thinking_mode = slot.thinking_mode;
+            usage_slot.speed = slot.speed;
+            usage_slot.first_gap = slot.first_gap;
+            usage_slot.cache_mode_1 = slot.cache_mode_1;
+
+            slot.tokens_in = 0;
+            slot.tokens_out = 0;
+            slot.cache_read_tokens = 0;
+            slot.cache_write_tokens = 0;
+            slot.subagent_tokens = 0;
+            slot.context_tokens = 0;
+            slot.first_gap = None;
+            slot.cache_mode_1 = CacheSlot::default();
+            Some(usage_slot)
+        } else {
+            None
+        };
+
+        if let Some(usage_slot) = usage_slot
+            && let Some(ready) =
+                self.reorder
+                    .push(usage_slot, &self.identity.agent, &self.identity.session_id)
+        {
+            self.fold_ready_slot(ready);
         }
         if let Some(ready) =
             self.reorder

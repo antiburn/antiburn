@@ -28,6 +28,7 @@ pub(crate) struct MetricsIdentity {
 
 pub(crate) struct MetricTurn {
     ts_ms: Option<i64>,
+    usage_ts_ms: Option<i64>,
     role: Role,
     message_id: Option<String>,
     source: EventSource,
@@ -49,6 +50,7 @@ impl From<NormalizedEvent> for MetricTurn {
     fn from(event: NormalizedEvent) -> Self {
         Self {
             ts_ms: event.ts_ms,
+            usage_ts_ms: event.usage_ts_ms,
             role: event.role,
             message_id: event.message_id,
             source: event.source,
@@ -696,7 +698,8 @@ pub(crate) fn finalize_metrics(
 ) -> SessionMetrics {
     let mut timestamps = turns
         .iter()
-        .filter_map(|(_, turn)| turn.ts_ms)
+        .flat_map(|(_, turn)| [turn.ts_ms, turn.usage_ts_ms])
+        .flatten()
         .collect::<Vec<_>>();
     timestamps.sort_unstable();
     let (first_ts, last_ts) = match (timestamps.first(), timestamps.last()) {
@@ -755,58 +758,75 @@ pub(crate) fn finalize_metrics(
             0.0
         }
         .clamp(0.0, 1.0);
-        let bucket_index = ((progress * BUCKETS as f32) as usize).min(BUCKETS - 1);
-        let bucket = &mut buckets[bucket_index];
+        let event_bucket_index = ((progress * BUCKETS as f32) as usize).min(BUCKETS - 1);
+        let usage_progress = if active_ms > 0 {
+            turn.usage_ts_ms
+                .or(turn.ts_ms)
+                .map(active_progress)
+                .unwrap_or(progress)
+        } else {
+            progress
+        }
+        .clamp(0.0, 1.0);
+        let usage_bucket_index = ((usage_progress * BUCKETS as f32) as usize).min(BUCKETS - 1);
 
         if *source == EventSource::Subagent {
+            let bucket = &mut buckets[usage_bucket_index];
             bucket.subagent_tokens = bucket
                 .subagent_tokens
                 .saturating_add(turn.usage.effective_input_tokens())
                 .saturating_add(turn.usage.output_tokens);
         }
         if *source == EventSource::Parent {
-            bucket.tokens_in = bucket
-                .tokens_in
-                .saturating_add(turn.usage.effective_input_tokens());
-            bucket.tokens_out = bucket.tokens_out.saturating_add(turn.usage.output_tokens);
-            bucket.cache_read_tokens = bucket
-                .cache_read_tokens
-                .saturating_add(turn.usage.cache_read_tokens);
-            bucket.cache_write_tokens = bucket
-                .cache_write_tokens
-                .saturating_add(turn.usage.cache_creation_tokens);
-            bucket.context_tokens = bucket.context_tokens.max(turn.usage.context_tokens());
+            {
+                let bucket = &mut buckets[usage_bucket_index];
+                bucket.tokens_in = bucket
+                    .tokens_in
+                    .saturating_add(turn.usage.effective_input_tokens());
+                bucket.tokens_out = bucket.tokens_out.saturating_add(turn.usage.output_tokens);
+                bucket.cache_read_tokens = bucket
+                    .cache_read_tokens
+                    .saturating_add(turn.usage.cache_read_tokens);
+                bucket.cache_write_tokens = bucket
+                    .cache_write_tokens
+                    .saturating_add(turn.usage.cache_creation_tokens);
+                bucket.context_tokens = bucket.context_tokens.max(turn.usage.context_tokens());
+                if turn.usage.context_tokens() > 0 {
+                    let usage_timestamp = turn.usage_ts_ms.or(turn.ts_ms);
+                    let secs_since_prior_turn =
+                        usage_timestamp
+                            .zip(previous_turn_ts)
+                            .map(|(current, prior)| {
+                                u64::try_from((current - prior).max(0) / 1000).unwrap_or(0)
+                            });
+                    let is_cache_rehydration = cache_miss_events.rehydrations.contains(&index);
+                    let is_provider_cache_miss = cache_miss_events.provider_misses.contains(&index);
+                    if is_cache_rehydration {
+                        bucket.is_cache_rehydration = true;
+                        cache_rehydration_count = cache_rehydration_count.saturating_add(1);
+                    }
+                    if is_provider_cache_miss {
+                        bucket.is_cache_routing_miss = true;
+                        provider_cache_miss_count = provider_cache_miss_count.saturating_add(1);
+                    }
+                    if let Some(composition) = cache_miss_events.compositions.get(&index) {
+                        bucket.cache_rehydration = Some(*composition);
+                    }
+                    if is_cache_rehydration
+                        || is_provider_cache_miss
+                        || (!bucket.is_cache_rehydration && bucket.secs_since_prior_turn.is_none())
+                    {
+                        bucket.secs_since_prior_turn = secs_since_prior_turn;
+                    }
+                    previous_turn_ts = usage_timestamp;
+                }
+            }
+            let bucket = &mut buckets[event_bucket_index];
             bucket.is_compaction_boundary |= turn.is_compaction_boundary;
             if turn.is_compaction_boundary {
                 bucket.compaction_trigger = turn.compaction_trigger;
                 bucket.compaction_pre_tokens = turn.compaction_pre_tokens;
                 bucket.compaction_post_tokens = turn.compaction_post_tokens;
-            }
-            if turn.usage.context_tokens() > 0 {
-                let secs_since_prior_turn =
-                    turn.ts_ms.zip(previous_turn_ts).map(|(current, prior)| {
-                        u64::try_from((current - prior).max(0) / 1000).unwrap_or(0)
-                    });
-                let is_cache_rehydration = cache_miss_events.rehydrations.contains(&index);
-                let is_provider_cache_miss = cache_miss_events.provider_misses.contains(&index);
-                if is_cache_rehydration {
-                    bucket.is_cache_rehydration = true;
-                    cache_rehydration_count = cache_rehydration_count.saturating_add(1);
-                }
-                if is_provider_cache_miss {
-                    bucket.is_cache_routing_miss = true;
-                    provider_cache_miss_count = provider_cache_miss_count.saturating_add(1);
-                }
-                if let Some(composition) = cache_miss_events.compositions.get(&index) {
-                    bucket.cache_rehydration = Some(*composition);
-                }
-                if is_cache_rehydration
-                    || is_provider_cache_miss
-                    || (!bucket.is_cache_rehydration && bucket.secs_since_prior_turn.is_none())
-                {
-                    bucket.secs_since_prior_turn = secs_since_prior_turn;
-                }
-                previous_turn_ts = turn.ts_ms;
             }
             let launches = turn
                 .tools

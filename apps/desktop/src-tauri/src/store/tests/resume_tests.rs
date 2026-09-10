@@ -380,7 +380,7 @@ fn a_vanished_source_has_its_rows_and_resume_dropped_on_the_next_publish() {
 fn current_resume_revisions_reject_each_prior_batch_revision() {
     let current = crate::analysis::resume_revisions();
     assert_eq!(current.snapshot_revision, 6);
-    assert_eq!(current.parser_revision, 31);
+    assert_eq!(current.parser_revision, 32);
     assert_eq!(current.analyzer_revision, 21);
     assert_eq!(current.metrics_schema_revision, 8);
     assert_eq!(current.evidence_schema_revision, 18);

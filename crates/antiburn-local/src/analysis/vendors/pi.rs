@@ -7,7 +7,9 @@
 //! cannot carry analysis signals. It recognizes `bashExecution` as a Pi
 //! housekeeping role under the same rule.
 //!
-//! The top-level row timestamp controls ordering. Usage contains four disjoint
+//! The top-level row timestamp controls ordering. Assistant messages can also
+//! carry a request-start timestamp inside `message.timestamp`; usage uses that
+//! position while event ordering keeps the top-level timestamp. Usage contains four disjoint
 //! buckets: `input`, `output`, `cacheRead`, and `cacheWrite`. Extra usage fields
 //! do not contribute to accounting. A linked child excludes rows whose
 //! timestamps precede the session header. The adapter checks only parent-link
@@ -484,6 +486,13 @@ impl PiStreamState {
             return;
         };
         event.ts_ms = Some(timestamp);
+        event.usage_ts_ms = (role == "assistant")
+            .then(|| value.pointer("/message/timestamp").and_then(Value::as_i64))
+            .flatten()
+            .filter(|usage_ts| {
+                self.started_at_ms
+                    .is_some_and(|started| *usage_ts >= started && *usage_ts <= timestamp)
+            });
         event.speed = None;
         event.thread_id = thread_id;
 

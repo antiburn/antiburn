@@ -170,7 +170,9 @@ pub use vendors::{has_dedicated_reader, reader_for};
 // +1 for Pi provider/API retention and Cursor native record identities.
 // Reparse existing rows to retain request provider and API fields.
 // This batch also reparses nested resources and paired subagent observations.
-pub const PARSER_REVISION: i64 = 31;
+// +1 for Pi assistant request-start timestamps: token and context buckets now
+// use `message.timestamp` while event ordering keeps the outer row timestamp.
+pub const PARSER_REVISION: i64 = 32;
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
