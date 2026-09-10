@@ -175,6 +175,16 @@ impl<T: Clone + PartialEq, P: Clone> Lifecycle<T, P> {
         Some(reveal_now)
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn renderer_failed(&mut self, renderer_generation: u64) -> bool {
+        if self.renderer_generation != renderer_generation {
+            return false;
+        }
+        self.conceal();
+        self.renderer_destroyed();
+        true
+    }
+
     pub(crate) fn renderer_destroyed(&mut self) {
         self.cancel_task();
         self.renderer_generation = self.renderer_generation.wrapping_add(1).max(1);

@@ -17,6 +17,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
+import { nativePeekBridge } from "./nativePeekBridge"
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
 import type {
@@ -802,6 +803,20 @@ export type LiveUsageProvider = "anthropic" | "openai" | "google"
 export type LiveUsageState =
   "fresh" | "stale" | "authentication" | "rate_limited" | "unavailable" | "no_credentials"
 
+function isNativePeekInteraction(interaction: Interaction): boolean {
+  switch (interaction.kind) {
+    case "surfaceViewed":
+    case "surfaceStateObserved":
+      return (
+        interaction.surface === "provider_preview" || interaction.surface === "checks_preview"
+      )
+    case "liveUsageStateObserved":
+      return true
+    default:
+      return false
+  }
+}
+
 /**
  * Report one interaction. Fire-and-forget, and silent on failure.
  *
@@ -811,6 +826,14 @@ export type LiveUsageState =
  * one gate rather than two that can drift apart.
  */
 export function noteInteraction(interaction: Interaction): void {
+  const native = nativePeekBridge()
+  if (native) {
+    if (!isNativePeekInteraction(interaction)) return
+    void native.invoke("note_interaction", { interaction }).catch(() => {
+      // Analytics errors must not interrupt the preview.
+    })
+    return
+  }
   if (!hasShell()) return
   void invoke("note_interaction", { interaction }).catch(() => {
     // Analytics must never surface an error into something the reader asked

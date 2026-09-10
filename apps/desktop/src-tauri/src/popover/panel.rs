@@ -8,11 +8,11 @@
 //! input, while the previous application stays active.
 //!
 //! Window operations must run on the main thread. Each public function here
-//! marshals its work through [`tauri::WebviewWindow::run_on_main_thread`],
-//! except [`prepare_for_destroy`], which its callers already run there.
+//! marshals its work through Tauri's main-thread callbacks, except
+//! [`prepare_for_destroy`], which its callers already run there.
 
 use tauri::{Manager, WebviewWindow};
-use tauri_nspanel::objc2_app_kit::NSWindowStyleMask;
+use tauri_nspanel::objc2_app_kit::{NSResponder, NSWindowCollectionBehavior, NSWindowStyleMask};
 use tauri_nspanel::objc2_foundation::NSThread;
 use tauri_nspanel::{ManagerExt, WebviewPanelManager, WebviewWindowExt};
 
@@ -30,9 +30,8 @@ tauri_nspanel::tauri_panel! {
 /// isn't present. Safe to call from any thread — the work is marshaled onto
 /// the main thread.
 ///
-/// Only the style mask changes. The window keeps the level that
-/// `always_on_top` set and the default collection behavior, so the popover
-/// stays a surface of the current Space.
+/// The window keeps the level that `always_on_top` set. It joins every Space,
+/// including a full-screen Space owned by another application.
 pub(super) fn to_nonactivating_panel(window: &WebviewWindow) {
     if window
         .try_state::<WebviewPanelManager<tauri::Wry>>()
@@ -47,17 +46,17 @@ pub(super) fn to_nonactivating_panel(window: &WebviewWindow) {
         };
         // Borderless + never activate the application on key.
         panel.set_style_mask(NSWindowStyleMask::NonactivatingPanel);
+        panel.set_collection_behavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary,
+        );
     });
 }
 
 /// Give the popover key-window status without activating the application.
 ///
-/// Orders the panel front, makes the content view first responder, then makes
-/// the panel key. `makeKeyWindow` alone does not hand keyboard events to the
-/// embedded WKWebView: without an explicit first responder the window itself
-/// absorbs them, and typing and Escape stop reaching the views even though
-/// mouse clicks (hit-testing, independent of first-responder state) keep
-/// working.
+/// Orders the panel front and makes it key, then gives its webview keyboard
+/// focus. The direct webview handle avoids the wrapper and its material views.
 ///
 /// Returns `false` when the nspanel plugin is not registered or the closure
 /// cannot be marshaled; the caller falls back to a plain `set_focus`. Inside
@@ -73,17 +72,22 @@ pub(super) fn focus_without_activation(window: &WebviewWindow) -> bool {
     let window = window.clone();
     window
         .clone()
-        .run_on_main_thread(move || match window.get_webview_panel(super::LABEL) {
-            Ok(panel) => {
-                panel.order_front_regardless();
-                let content_view = panel.content_view();
-                panel.make_first_responder(Some(&content_view));
-                panel.make_key_window();
-            }
-            Err(_) => {
-                let _ = window.set_focus();
-            }
-        })
+        .with_webview(
+            move |webview| match window.get_webview_panel(super::LABEL) {
+                Ok(panel) => {
+                    panel.order_front_regardless();
+                    panel.make_key_window();
+                    // SAFETY: The handle is the live WKWebView, and this callback runs on the main thread.
+                    let responder = unsafe { &*webview.inner().cast::<NSResponder>() };
+                    if !panel.make_first_responder(Some(responder)) {
+                        tracing::warn!("failed to give the popover webview keyboard focus");
+                    }
+                }
+                Err(_) => {
+                    let _ = window.set_focus();
+                }
+            },
+        )
         .is_ok()
 }
 

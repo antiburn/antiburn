@@ -9,6 +9,7 @@ import type {
   AnchoredWindowState,
 } from "./anchoredTrigger"
 import { hasShell, type LiveUsageSummaryPayload, type ProviderUsageSummaryPayload } from "./ipc"
+import { nativePeekBridge, type NativePeekBridge } from "./nativePeekBridge"
 import type { ChecksPresentation } from "./presentation/checks"
 
 export const POPOVER_PEEK_LABEL = "popover-peek"
@@ -42,6 +43,22 @@ export type PopoverPeekData =
     }
   | { kind: "checks"; presentation: ChecksPresentation }
 
+function browserState(): PopoverPeekState {
+  return {
+    generation: 0,
+    target: null,
+    rendererReady: true,
+    visible: false,
+    awaitingRetargetCommit: false,
+    awaitingPresentation: false,
+    awaitingConcealment: false,
+  }
+}
+
+function nativeInvoke<T>(bridge: NativePeekBridge, command: string, args?: object): Promise<T> {
+  return bridge.invoke(command, args) as Promise<T>
+}
+
 /** Retarget the companion beside the popover. */
 export async function showPopoverPeek(
   target: PopoverPeekTarget,
@@ -64,33 +81,31 @@ export async function hidePopoverPeek(): Promise<void> {
 
 /** Read the latest preview request after the resident renderer mounts. */
 export async function getPopoverPeekState(): Promise<PopoverPeekState> {
-  if (!hasShell()) {
-    return {
-      generation: 0,
-      target: null,
-      rendererReady: true,
-      visible: false,
-      awaitingRetargetCommit: false,
-      awaitingPresentation: false,
-      awaitingConcealment: false,
-    }
-  }
+  const native = nativePeekBridge()
+  if (native) return nativeInvoke<PopoverPeekState>(native, "get_popover_peek_state")
+  if (!hasShell()) return browserState()
   return invoke<PopoverPeekState>("get_popover_peek_state")
 }
 
 /** Read the latest preview lifecycle from the popover that owns the anchor. */
 export async function getPopoverPeekAnchorState(): Promise<PopoverPeekState> {
-  return getPopoverPeekState()
+  if (!hasShell()) return browserState()
+  return invoke<PopoverPeekState>("get_popover_peek_state")
 }
 
 /** Load the current target through the companion's restricted shell command. */
 export async function getPopoverPeekData(generation: number): Promise<PopoverPeekData> {
+  const native = nativePeekBridge()
+  if (native)
+    return nativeInvoke<PopoverPeekData>(native, "get_popover_peek_data", { generation })
   if (!hasShell()) throw new Error("popover peek data requires the desktop shell")
   return invoke<PopoverPeekData>("get_popover_peek_data", { generation })
 }
 
 /** Mark the companion ready after its resident standby skeleton commits. */
 export async function popoverPeekReady(generation: number): Promise<boolean> {
+  const native = nativePeekBridge()
+  if (native) return nativeInvoke<boolean>(native, "popover_peek_ready", { generation })
   if (!hasShell()) return true
   return invoke<boolean>("popover_peek_ready", { generation })
 }
@@ -100,6 +115,13 @@ export async function popoverPeekPresented(
   generation: number,
   contentHeight: number | null,
 ): Promise<boolean> {
+  const native = nativePeekBridge()
+  if (native) {
+    return nativeInvoke<boolean>(native, "popover_peek_presented", {
+      generation,
+      contentHeight,
+    })
+  }
   if (!hasShell()) return true
   return invoke<boolean>("popover_peek_presented", { generation, contentHeight })
 }
@@ -109,12 +131,21 @@ export async function popoverPeekRetargetReady(
   generation: number,
   contentHeight: number | null,
 ): Promise<boolean> {
+  const native = nativePeekBridge()
+  if (native) {
+    return nativeInvoke<boolean>(native, "popover_peek_retarget_ready", {
+      generation,
+      contentHeight,
+    })
+  }
   if (!hasShell()) return true
   return invoke<boolean>("popover_peek_retarget_ready", { generation, contentHeight })
 }
 
 /** Confirm that React committed the cleared generation before native hiding. */
 export async function popoverPeekConcealed(generation: number): Promise<boolean> {
+  const native = nativePeekBridge()
+  if (native) return nativeInvoke<boolean>(native, "popover_peek_concealed", { generation })
   if (!hasShell()) return true
   return invoke<boolean>("popover_peek_concealed", { generation })
 }
@@ -127,6 +158,12 @@ const POPOVER_PEEK_STATE_EVENT = "anchored-window-state"
 export async function onPopoverPeekRequest(
   handler: (request: PopoverPeekRequest) => void,
 ): Promise<UnlistenFn> {
+  const native = nativePeekBridge()
+  if (native) {
+    return native.listen(POPOVER_PEEK_REQUEST_EVENT, (payload) =>
+      handler(payload as PopoverPeekRequest),
+    )
+  }
   if (!hasShell()) return () => undefined
   return listen<PopoverPeekRequest>(POPOVER_PEEK_REQUEST_EVENT, (event) =>
     handler(event.payload),
