@@ -21,6 +21,24 @@ function totals(over: Partial<SessionEfficiency> = {}): SessionEfficiency {
   }
 }
 
+function expectNoProfileGuidance(content: HTMLElement) {
+  expect(content).not.toHaveTextContent(/Claude|Codex/i)
+  expect(content).not.toHaveTextContent(/aim for/i)
+  expect(content).not.toHaveTextContent(/too (high|low)/i)
+  expect(content).not.toHaveTextContent(/out of band/i)
+  expect(content).not.toHaveTextContent(
+    /\$(20|33|46|80)|\b(8|10|14|17|18|25|33|36|54|57|59|69)%/,
+  )
+}
+
+const NEUTRAL_CASES = ["pi", "cursor", "opencode", "antigravity", "unknown", ""]
+
+const SHARE_GUIDANCE = [
+  { key: "realWorkShare", summary: /share of the session's cost spent on fresh input/ },
+  { key: "rewriteShare", summary: /share of the session's cost spent rehydrating/ },
+  { key: "carryShare", summary: /share of the session's cost spent resending/ },
+]
+
 describe("EfficiencyBreakdown", () => {
   it.each([
     { totalUsd: 5, figure: "$20.00", band: "good", ink: "text-label" },
@@ -49,6 +67,54 @@ describe("EfficiencyBreakdown", () => {
     // The scale names its middle band once; each share row names its own.
     expect(screen.getAllByText("ok")).toHaveLength(4)
   })
+
+  it.each(NEUTRAL_CASES)(
+    "keeps the legacy visuals but uses neutral guidance for '%s'",
+    (agent) => {
+      const metrics = efficiencyMetrics(totals(), agent)
+      const baseline = efficiencyMetrics(totals(), "claude-code")
+      expect(metrics.costPerMTok).toEqual(baseline.costPerMTok)
+      expect(metrics.realWorkShare).toEqual(baseline.realWorkShare)
+      expect(metrics.rewriteShare).toEqual(baseline.rewriteShare)
+      expect(metrics.carryShare).toEqual(baseline.carryShare)
+      expect(metrics.profile).toBe(baseline.profile)
+      expect(metrics.guidanceProfile).toBeNull()
+
+      render(<EfficiencyBreakdown metrics={metrics} />)
+
+      expect(screen.getByText("$40.00")).toHaveClass("text-label")
+      expect(screen.getByText("$40.00")).not.toHaveClass("text-brand")
+      expect(screen.getByText("34%")).toBeTruthy()
+      expect(screen.getByText("12%")).toBeTruthy()
+      expect(screen.getByText("54%")).toBeTruthy()
+      expect(screen.getByTestId("efficiency-composition")).toBeTruthy()
+      expect(screen.getAllByText("ok")).toHaveLength(4)
+
+      const cost = screen.getByTestId("thermometer-costPerMTok")
+      expect(cost.dataset.position).toBe("0.383")
+      expect(within(cost).getByTestId("cost-band-word-good")).toHaveTextContent("under $33")
+      expect(within(cost).getByTestId("cost-band-word-bad")).toHaveTextContent("over $80")
+      expect(within(cost).getByTestId("cost-band-word-ok")).not.toHaveTextContent("$33 – $80")
+
+      const hero = screen.getByTestId("cost-hero")
+      fireEvent.focus(hero)
+      const tooltip = screen.getByRole("tooltip")
+      expect(tooltip).toHaveTextContent(
+        "The Context tab shows how spend splits across work, rewrite, and carry.",
+      )
+      expectNoProfileGuidance(tooltip)
+      fireEvent.blur(hero)
+
+      for (const { key, summary } of SHARE_GUIDANCE) {
+        const row = screen.getByTestId(`share-row-${key}`)
+        fireEvent.focus(row)
+        const tooltip = screen.getByRole("tooltip")
+        expect(within(tooltip).getByText(summary)).toBeTruthy()
+        expectNoProfileGuidance(tooltip)
+        fireEvent.blur(row)
+      }
+    },
+  )
 
   it("draws the cost reading as a bullet graph that labels its own scale", () => {
     render(<EfficiencyBreakdown metrics={efficiencyMetrics(totals(), "claude-code")} />)
@@ -208,6 +274,11 @@ describe("EfficiencyBreakdown", () => {
     )
     expect(
       screen.getAllByText("For Claude, aim for below $33. Above $80 is too high.").length,
+    ).toBeGreaterThan(0)
+    expect(
+      screen.getAllByText(
+        "The Context tab shows which of work, rewrite, and carry is out of band.",
+      ).length,
     ).toBeGreaterThan(0)
     fireEvent.blur(hero)
     expect(screen.queryByText(/average cost for each million tokens/)).toBeNull()

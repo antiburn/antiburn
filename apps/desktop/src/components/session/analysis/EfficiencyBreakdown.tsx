@@ -67,6 +67,14 @@ const METRIC_GUIDANCE: Record<MetricKey, string[]> = {
   ],
 }
 
+/** Neutral advice replaces text that requires a benchmark. */
+const NEUTRAL_GUIDANCE_OVERRIDES: Partial<Record<MetricKey, string[]>> = {
+  costPerMTok: [
+    "Craft tight workflows, and use cheaper models when they're good enough.",
+    "The Context tab shows how spend splits across work, rewrite, and carry.",
+  ],
+}
+
 interface ShareRow {
   key: ShareMetricKey
   label: string
@@ -238,15 +246,16 @@ function CompositionTrack({ segments }: { segments: ShareSegment[] }) {
 /** The tooltip explains the reading, its expected band, and the suggested changes. */
 function MetricGuidance({
   metricKey,
-  profile,
+  guidanceProfile,
 }: {
   metricKey: MetricKey
-  profile: EfficiencyProfile
+  guidanceProfile: EfficiencyProfile | null
 }) {
-  const advice = [
-    ...efficiencyThresholdGuidance(metricKey, profile),
-    ...METRIC_GUIDANCE[metricKey],
-  ]
+  const metricGuidance =
+    guidanceProfile === null
+      ? (NEUTRAL_GUIDANCE_OVERRIDES[metricKey] ?? METRIC_GUIDANCE[metricKey])
+      : METRIC_GUIDANCE[metricKey]
+  const advice = [...efficiencyThresholdGuidance(metricKey, guidanceProfile), ...metricGuidance]
   return (
     <div className="space-y-1 text-pretty">
       {METRIC_SUMMARY[metricKey].map((sentence) => (
@@ -270,14 +279,16 @@ const ROW_CLASS =
 function CostRowLine({
   metric,
   profile,
+  guidanceProfile,
 }: {
   metric: EfficiencyMetric
   profile: EfficiencyProfile
+  guidanceProfile: EfficiencyProfile | null
 }) {
   return (
     <div className="type-body" data-testid="cost-row">
       <Tooltip
-        label={<MetricGuidance metricKey="costPerMTok" profile={profile} />}
+        label={<MetricGuidance metricKey="costPerMTok" guidanceProfile={guidanceProfile} />}
         side="bottom"
         delayMs={150}
       >
@@ -308,19 +319,21 @@ function CostRowLine({
 }
 
 /**
- * One line of the composition legend: the slice's color, its name, its share,
- * and the band word. The run in the track above carries the size, so the row
- * carries no bar of its own.
+ * One composition line shows the slice color, name, share, and band word.
+ * The track shows the size, so the row has no bar.
  */
 function ShareRowLine({
   segment,
-  profile,
+  guidanceProfile,
 }: {
   segment: ShareSegment
-  profile: EfficiencyProfile
+  guidanceProfile: EfficiencyProfile | null
 }) {
   return (
-    <Tooltip label={<MetricGuidance metricKey={segment.key} profile={profile} />} delayMs={150}>
+    <Tooltip
+      label={<MetricGuidance metricKey={segment.key} guidanceProfile={guidanceProfile} />}
+      delayMs={150}
+    >
       <div
         data-testid={`share-row-${segment.key}`}
         className={cn(ROW_CLASS, "flex items-baseline gap-2")}
@@ -366,7 +379,13 @@ export function EfficiencyBreakdown({ metrics, section }: EfficiencyBreakdownPro
 
   return (
     <div className="flex flex-col" data-testid="efficiency-block">
-      {showCost && <CostRowLine metric={metrics.costPerMTok} profile={metrics.profile} />}
+      {showCost && (
+        <CostRowLine
+          metric={metrics.costPerMTok}
+          profile={metrics.profile}
+          guidanceProfile={metrics.guidanceProfile}
+        />
+      )}
       {showCost && showComposition && (
         <div className="my-3 border-b border-dashed border-separator" />
       )}
@@ -375,7 +394,11 @@ export function EfficiencyBreakdown({ metrics, section }: EfficiencyBreakdownPro
           <CompositionTrack segments={segments} />
           <div data-testid="composition-legend" className="flex flex-col mt-3">
             {segments.map((segment) => (
-              <ShareRowLine key={segment.key} segment={segment} profile={metrics.profile} />
+              <ShareRowLine
+                key={segment.key}
+                segment={segment}
+                guidanceProfile={metrics.guidanceProfile}
+              />
             ))}
           </div>
         </>
