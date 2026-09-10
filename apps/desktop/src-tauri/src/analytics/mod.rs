@@ -69,6 +69,7 @@ pub fn record(_app: &tauri::AppHandle, _name: event::EventName, facts: event::Fa
         facts.plan,
         facts.factor_band,
         facts.residual_band,
+        facts.unrecognized_types,
     );
 }
 
@@ -160,7 +161,7 @@ pub fn handle_settings_transition(
 #[cfg(feature = "analytics")]
 mod enabled {
 
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::time::{Duration, Instant};
 
     use antiburn_local::insights::UnrecognizedRecords;
@@ -295,6 +296,7 @@ mod enabled {
                 factor_band: facts.factor_band,
                 residual_band: facts.residual_band,
                 resource_usage: facts.resource_usage,
+                unrecognized_types: facts.unrecognized_types,
             },
             context: event::Context {
                 app_version: format!("antiburn:{}", app.package_info().version),
@@ -799,26 +801,76 @@ mod enabled {
             .take()
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    /// Maximum sanitized type names carried on one
+    /// `antiburn.unrecognized_records_observed` event.
+    const MAX_UNRECOGNIZED_TYPE_NAMES: usize = 16;
+
+    /// Maximum bytes allowed for one sanitized type name.
+    const MAX_UNRECOGNIZED_TYPE_NAME_BYTES: usize = 64;
+
+    /// Stands in for a type name antiburn will not carry verbatim. It makes
+    /// a rejection visible without leaking the value.
+    const REJECTED_TYPE_NAME: &str = "<rejected>";
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
     enum UnrecognizedOutcome {
         None,
         Observed {
             label: &'static str,
             bucket: &'static str,
+            types: Vec<String>,
         },
     }
 
     impl UnrecognizedOutcome {
         fn facts(self) -> Option<Facts> {
-            let Self::Observed { label, bucket } = self else {
+            let Self::Observed {
+                label,
+                bucket,
+                types,
+            } = self
+            else {
                 return None;
             };
             Some(Facts {
                 bucket: Some(bucket),
                 label: Some(label),
+                unrecognized_types: Some(types),
                 ..Facts::default()
             })
         }
+    }
+
+    /// Reduce a report's unknown record type names to the bounded, sanitized
+    /// list an event may carry.
+    ///
+    /// Keeps at most [`MAX_UNRECOGNIZED_TYPE_NAMES`] names. Each name must be
+    /// non-empty, ASCII, and at most [`MAX_UNRECOGNIZED_TYPE_NAME_BYTES`]
+    /// bytes long. Each name must use only letters, digits, `_`, `.`, `:`,
+    /// `/`, and `-`. A name that fails this check becomes the fixed sentinel
+    /// [`REJECTED_TYPE_NAME`]. This keeps a rejection visible without the
+    /// value itself. The sentinel appears at most once. The result is
+    /// sorted and has no duplicates.
+    fn sanitize_unrecognized_types(types: &BTreeSet<String>) -> Vec<String> {
+        let mut sanitized = BTreeSet::new();
+        for name in types.iter().take(MAX_UNRECOGNIZED_TYPE_NAMES) {
+            if is_safe_unrecognized_type_name(name) {
+                sanitized.insert(name.clone());
+            } else {
+                sanitized.insert(REJECTED_TYPE_NAME.to_string());
+            }
+        }
+        sanitized.into_iter().collect()
+    }
+
+    /// Whether a type name is safe to carry verbatim on an analytics event.
+    fn is_safe_unrecognized_type_name(name: &str) -> bool {
+        !name.is_empty()
+            && name.len() <= MAX_UNRECOGNIZED_TYPE_NAME_BYTES
+            && name.is_ascii()
+            && name.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'/' | b'-')
+            })
     }
 
     /// Record a discovery pass, if it says anything the previous one did not.
@@ -893,7 +945,7 @@ mod enabled {
             return;
         }
         let outcome = unrecognized_records_outcome(summary);
-        if !unrecognized_outcome_is_new(outcome) {
+        if !unrecognized_outcome_is_new(outcome.clone()) {
             return;
         }
         let Some(facts) = outcome.facts() else {
@@ -916,14 +968,19 @@ mod enabled {
         UnrecognizedOutcome::Observed {
             label,
             bucket: event::bucket(summary.sessions_with_types),
+            types: sanitize_unrecognized_types(&summary.types),
         }
     }
 
+    /// Whether this outcome differs from the last one reported. Remembers
+    /// the new outcome when it does. A changed sanitized type list counts
+    /// as a change, the same as a changed label or bucket. A new unknown
+    /// record name is exactly what this event exists to surface.
     fn unrecognized_outcome_is_new(outcome: UnrecognizedOutcome) -> bool {
         let mut guard = LAST_UNRECOGNIZED
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if *guard == Some(outcome) {
+        if guard.as_ref() == Some(&outcome) {
             return false;
         }
         *guard = Some(outcome);
@@ -1306,11 +1363,22 @@ mod enabled {
             capped: u64,
             truncated: u64,
         ) -> UnrecognizedRecords {
+            unrecognized_summary_with_types(sessions, evidence_bearing, capped, truncated, &[])
+        }
+
+        fn unrecognized_summary_with_types(
+            sessions: u64,
+            evidence_bearing: u64,
+            capped: u64,
+            truncated: u64,
+            types: &[&str],
+        ) -> UnrecognizedRecords {
             UnrecognizedRecords {
                 sessions_with_types: sessions,
                 evidence_bearing_sessions: evidence_bearing,
                 capped_sessions: capped,
                 truncated_sessions: truncated,
+                types: types.iter().map(|name| name.to_string()).collect(),
                 ..UnrecognizedRecords::default()
             }
         }
@@ -1809,6 +1877,7 @@ mod enabled {
                 .unwrap();
             assert_eq!(inert.label, Some("inert_only"));
             assert_eq!(inert.bucket, Some("1-9"));
+            assert_eq!(inert.unrecognized_types, Some(Vec::new()));
 
             let capped = unrecognized_records_outcome(&unrecognized_summary(12, 0, 1, 0))
                 .facts()
@@ -1828,6 +1897,69 @@ mod enabled {
             );
         }
 
+        /// The event carries the sanitizer's own output: sorted,
+        /// deduplicated, and never the raw report order.
+        #[test]
+        fn the_outcome_carries_the_sanitized_sorted_type_names() {
+            let summary = unrecognized_summary_with_types(
+                7,
+                0,
+                0,
+                0,
+                &["zzz_custom", "aaa_custom", "aaa_custom"],
+            );
+            let facts = unrecognized_records_outcome(&summary).facts().unwrap();
+            assert_eq!(
+                facts.unrecognized_types,
+                Some(vec!["aaa_custom".to_string(), "zzz_custom".to_string()])
+            );
+        }
+
+        #[test]
+        fn a_normal_type_name_passes_the_sanitizer_unchanged() {
+            let types = sanitize_unrecognized_types(&BTreeSet::from(["custom_event".to_string()]));
+            assert_eq!(types, vec!["custom_event".to_string()]);
+        }
+
+        #[test]
+        fn an_unsafe_type_name_becomes_the_rejected_sentinel() {
+            let with_space =
+                sanitize_unrecognized_types(&BTreeSet::from(["has space".to_string()]));
+            assert_eq!(with_space, vec![REJECTED_TYPE_NAME.to_string()]);
+
+            let with_non_ascii = sanitize_unrecognized_types(&BTreeSet::from(["café".to_string()]));
+            assert_eq!(with_non_ascii, vec![REJECTED_TYPE_NAME.to_string()]);
+
+            let too_long = sanitize_unrecognized_types(&BTreeSet::from(["a".repeat(65)]));
+            assert_eq!(too_long, vec![REJECTED_TYPE_NAME.to_string()]);
+
+            let empty = sanitize_unrecognized_types(&BTreeSet::from([String::new()]));
+            assert_eq!(empty, vec![REJECTED_TYPE_NAME.to_string()]);
+        }
+
+        /// More than one rejected name still yields one sentinel. The
+        /// sentinel shows that a rejection happened. It does not show how
+        /// many names were rejected.
+        #[test]
+        fn multiple_rejected_names_collapse_to_one_sentinel() {
+            let types = sanitize_unrecognized_types(&BTreeSet::from([
+                "has space".to_string(),
+                "café".to_string(),
+                "custom_event".to_string(),
+            ]));
+            assert_eq!(
+                types,
+                vec![REJECTED_TYPE_NAME.to_string(), "custom_event".to_string()]
+            );
+        }
+
+        #[test]
+        fn the_sanitizer_keeps_at_most_sixteen_names() {
+            let many: BTreeSet<String> = (0..20).map(|index| format!("type_{index:02}")).collect();
+            let types = sanitize_unrecognized_types(&many);
+            assert_eq!(types.len(), MAX_UNRECOGNIZED_TYPE_NAMES);
+        }
+
         #[test]
         fn only_a_changed_unrecognized_outcome_is_worth_an_event() {
             let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
@@ -1835,13 +1967,23 @@ mod enabled {
             let inert = UnrecognizedOutcome::Observed {
                 label: "inert_only",
                 bucket: "1-9",
+                types: Vec::new(),
             };
 
-            assert!(unrecognized_outcome_is_new(inert));
-            assert!(!unrecognized_outcome_is_new(inert));
+            assert!(unrecognized_outcome_is_new(inert.clone()));
+            assert!(!unrecognized_outcome_is_new(inert.clone()));
             assert!(unrecognized_outcome_is_new(UnrecognizedOutcome::None));
             assert!(!unrecognized_outcome_is_new(UnrecognizedOutcome::None));
-            assert!(unrecognized_outcome_is_new(inert));
+            assert!(unrecognized_outcome_is_new(inert.clone()));
+
+            // Same label and bucket, a new type name: still a new outcome.
+            let inert_new_type = UnrecognizedOutcome::Observed {
+                label: "inert_only",
+                bucket: "1-9",
+                types: vec!["custom_event".to_string()],
+            };
+            assert!(unrecognized_outcome_is_new(inert_new_type.clone()));
+            assert!(!unrecognized_outcome_is_new(inert_new_type));
             reset_suppression();
         }
 
@@ -1852,9 +1994,10 @@ mod enabled {
             let inert = UnrecognizedOutcome::Observed {
                 label: "inert_only",
                 bucket: "1-9",
+                types: Vec::new(),
             };
             assert!(scan_outcome_is_new(Some("1-9")));
-            assert!(unrecognized_outcome_is_new(inert));
+            assert!(unrecognized_outcome_is_new(inert.clone()));
             *LAST_CLAUDE_LIMIT_RESET.lock().unwrap() = Some(
                 crate::provider_usage::live::anthropic::empty_limit_reset_diagnostic(
                     "success", "null",
