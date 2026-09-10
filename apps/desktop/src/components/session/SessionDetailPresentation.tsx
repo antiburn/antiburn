@@ -1,3 +1,4 @@
+import { isMacOS } from "../../lib/platform"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import {
   ChevronLeft,
@@ -8,7 +9,13 @@ import {
   Moon,
   Trash2,
 } from "lucide-react"
-import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react"
+import {
+  useCallback,
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react"
 
 import { cn } from "../../lib/cn"
 import { agentDisplayName } from "../../lib/presentation/agents"
@@ -28,6 +35,7 @@ import {
   formatDuration,
   isEmptySummary,
   skillMcpUsage,
+  type SkillMcpUsage,
 } from "../../lib/presentation/sessionAnalysis"
 import { resultComponentCost, type LocalSessionCost } from "../../lib/presentation/sessionCosts"
 import { efficiencyMetrics } from "../../lib/presentation/sessionEfficiency"
@@ -118,7 +126,8 @@ export interface SessionDetailPresentationProps {
   modelRuns: PresentableModelRun[]
   /** Direct fork relations resolved from local transcripts. */
   relations: LocalSessionRelations | null
-  onBack: () => void
+  /** Return to the previous session when navigation history exists. */
+  onBack?: (() => void) | undefined
   /** Navigate to the newer adjacent session; omit when none exists. */
   onPrev?: () => void
   /** Navigate to the older adjacent session; omit when none exists. */
@@ -135,6 +144,9 @@ export interface SessionDetailPresentationProps {
   /** Reveal the session's transcript on disk. Omitted hides the control. */
   onRevealSource?: () => void
   renderAgentIcon: AgentIconRenderer
+  /** Remove the popover surface when a host supplies the surrounding pane. */
+  embedded?: boolean
+  active?: boolean
 }
 
 /* -------------------------------------------------------------------------
@@ -238,6 +250,65 @@ function RelationControl({
   )
 }
 
+/** The toolbar holds the host actions. */
+function HostActions({
+  relations,
+  refreshing = false,
+  onOpenRelatedSession,
+  onRevealSource,
+  onDeleteSession,
+  className,
+}: {
+  relations: LocalSessionRelations | null
+  refreshing?: boolean
+  onOpenRelatedSession: (target: LocalSessionRelation, title: string) => void
+  onRevealSource: (() => void) | undefined
+  onDeleteSession: () => void
+  className?: string
+}) {
+  const hasRelations = !!relations && (!!relations.parent || relations.children.length > 0)
+  return (
+    <div className={cn("flex shrink-0 items-center gap-1", className)}>
+      {refreshing && <RefreshingIndicator />}
+      {hasRelations && relations && (
+        <RelationControl relations={relations} onOpen={onOpenRelatedSession} />
+      )}
+      {onRevealSource && (
+        <Tooltip label="Reveal in file manager">
+          <button
+            type="button"
+            onClick={onRevealSource}
+            aria-label="Reveal in file manager"
+            className="rounded-control p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
+          >
+            <FolderOpen size={14} aria-hidden="true" />
+          </button>
+        </Tooltip>
+      )}
+      <Tooltip label="Delete this session">
+        <button
+          type="button"
+          onClick={onDeleteSession}
+          aria-label="Delete this session"
+          className="rounded-control p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-system-red-text"
+        >
+          <Trash2 size={14} aria-hidden="true" />
+        </button>
+      </Tooltip>
+    </div>
+  )
+}
+
+/** The quiet spinner that says a newer analysis is on its way. */
+function RefreshingIndicator() {
+  return (
+    <span role="status" className="inline-flex shrink-0 items-center text-label-tertiary">
+      <LoaderCircle size={12} strokeWidth={2} aria-hidden="true" className="animate-spin" />
+      <span className="sr-only">Refreshing session analysis</span>
+    </span>
+  )
+}
+
 /** The three views of one session's analysis. */
 type SessionDetailTab = "overview" | "cost" | "tools"
 
@@ -249,9 +320,7 @@ const DETAIL_TABS: ReadonlyArray<{ value: SessionDetailTab; label: string }> = [
 
 /** The name of one block inside a tab that holds more than one block. */
 function TabSectionHeading({ children }: { children: string }) {
-  return (
-    <h3 className="mb-2 type-caption font-medium! text-label-tertiary uppercase">{children}</h3>
-  )
+  return <h3 className="sr-only">{children}</h3>
 }
 
 /**
@@ -272,14 +341,27 @@ const KEY_CAPTIONS: Record<string, string> = {
   "Provider cache misses": "Cache misses",
 }
 
+/* The wasted-token figure turns red only when the waste is a large share of
+   the startup context and large in absolute terms. Each test alone reports
+   the wrong sessions: a big context wastes a small share of a large number,
+   and a small context wastes a large share of a small one. */
+const WASTED_RED_SHARE = 0.5
+const WASTED_RED_TOKENS = 10_000
+
+/** The ink for the wasted-token figure: a warning orange, or red when it is worse. */
+function wastedTokensInk({ wastedTokens, totalTokens }: SkillMcpUsage): string {
+  const share = totalTokens > 0 ? wastedTokens / totalTokens : 0
+  const severe = share >= WASTED_RED_SHARE && wastedTokens >= WASTED_RED_TOKENS
+  return severe ? "text-system-red-text" : "text-waste-warn"
+}
+
 /**
  * The chart's key, drawn under the plot it explains.
  *
  * Each figure is a stat cell: a swatch in the color its chart layer takes
  * when it lights, the value in the label ink, and a caption under them.
- * The cells sit in a grid of three equal columns, so the key reads as one
- * table and not as six badges. The swatch alone carries the color, so the
- * text keeps its contrast on both surfaces.
+ * The cells wrap into columns that share the available width.
+ * The swatch carries the color. The text keeps its contrast on both surfaces.
  *
  * Pointing at a cell lights its layer in the plot above, and the cell takes
  * the hover wash. Clicking a cell pins that layer, so it stays lit when the
@@ -306,40 +388,39 @@ function ChartKey({
   onPin: (series: ChartSeries) => void
 }) {
   return (
-    <div className="-mx-1.5 grid grid-cols-3 gap-x-1 gap-y-1">
+    <div data-testid="chart-key" className="session-detail-key grid">
       {stats.map((stat) => {
         const series = stat.series ?? null
         const isPinned = series != null && series === pinned
         return (
-          <Tooltip key={stat.label} label={stat.label}>
-            <button
-              type="button"
-              aria-pressed={series != null ? isPinned : undefined}
-              disabled={series == null}
-              data-series={series ?? undefined}
-              className={cn(
-                "chart-key-stat flex min-w-0 flex-col items-start rounded-control px-1.5 py-1 text-left disabled:opacity-100",
-                isPinned && "bg-surface-secondary",
-              )}
-              onMouseEnter={() => onHighlight(series)}
-              onMouseLeave={() => onHighlight(null)}
-              onClick={() => series != null && onPin(series)}
-            >
-              <span className="flex items-center gap-x-1.5 type-body font-medium text-label tabular-nums">
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    "size-2 shrink-0 rounded-full",
-                    series != null ? SERIES_SWATCH_CLASS[series] : "bg-surface-tertiary",
-                  )}
-                />
-                {stat.value}
-              </span>
-              <span className="max-w-full truncate type-caption text-label-secondary">
-                {KEY_CAPTIONS[stat.label] ?? stat.label}
-              </span>
-            </button>
-          </Tooltip>
+          <button
+            key={stat.label}
+            type="button"
+            aria-pressed={series != null ? isPinned : undefined}
+            disabled={series == null}
+            data-series={series ?? undefined}
+            className={cn(
+              "chart-key-stat flex min-w-0 flex-col items-start rounded-control text-left disabled:opacity-100",
+              isPinned && "bg-surface-secondary",
+            )}
+            onMouseEnter={() => onHighlight(series)}
+            onMouseLeave={() => onHighlight(null)}
+            onClick={() => series != null && onPin(series)}
+          >
+            <span className="flex items-center gap-x-1.5 type-body font-medium text-label tabular-nums">
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "size-2 shrink-0 rounded-full",
+                  series != null ? SERIES_SWATCH_CLASS[series] : "bg-surface-tertiary",
+                )}
+              />
+              {stat.value}
+            </span>
+            <span className="max-w-full truncate text-label-secondary type-callout">
+              {KEY_CAPTIONS[stat.label] ?? stat.label}
+            </span>
+          </button>
         )
       })}
     </div>
@@ -509,6 +590,8 @@ export function SessionDetailPresentation({
   onDeleteSession,
   onRevealSource,
   renderAgentIcon,
+  embedded = false,
+  active = true,
 }: SessionDetailPresentationProps) {
   const subagent = session.subagent
   const [tab, setTab] = useState<SessionDetailTab>("overview")
@@ -525,10 +608,9 @@ export function SessionDetailPresentation({
   const hygieneChecks = sessionHygieneChecks(hygiene)
   const hasAssessedHygieneChecks = hygieneChecks.some((check) => check.status !== "notAssessed")
 
-  // Left and right arrows traverse adjacent sessions. A missing handler is a
-  // no-op.
-  useGlobalKeydown(true, (event) => {
-    if (event.metaKey || event.ctrlKey || event.altKey) return
+  const handleAdjacentKey = (event: KeyboardEvent | ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!active || event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey)
+      return
     const target = event.target as HTMLElement | null
     if (
       target &&
@@ -543,9 +625,12 @@ export function SessionDetailPresentation({
       event.preventDefault()
       onNext()
     }
-  })
+  }
 
-  const showSkeleton = useSkeletonVisible(loading && supportsAnalysis)
+  // The popover owns global shortcuts. Embedded hosts scope them to this pane.
+  useGlobalKeydown(!embedded && active, handleAdjacentKey)
+
+  const showSkeleton = useSkeletonVisible(active && loading && supportsAnalysis)
   // The settled gate the real content, error, and empty states all key off:
   // true only once loading is done *and* the skeleton's minimum-visible
   // window, if any, has elapsed.
@@ -607,86 +692,147 @@ export function SessionDetailPresentation({
         ]
       : []
 
-  const hasRelations = !!relations && (!!relations.parent || relations.children.length > 0)
+  const heroTitle = relations?.title?.trim() || session.title?.trim() || "Session"
+  const hostActions = (
+    <HostActions
+      relations={relations}
+      refreshing={refreshing}
+      onOpenRelatedSession={onOpenRelatedSession}
+      onRevealSource={onRevealSource}
+      onDeleteSession={onDeleteSession}
+      className="session-detail-actions rounded-full bg-surface-card p-1"
+    />
+  )
+
+  const sessionSummary = (
+    <div
+      className="flex min-w-0 flex-col gap-y-0.5 session-detail-summary flex-1 basis-48 type-body"
+      aria-label="Session summary"
+    >
+      {(session.repo || session.wslDistro) && (
+        <div className="flex min-w-0 items-center gap-1.5 type-caption text-label-tertiary">
+          {session.repo && (
+            <Tooltip label={session.repo}>
+              <span className="truncate font-mono">{session.repo}</span>
+            </Tooltip>
+          )}
+          <WslOriginBadge distro={session.wslDistro} />
+        </div>
+      )}
+
+      <h2
+        data-view-heading
+        tabIndex={-1}
+        className="flex min-w-0 items-start gap-x-3 type-headline outline-none"
+      >
+        <TruncatedText
+          className="min-w-0 flex-1 font-semibold text-label break-words"
+          text={heroTitle}
+          lines={1}
+        />
+      </h2>
+
+      {summary && (
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 type-caption text-label-secondary">
+          <Tooltip label={`Active time (${formatDuration(summary.avgDurationSecs)} overall)`}>
+            <span className="tabular-nums">{formatDuration(summary.avgActiveSecs)} active</span>
+          </Tooltip>
+          {session.timestamp && (
+            <>
+              <span aria-hidden="true" className="text-label-tertiary">
+                ·
+              </span>
+              <time dateTime={session.timestamp}>{relativeTime(session.timestamp)}</time>
+            </>
+          )}
+          {modelPairs.length > 0 && (
+            <>
+              <span aria-hidden="true" className="text-label-tertiary">
+                ·
+              </span>
+              <span className="min-w-0 truncate" title={modelRunNames(modelRuns).join("\n")}>
+                {modelPairs.map((pair, index) => (
+                  <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
+                    {index > 0 && " · "}
+                    <span>{pair.model}</span>
+                    {pair.thinkingMode && <span> {pair.thinkingMode}</span>}
+                  </span>
+                ))}
+              </span>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+
+  const compositionSection = efficiencyCard && (
+    <div>
+      <TabSectionHeading>Cost composition</TabSectionHeading>
+      <EfficiencyBreakdown metrics={efficiencyCard} section="composition" />
+    </div>
+  )
+
+  const costSection = (
+    <section className="shrink-0">
+      <TabSectionHeading>Cost</TabSectionHeading>
+      {cost && tokensCard ? (
+        <CostBreakdown cost={cost} split={tokensCard.split} onOpenSubagent={onOpenSubagent} />
+      ) : (
+        <p className="type-callout text-label-tertiary">
+          No cost has been recorded for this session.
+        </p>
+      )}
+    </section>
+  )
+
+  const efficiencySection = efficiencyCard && (
+    <section className="mt-auto shrink-0">
+      <TabSectionHeading>Efficiency</TabSectionHeading>
+      <EfficiencyBreakdown metrics={efficiencyCard} section="cost" />
+    </section>
+  )
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-popover bg-surface text-label select-none">
-      <div className="flex items-center justify-between gap-2 border-b border-separator px-3 py-3">
-        {/* The control and the title are two things, not one. Wrapping the
-            heading text inside the back button made a screen reader announce
-            "Session Detail, button" for the control that leaves this view,
-            and left the view itself with no heading at all. */}
-        <div className="flex min-w-0 items-center gap-1.5">
+    <div
+      ref={(node) => {
+        if (embedded && node && document.activeElement === node.closest("[data-detail-pane]"))
+          node.focus()
+      }}
+      data-detail-focus-target={embedded ? "" : undefined}
+      data-session-detail-region
+      tabIndex={embedded ? -1 : undefined}
+      onKeyDown={embedded ? handleAdjacentKey : undefined}
+      className={cn(
+        "flex h-full flex-col overflow-hidden text-label select-none",
+        !embedded && "bg-surface",
+        "session-detail-wide type-body",
+      )}
+    >
+      <div
+        data-tauri-drag-region={embedded && isMacOS() ? "deep" : undefined}
+        className="session-detail-toolbar flex shrink-0 flex-wrap items-center gap-4 border-b border-separator bg-surface/80 px-10 py-3"
+      >
+        {onBack && (
           <button
             type="button"
             onClick={onBack}
             aria-label="Back"
-            className="-ml-1 inline-flex h-6 shrink-0 items-center rounded-control px-1 text-label hover:bg-surface-hover"
+            className="inline-flex h-6 shrink-0 items-center rounded-control px-1 text-label hover:bg-surface-hover"
           >
-            <ChevronLeft size={14} aria-hidden="true" className="shrink-0" />
+            <ChevronLeft size={14} aria-hidden="true" />
           </button>
-          <h2
-            data-view-heading
-            tabIndex={-1}
-            className="truncate type-headline text-label outline-none"
-          >
-            Session Detail
-          </h2>
-          {subagent && (
-            <span className="shrink-0 rounded bg-system-indigo/15 px-1.5 py-px type-caption font-medium text-system-indigo-text">
-              Sub-agent
-            </span>
-          )}
-          {refreshing && (
-            <span
-              role="status"
-              className="inline-flex shrink-0 items-center text-label-tertiary"
-            >
-              <LoaderCircle
-                size={12}
-                strokeWidth={2}
-                aria-hidden="true"
-                className="animate-spin"
-              />
-              <span className="sr-only">Refreshing session analysis</span>
-            </span>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          {hasRelations && relations && (
-            <RelationControl relations={relations} onOpen={onOpenRelatedSession} />
-          )}
-          {onRevealSource && (
-            <Tooltip label="Reveal in file manager">
-              <button
-                type="button"
-                onClick={onRevealSource}
-                aria-label="Reveal in file manager"
-                className="rounded-control p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-label-secondary"
-              >
-                <FolderOpen size={14} aria-hidden="true" />
-              </button>
-            </Tooltip>
-          )}
-          <Tooltip label="Delete this session">
-            <button
-              type="button"
-              onClick={onDeleteSession}
-              aria-label="Delete this session"
-              className="rounded-control p-1 text-label-tertiary hover:bg-surface-tertiary hover:text-system-red-text"
-            >
-              <Trash2 size={14} aria-hidden="true" />
-            </button>
-          </Tooltip>
-        </div>
+        )}
+        {sessionSummary}
+        {hostActions}
       </div>
 
-      <div key={sessionIdentityKey(session)} className="flex min-h-0 flex-1 flex-col">
+      <div key={sessionIdentityKey(session)} className="relative flex min-h-0 flex-1 flex-col">
         {(showSkeleton || (ready && (error || empty))) && (
           <div className="min-h-0 flex-1 overflow-y-auto py-3">
             {showSkeleton && <SessionDetailSkeleton />}
             {ready && error && (
-              <p className="px-4 type-callout text-system-orange">
+              <p className="type-callout text-system-orange px-10 pb-10">
                 Couldn't read this session.
               </p>
             )}
@@ -728,67 +874,6 @@ export function SessionDetailPresentation({
 
         {ready && !error && !empty && summary && (
           <>
-            <div className="flex flex-col gap-y-1 px-4 pt-3 pb-3" aria-label="Session summary">
-              {/* The repo comes first because it is the container: you are
-                  inside a repo, and the session is the work you do in it. */}
-              {(session.repo || session.wslDistro) && (
-                <div className="flex min-w-0 items-center gap-1.5 type-caption text-label-tertiary">
-                  {session.repo && (
-                    <Tooltip label={session.repo}>
-                      <span className="truncate">{session.repo}</span>
-                    </Tooltip>
-                  )}
-                  <WslOriginBadge distro={session.wslDistro} />
-                </div>
-              )}
-
-              <TruncatedText
-                className="min-w-0 type-body-large font-semibold text-label break-words"
-                text={relations?.title?.trim() || session.title?.trim() || "Session"}
-                lines={2}
-              />
-
-              {/* Active time, last activity, and the models on one quiet
-                  line. The figures that carry a reading live in the meter nav
-                  below; these three are context for the title. */}
-              <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 type-caption text-label-secondary">
-                <Tooltip
-                  label={`Active time (${formatDuration(summary.avgDurationSecs)} overall)`}
-                >
-                  <span className="tabular-nums">
-                    {formatDuration(summary.avgActiveSecs)} active
-                  </span>
-                </Tooltip>
-                {session.timestamp && (
-                  <>
-                    <span aria-hidden="true" className="text-label-tertiary">
-                      ·
-                    </span>
-                    <time dateTime={session.timestamp}>{relativeTime(session.timestamp)}</time>
-                  </>
-                )}
-                {modelPairs.length > 0 && (
-                  <>
-                    <span aria-hidden="true" className="text-label-tertiary">
-                      ·
-                    </span>
-                    <span
-                      className="min-w-0 truncate"
-                      title={modelRunNames(modelRuns).join("\n")}
-                    >
-                      {modelPairs.map((pair, index) => (
-                        <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
-                          {index > 0 && " · "}
-                          <span>{pair.model}</span>
-                          {pair.thinkingMode && <span> {pair.thinkingMode}</span>}
-                        </span>
-                      ))}
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
-
             {subagent && (
               <SubagentBadge
                 parentAgent={session.agent}
@@ -798,29 +883,17 @@ export function SessionDetailPresentation({
               />
             )}
 
-            <div className="border-b border-separator px-4 pb-3">
-              <SegmentedControl
-                options={DETAIL_TABS}
-                value={tab}
-                onChange={setTab}
-                ariaLabel="Session detail sections"
-                semantics="tabs"
-                variant="native-tabs"
-                idPrefix="session-detail-tabs"
-              />
-            </div>
-
             <div
               id="session-detail-tabs-panel"
               role="tabpanel"
               aria-labelledby={`session-detail-tabs-${tab}`}
-              className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
+              className="min-h-0 flex-1 overflow-y-auto py-4 px-10 pb-20"
             >
-              {/* The chart takes every pixel the key leaves, so the tab
-                  never ends in empty space. */}
+              {/* The chart fills the remaining space around its fixed summaries. */}
               {tab === "overview" && tokensCard && (
-                <div className="flex h-full flex-col gap-y-3">
-                  <div className="min-h-0 flex-1">
+                <div className="flex h-full flex-col gap-y-5">
+                  <TabSectionHeading>Context over time</TabSectionHeading>
+                  <div className="min-h-48 flex-1">
                     <ContextTokensChart
                       buckets={summary.buckets}
                       contextWindow={summary.contextAvailable ? summary.contextWindow : null}
@@ -834,65 +907,43 @@ export function SessionDetailPresentation({
                     onHighlight={setHovered}
                     onPin={togglePin}
                   />
-                  {/* The composition says what the context above cost. */}
-                  {efficiencyCard && (
-                    <div className="border-t border-separator pt-3">
-                      <EfficiencyBreakdown metrics={efficiencyCard} section="composition" />
-                    </div>
-                  )}
+                  {compositionSection}
                 </div>
               )}
 
-              {/* The checks lead: a failing check is more use than the cost
-                  rows most of the time. */}
               {tab === "cost" && (
-                <div className="flex min-h-full flex-col">
+                <div className="session-detail-cost flex min-h-full flex-col gap-6">
+                  {costSection}
                   {hasAssessedHygieneChecks && (
-                    <section>
+                    <section className="shrink-0">
                       <TabSectionHeading>Checks</TabSectionHeading>
-                      <HygieneBreakdown checks={hygieneChecks} collapsePassing={false} />
-                    </section>
-                  )}
-                  <section
-                    className={cn(
-                      hasAssessedHygieneChecks && "mt-4 border-t border-separator pt-4",
-                      efficiencyCard && "pb-4",
-                    )}
-                  >
-                    <TabSectionHeading>Cost</TabSectionHeading>
-                    {cost && tokensCard ? (
-                      <CostBreakdown
-                        cost={cost}
-                        split={tokensCard.split}
-                        onOpenSubagent={onOpenSubagent}
+                      <HygieneBreakdown
+                        checks={hygieneChecks}
+                        collapsePassing={false}
+                        inlineGuidance
                       />
-                    ) : (
-                      <p className="type-callout text-label-tertiary">
-                        No cost has been recorded for this session.
-                      </p>
-                    )}
-                  </section>
-                  {/* The $/MTok scale closes the money story. It sits at the
-                      foot of the tab, so a short tab keeps its slack between
-                      the cost rows and the scale, not after the scale. */}
-                  {efficiencyCard && (
-                    <section className="mt-auto border-t border-separator pt-4">
-                      <TabSectionHeading>Efficiency</TabSectionHeading>
-                      <EfficiencyBreakdown metrics={efficiencyCard} section="cost" />
                     </section>
                   )}
+
+                  {efficiencySection}
                 </div>
               )}
 
               {tab === "tools" &&
                 (firstSession?.initialContext ? (
-                  <div className="flex flex-col gap-y-2">
+                  <div className="flex flex-col gap-y-4">
                     {/* The wasted tokens are the finding of this tab, so they
                         head the table they summarize. The figure has no
                         ceiling, so it is a headline and not a meter. */}
                     {toolsUsage != null && toolsUsage.wastedTokens > 0 && (
-                      <p className="my-1 flex items-center gap-x-3">
-                        <span className="type-large-title font-semibold! text-brand tabular-nums">
+                      <p className="flex items-center gap-x-4 my-2 py-3">
+                        <span
+                          data-testid="tools-wasted-figure"
+                          className={cn(
+                            "font-semibold! tabular-nums type-display",
+                            wastedTokensInk(toolsUsage),
+                          )}
+                        >
                           {formatCompact(toolsUsage.wastedTokens)}
                         </span>
                         <span className="flex flex-col type-callout leading-tight">
@@ -903,13 +954,31 @@ export function SessionDetailPresentation({
                         </span>
                       </p>
                     )}
-                    <SkillsMcpChart breakdown={firstSession.initialContext} />
+                    <SkillsMcpChart breakdown={firstSession.initialContext} columns={2} />
                   </div>
                 ) : (
                   <p className="type-callout text-label-tertiary">
                     No startup context has been recorded for this session.
                   </p>
                 ))}
+            </div>
+
+            {/* The wide pane floats its section picker over the bottom of the
+                content, in reach of the reading it switches, instead of in
+                the toolbar beside the title. The wrapper lets pointer events
+                through to the content on either side of the pill. */}
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-6">
+              <SegmentedControl
+                className="ui-segmented-solid session-detail-tabs session-detail-floating-tabs pointer-events-auto type-callout shrink-0 rounded-full! bg-surface/80! shadow-raised [&_button]:rounded-full!"
+                options={DETAIL_TABS}
+                value={tab}
+                onChange={setTab}
+                ariaLabel="Session detail sections"
+                semantics="tabs"
+                variant="native-tabs"
+                equalWidth={false}
+                idPrefix="session-detail-tabs"
+              />
             </div>
           </>
         )}

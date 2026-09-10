@@ -32,24 +32,27 @@
       }
     },
     "capabilities": {
-      "cacheWriteTokens": false,
+      "cacheWriteTokens": true,
       "compactionBoundaries": true,
       "fastTier": true,
-      "harnessVersion": false,
+      "harnessVersion": true,
       "linearRecordOrder": true,
+      "mcpInventory": false,
       "modelIdentity": true,
       "quotaIncidents": false,
       "reasoningEffortTier": true,
       "recordIdentity": false,
+      "repeatedContextAccounting": "uncached_input",
       "requestContextTokens": true,
       "serviceTier": false,
-      "skillMcpAttribution": false,
+      "skillInventory": false,
+      "sourceFormat": "codex_rollout_jsonl",
       "subagentModels": true,
       "subagentRelationships": true,
       "threadIdentity": true,
       "timestampsAndOrder": true,
       "tokenClasses": true,
-      "toolDefinitions": false,
+      "toolDefinitions": true,
       "toolInvocations": true
     },
     "compactions": {
@@ -65,14 +68,27 @@
         "topDepthExamples": [
           {
             "depthTokens": 500,
-            "model": "gpt-test",
+            "model": "gpt-5.6-sol",
             "tsMs": 1786615502000
           }
         ]
       }
     },
     "contextSources": {
-      "state": "unsupported"
+      "state": "complete",
+      "value": {
+        "mcpCoverage": {
+          "state": "unsupported"
+        },
+        "mcpServers": {},
+        "skillCoverage": {
+          "state": "unsupported"
+        },
+        "skills": {},
+        "toolDefinitions": {
+          "state": "unsupported"
+        }
+      }
     },
     "coverage": "complete",
     "diagnostics": {
@@ -105,7 +121,7 @@
       "state": "complete",
       "value": {
         "byModel": {
-          "gpt-test": {
+          "gpt-5.6-sol": {
             "cacheCreation": 0,
             "cacheRead": 0,
             "firstTsMs": 1786615502000,
@@ -115,7 +131,21 @@
             "turns": 1
           }
         },
-        "dominantMainModel": "gpt-test",
+        "controlObservations": [
+          {
+            "api": null,
+            "effort": "xhigh",
+            "lastTsMs": 1786615502000,
+            "model": "gpt-5.6-sol",
+            "provider": null,
+            "speed": null,
+            "turns": {
+              "delegated": 0,
+              "mainLoop": 1
+            }
+          }
+        ],
+        "dominantMainModel": "gpt-5.6-sol",
         "effortSignal": {
           "eligibleTurns": 1,
           "presentTurns": 1
@@ -126,7 +156,16 @@
             "mainLoop": 1
           }
         },
+        "effortTiersByModel": {
+          "gpt-5.6-sol": {
+            "xhigh": {
+              "delegated": 0,
+              "mainLoop": 1
+            }
+          }
+        },
         "fastModes": {},
+        "fastModesByModel": {},
         "serviceTiers": {
           "state": "unsupported"
         },
@@ -138,20 +177,21 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 18,
-      "evidenceSchemaRevision": 14,
+      "analyzerRevision": 22,
+      "evidenceSchemaRevision": 18,
       "harnessVersion": {
-        "state": "unsupported"
+        "state": "complete",
+        "value": null
       },
       "ordering": "monotonic",
-      "parserRevision": 28,
+      "parserRevision": 32,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 14,
+    "schemaRevision": 18,
     "subagents": {
       "state": "complete",
       "value": {
@@ -197,7 +237,7 @@
         "isCacheRoutingMiss": false,
         "isCompactionBoundary": false,
         "lastTool": null,
-        "model": "gpt-test",
+        "model": "gpt-5.6-sol",
         "secsSincePriorTurn": null,
         "speed": null,
         "subagentLaunches": 0,
@@ -4152,25 +4192,31 @@
     "contextAvailable": true,
     "contextWindow": 200000,
     "contextWindowSource": "reported",
-    "cost": null,
+    "cost": {
+      "cacheReadUsd": 0.0,
+      "cacheWriteUsd": 0.0,
+      "inputUsd": 0.0025,
+      "outputUsd": 0.0015,
+      "totalUsd": 0.004
+    },
     "durationSecs": 0,
     "efficiency": {
       "carryUsd": 0.0,
-      "growthTokens": 0,
-      "newWorkUsd": 0.0,
-      "outputTokens": 0,
-      "pricedTurns": 0,
+      "growthTokens": 500,
+      "newWorkUsd": 0.004,
+      "outputTokens": 50,
+      "pricedTurns": 1,
       "rewriteUsd": 0.0,
-      "totalUsd": 0.0,
-      "unpricedTurns": 1
+      "totalUsd": 0.004,
+      "unpricedTurns": 0
     },
     "eventCount": 1,
     "initialContext": {
       "sources": []
     },
-    "model": "gpt-test",
+    "model": "gpt-5.6-sol",
     "modelBreakdown": {
-      "gpt-test": {
+      "gpt-5.6-sol": {
         "cache_creation_1h_tokens": 0,
         "cache_creation_tokens": 0,
         "cache_read_tokens": 0,
@@ -4180,13 +4226,13 @@
     },
     "modelRuns": [
       {
-        "model": "gpt-test",
+        "model": "gpt-5.6-sol",
         "thinkingMode": "xhigh"
       }
     ],
     "peakContextTokens": 500,
     "pricingBreakdown": {
-      "gpt-test": {
+      "gpt-5.6-sol": {
         "cache_creation_1h_tokens": 0,
         "cache_creation_tokens": 0,
         "cache_read_tokens": 0,
@@ -4211,7 +4257,7 @@
         "hasThinking": false,
         "isCompactionBoundary": false,
         "messageId": null,
-        "model": "gpt-test",
+        "model": "gpt-5.6-sol",
         "role": "assistant",
         "source": "parent",
         "speed": null,
@@ -4226,7 +4272,7 @@
         }
       }
     ],
-    "model": "gpt-test",
+    "model": "gpt-5.6-sol",
     "sessionId": "model_overthinking_finding"
   },
   "partialReasons": []

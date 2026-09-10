@@ -66,6 +66,10 @@ pub fn record(_app: &tauri::AppHandle, _name: event::EventName, facts: event::Fa
         facts.reset_availability,
         facts.resets_per_week,
         facts.next_reset_available,
+        facts.plan,
+        facts.factor_band,
+        facts.residual_band,
+        facts.unrecognized_types,
     );
 }
 
@@ -140,6 +144,13 @@ pub fn record_usage_observed(
 }
 
 #[cfg(not(feature = "analytics"))]
+pub fn record_limit_factor_observed(
+    _app: &tauri::AppHandle,
+    _learned: &[crate::provider_usage::factor::LearnedFactor],
+) {
+}
+
+#[cfg(not(feature = "analytics"))]
 pub fn handle_settings_transition(
     _app: &tauri::AppHandle,
     _previous: &crate::store::AppSettings,
@@ -150,12 +161,13 @@ pub fn handle_settings_transition(
 #[cfg(feature = "analytics")]
 mod enabled {
 
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::time::{Duration, Instant};
 
     use antiburn_local::insights::UnrecognizedRecords;
     use tauri::Manager as _;
 
+    use crate::provider_usage::factor::LearnedFactor;
     use crate::provider_usage::live::{ProviderUsageSnapshot, WindowRole, band_for_percent};
 
     use super::delivery::{DeliverySchedule, FlushOutcome};
@@ -184,6 +196,10 @@ mod enabled {
 
     /// Deliberate events separated by this gap belong to different visits.
     const DELIBERATE_VISIT_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+    /// The floor between two `antiburn.limit_factor_observed` events for the
+    /// same `(provider, lane)` pair, even across a genuine band change.
+    const LIMIT_FACTOR_MIN_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
     /// Wakes the bounded delivery scheduler after a queue depth change.
     #[derive(Default)]
@@ -276,7 +292,11 @@ mod enabled {
                 reset_availability: facts.reset_availability,
                 resets_per_week: facts.resets_per_week,
                 next_reset_available: facts.next_reset_available,
+                plan: facts.plan,
+                factor_band: facts.factor_band,
+                residual_band: facts.residual_band,
                 resource_usage: facts.resource_usage,
+                unrecognized_types: facts.unrecognized_types,
             },
             context: event::Context {
                 app_version: format!("antiburn:{}", app.package_info().version),
@@ -396,6 +416,128 @@ mod enabled {
         band: &'static str,
     ) -> bool {
         last.get(&(label, detail)) != Some(&band)
+    }
+
+    /// A limit-factor pair's `(plan, factor band, residual band)` tuple.
+    type LimitFactorTuple = (&'static str, &'static str, &'static str);
+
+    /// The last tuple reported for each `(provider, lane)` pair, and when.
+    type LastLimitFactorObserved =
+        BTreeMap<(&'static str, &'static str), (LimitFactorTuple, Instant)>;
+
+    /// One `(provider, lane)` pair's coarse dimensions, computed from a
+    /// learning pass's [`LearnedFactor`].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct LimitFactorObservation {
+        label: &'static str,
+        detail: &'static str,
+        plan: &'static str,
+        factor_band: &'static str,
+        residual_band: &'static str,
+    }
+
+    /// The lane detail `antiburn.limit_factor_observed` reports, matching the
+    /// vocabulary `antiburn.usage_observed` already uses for the same window
+    /// roles.
+    fn limit_factor_lane_detail(lane: &str) -> Option<&'static str> {
+        match lane {
+            crate::store::provider_limit::LANE_FIVE_HOUR => Some("short"),
+            crate::store::provider_limit::LANE_WEEKLY => Some("long"),
+            _ => None,
+        }
+    }
+
+    /// Every `(provider, lane)` observation this build can report for one
+    /// learning pass.
+    ///
+    /// A provider id this build does not recognize, or a lane outside the two
+    /// this app tracks a factor for, is skipped rather than given an invented
+    /// label — the same narrowing `usage_observed_candidates` applies.
+    fn limit_factor_observed_candidates(learned: &[LearnedFactor]) -> Vec<LimitFactorObservation> {
+        learned
+            .iter()
+            .filter_map(|factor| {
+                let label = LiveUsageProvider::from_provider_id(&factor.provider)?.as_str();
+                let detail = limit_factor_lane_detail(factor.lane)?;
+                Some(LimitFactorObservation {
+                    label,
+                    detail,
+                    plan: event::map_plan(factor.plan.as_deref()),
+                    factor_band: event::factor_band(factor.usd_per_percent),
+                    residual_band: event::residual_band(factor.residual),
+                })
+            })
+            .collect()
+    }
+
+    /// Whether one `(label, detail)` pair's dimensions are worth a second
+    /// event: the pair is new to this run, or its tuple changed and at least
+    /// 24 hours have passed since the last fire. The 24-hour floor applies
+    /// even to a genuine change, so a factor bouncing between two bands
+    /// cannot report more than once a day.
+    ///
+    /// A pure lookup rather than a mutating check, so the rule can be tested
+    /// without the process-wide static behind it.
+    fn limit_factor_observed_is_new(
+        last: &LastLimitFactorObserved,
+        key: (&'static str, &'static str),
+        tuple: LimitFactorTuple,
+        now: Instant,
+    ) -> bool {
+        match last.get(&key) {
+            None => true,
+            Some((last_tuple, last_fired_at)) => {
+                *last_tuple != tuple
+                    && now.duration_since(*last_fired_at) >= LIMIT_FACTOR_MIN_INTERVAL
+            }
+        }
+    }
+
+    /// Record a coarse limit-factor observation for every `(provider, lane)`
+    /// pair one learning pass touched, when analytics allows it.
+    ///
+    /// Multiple accounts on one provider collapse onto the same
+    /// `(provider, lane)` key — the payload carries no account dimension, by
+    /// design, so there is nothing to key a second observation on. Within one
+    /// pass, only the first account processed for a pair can report; see
+    /// `docs/plans/limit-factor-estimation.md`'s Phase 3 decisions.
+    pub fn record_limit_factor_observed(app: &tauri::AppHandle, learned: &[LearnedFactor]) {
+        if !allowed(app) {
+            return;
+        }
+        let candidates = limit_factor_observed_candidates(learned);
+        if candidates.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut last = LAST_LIMIT_FACTOR_OBSERVED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for observation in candidates {
+            let key = (observation.label, observation.detail);
+            let tuple = (
+                observation.plan,
+                observation.factor_band,
+                observation.residual_band,
+            );
+            if !limit_factor_observed_is_new(&last, key, tuple, now) {
+                continue;
+            }
+            if record_event(
+                app,
+                EventName::LimitFactorObserved,
+                Facts {
+                    label: Some(observation.label),
+                    detail: Some(observation.detail),
+                    plan: Some(observation.plan),
+                    factor_band: Some(observation.factor_band),
+                    residual_band: Some(observation.residual_band),
+                    ..Facts::default()
+                },
+            ) {
+                last.insert(key, (tuple, now));
+            }
+        }
     }
 
     /// Record an interaction reported by the renderer.
@@ -533,6 +675,13 @@ mod enabled {
         BTreeMap<(&'static str, &'static str), &'static str>,
     > = std::sync::Mutex::new(BTreeMap::new());
 
+    /// The last `(plan, factor band, residual band)` tuple reported for each
+    /// `(provider, lane)` pair during this run, and when it was reported. In
+    /// memory only, for the same reason [`LAST_USAGE_OBSERVED`] is: it is a
+    /// dedup and rate-limit key, not a fact worth keeping past this process.
+    static LAST_LIMIT_FACTOR_OBSERVED: std::sync::Mutex<LastLimitFactorObserved> =
+        std::sync::Mutex::new(BTreeMap::new());
+
     #[derive(Debug, Clone, Copy, Default)]
     struct OnboardingCapture {
         flow: Option<OnboardingFlow>,
@@ -652,26 +801,76 @@ mod enabled {
             .take()
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    /// Maximum sanitized type names carried on one
+    /// `antiburn.unrecognized_records_observed` event.
+    const MAX_UNRECOGNIZED_TYPE_NAMES: usize = 16;
+
+    /// Maximum bytes allowed for one sanitized type name.
+    const MAX_UNRECOGNIZED_TYPE_NAME_BYTES: usize = 64;
+
+    /// Stands in for a type name antiburn will not carry verbatim. It makes
+    /// a rejection visible without leaking the value.
+    const REJECTED_TYPE_NAME: &str = "<rejected>";
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
     enum UnrecognizedOutcome {
         None,
         Observed {
             label: &'static str,
             bucket: &'static str,
+            types: Vec<String>,
         },
     }
 
     impl UnrecognizedOutcome {
         fn facts(self) -> Option<Facts> {
-            let Self::Observed { label, bucket } = self else {
+            let Self::Observed {
+                label,
+                bucket,
+                types,
+            } = self
+            else {
                 return None;
             };
             Some(Facts {
                 bucket: Some(bucket),
                 label: Some(label),
+                unrecognized_types: Some(types),
                 ..Facts::default()
             })
         }
+    }
+
+    /// Reduce a report's unknown record type names to the bounded, sanitized
+    /// list an event may carry.
+    ///
+    /// Keeps at most [`MAX_UNRECOGNIZED_TYPE_NAMES`] names. Each name must be
+    /// non-empty, ASCII, and at most [`MAX_UNRECOGNIZED_TYPE_NAME_BYTES`]
+    /// bytes long. Each name must use only letters, digits, `_`, `.`, `:`,
+    /// `/`, and `-`. A name that fails this check becomes the fixed sentinel
+    /// [`REJECTED_TYPE_NAME`]. This keeps a rejection visible without the
+    /// value itself. The sentinel appears at most once. The result is
+    /// sorted and has no duplicates.
+    fn sanitize_unrecognized_types(types: &BTreeSet<String>) -> Vec<String> {
+        let mut sanitized = BTreeSet::new();
+        for name in types.iter().take(MAX_UNRECOGNIZED_TYPE_NAMES) {
+            if is_safe_unrecognized_type_name(name) {
+                sanitized.insert(name.clone());
+            } else {
+                sanitized.insert(REJECTED_TYPE_NAME.to_string());
+            }
+        }
+        sanitized.into_iter().collect()
+    }
+
+    /// Whether a type name is safe to carry verbatim on an analytics event.
+    fn is_safe_unrecognized_type_name(name: &str) -> bool {
+        !name.is_empty()
+            && name.len() <= MAX_UNRECOGNIZED_TYPE_NAME_BYTES
+            && name.is_ascii()
+            && name.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'/' | b'-')
+            })
     }
 
     /// Record a discovery pass, if it says anything the previous one did not.
@@ -746,7 +945,7 @@ mod enabled {
             return;
         }
         let outcome = unrecognized_records_outcome(summary);
-        if !unrecognized_outcome_is_new(outcome) {
+        if !unrecognized_outcome_is_new(outcome.clone()) {
             return;
         }
         let Some(facts) = outcome.facts() else {
@@ -769,14 +968,19 @@ mod enabled {
         UnrecognizedOutcome::Observed {
             label,
             bucket: event::bucket(summary.sessions_with_types),
+            types: sanitize_unrecognized_types(&summary.types),
         }
     }
 
+    /// Whether this outcome differs from the last one reported. Remembers
+    /// the new outcome when it does. A changed sanitized type list counts
+    /// as a change, the same as a changed label or bucket. A new unknown
+    /// record name is exactly what this event exists to surface.
     fn unrecognized_outcome_is_new(outcome: UnrecognizedOutcome) -> bool {
         let mut guard = LAST_UNRECOGNIZED
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if *guard == Some(outcome) {
+        if guard.as_ref() == Some(&outcome) {
             return false;
         }
         *guard = Some(outcome);
@@ -795,6 +999,10 @@ mod enabled {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         LAST_USAGE_OBSERVED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+        LAST_LIMIT_FACTOR_OBSERVED
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
@@ -1155,11 +1363,22 @@ mod enabled {
             capped: u64,
             truncated: u64,
         ) -> UnrecognizedRecords {
+            unrecognized_summary_with_types(sessions, evidence_bearing, capped, truncated, &[])
+        }
+
+        fn unrecognized_summary_with_types(
+            sessions: u64,
+            evidence_bearing: u64,
+            capped: u64,
+            truncated: u64,
+            types: &[&str],
+        ) -> UnrecognizedRecords {
             UnrecognizedRecords {
                 sessions_with_types: sessions,
                 evidence_bearing_sessions: evidence_bearing,
                 capped_sessions: capped,
                 truncated_sessions: truncated,
+                types: types.iter().map(|name| name.to_string()).collect(),
                 ..UnrecognizedRecords::default()
             }
         }
@@ -1391,6 +1610,125 @@ mod enabled {
             assert!(usage_observed_is_new(&last, "openai", "short", "below_80"));
         }
 
+        fn learned_factor(
+            provider: &'static str,
+            lane: &'static str,
+            usd_per_percent: f64,
+            plan: Option<&str>,
+            residual: Option<(f64, f64)>,
+        ) -> LearnedFactor {
+            LearnedFactor {
+                provider: provider.to_string(),
+                lane,
+                usd_per_percent,
+                plan: plan.map(str::to_string),
+                residual,
+            }
+        }
+
+        #[test]
+        fn a_learned_factor_reports_its_provider_lane_plan_and_bands() {
+            let learned = vec![learned_factor(
+                crate::provider_usage::providers::ANTHROPIC,
+                crate::store::provider_limit::LANE_FIVE_HOUR,
+                5.0,
+                Some("Max"),
+                Some((50.0, 48.0)),
+            )];
+            assert_eq!(
+                limit_factor_observed_candidates(&learned),
+                vec![LimitFactorObservation {
+                    label: "anthropic",
+                    detail: "short",
+                    plan: "max",
+                    factor_band: "4_to_under_8",
+                    residual_band: "within_5",
+                }]
+            );
+        }
+
+        #[test]
+        fn a_missing_residual_reports_the_unknown_band() {
+            let learned = vec![learned_factor(
+                crate::provider_usage::providers::OPENAI,
+                crate::store::provider_limit::LANE_WEEKLY,
+                40.0,
+                None,
+                None,
+            )];
+            let candidates = limit_factor_observed_candidates(&learned);
+            assert_eq!(candidates[0].detail, "long");
+            assert_eq!(candidates[0].plan, "unknown");
+            assert_eq!(candidates[0].factor_band, "32_to_under_64");
+            assert_eq!(candidates[0].residual_band, "unknown");
+        }
+
+        #[test]
+        fn an_unrecognized_provider_or_lane_reports_nothing() {
+            let unrecognized_provider = vec![learned_factor(
+                "some-future-provider",
+                crate::store::provider_limit::LANE_WEEKLY,
+                5.0,
+                None,
+                None,
+            )];
+            assert!(limit_factor_observed_candidates(&unrecognized_provider).is_empty());
+
+            let unrecognized_lane = vec![learned_factor(
+                crate::provider_usage::providers::ANTHROPIC,
+                "supplemental",
+                5.0,
+                None,
+                None,
+            )];
+            assert!(limit_factor_observed_candidates(&unrecognized_lane).is_empty());
+        }
+
+        #[test]
+        fn a_pair_fires_first_then_only_on_a_changed_tuple_at_least_a_day_later() {
+            let mut last = BTreeMap::new();
+            let key = ("anthropic", "short");
+            let tuple_a = ("max", "2_to_under_4", "within_5");
+            let tuple_b = ("max", "4_to_under_8", "within_5");
+            let start = Instant::now();
+
+            assert!(
+                limit_factor_observed_is_new(&last, key, tuple_a, start),
+                "the first observation for a pair always fires"
+            );
+            last.insert(key, (tuple_a, start));
+
+            assert!(
+                !limit_factor_observed_is_new(&last, key, tuple_a, start),
+                "an unchanged tuple is not worth a second event"
+            );
+            assert!(
+                !limit_factor_observed_is_new(
+                    &last,
+                    key,
+                    tuple_b,
+                    start + Duration::from_secs(3_600)
+                ),
+                "a changed tuple inside the 24-hour floor is still suppressed"
+            );
+            assert!(
+                limit_factor_observed_is_new(
+                    &last,
+                    key,
+                    tuple_b,
+                    start + LIMIT_FACTOR_MIN_INTERVAL
+                ),
+                "a changed tuple past the floor fires again"
+            );
+            // A different pair is judged independently.
+            assert!(limit_factor_observed_is_new(
+                &last,
+                ("openai", "short"),
+                tuple_a,
+                start
+            ));
+        }
+
         #[test]
         fn a_hidden_hud_cannot_consume_its_pending_origin() {
             let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
@@ -1539,6 +1877,7 @@ mod enabled {
                 .unwrap();
             assert_eq!(inert.label, Some("inert_only"));
             assert_eq!(inert.bucket, Some("1-9"));
+            assert_eq!(inert.unrecognized_types, Some(Vec::new()));
 
             let capped = unrecognized_records_outcome(&unrecognized_summary(12, 0, 1, 0))
                 .facts()
@@ -1558,6 +1897,69 @@ mod enabled {
             );
         }
 
+        /// The event carries the sanitizer's own output: sorted,
+        /// deduplicated, and never the raw report order.
+        #[test]
+        fn the_outcome_carries_the_sanitized_sorted_type_names() {
+            let summary = unrecognized_summary_with_types(
+                7,
+                0,
+                0,
+                0,
+                &["zzz_custom", "aaa_custom", "aaa_custom"],
+            );
+            let facts = unrecognized_records_outcome(&summary).facts().unwrap();
+            assert_eq!(
+                facts.unrecognized_types,
+                Some(vec!["aaa_custom".to_string(), "zzz_custom".to_string()])
+            );
+        }
+
+        #[test]
+        fn a_normal_type_name_passes_the_sanitizer_unchanged() {
+            let types = sanitize_unrecognized_types(&BTreeSet::from(["custom_event".to_string()]));
+            assert_eq!(types, vec!["custom_event".to_string()]);
+        }
+
+        #[test]
+        fn an_unsafe_type_name_becomes_the_rejected_sentinel() {
+            let with_space =
+                sanitize_unrecognized_types(&BTreeSet::from(["has space".to_string()]));
+            assert_eq!(with_space, vec![REJECTED_TYPE_NAME.to_string()]);
+
+            let with_non_ascii = sanitize_unrecognized_types(&BTreeSet::from(["café".to_string()]));
+            assert_eq!(with_non_ascii, vec![REJECTED_TYPE_NAME.to_string()]);
+
+            let too_long = sanitize_unrecognized_types(&BTreeSet::from(["a".repeat(65)]));
+            assert_eq!(too_long, vec![REJECTED_TYPE_NAME.to_string()]);
+
+            let empty = sanitize_unrecognized_types(&BTreeSet::from([String::new()]));
+            assert_eq!(empty, vec![REJECTED_TYPE_NAME.to_string()]);
+        }
+
+        /// More than one rejected name still yields one sentinel. The
+        /// sentinel shows that a rejection happened. It does not show how
+        /// many names were rejected.
+        #[test]
+        fn multiple_rejected_names_collapse_to_one_sentinel() {
+            let types = sanitize_unrecognized_types(&BTreeSet::from([
+                "has space".to_string(),
+                "café".to_string(),
+                "custom_event".to_string(),
+            ]));
+            assert_eq!(
+                types,
+                vec![REJECTED_TYPE_NAME.to_string(), "custom_event".to_string()]
+            );
+        }
+
+        #[test]
+        fn the_sanitizer_keeps_at_most_sixteen_names() {
+            let many: BTreeSet<String> = (0..20).map(|index| format!("type_{index:02}")).collect();
+            let types = sanitize_unrecognized_types(&many);
+            assert_eq!(types.len(), MAX_UNRECOGNIZED_TYPE_NAMES);
+        }
+
         #[test]
         fn only_a_changed_unrecognized_outcome_is_worth_an_event() {
             let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
@@ -1565,13 +1967,23 @@ mod enabled {
             let inert = UnrecognizedOutcome::Observed {
                 label: "inert_only",
                 bucket: "1-9",
+                types: Vec::new(),
             };
 
-            assert!(unrecognized_outcome_is_new(inert));
-            assert!(!unrecognized_outcome_is_new(inert));
+            assert!(unrecognized_outcome_is_new(inert.clone()));
+            assert!(!unrecognized_outcome_is_new(inert.clone()));
             assert!(unrecognized_outcome_is_new(UnrecognizedOutcome::None));
             assert!(!unrecognized_outcome_is_new(UnrecognizedOutcome::None));
-            assert!(unrecognized_outcome_is_new(inert));
+            assert!(unrecognized_outcome_is_new(inert.clone()));
+
+            // Same label and bucket, a new type name: still a new outcome.
+            let inert_new_type = UnrecognizedOutcome::Observed {
+                label: "inert_only",
+                bucket: "1-9",
+                types: vec!["custom_event".to_string()],
+            };
+            assert!(unrecognized_outcome_is_new(inert_new_type.clone()));
+            assert!(!unrecognized_outcome_is_new(inert_new_type));
             reset_suppression();
         }
 
@@ -1582,9 +1994,10 @@ mod enabled {
             let inert = UnrecognizedOutcome::Observed {
                 label: "inert_only",
                 bucket: "1-9",
+                types: Vec::new(),
             };
             assert!(scan_outcome_is_new(Some("1-9")));
-            assert!(unrecognized_outcome_is_new(inert));
+            assert!(unrecognized_outcome_is_new(inert.clone()));
             *LAST_CLAUDE_LIMIT_RESET.lock().unwrap() = Some(
                 crate::provider_usage::live::anthropic::empty_limit_reset_diagnostic(
                     "success", "null",
@@ -1594,6 +2007,10 @@ mod enabled {
                 .lock()
                 .unwrap()
                 .insert(("anthropic", "short"), "below_80");
+            LAST_LIMIT_FACTOR_OBSERVED.lock().unwrap().insert(
+                ("anthropic", "short"),
+                (("max", "2_to_under_4", "within_5"), Instant::now()),
+            );
 
             reset_suppression();
 
@@ -1601,6 +2018,7 @@ mod enabled {
             assert!(unrecognized_outcome_is_new(inert));
             assert_eq!(*LAST_CLAUDE_LIMIT_RESET.lock().unwrap(), None);
             assert!(LAST_USAGE_OBSERVED.lock().unwrap().is_empty());
+            assert!(LAST_LIMIT_FACTOR_OBSERVED.lock().unwrap().is_empty());
             reset_suppression();
         }
 

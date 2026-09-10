@@ -1,0 +1,13 @@
+{"type":"session","version":3,"id":"session","timestamp":0}
+{"type":"model_change","id":"model-a","parentId":null,"timestamp":1,"modelId":"model-a","provider":"openai"}
+{"type":"thinking_level_change","id":"low","parentId":"model-a","timestamp":2,"thinkingLevel":"low"}
+{"type":"model_change","id":"model-b","parentId":"low","timestamp":3,"modelId":"model-b","provider":"anthropic"}
+{"type":"thinking_level_change","id":"high","parentId":"model-b","timestamp":4,"thinkingLevel":"high"}
+{"type":"message","id":"b","parentId":"high","timestamp":5,"message":{"role":"assistant","content":[]}}
+{"type":"custom","id":"custom","parentId":"low","timestamp":6}
+{"type":"compaction","id":"compact","parentId":"custom","timestamp":7,"tokensBefore":100}
+{"type":"message","id":"a","parentId":"compact","timestamp":8,"message":{"role":"assistant","content":[]}}
+{"type":"message","id":"unknown","parentId":"missing","timestamp":9,"message":{"role":"assistant","providerThinkingLevel":"max","content":[]}}
+{"type":"message","id":"unknown-child","parentId":"unknown","timestamp":10,"message":{"role":"assistant","content":[]}}
+{"type":"message","id":"root","parentId":null,"timestamp":11,"message":{"role":"assistant","content":[]}}
+{"type":"message","id":"b-again","parentId":"b","timestamp":12,"message":{"role":"assistant","content":[]}}

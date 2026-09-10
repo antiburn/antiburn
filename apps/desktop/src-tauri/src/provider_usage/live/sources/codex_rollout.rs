@@ -32,6 +32,12 @@
 //! on screen, so [`super::codex_fetch`] only ever reaches for a rollout
 //! reading when both its own attempts have failed. See that module's doc
 //! under "Seeding from the session log".
+//!
+//! [`parse_windows`] is also reused by
+//! [`crate::provider_usage::codex_rollout_history`], which reads a whole
+//! rollout file rather than only its tail, so a historical reading and a
+//! live one build their windows through the identical rule — same
+//! `authoritative` value, same [`is_sliding_reset_projection`] filtering.
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -237,7 +243,10 @@ fn find_reading_line(tail: &[u8]) -> Option<Value> {
 /// an account-wide [`UsageWindow`]. Any window missing its duration or
 /// percentage, or carrying a percentage outside `0..=100`, fails the whole
 /// reading — the same fail-closed rule every other parser here uses.
-fn parse_windows(rate_limits: &Value, observed_at: OffsetDateTime) -> Option<Vec<UsageWindow>> {
+pub(crate) fn parse_windows(
+    rate_limits: &Value,
+    observed_at: OffsetDateTime,
+) -> Option<Vec<UsageWindow>> {
     let mut windows = Vec::new();
     for key in ["primary", "secondary"] {
         if let Some(window) = rate_limits.get(key).filter(|value| !value.is_null()) {

@@ -8,6 +8,7 @@
 //!   a deeper request, so absence cannot be concluded.
 
 use crate::analysis::SessionEvidence;
+use crate::remediation::{FindingCause, RequestFact};
 
 use super::{Observation, ReportCatalogs, observed};
 
@@ -20,11 +21,45 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
     Observation::NoFinding
 }
 
+pub(super) fn finding_causes(
+    evidence: &SessionEvidence,
+    catalogs: &ReportCatalogs,
+) -> Vec<FindingCause> {
+    let Some(context) = observed(&evidence.context) else {
+        return Vec::new();
+    };
+    let requests = context
+        .top_depth_examples
+        .iter()
+        .filter(|request| request.depth_tokens > catalogs.depth_cap_tokens)
+        .map(|request| RequestFact {
+            model: request.model.clone(),
+            timestamp_ms: (request.ts_ms != 0).then_some(request.ts_ms),
+            value: request.depth_tokens,
+        })
+        .collect();
+    vec![FindingCause::SessionsOverDepth {
+        maximum_tokens: context.max_request_context_tokens,
+        limit_tokens: catalogs.depth_cap_tokens,
+        requests,
+        omitted_requests: if evidence
+            .diagnostics
+            .capped_collections
+            .contains("context.top_depth_examples")
+        {
+            None
+        } else {
+            Some(0)
+        },
+    }]
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::claude_evidence;
     use super::*;
     use crate::analysis::{ContextEvidence, CoverageReason, EvidenceValue};
+    use crate::remediation::FindingCause;
 
     fn with_depth(depth: u64, partial: bool) -> SessionEvidence {
         let mut evidence = claude_evidence("depth");
@@ -66,5 +101,26 @@ mod tests {
             evaluate(&with_depth(catalogs.depth_cap_tokens, false), &catalogs),
             Observation::NoFinding
         );
+    }
+
+    #[test]
+    fn a_capped_depth_sample_reports_an_unknown_omitted_count() {
+        let catalogs = ReportCatalogs::default();
+        let mut evidence = with_depth(catalogs.depth_cap_tokens + 1, false);
+        evidence
+            .diagnostics
+            .capped_collections
+            .insert("context.top_depth_examples".to_owned());
+
+        let causes = finding_causes(&evidence, &catalogs);
+        let [
+            FindingCause::SessionsOverDepth {
+                omitted_requests, ..
+            },
+        ] = causes.as_slice()
+        else {
+            panic!("expected one depth cause");
+        };
+        assert_eq!(*omitted_requests, None);
     }
 }

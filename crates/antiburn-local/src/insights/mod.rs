@@ -1,7 +1,7 @@
 //! Provider-neutral local insights report contracts and reduction.
 
 mod badges;
-mod detectors;
+pub(crate) mod detectors;
 mod quota;
 mod report;
 mod status;

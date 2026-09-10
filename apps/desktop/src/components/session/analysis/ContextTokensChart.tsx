@@ -1,4 +1,4 @@
-import { useId, useState, type CSSProperties, type ReactElement } from "react"
+import { useId, useRef, useState, type CSSProperties, type ReactElement } from "react"
 import {
   Area,
   AreaChart,
@@ -571,14 +571,28 @@ export function ContextTokensChart({
   const data = contextTokenSeries(buckets)
   const fillId = `context-tokens-fill-${useId().replace(/:/g, "")}`
   const [initialBuckets] = useState(() => buckets)
-  const animate = !prefersReducedMotion()
+  const measuredSize = useRef<{ width: number; height: number } | null>(null)
+  const [resizedBuckets, setResizedBuckets] = useState<SessionBucket[] | null>(null)
+  const resizing = resizedBuckets === buckets
+  const animate = !resizing && !prefersReducedMotion()
+  const onResize = (width: number, height: number) => {
+    if (width <= 0 || height <= 0) return
+    const next = { width: Math.round(width), height: Math.round(height) }
+    const previous = measuredSize.current
+    measuredSize.current = next
+    if (previous && (previous.width !== next.width || previous.height !== next.height)) {
+      // Geometry changes must not replay the data's entrance animation.
+      setResizedBuckets(buckets)
+    }
+  }
   const animationDurationMs = slowAnimationDurationMs()
   // The first paint plays the session back in order: the context fill grows,
   // the token spikes follow it, and the rewrite marks land last, on top of a
   // chart that has finished drawing. A later bucket set comes from the live
   // poll, where a staggered replay would read as the panel redrawing itself,
   // so those updates animate together.
-  const entranceStepMs = buckets === initialBuckets ? Math.round(animationDurationMs / 2) : 0
+  const entranceStepMs =
+    animate && buckets === initialBuckets ? Math.round(animationDurationMs / 2) : 0
   const tokenRowStepMs = Math.round(entranceStepMs / 2)
   const markDelayMs =
     entranceStepMs === 0
@@ -662,6 +676,8 @@ export function ContextTokensChart({
       width="100%"
       height="100%"
       minHeight={CHART_MIN_HEIGHT}
+      onResize={onResize}
+      className={resizing ? "[&_.animate-chart-mark]:animate-none" : ""}
       style={{ "--chart-mark-delay": `${markDelayMs}ms` } as CSSProperties}
     >
       <AreaChart data={data} margin={{ top: 6, right: 12, bottom: 0, left: 0 }}>

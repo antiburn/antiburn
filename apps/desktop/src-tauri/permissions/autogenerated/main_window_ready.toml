@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-main-window-ready"
+description = "Enables the main_window_ready command without any pre-configured scope."
+commands.allow = ["main_window_ready"]
+
+[[permission]]
+identifier = "deny-main-window-ready"
+description = "Denies the main_window_ready command without any pre-configured scope."
+commands.deny = ["main_window_ready"]

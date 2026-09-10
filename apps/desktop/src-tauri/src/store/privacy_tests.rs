@@ -369,6 +369,53 @@ fn delete_session_removes_the_sentinel_from_every_table() {
     assert_absent_everywhere(&connection, CLAUDE_SENTINEL);
 }
 
+/// A Codex rollout checkpoint row never carries transcript content — it
+/// holds a file path and byte offsets — but it must still disappear when
+/// its session does, the same as every other session-scoped table.
+#[test]
+fn deleting_a_session_removes_its_rollout_checkpoint() {
+    use crate::store::codex_rollout_checkpoint::RolloutCheckpoint;
+
+    let store = store();
+    ingest_and_publish(
+        &store,
+        AgentKind::Codex,
+        "privacy-desktop-rollout-checkpoint",
+        RawSource::Jsonl(codex_fixture()),
+    );
+    let key = SessionKey::new(
+        "native",
+        AgentKind::Codex.slug(),
+        "privacy-desktop-rollout-checkpoint",
+    );
+    store
+        .upsert_rollout_checkpoint(
+            &key,
+            "/home/avery/.codex/sessions/rollout.jsonl",
+            &RolloutCheckpoint {
+                cursor_bytes: 10,
+                source_bytes: 10,
+                source_modified_epoch: Some(1),
+                source_identity: "1:1".to_string(),
+                complete: true,
+            },
+            1,
+        )
+        .expect("stores a checkpoint");
+
+    assert!(store.delete_session(&key).expect("delete session"));
+
+    let remaining: i64 = store
+        .lock()
+        .query_row(
+            "SELECT COUNT(*) FROM provider_usage_rollout_checkpoint",
+            [],
+            |row| row.get(0),
+        )
+        .expect("counts checkpoints");
+    assert_eq!(remaining, 0);
+}
+
 #[test]
 fn clear_local_session_data_removes_the_sentinel_from_every_table() {
     let store = store();

@@ -22,7 +22,7 @@ use crate::analysis::framing::{
 use crate::analysis::interface::{
     ContentKind, ContentPart, ContextWindowSource, EvidenceObservation, NormalizedRecord,
     ProviderHint, RawSource, RecordSink, RelationProvenance, SessionCollector, SessionInput,
-    SessionSummary, TurnContent, VendorAdapter, VisitOutcome, push_provider_hint,
+    SessionReader, SessionSummary, TurnContent, VisitOutcome, push_provider_hint,
 };
 use crate::analysis::model::{
     CompactionTrigger, EventSource, NormalizedEvent, NormalizedSession, Role, ToolCall,
@@ -41,11 +41,19 @@ const MAX_MESSAGE_PART_BYTES: usize = MAX_RECORD_BYTES;
 /// pathologically wide fan-out of subagents.
 const MAX_TRACKED_CHILD_SESSIONS: usize = 50_000;
 
-pub struct OpenCodeAdapter;
+pub struct OpenCodeSessionReader;
 
-impl VendorAdapter for OpenCodeAdapter {
+impl SessionReader for OpenCodeSessionReader {
     fn agent(&self) -> &'static str {
         "opencode"
+    }
+
+    fn capabilities(&self, source: &RawSource) -> crate::analysis::SourceCapabilities {
+        let mut capabilities = crate::analysis::SourceCapabilities::opencode();
+        if matches!(source, RawSource::Sqlite(_)) {
+            capabilities.source_format = crate::analysis::SourceFormat::OpenCodeSqliteV2;
+        }
+        capabilities
     }
 
     fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession> {
@@ -59,7 +67,7 @@ impl VendorAdapter for OpenCodeAdapter {
         input: &SessionInput,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
-        let summary = match &input.source {
+        let mut summary = match &input.source {
             RawSource::File(path) => {
                 self.visit_reader(BufReader::new(File::open(path)?), &|| false, sink)?
             }
@@ -72,6 +80,11 @@ impl VendorAdapter for OpenCodeAdapter {
                 self.visit_database(path, &input.session_id, &|| false, sink)?
             }
         };
+        if input.fork_parent_session_id.is_some() {
+            summary
+                .coverage_gaps
+                .push(PartialReason::AttributionIncomplete);
+        }
         sink.finish(summary);
         Ok(VisitOutcome::Unvalidated)
     }
@@ -95,14 +108,19 @@ impl VendorAdapter for OpenCodeAdapter {
                 SourceChangedReason::FingerprintMismatch,
             ));
         }
-        let summary = visit_database_connection(&conn, &input.session_id, cancel, sink)?;
+        let mut summary = visit_database_connection(&conn, &input.session_id, cancel, sink)?;
+        if input.fork_parent_session_id.is_some() {
+            summary
+                .coverage_gaps
+                .push(PartialReason::AttributionIncomplete);
+        }
         conn.execute_batch("COMMIT")?;
         sink.finish(summary);
         Ok(VisitOutcome::AcceptedFull)
     }
 }
 
-impl OpenCodeAdapter {
+impl OpenCodeSessionReader {
     fn visit_reader(
         &self,
         reader: impl BufRead,
@@ -168,7 +186,19 @@ fn visit_database_connection(
     cancel: &dyn Fn() -> bool,
     sink: &mut dyn RecordSink,
 ) -> anyhow::Result<SessionSummary> {
-    let mut state = OpenCodeStreamState::default();
+    let root_created = conn
+        .query_row(
+            "SELECT time_created FROM session WHERE id = ?1",
+            [root_session_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )?
+        .and_then(parse_db_ts);
+    let mut state = OpenCodeStreamState {
+        root_session_id: Some(root_session_id.to_owned()),
+        root_created,
+        ordering_incomplete: root_created.is_none(),
+        ..Default::default()
+    };
     let cluster = if db_session_has_parent_id(conn) {
         "WITH RECURSIVE cluster(id) AS (
              SELECT id FROM session WHERE id = ?1
@@ -223,9 +253,13 @@ fn visit_database_connection(
             drain_message_parts(&mut parts, &message_id, cancel, sink)?;
             continue;
         };
-        // The message id is the record identity. The sink reads a missing
-        // `uuid` as a thread-identity gap and degrades the cache group.
         event.uuid = Some(message_id.clone());
+        state.observe_order(
+            &message_id,
+            &session_id,
+            created.and_then(parse_db_ts),
+            &event,
+        );
         state.apply_session(&mut event, &session_id, session_id != root_session_id, sink);
         state.observe_provider_hint(&value, &event);
         state.observe_model(&event);
@@ -235,30 +269,28 @@ fn visit_database_connection(
             content: Vec::new(),
             part_bytes: 0,
             parts_oversized: false,
+            tasks: Vec::new(),
+            task_incomplete: false,
         };
         visit_db_parts(&mut parts, &mut pending, cancel, sink)?;
-        sink.record(NormalizedRecord::MetricsEvent(Box::new(pending.event)));
-        if !pending.content.is_empty() {
-            sink.record(NormalizedRecord::TurnContent(Box::new(TurnContent {
-                parts: pending.content,
-            })));
-        }
+        state.pending = Some(pending);
+        state.flush(sink);
     }
     Ok(state.finish())
 }
 
-/// Loads each descendant session's own creation timestamp and fork-title
-/// signal in one query, so a message row never needs its own join back to
-/// `session`. One row per session, not per message; forks (null
-/// `parent_id`) never join `cluster` and never appear here.
+/// Loads ancestry and fork titles without a join for each message.
 fn query_db_descendant_sessions(
     conn: &Connection,
     cluster: &str,
     root_session_id: &str,
 ) -> rusqlite::Result<HashMap<String, DescendantSessionMeta>> {
+    if !db_session_has_parent_id(conn) {
+        return Ok(HashMap::new());
+    }
     let mut statement = conn.prepare(&format!(
         "{cluster}
-         SELECT session.id, session.time_created, session.title
+         SELECT session.id, session.parent_id, session.title
          FROM session JOIN cluster ON session.id = cluster.id
          WHERE session.id != ?1"
     ))?;
@@ -266,12 +298,12 @@ fn query_db_descendant_sessions(
     let mut out = HashMap::new();
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
-        let created: Option<i64> = row.get(1).ok();
+        let parent_id: Option<String> = row.get(1)?;
         let title: Option<String> = row.get(2).ok();
         out.insert(
             id,
             DescendantSessionMeta {
-                ts_ms: created.and_then(parse_db_ts),
+                parent_id,
                 looks_like_fork: title
                     .as_deref()
                     .is_some_and(|title| opencode_fork_parent_title(title).is_some()),
@@ -356,17 +388,25 @@ fn drain_message_parts(
         content: Vec::new(),
         part_bytes: 0,
         parts_oversized: false,
+        tasks: Vec::new(),
+        task_incomplete: false,
     };
     visit_db_parts(statement, &mut pending, cancel, sink)
 }
 
-/// One descendant session's own creation timestamp and fork-title signal,
-/// known from `session` (database) or `session_member` (export) before its
-/// first message streams.
+/// Stores ancestry separately from proof of delegation.
 #[derive(Default)]
 struct DescendantSessionMeta {
-    ts_ms: Option<i64>,
+    parent_id: Option<String>,
     looks_like_fork: bool,
+}
+
+struct NativeTask {
+    child_id: String,
+    child_model: String,
+    parent_id: String,
+    parent_model: String,
+    ts_ms: Option<i64>,
 }
 
 #[derive(Default)]
@@ -378,12 +418,8 @@ struct OpenCodeStreamState {
     /// `None` for a synthetic stream with no session wrapper; every message
     /// then stays main-scope, matching the pre-relationship behavior.
     root_session_id: Option<String>,
-    /// The root's own most recently observed model, reported as
-    /// `SubagentSpawn::parent_model`.
-    root_model: Option<String>,
-    /// Spawn timestamp and fork-title signal per descendant session,
-    /// prefetched (database) or accumulated from `session_member` rows
-    /// (export) ahead of that session's first message.
+    tasks: HashMap<String, NativeTask>,
+    /// Stores descendant metadata before its messages arrive.
     descendant_sessions: HashMap<String, DescendantSessionMeta>,
     /// Descendant sessions already reported through `SubagentSpawn`, capped
     /// like [`crate::analysis::threads::ThreadResolver`].
@@ -391,11 +427,10 @@ struct OpenCodeStreamState {
     /// True once [`MAX_TRACKED_CHILD_SESSIONS`] is reached and a further
     /// descendant session goes unreported.
     children_capped: bool,
-    /// True once a `parent_id` descendant's title also looks like an
-    /// OpenCode fork title (`opencode_fork_parent_title`). Discovery's
-    /// `infer_db_fork_observation` owns real fork detection; this only
-    /// degrades attribution for the ambiguous shape.
-    saw_fork_titled_child: bool,
+    attribution_incomplete: bool,
+    root_created: Option<i64>,
+    last_root_order: Option<(i64, String)>,
+    ordering_incomplete: bool,
 }
 
 struct PendingMessage {
@@ -407,6 +442,8 @@ struct PendingMessage {
     content: Vec<ContentPart>,
     part_bytes: usize,
     parts_oversized: bool,
+    tasks: Vec<NativeTask>,
+    task_incomplete: bool,
 }
 
 impl OpenCodeStreamState {
@@ -426,6 +463,12 @@ impl OpenCodeStreamState {
                     return;
                 };
                 event.uuid = Some(id.to_owned());
+                self.observe_order(
+                    id,
+                    value.get("sessionID").and_then(Value::as_str).unwrap_or(""),
+                    fallback_ts,
+                    &event,
+                );
                 if let Some(session_id) = value.get("sessionID").and_then(Value::as_str) {
                     let session_role = value.get("sessionRole").and_then(Value::as_str);
                     let is_child = session_role == Some("child")
@@ -443,6 +486,8 @@ impl OpenCodeStreamState {
                     content: Vec::new(),
                     part_bytes: 0,
                     parts_oversized: false,
+                    tasks: Vec::new(),
+                    task_incomplete: false,
                 });
             }
             Some("part") => {
@@ -469,6 +514,11 @@ impl OpenCodeStreamState {
             }
             Some("session_meta") => {
                 self.flush(sink);
+                if self.root_session_id.is_some() {
+                    self.ordering_incomplete = true;
+                }
+                self.root_created = value.pointer("/time/created").and_then(parse_ts);
+                self.ordering_incomplete |= self.root_created.is_none();
                 if self.root_session_id.is_none() {
                     self.root_session_id = value
                         .pointer("/payload/id")
@@ -480,12 +530,15 @@ impl OpenCodeStreamState {
             Some("session_member") => {
                 self.flush(sink);
                 if let Some(child_id) = value.get("originSessionID").and_then(Value::as_str) {
-                    let ts_ms = value.pointer("/time/created").and_then(parse_ts);
+                    let parent_id = value
+                        .get("parentSessionID")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
                     let title = value.pointer("/payload/title").and_then(Value::as_str);
                     self.descendant_sessions.insert(
                         child_id.to_owned(),
                         DescendantSessionMeta {
-                            ts_ms,
+                            parent_id,
                             looks_like_fork: title
                                 .is_some_and(|title| opencode_fork_parent_title(title).is_some()),
                         },
@@ -516,10 +569,34 @@ impl OpenCodeStreamState {
         }
     }
 
-    /// Applies one message's session identity to its event: sets
-    /// `thread_id` to the message's own session and, for a descendant
-    /// session, `EventSource::Subagent`. Otherwise updates the root's
-    /// current model, reported by a later spawn as `parent_model`.
+    fn observe_order(
+        &mut self,
+        id: &str,
+        session_id: &str,
+        created: Option<i64>,
+        event: &NormalizedEvent,
+    ) {
+        if self.root_session_id.is_none() || session_id.is_empty() || id.is_empty() {
+            self.ordering_incomplete = true;
+        }
+        let Some(created) = created else {
+            self.ordering_incomplete = true;
+            return;
+        };
+        self.ordering_incomplete |= event.ts_ms != Some(created);
+        if self.root_session_id.as_deref() != Some(session_id) {
+            return;
+        }
+        let order = (created, id.to_owned());
+        self.ordering_incomplete |= self
+            .last_root_order
+            .as_ref()
+            .is_some_and(|last| last >= &order)
+            || self.root_created.is_some_and(|start| created < start);
+        self.last_root_order = Some(order);
+    }
+
+    /// Separates descendant scope from native task proof.
     fn apply_session(
         &mut self,
         event: &mut NormalizedEvent,
@@ -529,25 +606,35 @@ impl OpenCodeStreamState {
     ) {
         event.thread_id = Some(session_id.to_owned());
         if !is_child {
-            if event.model.is_some() {
-                self.root_model = event.model.clone();
-            }
             return;
         }
-        event.source = EventSource::Subagent;
         if self
             .descendant_sessions
             .get(session_id)
-            .is_some_and(|meta| meta.looks_like_fork)
+            .is_some_and(|meta| !meta.looks_like_fork)
         {
-            self.saw_fork_titled_child = true;
+            event.source = EventSource::Subagent;
         }
-        self.spawn_child(session_id, sink);
+        let proved = self.tasks.get(session_id).is_some_and(|task| {
+            self.descendant_sessions
+                .get(session_id)
+                .is_some_and(|meta| {
+                    !meta.looks_like_fork
+                        && meta.parent_id.as_deref() == Some(task.parent_id.as_str())
+                })
+                && (event.role != Role::Assistant
+                    || event.model.as_deref() == Some(task.child_model.as_str()))
+        });
+        if !proved {
+            self.attribution_incomplete = true;
+            return;
+        }
+        if event.role == Role::Assistant {
+            self.spawn_child(session_id, sink);
+        }
     }
 
-    /// Emits one `SubagentSpawn` the first time `session_id` streams, up to
-    /// [`MAX_TRACKED_CHILD_SESSIONS`]. Past the cap, the session goes
-    /// untracked and [`Self::finish`] reports `AttributionIncomplete`.
+    /// Emits one spawn when the first assistant message confirms the task model.
     fn spawn_child(&mut self, session_id: &str, sink: &mut dyn RecordSink) {
         if self.seen_child_sessions.contains(session_id) {
             return;
@@ -557,15 +644,14 @@ impl OpenCodeStreamState {
             return;
         }
         self.seen_child_sessions.insert(session_id.to_owned());
-        let ts_ms = self
-            .descendant_sessions
-            .get(session_id)
-            .and_then(|meta| meta.ts_ms);
+        let task = &self.tasks[session_id];
         sink.record(NormalizedRecord::Observation(Box::new(
             EvidenceObservation::SubagentSpawn {
-                ts_ms,
-                parent_model: self.root_model.clone(),
-                provenance: RelationProvenance::SessionParentLink,
+                ts_ms: task.ts_ms,
+                parent_model: Some(task.parent_model.clone()),
+                parent_call_id: None,
+                child_model: Some(task.child_model.clone()),
+                provenance: RelationProvenance::TaskToolUse,
             },
         )));
     }
@@ -587,6 +673,14 @@ impl OpenCodeStreamState {
 
     fn flush(&mut self, sink: &mut dyn RecordSink) {
         if let Some(pending) = self.pending.take() {
+            self.attribution_incomplete |= pending.task_incomplete;
+            for task in pending.tasks {
+                if self.tasks.len() >= MAX_TRACKED_CHILD_SESSIONS {
+                    self.children_capped = true;
+                    break;
+                }
+                self.tasks.insert(task.child_id.clone(), task);
+            }
             sink.record(NormalizedRecord::MetricsEvent(Box::new(pending.event)));
             if !pending.content.is_empty() {
                 sink.record(NormalizedRecord::TurnContent(Box::new(TurnContent {
@@ -597,12 +691,19 @@ impl OpenCodeStreamState {
     }
 
     fn finish(&self) -> SessionSummary {
-        // A capped or fork-titled descendant means some records could not
-        // be attributed to their real relationship: the same kind of
-        // attribution loss the Claude adapter's capped thread resolver
-        // reports.
         let mut coverage_gaps = Vec::new();
-        if self.children_capped || self.saw_fork_titled_child {
+        if self.ordering_incomplete
+            || self.children_capped
+            || self.attribution_incomplete
+            || self
+                .tasks
+                .keys()
+                .any(|id| !self.seen_child_sessions.contains(id))
+            || self
+                .descendant_sessions
+                .keys()
+                .any(|id| !self.seen_child_sessions.contains(id))
+        {
             coverage_gaps.push(PartialReason::AttributionIncomplete);
         }
         SessionSummary {
@@ -631,6 +732,7 @@ fn message_event(value: &Value, fallback_ts: Option<i64>) -> Option<NormalizedEv
         .or(fallback_ts);
     event.ts_ms?;
     event.model = string_field(object, &["modelID", "modelId", "model"]);
+    event.provider = string_field(object, &["providerID"]);
     event.thinking_mode = string_field(object, &["variant"]);
     event.usage = object
         .get("tokens")
@@ -686,7 +788,9 @@ fn apply_part(
                     .push(ContentPart::new(ContentKind::Thinking, text));
             }
         }
-        "tool" => apply_tool_part(object, pending),
+        "tool" => apply_tool_part(object, pending, sink),
+        // A native subtask request does not identify the child session.
+        "subtask" => pending.task_incomplete = true,
         "patch" => pending.event.tools.push(ToolCall {
             name: "patch".to_owned(),
             category: ToolCategory::Edit,
@@ -708,7 +812,11 @@ fn apply_part(
     }
 }
 
-fn apply_tool_part(part: &Map<String, Value>, pending: &mut PendingMessage) {
+fn apply_tool_part(
+    part: &Map<String, Value>,
+    pending: &mut PendingMessage,
+    sink: &mut dyn RecordSink,
+) {
     let name = part
         .get("tool")
         .and_then(Value::as_str)
@@ -716,6 +824,57 @@ fn apply_tool_part(part: &Map<String, Value>, pending: &mut PendingMessage) {
         .filter(|name| !name.is_empty())
         .unwrap_or("tool");
     let state = part.get("state");
+    if name == "skill"
+        && pending.event.role == Role::Assistant
+        && let Some(name) = state.and_then(completed_skill_name)
+    {
+        sink.record(NormalizedRecord::Observation(Box::new(
+            EvidenceObservation::SkillInjection {
+                name: name.to_owned(),
+                invoked: true,
+            },
+        )));
+    }
+    if name == "task" {
+        let task = (|| {
+            if pending.event.role != Role::Assistant
+                || !matches!(state?.get("status")?.as_str()?, "running" | "completed")
+            {
+                return None;
+            }
+            let metadata = state?.get("metadata")?.as_object()?;
+            let task = NativeTask {
+                child_id: string_field(metadata, &["sessionId"])?,
+                child_model: string_field(metadata.get("model")?.as_object()?, &["modelID"])?,
+                parent_id: pending.event.thread_id.clone()?,
+                parent_model: pending.event.model.clone()?,
+                ts_ms: state?
+                    .pointer("/time/start")
+                    .and_then(parse_ts)
+                    .or(pending.event.ts_ms),
+            };
+            if [
+                &task.child_id,
+                &task.child_model,
+                &task.parent_id,
+                &task.parent_model,
+            ]
+            .iter()
+            .any(|value| value.len() > EVIDENCE_STRING_CAP)
+                || metadata
+                    .get("parentSessionId")
+                    .is_some_and(|parent| parent.as_str() != Some(task.parent_id.as_str()))
+            {
+                return None;
+            }
+            Some(task)
+        })();
+        if let Some(task) = task {
+            pending.tasks.push(task);
+        } else {
+            pending.task_incomplete = true;
+        }
+    }
     let input = state.and_then(|state| state.get("input"));
     pending.event.tools.push(tool_call_from_input(name, input));
     if let Some(text) = input.and_then(compact_json_text) {
@@ -732,6 +891,43 @@ fn apply_tool_part(part: &Map<String, Value>, pending: &mut PendingMessage) {
             .content
             .push(ContentPart::new(ContentKind::ToolResult, output));
     }
+}
+
+fn completed_skill_name(state: &Value) -> Option<&str> {
+    if state.get("status")?.as_str()? != "completed"
+        || state
+            .pointer("/metadata/truncated")
+            .is_some_and(|value| value != &Value::Bool(false))
+        || state.pointer("/time/compacted").is_some()
+    {
+        return None;
+    }
+    let name = state.pointer("/metadata/name")?.as_str()?;
+    if name.is_empty()
+        || name.len() > EVIDENCE_STRING_CAP
+        || name.trim() != name
+        || name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '/' | '\\' | '"' | '<' | '>'))
+    {
+        return None;
+    }
+    let output = state.get("output")?.as_str()?;
+    let content = output
+        .strip_prefix(&format!(
+            "<skill_content name=\"{name}\">\n# Skill: {name}\n\n"
+        ))?
+        .strip_suffix("\n</skill_files>\n</skill_content>")?;
+    let (body, footer) = content.split_once("\n\nBase directory for this skill: ")?;
+    if body.trim().is_empty()
+        || !footer.contains("\n<skill_files>\n")
+        || ["redacted", "truncated"]
+            .iter()
+            .any(|marker| output.to_ascii_lowercase().contains(marker))
+    {
+        return None;
+    }
+    Some(name)
 }
 
 fn unrecognized(discriminator: &str, sink: &mut dyn RecordSink) {

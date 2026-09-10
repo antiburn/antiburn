@@ -14,6 +14,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/antiburn/antiburn)](https://github.com/antiburn/antiburn/stargazers)
 [![aislop score](https://badges.scanaislop.com/score/antiburn/antiburn.svg)](https://scanaislop.com/antiburn/antiburn)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
+[![Slack](https://img.shields.io/badge/Slack-join-4A154B?logo=slack&logoColor=white)](https://antiburn.ai/slack)
 
 A little free desktop app to check your sessions for the most common causes of token burn - sessions that go too deep, subagents that go too hard, skills and MCPs that go unused, etc etc etc.
 
@@ -36,13 +37,13 @@ antiburn supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, K
 macOS or Linux:
 
 ```sh
-curl -fsSL http://antiburn.ai/install.sh | sh
+curl -fsSL https://antiburn.ai/install.sh | sh
 ```
 
 Windows 11 PowerShell:
 
 ```powershell
-irm http://antiburn.ai/install.ps1 | iex
+irm https://antiburn.ai/install.ps1 | iex
 ```
 
 The installers verify release checksums. macOS also verifies the application
@@ -76,9 +77,17 @@ See the [desktop guide](apps/desktop/README.md) for app commands and the
 
 ## Privacy
 
-antiburn needs no account, server, or backend operated by the project. It can contact coding-agent providers with credentials already held by your tools to read current usage. Release builds also check GitHub Releases for updates.
+antiburn uses no account, server, or backend. It hits agent provider APIs from your machine, using the same methods your harnesses already do.
 
-antiburn has analytics that we use to improve the app, but analytics events never include sessions, prompts, file paths, repository names, or credentials. Builds from a clean checkout have no analytics endpoint. Point your coding agent at this repo to check exactly what data leaves the device, if you're worried. See the complete [analytics contract](docs/analytics.md).
+antiburn has analytics that we use to improve the app, but analytics events never include anything you care about: sessions, prompts, file paths, repository names, credentials, etc. You can turn analytics off, and builds from a clean checkout have no analytics endpoint. See the complete [analytics contract](docs/analytics.md).
+
+Open source, so if you're worried, point your coding agent at this repo to audit exactly what data leaves the device.
+
+## Community
+
+Questions, fixes, what's burning: join the [antiburn Slack](https://antiburn.ai/slack).
+
+Bugs and feature requests go in [GitHub issues](https://github.com/antiburn/antiburn/issues).
 
 ## Project links
 

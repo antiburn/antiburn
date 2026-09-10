@@ -10,6 +10,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as InsightsIpc from "../../lib/insightsIpc"
+import type { LiveUsageSummaryPayload, LiveUsageWindowPayload } from "../../lib/ipc"
 import { SessionList, type SessionListEntry, type SessionListProps } from "./SessionList"
 
 const getSessionHygiene = vi.hoisted(() => vi.fn())
@@ -116,6 +117,57 @@ function entries(count: number): SessionListEntry[] {
   )
 }
 
+/** A live usage summary reporting one provider with one window. */
+function liveUsageWithWindow(
+  provider: string,
+  displayName: string,
+  window: Partial<LiveUsageWindowPayload> = {},
+): LiveUsageSummaryPayload {
+  return {
+    generatedAt: NOW.toISOString(),
+    errors: [],
+    meters: [],
+    providers: [
+      {
+        provider,
+        accountKey: null,
+        displayName,
+        support: "live",
+        freshness: "fresh",
+        sourceLabel: "test",
+        observedAt: NOW.toISOString(),
+        windows: [
+          {
+            id: "five-hour",
+            role: "primaryShort",
+            kind: "rolling",
+            scopeModel: null,
+            usedPercent: 0,
+            startsAt: null,
+            resetsAt: null,
+            hasNonzeroUsageInCurrentPeriod: false,
+            forecast: {
+              unavailableReason: "sparseHistory",
+              confidence: null,
+              consumptionRate: null,
+              paceRatio: null,
+              paceTrend: null,
+              runwayAt: null,
+              usedToday: null,
+            },
+            ...window,
+          },
+        ],
+        extraUsage: null,
+        resetCredits: null,
+        plan: null,
+        accountUuid: null,
+        accountEmail: null,
+      },
+    ],
+  }
+}
+
 describe("SessionList — rows", () => {
   it("shows the backend weekly allocation for the exact session identity", () => {
     list({
@@ -131,11 +183,9 @@ describe("SessionList — rows", () => {
             displayName: "Claude",
             accountKey: "work",
             metric: "weekly",
-            windowId: "weekly-main",
-            resetsAt: new Date(NOW.getTime() + 7 * 86_400_000).toISOString(),
+            windowId: "weekly",
             percent: 12.345,
-            coverage: "complete",
-            periodCount: 1,
+            confidence: "learned",
           },
         ],
       },
@@ -143,7 +193,7 @@ describe("SessionList — rows", () => {
 
     const badge = screen.getByText("12.3%")
     expect(badge.dataset.sessionLimitProvider).toBe("anthropic")
-    expect(badge.dataset.sessionLimitWindow).toBe("weekly-main")
+    expect(badge.dataset.sessionLimitWindow).toBe("weekly")
     expect(badge.dataset.sessionLimitPercent).toBe("12.3450")
     expect(badge).toHaveAttribute(
       "aria-label",
@@ -151,7 +201,7 @@ describe("SessionList — rows", () => {
     )
   })
 
-  it("shows a partial cumulative estimate above one allowance period", () => {
+  it("shows a percent above 100 for a long session as is", () => {
     list({
       badgeMetric: "weeklyPercent",
       sessionLimitAllocations: {
@@ -165,11 +215,9 @@ describe("SessionList — rows", () => {
             displayName: "Claude",
             accountKey: "work",
             metric: "weekly",
-            windowId: "weekly-main",
-            resetsAt: null,
+            windowId: "weekly",
             percent: 102.5,
-            coverage: "partial",
-            periodCount: 2,
+            confidence: "seeded",
           },
         ],
       },
@@ -182,7 +230,7 @@ describe("SessionList — rows", () => {
     )
   })
 
-  it("names the weekly limit when the selected limit has no allocation", async () => {
+  it("shows the weekly limit as unknown when live usage has not loaded", async () => {
     list({
       entries: [
         entry({
@@ -193,11 +241,15 @@ describe("SessionList — rows", () => {
     })
 
     expect(screen.queryByLabelText("Estimated cost $1.00")).toBeNull()
-    const badge = screen.getByLabelText("No weekly limit for this session.")
-    expect(badge).toHaveTextContent("no limit")
+    const badge = screen.getByLabelText(
+      "Share of your weekly limit is not known for this session.",
+    )
+    expect(badge).toHaveTextContent("unknown")
     fireEvent.focus(badge)
     await waitFor(() => {
-      expect(screen.getByRole("tooltip")).toHaveTextContent("No weekly limit for this session.")
+      expect(screen.getByRole("tooltip")).toHaveTextContent(
+        "Share of your weekly limit is not known for this session.",
+      )
     })
   })
 
@@ -213,9 +265,43 @@ describe("SessionList — rows", () => {
     })
 
     expect(screen.getByRole("radio", { name: "$" })).toHaveAttribute("aria-checked", "false")
-    expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByRole("radio", { name: "5h" })).toHaveAttribute("aria-checked", "true")
     expect(screen.queryByLabelText("Estimated cost $1.00")).toBeNull()
-    expect(screen.getByLabelText("No 5h limit for this session.")).toHaveTextContent("no limit")
+    expect(
+      screen.getByLabelText("Share of your 5-hour limit is not known for this session."),
+    ).toHaveTextContent("unknown")
+  })
+
+  it("shows no limit when live usage confirms the provider reports none", () => {
+    list({
+      entries: [entry()],
+      badgeMetric: "weeklyPercent",
+      // The only reported window is a five-hour one, so a weekly badge can
+      // affirmatively say Claude has no weekly limit for this session.
+      liveUsage: liveUsageWithWindow("anthropic", "Claude", {
+        id: "five-hour",
+        kind: "rolling",
+      }),
+    })
+
+    expect(screen.getByLabelText("No weekly limit for this session.")).toHaveTextContent(
+      "no limit",
+    )
+  })
+
+  it("shows the five-hour limit as unknown when a live window exists but this session has no share", () => {
+    list({
+      entries: [entry()],
+      badgeMetric: "fiveHourPercent",
+      liveUsage: liveUsageWithWindow("anthropic", "Claude", {
+        id: "five-hour",
+        kind: "rolling",
+      }),
+    })
+
+    expect(
+      screen.getByLabelText("Share of your 5-hour limit is not known for this session."),
+    ).toHaveTextContent("unknown")
   })
 
   it("does not offer five-hour mode for another short rolling window", () => {
@@ -266,7 +352,7 @@ describe("SessionList — rows", () => {
       },
     })
 
-    expect(screen.queryByRole("radio", { name: "% 5h" })).toBeNull()
+    expect(screen.queryByRole("radio", { name: "5h" })).toBeNull()
   })
 
   it("offers five-hour mode when the usage panel shows an empty five-hour window", () => {
@@ -316,10 +402,10 @@ describe("SessionList — rows", () => {
       },
     })
 
-    expect(screen.getByRole("radio", { name: "% 5h" })).toBeInTheDocument()
+    expect(screen.getByRole("radio", { name: "5h" })).toBeInTheDocument()
   })
 
-  it("keeps a historical five-hour allocation after its latest reset", () => {
+  it("keeps a five-hour allocation badge as time passes, since the factor never expires", () => {
     const props: SessionListProps = {
       entries: [entry()],
       days: 7,
@@ -337,22 +423,20 @@ describe("SessionList — rows", () => {
             displayName: "Codex",
             accountKey: null,
             metric: "fiveHour",
-            windowId: "five-hour",
-            resetsAt: new Date(NOW.getTime() - 1).toISOString(),
+            windowId: "fiveHour",
             percent: 6.25,
-            coverage: "complete",
-            periodCount: 1,
+            confidence: "learned",
           },
         ],
       },
     }
     const { rerender } = render(<SessionList {...props} />)
 
-    expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByRole("radio", { name: "5h" })).toHaveAttribute("aria-checked", "true")
     expect(screen.getByText("6.3%")).toBeInTheDocument()
 
     rerender(<SessionList {...props} now={new Date(NOW.getTime() + 3_600_001)} />)
-    expect(screen.getByRole("radio", { name: "% 5h" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByRole("radio", { name: "5h" })).toHaveAttribute("aria-checked", "true")
     expect(screen.getByRole("radio", { name: "$" })).toHaveAttribute("aria-checked", "false")
     expect(screen.getByText("6.3%")).toBeInTheDocument()
   })
@@ -681,11 +765,9 @@ describe("SessionList — virtualization", () => {
             displayName: "Claude",
             accountKey: null,
             metric: "weekly",
-            windowId: "weekly-main",
-            resetsAt: new Date(NOW.getTime() + 7 * 86_400_000).toISOString(),
+            windowId: "weekly",
             percent: 7.25,
-            coverage: "complete",
-            periodCount: 1,
+            confidence: "learned",
           },
         ],
       },
@@ -982,5 +1064,88 @@ describe("SessionList — empty state", () => {
   it("shows no day heading at all when the list is empty", () => {
     list({ entries: [] })
     expect(screen.queryByTestId("activity-pinned-group-label")).toBeNull()
+  })
+})
+
+describe("SessionList — controlled main-window selection", () => {
+  it("selects without invoking popover navigation and focuses detail on Enter", () => {
+    const onSelect = vi.fn()
+    const onOpenDetail = vi.fn()
+    const onOpenSession = vi.fn()
+    list({ entries: entries(3), selectedKey: null, onSelect, onOpenDetail, onOpenSession })
+    const first = screen.getByRole("button", { name: /Fixture session 0/ })
+    fireEvent.click(first)
+    expect(first).toHaveFocus()
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-0" }))
+    expect(onOpenSession).not.toHaveBeenCalled()
+    fireEvent.keyDown(first, { key: "Enter" })
+    expect(onOpenDetail).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "session-0" }),
+    )
+  })
+
+  it("moves selection across virtualized rows and lets Tab leave the collection", async () => {
+    const onSelect = vi.fn()
+    list({ entries: entries(225), selectedKey: null, onSelect })
+    const first = screen.getByRole("button", { name: /Fixture session 0/ })
+    first.focus()
+    fireEvent.keyDown(first, { key: "End" })
+    expect(onSelect).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sessionId: "session-224" }),
+    )
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Fixture session 224/ })).toHaveFocus(),
+    )
+    fireEvent.keyDown(document.activeElement!, { key: "Home" })
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Fixture session 0/ })).toHaveFocus(),
+    )
+    expect(fireEvent.keyDown(document.activeElement!, { key: "Tab" })).toBe(true)
+  })
+
+  it("pauses hygiene work and active row motion while hidden", () => {
+    const { container } = list({
+      entries: [entry({ isActive: true })],
+      active: false,
+      onSelect: vi.fn(),
+    })
+    expect(getSessionHygiene).not.toHaveBeenCalled()
+    expect(container.querySelector(".activity-row-active")).toBeNull()
+  })
+})
+
+describe("SessionList — virtualized tab entry", () => {
+  it("retains one row tab stop after scrolling away while focus is elsewhere", async () => {
+    const { container } = list({ entries: entries(225), selectedKey: null, onSelect: vi.fn() })
+    const viewport = container.querySelector<HTMLElement>(".ui-scroll-viewport")!
+    viewport.scrollTop = 20_000
+    fireEvent.scroll(viewport)
+    await waitFor(() => expect(screen.getByText("Fixture session 224")).toBeTruthy())
+    expect(screen.getByRole("button", { name: /Fixture session 0/ })).toHaveAttribute(
+      "tabindex",
+      "0",
+    )
+    expect(container.querySelectorAll('[data-session-row][tabindex="0"]')).toHaveLength(1)
+    expect(container.querySelectorAll("[data-session-row]").length).toBeLessThan(20)
+  })
+})
+
+describe("SessionList — native drag header", () => {
+  it("opts in without marking session rows or metric buttons draggable", () => {
+    const props = {
+      entries: [entry({ isActive: true })],
+      days: 7,
+      onBadgeMetricChange: vi.fn(),
+    }
+    const { container, rerender } = render(<SessionList {...props} />)
+    expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
+    rerender(<SessionList {...props} draggableHeader />)
+    expect(screen.getByTestId("activity-pinned-group-label")).toHaveAttribute(
+      "data-tauri-drag-region",
+      "deep",
+    )
+    for (const control of container.querySelectorAll("button, [role=option]")) {
+      expect(control).not.toHaveAttribute("data-tauri-drag-region")
+    }
   })
 })

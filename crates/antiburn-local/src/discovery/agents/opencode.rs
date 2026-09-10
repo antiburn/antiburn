@@ -27,6 +27,7 @@ use crate::discovery::{
     current_desktop_platform, env_path_when_real_home, home_dir,
 };
 use async_trait::async_trait;
+use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags, params, params_from_iter};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -2729,7 +2730,7 @@ fn db_session_fingerprint_blocking(db_path: &Path, root_session_id: &str) -> Opt
     db_session_fingerprint_connection(&conn, root_session_id)
 }
 
-/// Computes the provider fingerprint without loading the cluster identifiers.
+/// Computes the provider fingerprint without loading cluster records into memory.
 pub(crate) fn db_session_fingerprint_connection(
     conn: &Connection,
     root_session_id: &str,
@@ -2743,26 +2744,123 @@ pub(crate) fn db_session_fingerprint_connection(
     } else {
         "WITH cluster(id) AS (SELECT id FROM session WHERE id = ?1)"
     };
-    conn.query_row(
-        &format!(
-            "{cluster}, records(updated) AS (
-             SELECT COALESCE(time_updated, time_created, 0) FROM session JOIN cluster ON session.id = cluster.id
-             UNION ALL
-             SELECT COALESCE(time_updated, time_created, 0) FROM message JOIN cluster ON message.session_id = cluster.id
-             UNION ALL
-             SELECT COALESCE(time_updated, time_created, 0) FROM part JOIN cluster ON part.session_id = cluster.id
-         )
-         SELECT COUNT(*), MAX(updated) FROM records"
+    let mut hash = DbFingerprintHash::new();
+    hash.write_bytes(root_session_id.as_bytes());
+    let mut rows = 0_u64;
+    for (table, join, columns) in [
+        (
+            "session",
+            "session.id = cluster.id",
+            &[
+                "id",
+                "parent_id",
+                "directory",
+                "title",
+                "time_created",
+                "time_updated",
+                "data",
+            ][..],
         ),
-        params![root_session_id],
-        |row| {
-            let rows = row.get::<_, i64>(0)?.max(0) as u64;
-            let latest = row.get::<_, Option<i64>>(1)?.unwrap_or(0).max(0) as u64;
-            Ok((latest, rows))
-        },
+        (
+            "message",
+            "message.session_id = cluster.id",
+            &["id", "session_id", "time_created", "time_updated", "data"][..],
+        ),
+        (
+            "part",
+            "part.session_id = cluster.id",
+            &[
+                "id",
+                "message_id",
+                "session_id",
+                "time_created",
+                "time_updated",
+                "data",
+            ][..],
+        ),
+    ] {
+        hash.write_bytes(table.as_bytes());
+        let selected = columns
+            .iter()
+            .map(|column| {
+                if db_table_has_column(conn, table, column) {
+                    format!("{table}.{column}")
+                } else {
+                    "NULL".to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let order = if db_table_has_column(conn, table, "id") {
+            format!("{table}.id")
+        } else {
+            format!("{table}.rowid")
+        };
+        let sql = format!(
+            "{cluster} SELECT {selected} FROM {table} JOIN cluster ON {join} ORDER BY {order}"
+        );
+        let mut statement = conn.prepare(&sql).ok()?;
+        let mut query = statement.query(params![root_session_id]).ok()?;
+        while let Some(row) = query.next().ok()? {
+            rows = rows.saturating_add(1);
+            for index in 0..columns.len() {
+                hash.write_value(row.get_ref(index).ok()?);
+            }
+        }
+    }
+    (rows > 0).then(|| (hash.finish(), rows))
+}
+
+fn db_table_has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+        params![table, column],
+        |row| row.get(0),
     )
-    .ok()
-    .filter(|(_, rows)| *rows > 0)
+    .unwrap_or(false)
+}
+
+struct DbFingerprintHash(u64);
+
+impl DbFingerprintHash {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x100_0000_01b3;
+
+    fn new() -> Self {
+        Self(Self::OFFSET_BASIS)
+    }
+
+    fn write_value(&mut self, value: ValueRef<'_>) {
+        match value {
+            ValueRef::Null => self.write_bytes(&[0]),
+            ValueRef::Integer(value) => {
+                self.write_bytes(&[1]);
+                self.write_bytes(&value.to_le_bytes());
+            }
+            ValueRef::Real(value) => {
+                self.write_bytes(&[2]);
+                self.write_bytes(&value.to_bits().to_le_bytes());
+            }
+            ValueRef::Text(value) => {
+                self.write_bytes(&[3]);
+                self.write_bytes(value);
+            }
+            ValueRef::Blob(value) => {
+                self.write_bytes(&[4]);
+                self.write_bytes(value);
+            }
+        }
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        for byte in (bytes.len() as u64).to_le_bytes().iter().chain(bytes) {
+            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(Self::PRIME);
+        }
+    }
+
+    fn finish(self) -> u64 {
+        self.0
+    }
 }
 
 pub(crate) fn db_session_has_parent_id(conn: &Connection) -> bool {

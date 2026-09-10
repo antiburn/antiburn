@@ -165,6 +165,19 @@ impl Cooldown {
         }
     }
 
+    /// Forget the last attempt so a test's next `poll` fetches again —
+    /// the same backdating trick this module's own tests use, exposed so a
+    /// source's suite can exercise consecutive fetches without waiting out
+    /// a real cooldown.
+    #[cfg(test)]
+    pub fn open_for_test(&self) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        inner.last_attempt = None;
+    }
+
     /// Return the remaining provider retry delay after a rate limit.
     #[cfg(feature = "analytics")]
     pub fn rate_limit_retry_after(&self, max_age: Duration) -> Option<Duration> {

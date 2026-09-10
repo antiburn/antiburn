@@ -17,13 +17,16 @@
           "state": "unsupported"
         },
         "repeatedContext": {
-          "state": "complete",
+          "state": "partial",
           "value": {
-            "accounting": "uncached_input",
-            "paidTokens": 860,
-            "pairsConsidered": 5,
-            "pairsSkipped": 0,
-            "repeatedTokens": 0
+            "observed": {
+              "accounting": "uncached_input",
+              "paidTokens": 0,
+              "pairsConsidered": 0,
+              "pairsSkipped": 2,
+              "repeatedTokens": 0
+            },
+            "reason": "attribution_incomplete"
           }
         },
         "userControlledChurn": {
@@ -32,24 +35,27 @@
       }
     },
     "capabilities": {
-      "cacheWriteTokens": false,
+      "cacheWriteTokens": true,
       "compactionBoundaries": true,
       "fastTier": true,
-      "harnessVersion": false,
+      "harnessVersion": true,
       "linearRecordOrder": true,
+      "mcpInventory": false,
       "modelIdentity": true,
       "quotaIncidents": false,
       "reasoningEffortTier": true,
       "recordIdentity": false,
+      "repeatedContextAccounting": "uncached_input",
       "requestContextTokens": true,
       "serviceTier": false,
-      "skillMcpAttribution": false,
+      "skillInventory": false,
+      "sourceFormat": "codex_rollout_jsonl",
       "subagentModels": true,
       "subagentRelationships": true,
       "threadIdentity": true,
       "timestampsAndOrder": true,
       "tokenClasses": true,
-      "toolDefinitions": false,
+      "toolDefinitions": true,
       "toolInvocations": true
     },
     "compactions": {
@@ -77,7 +83,20 @@
       }
     },
     "contextSources": {
-      "state": "unsupported"
+      "state": "complete",
+      "value": {
+        "mcpCoverage": {
+          "state": "unsupported"
+        },
+        "mcpServers": {},
+        "skillCoverage": {
+          "state": "unsupported"
+        },
+        "skills": {},
+        "toolDefinitions": {
+          "state": "unsupported"
+        }
+      }
     },
     "coverage": "complete",
     "diagnostics": {
@@ -120,6 +139,20 @@
             "turns": 6
           }
         },
+        "controlObservations": [
+          {
+            "api": null,
+            "effort": "medium",
+            "lastTsMs": 1787652017000,
+            "model": "gpt-alpha",
+            "provider": null,
+            "speed": null,
+            "turns": {
+              "delegated": 0,
+              "mainLoop": 6
+            }
+          }
+        ],
         "dominantMainModel": "gpt-alpha",
         "effortSignal": {
           "eligibleTurns": 6,
@@ -131,7 +164,16 @@
             "mainLoop": 7
           }
         },
+        "effortTiersByModel": {
+          "gpt-alpha": {
+            "medium": {
+              "delegated": 0,
+              "mainLoop": 6
+            }
+          }
+        },
         "fastModes": {},
+        "fastModesByModel": {},
         "serviceTiers": {
           "state": "unsupported"
         },
@@ -143,20 +185,21 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 18,
-      "evidenceSchemaRevision": 14,
+      "analyzerRevision": 22,
+      "evidenceSchemaRevision": 18,
       "harnessVersion": {
-        "state": "unsupported"
+        "state": "complete",
+        "value": null
       },
       "ordering": "monotonic",
-      "parserRevision": 28,
+      "parserRevision": 32,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 14,
+    "schemaRevision": 18,
     "subagents": {
       "state": "complete",
       "value": {
@@ -166,7 +209,9 @@
               "state": "unsupported"
             },
             "confidence": "observed",
+            "observedChildModels": [],
             "ordinal": 1,
+            "parentCallId": null,
             "parentModel": "gpt-alpha",
             "provenance": "spawn_agent_call"
           }

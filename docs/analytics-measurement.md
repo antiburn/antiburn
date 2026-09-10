@@ -157,6 +157,18 @@ or `automatic`, inherited from its exposure. This optional wire field lets
 reports separate deliberate value from passive display without guessing from
 neighboring timestamps. It stays absent on unrelated events.
 
+`unrecognized_records_observed` also carries `properties.unrecognizedTypes`,
+from the next release after 0.5.0: up to 16 unknown transcript record type
+names, sanitized (ASCII, bounded length, a fixed character set, a shared
+`<rejected>` sentinel for anything that fails that check) rather than mapped
+to a reviewed closed vocabulary. This is the one field on the closed catalog
+that is not a reviewed enum value, because the product question it answers —
+which new record type names an agent has started writing — cannot be answered
+by a value chosen in advance. Change-only suppression now compares the
+sanitized type list alongside the label and bucket, so a newly observed name
+is a reportable change even when both stay the same. It stays absent on every
+other event, and on an event from an app version that predates it.
+
 Define the start classification from the explicit restart path and existing
 onboarding state, not from whether the analytics identifier has been seen.
 Analyze setup progress by distinct installation and ordered times; repeated

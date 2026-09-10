@@ -284,6 +284,11 @@ pub enum EventSource {
 pub struct NormalizedEvent {
     /// Unix epoch milliseconds, when the transcript carries a timestamp.
     pub ts_ms: Option<i64>,
+    /// Unix epoch milliseconds when the provider request started, when the
+    /// transcript records a timestamp separate from the response record.
+    /// Token and context samples use this position; event ordering uses `ts_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_ts_ms: Option<i64>,
     pub role: Role,
     /// Which transcript this event comes from. `Parent` for every event
     /// before a merge; [`crate::analysis::merge_subagent_events`] tags
@@ -301,6 +306,12 @@ pub struct NormalizedEvent {
     /// falls back to the session's headline model.
     #[serde(default)]
     pub model: Option<String>,
+    /// The model API provider saved on this request, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// The provider API saved on this request, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<String>,
     /// The model's thinking mode for this turn, when the transcript records it.
     #[serde(default)]
     pub thinking_mode: Option<String>,
@@ -383,11 +394,14 @@ impl NormalizedEvent {
     pub fn new(role: Role) -> NormalizedEvent {
         NormalizedEvent {
             ts_ms: None,
+            usage_ts_ms: None,
             role,
             source: EventSource::default(),
             usage: Usage::default(),
             tools: Vec::new(),
             model: None,
+            provider: None,
+            api: None,
             thinking_mode: None,
             speed: None,
             has_thinking: false,

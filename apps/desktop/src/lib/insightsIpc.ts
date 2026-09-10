@@ -116,6 +116,154 @@ export interface ChecksReportPayload {
   categories: ChecksCategoryPayload[]
 }
 
+export type BurnCheckDetectorId =
+  | "sessionsOverDepth"
+  | "modelOverthinking"
+  | "overpoweredSubagents"
+  | "unusedMcpServers"
+  | "unusedBuiltInTools"
+  | "unusedSkills"
+  | "oldModelUsage"
+  | "overuseOfFastMode"
+  | "cacheChurn"
+
+export type BurnCheckSourceFormat =
+  | "claudeJsonl"
+  | "codexRolloutJsonl"
+  | "openCodeJsonl"
+  | "openCodeSqliteV2"
+  | "piV3Jsonl"
+  | "cursorJsonl"
+  | "cursorCliAgentJsonl"
+  | "cursorCliStoreDb"
+  | "cursorIdeComposer"
+  | "cursorLegacyChatJson"
+  | "antigravityJson"
+  | "antigravityBrainJsonl"
+  | "antigravityCascadeJson"
+  | "antigravityWorkspaceChatJson"
+  | "antigravitySqlite"
+  | "copilotCliJsonl"
+  | "copilotIdeChatJson"
+  | "clineSessionJson"
+  | "kiroSessionJson"
+  | "kiroChat"
+  | "ampThreadJson"
+  | "ampFileChanges"
+  | "windsurfWorkspaceJson"
+  | "windsurfMirrorJson"
+  | "windsurfCascadeProtobuf"
+  | "uncharacterized"
+
+export interface BurnCheckFindingPayload {
+  detector: BurnCheckDetectorId
+  agent: string
+  sourceFormat: BurnCheckSourceFormat
+  observation: string
+  labels: string[]
+  omitted: number
+}
+
+export type AutoFixUnavailableReason =
+  "unsupportedOrUnprovenTarget" | "activeWatch" | "safetyCheckFailed" | "targetNotFound"
+
+export type AutoFixAvailabilityPayload =
+  { status: "available" } | { status: "unavailable"; reason: AutoFixUnavailableReason }
+
+export type BurnCheckWatchLifecycle =
+  "reserved" | "writing" | "recoveryNeeded" | "watching" | "fixed" | "recurred"
+
+export type BurnCheckVerificationReason =
+  | "missingPostBoundaryEvidence"
+  | "writeOutcomeUnknown"
+  | "verificationUnavailable"
+  | "unsupportedAgent"
+  | "homeUnavailable"
+  | "physicalTargetChanged"
+
+export type BurnCheckVerificationPayload =
+  | { status: "reserved" }
+  | {
+      status: "watching"
+      reason?: BurnCheckVerificationReason
+      methodRevision?: number
+      evidenceRevision?: string
+    }
+  | { status: "fixed"; methodRevision: number; evidenceRevision: string }
+  | { status: "stillUnresolved"; methodRevision: number; evidenceRevision: string }
+  | { status: "recurred"; methodRevision: number; evidenceRevision: string }
+  | {
+      status: "recoveryNeeded"
+      reason: BurnCheckVerificationReason
+      checkedAtEpoch?: number
+    }
+  | { status: "verificationUnavailable" }
+
+export type BurnCheckSavingsUnknownReason =
+  "missingRates" | "missingEvidence" | "missingRevision" | "arithmeticOverflow"
+
+export type BurnCheckSavingsPayload =
+  | { status: "pending"; methodRevision?: number }
+  | { status: "unavailable" }
+  | {
+      status: "unknown"
+      reason: BurnCheckSavingsUnknownReason
+      methodRevision: number
+    }
+  | {
+      status: "known"
+      method: "oldModelPriceDifference"
+      methodRevision: number
+      pricingRevision: string
+      apiEquivalentCostAvoidedUsd: number
+      measuredThroughMs: number
+      recurrenceMs: number | null
+    }
+
+export interface BurnCheckWatchPayload {
+  watchId: string
+  lifecycle: BurnCheckWatchLifecycle
+  verification: BurnCheckVerificationPayload
+  savings: BurnCheckSavingsPayload
+}
+
+export interface BurnCheckTargetPayload {
+  targetId: string
+  finding: BurnCheckFindingPayload
+  occurrenceCount: number
+  autoFix: AutoFixAvailabilityPayload
+  watch: BurnCheckWatchPayload | null
+  coverageLimits: "currentPublishedEvidenceOnly"[]
+  expiresAtEpoch: number
+}
+
+export interface BurnCheckTargetListPayload {
+  targets: BurnCheckTargetPayload[]
+  truncated: boolean
+}
+
+export type AutoFixBurnCheckTargetOutcome =
+  | { outcome: "appliedAwaitingVerification"; watchId: string }
+  | { outcome: "recoveryNeeded"; watchId: string }
+  | { outcome: "stale" }
+  | { outcome: "expired" }
+  | { outcome: "conflict" }
+  | { outcome: "unavailable"; reason: AutoFixUnavailableReason }
+
+export type PromptFixUnavailableReason =
+  | "targetNotFound"
+  | "promptSizeLimit"
+  | "essentialIdentityUnavailable"
+  | "deferredAgent"
+  | "unsupportedSourceFormat"
+  | "checkUnsupportedForAgent"
+
+export type CopyPromptFixBurnCheckTargetOutcome =
+  | { outcome: "promptReady"; prompt: string; watch: BurnCheckWatchPayload }
+  | { outcome: "stale" }
+  | { outcome: "expired" }
+  | { outcome: "unavailable"; reason: PromptFixUnavailableReason }
+
 /** Report calculation state plus the evidence backlog counts. */
 export interface InsightsStatusPayload {
   calculating: boolean
@@ -221,6 +369,34 @@ export async function getInsightsReport(): Promise<InsightsReportPayload | null>
 export async function getChecksReport(consumerId: string): Promise<ChecksReportPayload | null> {
   if (!hasShell()) return null
   return invoke<ChecksReportPayload>("get_checks_report", { consumerId })
+}
+
+/** Lists current exact targets for one detector in the native thirty-day context. */
+export async function listBurnCheckTargets(
+  detector: BurnCheckDetectorId,
+): Promise<BurnCheckTargetListPayload | null> {
+  if (!hasShell()) return null
+  return invoke<BurnCheckTargetListPayload>("list_burn_check_targets", {
+    detector,
+  })
+}
+
+/** Applies the supported automatic change for one opaque current target. */
+export async function autoFixBurnCheckTarget(
+  targetId: string,
+): Promise<AutoFixBurnCheckTargetOutcome | null> {
+  if (!hasShell()) return null
+  return invoke<AutoFixBurnCheckTargetOutcome>("auto_fix_burn_check_target", { targetId })
+}
+
+/** Returns a bounded prompt and starts or reuses its verification watch. */
+export async function copyPromptFixBurnCheckTarget(
+  targetId: string,
+): Promise<CopyPromptFixBurnCheckTargetOutcome | null> {
+  if (!hasShell()) return null
+  return invoke<CopyPromptFixBurnCheckTargetOutcome>("copy_prompt_fix_burn_check_target", {
+    targetId,
+  })
 }
 
 /** Stop a Checks reduction that no visible popover still needs. */

@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "checks-remediation",
+  "description": "Allows the Checks surface to list and act on remediation targets.",
+  "windows": ["popover"],
+  "permissions": [
+    "allow-list-burn-check-targets",
+    "allow-auto-fix-burn-check-target",
+    "allow-copy-prompt-fix-burn-check-target"
+  ]
+}

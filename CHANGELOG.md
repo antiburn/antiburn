@@ -20,18 +20,65 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
-## [0.4.1] - 2026-09-08
+## [0.5.2] - 2026-09-10
 
 ### Changed
 
-- Session limit badges now retain cumulative estimates across provider resets,
-  keeping usage attributed in earlier periods visible alongside the current
-  provider period.
+- Session Details has a simpler layout and clearer Burn Check cards that adapt
+  to the window width.
+- Burn Checks now use stronger evidence contracts for supported Claude Code,
+  Codex, OpenCode, Pi, and Antigravity sessions. Findings keep exact provider
+  routes and supported checks decline clean results when required evidence is
+  incomplete.
+
+### Fixed
+
+- Long sessions retain complete thread evidence up to 16,384 identities, so
+  crossing 512 identities no longer prevents otherwise eligible clean Burn Check
+  results. Previously analyzed sessions are reprocessed.
+- Efficiency guidance no longer gives Claude or Codex threshold recommendations
+  for agents without a dedicated guidance profile.
+- Session-detail metric pickers keep a consistent width, percentage labels have
+  clear spacing, and the status bar keeps a consistent height.
+- Expanded sub-agent rows stay aligned with the cost table columns.
+- Expired Pi credentials can refresh through Pi before antiburn retries live
+  usage, including installations managed by nvm.
+- Cache churn now uses the correct Claude or OpenAI accounting policy in mixed
+  model sessions. Token-burn estimates stay unknown when prices or total-token
+  evidence is unavailable.
+- Session changes are detected more reliably for bounded inline sources and
+  OpenCode databases, including edits that do not change row counts or saved
+  timestamps.
+
+## [0.5.0] - 2026-09-09
+
+### Added
+
+- A persistent main window now provides an Activity sidebar and a Sessions
+  workspace. Sessions can be browsed beside their details, opened from the tray
+  popover, navigated by keyboard, and followed through related-session links.
+
+### Changed
+
+- Session limit badges now use learned estimates for each provider account and
+  limit window. Estimates cover sessions from before installation and while
+  antiburn was closed, retain cumulative use across provider resets, and
+  distinguish an unknown share from a provider without that limit.
+- Session Details in the main window uses a responsive desktop layout with a
+  fixed toolbar, more room for Context, Cost, and Tools, and clearer cost
+  breakdowns.
+- Settings diagnostics exports now include coarse learned provider-limit
+  details without account keys to help investigate session estimates.
 
 ### Fixed
 
 - Session rows now show `0%` when valid provider usage remains flat during a
   percentage plateau instead of treating the allocation as missing.
+- Expired Codex and Claude credentials now refresh through their owning CLI
+  before antiburn retries live usage.
+- The Windows install command `irm https://antiburn.ai/install.ps1 | iex`
+  now runs instead of failing with a parameter validation error, and the
+  installation instructions use HTTPS.
 
 ## [0.4.0] - 2026-09-07
 

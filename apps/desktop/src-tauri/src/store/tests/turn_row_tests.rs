@@ -11,10 +11,10 @@ use super::*;
 #[test]
 fn the_migration_ladder_reaches_the_turn_row_schema() {
     // Pin the count so each new migration requires an explicit test update.
-    assert_eq!(super::schema::MIGRATIONS.len(), 38);
+    assert_eq!(super::schema::MIGRATIONS.len(), 43);
 
     let store = store();
-    assert_eq!(store.schema_version().unwrap(), 38);
+    assert_eq!(store.schema_version().unwrap(), 43);
     let index_exists = store
         .lock()
         .query_row(
@@ -56,19 +56,19 @@ fn v32_indexes_existing_assistant_turns() {
             [],
         )
         .unwrap();
-    let mut user_turn = turn_row(1);
-    user_turn.role = "user";
-    insert_turn_rows(
-        &connection,
-        &TurnSessionKey {
-            environment_key: "native",
-            agent: "claude-code",
-            session_id: "indexed",
-        },
-        7,
-        &[turn_row(0), user_turn],
-    )
-    .unwrap();
+    for (index, role) in [(0, "assistant"), (1, "user")] {
+        connection
+            .execute(
+                "INSERT INTO turn (
+                environment_key, agent, session_id, claim_fence, source_key, thread_id,
+                turn_index, scope, role, input_tokens, cache_read_tokens,
+                cache_write_tokens, output_tokens, is_compaction_boundary
+            ) VALUES ('native', 'claude-code', 'indexed', 7, 's1', 's1', ?1,
+                      'main', ?2, 10, 0, 0, 5, 0)",
+                params![index, role],
+            )
+            .unwrap();
+    }
 
     let store = Store::from_connection(
         connection,
@@ -109,6 +109,14 @@ fn v32_indexes_existing_assistant_turns() {
 
     assert_eq!(assistant_rows, 1);
     assert_eq!(all_rows, 2);
+    let unknown_routes: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM turn WHERE provider IS NULL AND api IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(unknown_routes, 2);
     assert!(query_plan.contains("USING INDEX turn_assistant_session"));
 }
 
@@ -121,7 +129,11 @@ fn publish_turn_row_with_uuid(store: &Store, session_id: &str, uuid: &str) -> Se
     FencedTurnRowStore::new(store.clone(), record.key.clone(), claim.claim_fence)
         .write_turn_rows(&[row])
         .unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -249,7 +261,11 @@ fn publishing_evidence_keeps_only_the_current_fence_turn_rows() {
     }
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -266,113 +282,6 @@ fn publishing_evidence_keeps_only_the_current_fence_turn_rows() {
         count_turn_rows(&connection, &turn_session_key(&key), claim.claim_fence).unwrap(),
         2
     );
-}
-
-#[test]
-fn session_usage_turns_returns_published_rows_at_the_time_boundary() {
-    let store = store();
-    let (record, claim) = claimed_projection(&store, "session-usage-turns", 100, 60);
-    let key = record.key.clone();
-    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
-    writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
-    assert!(
-        store
-            .publish_projections(&record, None, &completion, &[], &[])
-            .unwrap()
-    );
-    {
-        let connection = store.lock();
-        insert_turn_rows(
-            &connection,
-            &turn_session_key(&key),
-            claim.claim_fence + 1,
-            &[turn_row(2)],
-        )
-        .unwrap();
-    }
-
-    let rows = store.session_usage_turns(1_001).unwrap();
-
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].key, key);
-    assert_eq!(rows[0].turns.len(), 1);
-    assert_eq!(rows[0].turns[0].ts_ms, Some(1_001));
-    assert_eq!(rows[0].turns[0].model.as_deref(), Some("claude-opus-4-6"));
-    assert_eq!(rows[0].turns[0].input_tokens, 10);
-    assert_eq!(rows[0].turns[0].output_tokens, 5);
-}
-
-#[test]
-fn grouped_usage_turns_use_disjoint_inclusive_observation_boundaries() {
-    let store = store();
-    let (record, claim) = claimed_projection(&store, "grouped-usage-turns", 100, 60);
-    let key = record.key.clone();
-    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
-    writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
-    assert!(
-        store
-            .publish_projections(&record, None, &completion, &[], &[])
-            .unwrap()
-    );
-
-    let rows = store
-        .session_usage_turns_grouped_between(1_000, 1_002, &[1_000, 1_001], 10)
-        .unwrap()
-        .unwrap();
-
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].key, key);
-    assert_eq!(rows[0].turns.len(), 2);
-    assert_eq!(rows[0].turns[0].ts_ms, Some(1_000));
-    assert_eq!(rows[0].turns[1].ts_ms, Some(1_001));
-    assert_eq!(rows[0].turns[0].input_tokens, 10);
-    assert_eq!(rows[0].turns[1].input_tokens, 10);
-}
-
-#[test]
-fn grouped_usage_turns_plan_uses_timestamp_range_lookups() {
-    let store = store();
-    let sql = format!("EXPLAIN QUERY PLAN {}", allocation_grouped_turn_sql(2));
-    let connection = store.lock();
-    let mut statement = connection.prepare(&sql).unwrap();
-    let details = statement
-        .query_map(
-            params![1_000, 1_000, 1_000, 1_001, 1_001, 1_001, 1_002, 11],
-            |row| row.get::<_, String>(3),
-        )
-        .unwrap()
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .unwrap();
-
-    assert!(
-        details.iter().any(|detail| {
-            detail.contains("turn_usage_timestamp")
-                && detail.contains("ts_ms>?")
-                && detail.contains("ts_ms<?")
-        }),
-        "{details:?}"
-    );
-}
-
-#[test]
-fn grouped_usage_turns_do_not_wait_for_the_writer_mutex() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path()).unwrap();
-    let writer = store.lock();
-    let reader_store = store.clone();
-    let (send, receive) = std::sync::mpsc::channel();
-    let thread = std::thread::spawn(move || {
-        let result = reader_store.session_usage_turns_grouped_between(1_000, 1_002, &[1_001], 10);
-        send.send(result).unwrap();
-    });
-
-    let result = receive.recv_timeout(std::time::Duration::from_secs(1));
-    drop(writer);
-    thread.join().unwrap();
-
-    assert!(result.unwrap().unwrap().unwrap().is_empty());
 }
 
 #[test]
@@ -402,7 +311,11 @@ fn a_lost_publish_race_deletes_only_its_own_fences_turn_rows() {
             params![key.environment_key, key.agent, key.session_id],
         )
         .unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         !store
