@@ -10,6 +10,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
     "dialog:allow-confirm",
+    "allow-acknowledge-main-window-session-target",
     "allow-delete-session-data",
     "allow-get-live-usage",
     "allow-get-main-window-visible",
@@ -19,9 +20,14 @@
     "allow-get-settings",
     "allow-get-subagent-analysis",
     "allow-list-recent-sessions",
+    "allow-main-window-health-ack",
+    "allow-main-window-pending-health-check",
     "allow-main-window-ready",
-    "allow-take-main-window-session-target",
     "allow-open-settings-window",
+    "allow-peek-main-window-session-target",
+    "allow-report-main-window-render-failure",
+    "allow-report-main-window-render-status",
+    "allow-request-main-window-recovery",
     "allow-reveal-source",
     "allow-set-settings"
   ]

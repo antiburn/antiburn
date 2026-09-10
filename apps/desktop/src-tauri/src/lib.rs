@@ -184,15 +184,17 @@ pub fn run() {
                 repeated.pending.store(true, Ordering::Release);
                 if repeated.setup_ready.load(Ordering::Acquire) {
                     repeated.pending.store(false, Ordering::Release);
-                    if let Err(error) =
-                        open_launch_surface(app, main_window::OpenTrigger::Interaction)
-                    {
-                        ::tracing::warn!(
-                            event = "launch_surface_open_failed",
-                            trigger = "second_instance",
-                            error = %error
-                        );
-                    }
+                    main_window::on_main(app, |app| {
+                        if let Err(error) =
+                            open_launch_surface(app, main_window::OpenTrigger::Interaction)
+                        {
+                            ::tracing::warn!(
+                                event = "launch_surface_open_failed",
+                                trigger = "second_instance",
+                                error = %error
+                            );
+                        }
+                    });
                 }
             })),
     )
@@ -685,6 +687,13 @@ mod tests {
             "\"allow-delete-session-data\"",
             "\"dialog:allow-confirm\"",
             "\"allow-main-window-ready\"",
+            "\"allow-main-window-health-ack\"",
+            "\"allow-main-window-pending-health-check\"",
+            "\"allow-report-main-window-render-status\"",
+            "\"allow-report-main-window-render-failure\"",
+            "\"allow-request-main-window-recovery\"",
+            "\"allow-peek-main-window-session-target\"",
+            "\"allow-acknowledge-main-window-session-target\"",
         ] {
             assert!(capability.contains(expected), "missing {expected}");
         }

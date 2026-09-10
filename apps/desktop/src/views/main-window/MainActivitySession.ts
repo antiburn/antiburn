@@ -12,6 +12,7 @@ import {
   getLiveUsage,
   getSessionLimitAllocations,
   getMainWindowVisible,
+  acknowledgeMainWindowSessionTarget,
   onMainWindowSessionTarget,
   onMainWindowVisibilityChanged,
   onSettingsChanged,
@@ -19,7 +20,7 @@ import {
   onSessionsInvalidated,
   onScanEvent,
   onLiveUsageChanged,
-  takeMainWindowSessionTarget,
+  peekMainWindowSessionTarget,
   type AppSettings,
   type SessionAnalysisPayload,
   type LiveUsageSummaryPayload,
@@ -196,8 +197,8 @@ export class MainActivitySession {
         generation,
         onMainWindowSessionTarget((request) => {
           if (generation !== this.generation) return
-          this.applySessionTarget(request)
-          void this.takeSessionTarget(generation)
+          this.applyAndAcknowledgeSessionTarget(request)
+          void this.peekSessionTarget(generation)
         }),
       ),
       this.listen(
@@ -277,17 +278,27 @@ export class MainActivitySession {
     if (generation !== this.generation) return
     const settingsVersion = this.settingsVersion
     const revision = visibilityRevision
+    const rendererGeneration = this.rendererGeneration()
     const [settings, visible, target] = await Promise.all([
       getSettings().catch(() => DEFAULT_SETTINGS),
       getMainWindowVisible().catch(() => false),
-      takeMainWindowSessionTarget().catch(() => null),
+      rendererGeneration === null
+        ? Promise.resolve(null)
+        : peekMainWindowSessionTarget(rendererGeneration).catch(() => null),
     ])
     if (generation !== this.generation) return
-    if (target) this.applySessionTarget(target)
+    if (target) this.applyAndAcknowledgeSessionTarget(target)
     if (settingsVersion === this.settingsVersion) this.applySettings(settings)
     if (revision === visibilityRevision) this.visible = visible
     this.initialized = true
     this.syncActive()
+  }
+
+  private rendererGeneration(): number | null {
+    const generation = window.__ANTIBURN_WINDOW_GENERATION__
+    return typeof generation === "number" && Number.isSafeInteger(generation)
+      ? generation
+      : null
   }
 
   private applySessionTarget(request: MainWindowSessionRequest): void {
@@ -296,9 +307,23 @@ export class MainActivitySession {
     this.open(request.target, [], "user")
   }
 
-  private async takeSessionTarget(generation: number): Promise<void> {
-    const request = await takeMainWindowSessionTarget().catch(() => null)
-    if (generation === this.generation && request) this.applySessionTarget(request)
+  private applyAndAcknowledgeSessionTarget(request: MainWindowSessionRequest): void {
+    if (request.revision < this.targetRevision) return
+    this.applySessionTarget(request)
+    const generation = this.rendererGeneration()
+    if (generation === null) return
+    void acknowledgeMainWindowSessionTarget(generation, request.revision).catch(() => {
+      console.error("The main window could not acknowledge its session target.")
+    })
+  }
+
+  private async peekSessionTarget(generation: number): Promise<void> {
+    const rendererGeneration = this.rendererGeneration()
+    if (rendererGeneration === null) return
+    const request = await peekMainWindowSessionTarget(rendererGeneration).catch(() => null)
+    if (generation === this.generation && request) {
+      this.applyAndAcknowledgeSessionTarget(request)
+    }
   }
 
   private applySettings(settings: AppSettings): void {
