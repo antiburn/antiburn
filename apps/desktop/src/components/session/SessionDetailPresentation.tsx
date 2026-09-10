@@ -35,6 +35,7 @@ import {
   formatDuration,
   isEmptySummary,
   skillMcpUsage,
+  type SkillMcpUsage,
 } from "../../lib/presentation/sessionAnalysis"
 import { resultComponentCost, type LocalSessionCost } from "../../lib/presentation/sessionCosts"
 import { efficiencyMetrics } from "../../lib/presentation/sessionEfficiency"
@@ -338,6 +339,20 @@ const SERIES_SWATCH_CLASS: Record<ChartSeries, string> = {
 /** A shorter caption for a stat whose full name does not fit one cell. */
 const KEY_CAPTIONS: Record<string, string> = {
   "Provider cache misses": "Cache misses",
+}
+
+/* The wasted-token figure turns red only when the waste is a large share of
+   the startup context and large in absolute terms. Each test alone reports
+   the wrong sessions: a big context wastes a small share of a large number,
+   and a small context wastes a large share of a small one. */
+const WASTED_RED_SHARE = 0.5
+const WASTED_RED_TOKENS = 10_000
+
+/** The ink for the wasted-token figure: a warning orange, or red when it is worse. */
+function wastedTokensInk({ wastedTokens, totalTokens }: SkillMcpUsage): string {
+  const share = totalTokens > 0 ? wastedTokens / totalTokens : 0
+  const severe = share >= WASTED_RED_SHARE && wastedTokens >= WASTED_RED_TOKENS
+  return severe ? "text-system-red-text" : "text-waste-warn"
 }
 
 /**
@@ -897,7 +912,7 @@ export function SessionDetailPresentation({
               )}
 
               {tab === "cost" && (
-                <div className="session-detail-cost flex min-h-full flex-col gap-x-6">
+                <div className="session-detail-cost flex min-h-full flex-col gap-6">
                   {costSection}
                   {hasAssessedHygieneChecks && (
                     <section className="shrink-0">
@@ -922,7 +937,13 @@ export function SessionDetailPresentation({
                         ceiling, so it is a headline and not a meter. */}
                     {toolsUsage != null && toolsUsage.wastedTokens > 0 && (
                       <p className="flex items-center gap-x-4 my-2 py-3">
-                        <span className="font-semibold! text-brand tabular-nums type-display">
+                        <span
+                          data-testid="tools-wasted-figure"
+                          className={cn(
+                            "font-semibold! tabular-nums type-display",
+                            wastedTokensInk(toolsUsage),
+                          )}
+                        >
                           {formatCompact(toolsUsage.wastedTokens)}
                         </span>
                         <span className="flex flex-col type-callout leading-tight">
@@ -948,7 +969,7 @@ export function SessionDetailPresentation({
                 through to the content on either side of the pill. */}
             <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-6">
               <SegmentedControl
-                className="session-detail-tabs session-detail-floating-tabs pointer-events-auto type-callout shrink-0 rounded-full! bg-surface/80! shadow-raised [&_button]:rounded-full!"
+                className="ui-segmented-solid session-detail-tabs session-detail-floating-tabs pointer-events-auto type-callout shrink-0 rounded-full! bg-surface/80! shadow-raised [&_button]:rounded-full!"
                 options={DETAIL_TABS}
                 value={tab}
                 onChange={setTab}

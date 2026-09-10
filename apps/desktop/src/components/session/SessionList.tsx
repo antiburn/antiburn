@@ -753,7 +753,11 @@ export function SessionList({
               value={selectedMetric}
               onChange={onBadgeMetricChange}
               ariaLabel="Session badge metric"
-              className="normal-case"
+              /* The same picker treatment as the section picker over the
+                 session detail: a pill track with no outline, and a solid
+                 neutral chip for the selected metric. */
+              variant="native-tabs"
+              className="ui-segmented-solid normal-case rounded-full! bg-surface-secondary! [&_button]:rounded-full! [&_button]:px-2.5!"
             />
           )}
         </div>

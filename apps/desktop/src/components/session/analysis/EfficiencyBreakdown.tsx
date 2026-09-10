@@ -71,9 +71,9 @@ interface ShareRow {
   key: ShareMetricKey
   label: string
   /* The slice keeps one color for the life of the feature, so a reader
-     recognizes it between sessions. Real work is the label ink, rewrite
-     waste is the brand orange, because waste is the burn antiburn is named
-     for, and carry stays the mid neutral. */
+     recognizes it between sessions. Real work takes the measure blue, the
+     same blue the cost scale draws its reading in. Rewrite waste takes the
+     mid neutral and carry the brand orange. */
   inkClassName: string
 }
 
@@ -81,17 +81,17 @@ const SHARE_ROWS: ShareRow[] = [
   {
     key: "realWorkShare",
     label: "Real Work %",
-    inkClassName: "bg-label",
+    inkClassName: "bg-measure",
   },
   {
     key: "rewriteShare",
     label: "Rewrite Waste %",
-    inkClassName: "bg-brand-tint",
+    inkClassName: "bg-share-carry",
   },
   {
     key: "carryShare",
     label: "Carry %",
-    inkClassName: "bg-share-carry",
+    inkClassName: "bg-brand-tint",
   },
 ]
 
@@ -141,7 +141,7 @@ function shareSegments(metrics: EfficiencyMetrics): ShareSegment[] {
 
 /**
  * The $/MTok scale as a bullet graph. Three grey bands mark good, middle,
- * and bad at fixed thirds, and a thin brand measure runs from zero to this
+ * and bad at fixed thirds, and a thin blue measure runs from zero to this
  * session's reading. Under each band sit its word and its dollar range, so
  * the scale labels itself and the reading needs no tag. The band steps and
  * the ranges already mark every edge, so no separate target line is drawn.
@@ -184,7 +184,7 @@ function CostScaleBar({
         ))}
         <span
           data-testid="cost-measure"
-          className="absolute inset-y-1 left-0 rounded-e-sm bg-brand-tint"
+          className="absolute inset-y-1 left-0 rounded-e-sm bg-measure"
           style={{ width: `${scale.position * 100}%` }}
         />
       </div>

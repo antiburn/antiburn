@@ -678,6 +678,52 @@ describe("SessionDetailPresentation — session facts", () => {
       screen.getByText("No startup context has been recorded for this session."),
     ).toBeTruthy()
   })
+
+  it("reddens the wasted-token figure only for a large share of a large context", () => {
+    function wastedContext(unusedTokens: number, usedTokens: number) {
+      return summary({
+        sessions: [
+          metrics({
+            initialContext: {
+              sources: [
+                {
+                  source: "skill_instructions",
+                  sourceName: "idle",
+                  tokenCount: unusedTokens,
+                  useCount: 0,
+                },
+                {
+                  source: "skill_instructions",
+                  sourceName: "busy",
+                  tokenCount: usedTokens,
+                  useCount: 1,
+                },
+              ],
+            },
+          }),
+        ],
+      })
+    }
+
+    function figureClass() {
+      fireEvent.click(screen.getByRole("tab", { name: /^Tools/ }))
+      return screen.getByTestId("tools-wasted-figure").className
+    }
+
+    // Three quarters of the startup context, and far past the floor.
+    const severe = view({ summary: wastedContext(30_000, 10_000) })
+    expect(figureClass()).toContain("text-system-red-text")
+    severe.unmount()
+
+    // The same share of a context too small for the waste to matter.
+    const small = view({ summary: wastedContext(3_000, 1_000) })
+    expect(figureClass()).toContain("text-waste-warn")
+    small.unmount()
+
+    // Past the floor, but a small share of a large context.
+    view({ summary: wastedContext(12_000, 200_000) })
+    expect(figureClass()).toContain("text-waste-warn")
+  })
 })
 
 describe("SessionDetailPresentation — presentation", () => {
