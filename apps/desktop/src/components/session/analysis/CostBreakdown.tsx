@@ -149,9 +149,9 @@ function SubagentMemberRow({
       type="button"
       aria-label={`Open the analysis for ${member.label}`}
       onClick={() => onOpenSubagent?.(member.subagentId, member.label)}
-      className="group col-span-full grid grid-cols-subgrid gap-y-0.5 text-label-tertiary py-2 border-t border-separator transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover type-callout"
+      className="group col-span-full grid grid-cols-subgrid gap-y-0.5 text-label-tertiary pl-4 mb-2.5 border-t border-separator transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover type-callout"
     >
-      <span className="col-start-1 col-end-5 flex min-w-0 gap-x-2 items-center text-left">
+      <span className="mt-2.5 col-start-1 col-end-5 flex min-w-0 gap-x-2 items-center text-left">
         <span className="tabular-nums">
           [{formatMemberStart(member, sessionStartedAtEpoch)}]
         </span>
