@@ -147,9 +147,14 @@ body[data-transparent-window] #root {
  * in phase, whenever a row joins.
  *
  * The position runs in bar lengths: 0 is the left end of a bar and 1 is the
- * right end. It travels at 0.8 bar lengths per second from before the left
- * end to past the right end, then holds while the bar rests. Each row starts
- * `--led-row-lag` bar lengths after the row above it, which is 100 ms.
+ * right end. It travels at a constant rate from before the left end to past
+ * the right end, and the band is off the bar at each end of the cycle. Each
+ * row starts `--led-row-lag` bar lengths after the row above it.
+ *
+ * The pace is the session list's title shimmer: the same cycle, and a band
+ * that also crosses its subject in half of one. `--activity-row-shimmer-cycle`
+ * in `session-rows.css` holds the same number for a running session's title.
+ * A live session therefore moves at one pace on every surface.
  *
  * `--led-gleam-peak` caps the gleam. The popover keeps the default; the HUD
  * adds `led-clock-soft`, because it floats over the reader's work and must
@@ -162,28 +167,34 @@ body[data-transparent-window] #root {
 }
 
 .led-clock {
-  /* The full cycle. The band crosses a bar in about 1.6 s of it. */
-  --led-sweep-cycle: 5s;
-  --led-row-lag: 0.08;
-  /* Half the band's width, as a share of the bar: about three dots of 20. */
-  --led-band: 0.15;
+  /* The session list's shimmer cycle. The band crosses a bar in half of it. */
+  --led-sweep-cycle: 4000ms;
+  /*
+   * The start of one row after the row above it. The sweep travels 0.5 bar
+   * lengths each second, so this delay is 100 ms.
+   */
+  --led-row-lag: 0.05;
+  /*
+   * Half the band's width, as a share of the bar. The band is on or off, so
+   * this is also its width in segments: about three dots of 20.
+   */
+  --led-band: 0.075;
   --led-gleam-peak: 0.7;
-  /* Lit levels between off and the peak: four brightness options in all. */
-  --led-gleam-steps: 3;
+  /* Lit levels between off and the peak: two brightness options in all. */
+  --led-gleam-steps: 1;
   animation: led-sweep var(--led-sweep-cycle) linear infinite;
 }
 
 .led-clock-soft {
-  --led-gleam-peak: 0.35;
+  --led-gleam-peak: 0.245;
 }
 
 @keyframes led-sweep {
-  0% {
+  from {
     --led-sweep: -0.25;
   }
 
-  50%,
-  100% {
+  to {
     --led-sweep: 1.75;
   }
 }
@@ -210,7 +221,7 @@ body[data-transparent-window] #root {
   /* The band's profile: 1 at its centre, 0 at its edge. */
   --led-glow: clamp(
     0,
-    calc(1 - max(var(--led-pos), -1 * var(--led-pos)) / var(--led-band, 0.15)),
+    calc(1 - max(var(--led-pos), -1 * var(--led-pos)) / var(--led-band, 0.075)),
     1
   );
   content: "";
@@ -222,16 +233,15 @@ body[data-transparent-window] #root {
 }
 
 /*
- * A LED is a lamp, and a lamp steps. The gleam takes four brightness levels,
- * off, one third, two thirds, and the peak, instead of a smooth ramp: the
- * centre segment holds the peak, its neighbours two thirds, the next pair
- * one third, and the band hops a segment at a time. A webview without
- * `round()` keeps the ramp.
+ * A LED is a lamp, and a lamp steps. The gleam takes two brightness levels,
+ * off and the peak, instead of a smooth ramp: a band of about three segments
+ * holds the peak together, and the band hops a segment at a time. A webview
+ * without `round()` keeps the ramp.
  */
 @supports (opacity: round(up, 0.5, 0.25)) {
   .led-sweep-dot::after {
     opacity: calc(
-      round(up, var(--led-glow), 1 / var(--led-gleam-steps, 3)) * var(--led-gleam-peak, 0.7)
+      round(up, var(--led-glow), 1 / var(--led-gleam-steps, 1)) * var(--led-gleam-peak, 0.7)
     );
   }
 }
@@ -259,12 +269,12 @@ body[data-transparent-window] #root {
 
 /*
  * The ring's gleam runs clockwise from twelve o'clock to the end of the
- * reading's arc while the bars sweep, then fades over 0.3 s and waits for
+ * reading's arc while the bars sweep, then fades over 0.6 s and waits for
  * the next cycle. `--led-lap` is the sweep as a share of one lap, 0 to 1
- * over the first half of the cycle. `--led-ring-span` is how far the gleam's
- * start may go before its end leaves the arc; at zero the gleam holds at
- * twelve and flashes in the brand tint. The stylesheet owns the arc's
- * rotation; the component sets no `transform` attribute on it.
+ * over the cycle. `--led-ring-span` is how far the gleam's start may go
+ * before its end leaves the arc; at zero the gleam holds at twelve and
+ * flashes in the brand tint. The stylesheet owns the arc's rotation; the
+ * component sets no `transform` attribute on it.
  */
 .led-sweep-ring {
   --led-lap: calc((var(--led-sweep) + 0.25) / 2);

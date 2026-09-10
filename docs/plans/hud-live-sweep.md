@@ -204,8 +204,8 @@ sweep while tokens flow, not while the agent waits.
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Stop fix       | Phase E, the quiet-path lane. The renderer-side cut is the fallback.                                                                                                |
 | Off delay      | 30 s after the last transcript write, through a `quiet` event on the bus (phase G). `idle` and the session list keep 180 s. Agreed 2026-09-11.                      |
-| Sweep pace     | 5 s cycle, about 1.6 s crossing: the shimmer's pace, slowed 1 s on 2026-09-11. One `--led-sweep-cycle` variable to tune.                                            |
-| Band width     | About six dots on the HUD, so a fifth of the bar. The same fraction on the popover's 32-segment meter.                                                              |
+| Sweep pace     | 4000 ms cycle, about a 2 s crossing: the session list shimmer's cycle on every surface, set on 2026-09-11. One `--led-sweep-cycle` variable to tune.                |
+| Band width     | About three dots on the HUD, so a seventh of the bar. The same fraction on the popover's 32-segment meter.                                                          |
 | Reduced motion | Steady brand tint on the next unlit segment; the ring's next eighth.                                                                                                |
 | Where it lands | E and the actor half of G on `feat/session-lifecycle-bus` (#489); F and the renderer half of G on `feat/hud-session-blink` (#490), which gets a new title and body. |
 
@@ -227,19 +227,31 @@ sweep while tokens flow, not while the agent waits.
   little more subtle in HUD, less subtle in the menubar view".
   `--led-gleam-peak` on `.led-clock` caps the gleam and the ring's gleam at
   0.7 in the popover; the HUD's clock hosts add `led-clock-soft`, which sets
-  0.35. The reduced-motion mark stays at full, because it is a steady colour
-  and not a change.
-- **Four brightness levels, not a ramp.** Keith, the same day: "rather
+  0.245 after Keith, on the four-level build: "make HUD color change 30%
+  more subtle". The reduced-motion mark stays at full, because it is a
+  steady colour and not a change.
+- **Two brightness levels, not a ramp.** Keith, the same day: "rather
   than a perfect gradient, lets try instead giving the LEDs 4 brightness
-  options, and applying the gradient to that". `round(up, …, 1/3)` on the
-  band's profile steps each segment through off, one third, two thirds,
-  and the peak, so the band hops a segment at a time. `--led-gleam-steps`
-  on `.led-clock` holds the count. A webview without `round()` keeps the
-  ramp. The ring's fade stays smooth; it is an arc, not a lamp.
-- **The cycle is 5 s, not the shimmer's 4 s.** Keith, the same day: "slow
-  animation down by 1 second". The travel phase stays half the cycle, so a
-  bar crossing takes about 1.6 s instead of 1.25 s, and `--led-row-lag`
-  drops to 0.08 bar lengths to keep the rows 100 ms apart.
+  options, and applying the gradient to that", then, on the four-level
+  build: "Try 2 brightness levels only". `round(up, …, 1/1)` on the band's
+  profile puts each segment at off or at the peak, so the band hops a
+  segment at a time. `--led-gleam-steps` on `.led-clock` holds the count.
+  The band narrowed from about six segments to about three with the second
+  step, because six segments at the peak together read as a block and not
+  as a gleam. A webview without `round()` keeps the ramp. The ring's fade
+  stays smooth; it is an arc, not a lamp.
+- **The cycle is the session list shimmer's, on both surfaces.** Keith,
+  the same day, moved the pace three times: "slow animation down by 1
+  second", then "slow down animation by 1.5 second for the menubar VU
+  meter", then "Set timing of VU meter in menubar and HUD to be the same as
+  the animation timings for the active session in the session list". The
+  shimmer runs a 4000 ms linear cycle with no rest and crosses its title in
+  half of one, so `--led-sweep-cycle` is 4000 ms on `.led-clock` and the
+  keyframes run the travel across the complete cycle. A bar crossing takes
+  about 2 s, and `--led-row-lag` is 0.05 bar lengths, which is 100 ms. The
+  cycle is a literal, not a shared token: `--activity-row-shimmer-cycle`
+  sits on `.activity-row-active` and does not reach the HUD. A comment in
+  each stylesheet names the other.
 - **The gleam takes a shade of the segment's own colour.** Keith, the same
   day: the sweep must "accommodate dark mode for the various models, which
   might use white (for openAI)". The OpenAI bar takes `--color-label`, near
@@ -257,8 +269,8 @@ sweep while tokens flow, not while the agent waits.
   the session at once.
 - **The sweep position runs in bar lengths.** The pseudo-element formula in
   the plan multiplied by the segment count; the built one divides the
-  segment index by it instead, so the band is the same share of every bar
-  and the row lag is 100 ms on every bar length.
+  segment index by it instead, so the band and the row lag are the same
+  share of every bar, whatever its length.
 
 ## Out of scope
 

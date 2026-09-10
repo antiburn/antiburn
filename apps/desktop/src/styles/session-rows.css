@@ -1,6 +1,7 @@
 /* These styles show active sessions with a title shimmer. */
 
 .activity-row-active {
+  /* The live meters sweep on this cycle too. See `--led-sweep-cycle` in hud.css. */
   --activity-row-shimmer-cycle: 4000ms;
 }
 

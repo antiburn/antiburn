@@ -182,13 +182,12 @@ switch and in Mission Control.
   detail window does not sweep. The popover sweeps the same providers from
   the same events: every usage meter of the provider on the open bar, and
   its ring on the closed bar.
-- The sweep is a gleam about six segments wide that crosses the lit
-  segments from the left. An unlit segment does not move. A segment steps
-  through four brightness levels, off, one third, two thirds, and the peak,
-  instead of a smooth ramp: the band's centre segment holds the peak, its
-  neighbours two thirds, the next pair one third, and the band hops a
+- The sweep is a gleam about three segments wide that crosses the lit
+  segments from the left. An unlit segment does not move. A segment takes
+  two brightness levels, off and the peak, instead of a smooth ramp: the
+  three segments of the band hold the peak together, and the band hops a
   segment at a time, like a lamp. The gleam peaks
-  at about a third of full strength on the HUD, which floats over the
+  at about a quarter of full strength on the HUD, which floats over the
   reader's work, and at 0.7 in the popover, which the reader opened. A
   segment keeps its colour under it either way. Above a dark
   segment the gleam is the shimmer white the session list runs across a
@@ -201,10 +200,12 @@ switch and in Mission Control.
   the closed popover bar the gleam runs from twelve o'clock to the end of
   the ring's arc and fades there; a ring under an eighth flashes its first
   eighth in the brand tint.
-- The cycle is 5 seconds: the band crosses the bar in about 1.6 seconds
-  and the bar rests for the remainder. A provider's rows run 100
-  milliseconds apart from the top. With no bars at all, the one empty bar
-  sweeps for any live session.
+- The cycle is 4 seconds, the cycle of the shimmer the session list runs
+  across a running session's title, on the HUD and in the popover alike: a
+  live session moves at one pace on every surface. The band crosses the bar
+  in about 2 seconds, half the cycle, and the bar rests for the remainder.
+  A provider's rows run 100 milliseconds apart from the top. With no bars at
+  all, the one empty bar sweeps for any live session.
 - One animation drives every live meter on a surface, and each segment
   reads the sweep position from it. A CSS animation starts when the browser
   applies it, so a meter with its own animation keeps its own clock. The
