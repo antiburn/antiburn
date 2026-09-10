@@ -46,6 +46,7 @@ export default defineConfig(({ command, mode }) => ({
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         mainWindow: fileURLToPath(new URL("./main.html", import.meta.url)),
+        nativePeek: fileURLToPath(new URL("./native-peek.html", import.meta.url)),
         onboarding: fileURLToPath(new URL("./onboarding.html", import.meta.url)),
         settings: fileURLToPath(new URL("./settings.html", import.meta.url)),
       },
