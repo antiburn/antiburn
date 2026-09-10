@@ -7,6 +7,7 @@ import {
 } from "react"
 
 import { cn } from "../../lib/cn"
+import { livePhaseStyle } from "../../lib/livePhase"
 
 /**
  * Track whether the element overflows its box.
@@ -73,8 +74,10 @@ export function TruncatedText({
   const lineLimit = Number.isFinite(lines) ? Math.max(1, Math.floor(lines)) : 1
   const ref = useRef<HTMLDivElement | null>(null)
   const truncated = useTruncated(ref, text, lineLimit)
-  const lineStyle =
-    lineLimit > 1 ? ({ "--truncated-text-lines": lineLimit } as CSSProperties) : undefined
+  const style: CSSProperties = {}
+  if (lineLimit > 1) Object.assign(style, { "--truncated-text-lines": lineLimit })
+  // The shimmer keeps the phase of every other live animation on screen.
+  if (shimmer) Object.assign(style, livePhaseStyle("--activity-row-shimmer-delay"))
 
   return (
     <div
@@ -84,7 +87,7 @@ export function TruncatedText({
         lineLimit === 1 ? "truncate" : "truncated-text-lines",
         shimmer && "activity-row-title-shimmer",
       )}
-      style={lineStyle}
+      style={style}
       title={truncated ? text : undefined}
       data-text={shimmer ? text : undefined}
       aria-label={shimmer ? text : undefined}

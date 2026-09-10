@@ -1,6 +1,8 @@
 import { cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { LIVE_CYCLE_MS } from "../../lib/livePhase"
+
 import { TruncatedText } from "./TruncatedText"
 
 afterEach(cleanup)
@@ -19,6 +21,12 @@ describe("TruncatedText", () => {
     expect(el.getAttribute("data-text")).toBe("Running session")
     expect(el.getAttribute("aria-label")).toBe("Running session")
     expect(el.className).toContain("activity-row-title-shimmer")
+    // The shimmer takes the phase every live animation on screen shares. The
+    // wall clock moves between the render and the check, so the check reads
+    // the shape of the delay and not one instant of it.
+    const delay = el.style.getPropertyValue("--activity-row-shimmer-delay")
+    expect(delay).toMatch(/^-\d+ms$/)
+    expect(-Number.parseInt(delay, 10)).toBeLessThan(LIVE_CYCLE_MS)
   })
 
   it("reveals the full value once the text is actually cut off", () => {

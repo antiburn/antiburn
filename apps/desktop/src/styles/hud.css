@@ -147,14 +147,17 @@ body[data-transparent-window] #root {
  * in phase, whenever a row joins.
  *
  * The position runs in bar lengths: 0 is the left end of a bar and 1 is the
- * right end. It travels at a constant rate from before the left end to past
- * the right end, and the band is off the bar at each end of the cycle. Each
- * row starts `--led-row-lag` bar lengths after the row above it.
+ * right end. It travels at a constant rate from half a bar before the left
+ * end to half a bar past the right end, and the band is off the bar at each
+ * end of the cycle. Each row starts `--led-row-lag` bar lengths after the row
+ * above it.
  *
- * The pace is the session list's title shimmer: the same cycle, and a band
- * that also crosses its subject in half of one. `--activity-row-shimmer-cycle`
- * in `session-rows.css` holds the same number for a running session's title.
- * A live session therefore moves at one pace on every surface.
+ * The pace is the session list's title shimmer, cycle and phase alike. That
+ * shimmer moves its band from half a title before the text to half a title
+ * past it, over one `--activity-row-shimmer-cycle` in `session-rows.css`, so
+ * this travel copies the range as well as the number. `livePhaseDelay` in
+ * `src/lib/livePhase.ts` starts both at the same point of the cycle. The
+ * band and the shimmer therefore cross their subjects together.
  *
  * `--led-gleam-peak` caps the gleam. The popover keeps the default; the HUD
  * adds `led-clock-soft`, because it floats over the reader's work and must
@@ -179,10 +182,12 @@ body[data-transparent-window] #root {
    * this is also its width in segments: about three dots of 20.
    */
   --led-band: 0.075;
-  --led-gleam-peak: 0.7;
+  --led-gleam-peak: 0.56;
   /* Lit levels between off and the peak: two brightness options in all. */
   --led-gleam-steps: 1;
   animation: led-sweep var(--led-sweep-cycle) linear infinite;
+  /* The shared phase. See `livePhaseDelay` in src/lib/livePhase.ts. */
+  animation-delay: var(--led-sweep-delay, 0ms);
 }
 
 .led-clock-soft {
@@ -191,11 +196,11 @@ body[data-transparent-window] #root {
 
 @keyframes led-sweep {
   from {
-    --led-sweep: -0.25;
+    --led-sweep: -0.5;
   }
 
   to {
-    --led-sweep: 1.75;
+    --led-sweep: 1.5;
   }
 }
 
@@ -229,7 +234,7 @@ body[data-transparent-window] #root {
   inset: 0;
   border-radius: inherit;
   background: var(--color-shimmer);
-  opacity: calc(var(--led-glow) * var(--led-gleam-peak, 0.7));
+  opacity: calc(var(--led-glow) * var(--led-gleam-peak, 0.56));
 }
 
 /*
@@ -241,7 +246,7 @@ body[data-transparent-window] #root {
 @supports (opacity: round(up, 0.5, 0.25)) {
   .led-sweep-dot::after {
     opacity: calc(
-      round(up, var(--led-glow), 1 / var(--led-gleam-steps, 1)) * var(--led-gleam-peak, 0.7)
+      round(up, var(--led-glow), 1 / var(--led-gleam-steps, 1)) * var(--led-gleam-peak, 0.56)
     );
   }
 }
@@ -277,13 +282,13 @@ body[data-transparent-window] #root {
  * component sets no `transform` attribute on it.
  */
 .led-sweep-ring {
-  --led-lap: calc((var(--led-sweep) + 0.25) / 2);
+  --led-lap: calc((var(--led-sweep) + 0.5) / 2);
   stroke: var(--color-brand-tint);
   transform-origin: 16px 16px;
   transform: rotate(calc(-90deg + clamp(0, var(--led-lap), var(--led-ring-span, 0)) * 360deg));
   opacity: calc(
     clamp(0, calc(1 - (var(--led-lap) - var(--led-ring-span, 0)) / 0.15), 1) *
-      var(--led-gleam-peak, 0.7)
+      var(--led-gleam-peak, 0.56)
   );
 }
 

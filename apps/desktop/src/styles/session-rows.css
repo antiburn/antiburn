@@ -82,6 +82,8 @@
   color: transparent;
   -webkit-text-fill-color: transparent;
   animation: activity-row-title-shimmer var(--activity-row-shimmer-cycle) linear infinite;
+  /* The shared phase. See `livePhaseDelay` in src/lib/livePhase.ts. */
+  animation-delay: var(--activity-row-shimmer-delay, 0ms);
 }
 
 .activity-row-title-shimmer.truncated-text-lines::before {

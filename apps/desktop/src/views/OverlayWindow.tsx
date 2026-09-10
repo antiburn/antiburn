@@ -3,6 +3,7 @@ import { useCallback, useState, useSyncExternalStore } from "react"
 import { X } from "lucide-react"
 
 import { LedBar } from "../components/ui/LedBar"
+import { livePhaseStyle } from "../lib/livePhase"
 import type { UsageBarItem } from "../lib/usageBars"
 import { OverlaySession } from "./overlay/OverlaySession"
 
@@ -66,6 +67,7 @@ export function OverlayWindow() {
         {state.bars.length === 0 ? (
           <div
             className={`pointer-events-none ${state.sessionLive ? "led-clock led-clock-soft" : ""}`.trimEnd()}
+            style={state.sessionLive ? livePhaseStyle("--led-sweep-delay") : undefined}
           >
             <LedBar segments={HUD_SEGMENTS} split={[]} live={state.sessionLive} />
           </div>
@@ -74,6 +76,9 @@ export function OverlayWindow() {
           // bars stay in phase whenever each bar joined.
           <div
             className={`pointer-events-none space-y-[3px] ${state.liveProviders.length > 0 ? "led-clock led-clock-soft" : ""}`.trimEnd()}
+            style={
+              state.liveProviders.length > 0 ? livePhaseStyle("--led-sweep-delay") : undefined
+            }
           >
             {state.bars.map((bar, index) => (
               <LedBar

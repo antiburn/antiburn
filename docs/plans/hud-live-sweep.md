@@ -204,7 +204,7 @@ sweep while tokens flow, not while the agent waits.
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Stop fix       | Phase E, the quiet-path lane. The renderer-side cut is the fallback.                                                                                                |
 | Off delay      | 30 s after the last transcript write, through a `quiet` event on the bus (phase G). `idle` and the session list keep 180 s. Agreed 2026-09-11.                      |
-| Sweep pace     | 4000 ms cycle, about a 2 s crossing: the session list shimmer's cycle on every surface, set on 2026-09-11. One `--led-sweep-cycle` variable to tune.                |
+| Sweep pace     | 4000 ms cycle, about a 2 s crossing: the session list shimmer's cycle and phase on every surface, set on 2026-09-11. One `--led-sweep-cycle` variable to tune.     |
 | Band width     | About three dots on the HUD, so a seventh of the bar. The same fraction on the popover's 32-segment meter.                                                          |
 | Reduced motion | Steady brand tint on the next unlit segment; the ring's next eighth.                                                                                                |
 | Where it lands | E and the actor half of G on `feat/session-lifecycle-bus` (#489); F and the renderer half of G on `feat/hud-session-blink` (#490), which gets a new title and body. |
@@ -226,10 +226,11 @@ sweep while tokens flow, not while the agent waits.
   subtle, like 50% less change", then on the half-strength build: "even a
   little more subtle in HUD, less subtle in the menubar view".
   `--led-gleam-peak` on `.led-clock` caps the gleam and the ring's gleam at
-  0.7 in the popover; the HUD's clock hosts add `led-clock-soft`, which sets
-  0.245 after Keith, on the four-level build: "make HUD color change 30%
-  more subtle". The reduced-motion mark stays at full, because it is a
-  steady colour and not a change.
+  0.56 in the popover, after Keith, on the two-level build: "make VU in
+  menubar color change a bit more subtle". The HUD's clock hosts add
+  `led-clock-soft`, which sets 0.245, after Keith on the four-level build:
+  "make HUD color change 30% more subtle". The reduced-motion mark stays at
+  full, because it is a steady colour and not a change.
 - **Two brightness levels, not a ramp.** Keith, the same day: "rather
   than a perfect gradient, lets try instead giving the LEDs 4 brightness
   options, and applying the gradient to that", then, on the four-level
@@ -252,6 +253,22 @@ sweep while tokens flow, not while the agent waits.
   cycle is a literal, not a shared token: `--activity-row-shimmer-cycle`
   sits on `.activity-row-active` and does not reach the HUD. A comment in
   each stylesheet names the other.
+- **The shimmer and the sweep share a phase, not only a cycle.** Keith, the
+  same day: "align timing of sessions list and the VU meter". A CSS
+  animation starts when the browser applies it, so two animations of one
+  cycle still sit at different points of it. `livePhaseDelay` in
+  `src/lib/livePhase.ts` returns the wall clock within the cycle as a
+  negative `animation-delay`, which puts every element at the same point,
+  whenever it mounts. The session row's title, the popover's meters, and the
+  HUD's meters each set it as a custom property the stylesheet reads. The
+  clock is `Date.now`, so the HUD's webview and the popover's agree. The
+  travel range copies the shimmer's as well: the band runs from half a bar
+  before the left end to half a bar past the right end, as the shimmer's
+  band runs from half a title before the text to half a title past it. One
+  cycle alone was not enough, because the sweep then crossed its bar 500 ms
+  before the shimmer crossed its title. Measured in Chrome: the sweep
+  position now equals the shimmer's band centre at each eighth of the
+  cycle.
 - **The gleam takes a shade of the segment's own colour.** Keith, the same
   day: the sweep must "accommodate dark mode for the various models, which
   might use white (for openAI)". The OpenAI bar takes `--color-label`, near

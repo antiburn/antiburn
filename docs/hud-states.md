@@ -188,7 +188,8 @@ switch and in Mission Control.
   three segments of the band hold the peak together, and the band hops a
   segment at a time, like a lamp. The gleam peaks
   at about a quarter of full strength on the HUD, which floats over the
-  reader's work, and at 0.7 in the popover, which the reader opened. A
+  reader's work, and at a bit over half in the popover, which the reader
+  opened. A
   segment keeps its colour under it either way. Above a dark
   segment the gleam is the shimmer white the session list runs across a
   running session's title, because the bar colours sit too close to the
@@ -202,7 +203,11 @@ switch and in Mission Control.
   eighth in the brand tint.
 - The cycle is 4 seconds, the cycle of the shimmer the session list runs
   across a running session's title, on the HUD and in the popover alike: a
-  live session moves at one pace on every surface. The band crosses the bar
+  live session moves at one pace on every surface. The two also share a
+  phase. A CSS animation starts when the browser applies it, so each
+  animation takes a negative delay of the wall clock within the cycle, and
+  a title shimmer and a meter sweep move in step whenever either one
+  starts. The band crosses the bar
   in about 2 seconds, half the cycle, and the bar rests for the remainder.
   A provider's rows run 100 milliseconds apart from the top. With no bars at
   all, the one empty bar sweeps for any live session.

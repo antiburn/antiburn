@@ -3,6 +3,7 @@ import { useId, type ReactNode } from "react"
 
 import type { AnchoredTriggerActivation } from "../../lib/anchoredTrigger"
 import { cn } from "../../lib/cn"
+import { livePhaseStyle } from "../../lib/livePhase"
 import { measureAnchorRegion, type AnchorRegion } from "../../lib/anchorRegion"
 import type {
   LiveProviderUsagePayload,
@@ -128,6 +129,7 @@ export function UsageLimitsBar({
     <div
       data-testid="usage-limits-bar"
       className={cn("relative shrink-0", liveProviders.length > 0 && "led-clock")}
+      style={liveProviders.length > 0 ? livePhaseStyle("--led-sweep-delay") : undefined}
     >
       {!expanded && (
         <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
