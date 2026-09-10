@@ -449,10 +449,6 @@ impl SessionMetricsAccumulator {
             usage_slot.cache_write_tokens = slot.cache_write_tokens;
             usage_slot.subagent_tokens = slot.subagent_tokens;
             usage_slot.context_tokens = slot.context_tokens;
-            usage_slot.has_thinking = slot.has_thinking;
-            usage_slot.model = slot.model;
-            usage_slot.thinking_mode = slot.thinking_mode;
-            usage_slot.speed = slot.speed;
             usage_slot.first_gap = slot.first_gap;
             usage_slot.cache_mode_1 = slot.cache_mode_1;
 
