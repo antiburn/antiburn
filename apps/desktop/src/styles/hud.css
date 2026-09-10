@@ -147,9 +147,13 @@ body[data-transparent-window] #root {
  * in phase, whenever a row joins.
  *
  * The position runs in bar lengths: 0 is the left end of a bar and 1 is the
- * right end. It travels at one bar per second from before the left end to
- * past the right end, then holds while the bar rests. Each row starts
+ * right end. It travels at 0.8 bar lengths per second from before the left
+ * end to past the right end, then holds while the bar rests. Each row starts
  * `--led-row-lag` bar lengths after the row above it, which is 100 ms.
+ *
+ * `--led-gleam-peak` caps the gleam. The popover keeps the default; the HUD
+ * adds `led-clock-soft`, because it floats over the reader's work and must
+ * stay quieter than a panel they opened.
  */
 @property --led-sweep {
   syntax: "<number>";
@@ -158,12 +162,19 @@ body[data-transparent-window] #root {
 }
 
 .led-clock {
-  /* The full cycle. The band crosses a bar in about 1.25 s of it. */
-  --led-sweep-cycle: 4s;
-  --led-row-lag: 0.1;
+  /* The full cycle. The band crosses a bar in about 1.6 s of it. */
+  --led-sweep-cycle: 5s;
+  --led-row-lag: 0.08;
   /* Half the band's width, as a share of the bar: about three dots of 20. */
   --led-band: 0.15;
+  --led-gleam-peak: 0.7;
+  /* Lit levels between off and the peak: four brightness options in all. */
+  --led-gleam-steps: 3;
   animation: led-sweep var(--led-sweep-cycle) linear infinite;
+}
+
+.led-clock-soft {
+  --led-gleam-peak: 0.35;
 }
 
 @keyframes led-sweep {
@@ -188,22 +199,58 @@ body[data-transparent-window] #root {
  * across a running session's title: a lit segment is already near the brand
  * tint, and a 6 px dot cannot show the tint above it. The one segment that
  * sweeps unlit, the first of a bar with nothing lit, takes the brand tint.
+ * The gleam peaks at `--led-gleam-peak`, well under full, so the segment
+ * keeps its colour under it.
  */
 .led-sweep-dot::after {
   --led-pos: calc(
     var(--led-sweep) - var(--led-row, 0) * var(--led-row-lag, 0.1) -
       (var(--led-index, 0) + 0.5) / var(--led-segments, 20)
   );
+  /* The band's profile: 1 at its centre, 0 at its edge. */
+  --led-glow: clamp(
+    0,
+    calc(1 - max(var(--led-pos), -1 * var(--led-pos)) / var(--led-band, 0.15)),
+    1
+  );
   content: "";
   position: absolute;
   inset: 0;
   border-radius: inherit;
   background: var(--color-shimmer);
-  opacity: clamp(
-    0,
-    calc(1 - max(var(--led-pos), -1 * var(--led-pos)) / var(--led-band, 0.15)),
-    1
-  );
+  opacity: calc(var(--led-glow) * var(--led-gleam-peak, 0.7));
+}
+
+/*
+ * A LED is a lamp, and a lamp steps. The gleam takes four brightness levels,
+ * off, one third, two thirds, and the peak, instead of a smooth ramp: the
+ * centre segment holds the peak, its neighbours two thirds, the next pair
+ * one third, and the band hops a segment at a time. A webview without
+ * `round()` keeps the ramp.
+ */
+@supports (opacity: round(up, 0.5, 0.25)) {
+  .led-sweep-dot::after {
+    opacity: calc(
+      round(up, var(--led-glow), 1 / var(--led-gleam-steps, 3)) * var(--led-gleam-peak, 0.7)
+    );
+  }
+}
+
+/*
+ * A segment that carries its own colour in `--led-color` takes a gleam made
+ * from it: white above a dark segment, a dark shade of the same hue above a
+ * light one. A provider whose bar is the label colour is near white in dark
+ * mode, and white above white shows nothing. The step sits at an oklch
+ * lightness of 0.85; every bar colour of a vendor sits below it. A webview
+ * without relative colour syntax keeps the white gleam.
+ */
+@supports (color: oklch(from red l c h)) {
+  .led-sweep-dot[data-led-lit]::after {
+    background: oklch(
+      from var(--led-color, var(--color-brand-tint))
+        calc(1 - clamp(0, (l - 0.85) * 40, 1) * 0.65) c h / 1
+    );
+  }
 }
 
 .led-sweep-dot:not([data-led-lit])::after {
@@ -224,7 +271,10 @@ body[data-transparent-window] #root {
   stroke: var(--color-brand-tint);
   transform-origin: 16px 16px;
   transform: rotate(calc(-90deg + clamp(0, var(--led-lap), var(--led-ring-span, 0)) * 360deg));
-  opacity: clamp(0, calc(1 - (var(--led-lap) - var(--led-ring-span, 0)) / 0.15), 1);
+  opacity: calc(
+    clamp(0, calc(1 - (var(--led-lap) - var(--led-ring-span, 0)) / 0.15), 1) *
+      var(--led-gleam-peak, 0.7)
+  );
 }
 
 .led-sweep-ring[data-led-lit] {

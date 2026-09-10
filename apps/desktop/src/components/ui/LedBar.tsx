@@ -69,6 +69,9 @@ export function LedBar({
         const style: CSSProperties = {}
         if (hit) style.backgroundColor = hit.color
         if (sweeping) Object.assign(style, { "--led-index": index })
+        // The stylesheet derives the gleam from the segment's own colour, so a
+        // provider whose bar is near white still shows the sweep.
+        if (sweeping && hit) Object.assign(style, { "--led-color": hit.color })
         return (
           <span
             key={index}

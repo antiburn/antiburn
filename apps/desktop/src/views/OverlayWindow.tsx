@@ -65,7 +65,7 @@ export function OverlayWindow() {
 
         {state.bars.length === 0 ? (
           <div
-            className={`pointer-events-none ${state.sessionLive ? "led-clock" : ""}`.trimEnd()}
+            className={`pointer-events-none ${state.sessionLive ? "led-clock led-clock-soft" : ""}`.trimEnd()}
           >
             <LedBar segments={HUD_SEGMENTS} split={[]} live={state.sessionLive} />
           </div>
@@ -73,7 +73,7 @@ export function OverlayWindow() {
           // `led-clock` runs the one sweep clock every live bar reads, so the
           // bars stay in phase whenever each bar joined.
           <div
-            className={`pointer-events-none space-y-[3px] ${state.liveProviders.length > 0 ? "led-clock" : ""}`.trimEnd()}
+            className={`pointer-events-none space-y-[3px] ${state.liveProviders.length > 0 ? "led-clock led-clock-soft" : ""}`.trimEnd()}
           >
             {state.bars.map((bar, index) => (
               <LedBar

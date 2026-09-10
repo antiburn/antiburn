@@ -183,15 +183,25 @@ switch and in Mission Control.
   the same events: every usage meter of the provider on the open bar, and
   its ring on the closed bar.
 - The sweep is a gleam about six segments wide that crosses the lit
-  segments from the left. An unlit segment does not move. The gleam is the
-  shimmer white the session list runs across a running session's title,
-  because the bar colours sit too close to the brand tint for a 6-pixel dot
-  to show the tint above them. A bar with nothing lit flashes its first
-  segment in the brand tint as the sweep passes, so a session at zero usage
-  still shows. On the closed popover bar the gleam runs from twelve o'clock
-  to the end of the ring's arc and fades there; a ring under an eighth
-  flashes its first eighth in the brand tint.
-- The cycle is 4 seconds: the band crosses the bar in about 1.25 seconds
+  segments from the left. An unlit segment does not move. A segment steps
+  through four brightness levels, off, one third, two thirds, and the peak,
+  instead of a smooth ramp: the band's centre segment holds the peak, its
+  neighbours two thirds, the next pair one third, and the band hops a
+  segment at a time, like a lamp. The gleam peaks
+  at about a third of full strength on the HUD, which floats over the
+  reader's work, and at 0.7 in the popover, which the reader opened. A
+  segment keeps its colour under it either way. Above a dark
+  segment the gleam is the shimmer white the session list runs across a
+  running session's title, because the bar colours sit too close to the
+  brand tint for a 6-pixel dot to show the tint above them. Above a light
+  segment it is a dark shade of the segment's own hue: the OpenAI bar takes
+  the label colour, which is near white in dark mode, and white above white
+  shows nothing. A bar with nothing lit flashes its first segment in the
+  brand tint as the sweep passes, so a session at zero usage still shows. On
+  the closed popover bar the gleam runs from twelve o'clock to the end of
+  the ring's arc and fades there; a ring under an eighth flashes its first
+  eighth in the brand tint.
+- The cycle is 5 seconds: the band crosses the bar in about 1.6 seconds
   and the bar rests for the remainder. A provider's rows run 100
   milliseconds apart from the top. With no bars at all, the one empty bar
   sweeps for any live session.

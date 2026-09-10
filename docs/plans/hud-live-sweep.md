@@ -204,7 +204,7 @@ sweep while tokens flow, not while the agent waits.
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Stop fix       | Phase E, the quiet-path lane. The renderer-side cut is the fallback.                                                                                                |
 | Off delay      | 30 s after the last transcript write, through a `quiet` event on the bus (phase G). `idle` and the session list keep 180 s. Agreed 2026-09-11.                      |
-| Sweep pace     | 4 s cycle, about 1.3 s crossing, from the title shimmer. One `--led-sweep-cycle` variable to tune.                                                                  |
+| Sweep pace     | 5 s cycle, about 1.6 s crossing: the shimmer's pace, slowed 1 s on 2026-09-11. One `--led-sweep-cycle` variable to tune.                                            |
 | Band width     | About six dots on the HUD, so a fifth of the bar. The same fraction on the popover's 32-segment meter.                                                              |
 | Reduced motion | Steady brand tint on the next unlit segment; the ring's next eighth.                                                                                                |
 | Where it lands | E and the actor half of G on `feat/session-lifecycle-bus` (#489); F and the renderer half of G on `feat/hud-session-blink` (#490), which gets a new title and body. |
@@ -221,6 +221,34 @@ sweep while tokens flow, not while the agent waits.
   rule: its gleam runs from twelve o'clock to the end of the reading's arc
   and fades there, and a ring under an eighth flashes its first eighth in
   the tint. The reduced-motion mark is unchanged.
+- **The gleam peaks well under full, and lower on the HUD.** Keith,
+  2026-09-11, on the lit-only build: "animation colour should be more
+  subtle, like 50% less change", then on the half-strength build: "even a
+  little more subtle in HUD, less subtle in the menubar view".
+  `--led-gleam-peak` on `.led-clock` caps the gleam and the ring's gleam at
+  0.7 in the popover; the HUD's clock hosts add `led-clock-soft`, which sets
+  0.35. The reduced-motion mark stays at full, because it is a steady colour
+  and not a change.
+- **Four brightness levels, not a ramp.** Keith, the same day: "rather
+  than a perfect gradient, lets try instead giving the LEDs 4 brightness
+  options, and applying the gradient to that". `round(up, …, 1/3)` on the
+  band's profile steps each segment through off, one third, two thirds,
+  and the peak, so the band hops a segment at a time. `--led-gleam-steps`
+  on `.led-clock` holds the count. A webview without `round()` keeps the
+  ramp. The ring's fade stays smooth; it is an arc, not a lamp.
+- **The cycle is 5 s, not the shimmer's 4 s.** Keith, the same day: "slow
+  animation down by 1 second". The travel phase stays half the cycle, so a
+  bar crossing takes about 1.6 s instead of 1.25 s, and `--led-row-lag`
+  drops to 0.08 bar lengths to keep the rows 100 ms apart.
+- **The gleam takes a shade of the segment's own colour.** Keith, the same
+  day: the sweep must "accommodate dark mode for the various models, which
+  might use white (for openAI)". The OpenAI bar takes `--color-label`, near
+  white in dark mode, and the white gleam vanished on it. `LedBar` hands each
+  lit segment's colour to the stylesheet in `--led-color`, and relative
+  colour syntax turns it into the gleam: white above a segment under oklch
+  lightness 0.85, a dark shade of the same hue above one over it. A webview
+  without the syntax keeps the white gleam. `SegmentedMeter` and the ring
+  paint only the brand and red tints, so they stay on the shimmer white.
 - **The renderer keeps a local 30 s clock for keyed sessions too.** The plan
   had the bus's `quiet` event end the sweep by itself. A snapshot that lists
   a session written 20 s ago, or a missed event, then needs a timer anyway,

@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../lib/ipc"
+import { providerBarColor } from "../lib/usageBars"
 import type { LiveUsageSummaryPayload } from "../lib/ipc"
 import { OverlayWindow } from "./OverlayWindow"
 
@@ -588,6 +589,8 @@ describe("OverlayWindow", () => {
     // late a bar joined the sweep.
     await waitFor(() => expect(container.querySelector(".led-clock")).not.toBeNull())
     expect(container.querySelectorAll(".led-clock")).toHaveLength(1)
+    // The HUD floats over the reader's work, so its gleam runs softer.
+    expect(container.querySelector(".led-clock")).toHaveClass("led-clock-soft")
     expect(
       container.querySelector(".led-clock")?.querySelectorAll(".led-sweep-dot"),
     ).toHaveLength(32)
@@ -627,6 +630,9 @@ describe("OverlayWindow", () => {
     expect(dots[15]?.style.backgroundColor).not.toBe("")
     expect(dots[15]?.style.getPropertyValue("--led-index")).toBe("15")
     expect(dots[15]).toHaveClass("led-sweep-dot")
+    // The stylesheet derives the gleam from the segment's own colour. jsdom
+    // normalises the background to rgb; the custom property keeps the source.
+    expect(dots[15]?.style.getPropertyValue("--led-color")).toBe(providerBarColor("anthropic"))
     // The unlit segment does not move. It keeps the unlit colour and only
     // holds the still mark under reduced motion.
     expect(dots[16]).toHaveAttribute("data-led-next", "true")

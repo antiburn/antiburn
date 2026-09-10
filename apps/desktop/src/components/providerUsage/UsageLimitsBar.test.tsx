@@ -216,6 +216,11 @@ describe("UsageLimitsBar — the live sweep", () => {
     expect(live.container.querySelector('[data-testid="usage-limits-bar"]')).toHaveClass(
       "led-clock",
     )
+    // The popover is a panel the reader opened, so its gleam runs at the
+    // full peak; only the floating HUD softens it.
+    expect(live.container.querySelector('[data-testid="usage-limits-bar"]')).not.toHaveClass(
+      "led-clock-soft",
+    )
     const dark = bar({ live: twoProviders(), expanded: true })
     expect(dark.container.querySelector('[data-testid="usage-limits-bar"]')).not.toHaveClass(
       "led-clock",
