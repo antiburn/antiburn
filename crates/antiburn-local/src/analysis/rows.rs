@@ -131,6 +131,12 @@ pub const TURN_SCHEMA_V6_SQL: &str = r#"
 CREATE INDEX turn_uuid ON turn (uuid) WHERE uuid IS NOT NULL;
 "#;
 
+/// Preserve each request's route. Existing rows have unknown routes until a full parse replaces them.
+pub const TURN_SCHEMA_V7_SQL: &str = r#"
+ALTER TABLE turn ADD COLUMN provider TEXT;
+ALTER TABLE turn ADD COLUMN api TEXT;
+"#;
+
 /// DDL for the `session_coverage` table: one row per `(environment_key,
 /// agent, session_id, claim_fence)`, holding the serialized
 /// [`SessionCoverageRecord`] a pass wrote alongside its turn rows under the
@@ -201,7 +207,7 @@ CREATE TABLE source_resume (
 /// [`TURN_SCHEMA_V2_SQL`], [`TURN_SCHEMA_V3_SQL`],
 /// [`SESSION_COVERAGE_SCHEMA_SQL`], [`TURN_SCHEMA_V4_SQL`],
 /// [`SOURCE_RESUME_SCHEMA_SQL`], [`TURN_SCHEMA_V5_SQL`], and
-/// [`TURN_SCHEMA_V6_SQL`] as its own migrations instead, since
+/// [`TURN_SCHEMA_V6_SQL`], and [`TURN_SCHEMA_V7_SQL`] as its own migrations instead, since
 /// [`TURN_SCHEMA_SQL`] is already applied on user machines.
 pub const TURN_MIGRATIONS: &[&str] = &[
     TURN_SCHEMA_SQL,
@@ -212,6 +218,7 @@ pub const TURN_MIGRATIONS: &[&str] = &[
     SOURCE_RESUME_SCHEMA_SQL,
     TURN_SCHEMA_V5_SQL,
     TURN_SCHEMA_V6_SQL,
+    TURN_SCHEMA_V7_SQL,
 ];
 
 /// Number of rows a [`TurnRowSink`] buffers before it writes them, unless the
@@ -261,6 +268,8 @@ pub struct TurnRow {
     pub role: &'static str,
     pub ts_ms: Option<i64>,
     pub model: Option<String>,
+    pub provider: Option<String>,
+    pub api: Option<String>,
     pub effort: Option<String>,
     pub speed: Option<String>,
     pub input_tokens: u64,
@@ -325,6 +334,16 @@ pub(crate) fn parse_role(value: &str) -> Option<&'static str> {
 /// its own child identity distinct from its parent file's `source_key`.
 /// Otherwise scope is `Main` with no `child_id`.
 pub fn turn_row_from_event(event: &NormalizedEvent, source_key: &str, turn_index: u64) -> TurnRow {
+    // An empty route field preserves an explicit unknown route when its source value exceeds the limit.
+    let route_field = |value: &Option<String>| {
+        value.as_ref().map(|value| {
+            if value.len() <= crate::analysis::EVIDENCE_STRING_CAP {
+                value.clone()
+            } else {
+                String::new()
+            }
+        })
+    };
     let thread_id = event
         .thread_id
         .clone()
@@ -342,6 +361,8 @@ pub fn turn_row_from_event(event: &NormalizedEvent, source_key: &str, turn_index
         role: role_key(event.role),
         ts_ms: event.ts_ms,
         model: event.model.clone(),
+        provider: route_field(&event.provider),
+        api: route_field(&event.api),
         effort: event.thinking_mode.clone(),
         speed: event.speed.clone(),
         input_tokens: event.usage.input_tokens,
@@ -635,10 +656,10 @@ const INSERT_TURN_SQL: &str = "INSERT INTO turn (
     input_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
     is_compaction_boundary, message_id, uuid, parent_uuid,
     compaction_trigger, compaction_pre_tokens, compaction_post_tokens,
-    has_thinking, last_tool, subagent_launches
+    has_thinking, last_tool, subagent_launches, provider, api
 ) VALUES (
     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28
+    ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30
 )";
 
 const INSERT_TURN_CONTENT_SQL: &str = "INSERT INTO turn_content (
@@ -689,6 +710,8 @@ pub fn insert_turn_rows(
             i64::from(row.has_thinking),
             row.last_tool,
             row.subagent_launches as i64,
+            row.provider,
+            row.api,
         ])?;
         if !row.content.is_empty() {
             let turn_rowid = conn.last_insert_rowid();
@@ -1358,6 +1381,8 @@ mod tests {
             role: "assistant",
             ts_ms: Some(1_000 + turn_index as i64),
             model: Some("claude-opus-4-6".to_owned()),
+            provider: None,
+            api: None,
             effort: None,
             speed: None,
             input_tokens: 10,
@@ -1376,6 +1401,71 @@ mod tests {
             subagent_launches: 0,
             content: Vec::new(),
         }
+    }
+
+    #[test]
+    fn route_migration_preserves_existing_rows_as_unknown_routes() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (
+            environment_key TEXT, agent TEXT, session_id TEXT,
+            PRIMARY KEY (environment_key, agent, session_id));
+            INSERT INTO session VALUES ('native', 'pi', 's1');",
+        )
+        .unwrap();
+        for migration in &TURN_MIGRATIONS[..TURN_MIGRATIONS.len() - 1] {
+            conn.execute_batch(migration).unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO turn (
+            environment_key, agent, session_id, claim_fence, source_key, thread_id,
+            turn_index, scope, role, model, input_tokens, cache_read_tokens,
+            cache_write_tokens, output_tokens, is_compaction_boundary
+        ) VALUES ('native', 'pi', 's1', 1, 's1', 's1', 0, 'main', 'assistant',
+                  'claude-sonnet-4-6', 100, 200, 300, 10, 0);",
+        )
+        .unwrap();
+        conn.execute_batch(TURN_SCHEMA_V7_SQL).unwrap();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "pi",
+            session_id: "s1",
+        };
+        let rows = crate::analysis::query_turn_rows(&conn, &key, &FenceScope::single(1)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].input_tokens, 100);
+        assert_eq!(rows[0].provider, None);
+        assert_eq!(rows[0].api, None);
+        let facts = query_turn_facts(&conn, &key, &FenceScope::single(1)).unwrap();
+        assert_eq!(facts.repeated_context_accounting, None);
+        assert!(facts.repeated_context_incomplete);
+    }
+
+    #[test]
+    fn request_routes_round_trip_without_truncating_unknown_routes_into_known_names() {
+        let conn = test_connection();
+        let key = TurnSessionKey {
+            environment_key: "native",
+            agent: "pi",
+            session_id: "s1",
+        };
+        insert_session(&conn, &key);
+        let mut event = NormalizedEvent::new(Role::Assistant);
+        event.provider = Some("anthropic".to_owned());
+        event.api = Some("anthropic-messages".to_owned());
+        let row = turn_row_from_event(&event, "s1", 0);
+        insert_turn_rows(&conn, &key, 1, std::slice::from_ref(&row)).unwrap();
+        let restored =
+            crate::analysis::query_turn_rows(&conn, &key, &FenceScope::single(1)).unwrap();
+        assert_eq!(restored, [row]);
+        let replayed = crate::analysis::replay::event_from_row(&restored[0]);
+        assert_eq!(replayed.provider, event.provider);
+        assert_eq!(replayed.api, event.api);
+        event.provider = Some("p".repeat(crate::analysis::EVIDENCE_STRING_CAP + 1));
+        event.api = Some("a".repeat(crate::analysis::EVIDENCE_STRING_CAP + 1));
+        let row = turn_row_from_event(&event, "s1", 1);
+        assert_eq!(row.provider.as_deref(), Some(""));
+        assert_eq!(row.api.as_deref(), Some(""));
     }
 
     #[test]

@@ -600,8 +600,8 @@ async fn test_opencode_discovers_recent_sqlite_sessions() {
     assert!(content.contains("\"cwd\":\"/repo\""));
 
     assert_eq!(
-        db_session_fingerprint_blocking(&db_path, "ses_db"),
-        Some((1_772_602_559_000, 3)),
+        db_session_fingerprint_blocking(&db_path, "ses_db").map(|(_, rows)| rows),
+        Some(3),
     );
 
     let located = run_with_data_dir(root, || async {
@@ -625,6 +625,44 @@ async fn test_opencode_discovers_recent_sqlite_sessions() {
     })
     .await;
     assert!(matches!(missing, DirectSessionSource::Missing));
+}
+
+#[test]
+fn db_session_fingerprint_detects_content_mutation_without_time_or_count_changes() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("opencode.db");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE session (
+                 id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT,
+                 time_created INTEGER, time_updated INTEGER, data TEXT);
+             CREATE TABLE message (
+                 id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER,
+                 time_updated INTEGER, data TEXT);
+             CREATE TABLE part (
+                 id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+                 time_created INTEGER, time_updated INTEGER, data TEXT);
+             INSERT INTO session VALUES
+                 ('ses_root', NULL, '/repo', 'Title', 10, 20, '{}');
+             INSERT INTO message VALUES
+                 ('msg_1', 'ses_root', 30, 40, '{\"role\":\"assistant\"}');
+             INSERT INTO part VALUES
+                 ('part_1', 'msg_1', 'ses_root', 50, 60, '{\"text\":\"first\"}');",
+        )
+        .unwrap();
+    let before = db_session_fingerprint_connection(&connection, "ses_root").unwrap();
+
+    connection
+        .execute(
+            "UPDATE part SET data = '{\"text\":\"other\"}' WHERE id = 'part_1'",
+            [],
+        )
+        .unwrap();
+    let after = db_session_fingerprint_connection(&connection, "ses_root").unwrap();
+
+    assert_eq!(before.1, after.1);
+    assert_ne!(before.0, after.0);
 }
 
 #[tokio::test]

@@ -371,6 +371,29 @@ pub(crate) async fn process_next(
     Ok(true)
 }
 
+pub(crate) async fn process_next_work(
+    store: &Store,
+    clock: &(dyn Fn() -> i64 + Send + Sync),
+    run_pass: &PassRunner<'_>,
+    announce: &(dyn Fn(ActivityEntry) + Send + Sync),
+) -> anyhow::Result<bool> {
+    let now = clock();
+    if let Some(recovery) = store.next_remediation_write_recovery(now)? {
+        crate::remediation::recover_uncertain_write(store, &recovery, now)?;
+        return Ok(true);
+    }
+    if let Some(remediation) = store.next_dirty_remediation()? {
+        let _ = crate::remediation::evaluate_dirty_remediation(
+            store.state_dir(),
+            store,
+            &remediation,
+            clock(),
+        )?;
+        return Ok(true);
+    }
+    process_next(store, clock, run_pass, announce).await
+}
+
 pub(crate) async fn worker_loop(
     store: &Store,
     handle: &WorkerHandle,
@@ -381,7 +404,7 @@ pub(crate) async fn worker_loop(
 ) {
     let mut processed = false;
     loop {
-        match process_next(store, clock, run_pass, announce).await {
+        match process_next_work(store, clock, run_pass, announce).await {
             Ok(true) => {
                 processed = true;
                 continue;

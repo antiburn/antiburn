@@ -21,17 +21,7 @@
             "state": "unsupported"
           },
           "repeatedContext": {
-            "state": "partial",
-            "value": {
-              "observed": {
-                "accounting": "cache_write",
-                "paidTokens": 0,
-                "pairsConsidered": 0,
-                "pairsSkipped": 0,
-                "repeatedTokens": 0
-              },
-              "reason": "unrecognized_record_type"
-            }
+            "state": "unsupported"
           },
           "userControlledChurn": {
             "manualCompactions": 0
@@ -46,13 +36,16 @@
       "fastTier": false,
       "harnessVersion": false,
       "linearRecordOrder": false,
+      "mcpInventory": false,
       "modelIdentity": true,
       "quotaIncidents": false,
       "reasoningEffortTier": true,
       "recordIdentity": true,
+      "repeatedContextAccounting": null,
       "requestContextTokens": true,
       "serviceTier": false,
-      "skillMcpAttribution": false,
+      "skillInventory": false,
+      "sourceFormat": "pi_v3_jsonl",
       "subagentModels": false,
       "subagentRelationships": false,
       "threadIdentity": true,
@@ -142,13 +135,16 @@
               "turns": 1
             }
           },
+          "controlObservations": [],
           "dominantMainModel": "model-a",
           "effortSignal": {
             "eligibleTurns": 1,
             "presentTurns": 0
           },
           "effortTiers": {},
+          "effortTiersByModel": {},
           "fastModes": {},
+          "fastModesByModel": {},
           "serviceTiers": {
             "state": "unsupported"
           },
@@ -162,20 +158,20 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 18,
-      "evidenceSchemaRevision": 14,
+      "analyzerRevision": 22,
+      "evidenceSchemaRevision": 18,
       "harnessVersion": {
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 28,
+      "parserRevision": 32,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 14,
+    "schemaRevision": 18,
     "subagents": {
       "state": "unsupported"
     },

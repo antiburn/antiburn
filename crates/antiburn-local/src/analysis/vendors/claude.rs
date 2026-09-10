@@ -16,11 +16,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
-use crate::analysis::initial_context::ClaudeContextAccumulator;
+use crate::analysis::initial_context::{ClaudeContextAccumulator, parse_markdown_bullet};
 use crate::analysis::interface::{
     ContextSourceKind, ContextWindowSource, EvidenceObservation, NormalizedRecord, RawSource,
-    RecordSink, ResumedVisit, SessionCollector, SessionInput, SessionSummary, TurnContent,
-    VendorAdapter, VisitOutcome,
+    RecordSink, ResumedVisit, SessionCollector, SessionInput, SessionReader, SessionSummary,
+    TurnContent, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, ToolCall, Usage};
 use crate::analysis::records::{
@@ -91,7 +91,7 @@ fn parse_uuid_u128(uuid: &str) -> Option<u128> {
 /// in `text` — the set of skills that actually loaded this session.
 fn collect_skill_base_names_from_text(text: &str, out: &mut HashSet<String>) {
     for line in text.lines() {
-        if let Some((_, rest)) = line.split_once(SKILL_BASE_MARKER)
+        if let Some(rest) = line.strip_prefix(SKILL_BASE_MARKER)
             && let Some(name) = skill_base_name_from_path(rest)
         {
             out.insert(name);
@@ -102,7 +102,7 @@ fn collect_skill_base_names_from_text(text: &str, out: &mut HashSet<String>) {
 /// Skill name from a base-directory marker path: the final path segment, or its
 /// parent when the path points straight at the `SKILL.md` file. Cross-platform
 /// (splits on `/` and `\`).
-fn skill_base_name_from_path(path: &str) -> Option<String> {
+pub(crate) fn skill_base_name_from_path(path: &str) -> Option<String> {
     let mut segments: Vec<&str> = path
         .trim()
         .trim_matches(['`', '"', '\''])
@@ -138,14 +138,13 @@ fn command_names_in_text(text: &str) -> Vec<String> {
     out
 }
 
-/// The skill base name a command resolves to, if any: a direct hit, or a
-/// `plugin:skill` whose bare segment ran. `None` for non-skill commands.
+/// Preserve the command's full identity when its skill directory appears in the transcript.
 fn command_skill_name(command: &str, skill_base_names: &HashSet<String>) -> Option<String> {
     if skill_base_names.contains(command) {
         return Some(command.to_string());
     }
     let bare = command.rsplit(':').next().unwrap_or(command);
-    skill_base_names.contains(bare).then(|| bare.to_string())
+    skill_base_names.contains(bare).then(|| command.to_string())
 }
 
 /// The skill descriptions from a `skill_listing` attachment: each `- name:
@@ -164,19 +163,91 @@ fn skill_listing_observations(value: &Value) -> Vec<EvidenceObservation> {
         .into_iter()
         .flat_map(|content| content.lines())
         .filter_map(|line| {
-            let (name, description) = line.trim().strip_prefix("- ")?.split_once(':')?;
-            let name = name.trim();
-            if name.is_empty() {
-                return None;
-            }
-            let description = description.trim();
+            let (name, description, _) = parse_markdown_bullet(line)?;
             Some(EvidenceObservation::ContextSource {
                 kind: ContextSourceKind::Skill,
-                name: name.to_owned(),
-                description: (!description.is_empty()).then(|| description.to_owned()),
+                name,
+                description: (!description.is_empty()).then_some(description),
             })
         })
         .collect()
+}
+
+fn skill_resource_observations(value: &Value) -> Vec<EvidenceObservation> {
+    match value.get("type").and_then(Value::as_str) {
+        Some("user" | "human") if value.get("isMeta").and_then(Value::as_bool) == Some(true) => {
+            let text = record_text(value);
+            let Some(path) = text.strip_prefix("Base directory for this skill: ") else {
+                return Vec::new();
+            };
+            let Some((path, document)) = path.split_once('\n') else {
+                return Vec::new();
+            };
+            if document.trim().is_empty() {
+                return Vec::new();
+            }
+            skill_base_name_from_path(path)
+                .map(|name| EvidenceObservation::SkillInjection {
+                    name,
+                    invoked: false,
+                })
+                .into_iter()
+                .collect()
+        }
+        Some("attachment") => {
+            let Some(attachment) = value.get("attachment") else {
+                return Vec::new();
+            };
+            match attachment.get("type").and_then(Value::as_str) {
+                Some("invoked_skills") => attachment
+                    .get("skills")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|skill| {
+                        let name = skill.get("name")?.as_str()?.trim();
+                        let path = skill.get("path")?.as_str()?.trim();
+                        let content = skill.get("content")?.as_str()?.trim();
+                        if name.is_empty() || path.is_empty() || content.is_empty() {
+                            return None;
+                        }
+                        Some(EvidenceObservation::SkillInjection {
+                            name: name.to_owned(),
+                            invoked: true,
+                        })
+                    })
+                    .collect(),
+                Some("dynamic_skill") => {
+                    if attachment
+                        .get("skillDir")
+                        .and_then(Value::as_str)
+                        .is_none_or(str::is_empty)
+                        || attachment
+                            .get("displayPath")
+                            .and_then(Value::as_str)
+                            .is_none_or(str::is_empty)
+                    {
+                        return Vec::new();
+                    }
+                    attachment
+                        .get("skillNames")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .filter(|name| !name.trim().is_empty())
+                        .map(|name| EvidenceObservation::ContextSource {
+                            kind: ContextSourceKind::Skill,
+                            name: name.trim().to_owned(),
+                            description: None,
+                        })
+                        .collect()
+                }
+                _ => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// The `uuid` set to skip when replaying `path`: everything
@@ -329,11 +400,15 @@ fn collect_record_uuids(reader: impl BufRead) -> HashSet<String> {
     uuids
 }
 
-pub struct ClaudeAdapter;
+pub struct ClaudeSessionReader;
 
-impl VendorAdapter for ClaudeAdapter {
+impl SessionReader for ClaudeSessionReader {
     fn agent(&self) -> &'static str {
         "claude"
+    }
+
+    fn capabilities(&self, _source: &RawSource) -> crate::analysis::SourceCapabilities {
+        crate::analysis::SourceCapabilities::claude()
     }
 
     fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession> {
@@ -393,7 +468,7 @@ impl VendorAdapter for ClaudeAdapter {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
-        ClaudeAdapter::visit_claimed(self, input, claim, guarantee, cancel, sink)
+        ClaudeSessionReader::visit_claimed(self, input, claim, guarantee, cancel, sink)
     }
 
     fn visit_claimed_resumed(
@@ -404,20 +479,20 @@ impl VendorAdapter for ClaudeAdapter {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<ResumedVisit> {
-        ClaudeAdapter::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
+        ClaudeSessionReader::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
     }
 
     fn empty_resume_state(&self) -> Option<crate::analysis::resume::AdapterSnapshot> {
-        Some(ClaudeAdapter::empty_adapter_snapshot())
+        Some(ClaudeSessionReader::empty_adapter_snapshot())
     }
 }
 
-impl ClaudeAdapter {
+impl ClaudeSessionReader {
     /// A fresh [`ClaudeStreamState`], serialized. A caller starting the
     /// first resumable pass over a source (no snapshot from a prior pass
     /// exists yet) uses this to build a [`StreamSnapshot`] with
     /// [`ResumePoint::offset`] zero: see
-    /// [`VendorAdapter::visit_claimed_resumed`]'s doc comment for why that
+    /// [`SessionReader::visit_claimed_resumed`]'s doc comment for why that
     /// one method covers both cases.
     pub fn empty_adapter_snapshot() -> crate::analysis::resume::AdapterSnapshot {
         crate::analysis::resume::AdapterSnapshot(
@@ -639,6 +714,17 @@ impl ClaudeAdapter {
                         state.context.observe(&value);
                         for observation in skill_listing_observations(&value)
                             .into_iter()
+                            .chain(skill_resource_observations(&value).into_iter().map(
+                                |observation| match observation {
+                                    EvidenceObservation::SkillInjection { name, .. } => {
+                                        EvidenceObservation::SkillInjection {
+                                            name,
+                                            invoked: false,
+                                        }
+                                    }
+                                    observation => observation,
+                                },
+                            ))
                             .chain(context_observations(&value))
                         {
                             sink.record(NormalizedRecord::Observation(Box::new(observation)));
@@ -649,6 +735,7 @@ impl ClaudeAdapter {
                     state.context.observe(&value);
                     for observation in skill_listing_observations(&value)
                         .into_iter()
+                        .chain(skill_resource_observations(&value))
                         .chain(evidence_observations(&value))
                     {
                         sink.record(NormalizedRecord::Observation(Box::new(observation)));
@@ -1039,7 +1126,7 @@ mod tests {
         let input = file_input(&path);
         let mut collector = SessionCollector::new("claude", "claimed-session");
 
-        let outcome = ClaudeAdapter
+        let outcome = ClaudeSessionReader
             .visit_claimed(
                 &input,
                 &claim,
@@ -1079,7 +1166,7 @@ mod tests {
         let input = file_input(&path);
         let mut sink = HeadMutatingSink::new(&path);
 
-        let outcome = ClaudeAdapter
+        let outcome = ClaudeSessionReader
             .visit_claimed(
                 &input,
                 &claim,
@@ -1104,7 +1191,7 @@ mod tests {
         let input = file_input(&path);
         let mut collector = SessionCollector::new("claude", "claimed-session");
 
-        let result = ClaudeAdapter.visit_claimed(
+        let result = ClaudeSessionReader.visit_claimed(
             &input,
             &claim,
             AppendOnlyGuarantee::Absent,
@@ -1124,7 +1211,7 @@ mod tests {
         let input = file_input(&path);
         let mut collector = SessionCollector::new("claude", "claimed-session");
 
-        let outcome = ClaudeAdapter
+        let outcome = ClaudeSessionReader
             .visit_claimed(
                 &input,
                 &claim,
@@ -1186,7 +1273,7 @@ mod tests {
                 tail_hash: head_hash_of(&[]),
                 tail_len: 0,
             },
-            adapter: ClaudeAdapter::empty_adapter_snapshot(),
+            adapter: ClaudeSessionReader::empty_adapter_snapshot(),
         })
     }
 
@@ -1198,7 +1285,7 @@ mod tests {
         let input = file_input(&path);
         let mut collector = SessionCollector::new("claude", "claimed-session");
 
-        let visit = ClaudeAdapter
+        let visit = ClaudeSessionReader
             .visit_claimed_resumed(&input, &claim, &fresh_snapshot(), &|| false, &mut collector)
             .expect("resumed visit of a fresh file");
 
@@ -1222,7 +1309,7 @@ mod tests {
         let input = file_input(&path);
         let mut first_pass = SessionCollector::new("claude", "claimed-session");
         let first_claim = claim_for_path(&path);
-        let first_visit = ClaudeAdapter
+        let first_visit = ClaudeSessionReader
             .visit_claimed_resumed(
                 &input,
                 &first_claim,
@@ -1243,7 +1330,7 @@ mod tests {
         let second_claim = claim_for_path(&path);
         let mut second_pass = SessionCollector::new("claude", "claimed-session");
 
-        let second_visit = ClaudeAdapter
+        let second_visit = ClaudeSessionReader
             .visit_claimed_resumed(
                 &input,
                 &second_claim,
@@ -1272,7 +1359,7 @@ mod tests {
         let input = file_input(&path);
         let first_claim = claim_for_path(&path);
         let mut first_pass = SessionCollector::new("claude", "claimed-session");
-        let first_visit = ClaudeAdapter
+        let first_visit = ClaudeSessionReader
             .visit_claimed_resumed(
                 &input,
                 &first_claim,
@@ -1292,7 +1379,7 @@ mod tests {
         let rewritten_claim = claim_for_path(&path);
         let mut second_pass = SessionCollector::new("claude", "claimed-session");
 
-        let visit = ClaudeAdapter
+        let visit = ClaudeSessionReader
             .visit_claimed_resumed(
                 &input,
                 &rewritten_claim,
@@ -1320,7 +1407,7 @@ mod tests {
         let mut snapshot = fresh_snapshot();
         snapshot.revision = RESUME_SNAPSHOT_REVISION - 1;
 
-        let result = ClaudeAdapter.visit_claimed_resumed(
+        let result = ClaudeSessionReader.visit_claimed_resumed(
             &input,
             &claim,
             &snapshot,
@@ -1341,7 +1428,7 @@ mod tests {
         };
         let mut sink = CountingSink::default();
 
-        let outcome = ClaudeAdapter
+        let outcome = ClaudeSessionReader
             .visit(&input, &mut sink)
             .expect("visit plain source");
 
@@ -1381,7 +1468,7 @@ mod tests {
         };
         let mut sink = ContentCapturingSink::default();
 
-        ClaudeAdapter
+        ClaudeSessionReader
             .visit(&input, &mut sink)
             .expect("visit content session");
 
@@ -1406,7 +1493,7 @@ mod tests {
         let source = b"{\"type\":\"assistant\",\"message\":{\"id\":\"first\",\"role\":\"assistant\",\"content\":[]}}\n";
         let reader = BufReader::new(DataThenError::new(source));
         let mut collector = SessionCollector::new("claude", "read-failure");
-        let result = ClaudeAdapter.visit_reader(
+        let result = ClaudeSessionReader.visit_reader(
             reader,
             &|| false,
             &mut collector,
@@ -1529,6 +1616,23 @@ mod tests {
         assert!(!is_builtin_command("orbit-tracker"));
     }
 
+    #[test]
+    fn skill_injection_requires_a_known_record_structure_and_document() {
+        use serde_json::json;
+        for value in [
+            json!({"type":"assistant","isMeta":true,"message":{"content":"Base directory for this skill: /synthetic/review\nInstructions."}}),
+            json!({"type":"user","message":{"content":"Base directory for this skill: /synthetic/review\nInstructions."}}),
+            json!({"type":"user","isMeta":true,"message":{"content":"Quoted marker: Base directory for this skill: /synthetic/review\nInstructions."}}),
+            json!({"type":"user","isMeta":true,"message":{"content":"Base directory for this skill: /synthetic/review"}}),
+            json!({"type":"attachment","attachment":{"type":"invoked_skills","skills":[{"name":"plugin:review","path":"plugin:review"}]}}),
+            json!({"type":"attachment","attachment":{"type":"invoked_skills","skills":[{"name":"plugin:review","path":"plugin:review","content":" "}]}}),
+            json!({"type":"attachment","attachment":{"type":"dynamic_skill","skillNames":["plugin:review"]}}),
+            json!({"type":"assistant","attachment":{"type":"invoked_skills","skills":[{"name":"plugin:review","path":"plugin:review","content":"Instructions."}]}}),
+        ] {
+            assert!(skill_resource_observations(&value).is_empty(), "{value}");
+        }
+    }
+
     impl Read for DataThenError {
         fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
             if !self.returned_data {
@@ -1578,10 +1682,10 @@ mod tests {
             command_skill_name("code-review", &names),
             Some("code-review".to_string())
         );
-        // `plugin:skill` resolves to its bare segment.
+        // The directory match does not remove the command's namespace.
         assert_eq!(
             command_skill_name("frontend-design:frontend-design", &names),
-            Some("frontend-design".to_string())
+            Some("frontend-design:frontend-design".to_string())
         );
         // A command that didn't run as a skill is rejected (no base-dir marker).
         assert_eq!(command_skill_name("clear", &names), None);
@@ -1913,7 +2017,7 @@ mod tests {
         let reader = BufReader::new(source.as_bytes());
         let mut collector = SessionCollector::new("claude", "fork-child");
         let replayed = HashSet::from(["replayed-1".to_string()]);
-        let state = ClaudeAdapter
+        let state = ClaudeSessionReader
             .visit_reader(
                 reader,
                 &|| false,
@@ -1952,7 +2056,7 @@ mod tests {
             "\n",
         );
         let mut sink = RecordingSink::default();
-        ClaudeAdapter
+        ClaudeSessionReader
             .visit_reader(
                 BufReader::new(source.as_bytes()),
                 &|| false,
@@ -1980,7 +2084,7 @@ mod tests {
             "\n",
         );
         let mut sink = RecordingSink::default();
-        ClaudeAdapter
+        ClaudeSessionReader
             .visit_reader(
                 BufReader::new(source.as_bytes()),
                 &|| false,
@@ -2007,7 +2111,7 @@ mod tests {
             "\n",
         );
         let mut sink = RecordingSink::default();
-        ClaudeAdapter
+        ClaudeSessionReader
             .visit_reader(
                 BufReader::new(source.as_bytes()),
                 &|| false,
@@ -2029,7 +2133,7 @@ mod tests {
             "\n",
         );
         let mut sink = RecordingSink::default();
-        ClaudeAdapter
+        ClaudeSessionReader
             .visit_reader(
                 BufReader::new(source.as_bytes()),
                 &|| false,
@@ -2195,7 +2299,7 @@ mod tests {
         };
         let mut collector = SessionCollector::new("claude", "agent-x");
 
-        ClaudeAdapter
+        ClaudeSessionReader
             .visit(&input, &mut collector)
             .expect("visit must succeed");
 

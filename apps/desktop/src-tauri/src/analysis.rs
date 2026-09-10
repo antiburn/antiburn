@@ -23,11 +23,12 @@ use antiburn_local::analysis::{
     METRICS_SCHEMA_REVISION, ModelRun, PARSER_REVISION, ProviderHint, RESUME_SNAPSHOT_REVISION,
     RawSource, ResumePoint, ResumeRevisions, ResumedVisit, SessionCost, SessionEvidence,
     SessionEvidenceAccumulator, SessionInput, SessionMetrics, SessionMetricsAccumulator,
-    SessionSummary, SourceCapabilities, SourceClaim, SourceKind, StoredResume, StreamSnapshot,
-    TurnRow, TurnRowSink, TurnRowStore, TurnScope, VendorAdapter, VisitOutcome, adapter_for,
-    aggregate_metrics, append_only_guarantee, evidence_from_facts, merge_metrics,
-    metrics_by_source, metrics_from_rows, price_breakdown, pricing_generation,
+    SessionReader, SessionSummary, SourceCapabilities, SourceClaim, SourceKind, StoredResume,
+    StreamSnapshot, TurnRow, TurnRowSink, TurnRowStore, TurnScope, VisitOutcome, aggregate_metrics,
+    append_only_guarantee, evidence_from_facts, merge_metrics, metrics_by_source,
+    metrics_from_rows, price_breakdown, pricing_generation, reader_for,
 };
+use antiburn_local::discovery::source_version::claude_sidecar_fingerprint;
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
     ForkObservation, SessionSource, SourceStat, session_source_content,
@@ -37,7 +38,7 @@ use antiburn_local::pricing::ModelTokens;
 
 #[cfg(test)]
 use antiburn_local::analysis::{
-    ClaudeAdapter, CoverageReason, EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore,
+    ClaudeSessionReader, CoverageReason, EvidenceValue, FAST_SPEED_KEY, MemoryTurnRowStore,
     SourceAcceptance, analyze_sources_with,
 };
 #[cfg(test)]
@@ -458,11 +459,16 @@ pub fn fingerprint_of(source: &SessionSource) -> String {
 }
 
 /// Build one stable fingerprint from a parent and its sorted child paths.
-fn combined_fingerprint(source: &SessionSource, subagent_paths: &[std::path::PathBuf]) -> String {
-    combined_fingerprint_from_parent(fingerprint_of(source), subagent_paths)
+fn combined_fingerprint(
+    agent: AgentKind,
+    source: &SessionSource,
+    subagent_paths: &[std::path::PathBuf],
+) -> String {
+    combined_fingerprint_from_parent(agent, fingerprint_of(source), subagent_paths)
 }
 
 fn combined_fingerprint_from_parent(
+    agent: AgentKind,
     parent_fingerprint: String,
     subagent_paths: &[std::path::PathBuf],
 ) -> String {
@@ -478,7 +484,21 @@ fn combined_fingerprint_from_parent(
             )
         }),
     );
-    serde_json::to_string(&parts.collect::<Vec<_>>())
+    let mut parts = parts.collect::<Vec<_>>();
+    if agent == AgentKind::Claude {
+        for path in subagent_paths {
+            let Ok(fingerprint) = claude_sidecar_fingerprint(path) else {
+                return MISSING_FINGERPRINT.to_string();
+            };
+            parts.push((
+                path.with_extension("meta.json")
+                    .to_string_lossy()
+                    .into_owned(),
+                fingerprint,
+            ));
+        }
+    }
+    serde_json::to_string(&parts)
         .map(|fingerprint| format!("v{ANALYSIS_FINGERPRINT_VERSION}:{fingerprint}"))
         .unwrap_or_else(|_| MISSING_FINGERPRINT.to_string())
 }
@@ -584,23 +604,6 @@ fn stream_vendor_with_claim_hook(
 /// (insights_worker.rs) is what turns an unset profile into the terminal
 /// `Unsupported` state; this function's job is only to describe the source,
 /// never to decide whether it is good enough.
-fn capabilities_for_source(agent: &str, source: &RawSource) -> SourceCapabilities {
-    let mut capabilities = match agent {
-        "claude" => SourceCapabilities::claude(),
-        "codex" => SourceCapabilities::codex(),
-        "opencode" => SourceCapabilities::opencode(),
-        "pi" => SourceCapabilities::pi(),
-        "cursor" => SourceCapabilities::cursor(),
-        "antigravity" => SourceCapabilities::antigravity(),
-        _ => SourceCapabilities::generic(),
-    };
-    if agent == "antigravity" && matches!(source, RawSource::Sqlite(_)) {
-        capabilities.cache_write_tokens = true;
-        capabilities.token_classes = true;
-    }
-    capabilities
-}
-
 fn adapter_supports_provider_db(agent: &str) -> bool {
     matches!(agent, "opencode" | "antigravity")
 }
@@ -610,7 +613,10 @@ fn adapter_supports_provider_db(agent: &str) -> bool {
 /// [`stream_vendor_with_hooks`]. `Unreadable` marks a discovered child this
 /// pass could not read; `Coverage` carries that child's own residual.
 enum ChildFold {
-    Coverage(Box<SessionEvidenceAccumulator>),
+    Coverage(
+        Box<SessionEvidenceAccumulator>,
+        Option<antiburn_local::discovery::SubagentMeta>,
+    ),
     Unreadable,
 }
 
@@ -626,9 +632,9 @@ enum ChildFold {
 /// partway): passing a fresh, offset-zero snapshot to
 /// `visit_claimed_resumed` gives the same read as `visit_claimed` while
 /// still producing a real `AdapterResume` for the next pass — see
-/// `VendorAdapter::visit_claimed_resumed`'s doc comment.
+/// `SessionReader::visit_claimed_resumed`'s doc comment.
 fn bootstrap_snapshot(
-    adapter: &dyn VendorAdapter,
+    adapter: &dyn SessionReader,
     agent: &str,
     session_id: &str,
     kind: SourceKind,
@@ -666,7 +672,7 @@ fn bootstrap_snapshot(
 /// exactly as before this change.
 fn stream_snapshot_to_attempt(
     store: &dyn TurnRowStore,
-    adapter: &dyn VendorAdapter,
+    adapter: &dyn SessionReader,
     agent: &str,
     session_id: &str,
     kind: SourceKind,
@@ -750,7 +756,7 @@ struct SourceContext {
 /// back to the plain `visit_claimed` that never produces a resume.
 fn delete_then_full_read(
     store: &Arc<dyn TurnRowStore>,
-    adapter: &dyn VendorAdapter,
+    adapter: &dyn SessionReader,
     input: &SessionInput,
     claim: &SourceClaim,
     context: SourceContext,
@@ -820,6 +826,22 @@ fn stream_vendor_with_hooks(
     database_claim: Option<&str>,
     turn_row_store: Option<Arc<dyn TurnRowStore>>,
 ) -> StreamOutcome {
+    let sidecars = inputs
+        .iter()
+        .skip(1)
+        .filter_map(|input| match (&*input.agent, &input.source) {
+            ("claude", RawSource::File(path)) => Some(path),
+            _ => None,
+        })
+        .map(|path| claude_sidecar_fingerprint(path).map(|fingerprint| (path, fingerprint)))
+        .collect::<std::io::Result<Vec<_>>>();
+    let Ok(sidecars) = sidecars else {
+        return StreamOutcome::ParentUnreadable(if cancelled() {
+            UnreadableReason::Cancelled
+        } else {
+            UnreadableReason::ClaimFailed
+        });
+    };
     let mut metrics_accumulators = Vec::with_capacity(inputs.len());
     // The parent's own residual evidence accumulator, set once index 0
     // streams successfully. Unlike `child_folds`, this never has a later
@@ -849,9 +871,9 @@ fn stream_vendor_with_hooks(
         // `StreamOutcome::ParentUnsupported` the way an unrecognized vendor
         // used to; a SQLite source from an adapter without database support is the one
         // remaining path that outcome still covers, further down.
-        let capabilities = capabilities_for_source(&input.agent, &input.source);
         let kind = SourceKind::from(&input.source);
-        let adapter = adapter_for(&input.agent);
+        let adapter = reader_for(&input.agent);
+        let capabilities = adapter.capabilities(&input.source);
         // Every input after the parent is a discovered child transcript, so
         // its rows get `Delegated` scope from position. The adapter's own
         // `EventSource` flag is not the only source of scope.
@@ -1116,7 +1138,13 @@ fn stream_vendor_with_hooks(
                 if index == 0 {
                     parent_residual = Some(residual);
                 } else {
-                    child_folds.push(ChildFold::Coverage(Box::new(residual)));
+                    let meta = match &input.source {
+                        RawSource::File(path) if input.agent == "claude" => {
+                            antiburn_local::discovery::SubagentMeta::read_from_transcript(path)
+                        }
+                        _ => None,
+                    };
+                    child_folds.push(ChildFold::Coverage(Box::new(residual), meta));
                 }
                 metrics_accumulators.push(metrics);
                 if let Some((mode, resume)) = resolved_resume {
@@ -1151,7 +1179,7 @@ fn stream_vendor_with_hooks(
         .min()
         .map(|timestamp| timestamp / 1000);
     let parent_metrics = parent.metrics();
-    let subagents = children
+    let subagents: Vec<_> = children
         .iter()
         .map(|child| (child.metrics(), child.started_at_ms().map(|ts| ts / 1000)))
         .collect();
@@ -1161,9 +1189,35 @@ fn stream_vendor_with_hooks(
     // never mutates `parent_residual` itself, so a future caller can still
     // read each source's own, unfolded residual — see `ChildFold`.
     let folded_residual = parent_residual.clone().map(|mut folded| {
+        let mut call_claims = HashMap::new();
+        for child in &child_folds {
+            if let ChildFold::Coverage(_, Some(meta)) = child
+                && let Some(id) = meta.tool_use_id.as_deref()
+            {
+                *call_claims.entry(id).or_insert(0usize) += 1;
+            }
+        }
+        let mut child_metrics = subagents.iter();
         for child in &child_folds {
             match child {
-                ChildFold::Coverage(residual) => folded.observe_child_coverage(residual),
+                ChildFold::Coverage(residual, meta) => {
+                    folded.observe_child_coverage(residual);
+                    let (metrics, _) = child_metrics
+                        .next()
+                        .expect("one metrics entry per readable child");
+                    if inputs[0].agent == "claude" {
+                        let call_id = meta
+                            .as_ref()
+                            .filter(|meta| meta.parent_agent_id.is_none())
+                            .and_then(|meta| meta.tool_use_id.as_deref());
+                        // Duplicate sidecar claims cannot prove which transcript belongs to the call.
+                        let unique_call_id = call_id.filter(|id| call_claims.get(id) == Some(&1));
+                        folded.observe_child_models(
+                            unique_call_id,
+                            metrics.model_breakdown.keys().map(String::as_str),
+                        );
+                    }
+                }
                 ChildFold::Unreadable => folded.observe_child_unreadable(),
             }
         }
@@ -1245,6 +1299,11 @@ fn stream_vendor_with_hooks(
     // above — so it doubles as the flag for whether to keep the captured
     // summaries rather than discard them.
     let source_summaries = row_projections.is_some().then_some(source_summaries);
+    if sidecars.iter().any(|(path, fingerprint)| {
+        claude_sidecar_fingerprint(path).as_ref().ok() != Some(fingerprint)
+    }) {
+        return StreamOutcome::SourceChanged;
+    }
     StreamOutcome::Published {
         session: Box::new(StreamedSession {
             parent: parent_metrics,
@@ -1339,24 +1398,24 @@ pub async fn analyze_for_evidence(
         if subagent_paths.is_empty() {
             parent_fingerprint
         } else {
-            combined_fingerprint_from_parent(parent_fingerprint, &subagent_paths)
+            combined_fingerprint_from_parent(agent, parent_fingerprint, &subagent_paths)
         }
     } else {
-        combined_fingerprint(&source, &subagent_paths)
+        combined_fingerprint(agent, &source, &subagent_paths)
     };
     let mut subagents: Vec<(String, String, SessionInput)> = Vec::new();
-    for path in subagent_paths {
-        let Some(subagent_id) = Explorers::DISK.subagent_id(&agent, &path) else {
+    for path in &subagent_paths {
+        let Some(subagent_id) = Explorers::DISK.subagent_id(&agent, path) else {
             continue;
         };
-        let label_text = Explorers::DISK.subagent_label(&agent, &path).await;
+        let label_text = Explorers::DISK.subagent_label(&agent, path).await;
         subagents.push((
             subagent_id.clone(),
             label_text,
             SessionInput {
                 agent: label.to_string(),
                 session_id: subagent_id,
-                source: RawSource::File(path),
+                source: RawSource::File(path.clone()),
                 fork_parent_session_id: fork_parent_session_id.clone(),
             },
         ));
@@ -1413,7 +1472,7 @@ pub async fn analyze_for_evidence(
     .await;
 
     debug_assert!(signal.progress() > 0);
-    let Ok(computed) = computed else {
+    let Ok(mut computed) = computed else {
         // The blocking task itself did not return — it panicked or the
         // runtime dropped it. The adapter never got a chance to finish.
         return unavailable_evidence_pass(
@@ -1422,6 +1481,12 @@ pub async fn analyze_for_evidence(
             Some(fingerprint),
         );
     };
+    if agent == AgentKind::Claude
+        && !subagent_paths.is_empty()
+        && combined_fingerprint(agent, &source, &subagent_paths) != fingerprint
+    {
+        computed = ComputedAnalysis::SourceChanged;
+    }
     let (
         parent_metrics,
         merged,

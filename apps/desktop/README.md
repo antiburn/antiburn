@@ -1,7 +1,7 @@
 # antiburn desktop
 
-The antiburn desktop application: a menu-bar / system-tray shell around the
-local [`antiburn-local`](../../crates/antiburn-local) engine.
+The antiburn desktop application: a main window and menu-bar / system-tray
+companion around the local [`antiburn-local`](../../crates/antiburn-local) engine.
 
 The app discovers the coding-agent sessions already on this machine, analyzes
 them with the engine, and shows activity, per-session analysis, and
@@ -56,7 +56,7 @@ Run from the repository root:
 
 ```bash
 pnpm install
-pnpm --filter @antiburn/desktop dev          # Tauri dev build (tray + popover)
+pnpm --filter @antiburn/desktop dev          # Tauri dev build (main window + tray)
 pnpm --filter @antiburn/desktop dev:web      # frontend only, in a browser
 pnpm --filter @antiburn/desktop dev:bundle   # bundled debug .app / installer
 pnpm --filter @antiburn/desktop lint
@@ -97,6 +97,11 @@ The macOS-only [memory reporting runbook](../../docs/runbooks/memory-reporting.m
 documents the probe-enabled release measurement, Steve setup, and result
 interpretation.
 
+The [main-window validation runbook](../../docs/runbooks/main-window.md) covers
+native lifecycle checks, opening latency, and hidden-window resource use. Run
+Rust formatting, Clippy, and tests from `src-tauri/crates/main-window` as well
+as the shell when changing the main-window mechanism.
+
 `rusqlite` is compiled from bundled sources, so neither CI nor a checkout needs
 a system SQLite.
 
@@ -119,12 +124,23 @@ See [Desktop window renderer lifecycle](../../docs/window-renderer-lifecycle.md)
 for the shared readiness handshake, onboarding prewarm, popover eviction,
 Settings teardown, and the memory rules behind those policies.
 
+- **Main window.** Explicit launch opens the main window after onboarding.
+  It uses native window controls and participates in application switching.
+  Closing hides it while monitoring continues; opening it again reuses the
+  renderer. On macOS, switching away and Command-Tabbing back restores a main
+  window that was closed or minimized earlier. Restoration uses the native
+  unminimize operation. Tray interactions and login startup stay quiet.
+  The initial content size is
+  1100×600 logical pixels with a normal minimum of 1000×560. The initial outer
+  frame is capped at 85% of each usable display dimension. Saved user sizes
+  retain their dimensions within the available work area. The navigation shell
+  uses a persistent 220px sidebar with dense desktop rows. Sessions shows the session list and selected detail. The sidebar Settings action and
+  Command+, (Control+, on Windows and Linux) open the existing Settings window; see the
+  [main-window validation runbook](../../docs/runbooks/main-window.md).
 - **Tray item.** Primary click toggles the popover. Secondary click opens a
-  menu with Pin Window, Settings, and Quit. The Settings sidebar ends in the
-  same Quit action — an agent application has no Dock icon and no application
-  menu, so those two are the only places a reader can look for the way out.
-  Both go through the shell's `exit(0)`, which is what distinguishes a
-  deliberate quit from the window closes the shell suppresses. On macOS the
+  menu with Open antiburn, Pin Window, Settings, and Quit. Native application
+  menus also provide Quit. Explicit Quit stops the
+  application; closing the main window does not. On macOS the
   item stays highlighted for as long as the popover is open: the system's own
   highlight is momentary and lets go on mouse-up, so the shell drives it, and
   clears it again on every path that puts the popover away.
@@ -150,8 +166,8 @@ Settings teardown, and the memory rules behind those policies.
   it is unfinished the tray click goes here rather than to the popover, which
   has nothing to show yet, and antiburn is an ordinary Dock application so the
   window can be reached again once something else takes focus. Finishing it
-  puts the window away, drops the Dock icon, and posts the one notification
-  that says where the app now lives, anchored under that glyph.
+  puts the onboarding window away, opens the main window, and retains the Dock
+  icon. The existing notification still identifies the menu-bar companion.
 - **Settings.** An ordinary decorated window, created on demand and destroyed
   on close. A source list on the left, one pane on the right; every control
   writes through immediately, so there is no Save button and no dirty state.
@@ -231,3 +247,29 @@ These build-level limits affect desktop development:
   agents with a recorded vendor logo, a letter tile for known agents without
   one, and a neutral surface glyph only for `generic-agent`. Original
   per-agent artwork beyond vendor marks is a later stream.
+
+### Main window feature boundary
+
+`MainWindowView` registers sections with a renderer that receives an `active` flag. Unvisited
+sections do not mount; visited sections stay mounted while hidden. Future feature adapters
+must combine this flag with window visibility before doing presentation work.
+
+`MainWindowLayout` supplies the persistent sidebar and workspace. `CollectionDetailPane`
+supplies independent collection/detail viewports and selection by stable item ID. Features
+provide `items` and `renderDetail`; an optional `renderCollection` slot receives `selectedId`,
+`select`, and `openDetail` and owns its viewport. The default list supports keyboard selection
+and Enter-to-detail-region focus. Controlled `selection` and `onSelectionChange` let a feature
+own navigation history. `detailOwnsViewport` embeds a view with an existing scroll container.
+
+Sessions uses `MainActivitySession`, an independent external store. It loads the existing
+session index and cached usage through scoped commands, coalesces shell events, and rejects
+stale responses. It loads analysis only for the selected subject. Native `main:visibility-changed`
+events and the initial `get_main_window_visible` snapshot suspend work on hide or minimize;
+blur does not suspend it. Section inactivity also suspends work. Resume reconciles the list,
+cached usage, and selected analysis. This adds no scanner or provider polling.
+
+`SessionList` accepts opt-in `selectedKey`, `onSelect`, `onOpenDetail`, and `active` props.
+`SessionPane` accepts `embedded` and `active`; embedded confirmation does not hold the popover.
+Shared subject identity and analysis loading live in `lib/sessionSubject.ts`. Existing
+menu-bar callers retain their defaults. Session removal broadcasts the existing invalidation
+event so both windows refresh their local views.

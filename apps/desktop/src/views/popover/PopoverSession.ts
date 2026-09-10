@@ -12,10 +12,8 @@ import {
   getLiveUsage,
   getProviderUsage,
   getSessionLimitAllocations,
-  getSessionAnalysis,
   getSettings,
   getStorageHealth,
-  getSubagentAnalysis,
   HEALTHY_STORAGE,
   hidePopover,
   listRecentSessions,
@@ -33,14 +31,12 @@ import {
   popoverContentReady,
   refreshLiveUsage,
   scanNow,
-  setPopoverHeight,
   setSettings,
   type ActivityEntryPayload,
   type AppSettings,
   type LiveUsageSummaryPayload,
   type ProviderUsageSummaryPayload,
   type SessionLimitAllocationSummaryPayload,
-  type SessionAnalysisPayload,
   type StorageHealthPayload,
 } from "../../lib/ipc"
 import {
@@ -49,12 +45,6 @@ import {
   onChecksReportChanged,
   type ChecksReportPayload,
 } from "../../lib/insightsIpc"
-import {
-  popoverHeightFor,
-  prefersReducedMotion,
-  type PopoverSurface,
-} from "../../lib/popoverHeight"
-import { localSessionKey } from "../../lib/presentation/localIdentity"
 import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
 import {
   applyLifecycleEvent,
@@ -75,7 +65,6 @@ import {
 import { isMacOS } from "../../lib/platform"
 import { SurfaceExposureTracker, liveUsageObservations } from "../../lib/surfaceExposure"
 import type { LocalRepositoryItem, LocalRepositoryStatus } from "../../lib/types/repository"
-import type { SessionSubject } from "./SessionPane"
 
 /**
  * The imperative boundary between the popover window and the shell.
@@ -86,13 +75,6 @@ import type { SessionSubject } from "./SessionPane"
  * a component lifecycle. See `views/onboarding/OnboardingSession.ts` for the
  * same shape applied to the first-run window.
  */
-
-/** One session's loaded analysis, tagged with the subject it belongs to. */
-type PopoverAnalysisState = {
-  key: string
-  payload: SessionAnalysisPayload | null
-  error: boolean
-} | null
 
 export interface PopoverSnapshot {
   appVersion: string | null
@@ -116,78 +98,19 @@ export interface PopoverSnapshot {
   checksReport: ChecksReportPayload | null
   /** True when the latest Checks report request fails. */
   checksUnavailable: boolean
-  /** The surface whose native resize has completed and React can render. */
-  presentedSurface: PopoverSurface
-  /** The session retained while a request to present another surface is in flight. */
-  presentedSession: SessionSubject | null
   storage: StorageHealthPayload
   /** Banners the reader has waved away this run. */
   dismissed: readonly AttentionKind[]
-  /** Navigation stack. Empty means the activity list is showing. */
-  stack: SessionSubject[]
   /**
-   * The most recently settled (or failed) analysis load, tagged with its
-   * subject's key.
+   * A timestamp bumped every `NOW_TICK_MS` while the popover is visible.
    *
-   * One field rather than three, and it carries its own key: "still loading"
-   * is then *derived* by the reader (the key does not match the subject on
-   * top of the stack) instead of being a flag this class has to flip on the
-   * way in — which is what keeps opening a session from cascading renders.
-   */
-  analysis: PopoverAnalysisState
-  /**
-   * Whether a re-load of the open session's analysis is in flight while an
-   * earlier result is still on screen. Drives the detail header's spinner.
-   */
-  analysisRefreshing: boolean
-  /**
-   * A timestamp bumped every `NOW_TICK_MS` while the popover is visible or a
-   * detail pane is open.
-   *
-   * The activity list uses it for day boundaries and future-time checks. The
-   * detail header uses it to update relative-time text without new data.
+   * The activity list uses it for day boundaries and future-time checks.
    */
   now: number
 }
 
 /**
- * Identity key for a subject's analysis load. Stable across re-navigation.
- *
- * Scoped by environment as well as agent and id: the same session id can
- * exist natively and inside a WSL distribution, and without the environment
- * in the key a subject moving between the two would keep showing the other
- * environment's stale (or loading) analysis.
- *
- * A sub-agent id is only unique within its launching session, so its key
- * carries the parent's local identity too.
- */
-export function sessionKey(subject: SessionSubject): string {
-  return subject.subagent
-    ? JSON.stringify([
-        "subagent",
-        localSessionKey(subject.agent, subject.subagent.parentSessionId, subject.wslDistro),
-        subject.subagent.subagentId,
-      ])
-    : localSessionKey(subject.agent, subject.sessionId, subject.wslDistro)
-}
-
-/** Load one subject's analysis. Sub-agents come from their own command. */
-async function loadAnalysis(subject: SessionSubject): Promise<SessionAnalysisPayload | null> {
-  if (subject.subagent) {
-    return getSubagentAnalysis(
-      subject.agent,
-      subject.subagent.parentSessionId,
-      subject.subagent.subagentId,
-      subject.wslDistro,
-    )
-  }
-  return getSessionAnalysis(subject.agent, subject.sessionId, subject.wslDistro)
-}
-
-/**
- * How often the store forces a snapshot change while a detail pane is open,
- * so the header's relative-time text ("last just now") stays current even
- * when nothing else about the session has changed.
+ * How often the store updates relative activity times while the popover is visible.
  */
 const NOW_TICK_MS = 30_000
 
@@ -263,12 +186,10 @@ export class PopoverSession {
   private analyticsVisibilityRevision = 0
   private analyticsVisible = false
   private readonly exposure = new SurfaceExposureTracker()
-  private analysisToken = 0
   private checksToken = 0
   private checksConsumerId: string | null = null
   private checksRefresh: Promise<void> | null = null
   private checksRefreshQueued = false
-  private resizeToken = 0
   /**
    * How many `refreshUsage` calls are currently in flight.
    *
@@ -278,16 +199,6 @@ export class PopoverSession {
    * still running. The snapshot's `usageRefreshing` is `count > 0`.
    */
   private usageRefreshCount = 0
-  /** How many `refreshAnalysis` calls are in flight; see `usageRefreshCount`. */
-  private analysisRefreshCount = 0
-  /**
-   * Set when a matching `sessions:entry-changed` event lands while a
-   * `refreshAnalysis` call is already in flight. Coalesced to one extra run,
-   * not one per event: the in-flight call's own result is already stale by
-   * the time it lands, so every event that arrives before it finishes is
-   * asking for the same thing.
-   */
-  private pendingAnalysisRefresh = false
   private liveUsageRevision = 0
   private sessionLimitAllocationRefresh: Promise<void> | null = null
   private sessionLimitAllocationRefreshPending = false
@@ -299,7 +210,7 @@ export class PopoverSession {
   private contentReadyReportInFlightGeneration: number | null = null
   private contentReadyRetryGeneration: number | null = null
 
-  /** Set while a coalesced `refreshEntries` call is in flight; see `pendingAnalysisRefresh`. */
+  /** Set while a coalesced `refreshEntries` call is in flight. */
   private entriesRefreshInFlight = false
   private entriesRefreshQueued = false
   /**
@@ -362,13 +273,8 @@ export class PopoverSession {
     usageRefreshing: false,
     checksReport: null,
     checksUnavailable: false,
-    presentedSurface: "activity",
-    presentedSession: null,
     storage: HEALTHY_STORAGE,
     dismissed: [],
-    stack: [],
-    analysis: null,
-    analysisRefreshing: false,
     now: Date.now(),
   }
 
@@ -381,40 +287,6 @@ export class PopoverSession {
       this.listeners.delete(listener)
       if (this.listeners.size === 0) this.stop()
     }
-  }
-
-  /* -----------------------------------------------------------------------
-   * Navigation
-   * -------------------------------------------------------------------- */
-
-  openSession = (subject: SessionSubject): void => {
-    this.update({ stack: [...this.snapshot.stack, subject] })
-    this.syncHeight()
-    this.openAnalysis(subject)
-  }
-
-  goBack = (): void => {
-    this.update({ stack: this.snapshot.stack.slice(0, -1) })
-    this.syncHeight()
-    const top = this.snapshot.stack.at(-1)
-    if (top) {
-      this.openAnalysis(top)
-    } else {
-      this.syncNowTicking()
-    }
-  }
-
-  /** Replace the top of the stack, for the newer/older traversal. */
-  replaceTop = (subject: SessionSubject): void => {
-    this.update({ stack: [...this.snapshot.stack.slice(0, -1), subject] })
-    this.syncHeight()
-    this.openAnalysis(subject)
-  }
-
-  /** The shown session's local records were deleted: go back and re-list. */
-  sessionDeleted = (): void => {
-    this.goBack()
-    void this.refreshEntries(this.windowDays()).catch(() => {})
   }
 
   dismissBanner = (id: AttentionKind): void => {
@@ -483,8 +355,7 @@ export class PopoverSession {
     // already had its chance to claim the key first.
     window.addEventListener("keydown", this.onWindowKeyDown)
 
-    // A visible list or a detail stack carried over from a previous start
-    // still needs its clock running again.
+    // A visible activity list needs its clock running.
     this.syncNowTicking()
 
     // R6: the session starts visible (see `visible`'s doc comment), so its
@@ -615,12 +486,8 @@ export class PopoverSession {
     this.stopSessionsInvalidatedListening = unlisten
   }
 
-  // Opening a session computes its analysis and the shell caches it, but a
-  // cache write alone does not change what a scan already put in the list.
-  // The shell pushes the one changed row here so the pills stay current
-  // without a full re-query, and — since this is also the scan pass's own
-  // per-session signal, not only the worker's — this also refreshes an open
-  // detail pane's analysis when the changed session is the one on screen.
+  // The shell pushes one changed row so the activity pills stay current.
+  // This avoids a full list query for each analysis cache write.
   //
   // R6: while the popover is visible, this is also a usage-refresh signal,
   // on the same `USAGE_REFRESH_MIN_MS` floor `listenScanEvent` uses — an
@@ -632,7 +499,6 @@ export class PopoverSession {
     const unlisten = await onSessionEntryChanged((entry) => {
       if (generation !== this.generation) return
       this.patchOrRefetchEntry(entry)
-      this.refreshOpenAnalysisIfMatching(entry)
       this.requestSessionLimitAllocationRefresh(false, true)
       if (this.visible && Date.now() - this.lastUsageRefreshAt >= USAGE_REFRESH_MIN_MS) {
         this.lastUsageRefreshAt = Date.now()
@@ -716,38 +582,6 @@ export class PopoverSession {
       })
   }
 
-  /**
-   * Refresh the open detail pane's analysis when `entry` describes the
-   * subject on top of the stack — its own session, or for a sub-agent
-   * subject its parent's session, in the same environment.
-   */
-  private refreshOpenAnalysisIfMatching(entry: ActivityEntryPayload): void {
-    const subject = this.snapshot.stack.at(-1)
-    if (!subject) return
-    const sessionId = subject.subagent?.parentSessionId ?? subject.sessionId
-    if (
-      entry.agent !== subject.agent ||
-      entry.sessionId !== sessionId ||
-      (entry.wslDistro ?? null) !== (subject.wslDistro ?? null)
-    ) {
-      return
-    }
-    this.requestAnalysisRefresh()
-  }
-
-  /**
-   * Refresh the open analysis, coalesced: a matching event that lands while
-   * a refresh is already in flight schedules exactly one more, run after the
-   * in-flight one settles, rather than a second overlapping load.
-   */
-  private requestAnalysisRefresh = (): void => {
-    if (this.analysisRefreshCount > 0) {
-      this.pendingAnalysisRefresh = true
-      return
-    }
-    void this.refreshAnalysis()
-  }
-
   // Storage health changes rarely and matters immediately, so it is pushed
   // rather than polled. Only changes are emitted, so this is not a per-tick
   // event.
@@ -810,9 +644,7 @@ export class PopoverSession {
 
   // The shell's own signal that the popover just reached the screen — no
   // longer paired with a scan kick (R1: opening the popover does not ask for
-  // one). The open session's analysis can grow while the popover is hidden,
-  // and nothing else asks for it again until the reader navigates, so it
-  // still gets its own refresh here.
+  // one).
   //
   // Entries are also refetched here, even though the scan scheduler now
   // ticks unconditionally and `listenScanEvent` above is the primary path:
@@ -832,7 +664,6 @@ export class PopoverSession {
       void this.restoreFloatingHud(generation)
       void this.refreshEntries(this.windowDays()).catch(() => {})
       void this.refreshUsage()
-      void this.refreshAnalysis()
       this.refreshLiveness(generation)
     })
     if (generation !== this.generation) {
@@ -1174,15 +1005,9 @@ export class PopoverSession {
     })
   }
 
-  /** Load a subject's analysis and keep the clock running for the detail pane. */
-  private openAnalysis(subject: SessionSubject): void {
-    void this.loadAnalysisFor(subject)
-    this.syncNowTicking()
-  }
-
-  /** Run the clock while visible or while a hidden detail pane stays mounted. */
+  /** Run the clock while the popover is visible. */
   private syncNowTicking(): void {
-    if (this.visible || this.snapshot.stack.length > 0) {
+    if (this.visible) {
       this.startNowTicking()
     } else {
       this.stopNowTicking()
@@ -1218,48 +1043,6 @@ export class PopoverSession {
     if (this.usagePollTimer === null) return
     clearInterval(this.usagePollTimer)
     this.usagePollTimer = null
-  }
-
-  private loadAnalysisFor = (subject: SessionSubject): Promise<void> => {
-    const key = sessionKey(subject)
-    const generation = this.generation
-    const token = ++this.analysisToken
-    return loadAnalysis(subject)
-      .then((payload) => {
-        if (generation !== this.generation || token !== this.analysisToken) return
-        this.update({ analysis: { key, payload, error: false } })
-      })
-      .catch(() => {
-        if (generation !== this.generation || token !== this.analysisToken) return
-        this.update({ analysis: { key, payload: null, error: true } })
-      })
-  }
-
-  /**
-   * Re-load the analysis for the session on top of the stack. The settled
-   * result stays on screen until the new one lands: `loading` is derived from
-   * a key mismatch, and the key does not change here, so the reader sees the
-   * header spinner rather than the skeleton.
-   *
-   * A matching `sessions:entry-changed` event that lands while this is
-   * already running is not dropped: `requestAnalysisRefresh` queues exactly
-   * one more call, picked up here once this one settles.
-   */
-  private refreshAnalysis = async (): Promise<void> => {
-    const top = this.snapshot.stack.at(-1)
-    if (!top) return
-    this.analysisRefreshCount += 1
-    this.update({ analysisRefreshing: true })
-    try {
-      await this.loadAnalysisFor(top)
-    } finally {
-      this.analysisRefreshCount -= 1
-      this.update({ analysisRefreshing: this.analysisRefreshCount > 0 })
-      if (this.analysisRefreshCount === 0 && this.pendingAnalysisRefresh) {
-        this.pendingAnalysisRefresh = false
-        void this.refreshAnalysis()
-      }
-    }
   }
 
   private refreshChecks = (): Promise<void> => {
@@ -1306,37 +1089,6 @@ export class PopoverSession {
     return this.snapshot.settings?.activityWindowDays ?? DEFAULT_SETTINGS.activityWindowDays
   }
 
-  private surface(): PopoverSurface {
-    return this.snapshot.stack.length > 0 ? "session" : "activity"
-  }
-
-  // Reduced motion is a webview preference, so the decision is made here and
-  // the shell simply honours it.
-  private syncHeight(): void {
-    const surface = this.surface()
-    const presentedSession = surface === "session" ? (this.snapshot.stack.at(-1) ?? null) : null
-    const targetHeight = popoverHeightFor(surface)
-    const token = ++this.resizeToken
-
-    // A taller or equal-height surface fits immediately. A shorter surface
-    // waits so its larger replacement stays mounted during the contraction.
-    if (targetHeight >= popoverHeightFor(this.snapshot.presentedSurface)) {
-      this.update({ presentedSurface: surface, presentedSession })
-    }
-
-    void setPopoverHeight(targetHeight, !prefersReducedMotion())
-      .then(() => {
-        if (token !== this.resizeToken || surface !== this.surface()) return
-        // A failed shell resize must not leave old navigation active forever.
-        // The shell has already stopped a failed or superseded animation.
-        this.update({ presentedSurface: surface, presentedSession })
-      })
-      .catch(() => {
-        if (token !== this.resizeToken || surface !== this.surface()) return
-        this.update({ presentedSurface: surface, presentedSession })
-      })
-  }
-
   private update(change: Partial<PopoverSnapshot>): void {
     this.snapshot = { ...this.snapshot, ...change }
     this.syncAnalyticsExposure()
@@ -1345,18 +1097,6 @@ export class PopoverSession {
 
   private syncAnalyticsExposure(): void {
     if (!this.analyticsVisible) return
-    const subject = this.snapshot.presentedSession
-    if (this.snapshot.presentedSurface === "session" && subject) {
-      const generation = this.exposure.expose({
-        surface: "session_detail",
-        origin: "user",
-        identity: sessionKey(subject),
-      })
-      const state = this.sessionSurfaceState(subject)
-      if (state) this.exposure.observe(state, generation)
-      return
-    }
-
     const generation = this.exposure.expose({ surface: "activity", origin: "user" })
     const totals = this.snapshot.usage?.totals
     const hasLocalUsage =
@@ -1379,25 +1119,6 @@ export class PopoverSession {
       this.exposure.observe("empty", generation)
     }
     this.exposure.observeLiveUsage(this.snapshot.liveUsage, undefined, generation)
-  }
-
-  private sessionSurfaceState(subject: SessionSubject): "ready" | "empty" | "error" | null {
-    const analysis = this.snapshot.analysis
-    if (!analysis || analysis.key !== sessionKey(subject)) return null
-    if (analysis.error) return "error"
-    const payload = analysis.payload
-    if (!payload) return "empty"
-    if (payload.analysisPending) return null
-    const hasData =
-      (payload.summary?.sessions.length ?? 0) > 0 ||
-      payload.cost !== null ||
-      payload.topLevelCost !== null ||
-      payload.efficiency !== null ||
-      (payload.orchestration?.members.length ?? 0) > 0 ||
-      (payload.relations?.parent ?? null) !== null ||
-      (payload.relations?.children.length ?? 0) > 0 ||
-      payload.models.length > 0
-    return hasData ? "ready" : "empty"
   }
 }
 

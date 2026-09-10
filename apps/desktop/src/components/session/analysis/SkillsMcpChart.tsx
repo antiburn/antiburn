@@ -10,6 +10,8 @@ import type { InitialContextBreakdown } from "../../../lib/types/session"
 
 export interface SkillsMcpChartProps {
   breakdown: InitialContextBreakdown
+  /** How many columns the cells fill. Two suits a wide pane. */
+  columns?: 1 | 2
 }
 
 /** Kind label shown on a row's detail line. */
@@ -40,18 +42,30 @@ function statusClass(row: SkillMcpRow): string | null {
  * muted detail line. The cell shape matches the session list, at half the
  * card wash. Not a button and no hover wash — the row does nothing.
  */
-function SkillMcpRowLine({ row }: { row: SkillMcpRow }) {
+function SkillMcpRowLine({ row, wide }: { row: SkillMcpRow; wide: boolean }) {
   const statusInk = statusClass(row)
   const origin = skillMcpOriginLabel(row.origin)
   return (
     <div className="flex flex-col gap-y-0.5 rounded-[var(--radius-popover)] bg-surface-card/50 px-3 py-2 type-body">
       <span className="flex items-baseline justify-between gap-x-3">
-        <span className="min-w-0 truncate font-semibold text-label">{row.name}</span>
+        <span
+          className={cn(
+            "min-w-0 truncate text-label",
+            wide ? "type-body-large" : "font-semibold",
+          )}
+        >
+          {row.name}
+        </span>
         <span className="shrink-0 text-label-tertiary tabular-nums">
           {formatCompact(row.tokenCount)}
         </span>
       </span>
-      <span className="flex min-w-0 items-baseline gap-x-1 text-label-tertiary">
+      <span
+        className={cn(
+          "flex min-w-0 items-baseline gap-x-1 text-label-tertiary",
+          wide && "type-callout",
+        )}
+      >
         <span>{skillMcpKindLabel(row.kind)}</span>
         {origin && (
           <>
@@ -69,9 +83,10 @@ function SkillMcpRowLine({ row }: { row: SkillMcpRow }) {
 /**
  * The full skills, MCPs and tools list. Every source renders as a two-line
  * cell: the list is the tab's whole content, so it hides nothing behind a
- * disclosure and needs no column headers.
+ * disclosure and needs no column headers. The cells keep their rank order
+ * across `columns` columns, left to right and then down.
  */
-export function SkillsMcpChart({ breakdown }: SkillsMcpChartProps) {
+export function SkillsMcpChart({ breakdown, columns = 1 }: SkillsMcpChartProps) {
   const usage = skillMcpUsage(breakdown)
 
   if (usage.totalTokens === 0) {
@@ -79,9 +94,13 @@ export function SkillsMcpChart({ breakdown }: SkillsMcpChartProps) {
   }
 
   return (
-    <div className="flex flex-col gap-y-1.5">
+    <div
+      data-testid="skills-mcp-list"
+      data-columns={columns}
+      className={cn("grid gap-1.5", columns === 2 ? "grid-cols-2" : "grid-cols-1")}
+    >
       {usage.rows.map((row) => (
-        <SkillMcpRowLine key={row.key} row={row} />
+        <SkillMcpRowLine key={row.key} row={row} wide={columns === 2} />
       ))}
     </div>
   )

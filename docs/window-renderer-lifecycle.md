@@ -3,14 +3,14 @@
 _Contributor reference for when desktop webview renderers are created, reused,
 hidden, and destroyed._
 
-The desktop shell stays resident because antiburn is a menu-bar application.
+The desktop shell stays resident to support monitoring and the menu-bar companion.
 The main popover renderer also stays resident after its first use, so the
 application's primary surface can reopen immediately. Other renderers remain
 bounded by their interaction or handoff.
 
-This document covers the popover, its peek companion, onboarding, and Settings
-renderers. The HUD and nudge windows have separate ownership rules. See
-[HUD states](hud-states.md) for the HUD and its detail window.
+This document covers the main window, popover, its peek companion, onboarding,
+and Settings renderers. The HUD and nudge windows have separate ownership rules.
+See [HUD states](hud-states.md) for the HUD and its detail window.
 
 ## The shared lifecycle
 
@@ -43,16 +43,36 @@ This handshake gives the lifecycle these properties:
 The shared Tauri adapters in
 [`window_lifecycle.rs`](../apps/desktop/src-tauri/src/window_lifecycle.rs) record
 load timing, warn about the current stale generation, and reset failed loads.
-The popover, Settings, and onboarding modules own their window-specific reveal
+The main-window, popover, Settings, and onboarding modules own their window-specific reveal
 and destruction policies.
+
+## Main window
+
+The main window uses a dedicated frontend entry with an empty themed shell.
+An explicit launch creates it after onboarding. Background startup does not
+construct its webview. After first use, closing hides the window and preserves
+its renderer for the next open. Quit stops the application and all renderers.
+
+The native mechanism crate owns creation, reveal, and placement geometry. The
+shell owns the shared readiness state machine, persisted placement, launch
+intent, and close policy. Repeated opens join the same load; a matching shell
+readiness report permits reveal without waiting for data or network requests.
+
+The main window adds no scans or provider polling. Future views must gate
+presentation work on visibility rather than focus, and consume existing native
+state. An unfocused window can still be visible beside another application.
+
+Opening timing is local diagnostic evidence. Native reveal completion does not
+prove a frame was presented. See the [validation runbook](runbooks/main-window.md)
+for separate cold, first-open, and warm measurements.
 
 ## Onboarding handoff and popover prewarm
 
 Completing onboarding performs a deliberate handoff from the first-run window
 to the menu-bar surface:
 
-1. The shell hides onboarding immediately, changes macOS to accessory mode,
-   and shows the menu-bar-location notification.
+1. The shell hides onboarding immediately, opens the main window, and shows
+   the menu-bar-location notification. macOS retains regular application mode.
 2. On the next main-loop turn, the shell requests one hidden popover renderer.
    This moves renderer startup out of the first menu-bar click.
 3. It waits one second before destroying onboarding. This lets the final

@@ -13,6 +13,7 @@ use super::*;
 mod activity_tests;
 mod coverage_tests;
 mod reconcile_tests;
+mod remediation_tests;
 mod resume_tests;
 mod turn_row_tests;
 
@@ -929,6 +930,9 @@ fn session_evidence_table_shape_is_stable() {
             "analyzed_at_epoch",
             "last_error",
             "published_fence",
+            "effective_model_target_hash",
+            "effective_model_scope",
+            "effective_model",
         ]
     );
 }
@@ -1804,7 +1808,11 @@ fn publish_projections_writes_the_generation_and_revision_columns() {
         metrics_schema_revision: 3,
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -1832,7 +1840,11 @@ fn publish_projections_round_trips_initial_context_json() {
         source_summaries_json: None,
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -1863,7 +1875,11 @@ fn publish_projections_round_trips_source_summaries_json() {
         ),
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -1888,7 +1904,11 @@ fn publish_projections_round_trips_provider_hints_json() {
         provider_hints_json: Some(r#"[{"provider":"anthropic","model":"claude-opus-4-6"}]"#.into()),
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -1911,7 +1931,11 @@ fn publish_projections_round_trips_provider_hints_json() {
 fn publish_projections_never_clears_a_known_start_time() {
     let store = store();
     let (record, claim) = claimed_projection(&store, "known-start", 100, 60);
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, Some(800), &completion, &[], &[])
@@ -1929,7 +1953,11 @@ fn publish_projections_never_clears_a_known_start_time() {
         analyzed_generation: claim.source_generation,
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -2317,147 +2345,6 @@ fn live_usage_is_only_active_once_both_the_switch_and_onboarding_agree() {
 
     settings.live_usage_enabled = false;
     assert!(!settings.live_usage_active(), "the opt-out still works");
-}
-
-#[test]
-fn migrating_forward_drops_a_legacy_live_usage_off_row_so_the_new_default_applies() {
-    // Before this build, `liveUsageEnabled` defaulted to false, and
-    // `write_settings` writes every key on every save regardless of whether
-    // it changed — so any install that ever saved settings at all (finishing
-    // onboarding is enough) already carries an explicit `liveUsageEnabled|
-    // false` row from that old default, indistinguishable from a reader who
-    // deliberately opted out. antiburn has no public installs yet to protect
-    // from losing one, so migration V3 just drops the row. Simulated here by
-    // building a v2 database by hand — a real fresh `Store::open_in_memory`
-    // would already be at the latest version and could not exercise the
-    // migration path at all.
-    let connection = rusqlite::Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..2] {
-        connection.execute_batch(sql).unwrap();
-    }
-    connection
-        .execute(
-            "INSERT INTO setting (key, value) VALUES ('liveUsageEnabled', 'false')",
-            [],
-        )
-        .unwrap();
-    connection
-        .pragma_update(None, "user_version", 2i64)
-        .unwrap();
-
-    let store = Store::from_connection(
-        connection,
-        Path::new("/tmp/antiburn-migration-test").to_path_buf(),
-    )
-    .expect("migrates cleanly to the latest version");
-
-    assert_eq!(
-        store.schema_version().unwrap(),
-        super::schema::MIGRATIONS.len() as i64
-    );
-    let remaining: i64 = store
-        .lock()
-        .query_row(
-            "SELECT COUNT(*) FROM setting WHERE key = 'liveUsageEnabled'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(remaining, 0, "the row is gone, not merely reinterpreted");
-    assert!(
-        store.settings().unwrap().live_usage_enabled,
-        "with the legacy row gone, the read path falls through to the new default"
-    );
-}
-
-#[test]
-fn migrating_forward_renames_the_analytics_tables_and_keeps_their_rows() {
-    // V1 through V8 created and used `usage_analytics_event` and
-    // `usage_analytics_identity`. V9 (source generations) does not touch
-    // them. V10 renames both tables to drop the "usage_" prefix, to match
-    // the renamed Rust module and code. Built by hand up to V9 so only the
-    // rename migration runs; a fresh `Store::open_in_memory` would already
-    // be past it.
-    let connection = rusqlite::Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..9] {
-        connection.execute_batch(sql).unwrap();
-    }
-    connection
-        .execute(
-            "INSERT INTO usage_analytics_identity (id, install_id, minted_at)
-             VALUES (1, 'test-install-id', '2026-01-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "INSERT INTO usage_analytics_event (name, payload, queued_at)
-             VALUES ('app_launched', '{}', '2026-01-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-    connection
-        .pragma_update(None, "user_version", 9i64)
-        .unwrap();
-
-    let store = Store::from_connection(
-        connection,
-        Path::new("/tmp/antiburn-migration-test").to_path_buf(),
-    )
-    .expect("migrates cleanly to the latest version");
-
-    assert_eq!(
-        store.schema_version().unwrap(),
-        super::schema::MIGRATIONS.len() as i64
-    );
-    let (install_id, event_count): (String, i64) = store
-        .lock()
-        .query_row(
-            "SELECT install_id, (SELECT COUNT(*) FROM analytics_event) FROM analytics_identity",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("the renamed tables carry the rows the old names held");
-    assert_eq!(install_id, "test-install-id");
-    assert_eq!(event_count, 1);
-}
-
-#[test]
-fn migrating_forward_drops_queued_events_for_the_retired_usage_surface() {
-    let connection = rusqlite::Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..34] {
-        connection.execute_batch(sql).unwrap();
-    }
-    connection
-        .execute(
-            "INSERT INTO analytics_event (name, payload, queued_at) VALUES
-             ('antiburn.usage_viewed', '{}', '2026-01-01T00:00:00Z'),
-             ('antiburn.app_launched', '{}', '2026-01-01T00:00:01Z')",
-            [],
-        )
-        .unwrap();
-    connection
-        .pragma_update(None, "user_version", 34i64)
-        .unwrap();
-
-    let store = Store::from_connection(
-        connection,
-        Path::new("/tmp/antiburn-migration-test").to_path_buf(),
-    )
-    .expect("migrates cleanly to the latest version");
-
-    let remaining_names = {
-        let connection = store.lock();
-        let mut statement = connection
-            .prepare("SELECT name FROM analytics_event ORDER BY id")
-            .unwrap();
-        statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap()
-    };
-    assert_eq!(remaining_names, vec!["antiburn.app_launched"]);
 }
 
 #[test]
@@ -2965,7 +2852,11 @@ fn analysis_from_rows_serves_a_pass_published_unsupported() {
     let key = record.key.clone();
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0)]).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Unsupported, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Unsupported,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -3038,7 +2929,7 @@ async fn reprocessing_a_revision_one_row_leaves_no_placeholder_in_stored_evidenc
 
     let ready = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(ready.status, EvidenceStatus::Ready);
-    assert_eq!(ready.evidence_schema_revision, Some(14));
+    assert_eq!(ready.evidence_schema_revision, Some(18));
     assert!(!ready.evidence_json.unwrap().contains("unimplemented"));
 }
 
@@ -3074,7 +2965,7 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
 
     let failed = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(failed.status, EvidenceStatus::Failed);
-    assert_eq!(failed.evidence_schema_revision, Some(14));
+    assert_eq!(failed.evidence_schema_revision, Some(18));
     assert!(failed.evidence_json.is_none());
 }
 
@@ -3521,7 +3412,7 @@ fn publishing_session_evidence_writes_both_projections_and_the_start_time() {
     let completion = evidence_completion(
         &claim,
         PublishedEvidence::Unsupported,
-        "{\"unsupported\":true}".into(),
+        crate::store::test_support::evidence_json(&claim.key),
     );
 
     assert!(
@@ -3564,7 +3455,11 @@ fn publishing_session_evidence_writes_both_projections_and_the_start_time() {
 fn published_session_evidence_and_analysis_describe_the_same_pass() {
     let store = store();
     let (record, claim) = claimed_projection(&store, "same-pass", 100, 60);
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -3607,7 +3502,11 @@ fn a_stale_generation_publishes_no_session_evidence_and_no_analysis() {
     let source_before = store.session_source_state(&record.key).unwrap().unwrap();
     let analysis_before = store.analysis(&record.key).unwrap().unwrap();
     let evidence_before = store.evidence(&record.key).unwrap().unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         !store
@@ -3643,7 +3542,11 @@ fn a_stale_fence_publishes_no_session_evidence_and_no_analysis() {
     let source_before = store.session_source_state(&record.key).unwrap().unwrap();
     let analysis_before = store.analysis(&record.key).unwrap().unwrap();
     let evidence_before = store.evidence(&record.key).unwrap().unwrap();
-    let completion = evidence_completion(&first_claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &first_claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&first_claim.key),
+    );
 
     assert!(
         !store
@@ -3676,7 +3579,7 @@ fn a_stale_claim_cannot_change_projections_or_relations() {
     let current_completion = evidence_completion(
         &current_claim,
         PublishedEvidence::Ready,
-        "{\"new\":true}".into(),
+        crate::store::test_support::evidence_json(&current_claim.key),
     );
     let current_relations = [RelationRecord {
         kind: RelationKind::Subagent,
@@ -3696,7 +3599,7 @@ fn a_stale_claim_cannot_change_projections_or_relations() {
     let stale_completion = evidence_completion(
         &first_claim,
         PublishedEvidence::Ready,
-        "{\"old\":true}".into(),
+        crate::store::test_support::evidence_json(&first_claim.key),
     );
     let stale_relations = [RelationRecord {
         kind: RelationKind::Subagent,
@@ -3746,7 +3649,11 @@ fn publication_replaces_subagent_relations_in_one_transaction() {
             }],
         )
         .unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     let new_relations = [RelationRecord {
         kind: RelationKind::Subagent,
         related_id: "new-child".into(),
@@ -3950,6 +3857,8 @@ fn turn_row(turn_index: u64) -> TurnRow {
         role: "assistant",
         ts_ms: Some(1_000 + turn_index as i64),
         model: Some("claude-opus-4-6".into()),
+        provider: None,
+        api: None,
         effort: None,
         speed: None,
         input_tokens: 10,

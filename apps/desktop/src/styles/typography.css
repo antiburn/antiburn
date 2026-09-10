@@ -86,3 +86,10 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: var(--truncated-text-lines);
 }
+
+/* The display step gives a standalone finding more emphasis than a title. */
+.type-display {
+  font-size: 40px;
+  font-weight: 400;
+  letter-spacing: 0.36px;
+}

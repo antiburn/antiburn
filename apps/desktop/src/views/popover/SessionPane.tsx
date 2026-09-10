@@ -11,6 +11,7 @@ import {
   type SessionAnalysisPayload,
 } from "../../lib/ipc"
 import { agentSupportsAnalysis } from "../../lib/presentation/agents"
+import type { SessionSubject } from "../../lib/sessionSubject"
 import {
   inclusiveCostSubject,
   subagentsCostSubject,
@@ -32,21 +33,7 @@ import type {
  * out below because it is easy to get subtly wrong.
  */
 
-/** Which session the pane is showing. */
-export interface SessionSubject {
-  agent: string
-  sessionId: string
-  repo?: string | undefined
-  timestamp?: string | undefined
-  wslDistro?: string | null | undefined
-  title?: string | undefined
-  /** Present when the subject is a sub-agent rather than a session a reader drove. */
-  subagent?: {
-    parentSessionId: string
-    subagentId: string
-    parentTitle?: string
-  }
-}
+export type { SessionSubject } from "../../lib/sessionSubject"
 
 export interface SessionPaneProps {
   subject: SessionSubject
@@ -58,7 +45,8 @@ export interface SessionPaneProps {
   refreshing: boolean
   /** Whether the load for this subject failed. */
   error: boolean
-  onBack: () => void
+  /** Leave the pane; omitted when the host owns navigation. */
+  onBack?: (() => void) | undefined
   /** Newer adjacent session; omitted when there is none. */
   onPrev?: (() => void) | undefined
   /** Older adjacent session; omitted when there is none. */
@@ -67,6 +55,10 @@ export interface SessionPaneProps {
   onOpenSession: (subject: SessionSubject) => void
   /** The session's local records were deleted, so it can no longer be shown. */
   onDeleted: () => void
+  /** Remove popover-only chrome when the pane sits in another window. */
+  embedded?: boolean
+  /** Pause hidden hygiene work while keeping the pane mounted. */
+  active?: boolean
 }
 
 /** All-zero token counts. Use this value when a subject has no billable-token summary. */
@@ -200,6 +192,8 @@ export function SessionPane({
   onNext,
   onOpenSession,
   onDeleted,
+  embedded = false,
+  active = true,
 }: SessionPaneProps) {
   /**
    * Delete: antiburn's own records only.
@@ -209,16 +203,18 @@ export function SessionPane({
    * It does not: the agent's transcript is the agent's.
    */
   const handleDelete = useCallback(async () => {
-    const proceed = await withPopoverHold(() =>
+    const requestConfirmation = () =>
       confirm(
         "This removes antiburn’s stored analysis for the session. The agent’s own transcript file is not touched, and a later scan will find the session again.",
         { title: "Remove this session from antiburn?", kind: "warning", okLabel: "Remove" },
-      ),
-    )
+      )
+    const proceed = embedded
+      ? await requestConfirmation()
+      : await withPopoverHold(requestConfirmation)
     if (!proceed) return
     await deleteSessionData(subject.agent, subject.sessionId, subject.wslDistro)
     onDeleted()
-  }, [subject, onDeleted])
+  }, [subject, onDeleted, embedded])
 
   const sourcePath = payload?.sourcePath ?? null
   const handleReveal = useCallback(() => {
@@ -231,7 +227,7 @@ export function SessionPane({
     sessionId: subject.sessionId,
     wslDistro: subject.wslDistro ?? null,
   }
-  const hygieneBySession = useSessionHygiene([hygieneIdentity])
+  const hygieneBySession = useSessionHygiene(active ? [hygieneIdentity] : [])
   const hygiene = sessionHygieneFor(hygieneBySession, hygieneIdentity)
   const { cost, costSplit } = payload
     ? toLocalCost(subject, payload)
@@ -322,7 +318,7 @@ export function SessionPane({
       subagentCount={payload?.orchestration?.subagentCount ?? 0}
       modelRuns={payload?.modelRuns ?? []}
       relations={relations}
-      onBack={onBack}
+      {...(onBack ? { onBack } : {})}
       {...(onPrev ? { onPrev } : {})}
       {...(onNext ? { onNext } : {})}
       onOpenSubagent={openSubagent}
@@ -331,6 +327,8 @@ export function SessionPane({
       onDeleteSession={() => void handleDelete()}
       {...(sourcePath ? { onRevealSource: handleReveal } : {})}
       renderAgentIcon={renderAgentIcon}
+      embedded={embedded}
+      active={active}
     />
   )
 }

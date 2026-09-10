@@ -218,6 +218,36 @@ describe("SessionStatusBar", () => {
     expect(screen.getByLabelText("Estimated weekly share").parentElement).toHaveClass("ml-auto")
   })
 
+  it("shows no limit for a badge with no percent and no unknown flag", () => {
+    render(
+      <SessionStatusBar
+        checks={[]}
+        limitBadge={{ label: "No weekly limit for this session.", percent: null }}
+      />,
+    )
+
+    expect(screen.getByLabelText("No weekly limit for this session.")).toHaveTextContent(
+      "no limit",
+    )
+  })
+
+  it("shows unknown for a badge with no percent that is flagged unknown", () => {
+    render(
+      <SessionStatusBar
+        checks={[]}
+        limitBadge={{
+          label: "Share of your weekly limit is not known for this session.",
+          percent: null,
+          unknown: true,
+        }}
+      />,
+    )
+
+    expect(
+      screen.getByLabelText("Share of your weekly limit is not known for this session."),
+    ).toHaveTextContent("unknown")
+  })
+
   it("omits unavailable checks from the tooltip", async () => {
     render(<SessionStatusBar checks={WITH_NOT_ASSESSED} />)
     fireEvent.focus(screen.getByLabelText("4 of 5 burn checks passed"))

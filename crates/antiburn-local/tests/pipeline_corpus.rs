@@ -15,13 +15,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, AppendOnlyGuarantee, BoundedJsonlReader, ClaudeAdapter, CompositeSink,
+    ANALYZER_REVISION, AppendOnlyGuarantee, BoundedJsonlReader, ClaudeSessionReader, CompositeSink,
     CoverageReason, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource, EvidenceValue,
     MAX_RECORD_BYTES, MemoryTurnRowStore, NormalizedRecord, PARSER_REVISION,
     RETAINED_METRICS_BYTES_BOUND, RawSource, RecordSink, SCAN_QUANTUM_BYTES, SessionEvidence,
     SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
     SourceCapabilities, SourceChangedReason, SourceClaim, SourceKind, TurnRowSink, TurnRowStore,
-    VisitOutcome, adapter_for,
+    VisitOutcome, reader_for,
 };
 use antiburn_local::discovery::source_version::{FingerprintInputs, SourceStat, head_hash_of};
 use antiburn_local::insights::{
@@ -96,7 +96,7 @@ fn composite_for(input: &SessionInput) -> CompositeSink {
 /// Runs framing → normalization → metrics + evidence for one input.
 fn run_pipeline(input: &SessionInput) -> CompositeSink {
     let mut composite = composite_for(input);
-    let outcome = adapter_for("claude")
+    let outcome = reader_for("claude")
         .visit(input, &mut composite)
         .expect("synthetic source must stream");
     composite.observe_source_outcome(outcome);
@@ -387,7 +387,7 @@ fn provider_db_backed_source_flows_end_to_end_into_a_report() {
         fork_parent_session_id: None,
     };
     let mut composite = composite_for(&input);
-    let outcome = adapter_for(&input.agent)
+    let outcome = reader_for(&input.agent)
         .visit(&input, &mut composite)
         .expect("synthetic provider DB must be readable");
     assert_eq!(outcome, VisitOutcome::Unvalidated);
@@ -466,7 +466,7 @@ fn an_active_writer_forces_source_changed_and_nothing_publishes() {
         seen: 0,
         appended: false,
     };
-    let outcome = ClaudeAdapter
+    let outcome = ClaudeSessionReader
         .visit_claimed(
             &input,
             &claim,
@@ -487,7 +487,7 @@ fn an_active_writer_forces_source_changed_and_nothing_publishes() {
     // Control: once the writer is quiet, the same full-reprocess claim passes.
     let claim = claim_for_path(&path);
     let mut composite = composite_for(&input);
-    let outcome = ClaudeAdapter
+    let outcome = ClaudeSessionReader
         .visit_claimed(
             &input,
             &claim,

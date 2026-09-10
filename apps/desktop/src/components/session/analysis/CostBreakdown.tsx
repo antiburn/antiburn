@@ -13,8 +13,7 @@ import {
 } from "../../../lib/presentation/sessionCosts"
 import { modelRunShortNames } from "../../../lib/presentation/models"
 import type { SubagentMember } from "../../../lib/types/session"
-import { TruncatedText } from "../../presentation/TruncatedText"
-import { RowInfo } from "./RowInfo"
+import { Tooltip } from "../../presentation/Tooltip"
 import { toggleSubagentsExpanded, useSubagentsExpanded } from "./subagentsExpandedStore"
 
 interface CostBreakdownSplit {
@@ -45,7 +44,7 @@ export interface CostBreakdownProps {
   onOpenSubagent?: (subagentId: string, label: string) => void
 }
 
-/* One sentence per billable component, for that row's info button. */
+/** Each component row shows its help in a tooltip. */
 const COST_ROW_HELP: Record<string, string> = {
   Input: "Fresh tokens sent to the model, billed at the full input price.",
   Output: "Tokens the model wrote back. The highest price per token.",
@@ -70,7 +69,7 @@ function formatSharePct(usd: number, totalUsd: number): string {
   return `${Math.round(pct)}%`
 }
 
-/** One row: a label, its token count, its USD cost, and its share of the total. */
+/** The compact row keeps the component table beside the total at the minimum window width. */
 function CostRowLine({
   label,
   usd,
@@ -83,11 +82,13 @@ function CostRowLine({
   totalUsd: number
 }) {
   const help = COST_ROW_HELP[label]
-  return (
-    <div className="group col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 py-0.5 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover">
+  const row = (
+    <div
+      tabIndex={help ? 0 : undefined}
+      className="group col-span-full grid grid-cols-subgrid rounded-control -mx-1 px-1 py-0.5 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover type-callout focus-visible:bg-surface-hover"
+    >
       <span className="flex min-w-0 items-center gap-1 text-label-tertiary">
         <span className="truncate">{label}</span>
-        {help && <RowInfo label={label} body={help} />}
       </span>
       <span className="text-right text-label-tertiary tabular-nums">
         {formatTokensShort(tokens)}
@@ -97,6 +98,12 @@ function CostRowLine({
         {formatSharePct(usd, totalUsd)}
       </span>
     </div>
+  )
+  if (!help) return row
+  return (
+    <Tooltip label={help} delayMs={150}>
+      {row}
+    </Tooltip>
   )
 }
 
@@ -142,17 +149,17 @@ function SubagentMemberRow({
       type="button"
       aria-label={`Open the analysis for ${member.label}`}
       onClick={() => onOpenSubagent?.(member.subagentId, member.label)}
-      className="group col-span-full grid grid-cols-subgrid gap-y-0.5 text-label-tertiary type-body py-2 border-t border-separator transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover"
+      className="group col-span-full grid grid-cols-subgrid gap-y-0.5 text-label-tertiary pl-4 mb-2.5 border-t border-separator transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover type-callout"
     >
-      <span className="col-span-full flex min-w-0 items-center gap-x-1 text-left">
+      <span className="mt-2.5 col-start-1 col-end-5 flex min-w-0 gap-x-2 items-center text-left">
         <span className="tabular-nums">
           [{formatMemberStart(member, sessionStartedAtEpoch)}]
         </span>
-        <TruncatedText className="min-w-0 flex-1" text={member.label} />
+        <span className="min-w-0 flex-1 truncate">{member.label}</span>
         <ChevronRight
           size={12}
           aria-hidden="true"
-          className="shrink-0 transition-transform duration-[var(--duration-fast)] ease-out group-hover:translate-x-0.5"
+          className="self-center justify-self-end transition-transform duration-[var(--duration-fast)] ease-out group-hover:translate-x-0.5"
         />
       </span>
 
@@ -210,11 +217,11 @@ function SubagentsSplitRow({
         type="button"
         onClick={toggleSubagentsExpanded}
         aria-expanded={expanded}
-        className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 my-1 px-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover"
+        className="col-span-full grid grid-cols-subgrid rounded-control -mx-1 my-1 px-1 transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover type-callout"
       >
         <span className="min-w-0 flex items-center gap-x-1 text-label-tertiary">
           <Chevron size={12} aria-hidden="true" className="shrink-0" />
-          {label}
+          <span className="truncate">{label}</span>
         </span>
         <span className="text-right text-label-tertiary tabular-nums">
           {formatTokensShort(tokens)}
@@ -246,14 +253,14 @@ function SubagentsSplitRow({
  * only appears when the caller has parent and sub-agent results drawn from the
  * same computation as the headline, because mixing sources would produce rows
  * that do not add up. The token and percent columns share that same subject,
- * so every row's percent reads as a share of the one total shown in the footer.
+ * so every row's percent reads as a share of the one total shown beside the table.
  */
 export function CostBreakdown({ cost, split, onOpenSubagent }: CostBreakdownProps) {
   const rows = costBreakdownRows(resultComponentCost(cost))
   const totalUsd = cost.totalCostUsd
 
-  return (
-    <div className="grid grid-cols-[1fr_max-content_max-content_max-content] gap-x-3 gap-y-1">
+  const table = (
+    <div className="grid min-w-0 gap-y-1 w-full max-w-[640px] gap-x-6 justify-self-end justify-end grid-cols-[1fr_auto_auto_auto]">
       {split && (
         <div className="col-span-full grid grid-cols-subgrid mb-1 border-b border-separator pb-1">
           <CostRowLine
@@ -283,21 +290,24 @@ export function CostBreakdown({ cost, split, onOpenSubagent }: CostBreakdownProp
           totalUsd={totalUsd}
         />
       ))}
+    </div>
+  )
 
-      <div className="col-span-full grid grid-cols-subgrid mt-1 border-t border-separator pt-1 type-body">
-        <span className="text-label-tertiary">{costFigureLabel(cost.isActive)}</span>
-        <span className="text-right text-label-tertiary tabular-nums">
-          {formatTokensShort(cost.totalTokens)}
+  return (
+    <div className="session-cost-summary grid w-full gap-x-12 gap-y-3 rounded-popover bg-surface-card/50 p-4 font-mono">
+      <div className="flex min-w-0 flex-col gap-1">
+        <span className="type-large-title font-semibold! text-label tabular-nums">
+          {formatCost(totalUsd)}
         </span>
-        <span className="flex justify-end">
-          <span className="flex shrink-0 items-center rounded-full bg-surface-secondary px-1.5 py-px type-body font-medium text-label tabular-nums">
-            {formatCost(cost.totalCostUsd)}
-          </span>
+        <span className="type-callout text-label-secondary">
+          {costFigureLabel(cost.isActive)}
         </span>
-        <span className="text-right text-label-tertiary tabular-nums">
-          {formatSharePct(cost.totalCostUsd, totalUsd)}
+        <span className="type-callout text-label-tertiary">
+          {formatTokensShort(cost.totalTokens)} tokens
         </span>
       </div>
+
+      {table}
     </div>
   )
 }

@@ -25,6 +25,13 @@ pub struct PiOauth {
     pub account_id: Option<String>,
 }
 
+impl PiOauth {
+    /// Whether the access token has not yet passed its stated expiry.
+    pub fn is_live(&self, now: time::OffsetDateTime) -> bool {
+        i128::from(self.expires_at_ms) > now.unix_timestamp_nanos() / 1_000_000
+    }
+}
+
 /// Pi's auth store path.
 pub fn default_auth_path() -> Option<PathBuf> {
     Some(antiburn_local::paths::home_dir()?.join(".pi/agent/auth.json"))
@@ -99,6 +106,15 @@ mod tests {
         ] {
             assert!(parse_entry(entry, ANTHROPIC_KEY).is_none());
         }
+    }
+
+    #[test]
+    fn liveness_compares_the_stated_expiry_to_now() {
+        let entry = parse_entry(STORE, ANTHROPIC_KEY).expect("anthropic entry");
+        let before = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+        let after = time::OffsetDateTime::from_unix_timestamp(1_900_000_000).unwrap();
+        assert!(entry.is_live(before));
+        assert!(!entry.is_live(after));
     }
 
     #[test]

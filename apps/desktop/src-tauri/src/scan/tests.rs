@@ -1129,6 +1129,64 @@ async fn an_orchestrator_cursor_gates_unchanged_children_and_advances_on_child_g
     assert!(advanced.records[0].updated_at_epoch.unwrap() > first_epoch);
 }
 
+#[tokio::test]
+async fn claude_sidecar_changes_bypass_the_unchanged_source_gate() {
+    let home = tempfile::TempDir::new().unwrap();
+    let parent = write_claude_session(home.path(), "sidecar-source");
+    let child_dir = parent.parent().unwrap().join("sidecar-source/subagents");
+    std::fs::create_dir_all(&child_dir).unwrap();
+    let child = child_dir.join("agent-child.jsonl");
+    std::fs::write(&child, "{}\n").unwrap();
+    let sidecar = child.with_extension("meta.json");
+    let store = crate::store::Store::open_in_memory(home.path()).unwrap();
+    let log = log(AgentKind::Claude, parent.clone(), 1_800_000_000);
+    let first = describe_with_states(
+        vec![log.clone()],
+        home.path(),
+        &HashSet::new(),
+        &store.session_records().unwrap(),
+    )
+    .await;
+    let mut previous = first.records[0].clone();
+    for content in [
+        Some(r#"{"toolUseId":"call-a"}"#),
+        Some(r#"{"toolUseId":"call-b"}"#),
+        None,
+    ] {
+        store
+            .upsert_sessions(std::slice::from_ref(&previous), &agents::evidence_cohort())
+            .unwrap();
+        assert!(
+            reuse_unchanged_record(&log, Some(&previous), None)
+                .await
+                .is_some()
+        );
+        match content {
+            Some(content) => std::fs::write(&sidecar, content).unwrap(),
+            None => std::fs::remove_file(&sidecar).unwrap(),
+        }
+        assert!(
+            reuse_unchanged_record(&log, Some(&previous), None)
+                .await
+                .is_none()
+        );
+        let next = describe_with_states(
+            vec![log.clone()],
+            home.path(),
+            &HashSet::new(),
+            &store.session_records().unwrap(),
+        )
+        .await;
+        assert_ne!(previous.activity_cursor, next.records[0].activity_cursor);
+        assert_eq!(
+            previous.source_fingerprint,
+            next.records[0].source_fingerprint
+        );
+        assert_eq!(previous.updated_at_epoch, next.records[0].updated_at_epoch);
+        previous = next.records[0].clone();
+    }
+}
+
 /// A synthetic Claude sidechain transcript: `agentId` on every record and
 /// `isSidechain: true`, written beside top-level sessions the way current
 /// agent versions do.

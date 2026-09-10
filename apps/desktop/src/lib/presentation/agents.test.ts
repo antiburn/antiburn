@@ -55,7 +55,7 @@ describe("agentDisplayName / agentIconName", () => {
 })
 
 describe("agentSupportsAnalysis", () => {
-  it("is true only for agents with a dedicated analysis adapter", () => {
+  it("is true for the six functional session parsers", () => {
     expect(agentSupportsAnalysis("claude-code")).toBe(true)
     expect(agentSupportsAnalysis("codex")).toBe(true)
     expect(agentSupportsAnalysis("cursor")).toBe(true)
@@ -64,10 +64,17 @@ describe("agentSupportsAnalysis", () => {
     expect(agentSupportsAnalysis("pi")).toBe(true)
   })
 
-  it("is false for generic-fallback agents and unknown slugs", () => {
-    expect(agentSupportsAnalysis("copilot")).toBe(false)
-    expect(agentSupportsAnalysis("kiro")).toBe(false)
+  it.each(["copilot", "cline", "kiro", "amp-code", "windsurf"])(
+    "keeps %s registered without enabling session analysis",
+    (slug) => {
+      expect(AGENT_SLUGS).toContain(slug)
+      expect(agentSupportsAnalysis(slug)).toBe(false)
+    },
+  )
+
+  it("is false for unknown slugs", () => {
     expect(agentSupportsAnalysis("totally-made-up")).toBe(false)
+    expect(agentSupportsAnalysis("")).toBe(false)
   })
 })
 

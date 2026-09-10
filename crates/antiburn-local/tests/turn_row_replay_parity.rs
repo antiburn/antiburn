@@ -36,8 +36,8 @@ use antiburn_local::analysis::{
     Bucket, CompositeSink, EvidenceSource, FenceScope, MemoryTurnRowStore, NormalizedRecord,
     RawSource, RecordSink, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
     SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind, TurnRowSink,
-    TurnRowStore, TurnScope, TurnSessionKey, adapter_for, merge_metrics, metrics_by_source,
-    metrics_from_rows, query_turn_rows,
+    TurnRowStore, TurnScope, TurnSessionKey, merge_metrics, metrics_by_source, metrics_from_rows,
+    query_turn_rows, reader_for,
 };
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -115,7 +115,7 @@ fn run_fixture_and_replay(
         None,
     );
     let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for(agent)
+    let outcome = reader_for(agent)
         .visit(input, &mut composite)
         .expect("fixture must stream");
     composite.observe_source_outcome(outcome);
@@ -137,7 +137,7 @@ fn run_fixture_and_replay(
     });
 
     let mut capture = SummaryCapture::default();
-    adapter_for(agent)
+    reader_for(agent)
         .visit(input, &mut capture)
         .expect("fixture must stream for summary capture");
     let mut summary = capture.0;
@@ -157,7 +157,7 @@ fn run_fixture_and_replay(
 /// Strips the one documented, principled gap this seam accepts before
 /// comparing `live`'s buckets to the replay's: Claude's
 /// `late_skill_metrics` fixture names its skill through a trailing
-/// `attachment` record, which `ClaudeAdapter` resolves only in
+/// `attachment` record, which `ClaudeSessionReader` resolves only in
 /// `SessionSummary::late_tools`, after the pipeline already wrote this
 /// turn's row (turn ordinal 1, bucket 0) with no tool call at all —
 /// `TurnRowSink` observes each row at `record` time, before `finish`
@@ -980,7 +980,7 @@ fn stream_source_into_shared_store(
         scope,
     );
     let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for("claude")
+    let outcome = reader_for("claude")
         .visit(input, &mut composite)
         .expect("multi-source fixture must stream");
     composite.observe_source_outcome(outcome);

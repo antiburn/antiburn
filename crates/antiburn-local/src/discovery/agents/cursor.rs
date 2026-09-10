@@ -1725,6 +1725,7 @@ fn build_cursor_store_db_content(
                     "content": message.content,
                     "timestamp": message.timestamp,
                     "model": message.model,
+                    "bubbleId": message.record_id,
                 })
                 .to_string(),
             );
@@ -1743,6 +1744,7 @@ struct CursorMessageCandidate {
     content: String,
     timestamp: Option<i64>,
     model: Option<String>,
+    record_id: Option<String>,
 }
 
 fn extract_cursor_message_candidates(value: &Value) -> Vec<CursorMessageCandidate> {
@@ -1784,6 +1786,10 @@ fn collect_cursor_message_candidates(value: &Value, out: &mut Vec<CursorMessageC
                                 .and_then(Value::as_str)
                                 .map(ToOwned::to_owned)
                         }),
+                    record_id: ["bubbleId", "messageId", "id"]
+                        .into_iter()
+                        .find_map(|key| map.get(key).and_then(Value::as_str))
+                        .map(ToOwned::to_owned),
                 });
             }
             for child in map.values() {

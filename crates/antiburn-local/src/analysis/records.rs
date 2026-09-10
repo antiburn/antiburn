@@ -201,7 +201,8 @@ pub(crate) fn work_observations(value: &Value) -> Vec<EvidenceObservation> {
         .or_else(|| value.get("content"));
     if let Some(items) = content.and_then(Value::as_array) {
         for item in items {
-            if item.get("type").and_then(Value::as_str) == Some("tool_use")
+            if is_assistant
+                && item.get("type").and_then(Value::as_str) == Some("tool_use")
                 && item
                     .get("name")
                     .and_then(Value::as_str)
@@ -210,6 +211,11 @@ pub(crate) fn work_observations(value: &Value) -> Vec<EvidenceObservation> {
                 observations.push(EvidenceObservation::SubagentSpawn {
                     ts_ms,
                     parent_model: parent_model.clone(),
+                    parent_call_id: (!is_sidechain
+                        && value.get("type").and_then(Value::as_str) == Some("assistant"))
+                    .then(|| item.get("id").and_then(Value::as_str).map(str::to_owned))
+                    .flatten(),
+                    child_model: None,
                     provenance: RelationProvenance::TaskToolUse,
                 });
             }

@@ -158,9 +158,8 @@ fn reconcile_windows<R: Runtime>(app: &tauri::AppHandle<R>, desired: bool) -> an
 
 #[cfg(any(target_os = "windows", test))]
 fn windows_run_command(executable: &str) -> String {
-    // Windows filenames cannot contain a quote, so surrounding the complete
-    // executable path is sufficient when no startup arguments are passed.
-    format!("\"{executable}\"")
+    // Keep the background flag outside the quoted executable path.
+    format!("\"{executable}\" --background")
 }
 
 #[cfg(target_os = "linux")]
@@ -209,7 +208,7 @@ fn reconcile_linux<R: Runtime>(app: &tauri::AppHandle<R>, desired: bool) -> anyh
 #[cfg(any(target_os = "linux", test))]
 fn linux_desktop_entry(executable: &str) -> String {
     format!(
-        "[Desktop Entry]\nType=Application\nVersion=1.0\nName=antiburn\nComment=Start antiburn at login\nExec={}\nStartupNotify=false\nTerminal=false\n",
+        "[Desktop Entry]\nType=Application\nVersion=1.0\nName=antiburn\nComment=Start antiburn at login\nExec={} --background\nStartupNotify=false\nTerminal=false\n",
         desktop_exec_quote(executable)
     )
 }
@@ -219,6 +218,9 @@ fn desktop_exec_quote(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len() + 2);
     escaped.push('"');
     for character in value.chars() {
+        if character == '%' {
+            escaped.push('%');
+        }
         if matches!(character, '"' | '`' | '$' | '\\') {
             escaped.push('\\');
         }
@@ -275,11 +277,11 @@ mod tests {
     fn platform_commands_quote_paths_with_spaces_and_reserved_characters() {
         assert_eq!(
             windows_run_command(r"C:\Program Files\antiburn\antiburn.exe"),
-            r#""C:\Program Files\antiburn\antiburn.exe""#
+            r#""C:\Program Files\antiburn\antiburn.exe" --background"#
         );
         assert!(
-            linux_desktop_entry("/opt/anti burn/$stable`/antiburn")
-                .contains(r#"Exec="/opt/anti burn/\$stable\`/antiburn""#)
+            linux_desktop_entry("/opt/100%real/anti burn/$stable`/antiburn")
+                .contains("Exec=\"/opt/100%%real/anti burn/\\$stable\\`/antiburn\" --background\n")
         );
     }
 

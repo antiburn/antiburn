@@ -41,6 +41,8 @@ fn turn_row(turn_index: u64, uuid: Option<&str>) -> TurnRow {
         role: "assistant",
         ts_ms: Some(1_000 + turn_index as i64),
         model: Some("claude-opus-4-6".into()),
+        provider: None,
+        api: None,
         effort: None,
         speed: None,
         input_tokens: 10,
@@ -103,7 +105,7 @@ fn publish_turns(store: &Store, session_id: &str, uuid: &str, row_count: u64) ->
         claim_fence: claim.claim_fence,
         status: PublishedEvidence::Ready,
         evidence_schema_revision: 1,
-        evidence_json: "{}".into(),
+        evidence_json: crate::store::test_support::evidence_json(&claim.key),
     };
     assert!(
         store
