@@ -9,7 +9,7 @@ import { MainWindowView } from "./views/MainWindowView"
 const RESPONDER_INSTALL_TIMEOUT = 1_000
 
 /** Synchronizes the retained renderer with the stored theme preference. */
-export class MainWindowThemeSession {
+class MainWindowThemeSession {
   private active = true
   private started = false
   private settingsVersion = 0
