@@ -188,14 +188,38 @@ describe("Checks", () => {
 
   it("renders every shared per-check metric in the anchored companion", () => {
     const failures = [
-      category("sessionsOverDepth", { finding: 1, clean: 0, estimatedTokenBurnBasisPoints: 800 }),
-      category("modelOverthinking", { finding: 1, clean: 0, estimatedTokenBurnBasisPoints: 350 }),
-      category("overpoweredSubagents", { finding: 1, clean: 0, estimatedTokenBurnBasisPoints: 880 }),
-      category("unusedMcpServers", { finding: 1, clean: 0, estimatedTokenBurnBasisPoints: 100 }),
-      category("unusedBuiltInTools", { finding: 1, clean: 0, estimatedTokenBurnBasisPoints: 1 }),
+      category("sessionsOverDepth", {
+        finding: 1,
+        clean: 0,
+        estimatedTokenBurnBasisPoints: 800,
+      }),
+      category("modelOverthinking", {
+        finding: 1,
+        clean: 0,
+        estimatedTokenBurnBasisPoints: 350,
+      }),
+      category("overpoweredSubagents", {
+        finding: 1,
+        clean: 0,
+        estimatedTokenBurnBasisPoints: 880,
+      }),
+      category("unusedMcpServers", {
+        finding: 1,
+        clean: 0,
+        estimatedTokenBurnBasisPoints: 100,
+      }),
+      category("unusedBuiltInTools", {
+        finding: 1,
+        clean: 0,
+        estimatedTokenBurnBasisPoints: 1,
+      }),
       category("unusedSkills", { finding: 1, clean: 0, estimatedTokenBurnBasisPoints: 100 }),
       category("oldModelUsage", { finding: 1, clean: 0, estimatedTokenBurnBasisPoints: 400 }),
-      category("overuseOfFastMode", { finding: 1, clean: 0, estimatedTokenBurnBasisPoints: 333 }),
+      category("overuseOfFastMode", {
+        finding: 1,
+        clean: 0,
+        estimatedTokenBurnBasisPoints: 333,
+      }),
       category("cacheChurn", { finding: 1, clean: 0, estimatedTokenBurnBasisPoints: 700 }),
     ]
 

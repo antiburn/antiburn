@@ -1,10 +1,14 @@
 use std::fmt;
+#[cfg(not(windows))]
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use antiburn_local::model::AgentKind;
 
-use super::filesystem::{FileIdentity, FileOwnership};
+#[cfg(not(windows))]
+use super::filesystem::FileIdentity;
+#[cfg(unix)]
+use super::filesystem::FileOwnership;
 use super::vendors::OperationSelector;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

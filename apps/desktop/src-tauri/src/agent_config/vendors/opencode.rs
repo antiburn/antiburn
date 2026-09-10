@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
 
-use super::json::{edit_top_level_string, parse};
+#[cfg(not(windows))]
+use super::json::edit_top_level_string;
+use super::json::parse;
 use super::{OperationSelector, Target, VendorConfig, VendorPolicy};
 use crate::agent_config::filesystem::{path_entry_exists, read_checked};
 use crate::agent_config::{ConfigScope, ConfigSetting, ConfigUnavailableReason};
@@ -200,7 +202,13 @@ fn project_config_disabled_value(value: &str) -> bool {
 }
 
 fn global_config_root(home: &Path) -> Result<PathBuf, ConfigUnavailableReason> {
-    global_config_root_for(home, std::env::var_os("XDG_CONFIG_HOME").as_deref())
+    let process_home = std::env::var_os("HOME");
+    let xdg_config_home = process_home
+        .as_deref()
+        .is_some_and(|process_home| Path::new(process_home) == home)
+        .then(|| std::env::var_os("XDG_CONFIG_HOME"))
+        .flatten();
+    global_config_root_for(home, xdg_config_home.as_deref())
 }
 
 fn global_config_root_for(
@@ -253,17 +261,22 @@ fn reject_directory_overrides(root: &Path) -> Result<(), ConfigUnavailableReason
 }
 
 fn reject_managed_config() -> Result<(), ConfigUnavailableReason> {
-    #[cfg(target_os = "macos")]
-    let root = Path::new("/Library/Application Support/opencode");
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let root = Path::new("/etc/opencode");
     #[cfg(windows)]
-    return Ok(());
+    {
+        Ok(())
+    }
+
     #[cfg(not(windows))]
-    reject_managed_config_at(root)?;
-    #[cfg(target_os = "macos")]
-    reject_managed_preferences()?;
-    Ok(())
+    {
+        #[cfg(target_os = "macos")]
+        let root = Path::new("/Library/Application Support/opencode");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let root = Path::new("/etc/opencode");
+        reject_managed_config_at(root)?;
+        #[cfg(target_os = "macos")]
+        reject_managed_preferences()?;
+        Ok(())
+    }
 }
 
 #[cfg(not(windows))]

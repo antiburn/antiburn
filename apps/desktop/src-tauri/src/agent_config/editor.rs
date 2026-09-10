@@ -5,9 +5,11 @@ use std::io::Write;
 #[cfg(not(windows))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(not(windows))]
+use super::config::{ApplyConflict, ApplyError, ApplyReadbackError};
 use super::config::{
-    ApplyConflict, ApplyError, ApplyReadbackError, ConfigChange, ConfigContext, ConfigOperation,
-    ConfigSetting, ConfigUnavailableReason, EffectiveConfig, PreparedChange,
+    ConfigChange, ConfigContext, ConfigOperation, ConfigSetting, ConfigUnavailableReason,
+    EffectiveConfig, PreparedChange,
 };
 use super::filesystem::{canonical_root, read_checked};
 #[cfg(not(windows))]

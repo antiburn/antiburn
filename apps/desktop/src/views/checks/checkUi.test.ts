@@ -61,9 +61,9 @@ describe("check row presentation", () => {
     ] as const
 
     for (const [id, estimatedTokenBurnBasisPoints, metric] of estimates) {
-      expect(
-        checkRowPresentation(category({ id, estimatedTokenBurnBasisPoints })).metric,
-      ).toBe(metric)
+      expect(checkRowPresentation(category({ id, estimatedTokenBurnBasisPoints })).metric).toBe(
+        metric,
+      )
     }
   })
 })
