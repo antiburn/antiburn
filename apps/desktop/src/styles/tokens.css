@@ -49,6 +49,12 @@
   /* accent-fill is the concrete value; the live system accent token breaks when
      used as a background-color, so backgrounds must use this one. */
   --color-accent-fill: var(--color-accent-fill-val);
+  /* The solid chip of a view picker, and the ink on it. The fill is the
+     neutral furthest from the track: the darkest one on the light theme and
+     the lightest one on the dark theme. A dark chip on a dark track has too
+     little separation to name the selected view. */
+  --color-selected-fill: var(--color-selected-fill-val);
+  --color-selected-ink: var(--color-selected-ink-val);
   /* The antiburn brand orange, in the two-token shape system-orange uses.
      brand-tint fills a large shape — a meter segment, a ring arc, a hover
      wash — and carries the mark unchanged in both themes. brand inks text and
@@ -154,6 +160,8 @@
   --color-accent-val: hsl(211.2 100% 50%);
   --color-accent-fill-val: hsl(210 100% 44.5%);
   --color-accent-hover-val: hsl(210.4 100% 39%);
+  --color-selected-fill-val: hsl(240 6% 26%);
+  --color-selected-ink-val: hsl(0 0% 100%);
 
   /* Brand — the antiburn orange. The mark itself fills large shapes in both
      themes. On a light surface it measures 2.9:1, so text and small glyphs
@@ -260,6 +268,8 @@
     --color-accent-val: hsl(210 100% 51.9%);
     --color-accent-fill-val: hsl(213.3 92% 48%);
     --color-accent-hover-val: hsl(213.5 91% 42%);
+    --color-selected-fill-val: hsl(240 6% 84%);
+    --color-selected-ink-val: hsl(240 4% 12%);
     /* The mark measures 7.4:1 on a dark surface, so text keeps it too. */
     --color-brand-tint-val: hsl(17.6 100% 58.6%);
     --color-brand-unlit-val: hsl(17.7 75% 58.6%);
@@ -321,6 +331,8 @@
   --color-accent-val: hsl(211.2 100% 50%);
   --color-accent-fill-val: hsl(210 100% 44.5%);
   --color-accent-hover-val: hsl(210.4 100% 39%);
+  --color-selected-fill-val: hsl(240 6% 26%);
+  --color-selected-ink-val: hsl(0 0% 100%);
   --color-brand-tint-val: hsl(17.6 100% 58.6%);
   --color-brand-unlit-val: hsl(17.7 75% 58.6%);
   --color-brand-val: hsl(18 92% 39%);
@@ -381,6 +393,8 @@
   --color-accent-val: hsl(210 100% 51.9%);
   --color-accent-fill-val: hsl(213.3 92% 48%);
   --color-accent-hover-val: hsl(213.5 91% 42%);
+  --color-selected-fill-val: hsl(240 6% 84%);
+  --color-selected-ink-val: hsl(240 4% 12%);
   --color-brand-tint-val: hsl(17.6 100% 58.6%);
   --color-brand-unlit-val: hsl(17.7 75% 58.6%);
   --color-brand-val: hsl(17.6 100% 58.6%);

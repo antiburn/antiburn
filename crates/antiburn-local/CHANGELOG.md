@@ -17,6 +17,8 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-10
+
 ### Added
 
 - Typed per-detector finding causes now support exact target grouping and

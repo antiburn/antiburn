@@ -1,8 +1,8 @@
 /**
  * The headline efficiency metric and the three spend shares the card shows.
  *
- * The bands differ by agent family because pricing and harness behavior differ.
- * Any agent other than Codex uses the Claude Code bands.
+ * Every session keeps the legacy visualization scale.
+ * Agent-specific threshold guidance appears only for explicitly supported agents.
  */
 
 import type { SessionEfficiency } from "../types/session"
@@ -10,10 +10,10 @@ import type { SessionEfficiency } from "../types/session"
 /** How a metric reads against its band thresholds. */
 export type EfficiencyBand = "good" | "ok" | "bad"
 
-/** The agent family whose thresholds a session reads against. */
+/** A reference family used for visualization or agent-specific guidance. */
 export type EfficiencyProfile = "claude" | "codex"
 
-/** One metric with its reading, or null when the ratio is undefined. */
+/** One metric with its reading against the visualization scale. */
 export interface EfficiencyMetric {
   value: number
   band: EfficiencyBand
@@ -29,14 +29,13 @@ export interface EfficiencyMetrics {
   /** Share of the spend that was carry, in the range 0 to 1. */
   carryShare: EfficiencyMetric | null
   unpricedTurns: number
+  /** The non-null profile preserves the legacy scale and verdict visualization. */
   profile: EfficiencyProfile
+  /** The nullable profile controls agent-specific tooltip and inline guidance. */
+  guidanceProfile: EfficiencyProfile | null
 }
 
-/**
- * Band edges for one metric. A reading below `good` is good and one above
- * `bad` is bad; anything between reads as ok. A "higher is better"
- * metric flips the comparison.
- */
+/** Band edges and direction for one metric. */
 interface BandEdges {
   good: number
   bad: number
@@ -67,8 +66,15 @@ const EDGES: Record<EfficiencyProfile, ProfileEdges> = {
   },
 }
 
-/** The threshold family for an agent slug. */
-export function efficiencyProfile(agent: string): EfficiencyProfile {
+/** Return the guidance profile only for an exact supported agent slug. */
+export function efficiencyProfile(agent: string): EfficiencyProfile | null {
+  if (agent === "claude-code") return "claude"
+  if (agent === "codex") return "codex"
+  return null
+}
+
+/** Preserve the pre-existing reference scale. This fallback does not validate agent-specific guidance. */
+function visualizationProfile(agent: string): EfficiencyProfile {
   return agent === "codex" ? "codex" : "claude"
 }
 
@@ -135,9 +141,10 @@ function metric(value: number, edges: BandEdges): EfficiencyMetric {
   return { value, band: bandFor(value, edges) }
 }
 
-/** The three metrics for one subject's totals, read against `agent`'s bands. */
+/** Build metrics with the legacy scale and separate agent-specific guidance applicability. */
 export function efficiencyMetrics(totals: SessionEfficiency, agent: string): EfficiencyMetrics {
-  const profile = efficiencyProfile(agent)
+  const profile = visualizationProfile(agent)
+  const guidanceProfile = efficiencyProfile(agent)
   const edges = EDGES[profile]
   const denominatorTokens = totals.growthTokens + totals.outputTokens
   const hasSpend = totals.totalUsd > 0
@@ -155,6 +162,7 @@ export function efficiencyMetrics(totals: SessionEfficiency, agent: string): Eff
     carryShare: hasSpend ? metric(totals.carryUsd / totals.totalUsd, edges.carryShare) : null,
     unpricedTurns: totals.unpricedTurns,
     profile,
+    guidanceProfile,
   }
 }
 
@@ -175,9 +183,9 @@ function formatEdge(metricKey: keyof ProfileEdges, value: number): string {
   return metricKey === "costPerMTok" ? `$${value}` : `${Math.round(value * 100)}%`
 }
 
-function readableProfile(profile: EfficiencyProfile) {
-  if (profile === "claude") return "Claude"
-  if (profile === "codex") return "Codex"
+const readableProfile: Record<EfficiencyProfile, string> = {
+  claude: "Claude",
+  codex: "Codex",
 }
 
 /**
@@ -195,16 +203,18 @@ export function efficiencyBandWord(
 /** Describe the good, bad, and neutral ranges for one metric. */
 export function efficiencyThresholdGuidance(
   metricKey: keyof ProfileEdges,
-  profile: EfficiencyProfile,
+  profile: EfficiencyProfile | null,
 ): string[] {
+  if (profile === null) return []
+
   const edges = EDGES[profile][metricKey]
   const fmt = (value: number) => formatEdge(metricKey, value)
   if (edges.higherIsBetter) {
     return [
-      `For ${readableProfile(profile)}, aim for above ${fmt(edges.good)}. Below ${fmt(edges.bad)} is too low.`,
+      `For ${readableProfile[profile]}, aim for above ${fmt(edges.good)}. Below ${fmt(edges.bad)} is too low.`,
     ]
   }
   return [
-    `For ${readableProfile(profile)}, aim for below ${fmt(edges.good)}. Above ${fmt(edges.bad)} is too high.`,
+    `For ${readableProfile[profile]}, aim for below ${fmt(edges.good)}. Above ${fmt(edges.bad)} is too high.`,
   ]
 }

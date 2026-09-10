@@ -29,7 +29,7 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
         crate::analysis::projection_revisions(),
         ProjectionRevisions {
             parser_revision: 32,
-            analyzer_revision: 21,
+            analyzer_revision: 22
             metrics_schema_revision: 8,
             evidence_schema_revision: 18,
         }

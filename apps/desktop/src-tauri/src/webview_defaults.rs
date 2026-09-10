@@ -10,8 +10,7 @@ use tauri_plugin_prevent_default::{
 };
 
 fn flags_for(debug: bool) -> Flags {
-    let app_flags = Flags::CONTEXT_MENU
-        | Flags::FIND
+    let app_flags = Flags::FIND
         | Flags::CARET_BROWSING
         | Flags::DOWNLOADS
         | Flags::SOURCE
@@ -21,7 +20,7 @@ fn flags_for(debug: bool) -> Flags {
     if debug {
         app_flags
     } else {
-        app_flags | Flags::DEV_TOOLS | Flags::RELOAD
+        app_flags | Flags::CONTEXT_MENU | Flags::DEV_TOOLS | Flags::RELOAD
     }
 }
 
@@ -104,10 +103,9 @@ mod tests {
     }
 
     #[test]
-    fn debug_keeps_reload_and_developer_tools_available() {
+    fn debug_keeps_context_menu_reload_and_developer_tools_available() {
         let flags = flags_for(true);
-        let expected = Flags::CONTEXT_MENU
-            | Flags::FIND
+        let expected = Flags::FIND
             | Flags::CARET_BROWSING
             | Flags::DOWNLOADS
             | Flags::SOURCE
@@ -115,7 +113,7 @@ mod tests {
             | Flags::PRINT;
 
         assert_eq!(flags, expected);
-        assert!(flags.contains(Flags::CONTEXT_MENU));
+        assert!(!flags.contains(Flags::CONTEXT_MENU));
         assert!(!flags.contains(Flags::DEV_TOOLS));
         assert!(!flags.contains(Flags::RELOAD));
         assert!(!flags.contains(Flags::FOCUS_MOVE));

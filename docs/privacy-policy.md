@@ -23,7 +23,7 @@ which features are used, and coarse hourly ranges for the application's own
 resource use. This includes application launch and progress through the fixed
 onboarding steps.
 
-The event schema contains twenty-seven fields:
+The event schema contains twenty-eight fields:
 
 - the constant product surface `desktop`;
 - random message, installation, and analytics-session identifiers;
@@ -43,10 +43,13 @@ The event schema contains twenty-seven fields:
   provider's own plan string;
 - that factor's dollars-per-percent value, reduced to a coarse band;
 - how far the factor's estimate and the provider's own meter disagree,
-  reduced to a coarse band; and
+  reduced to a coarse band;
 - a nested hourly summary containing fixed bands for antiburn's own shell CPU,
   memory, process read and write I/O, local database size, and database log
-  size, plus `none`, `partial`, or `full` coverage for each measurement.
+  size, plus `none`, `partial`, or `full` coverage for each measurement; and
+- up to 16 sanitized unknown transcript record type names, each checked
+  against a fixed character set and length before it is sent, with a
+  rejected name replaced by a fixed placeholder rather than sent verbatim.
 
 Resource summaries can reveal coarse application work intensity and local data
 volume. They contain no work content, paths, credentials, renderer-process
