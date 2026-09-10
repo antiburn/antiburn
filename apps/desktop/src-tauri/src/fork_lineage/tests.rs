@@ -105,7 +105,7 @@ fn publish_turns(store: &Store, session_id: &str, uuid: &str, row_count: u64) ->
         claim_fence: claim.claim_fence,
         status: PublishedEvidence::Ready,
         evidence_schema_revision: 1,
-        evidence_json: "{}".into(),
+        evidence_json: crate::store::test_support::evidence_json(&claim.key),
     };
     assert!(
         store

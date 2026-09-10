@@ -40,6 +40,7 @@
   height: var(--space-lg);
 }
 .session-detail-key {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr));
   margin-inline: 0;
 }
 .session-detail-wide .chart-key-stat {

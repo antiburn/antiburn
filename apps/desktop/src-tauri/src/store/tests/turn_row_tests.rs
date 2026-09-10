@@ -129,7 +129,11 @@ fn publish_turn_row_with_uuid(store: &Store, session_id: &str, uuid: &str) -> Se
     FencedTurnRowStore::new(store.clone(), record.key.clone(), claim.claim_fence)
         .write_turn_rows(&[row])
         .unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -257,7 +261,11 @@ fn publishing_evidence_keeps_only_the_current_fence_turn_rows() {
     }
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -303,7 +311,11 @@ fn a_lost_publish_race_deletes_only_its_own_fences_turn_rows() {
             params![key.environment_key, key.agent, key.session_id],
         )
         .unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         !store
