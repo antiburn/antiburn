@@ -271,6 +271,20 @@ mod enabled {
         previous: &AppSettings,
         saved: &AppSettings,
     ) -> anyhow::Result<()> {
+        prepare_opt_out_payload(
+            transaction,
+            previous,
+            saved,
+            &format!("antiburn:{}", app.package_info().version),
+        )
+    }
+
+    fn prepare_opt_out_payload(
+        transaction: &rusqlite::Transaction<'_>,
+        previous: &AppSettings,
+        saved: &AppSettings,
+        app_version: &str,
+    ) -> anyhow::Result<()> {
         if !previous.analytics_enabled
             || saved.analytics_enabled
             || !available()
@@ -310,7 +324,7 @@ mod enabled {
                 unrecognized_types: None,
             },
             context: event::Context {
-                app_version: format!("antiburn:{}", app.package_info().version),
+                app_version: app_version.to_string(),
                 os: event::os_family(),
             },
         };
@@ -359,6 +373,7 @@ mod enabled {
     }
 
     fn record_event(app: &tauri::AppHandle, name: EventName, facts: Facts) -> bool {
+        let _lifecycle = lock_settings_transition();
         let _capture = CAPTURE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -427,6 +442,10 @@ mod enabled {
         app: &tauri::AppHandle,
         diagnostic: crate::provider_usage::live::anthropic::LimitResetDiagnostic,
     ) {
+        let _lifecycle = lock_settings_transition();
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !allowed(app) {
             return;
         }
@@ -436,7 +455,7 @@ mod enabled {
         if *last == Some(diagnostic) {
             return;
         }
-        if record_event(
+        if record_event_locked(
             app,
             EventName::ClaudeLimitResetObserved,
             event::claude_limit_reset_facts(diagnostic),
@@ -454,6 +473,10 @@ mod enabled {
     /// failed this pass has no snapshot in the slice, so it contributes no
     /// observation and its last reported band is left exactly as it was.
     pub fn record_usage_observed(app: &tauri::AppHandle, snapshots: &[ProviderUsageSnapshot]) {
+        let _lifecycle = lock_settings_transition();
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !allowed(app) {
             return;
         }
@@ -468,7 +491,7 @@ mod enabled {
             if !usage_observed_is_new(&last, label, detail, band) {
                 continue;
             }
-            if record_event(
+            if record_event_locked(
                 app,
                 EventName::UsageObserved,
                 Facts {
@@ -615,6 +638,10 @@ mod enabled {
     /// pass, only the first account processed for a pair can report; see
     /// `docs/plans/limit-factor-estimation.md`'s Phase 3 decisions.
     pub fn record_limit_factor_observed(app: &tauri::AppHandle, learned: &[LearnedFactor]) {
+        let _lifecycle = lock_settings_transition();
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !allowed(app) {
             return;
         }
@@ -636,7 +663,7 @@ mod enabled {
             if !limit_factor_observed_is_new(&last, key, tuple, now) {
                 continue;
             }
-            if record_event(
+            if record_event_locked(
                 app,
                 EventName::LimitFactorObserved,
                 Facts {
@@ -1416,6 +1443,7 @@ mod enabled {
         generation: u64,
         summary: resources::schema::ResourceUsageSummary,
     ) {
+        let _lifecycle = lock_settings_transition();
         let _capture = CAPTURE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1490,13 +1518,30 @@ mod enabled {
         {
             return FlushOutcome::Empty;
         }
-        let _flush = FLUSH_LOCK.lock().await;
         let Some(base) = config::endpoint() else {
             return FlushOutcome::Suspended;
         };
         let Some(store) = app.try_state::<Store>() else {
             return FlushOutcome::Suspended;
         };
+        flush_pending_events(&store, base, || permitted(app)).await
+    }
+
+    async fn flush_pending_events(
+        store: &Store,
+        base: &str,
+        permitted: impl Fn() -> bool,
+    ) -> FlushOutcome {
+        flush_pending_events_with_timeout(store, base, permitted, REQUEST_TIMEOUT).await
+    }
+
+    async fn flush_pending_events_with_timeout(
+        store: &Store,
+        base: &str,
+        permitted: impl Fn() -> bool,
+        request_timeout: Duration,
+    ) -> FlushOutcome {
+        let _flush = FLUSH_LOCK.lock().await;
         let Ok(pending) = store.pending_analytics_events(delivery::REQUEST_BUDGET) else {
             return FlushOutcome::Suspended;
         };
@@ -1504,7 +1549,7 @@ mod enabled {
             return FlushOutcome::Empty;
         }
         ensure_crypto_provider();
-        let Ok(client) = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build() else {
+        let Ok(client) = reqwest::Client::builder().timeout(request_timeout).build() else {
             return FlushOutcome::Failed {
                 remaining: store.analytics_event_count().unwrap_or(0),
             };
@@ -1521,7 +1566,7 @@ mod enabled {
             // off withdraws what is queued — a batch that kept posting after the
             // switch moved would make that promise false in exactly the moment it
             // matters most.
-            if !permitted(app) {
+            if !permitted() {
                 suspended = true;
                 break;
             }
@@ -2318,6 +2363,295 @@ mod enabled {
             assert!(older_than_lifetime("not a timestamp"));
             assert!(older_than_lifetime("2000-01-01T00:00:00Z"));
             assert!(!older_than_lifetime(&crate::store::now_rfc3339()));
+        }
+
+        fn collector(
+            expected_requests: usize,
+            response_delay: Duration,
+        ) -> (
+            String,
+            std::sync::mpsc::Receiver<Vec<u8>>,
+            std::thread::JoinHandle<()>,
+        ) {
+            use std::io::{Read, Write};
+            use std::net::TcpListener;
+
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let (sent, received) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                for _ in 0..expected_requests {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 4096];
+                    let header_end = loop {
+                        let read = stream.read(&mut buffer).unwrap();
+                        if read == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buffer[..read]);
+                        if let Some(end) =
+                            request.windows(4).position(|window| window == b"\r\n\r\n")
+                        {
+                            break end + 4;
+                        }
+                    };
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    while request.len() < header_end + length {
+                        let read = stream.read(&mut buffer).unwrap();
+                        if read == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buffer[..read]);
+                    }
+                    sent.send(request[header_end..header_end + length].to_vec())
+                        .unwrap();
+                    if !response_delay.is_zero() {
+                        std::thread::sleep(response_delay);
+                    }
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+            });
+            (endpoint, received, worker)
+        }
+
+        fn opt_out_transition_store() -> (Store, tempfile::TempDir) {
+            let directory = tempfile::tempdir().unwrap();
+            let store = Store::open_in_memory(directory.path()).unwrap();
+            store
+                .set_analytics_identity("11111111-1111-4111-8111-111111111111")
+                .unwrap();
+            store
+                .queue_analytics_event("antiburn.app_launched", r#"{"event":"old"}"#)
+                .unwrap();
+            (store, directory)
+        }
+
+        #[test]
+        fn the_production_transition_queues_one_fixed_signal_with_existing_identity() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            assert!(
+                available(),
+                "the enabled test suite needs analytics configuration"
+            );
+            let (store, _directory) = opt_out_transition_store();
+            let mut disabled = store.settings().unwrap();
+            disabled.analytics_enabled = false;
+
+            let (previous, saved, ()) = store
+                .replace_settings_with_transition(&disabled, |transaction, previous, saved| {
+                    prepare_opt_out_payload(transaction, previous, saved, "antiburn:test")
+                })
+                .unwrap();
+
+            assert!(previous.analytics_enabled);
+            assert!(!saved.analytics_enabled);
+            assert_eq!(
+                store.analytics_identity().unwrap().unwrap().0,
+                "11111111-1111-4111-8111-111111111111"
+            );
+            let pending = store.pending_analytics_events(50).unwrap();
+            assert_eq!(pending.len(), 2);
+            assert!(pending[0].1.contains("antiburn.analytics_opted_out"));
+            let payload: serde_json::Value = serde_json::from_str(&pending[0].1).unwrap();
+            assert_eq!(payload["event"], "antiburn.analytics_opted_out");
+            assert_eq!(
+                payload["anonymousId"],
+                "11111111-1111-4111-8111-111111111111"
+            );
+            let properties = payload["properties"].as_object().unwrap();
+            assert_eq!(properties["arch"], event::arch());
+            assert!(
+                properties
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != "arch")
+                    .all(|(_, value)| value.is_null())
+            );
+        }
+
+        #[test]
+        fn final_transition_delivery_drains_the_signal_and_backlog_before_cleanup() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            assert!(
+                available(),
+                "the enabled test suite needs analytics configuration"
+            );
+            let (store, _directory) = opt_out_transition_store();
+            let mut disabled = store.settings().unwrap();
+            disabled.analytics_enabled = false;
+            store
+                .replace_settings_with_transition(&disabled, |transaction, previous, saved| {
+                    prepare_opt_out_payload(transaction, previous, saved, "antiburn:test")
+                })
+                .unwrap();
+            let (endpoint, received, worker) = collector(2, Duration::ZERO);
+
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let outcome = runtime.block_on(flush_pending_events_with_timeout(
+                &store,
+                &endpoint,
+                || true,
+                Duration::from_secs(2),
+            ));
+            assert_eq!(outcome, FlushOutcome::Empty);
+            let first: serde_json::Value =
+                serde_json::from_slice(&received.recv().unwrap()).unwrap();
+            assert_eq!(first["event"], "antiburn.analytics_opted_out");
+            let _second = received.recv().unwrap();
+            worker.join().unwrap();
+            assert_eq!(store.analytics_event_count().unwrap(), 0);
+            assert!(store.analytics_identity().unwrap().is_some());
+
+            clear_local_state(&store);
+            assert!(store.analytics_identity().unwrap().is_none());
+            assert_eq!(store.analytics_event_count().unwrap(), 0);
+        }
+
+        #[test]
+        fn failed_or_timed_out_final_delivery_still_cleans_up_without_retry() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            assert!(
+                available(),
+                "the enabled test suite needs analytics configuration"
+            );
+            for (delay, timeout) in [
+                (Duration::ZERO, Duration::from_secs(2)),
+                (Duration::from_millis(100), Duration::from_millis(10)),
+            ] {
+                let (store, _directory) = opt_out_transition_store();
+                let mut disabled = store.settings().unwrap();
+                disabled.analytics_enabled = false;
+                store
+                    .replace_settings_with_transition(&disabled, |transaction, previous, saved| {
+                        prepare_opt_out_payload(transaction, previous, saved, "antiburn:test")
+                    })
+                    .unwrap();
+                let endpoint = if delay.is_zero() {
+                    // No listener means a refused connection tests a transport failure.
+                    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+                    drop(listener);
+                    endpoint
+                } else {
+                    let (endpoint, _received, worker) = collector(1, delay);
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    let outcome = runtime.block_on(flush_pending_events_with_timeout(
+                        &store,
+                        &endpoint,
+                        || true,
+                        timeout,
+                    ));
+                    assert!(matches!(outcome, FlushOutcome::Failed { .. }));
+                    let _ = worker.join();
+                    clear_local_state(&store);
+                    assert!(store.analytics_identity().unwrap().is_none());
+                    assert_eq!(store.analytics_event_count().unwrap(), 0);
+                    continue;
+                };
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let outcome = runtime.block_on(flush_pending_events_with_timeout(
+                    &store,
+                    &endpoint,
+                    || true,
+                    timeout,
+                ));
+                assert!(matches!(outcome, FlushOutcome::Failed { .. }));
+                clear_local_state(&store);
+                assert!(store.analytics_identity().unwrap().is_none());
+                assert_eq!(store.analytics_event_count().unwrap(), 0);
+            }
+        }
+
+        #[test]
+        fn a_second_disabled_transition_does_not_append_a_duplicate_signal() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            assert!(
+                available(),
+                "the enabled test suite needs analytics configuration"
+            );
+            let (store, _directory) = opt_out_transition_store();
+            let mut disabled = store.settings().unwrap();
+            disabled.analytics_enabled = false;
+            store
+                .replace_settings_with_transition(&disabled, |transaction, previous, saved| {
+                    prepare_opt_out_payload(transaction, previous, saved, "antiburn:test")
+                })
+                .unwrap();
+            let (_, _, ()) = store
+                .replace_settings_with_transition(&disabled, |transaction, previous, saved| {
+                    prepare_opt_out_payload(transaction, previous, saved, "antiburn:test")
+                })
+                .unwrap();
+            assert_eq!(
+                store
+                    .pending_analytics_events(50)
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, payload)| payload.contains("antiburn.analytics_opted_out"))
+                    .count(),
+                1
+            );
+        }
+
+        #[test]
+        fn final_delivery_gate_can_stop_a_pass_before_it_sends_or_removes_rows() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            assert!(
+                available(),
+                "the enabled test suite needs analytics configuration"
+            );
+            let (store, _directory) = opt_out_transition_store();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let outcome = runtime.block_on(flush_pending_events_with_timeout(
+                &store,
+                "http://127.0.0.1:1",
+                || false,
+                Duration::from_millis(10),
+            ));
+            assert_eq!(outcome, FlushOutcome::Suspended);
+            assert_eq!(store.analytics_event_count().unwrap(), 1);
+            clear_local_state(&store);
+            assert_eq!(store.analytics_event_count().unwrap(), 0);
+            assert!(store.analytics_identity().unwrap().is_none());
+        }
+
+        #[test]
+        fn opt_out_preparation_without_an_identity_does_not_mint_or_queue() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            assert!(
+                available(),
+                "the enabled test suite needs analytics configuration"
+            );
+            let directory = tempfile::tempdir().unwrap();
+            let store = Store::open_in_memory(directory.path()).unwrap();
+            let mut disabled = store.settings().unwrap();
+            disabled.analytics_enabled = false;
+            store
+                .replace_settings_with_transition(&disabled, |transaction, previous, saved| {
+                    prepare_opt_out_payload(transaction, previous, saved, "antiburn:test")
+                })
+                .unwrap();
+            assert!(store.analytics_identity().unwrap().is_none());
+            assert_eq!(store.analytics_event_count().unwrap(), 0);
         }
     }
 }
