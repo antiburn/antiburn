@@ -49,6 +49,44 @@ loads only for windows whose labels are free. Main-window failures use their
 ownership-aware resolver instead. The main-window, popover, Settings, and
 onboarding modules own their window-specific reveal and destruction policies.
 
+## macOS overlay presentation
+
+The HUD, HUD detail, popover, and nudge start hidden and unfocused. Their
+native presentation runs on the main thread: configure stacking and Space
+behavior, then use `orderFrontRegardless()` for visual reveal. All use
+`CanJoinAllSpaces | FullScreenAuxiliary`. Tauri-backed surfaces reapply their
+native policy before each reveal; popover refocus reapplies it too.
+
+| Surface | Native level | Keyboard interaction |
+| --- | --- | --- |
+| HUD and detail | Screen saver (1000) | Non-focusable; detail also passes through clicks |
+| Popover | Floating (3) | Takes key and gives its webview first responder separately from visual reveal |
+| Nudge | Status (25) | Passive on arrival; takes key only after hover |
+| Native popover preview | Matches the anchor before presentation | Cannot become key or main |
+
+HUD and detail use passive nonactivating panels, retaining their existing
+screen-saver level while the fullscreen fix is validated. Level alone did not
+make their previous ordinary windows visible over fullscreen apps. The
+nonactivating popover panel stays below system menus and status-level nudges.
+Nudges remain above floating windows. HUD and detail additionally use
+`Stationary | IgnoresCycle`.
+
+HUD, detail, popover, and nudge resolve or convert their panel in the same
+main-thread callback that configures and reveals it. Failed conversion does not fall back
+to an activating Tauri show or focus operation. The popover records reveal
+completion only after native presentation, not after queueing a callback.
+Nudge key release returns focus through the popover's nonactivating path.
+
+Native previews initialize their nonactivating style and fullscreen collection
+behavior before presentation. Frame placement reapplies the anchor's level.
+They bypass Tauri window conversion, so they do not need repeated collection
+configuration to defend against toolkit changes.
+
+This policy does not change Main, Settings, or Onboarding activation. It also
+does not remove the upstream Wry cold-webview creation limitation documented
+in the [desktop README](../apps/desktop/README.md#known-gaps). Creation-time
+activation and reveal-time activation require separate macOS QA.
+
 ## Main window
 
 The main window uses a dedicated frontend entry and a retained renderer. An

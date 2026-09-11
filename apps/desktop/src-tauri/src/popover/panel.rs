@@ -12,9 +12,11 @@
 //! [`prepare_for_destroy`], which its callers already run there.
 
 use tauri::{Manager, WebviewWindow};
-use tauri_nspanel::objc2_app_kit::{NSResponder, NSWindowCollectionBehavior, NSWindowStyleMask};
+use tauri_nspanel::objc2_app_kit::{
+    NSFloatingWindowLevel, NSResponder, NSWindowCollectionBehavior, NSWindowStyleMask,
+};
 use tauri_nspanel::objc2_foundation::NSThread;
-use tauri_nspanel::{ManagerExt, WebviewPanelManager, WebviewWindowExt};
+use tauri_nspanel::{ManagerExt, PanelHandle, WebviewPanelManager, WebviewWindowExt};
 
 tauri_nspanel::tauri_panel! {
     panel!(PopoverPanel {
@@ -25,32 +27,57 @@ tauri_nspanel::tauri_panel! {
     })
 }
 
-/// Convert the popover window into a non-activating panel. Requires the
-/// nspanel plugin (registered via `antiburn_nudge::register`); a no-op if it
-/// isn't present. Safe to call from any thread — the work is marshaled onto
-/// the main thread.
-///
-/// The window keeps the level that `always_on_top` set. It joins every Space,
-/// including a full-screen Space owned by another application.
-pub(super) fn to_nonactivating_panel(window: &WebviewWindow) {
+/// Resolve and configure the panel on the main thread before presentation.
+fn configured_panel(window: &WebviewWindow) -> tauri::Result<PanelHandle<tauri::Wry>> {
+    debug_assert!(NSThread::isMainThread_class());
     if window
         .try_state::<WebviewPanelManager<tauri::Wry>>()
         .is_none()
     {
-        return;
+        return Err(tauri::Error::Anyhow(anyhow::anyhow!(
+            "popover panel plugin is unavailable"
+        )));
     }
+    let panel = window
+        .get_webview_panel(super::LABEL)
+        .or_else(|_| window.to_panel::<PopoverPanel>())?;
+    panel.set_style_mask(NSWindowStyleMask::NonactivatingPanel);
+    // Keep the interactive panel below status-level nudges and system menus.
+    panel.set_level(NSFloatingWindowLevel as i64);
+    panel.set_collection_behavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::FullScreenAuxiliary,
+    );
+    Ok(panel)
+}
+
+/// Prepare the hidden panel without requesting keyboard focus.
+pub(super) fn to_nonactivating_panel(window: &WebviewWindow) {
     let window = window.clone();
     let _ = window.clone().run_on_main_thread(move || {
-        let Ok(panel) = window.to_panel::<PopoverPanel>() else {
-            return;
-        };
-        // Borderless + never activate the application on key.
-        panel.set_style_mask(NSWindowStyleMask::NonactivatingPanel);
-        panel.set_collection_behavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::FullScreenAuxiliary,
-        );
+        if let Err(error) = configured_panel(&window) {
+            tracing::warn!(%error, "failed to configure the popover panel");
+        }
     });
+}
+
+/// Reveal only a configured panel, then report the native presentation result.
+pub(super) fn show_without_activation(
+    window: &WebviewWindow,
+    generation: u64,
+    on_shown: impl FnOnce(tauri::Result<()>) + Send + 'static,
+) -> tauri::Result<()> {
+    let window = window.clone();
+    window.clone().run_on_main_thread(move || {
+        if !window
+            .app_handle()
+            .try_state::<super::PopoverState>()
+            .is_some_and(|state| state.owns_renderer(generation))
+        {
+            return;
+        }
+        on_shown(configured_panel(&window).map(|panel| panel.order_front_regardless()));
+    })
 }
 
 /// Give the popover key-window status without activating the application.
@@ -58,22 +85,17 @@ pub(super) fn to_nonactivating_panel(window: &WebviewWindow) {
 /// Orders the panel front and makes it key, then gives its webview keyboard
 /// focus. The direct webview handle avoids the wrapper and its material views.
 ///
-/// Returns `false` when the nspanel plugin is not registered or the closure
-/// cannot be marshaled; the caller falls back to a plain `set_focus`. Inside
-/// the closure an unconverted window (a cold-start race with
-/// [`to_nonactivating_panel`]) gets the same fallback.
-pub(super) fn focus_without_activation(window: &WebviewWindow) -> bool {
-    if window
-        .try_state::<WebviewPanelManager<tauri::Wry>>()
-        .is_none()
-    {
-        return false;
-    }
+/// Configuration failures leave the window unchanged instead of activating the application.
+pub(super) fn focus_without_activation(window: &WebviewWindow) -> tauri::Result<()> {
     let window = window.clone();
     window
         .clone()
-        .with_webview(
-            move |webview| match window.get_webview_panel(super::LABEL) {
+        .with_webview(move |webview| {
+            // A dismissal can occur while the focus request waits for the main thread.
+            if !window.is_visible().unwrap_or(false) {
+                return;
+            }
+            match configured_panel(&window) {
                 Ok(panel) => {
                     panel.order_front_regardless();
                     panel.make_key_window();
@@ -83,12 +105,11 @@ pub(super) fn focus_without_activation(window: &WebviewWindow) -> bool {
                         tracing::warn!("failed to give the popover webview keyboard focus");
                     }
                 }
-                Err(_) => {
-                    let _ = window.set_focus();
+                Err(error) => {
+                    tracing::error!(event = "window_focus_failed", %error, "failed to focus the popover panel");
                 }
-            },
-        )
-        .is_ok()
+            }
+        })
 }
 
 /// Convert the popover panel back to its original window class and remove the

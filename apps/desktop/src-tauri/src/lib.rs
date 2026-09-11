@@ -793,7 +793,17 @@ mod tests {
         let task_announced = Arc::clone(&announced);
         let task_store = Arc::clone(&store);
         let task_handle = Arc::clone(&handle);
+        struct DropSignal(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+        let (dropped, worker_dropped) = tokio::sync::oneshot::channel();
         let task = tauri::async_runtime::spawn(async move {
+            let _drop_signal = DropSignal(Some(dropped));
             worker_loop(
                 &task_store,
                 &task_handle,
@@ -814,12 +824,15 @@ mod tests {
         schedulers.push(task);
 
         abort_schedulers(Some(&schedulers));
+        tokio::time::timeout(Duration::from_secs(1), worker_dropped)
+            .await
+            .expect("the async worker stops")
+            .expect("the async worker reports its drop");
         assert_eq!(store.evidence(&key).unwrap().unwrap(), processing);
         release.send(()).unwrap();
         pass_completed
             .recv_timeout(Duration::from_secs(1))
             .expect("the blocking job survives the worker abort");
-        tokio::task::yield_now().await;
         assert_eq!(store.analysis(&key).unwrap(), analysis_before);
         assert_eq!(store.evidence(&key).unwrap().unwrap(), processing);
         assert!(announced.lock().unwrap().is_empty());
