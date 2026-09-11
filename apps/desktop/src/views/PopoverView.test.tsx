@@ -755,7 +755,7 @@ describe("PopoverView", () => {
     expect(invoke).toHaveBeenCalledWith("get_provider_usage", {
       utcOffsetMinutes: -new Date().getTimezoneOffset(),
     })
-    expect(screen.getByRole("img", { name: "Codex at 40 percent" })).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: /^Codex at 40 percent\b/ })).toBeInTheDocument()
   })
 
   it("shows Checks in one passive anchored preview", async () => {
@@ -826,7 +826,7 @@ describe("PopoverView", () => {
   it("keeps an anchored preview open when Checks refreshes in the background", async () => {
     render(<PopoverView />)
     await screen.findByText("1 failed")
-    const trigger = await screen.findByRole("img", { name: "Codex at 40 percent" })
+    const trigger = await screen.findByRole("img", { name: /^Codex at 40 percent\b/ })
     fireEvent.mouseEnter(trigger)
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("show_popover_peek", expect.anything()),
@@ -965,7 +965,7 @@ describe("PopoverView", () => {
   it("requests a provider preview after the pointer rests on its trigger", async () => {
     render(<PopoverView />)
 
-    const trigger = await screen.findByRole("img", { name: "Codex at 40 percent" })
+    const trigger = await screen.findByRole("img", { name: /^Codex at 40 percent\b/ })
     vi.useFakeTimers()
     try {
       fireEvent.mouseEnter(trigger)
@@ -995,7 +995,7 @@ describe("PopoverView", () => {
   it("does not navigate when a provider dial is clicked", async () => {
     render(<PopoverView />)
 
-    const trigger = await screen.findByRole("img", { name: "Codex at 40 percent" })
+    const trigger = await screen.findByRole("img", { name: /^Codex at 40 percent\b/ })
     fireEvent.click(trigger)
 
     expect(screen.queryByRole("heading", { name: "Usage" })).not.toBeInTheDocument()
@@ -1005,7 +1005,7 @@ describe("PopoverView", () => {
   it("conceals an active provider preview before expanding the limits bar", async () => {
     render(<PopoverView />)
 
-    const trigger = await screen.findByRole("img", { name: "Codex at 40 percent" })
+    const trigger = await screen.findByRole("img", { name: /^Codex at 40 percent\b/ })
     fireEvent.mouseEnter(trigger)
     fireEvent.click(screen.getByRole("button", { name: "Expand usage limits" }))
 
@@ -1056,7 +1056,7 @@ describe("PopoverView", () => {
 
     await screen.findByText("Wire the tray popover")
     expect(screen.getByTestId("usage-limits-bar")).toBeInTheDocument()
-    expect(screen.getByRole("img", { name: "Codex at 40 percent" })).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: /^Codex at 40 percent\b/ })).toBeInTheDocument()
     expect(screen.queryByText("No live limits")).not.toBeInTheDocument()
   })
 
