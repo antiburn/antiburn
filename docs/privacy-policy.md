@@ -113,13 +113,11 @@ name to include it.
 Raw events, including their request IP address and user-agent, have no automatic
 deletion schedule. We retain them until we delete them.
 
-Turning analytics off queues one fixed opt-out event with the current
-installation identifier and attempts one bounded final flush. It then deletes
-that event, the installation identifier, and all remaining unsent events on
-your computer, even when delivery fails. It does not delete events that have
-already reached us. Contact us to request deletion of received data. Because
-Antiburn has no account and the installation identifier is random, we might not
-be able to identify which events belong to you.
+Turning analytics off deletes the installation identifier and unsent events on
+your computer. It does not delete events that have already reached us. Contact
+us to request deletion of received data. Because Antiburn has no account and the
+installation identifier is random, we might not be able to identify which
+events belong to you.
 
 ## Who receives the data
 
