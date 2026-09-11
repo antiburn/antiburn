@@ -458,6 +458,36 @@ describe("BurnChecksView", () => {
     ).not.toBeInTheDocument()
   })
 
+  it("keeps the macOS drag strip outside the report while loading and after load", async () => {
+    const userAgent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
+    try {
+      const pending = deferred<ChecksReportPayload>()
+      const { view } = setup(target, false, aggregate, pending.promise)
+      const strip = view.container.querySelector("[data-tauri-drag-region]")!
+      expect(strip).toHaveAttribute("aria-hidden", "true")
+      expect(strip).toHaveClass("shrink-0")
+      expect(strip.contains(screen.getByRole("region", { name: "Loading Burn checks" }))).toBe(
+        false,
+      )
+      await act(async () => pending.resolve(report))
+      await screen.findByRole("button", { name: /Old model usage.*8% burn/ })
+      expect(view.container.querySelectorAll("[data-tauri-drag-region]")).toHaveLength(1)
+      expect(view.container.querySelector("[data-tauri-drag-region] button")).toBeNull()
+    } finally {
+      userAgent.mockRestore()
+    }
+  })
+
+  it("uses native title bars without adding a drag strip on Windows", () => {
+    const userAgent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Windows")
+    try {
+      const { view } = setup()
+      expect(view.container.querySelector("[data-tauri-drag-region]")).toBeNull()
+    } finally {
+      userAgent.mockRestore()
+    }
+  })
+
   it("uses one busy region and one announcement for the shaped loading skeleton", () => {
     const pending = deferred<ChecksReportPayload>()
     const { view } = setup(target, false, aggregate, pending.promise)
