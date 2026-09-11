@@ -293,8 +293,9 @@ impl CodexSessionReader {
             // stays `Pending` for as long as any row is buffered, so the
             // two conditions coincide today, but a resume snapshot must
             // never depend on that coincidence holding.
-            let pending =
-                state.ownership == ForkOwnership::Pending || !state.pending_rows.is_empty();
+            let pending = state.ownership == ForkOwnership::Pending
+                || !state.pending_rows.is_empty()
+                || state.incomplete_tail_seen;
             let settled_resume = if pending {
                 None
             } else {
@@ -334,7 +335,11 @@ impl CodexSessionReader {
         while let Some(record) = reader.next_record(cancel) {
             match record {
                 FramedRecord::Skipped(skip) => match skip {
-                    RecordSkip::Oversized { .. } | RecordSkip::IncompleteTail { .. } => {
+                    RecordSkip::Oversized { .. } => {
+                        sink.record(NormalizedRecord::Unusable(skip.partial_reason()));
+                    }
+                    RecordSkip::IncompleteTail { .. } => {
+                        state.incomplete_tail_seen = true;
                         sink.record(NormalizedRecord::Unusable(skip.partial_reason()));
                     }
                     RecordSkip::ReadFailed { index, kind } => {
@@ -370,6 +375,7 @@ enum ForkOwnership {
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 struct CodexStreamState {
+    incomplete_tail_seen: bool,
     ownership: ForkOwnership,
     agent_path: Option<String>,
     /// See [`json_text_codec`]: `postcard` cannot decode a `serde_json::Value`
@@ -3118,6 +3124,7 @@ mod tests {
             snapshot_from(AdapterResume {
                 point: ResumePoint {
                     offset: 0,
+                    prefix_hash: head_hash_of(&[]),
                     tail_hash: head_hash_of(&[]),
                     tail_len: 0,
                 },
@@ -3477,6 +3484,7 @@ mod tests {
             let snapshot = snapshot_from(AdapterResume {
                 point: ResumePoint {
                     offset: 0,
+                    prefix_hash: head_hash_of(&[]),
                     tail_hash: head_hash_of(&[]),
                     tail_len: 0,
                 },

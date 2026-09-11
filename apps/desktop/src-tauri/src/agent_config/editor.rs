@@ -51,6 +51,36 @@ impl AgentConfigEditor {
         })
     }
 
+    pub(crate) fn effective_bytes(
+        &self,
+        context: &ConfigContext,
+        setting: ConfigSetting,
+    ) -> Result<(EffectiveConfig, Vec<u8>), ConfigUnavailableReason> {
+        let vendor = validate_read_context(context, setting, current_platform())?;
+        let home = canonical_root(&context.home_root)?;
+        let (workspace_cwd, trusted_workspace_root) = canonical_workspace(context)?;
+        let target = vendor.resolve_target(
+            setting,
+            &home,
+            workspace_cwd.as_deref(),
+            trusted_workspace_root.as_deref(),
+        )?;
+        let file = read_checked(&target.path, &target.safety_root)?;
+        let value = vendor
+            .read_value(&file.bytes, &target.operation)?
+            .ok_or(ConfigUnavailableReason::MissingTarget)?;
+        Ok((
+            EffectiveConfig {
+                setting,
+                scope: target.scope,
+                value,
+                selector: target.operation.physical_selector(),
+                path: target.path,
+            },
+            file.bytes,
+        ))
+    }
+
     pub fn effective_model(
         &self,
         context: &ConfigContext,
@@ -157,9 +187,13 @@ impl AgentConfigEditor {
             .map_err(|_| ApplyError::Unavailable(ConfigUnavailableReason::WriteFailed))?
             .as_nanos();
         let temporary = parent.join(format!(".{file_name}.antiburn-{nonce}.tmp"));
+        let backup = parent.join(format!("{file_name}.backup"));
+        write_backup(&backup, &temporary, prepared)?;
+        let mut temporary_created = false;
         let pre_replace = (|| {
             let mut output = create_temporary(&temporary, &prepared.permissions)
                 .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+            temporary_created = true;
             #[cfg(unix)]
             if file_ownership(
                 &output
@@ -188,11 +222,18 @@ impl AgentConfigEditor {
             if current.bytes != prepared.original_bytes {
                 return Err(ApplyError::Conflict(ApplyConflict::ChangedContent));
             }
+            if current.permissions != prepared.permissions {
+                return Err(ApplyError::Conflict(ApplyConflict::ChangedIdentity));
+            }
+            #[cfg(unix)]
+            if current.ownership != prepared.ownership {
+                return Err(ApplyError::Conflict(ApplyConflict::ChangedIdentity));
+            }
             fs::rename(&temporary, &prepared.path)
                 .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
             Ok(replacement_identity)
         })();
-        if pre_replace.is_err() {
+        if pre_replace.is_err() && temporary_created {
             let _ = fs::remove_file(&temporary);
         }
         let replacement_identity = pre_replace?;
@@ -218,6 +259,48 @@ impl AgentConfigEditor {
         }
         Ok(())
     }
+}
+
+#[cfg(not(windows))]
+fn write_backup(
+    backup: &std::path::Path,
+    temporary: &std::path::Path,
+    prepared: &PreparedChange,
+) -> Result<(), ApplyError> {
+    if super::filesystem::path_entry_exists(backup).map_err(ApplyError::Unavailable)? {
+        // Validate the existing companion before replacing the latest backup.
+        read_checked(backup, &prepared.safety_root).map_err(ApplyError::Unavailable)?;
+    }
+    let backup_temporary = temporary.with_extension("backup.tmp");
+    let mut created = false;
+    let result = (|| {
+        let mut output = create_temporary(&backup_temporary, &prepared.permissions)
+            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+        created = true;
+        #[cfg(unix)]
+        if file_ownership(
+            &output
+                .metadata()
+                .map_err(|_| ApplyError::Unavailable(ConfigUnavailableReason::WriteFailed))?,
+        ) != prepared.ownership
+        {
+            return Err(ApplyError::Unavailable(
+                ConfigUnavailableReason::UnsupportedOwner,
+            ));
+        }
+        output
+            .write_all(&prepared.original_bytes)
+            .and_then(|()| output.sync_all())
+            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+        drop(output);
+        fs::rename(&backup_temporary, backup)
+            .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
+        Ok(())
+    })();
+    if result.is_err() && created {
+        let _ = fs::remove_file(&backup_temporary);
+    }
+    result
 }
 
 fn validate_read_context(

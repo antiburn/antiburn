@@ -79,16 +79,12 @@ pub(super) fn finding_causes(
 }
 
 /// One model's premium verdict under its family's reviewed policy.
-/// `None` means the family's premium policy is not reviewed, so the
-/// verdict is unknown — not "not premium".
+/// `None` means the model has no reviewed tier identity.
 fn premium_verdict(model: &str, catalogs: &ReportCatalogs) -> Option<bool> {
     let family = model_family(model);
     let policy = &catalogs.families.get(&family)?.premium;
-    if !policy.reviewed {
-        return None;
-    }
     let canonical = canonical_model_key(model);
-    Some(policy.is_premium(&canonical))
+    policy.verdict(&canonical)
 }
 
 #[cfg(test)]
@@ -194,7 +190,7 @@ mod tests {
 
         assert_eq!(
             evaluate(&evidence, &ReportCatalogs::default()),
-            Observation::NoFinding
+            Observation::ContractIncomplete
         );
     }
 
@@ -228,22 +224,22 @@ mod tests {
     }
 
     #[test]
-    fn lower_cost_delegated_models_report_no_finding() {
+    fn unreviewed_delegated_tier_reports_the_contract_gap() {
         let evidence = evidence_with_models(Some("claude-opus-4-6"), &["claude-sonnet-4-6"]);
 
         assert_eq!(
             evaluate(&evidence, &ReportCatalogs::default()),
-            Observation::NoFinding
+            Observation::ContractIncomplete
         );
     }
 
     #[test]
-    fn lower_cost_parent_models_report_no_finding() {
+    fn unreviewed_parent_tier_reports_the_contract_gap() {
         let evidence = evidence_with_models(Some("claude-sonnet-4-6"), &["claude-opus-4-6"]);
 
         assert_eq!(
             evaluate(&evidence, &ReportCatalogs::default()),
-            Observation::NoFinding
+            Observation::ContractIncomplete
         );
     }
 
@@ -363,7 +359,7 @@ mod tests {
     fn premium_verdict_does_not_flag_claude_sonnet_5() {
         assert_eq!(
             premium_verdict("claude-sonnet-5", &ReportCatalogs::default()),
-            Some(false)
+            None
         );
     }
 
@@ -371,7 +367,17 @@ mod tests {
     fn premium_verdict_does_not_flag_a_date_suffixed_claude_haiku() {
         assert_eq!(
             premium_verdict("claude-haiku-4-5-20251001", &ReportCatalogs::default()),
-            Some(false)
+            None
+        );
+    }
+
+    #[test]
+    fn an_unreviewed_model_name_reports_the_contract_gap() {
+        let evidence = evidence_with_models(Some("claude-opus-4-6"), &["claude-new-tier-9"]);
+
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::ContractIncomplete
         );
     }
 }

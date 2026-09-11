@@ -144,6 +144,11 @@ pub(crate) fn old_model_remediation_evidence(
     let mut recurrence_ms: Option<i64> = None;
     let mut token_overflow = false;
     let mut max_fence = 0_i64;
+    let source_format = serde_json::to_value(definition.source_format)
+        .expect("SourceFormat serialization must produce a JSON string");
+    let source_format = source_format
+        .as_str()
+        .expect("SourceFormat serialization must produce a string");
     let mut turns = transaction.prepare(
         "SELECT t.ts_ms, t.provider, t.api, t.model, t.effort, t.input_tokens,
                 t.output_tokens, t.cache_read_tokens, t.cache_write_tokens,
@@ -153,12 +158,13 @@ pub(crate) fn old_model_remediation_evidence(
            FROM turn t
            JOIN session s USING (environment_key, agent, session_id)
            JOIN session_evidence e USING (environment_key, agent, session_id)
-          WHERE t.environment_key = ?1 AND t.agent = ?2 AND t.role = 'assistant'
-            AND t.scope = 'main' AND t.ts_ms IS NOT NULL AND t.ts_ms > ?3
-            AND e.status = 'ready' AND e.analyzed_generation = s.source_generation
-            AND e.published_fence = t.claim_fence AND e.parser_revision = ?4
-            AND e.analyzer_revision = ?5 AND e.evidence_schema_revision = ?6
-          ORDER BY t.ts_ms, t.rowid",
+           WHERE t.environment_key = ?1 AND t.agent = ?2 AND t.role = 'assistant'
+             AND t.scope = 'main' AND t.ts_ms IS NOT NULL AND t.ts_ms > ?3
+             AND e.status = 'ready' AND e.analyzed_generation = s.source_generation
+             AND e.published_fence = t.claim_fence AND e.parser_revision = ?4
+             AND e.analyzer_revision = ?5 AND e.evidence_schema_revision = ?6
+             AND json_extract(e.evidence_json, '$.capabilities.sourceFormat') = ?7
+           ORDER BY t.ts_ms, t.rowid",
     )?;
     let mut turn_rows = turns.query(params![
         remediation.environment_key,
@@ -166,7 +172,8 @@ pub(crate) fn old_model_remediation_evidence(
         boundary_ms,
         PARSER_REVISION,
         ANALYZER_REVISION,
-        EVIDENCE_SCHEMA_REVISION
+        EVIDENCE_SCHEMA_REVISION,
+        source_format,
     ])?;
     while let Some(turn) = turn_rows.next()? {
         let timestamp_ms: i64 = turn.get(0)?;

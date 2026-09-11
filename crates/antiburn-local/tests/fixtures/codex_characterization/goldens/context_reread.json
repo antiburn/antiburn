@@ -23,7 +23,16 @@
             "paidTokens": 62000,
             "pairsConsidered": 2,
             "pairsSkipped": 0,
-            "repeatedTokens": 60000
+            "repeatedTokens": 60000,
+            "segments": [
+              {
+                "accounting": "uncached_input",
+                "paidTokens": 62000,
+                "pairsConsidered": 2,
+                "pairsSkipped": 0,
+                "repeatedTokens": 60000
+              }
+            ]
           }
         },
         "userControlledChurn": {
@@ -188,7 +197,7 @@
     },
     "provenance": {
       "analyzerRevision": 23,
-      "evidenceSchemaRevision": 18,
+      "evidenceSchemaRevision": 19,
       "harnessVersion": {
         "state": "complete",
         "value": null
@@ -201,7 +210,7 @@
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 18,
+    "schemaRevision": 19,
     "subagents": {
       "state": "complete",
       "value": {

@@ -232,6 +232,7 @@ mod tests {
                     paid_tokens: 1,
                     pairs_considered: 1,
                     pairs_skipped: 0,
+                    segments: Vec::new(),
                 });
                 if partial {
                     evidence.cache = make_partial(evidence.cache);

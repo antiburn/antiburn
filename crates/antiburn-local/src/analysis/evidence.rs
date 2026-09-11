@@ -382,10 +382,11 @@ pub enum SourceFormat {
 }
 
 /// Paid context beyond positive growth across compatible main-thread requests.
-/// A partial result can exclude requests under other billing contracts.
+/// `segments` retains each compatible billing contract independently.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepeatedContext {
+    /// Legacy summary fields. New evidence uses `segments`.
     pub accounting: RepeatedContextAccounting,
     pub repeated_tokens: u64,
     pub pairs_considered: u64,
@@ -398,6 +399,19 @@ pub struct RepeatedContext {
     /// `0`.
     #[serde(default)]
     pub paid_tokens: u64,
+    #[serde(default)]
+    pub segments: Vec<RepeatedContextSegment>,
+}
+
+/// Paid context beyond positive growth for one billing contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepeatedContextSegment {
+    pub accounting: RepeatedContextAccounting,
+    pub repeated_tokens: u64,
+    pub paid_tokens: u64,
+    pub pairs_considered: u64,
+    pub pairs_skipped: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1127,8 +1141,8 @@ mod tests {
         coverage: serde_json::Value,
         truncated_strings: serde_json::Value,
     ) -> serde_json::Value {
-        json!({
-            "schemaRevision": 18,
+        let mut evidence = json!({
+            "schemaRevision": 19,
             "identity": {"agent": "claude", "sessionId": session_id},
             "context": {"state": "complete", "value": {"maxRequestContextTokens": 0, "topDepthExamples": []}},
             "capabilities": {
@@ -1159,7 +1173,7 @@ mod tests {
             "provenance": {
                 "parserRevision": 32,
                 "analyzerRevision": 23,
-                "evidenceSchemaRevision": 18,
+                "evidenceSchemaRevision": 19,
                 "sourceKind": "file",
                 "sourceAcceptance": "not_observed",
                 "ordering": "monotonic",
@@ -1187,7 +1201,15 @@ mod tests {
             "cache": {"state": "complete", "value": {"cacheReadTokens": 0, "cacheCreationTokens": 0, "freshInputTokens": 0, "modelTransitions": [], "longestIdleGapMs": 0, "idleGapMsTotal": 0, "userControlledChurn": {"manualCompactions": 0}, "previousTurn": {"state": "complete", "value": null}, "providerEviction": {"state": "unsupported"}, "repeatedContext": {"state": "complete", "value": {"accounting": "cache_write", "repeatedTokens": 0, "pairsConsidered": 0, "pairsSkipped": 0, "paidTokens": 0}}}},
             "compactions": {"state": "complete", "value": {"boundaries": []}},
             "quotaIncidents": {"state": "unsupported"}
-        })
+        });
+        evidence["cache"]["value"]["repeatedContext"]["value"]["segments"] = json!([{
+            "accounting": "cache_write",
+            "repeatedTokens": 0,
+            "paidTokens": 0,
+            "pairsConsidered": 0,
+            "pairsSkipped": 0
+        }]);
+        evidence
     }
 
     #[test]

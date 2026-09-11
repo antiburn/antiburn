@@ -73,6 +73,7 @@ fn fresh_snapshot(
         revision: RESUME_SNAPSHOT_REVISION,
         resume: ResumePoint {
             offset: 0,
+            prefix_hash: head_hash_of(&[]),
             tail_hash: head_hash_of(&[]),
             tail_len: 0,
         },

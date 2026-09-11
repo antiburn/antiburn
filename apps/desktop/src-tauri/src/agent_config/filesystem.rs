@@ -2,6 +2,8 @@ use std::fs;
 #[cfg(not(windows))]
 use std::fs::OpenOptions;
 #[cfg(unix)]
+use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -78,6 +80,9 @@ pub(super) fn read_checked(
         return Err(ConfigUnavailableReason::UnsafePath);
     }
     check_owner(&metadata, path, trusted_root)?;
+    #[cfg(unix)]
+    let bytes = read_final_target(path, &metadata)?;
+    #[cfg(not(unix))]
     let bytes = fs::read(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::PermissionDenied {
             ConfigUnavailableReason::PermissionDenied
@@ -101,6 +106,40 @@ pub(super) fn read_checked(
         #[cfg(unix)]
         ownership: file_ownership(&metadata),
     })
+}
+
+#[cfg(unix)]
+fn read_final_target(
+    path: &Path,
+    initial: &fs::Metadata,
+) -> Result<Vec<u8>, ConfigUnavailableReason> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(unix_libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(map_read_error)?;
+    let metadata = file.metadata().map_err(map_read_error)?;
+    if !metadata.is_file()
+        || file_identity(&metadata) != file_identity(initial)
+        || metadata.permissions() != initial.permissions()
+        || file_ownership(&metadata) != file_ownership(initial)
+    {
+        return Err(ConfigUnavailableReason::ChangedIdentity);
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(map_read_error)?;
+    Ok(bytes)
+}
+
+#[cfg(unix)]
+fn map_read_error(error: std::io::Error) -> ConfigUnavailableReason {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        ConfigUnavailableReason::PermissionDenied
+    } else {
+        ConfigUnavailableReason::UnsafePath
+    }
 }
 
 fn reject_symlink_ancestors(
@@ -196,5 +235,30 @@ pub(super) fn map_write_error(error: std::io::Error) -> ConfigUnavailableReason 
         ConfigUnavailableReason::PermissionDenied
     } else {
         ConfigUnavailableReason::WriteFailed
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    use super::{ConfigUnavailableReason, read_final_target};
+
+    #[test]
+    fn final_target_symlink_swap_is_rejected() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("config.json");
+        let replacement = temporary.path().join("replacement.json");
+        fs::write(&path, "original").unwrap();
+        fs::write(&replacement, "replacement").unwrap();
+        let initial = fs::symlink_metadata(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        symlink(&replacement, &path).unwrap();
+
+        assert!(matches!(
+            read_final_target(&path, &initial),
+            Err(ConfigUnavailableReason::UnsafePath)
+        ));
     }
 }

@@ -479,6 +479,9 @@ describe("BurnChecksView", () => {
     expect(dialog).toHaveTextContent("Config file~/.claude/settings.json")
     expect(dialog).toHaveTextContent("Config changeclaude-opus-4-6 → claude-sonnet-5")
     expect(dialog).toHaveTextContent("This plan changes future model selection")
+    expect(dialog).toHaveTextContent(
+      "Close your editor to reduce conflicting changes. antiburn saves the current config as the latest .backup before it applies this change.",
+    )
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Change applied" })).toBeDisabled(),

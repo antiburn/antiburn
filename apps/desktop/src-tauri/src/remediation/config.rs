@@ -4,6 +4,22 @@ pub(super) fn trusted_workspace(store: &Store, candidate: &Path) -> Result<Optio
     trusted_workspace_in(&store.lock(), candidate)
 }
 
+pub(super) fn trusted_workspace_still_matches(
+    store: &Store,
+    context: &ConfigContext,
+) -> Result<bool> {
+    match (
+        context.workspace_cwd.as_deref(),
+        context.trusted_workspace_root.as_deref(),
+    ) {
+        (None, None) => Ok(true),
+        (Some(cwd), Some(expected)) => {
+            Ok(trusted_workspace(store, cwd)?.is_some_and(|current| current == expected))
+        }
+        _ => Ok(false),
+    }
+}
+
 pub(super) fn trusted_workspace_in(
     connection: &rusqlite::Connection,
     candidate: &Path,
@@ -319,6 +335,15 @@ pub(super) fn hashed_value(store: &Store, domain: &str, value: &str) -> Result<S
 pub(super) fn hashed_parts(store: &Store, domain: &[u8], values: &[&str]) -> Result<String> {
     let secret = store.provider_account_secret()?;
     Ok(hashed_parts_with_secret(&secret, domain, values))
+}
+
+pub(super) fn hashed_bytes(store: &Store, domain: &[u8], value: &[u8]) -> Result<String> {
+    let secret = store.provider_account_secret()?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(&secret).expect("HMAC accepts a 32-byte key");
+    mac.update(domain);
+    mac.update(&(value.len() as u64).to_be_bytes());
+    mac.update(value);
+    Ok(hex(&mac.finalize().into_bytes()))
 }
 
 pub(super) fn hashed_parts_with_secret(

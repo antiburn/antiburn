@@ -1715,7 +1715,10 @@ fn build_cursor_store_db_content(
             continue;
         };
         for message in extract_cursor_message_candidates(&json) {
-            let fingerprint = format!("{}:{}", message.role, message.content);
+            let fingerprint = format!(
+                "{:?}:{:?}:{:?}:{}:{}",
+                message.record_id, message.timestamp, message.model, message.role, message.content
+            );
             if !seen.insert(fingerprint) {
                 continue;
             }
@@ -3274,5 +3277,31 @@ mod tests {
         if cfg!(windows) {
             assert_eq!(encoded, "C--Users-avery-dev-demo-cli");
         }
+    }
+
+    #[test]
+    fn store_content_keeps_equal_messages_with_distinct_native_ids() {
+        let metadata = CursorStoreDbMetadata {
+            session_id: "session".into(),
+            cwd: None,
+            model: None,
+            title: None,
+            created_at: None,
+            updated_at: None,
+        };
+        let records = [
+            (
+                "first".into(),
+                r#"{"id":"first","role":"assistant","content":"same"}"#.into(),
+            ),
+            (
+                "second".into(),
+                r#"{"id":"second","role":"assistant","content":"same"}"#.into(),
+            ),
+        ];
+
+        let content = build_cursor_store_db_content(&metadata, &records, None).unwrap();
+
+        assert_eq!(content.matches("\"content\":\"same\"").count(), 2);
     }
 }

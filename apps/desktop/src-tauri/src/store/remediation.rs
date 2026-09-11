@@ -45,6 +45,7 @@ pub struct RemediationContribution {
     pub owner_key: String,
     pub remediation_id: String,
     pub detector_id: String,
+    pub physical_target_key: Option<String>,
     pub origin: String,
     pub display_snapshot_json: String,
     pub facts_json: String,
@@ -134,8 +135,8 @@ impl Store {
             i64::try_from(limit.min(MAX_AGGREGATE_WINS)).expect("the aggregate win limit fits i64");
         let connection = self.lock();
         let mut statement = connection.prepare(
-            "SELECT owner_key, remediation_id, detector_id, origin, display_snapshot_json,
-                    facts_json, starts_at_ms, ends_at_ms, updated_at_ms
+            "SELECT owner_key, remediation_id, detector_id, physical_target_key, origin,
+                    display_snapshot_json, facts_json, starts_at_ms, ends_at_ms, updated_at_ms
                FROM remediation_contribution
               ORDER BY ends_at_ms DESC, owner_key DESC
               LIMIT ?1",
@@ -265,7 +266,11 @@ impl Store {
                 scope_kind, scope_key, state, definition_json, result_json, created_at_epoch,
                 updated_at_epoch, effective_boundary_ms)
              SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11
-              WHERE (SELECT COUNT(*) FROM remediation WHERE state != 'recurred') < ?12",
+               WHERE (SELECT COUNT(*) FROM remediation
+                       WHERE state != 'recurred'
+                         AND COALESCE(
+                             json_extract(result_json, '$.verification.status'), ''
+                         ) != 'verificationUnavailable') < ?12",
             params![
                 remediation.remediation_id,
                 remediation.target_key,
@@ -281,6 +286,7 @@ impl Store {
                 i64::try_from(MAX_DURABLE_REMEDIATIONS).expect("the remediation bound fits i64"),
             ],
         )?;
+        prune_verification_unavailable_history_in(&transaction)?;
         transaction.commit()?;
         drop(connection);
         self.remediation(&remediation.remediation_id)
@@ -311,11 +317,11 @@ impl Store {
     }
 
     pub fn cancel_remediation_reservation(&self, remediation_id: &str) -> Result<bool> {
-        self.restore_or_delete_reservation(remediation_id, "reserved")
+        self.restore_or_delete_reservation(remediation_id, false)
     }
 
     pub fn cancel_pre_replacement_write(&self, remediation_id: &str) -> Result<bool> {
-        self.restore_or_delete_reservation(remediation_id, "writing")
+        self.restore_or_delete_reservation(remediation_id, true)
     }
 
     pub fn mark_remediation_recovery_needed(
@@ -411,7 +417,7 @@ impl Store {
             .query_row(
                 &format!(
                     "SELECT {REMEDIATION_COLUMNS} FROM remediation
-                WHERE state IN ('writing', 'recoveryNeeded')
+                WHERE state = 'recoveryNeeded'
                   AND json_type(result_json, '$.verification.checkedAtEpoch') IS NULL
                   AND COALESCE(json_extract(result_json, '$.verification.retryAfterEpoch'), 0) <= ?1
                 ORDER BY updated_at_epoch, remediation_id LIMIT 1"
@@ -584,7 +590,11 @@ impl Store {
         )?)
     }
 
-    fn restore_or_delete_reservation(&self, remediation_id: &str, state: &str) -> Result<bool> {
+    fn restore_or_delete_reservation(
+        &self,
+        remediation_id: &str,
+        include_write_states: bool,
+    ) -> Result<bool> {
         let connection = self.lock();
         let restored = connection.execute(
             "UPDATE remediation SET state = 'watching',
@@ -597,17 +607,19 @@ impl Store {
                 recurred_boundary_ms = json_extract(result_json, '$.priorRecurredBoundaryMs'),
                 action_joined_at_ms = json_extract(result_json, '$.priorActionJoinedAtMs'),
                 joined_boundary_ms = json_extract(result_json, '$.priorJoinedBoundaryMs')
-              WHERE remediation_id = ?1 AND state = ?2
+              WHERE remediation_id = ?1
+                AND (state = 'reserved' OR (?2 AND state IN ('writing', 'recoveryNeeded')))
                 AND json_extract(result_json, '$.reservationKind') = 'upgraded'",
-            params![remediation_id, state],
+            params![remediation_id, include_write_states],
         )?;
         if restored == 1 {
             return Ok(true);
         }
         Ok(connection.execute(
-            "DELETE FROM remediation WHERE remediation_id = ?1 AND state = ?2
+            "DELETE FROM remediation WHERE remediation_id = ?1
+                AND (state = 'reserved' OR (?2 AND state IN ('writing', 'recoveryNeeded')))
                 AND json_extract(result_json, '$.reservationKind') = 'new'",
-            params![remediation_id, state],
+            params![remediation_id, include_write_states],
         )? == 1)
     }
 }
@@ -618,14 +630,38 @@ fn upsert_remediation_contribution_in(
 ) -> Result<bool> {
     let changed = connection.execute(
         "INSERT INTO remediation_contribution (
-            owner_key, remediation_id, detector_id, origin, display_snapshot_json,
-            facts_json, starts_at_ms, ends_at_ms, updated_at_ms)
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
-           FROM remediation WHERE remediation_id = ?2
-         ON CONFLICT(owner_key) DO UPDATE SET
-            detector_id = excluded.detector_id, origin = excluded.origin,
-            display_snapshot_json = excluded.display_snapshot_json,
-            facts_json = excluded.facts_json, starts_at_ms = excluded.starts_at_ms,
+            owner_key, remediation_id, detector_id, physical_target_key, origin,
+            display_snapshot_json, facts_json, starts_at_ms, ends_at_ms, updated_at_ms)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
+           FROM remediation AS current
+          WHERE remediation_id = ?2
+            AND (?3 != 'oldModelUsage' OR (
+                ?4 IS NOT NULL
+                AND json_extract(current.definition_json, '$.physicalTargetKey') = ?4
+                AND NOT EXISTS (
+                    SELECT 1 FROM remediation AS competing
+                     WHERE competing.remediation_id != current.remediation_id
+                       AND competing.environment_key = current.environment_key
+                       AND competing.agent = current.agent
+                       AND json_extract(competing.definition_json, '$.detector') = 'oldModelUsage'
+                       AND json_extract(competing.definition_json, '$.physicalTargetKey') = ?4
+                       AND competing.effective_boundary_ms <= ?9
+                       AND COALESCE(competing.recurred_boundary_ms, ?9) >= ?8
+                       AND competing.remediation_id < current.remediation_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM remediation_contribution AS existing
+                     WHERE existing.remediation_id != ?2
+                       AND existing.physical_target_key = ?4
+                       AND existing.starts_at_ms <= ?9
+                       AND existing.ends_at_ms >= ?8
+                )
+            ))
+          ON CONFLICT(owner_key) DO UPDATE SET
+             detector_id = excluded.detector_id,
+             physical_target_key = excluded.physical_target_key, origin = excluded.origin,
+             display_snapshot_json = excluded.display_snapshot_json,
+             facts_json = excluded.facts_json, starts_at_ms = excluded.starts_at_ms,
             ends_at_ms = excluded.ends_at_ms, updated_at_ms = excluded.updated_at_ms
          WHERE remediation_contribution.remediation_id = excluded.remediation_id
            AND remediation_contribution.updated_at_ms <= excluded.updated_at_ms",
@@ -633,6 +669,7 @@ fn upsert_remediation_contribution_in(
             contribution.owner_key,
             contribution.remediation_id,
             contribution.detector_id,
+            contribution.physical_target_key,
             contribution.origin,
             contribution.display_snapshot_json,
             contribution.facts_json,
@@ -735,7 +772,11 @@ pub(super) fn enroll_passive_remediations_in(
                 effective_boundary_ms, origin, display_snapshot_json)
              SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'watching', ?7, ?8, ?9, ?9, ?10,
                     'passive', ?11
-              WHERE (SELECT COUNT(*) FROM remediation WHERE state != 'recurred') < ?12
+               WHERE (SELECT COUNT(*) FROM remediation
+                       WHERE state != 'recurred'
+                         AND COALESCE(
+                             json_extract(result_json, '$.verification.status'), ''
+                         ) != 'verificationUnavailable') < ?12
                 AND NOT EXISTS (
                 SELECT 1 FROM remediation
                  WHERE environment_key = ?3 AND agent = ?4 AND target_key = ?2
@@ -768,10 +809,28 @@ pub(super) fn enroll_passive_remediations_in(
     Ok(inserted)
 }
 
+/// Keeps permanent unavailable results as bounded action history.
+fn prune_verification_unavailable_history_in(connection: &rusqlite::Connection) -> Result<usize> {
+    Ok(connection.execute(
+        "DELETE FROM remediation
+          WHERE remediation_id IN (
+            SELECT remediation_id FROM remediation
+             WHERE state != 'recurred'
+               AND json_extract(result_json, '$.verification.status') = 'verificationUnavailable'
+             ORDER BY rowid DESC
+             LIMIT -1 OFFSET ?1)",
+        [i64::try_from(MAX_DURABLE_REMEDIATIONS).expect("the remediation bound fits i64")],
+    )?)
+}
+
 /// Removes old fixed watch rows only after their derived contribution is durable.
 fn prune_archivable_fixed_in(connection: &rusqlite::Connection) -> Result<usize> {
     let active: usize = connection.query_row(
-        "SELECT COUNT(*) FROM remediation WHERE state != 'recurred'",
+        "SELECT COUNT(*) FROM remediation
+          WHERE state != 'recurred'
+            AND COALESCE(
+                json_extract(result_json, '$.verification.status'), ''
+            ) != 'verificationUnavailable'",
         [],
         |row| row.get(0),
     )?;
@@ -872,6 +931,17 @@ fn validate_contribution(contribution: &RemediationContribution) -> Result<()> {
     validate_origin(&contribution.origin)?;
     validate_safe_json("display_snapshot_json", &contribution.display_snapshot_json)?;
     validate_safe_json("facts_json", &contribution.facts_json)?;
+    ensure!(
+        contribution.detector_id != "oldModelUsage" || contribution.physical_target_key.is_some(),
+        "old-model contribution has no physical target"
+    );
+    ensure!(
+        contribution
+            .physical_target_key
+            .as_ref()
+            .is_none_or(|key| !key.is_empty() && key.len() <= 192),
+        "invalid contribution physical target"
+    );
     ensure!(contribution.starts_at_ms >= 0, "invalid contribution start");
     ensure!(
         contribution.ends_at_ms >= contribution.starts_at_ms,
@@ -900,20 +970,21 @@ fn display_snapshot_from_row(
 }
 
 fn contribution_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemediationContribution> {
-    let display_snapshot_json: String = row.get(4)?;
-    let facts_json: String = row.get(5)?;
-    validate_envelope_from_row("display_snapshot_json", &display_snapshot_json, 4)?;
-    validate_envelope_from_row("facts_json", &facts_json, 5)?;
+    let display_snapshot_json: String = row.get(5)?;
+    let facts_json: String = row.get(6)?;
+    validate_envelope_from_row("display_snapshot_json", &display_snapshot_json, 5)?;
+    validate_envelope_from_row("facts_json", &facts_json, 6)?;
     Ok(RemediationContribution {
         owner_key: row.get(0)?,
         remediation_id: row.get(1)?,
         detector_id: row.get(2)?,
-        origin: row.get(3)?,
+        physical_target_key: row.get(3)?,
+        origin: row.get(4)?,
         display_snapshot_json,
         facts_json,
-        starts_at_ms: row.get(6)?,
-        ends_at_ms: row.get(7)?,
-        updated_at_ms: row.get(8)?,
+        starts_at_ms: row.get(7)?,
+        ends_at_ms: row.get(8)?,
+        updated_at_ms: row.get(9)?,
     })
 }
 

@@ -3,8 +3,7 @@
 //! Primary source:
 //! - `~/.local/share/amp/threads/*.json`
 //!
-//! Fallback source (if no threads are found):
-//! - `~/.amp/file-changes/**/*.{json,jsonl}`
+//! File changes are not session records and are not admitted for analysis.
 
 use std::path::{Path, PathBuf};
 
@@ -43,12 +42,10 @@ impl AgentExplorer for AmpCodeExplorer {
     }
 
     /// Owns the Amp Code state dir per platform: `~/.local/share/amp/threads/`
-    /// (unix), `%APPDATA%/amp/threads/` (Windows), and the
-    /// `~/.amp/file-changes/` fallback tree.
+    /// (unix) and `%APPDATA%/amp/threads/` (Windows).
     ///
     /// Substring → `surface_paths` bucket:
     /// - `/.local/share/amp/threads/`      → `cli` (Linux state dir)
-    /// - `/.amp/file-changes/`             → `cli` (fallback file-diffs tree)
     /// - `/appdata/roaming/amp/threads/`   → `cli` (Windows state dir)
     ///
     /// No IDE substring — the Amp VS Code extension keeps no local
@@ -56,28 +53,22 @@ impl AgentExplorer for AmpCodeExplorer {
     /// `"cli"` for the same reason.
     fn owns_path(&self, path_lower: &str) -> bool {
         path_lower.contains("/.local/share/amp/threads/")
-            || path_lower.contains("/.amp/file-changes/")
             || path_lower.contains("/appdata/roaming/amp/threads/")
     }
 
-    // Transcripts/file-changes walkers are CLI-side; the Amp VS Code extension
-    // keeps no local transcripts. Per the 2026-05-25 audit.
+    // Amp transcripts are CLI-side. The VS Code extension keeps no local transcripts.
     fn unmatched_surface(&self) -> &'static str {
         "cli"
     }
 
-    /// CLI-only: platform state dir's `threads/` plus the
-    /// `~/.amp/file-changes/` fallback. The Amp VS Code extension keeps no
-    /// local transcripts (per the 2026-05-25 audit).
+    /// CLI-only: platform state dir's `threads/`. The Amp VS Code extension keeps no
+    /// local transcripts.
     fn surface_paths(&self, home: &Path) -> SurfacePaths {
         let appdata = env_path_when_real_home(home, "APPDATA");
         let state_root =
             amp_state_dir_for_platform(home, current_desktop_platform(), appdata.as_deref());
         SurfacePaths {
-            cli: vec![
-                state_root.join("threads"),
-                home.join(".amp").join("file-changes"),
-            ],
+            cli: vec![state_root.join("threads")],
             ide_desktop: Vec::new(),
             mirror: Vec::new(),
         }
@@ -114,22 +105,9 @@ async fn log_dirs_for_platform(
     let mut primary_dirs = Vec::new();
     collect_dirs_with_exts(&primary_threads, &mut primary_dirs, &["json"]).await;
 
-    if !primary_dirs.is_empty() {
-        primary_dirs.sort();
-        primary_dirs.dedup();
-        return primary_dirs;
-    }
-
-    let mut fallback_dirs = Vec::new();
-    collect_dirs_with_exts(
-        &home.join(".amp").join("file-changes"),
-        &mut fallback_dirs,
-        &["json", "jsonl"],
-    )
-    .await;
-    fallback_dirs.sort();
-    fallback_dirs.dedup();
-    fallback_dirs
+    primary_dirs.sort();
+    primary_dirs.dedup();
+    primary_dirs
 }
 
 fn amp_state_dir_for_platform(
@@ -173,7 +151,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_amp_log_dirs_falls_back_when_threads_missing() {
+    async fn file_changes_are_not_discovered_as_sessions() {
         let home = TempDir::new().unwrap();
         let fallback_dir = home.path().join(".amp").join("file-changes").join("x");
         tokio::fs::create_dir_all(&fallback_dir).await.unwrap();
@@ -182,7 +160,7 @@ mod tests {
             .unwrap();
 
         let dirs = log_dirs_for_platform(home.path(), DesktopPlatform::Linux, None).await;
-        assert_eq!(dirs, vec![fallback_dir]);
+        assert!(dirs.is_empty());
     }
 
     #[tokio::test]

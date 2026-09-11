@@ -135,6 +135,11 @@ impl fmt::Debug for PreparedChange {
 }
 
 impl PreparedChange {
+    #[cfg(not(windows))]
+    pub(crate) fn recovery_bytes(&self) -> (&[u8], &[u8]) {
+        (&self.original_bytes, &self.proposed_bytes)
+    }
+
     pub const fn scope(&self) -> ConfigScope {
         self.scope
     }

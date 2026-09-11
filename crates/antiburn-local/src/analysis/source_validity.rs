@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::analysis::interface::SourceChangedReason;
 use crate::discovery::source_version::{
-    FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
+    FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of, prefix_hash_of_reader,
 };
 
 /// Bytes of trailing window a [`ResumePoint`] hashes, ending at its
@@ -20,7 +20,7 @@ use crate::discovery::source_version::{
 pub const RESUME_TAIL_BYTES: u64 = 64 * 1024;
 
 /// A verified point to resume a stream from: the byte offset already
-/// consumed, and a hash of the window before it.
+/// consumed, hashes of the complete accepted prefix and its trailing window.
 ///
 /// [`PinnedSource::open_resumed`] trusts this offset only when the trailing
 /// window still hashes to `tail_hash` — a rewrite inside that window (not
@@ -28,6 +28,9 @@ pub const RESUME_TAIL_BYTES: u64 = 64 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResumePoint {
     pub offset: u64,
+    /// Hashes `[0, offset)`. This validates restored adapter and sink state
+    /// after a rewrite anywhere in the accepted prefix.
+    pub prefix_hash: u64,
     pub tail_hash: u64,
     /// `min(offset, RESUME_TAIL_BYTES)`. Zero when `offset` is zero.
     pub tail_len: u32,
@@ -108,7 +111,7 @@ impl PinnedSource {
 
     /// Opens the path and validates it the same way [`Self::open`] does,
     /// plus a resume-specific check: the file must be at least
-    /// `resume.offset` bytes, and the window
+    /// `resume.offset` bytes, the complete accepted prefix, and the window
     /// `[resume.offset - resume.tail_len, resume.offset)` must still hash to
     /// `resume.tail_hash`. Either failure returns
     /// [`SourceChangedReason::ResumeTailMismatch`] — a rewrite inside the
@@ -134,6 +137,10 @@ impl PinnedSource {
             return Ok(Err(SourceChangedReason::HeadRegionMismatch));
         }
         if stat.size < resume.offset {
+            return Ok(Err(SourceChangedReason::ResumeTailMismatch));
+        }
+        file.seek(SeekFrom::Start(0))?;
+        if prefix_hash_of_reader(&mut file, resume.offset)? != resume.prefix_hash {
             return Ok(Err(SourceChangedReason::ResumeTailMismatch));
         }
         let tail_start = resume.offset - u64::from(resume.tail_len);
@@ -217,12 +224,15 @@ impl PinnedSource {
     /// [`Self::claim`] describes a validated state.
     pub fn resume_point(&mut self) -> anyhow::Result<ResumePoint> {
         let offset = self.base_offset.saturating_add(self.consumed);
+        self.file.seek(SeekFrom::Start(0))?;
+        let prefix_hash = prefix_hash_of_reader(&mut self.file, offset)?;
         let tail_len = offset.min(RESUME_TAIL_BYTES);
         self.file.seek(SeekFrom::Start(offset - tail_len))?;
         let mut tail = vec![0_u8; tail_len as usize];
         self.file.read_exact(&mut tail)?;
         Ok(ResumePoint {
             offset,
+            prefix_hash,
             tail_hash: head_hash_of(&tail),
             tail_len: u32::try_from(tail_len).unwrap_or(u32::MAX),
         })
@@ -611,12 +621,46 @@ mod tests {
     }
 
     #[test]
+    fn a_same_size_prefix_rewrite_before_the_tail_window_is_detected() {
+        let directory = TempDir::new().expect("tempdir");
+        let bytes = vec![b'a'; RESUME_TAIL_BYTES as usize * 2 + 8_192];
+        let path = write_source(&directory, "session.jsonl", &bytes);
+        let claim = claim_for_offset(&path, bytes.len() as u64);
+        let mut pinned = PinnedSource::open(&path, claim.clone())
+            .expect("open pinned source")
+            .expect("matching source");
+        pinned
+            .reader(u64::MAX)
+            .read_to_end(&mut Vec::new())
+            .expect("read initial source");
+        let resume = pinned.resume_point().expect("build resume point");
+        let mut writer = OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open source for rewrite");
+        writer
+            .seek(SeekFrom::Start(FINGERPRINT_HEAD_BYTES as u64 + 100))
+            .expect("seek before tail window");
+        writer.write_all(b"b").expect("rewrite prefix");
+        writer.sync_all().expect("sync rewrite");
+
+        let result =
+            PinnedSource::open_resumed(&path, claim, &resume).expect("validate rewritten source");
+
+        assert!(matches!(
+            result,
+            Err(SourceChangedReason::ResumeTailMismatch)
+        ));
+    }
+
+    #[test]
     fn offset_zero_has_an_empty_tail_and_resumes_as_a_full_read() {
         let directory = TempDir::new().expect("tempdir");
         let path = write_source(&directory, "session.jsonl", b"");
         let claim = claim_for_offset(&path, 0);
         let resume = ResumePoint {
             offset: 0,
+            prefix_hash: head_hash_of(&[]),
             tail_hash: head_hash_of(&[]),
             tail_len: 0,
         };

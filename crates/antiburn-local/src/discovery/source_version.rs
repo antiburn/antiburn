@@ -280,17 +280,42 @@ pub fn head_hash_of(bytes: &[u8]) -> u64 {
     hash_bytes(bytes.iter().take(FINGERPRINT_HEAD_BYTES))
 }
 
+/// Hashes at most `limit` bytes from `reader` without retaining the prefix.
+/// Resume validation uses this to prove its restored state still describes the
+/// entire accepted prefix.
+pub fn prefix_hash_of_reader(reader: &mut impl std::io::Read, limit: u64) -> std::io::Result<u64> {
+    let mut hash = HASH_OFFSET_BASIS;
+    let mut remaining = limit;
+    let mut buffer = [0_u8; 8192];
+    while remaining > 0 {
+        let length = usize::try_from(remaining)
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        let read = reader.read(&mut buffer[..length])?;
+        if read == 0 {
+            break;
+        }
+        for byte in &buffer[..read] {
+            hash = hash_step(hash, *byte);
+        }
+        remaining -= u64::try_from(read).expect("buffer length fits u64");
+    }
+    Ok(hash)
+}
+
 fn content_hash_of(bytes: &[u8]) -> u64 {
     hash_bytes(bytes.iter())
 }
 
 fn hash_bytes<'a>(bytes: impl Iterator<Item = &'a u8>) -> u64 {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x100_0000_01b3;
+    bytes.fold(HASH_OFFSET_BASIS, |hash, byte| hash_step(hash, *byte))
+}
 
-    bytes.fold(OFFSET_BASIS, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
-    })
+const HASH_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const HASH_PRIME: u64 = 0x100_0000_01b3;
+
+fn hash_step(hash: u64, byte: u8) -> u64 {
+    (hash ^ u64::from(byte)).wrapping_mul(HASH_PRIME)
 }
 
 fn optional_i128(value: Option<i128>) -> String {

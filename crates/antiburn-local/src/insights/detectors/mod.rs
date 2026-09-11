@@ -199,34 +199,32 @@ pub struct SpeedPolicy {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PremiumPolicy {
     pub reviewed: bool,
-    /// A canonical model key is premium when it contains any of these
-    /// substrings (Claude: `opus`, `fable`, `mythos`).
-    pub substrings: Vec<String>,
-    /// A canonical model key is premium when it starts with any of these
-    /// prefixes (OpenAI: `gpt-6-astra`, `gpt-5.6`, `gpt-5.5`), unless it is in
-    /// `exceptions`.
-    pub prefixes: Vec<String>,
-    /// Canonical model keys that a substring or prefix match would
-    /// otherwise call premium, but a maintainer has reviewed as budget
-    /// tiers within that prefix (e.g. `gpt-5.6-terra`, `gpt-5.6-luna`).
+    /// Canonical model keys that a maintainer reviewed as premium.
+    pub models: BTreeSet<String>,
+    /// Canonical model keys that a maintainer reviewed as nonpremium.
     pub exceptions: BTreeSet<String>,
 }
 
 impl PremiumPolicy {
-    /// Whether a canonical model key is premium under this policy.
-    /// Callers check `reviewed` separately: an unreviewed policy's
-    /// verdict here is not meaningful.
-    pub fn is_premium(&self, canonical: &str) -> bool {
-        if self.exceptions.contains(canonical) {
-            return false;
+    /// Returns the reviewed tier verdict for a canonical model key.
+    /// An unmatched key has no reviewed tier identity.
+    pub fn verdict(&self, canonical: &str) -> Option<bool> {
+        if !self.reviewed {
+            return None;
         }
-        self.substrings
-            .iter()
-            .any(|s| canonical.contains(s.as_str()))
-            || self
-                .prefixes
-                .iter()
-                .any(|p| canonical.starts_with(p.as_str()))
+        if self.exceptions.contains(canonical) {
+            return Some(false);
+        }
+        if self.models.contains(canonical) {
+            Some(true)
+        } else {
+            None
+        }
+    }
+
+    /// Returns true only for a reviewed premium model.
+    pub fn is_premium(&self, canonical: &str) -> bool {
+        self.verdict(canonical) == Some(true)
     }
 }
 
@@ -307,11 +305,17 @@ impl Default for ReportCatalogs {
                 },
                 premium: PremiumPolicy {
                     reviewed: true,
-                    substrings: ["opus", "fable", "mythos"]
-                        .into_iter()
-                        .map(str::to_owned)
-                        .collect(),
-                    prefixes: Vec::new(),
+                    models: [
+                        "claude-opus-4-6",
+                        "claude-opus-4-7",
+                        "claude-opus-4-8",
+                        "claude-opus-5",
+                        "claude-fable-5",
+                        "claude-mythos-5",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
                     exceptions: BTreeSet::new(),
                 },
                 cache_policy_reviewed: true,
@@ -337,12 +341,17 @@ impl Default for ReportCatalogs {
                 },
                 premium: PremiumPolicy {
                     reviewed: true,
-                    substrings: Vec::new(),
-                    prefixes: vec![
-                        "gpt-6-astra".to_owned(),
-                        "gpt-5.6".to_owned(),
-                        "gpt-5.5".to_owned(),
-                    ],
+                    models: [
+                        "gpt-5.5",
+                        "gpt-5.5-fast",
+                        "gpt-5.6",
+                        "gpt-5.6-sol",
+                        "gpt-6-astra",
+                        "gpt-6-astra-fast",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
                     exceptions: [
                         "gpt-5.6-terra",
                         "gpt-5.6-luna",
@@ -362,8 +371,10 @@ impl Default for ReportCatalogs {
             FamilyPolicy {
                 premium: PremiumPolicy {
                     reviewed: true,
-                    substrings: vec!["pro".to_owned()],
-                    prefixes: Vec::new(),
+                    models: ["gemini-3.1-pro", "gemini-3.8-pro", "gemini-3.8-pro-preview"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
                     exceptions: BTreeSet::new(),
                 },
                 cache_policy_reviewed: false,
@@ -376,7 +387,7 @@ impl Default for ReportCatalogs {
         families.insert(ModelFamily::Unknown, FamilyPolicy::default());
 
         Self {
-            revision: 8,
+            revision: 9,
             depth_cap_tokens: 400_000,
             families,
             model_replacements: model_registry::default_registry(),
@@ -718,66 +729,73 @@ mod tests {
     fn google_premium_policy_flags_canonical_gemini_pro() {
         let catalogs = ReportCatalogs::default();
         let canonical = canonical_model_key("antigravity-gemini-3.8-pro-preview");
-        assert!(
+        assert_eq!(
             catalogs.families[&ModelFamily::Google]
                 .premium
-                .is_premium(&canonical)
+                .verdict(&canonical),
+            Some(true)
         );
     }
 
     #[test]
     fn openai_premium_policy_flags_bare_gpt_5_6() {
         let policy = &ReportCatalogs::default().families[&ModelFamily::OpenAi].premium;
-        assert!(policy.is_premium("gpt-5.6"));
+        assert_eq!(policy.verdict("gpt-5.6"), Some(true));
     }
 
     #[test]
     fn openai_premium_policy_flags_gpt_5_5_fast() {
         let policy = &ReportCatalogs::default().families[&ModelFamily::OpenAi].premium;
-        assert!(policy.is_premium("gpt-5.5-fast"));
+        assert_eq!(policy.verdict("gpt-5.5-fast"), Some(true));
     }
 
     #[test]
     fn openai_premium_policy_flags_gpt_6_astra() {
         let policy = &ReportCatalogs::default().families[&ModelFamily::OpenAi].premium;
-        assert!(policy.is_premium("gpt-6-astra"));
-        assert!(policy.is_premium("gpt-6-astra-fast"));
+        assert_eq!(policy.verdict("gpt-6-astra"), Some(true));
+        assert_eq!(policy.verdict("gpt-6-astra-fast"), Some(true));
     }
 
     #[test]
     fn openai_premium_policy_does_not_guess_other_gpt_6_models() {
         let policy = &ReportCatalogs::default().families[&ModelFamily::OpenAi].premium;
-        assert!(!policy.is_premium("gpt-6-unknown"));
+        assert_eq!(policy.verdict("gpt-6-unknown"), None);
+    }
+
+    #[test]
+    fn premium_policy_does_not_guess_an_unreviewed_premium_named_model() {
+        let policy = &ReportCatalogs::default().families[&ModelFamily::Claude].premium;
+        assert_eq!(policy.verdict("claude-opus-unreviewed"), None);
     }
 
     #[test]
     fn openai_premium_policy_excepts_gpt_5_6_terra() {
         let policy = &ReportCatalogs::default().families[&ModelFamily::OpenAi].premium;
-        assert!(!policy.is_premium("gpt-5.6-terra"));
+        assert_eq!(policy.verdict("gpt-5.6-terra"), Some(false));
     }
 
     #[test]
     fn openai_premium_policy_excepts_gpt_5_6_luna() {
         let policy = &ReportCatalogs::default().families[&ModelFamily::OpenAi].premium;
-        assert!(!policy.is_premium("gpt-5.6-luna"));
+        assert_eq!(policy.verdict("gpt-5.6-luna"), Some(false));
     }
 
     #[test]
     fn claude_premium_policy_flags_mythos() {
         let policy = &ReportCatalogs::default().families[&ModelFamily::Claude].premium;
-        assert!(policy.is_premium("claude-mythos-5"));
+        assert_eq!(policy.verdict("claude-mythos-5"), Some(true));
     }
 
     #[test]
     fn claude_premium_policy_does_not_flag_sonnet() {
         let policy = &ReportCatalogs::default().families[&ModelFamily::Claude].premium;
-        assert!(!policy.is_premium("claude-sonnet-5"));
+        assert_eq!(policy.verdict("claude-sonnet-5"), None);
     }
 
     #[test]
     fn claude_premium_policy_does_not_flag_haiku() {
         let policy = &ReportCatalogs::default().families[&ModelFamily::Claude].premium;
-        assert!(!policy.is_premium("claude-haiku-4-5"));
+        assert_eq!(policy.verdict("claude-haiku-4-5"), None);
     }
 
     #[test]

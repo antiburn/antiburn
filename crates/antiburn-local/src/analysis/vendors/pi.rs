@@ -231,15 +231,21 @@ impl PiSessionReader {
                     resume: None,
                 });
             }
-            let adapter = postcard::to_allocvec(&state).context("encoding Pi adapter snapshot")?;
-            let new_resume = pinned.resume_point()?;
+            let resumable = !state.incomplete_tail_seen;
+            let adapter = resumable
+                .then(|| postcard::to_allocvec(&state))
+                .transpose()
+                .context("encoding Pi adapter snapshot")?;
+            let new_resume = resumable.then(|| pinned.resume_point()).transpose()?;
             sink.finish(state.finish());
             Ok(ResumedVisit {
                 outcome,
-                resume: Some(AdapterResume {
-                    point: new_resume,
-                    adapter: crate::analysis::resume::AdapterSnapshot(adapter),
-                }),
+                resume: new_resume
+                    .zip(adapter)
+                    .map(|(point, adapter)| AdapterResume {
+                        point,
+                        adapter: crate::analysis::resume::AdapterSnapshot(adapter),
+                    }),
             })
         })()
         .context("reading resumed Pi session")
@@ -262,7 +268,11 @@ impl PiSessionReader {
         while let Some(record) = reader.next_record(cancel) {
             match record {
                 FramedRecord::Skipped(skip) => match skip {
-                    RecordSkip::Oversized { .. } | RecordSkip::IncompleteTail { .. } => {
+                    RecordSkip::Oversized { .. } => {
+                        sink.record(NormalizedRecord::Unusable(skip.partial_reason()));
+                    }
+                    RecordSkip::IncompleteTail { .. } => {
+                        state.incomplete_tail_seen = true;
                         sink.record(NormalizedRecord::Unusable(skip.partial_reason()));
                     }
                     RecordSkip::ReadFailed { index, kind } => {
@@ -308,6 +318,7 @@ struct PiSubagentCall {
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 struct PiStreamState {
+    incomplete_tail_seen: bool,
     model: Option<String>,
     current_model: Option<String>,
     current_provider: Option<String>,
@@ -1151,6 +1162,7 @@ mod tests {
         snapshot_from(AdapterResume {
             point: ResumePoint {
                 offset: 0,
+                prefix_hash: head_hash_of(&[]),
                 tail_hash: head_hash_of(&[]),
                 tail_len: 0,
             },

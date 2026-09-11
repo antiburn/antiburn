@@ -89,6 +89,10 @@ export function BurnCheckReviewDialog({
             </dd>
           </div>
         </dl>
+        <p className="mt-4 rounded-control bg-surface-secondary px-3 py-3 type-callout text-label-secondary">
+          Close your editor to reduce conflicting changes. antiburn saves the current config as
+          the latest .backup before it applies this change.
+        </p>
         {status && (
           <p role="alert" className="mt-4 type-callout text-system-red-text">
             {status}

@@ -3,7 +3,7 @@ use super::watch::{
     positive_control_resolution, scope_identity_matches, session_starts_after_boundary,
 };
 use super::*;
-use crate::store::{PublishedEvidence, SessionKey, SessionRecord};
+use crate::store::{PublishedEvidence, RepositoryRecord, SessionKey, SessionRecord};
 use antiburn_local::analysis::{
     EvidenceSource, EvidenceValue, ModelControlObservation, SessionEvidenceAccumulator,
     SourceCapabilities, SourceKind, TurnCounts, TurnFacts,
@@ -412,6 +412,52 @@ fn workspace_context_rejects_an_untrusted_cwd() {
 }
 
 #[test]
+fn trusted_workspace_still_matches_requires_an_enabled_accessible_matching_repository() {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("home");
+    let root = directory.path().join("project");
+    let cwd = root.join("packages/app");
+    let other_root = directory.path().join("other-project");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir(&other_root).unwrap();
+
+    let global = config_context(AgentKind::OpenCode, &home, None, None).unwrap();
+    let workspace = config_context(AgentKind::OpenCode, &home, Some(&cwd), Some(&root)).unwrap();
+    let cases = [
+        ("matching", "accessible", true, &root, true),
+        ("disabled", "accessible", false, &root, false),
+        ("inaccessible", "permission_denied", true, &root, false),
+        ("mismatched", "accessible", true, &other_root, false),
+    ];
+
+    for (name, status, enabled, repository_root, expected) in cases {
+        let store = Store::open(&directory.path().join(name)).unwrap();
+        store
+            .replace_repositories(&[RepositoryRecord {
+                key: repository_root.to_string_lossy().into_owned(),
+                repo_name: name.into(),
+                full_name: format!("test/{name}"),
+                status: status.into(),
+                repo_root: Some(repository_root.to_string_lossy().into_owned()),
+                suspected_path: None,
+                worktree_count: 1,
+                session_count: 0,
+                wsl_distro: None,
+                enabled,
+            }])
+            .unwrap();
+
+        assert!(trusted_workspace_still_matches(&store, &global).unwrap());
+        assert_eq!(
+            trusted_workspace_still_matches(&store, &workspace).unwrap(),
+            expected,
+            "{name} repository"
+        );
+    }
+}
+
+#[test]
 fn generic_watch_scope_rejects_other_projects_and_sessions() {
     assert!(scope_identity_matches(
         "project",
@@ -474,6 +520,8 @@ fn verification_availability_matches_all_documented_source_cells() {
         config_setting: (detector == DetectorId::OldModelUsage).then(|| "model".into()),
         config_expected_value: None,
         config_proposed_value: None,
+        config_original_bytes_hash: None,
+        config_proposed_bytes_hash: None,
         verification_method_revision: VERIFICATION_METHOD_REVISION,
         remediation_policy_revision: Some(REMEDIATION_POLICY_REVISION),
         savings_method_revision: SAVINGS_METHOD_REVISION,
@@ -540,6 +588,8 @@ fn verification_rejects_mismatched_agents_and_named_resources() {
         config_setting: Some("model".into()),
         config_expected_value: Some("old".into()),
         config_proposed_value: Some("new".into()),
+        config_original_bytes_hash: None,
+        config_proposed_bytes_hash: None,
         verification_method_revision: VERIFICATION_METHOD_REVISION,
         remediation_policy_revision: Some(REMEDIATION_POLICY_REVISION),
         savings_method_revision: SAVINGS_METHOD_REVISION,
@@ -858,6 +908,8 @@ fn missing_or_changed_policy_cannot_verify_an_attempt() {
         config_setting: Some("model".into()),
         config_expected_value: Some("old".into()),
         config_proposed_value: Some("new".into()),
+        config_original_bytes_hash: None,
+        config_proposed_bytes_hash: None,
         verification_method_revision: VERIFICATION_METHOD_REVISION,
         remediation_policy_revision: Some(REMEDIATION_POLICY_REVISION),
         savings_method_revision: SAVINGS_METHOD_REVISION,
@@ -905,6 +957,8 @@ fn only_explicit_same_route_controls_prove_generic_transitions() {
         config_setting: None,
         config_expected_value: None,
         config_proposed_value: None,
+        config_original_bytes_hash: None,
+        config_proposed_bytes_hash: None,
         verification_method_revision: VERIFICATION_METHOD_REVISION,
         remediation_policy_revision: Some(REMEDIATION_POLICY_REVISION),
         savings_method_revision: SAVINGS_METHOD_REVISION,
@@ -966,7 +1020,7 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
                     state, definition_json, result_json, created_at_epoch, updated_at_epoch,
                     effective_boundary_ms, verified_at_epoch)
                  VALUES ('attempt', 'target', 'native', 'claude-code', 'project', 'scope',
-                         'fixed', '{\"version\":1}', '{\"version\":1}', 1, 2, 1000, 2)",
+                         'fixed', '{\"version\":1,\"detector\":\"oldModelUsage\",\"physicalTargetKey\":\"physical\"}', '{\"version\":1}', 1, 2, 1000, 2)",
             [],
         )
         .unwrap();
@@ -1017,6 +1071,7 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
                 owner_key: format!("owner-{index:03}"),
                 remediation_id: "attempt".into(),
                 detector_id: DetectorId::OldModelUsage.key().into(),
+                physical_target_key: Some("physical".into()),
                 origin: "action".into(),
                 display_snapshot_json: snapshot.clone(),
                 facts_json: savings.clone(),
