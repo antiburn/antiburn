@@ -22,7 +22,7 @@ process-level opt-out.
 - Official builds can record launch and onboarding progress before setup ends.
 - The installation identifier is random, is not derived from anything about
   your machine, and is replaced every 30 days.
-- Turning the control off deletes the identifier and everything queued.
+- Turning the control off queues one fixed opt-out signal, attempts one bounded final flush, then deletes the identifier and everything queued.
 - A build with no endpoint configured sends nothing at all. That includes every
   development build and **every build made from a clean checkout of this
   repository** — the endpoint is injected at build time and is not in the tree.

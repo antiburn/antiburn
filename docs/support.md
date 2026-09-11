@@ -211,8 +211,9 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   [analytics.md](analytics.md) is the complete account: every field,
   the full event catalog, and how to verify all of it yourself.
   Never sent: session content, transcripts, prompts, titles, file paths, repository or
-  branch names, token counts, costs, or credentials. Switching it off deletes
-  the identifier and anything still queued. The endpoint also stores the request
+  branch names, token counts, costs, or credentials. Switching it off attempts
+  one bounded final delivery, then deletes the identifier and anything still
+  queued. The endpoint also stores the request
   IP address and user-agent. Raw events are retained until the operator deletes
   them. Default source and development builds exclude the analytics client.
 - There is **no third-party analytics, telemetry, or crash-reporting SDK** in this
