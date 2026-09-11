@@ -3,6 +3,7 @@ import { useCallback, useState, useSyncExternalStore } from "react"
 import { X } from "lucide-react"
 
 import { LedBar } from "../components/ui/LedBar"
+import { liveWindowSweeps } from "../lib/presentation/liveUsage"
 import type { UsageBarItem } from "../lib/usageBars"
 import { OverlaySession } from "./overlay/OverlaySession"
 
@@ -31,6 +32,11 @@ export function OverlayWindow() {
     session.getSnapshot,
   )
   const showClose = state.hovered && !state.dragging
+  // A bar scoped to one model sweeps only while a live session runs that
+  // model. Every other bar sweeps for any live session on its provider.
+  const sweeping = state.bars.map((bar) =>
+    liveWindowSweeps(bar, state.liveProviders.includes(bar.provider), state.liveModels),
+  )
   const panelRef = useCallback(
     (node: HTMLDivElement | null) => session.registerPanel(node),
     [session],
@@ -73,14 +79,14 @@ export function OverlayWindow() {
           // `led-clock` runs the one sweep clock every live bar reads, so the
           // bars stay in phase whenever each bar joined.
           <div
-            className={`pointer-events-none space-y-[3px] ${state.liveProviders.length > 0 ? "led-clock led-clock-soft" : ""}`.trimEnd()}
+            className={`pointer-events-none space-y-[3px] ${sweeping.some(Boolean) ? "led-clock led-clock-soft" : ""}`.trimEnd()}
           >
             {state.bars.map((bar, index) => (
               <LedBar
                 key={bar.key}
                 segments={HUD_SEGMENTS}
                 split={[{ fraction: bar.percent / 100, color: bar.color }]}
-                live={state.liveProviders.includes(bar.provider)}
+                live={sweeping[index]!}
                 row={providerRow(state.bars, index)}
                 expectedFraction={bar.expectedFraction}
               />

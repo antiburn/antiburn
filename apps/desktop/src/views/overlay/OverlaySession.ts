@@ -33,6 +33,7 @@ import {
   isLive,
   livenessExpiry,
   livenessFromSnapshot,
+  liveModels,
   liveProviders,
   type Liveness,
 } from "../../lib/sessionLiveness"
@@ -51,6 +52,8 @@ export type OverlaySnapshot = {
   sessionLive: boolean
   /** The providers a live session draws on, sorted. Their bars blink. */
   liveProviders: readonly string[]
+  /** The models a live session runs, sorted. A model-scoped bar reads this. */
+  liveModels: readonly string[]
   /** True when `bars` is empty because every meter is turned off. */
   noMeterSelected: boolean
 }
@@ -61,6 +64,7 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   dragging: false,
   sessionLive: false,
   liveProviders: [],
+  liveModels: [],
   noMeterSelected: false,
 }
 
@@ -224,7 +228,13 @@ export class OverlaySession {
     this.active = true
     this.hudVisibilityKnown = false
     const generation = ++this.activityGeneration
-    this.update({ hovered: false, dragging: false, sessionLive: false, liveProviders: [] })
+    this.update({
+      hovered: false,
+      dragging: false,
+      sessionLive: false,
+      liveProviders: [],
+      liveModels: [],
+    })
     this.connectPanel(generation)
     this.resumeHudExposure()
 
@@ -347,7 +357,13 @@ export class OverlaySession {
     this.dragOrigin = null
     this.pendingMove = null
     this.liveness = IDLE_LIVENESS
-    this.update({ hovered: false, dragging: false, sessionLive: false, liveProviders: [] })
+    this.update({
+      hovered: false,
+      dragging: false,
+      sessionLive: false,
+      liveProviders: [],
+      liveModels: [],
+    })
   }
 
   private isCurrent(generation: number): boolean {
@@ -420,7 +436,11 @@ export class OverlaySession {
     this.liveness = next
     this.clearLivenessExpiry()
     const now = Date.now()
-    this.update({ sessionLive: isLive(next, now), liveProviders: liveProviders(next, now) })
+    this.update({
+      sessionLive: isLive(next, now),
+      liveProviders: liveProviders(next, now),
+      liveModels: liveModels(next, now),
+    })
     const expiresAt = livenessExpiry(next, now)
     if (expiresAt == null) return
     this.livenessExpiry = window.setTimeout(
@@ -553,6 +573,7 @@ export class OverlaySession {
       this.snapshot.dragging === next.dragging &&
       this.snapshot.sessionLive === next.sessionLive &&
       sameList(this.snapshot.liveProviders, next.liveProviders) &&
+      sameList(this.snapshot.liveModels, next.liveModels) &&
       this.snapshot.noMeterSelected === next.noMeterSelected
     ) {
       return false

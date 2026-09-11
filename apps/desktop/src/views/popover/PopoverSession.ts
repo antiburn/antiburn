@@ -52,6 +52,7 @@ import {
   isLive,
   livenessExpiry,
   livenessFromSnapshot,
+  liveModels,
   liveProviders,
   type Liveness,
 } from "../../lib/sessionLiveness"
@@ -91,6 +92,8 @@ export interface PopoverSnapshot {
   sessionLive: boolean
   /** The providers a live session draws on, sorted. Their meters blink. */
   liveProviders: readonly string[]
+  /** The models a live session runs, sorted. A model-scoped meter reads this. */
+  liveModels: readonly string[]
   sessionLimitAllocations: SessionLimitAllocationSummaryPayload
   /** Whether a `refreshUsage` call is in flight, for the limits section's spinner. */
   usageRefreshing: boolean
@@ -269,6 +272,7 @@ export class PopoverSession {
     liveUsage: EMPTY_LIVE_USAGE,
     sessionLive: false,
     liveProviders: [],
+    liveModels: [],
     sessionLimitAllocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
     usageRefreshing: false,
     checksReport: null,
@@ -732,11 +736,13 @@ export class PopoverSession {
     const now = Date.now()
     const sessionLive = isLive(next, now)
     const providers = liveProviders(next, now)
+    const models = liveModels(next, now)
     if (
       sessionLive !== this.snapshot.sessionLive ||
-      !sameList(providers, this.snapshot.liveProviders)
+      !sameList(providers, this.snapshot.liveProviders) ||
+      !sameList(models, this.snapshot.liveModels)
     ) {
-      this.update({ sessionLive, liveProviders: providers })
+      this.update({ sessionLive, liveProviders: providers, liveModels: models })
     }
     const expiresAt = livenessExpiry(next, now)
     if (expiresAt == null) return

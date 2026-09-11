@@ -119,6 +119,10 @@ pub struct LiveSession {
     pub session: SessionRef,
     pub agent: AgentKind,
     pub last_activity_at: i64,
+    /// The model of the session's newest analyzed turn. `None` until an
+    /// analysis pass publishes one. The snapshot command fills this; the
+    /// actor does not read the store on the event path.
+    pub model: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -194,6 +198,7 @@ impl SessionEvents {
                 session: SessionRef::from(key),
                 agent: entry.agent,
                 last_activity_at: entry.last_activity_at,
+                model: None,
             })
             .collect::<Vec<_>>();
         sessions.sort_by(|a, b| {

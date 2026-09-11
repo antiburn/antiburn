@@ -31,6 +31,13 @@ interface LiveEntry {
   agent: string
   /** When the session's last write stops counting, as epoch milliseconds. */
   until: number
+  /**
+   * The model of the session's newest analyzed turn, or `null` when no
+   * analysis pass has published one. Only a snapshot carries a model,
+   * because the analyzer publishes a turn after the pass that starts the
+   * session. An event therefore keeps the model the snapshot last stated.
+   */
+  model: string | null
 }
 
 /** What a surface knows about live sessions, from the bus. */
@@ -62,9 +69,9 @@ export function livenessFromSnapshot(
 ): Liveness {
   return {
     sessions: new Map(
-      sessions.map(({ session, agent, lastActivityAt }) => [
+      sessions.map(({ session, agent, lastActivityAt, model }) => [
         liveSessionKey(session),
-        { agent, until: lastActivityAt * 1000 + LIVE_WINDOW_MS },
+        { agent, until: lastActivityAt * 1000 + LIVE_WINDOW_MS, model: model ?? null },
       ]),
     ),
     anonymousUntil: previous.anonymousUntil,
@@ -99,8 +106,10 @@ export function applyLifecycleEvent(state: Liveness, event: SessionLifecycleEven
 function withSession(state: Liveness, key: string, agent: string, until: number): Liveness {
   const current = state.sessions.get(key)
   if (current && current.agent === agent && current.until >= until) return state
+  // An event states no model, so the session keeps the model the last
+  // snapshot gave it. The next snapshot corrects a session that changed it.
   return {
-    sessions: new Map(state.sessions).set(key, { agent, until }),
+    sessions: new Map(state.sessions).set(key, { agent, until, model: current?.model ?? null }),
     anonymousUntil: state.anonymousUntil,
   }
 }
@@ -134,6 +143,21 @@ export function liveProviders(state: Liveness, now: number): LiveUsageProvider[]
     if (provider) providers.add(provider)
   }
   return [...providers].sort()
+}
+
+/**
+ * The models a live session runs at `now`, sorted. A session with no
+ * analyzed turn yet states no model and adds nothing here.
+ *
+ * A meter scoped to one model reads this. Keyless activity states no model
+ * either, so a scoped meter stays still until the store names the model.
+ */
+export function liveModels(state: Liveness, now: number): string[] {
+  const models = new Set<string>()
+  for (const { until, model } of state.sessions.values()) {
+    if (until > now && model) models.add(model)
+  }
+  return [...models].sort()
 }
 
 /**

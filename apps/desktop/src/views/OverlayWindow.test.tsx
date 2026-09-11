@@ -187,6 +187,16 @@ function withSecondBar(): LiveUsageSummaryPayload {
   return payload
 }
 
+function withScopedBar(): LiveUsageSummaryPayload {
+  const payload = withSecondBar()
+  payload.providers[0]!.windows[1] = {
+    ...payload.providers[0]!.windows[1]!,
+    id: "weekly-fable",
+    scopeModel: "Fable",
+  }
+  return payload
+}
+
 function frame(container: HTMLElement): HTMLElement {
   return container.firstElementChild as HTMLElement
 }
@@ -226,11 +236,16 @@ async function advance(ms: number) {
 
 const SESSION_REF = { environmentKey: "native", agent: "claude-code", sessionId: "session-1" }
 
-function liveSession(sessionId = "session-1", agent = "claude-code") {
+function liveSession(
+  sessionId = "session-1",
+  agent = "claude-code",
+  model: string | null = null,
+) {
   return {
     session: { ...SESSION_REF, agent, sessionId },
     agent,
     lastActivityAt: Math.floor(Date.now() / 1000),
+    model,
   }
 }
 
@@ -578,6 +593,31 @@ describe("OverlayWindow", () => {
     const bars = Array.from(container.querySelectorAll<HTMLElement>("[style*='--led-row']"))
     expect(bars.map((bar) => bar.style.getPropertyValue("--led-row"))).toEqual(["0", "1"])
     expect(bars[0]?.style.getPropertyValue("--led-segments")).toBe("20")
+  })
+
+  it("holds a model-scoped bar still while the session runs another model", async () => {
+    getLiveUsage.mockResolvedValue(withScopedBar())
+    getLiveSessions.mockResolvedValue([
+      liveSession("session-1", "claude-code", "claude-opus-4-6"),
+    ])
+    const { container } = render(<OverlayWindow />)
+
+    // Only the first bar sweeps. The Fable bar shows a model that the
+    // session does not run, so it holds still.
+    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(16))
+    const bars = Array.from(container.querySelectorAll<HTMLElement>("[style*='--led-row']"))
+    expect(bars).toHaveLength(1)
+    expect(bars[0]?.style.getPropertyValue("--led-row")).toBe("0")
+  })
+
+  it("sweeps a model-scoped bar while the session runs that model", async () => {
+    getLiveUsage.mockResolvedValue(withScopedBar())
+    getLiveSessions.mockResolvedValue([
+      liveSession("session-1", "claude-code", "claude-fable-5"),
+    ])
+    const { container } = render(<OverlayWindow />)
+
+    await waitFor(() => expect(container.querySelectorAll(".led-sweep-dot")).toHaveLength(32))
   })
 
   it("runs one sweep clock for every bar, and only while a session is live", async () => {

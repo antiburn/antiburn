@@ -21,6 +21,7 @@ status: built
 | E     | The Claude desktop manifest no longer keeps the HUD live              | ~80 lines Rust | built 2026-09-11 on `feat/session-lifecycle-bus`                                                        |
 | F     | A brand-tint sweep across the live provider's bars replaces the blink | ~250 lines     | built 2026-09-11 on `feat/hud-session-blink`                                                            |
 | G     | The sweep ends 30 s after the last write; `idle` stays at 180 s       | ~60 lines      | built 2026-09-11: actor half on `feat/session-lifecycle-bus`, renderer half on `feat/hud-session-blink` |
+| H     | A model-scoped meter sweeps only for the model that is running        | ~350 lines     | built 2026-09-11 on `feat/hud-session-blink`                                                            |
 
 ## Problem 1: the HUD never stops
 
@@ -211,6 +212,11 @@ sweep while tokens flow, not while the agent waits.
 
 ## Departures while building
 
+- **The closed bar's ring stays provider-level.** Phase H scopes each meter
+  to the model it measures, but the ring on the closed popover bar shows
+  `maxLiveUsedPercent`, the provider's highest meter rather than one window.
+  There is no single model to match it against, so the ring keeps the
+  provider rule and sweeps whenever a session draws on the provider.
 - **Only lit segments move, and the band on them is the shimmer white.**
   Keith, 2026-09-11, on the first build: "dont animate unlit LEDs". The tint
   over an Anthropic bar's lit segments paints nothing, so a lit segment takes
@@ -321,3 +327,116 @@ sweep while tokens flow, not while the agent waits.
 - Changing `ACTIVE_SESSION_WINDOW_SECS`. The 30 s sweep window is a second
   event on the bus, not a change to the engine's active window.
 - The detail window, which does not animate.
+
+## Problem 3: a model-scoped meter sweeps for a model that is not running
+
+Keith, 2026-09-11: "Issue: if user is not running fable, the fable line
+should not be shimmering". Then, on the routes: "If a fable session is
+active, then also sweep fable. If not, do not include it in the sweep".
+
+**The logic today.** The sweep is chosen once per provider and every meter in
+that provider's group inherits it:
+
+```
+src/components/providerUsage/UsageLimitsBar.tsx:142  live={liveProviders.includes(reading.provider)}
+src/components/providerUsage/UsageLimitsBar.tsx:176  live={liveProviders.includes(reading.provider)}
+src/components/providerUsage/UsageLimitsBar.tsx:329  live={live}            (each WindowMeterRow)
+src/views/OverlayWindow.tsx:83                       live={state.liveProviders.includes(bar.provider)}
+```
+
+Anthropic publishes three windows: the account-wide `five-hour` and
+`seven-day`, and one model-scoped `weekly-<model>` per model the plan meters
+separately. A model-scoped window carries `scopeModel`, the provider's
+display name, such as `"Fable"`. Any live Claude Code session therefore
+sweeps the Fable line, whatever model that session runs.
+
+**Why the renderer cannot tell.** The lifecycle bus carries the agent only:
+
+```
+src-tauri/src/session_lifecycle.rs:118  pub struct LiveSession { session, agent, last_activity_at }
+src/lib/sessionLiveness.ts:29           interface LiveEntry { agent, until }
+```
+
+`SessionRecord` holds no model either, so the model is not available where
+the scan feeds the bus. The model lives in the evidence tables that the
+analysis worker writes after a pass indexes a session.
+
+## Phase H: a scoped meter sweeps only for the model that is running
+
+**The rule.** A window with no `scopeModel` keeps today's behaviour: it
+sweeps while the provider has a live session. A window with a `scopeModel`
+sweeps only while a live session runs a model that matches that scope. An
+unknown model does not sweep a scoped window, so the meter stays still until
+the app can show the model is running.
+
+**Where the model comes from.** The newest turn the analyzer published for
+that session. The `turn` table already holds `model` and `ts_ms` per turn
+(`crates/antiburn-local/src/analysis/evidence_query.rs:358`), so the newest
+row answers "the model this session runs now". The whole-session model set
+in `analysis.model_breakdown_json` does not: a session that ran Fable an
+hour ago and Opus now still lists Fable, which is the report Keith made.
+
+A new store read returns one value per session:
+
+```sql
+SELECT model FROM turn
+ WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+   AND claim_fence = ?4 AND model IS NOT NULL AND model <> ''
+ ORDER BY ts_ms DESC, turn_index DESC
+ LIMIT 1
+```
+
+`?4` is the session's `published_fence`, the same fence
+`Store::published_turn_rows` reads, so a pass in flight cannot leak a
+half-written claim.
+
+**Where it is carried.** The live snapshot, not the event stream.
+`get_live_sessions` already runs with an `AppHandle`, so it reads the store
+and fills a new `LiveSession.model` field. The events on `session:lifecycle`
+stay as they are: they answer "is anything live", which must be fast, and
+the model only exists after an analysis pass anyway. The renderer already
+re-reads the snapshot on `scan:finished`, which is when a new model can
+first appear.
+
+**Matching a model id to a scope name.** `scopeModel` is a display name
+(`"Fable"`) and a session model is a raw id (`"claude-fable-5"`). A new
+helper beside `modelShortName` in `src/lib/presentation/models.ts` compares
+them by token: it slugs the scope name, drops the vendor and numeric tokens
+(`claude`, `gpt`, `anthropic`, `openai`, and any all-digit token), and
+reports a match when every token that is left appears as a token of the
+model id.
+
+| Scope name          | Model id                     | Match |
+| ------------------- | ---------------------------- | ----- |
+| `Fable`             | `claude-fable-5`             | yes   |
+| `Fable`             | `claude-opus-4-6`            | no    |
+| `Claude Sonnet 4.5` | `claude-sonnet-4-5-20250929` | yes   |
+| `Fable`             | `gpt-5.6-sol`                | no    |
+
+**The changes.**
+
+| File                                              | Change                                                                            |
+| ------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `src-tauri/src/store/mod.rs`                      | `latest_turn_model(&SessionKey) -> Result<Option<String>>`, at the published fence |
+| `src-tauri/src/session_lifecycle.rs`              | `LiveSession` gains `model: Option<String>`                                       |
+| `src-tauri/src/commands.rs`                       | `get_live_sessions` fills `model` from the store                                   |
+| `src/lib/sessionLiveness.ts`                      | `LiveEntry` gains `model`; new `liveModels(state, now)`                            |
+| `src/lib/presentation/models.ts`                  | `modelMatchesScope(modelId, scopeName)`                                            |
+| `src/lib/presentation/liveUsage.ts`               | `windowSweeps(window, providerLive, liveModels)`                                   |
+| `src/lib/usageBars.ts`                            | `UsageBarItem` gains `scopeModel`                                                  |
+| `src/components/providerUsage/UsageLimitsBar.tsx` | each `WindowMeterRow` decides its own sweep                                        |
+| `src/views/OverlayWindow.tsx`                     | each bar decides its own sweep; the `led-clock` host needs any bar to sweep        |
+| `src/views/overlay/OverlaySession.ts`             | carry `liveModels` in the HUD snapshot                                             |
+| `src/views/popover/PopoverSession.ts`             | carry `liveModels` in the popover snapshot                                         |
+
+About 350 lines with tests.
+
+**Where it lands.** All of phase H on `feat/hud-session-blink` (#490). The
+model is read only by the sweep, and #490 already owns `sessionLiveness.ts`,
+`usageBars.ts`, and its own additions to `commands.rs` and `store/mod.rs`.
+#489 stays reviewable as the bus alone, and no merge up is needed.
+
+**What this does not fix.** A brand-new session shows no model until the
+analyzer publishes its first turn, so its scoped meter starts sweeping a
+pass late. The account-wide meters still sweep at once. Keyless activity, a
+write with no indexed session, carries no model and sweeps no scoped meter.

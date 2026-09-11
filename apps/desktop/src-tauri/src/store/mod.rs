@@ -48,9 +48,9 @@ use antiburn_local::analysis::{
     TurnRowError, TurnRowStore, TurnSessionKey, count_turn_rows, delete_source_resume,
     delete_source_rows_at_fence, delete_stale_source_resume, delete_turn_rows,
     delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_coverage_record,
-    insert_source_resume, insert_turn_rows, query_coverage_record, query_model_breakdown,
-    query_model_runs, query_pricing_breakdown, query_source_resume, query_turn_facts,
-    query_turn_rows, restamp_source_rows,
+    insert_source_resume, insert_turn_rows, latest_turn_model, query_coverage_record,
+    query_model_breakdown, query_model_runs, query_pricing_breakdown, query_source_resume,
+    query_turn_facts, query_turn_rows, restamp_source_rows,
 };
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_iter};
@@ -1972,6 +1972,36 @@ impl Store {
             &connection,
             &turn_session_key(key),
             claim_fence,
+        )?)
+    }
+
+    /// The model one session's newest published turn ran, or `None` when
+    /// this session has never published a turn with a model.
+    ///
+    /// This reads at `published_fence`, for the reason
+    /// [`Self::published_turn_rows`] gives: a claim in flight writes rows
+    /// under its own fence, and only a complete publish moves
+    /// `published_fence`. The evidence lookup and the turn query run under
+    /// one lock, so a concurrent claim cannot swap the fence in between.
+    pub fn latest_session_model(&self, key: &SessionKey) -> Result<Option<String>> {
+        let connection = self.lock();
+        let Some(evidence) = connection
+            .query_row(
+                EVIDENCE_BY_KEY_SQL,
+                params![key.environment_key, key.agent, key.session_id],
+                evidence_from_row,
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let Some(published_fence) = evidence.published_fence else {
+            return Ok(None);
+        };
+        Ok(latest_turn_model(
+            &connection,
+            &turn_session_key(key),
+            published_fence,
         )?)
     }
 

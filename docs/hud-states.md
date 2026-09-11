@@ -182,6 +182,15 @@ switch and in Mission Control.
   detail window does not sweep. The popover sweeps the same providers from
   the same events: every usage meter of the provider on the open bar, and
   its ring on the closed bar.
+- A bar that holds one model sweeps only while a live session runs that
+  model. The Anthropic weekly Fable limit is such a bar: a session on Opus
+  leaves it still, and a session on Fable sweeps it. The shell reports the
+  model of each live session's newest analyzed turn, and the renderer
+  matches that model against the bar's model name. A session reports no
+  model until an analysis pass publishes its first turn, so a new session
+  sweeps the unscoped bars of its provider one pass before its model-scoped
+  bar. The ring on the closed popover bar keeps the provider rule, because
+  it shows the provider's highest meter rather than one window.
 - The sweep is a gleam about three segments wide that crosses the lit
   segments from the left. An unlit segment does not move. A segment takes
   two brightness levels, off and the peak, instead of a smooth ramp: the

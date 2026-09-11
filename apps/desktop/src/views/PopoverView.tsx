@@ -253,6 +253,7 @@ export function PopoverView() {
               <UsageLimitsBar
                 live={state.liveUsage}
                 liveProviders={state.liveProviders}
+                liveModels={state.liveModels}
                 expanded={limitsExpanded}
                 onToggleExpanded={() => {
                   void peekTriggers.leave()

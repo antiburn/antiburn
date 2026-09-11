@@ -182,7 +182,14 @@ describe("UsageLimitsBar — the live sweep", () => {
     })
 
   it("sweeps every meter of the live provider, one row apart from the top", () => {
-    bar({ live: twoProviders(), liveProviders: ["anthropic"], expanded: true })
+    bar({
+      live: twoProviders(),
+      liveProviders: ["anthropic"],
+      // The third window is scoped to Fable, so it needs the session to run
+      // that model before it joins the other two.
+      liveModels: ["claude-fable-5"],
+      expanded: true,
+    })
     const region = screen.getByRole("region", { name: "Usage limits" })
     const meters = Array.from(region.querySelectorAll<HTMLElement>("[style*='--led-row']"))
     expect(meters.map((node) => node.style.getPropertyValue("--led-row"))).toEqual([
@@ -196,6 +203,29 @@ describe("UsageLimitsBar — the live sweep", () => {
     const groups = within(region).getAllByRole("group")
     expect(meters.every((node) => groups[0]?.contains(node))).toBe(true)
     expect(groups[1]?.querySelector(".led-sweep-dot")).toBeNull()
+  })
+
+  it("holds a model-scoped meter still while the session runs another model", () => {
+    bar({
+      live: twoProviders(),
+      liveProviders: ["anthropic"],
+      liveModels: ["claude-opus-4-6"],
+      expanded: true,
+    })
+    const region = screen.getByRole("region", { name: "Usage limits" })
+    // The two account-wide meters sweep. The Fable meter measures a model
+    // this session does not run, so it states nothing about live work.
+    const meters = Array.from(region.querySelectorAll<HTMLElement>("[style*='--led-row']"))
+    expect(meters.map((node) => node.style.getPropertyValue("--led-row"))).toEqual(["0", "1"])
+    expect(region.querySelectorAll(".led-sweep-dot")).toHaveLength(2 * 13)
+  })
+
+  it("holds a model-scoped meter still while no session states a model", () => {
+    bar({ live: twoProviders(), liveProviders: ["anthropic"], expanded: true })
+    const region = screen.getByRole("region", { name: "Usage limits" })
+    // No analysis pass has named the live session's model yet. A scoped
+    // meter must not claim that model is running.
+    expect(region.querySelectorAll(".led-sweep-dot")).toHaveLength(2 * 13)
   })
 
   it("sweeps the ring of each live provider on the closed bar", () => {

@@ -6,6 +6,7 @@ import {
   LIVE_WINDOW_MS,
   applyLifecycleEvent,
   isLive,
+  liveModels,
   liveProviders,
   livenessExpiry,
   livenessFromSnapshot,
@@ -33,8 +34,18 @@ function event(
 describe("sessionLiveness", () => {
   it("counts a session written inside the window, and maps its agent to a provider", () => {
     const live = livenessFromSnapshot([
-      { session: ref("claude-code"), agent: "claude-code", lastActivityAt: NOW_SECS - 10 },
-      { session: ref("codex", "session-2"), agent: "codex", lastActivityAt: NOW_SECS - 20 },
+      {
+        session: ref("claude-code"),
+        agent: "claude-code",
+        lastActivityAt: NOW_SECS - 10,
+        model: null,
+      },
+      {
+        session: ref("codex", "session-2"),
+        agent: "codex",
+        lastActivityAt: NOW_SECS - 20,
+        model: null,
+      },
     ])
     expect(isLive(live, NOW)).toBe(true)
     expect(liveProviders(live, NOW)).toEqual(["anthropic", "openai"])
@@ -46,7 +57,12 @@ describe("sessionLiveness", () => {
     // The session is inside the 180 s active window, so the snapshot lists
     // it, but its tokens stopped flowing 45 s ago.
     const live = livenessFromSnapshot([
-      { session: ref("claude-code"), agent: "claude-code", lastActivityAt: NOW_SECS - 45 },
+      {
+        session: ref("claude-code"),
+        agent: "claude-code",
+        lastActivityAt: NOW_SECS - 45,
+        model: null,
+      },
     ])
     expect(isLive(live, NOW)).toBe(false)
     expect(liveProviders(live, NOW)).toEqual([])
@@ -103,11 +119,83 @@ describe("sessionLiveness", () => {
   it("keeps keyless activity across a snapshot, and reports the earliest expiry", () => {
     const anonymous = applyLifecycleEvent(IDLE_LIVENESS, event("activity", "codex", null))
     const live = livenessFromSnapshot(
-      [{ session: ref("claude-code"), agent: "claude-code", lastActivityAt: NOW_SECS - 5 }],
+      [
+        {
+          session: ref("claude-code"),
+          agent: "claude-code",
+          lastActivityAt: NOW_SECS - 5,
+          model: null,
+        },
+      ],
       anonymous,
     )
     expect(liveProviders(live, NOW)).toEqual(["anthropic", "openai"])
     expect(livenessExpiry(live, NOW)).toBe(NOW + LIVE_WINDOW_MS - 5_000)
     expect(liveProviders(live, NOW + LIVE_WINDOW_MS - 4_000)).toEqual(["openai"])
+  })
+
+  it("reports the model of a live session, for a model-scoped meter", () => {
+    const live = livenessFromSnapshot([
+      {
+        session: ref("claude-code"),
+        agent: "claude-code",
+        lastActivityAt: NOW_SECS - 5,
+        model: "claude-fable-5",
+      },
+      {
+        session: ref("claude-code", "session-2"),
+        agent: "claude-code",
+        lastActivityAt: NOW_SECS - 5,
+        model: "claude-opus-4-6",
+      },
+    ])
+    expect(liveModels(live, NOW)).toEqual(["claude-fable-5", "claude-opus-4-6"])
+  })
+
+  it("drops the model of a session that stopped writing", () => {
+    const live = livenessFromSnapshot([
+      {
+        session: ref("claude-code"),
+        agent: "claude-code",
+        lastActivityAt: NOW_SECS - 45,
+        model: "claude-fable-5",
+      },
+    ])
+    expect(liveModels(live, NOW)).toEqual([])
+  })
+
+  it("states no model for a session no analysis pass has reached", () => {
+    const live = livenessFromSnapshot([
+      {
+        session: ref("claude-code"),
+        agent: "claude-code",
+        lastActivityAt: NOW_SECS,
+        model: null,
+      },
+    ])
+    // A scoped meter must stay still rather than claim an unknown model.
+    expect(liveProviders(live, NOW)).toEqual(["anthropic"])
+    expect(liveModels(live, NOW)).toEqual([])
+  })
+
+  it("keeps the model a snapshot stated across the events that follow", () => {
+    const snapshot = livenessFromSnapshot([
+      {
+        session: ref("claude-code"),
+        agent: "claude-code",
+        lastActivityAt: NOW_SECS - 20,
+        model: "claude-fable-5",
+      },
+    ])
+    // The bus states no model, and the analyzer publishes a turn well after
+    // the write that raised the event.
+    const next = applyLifecycleEvent(snapshot, event("activity", "claude-code", "session-1"))
+    expect(liveModels(next, NOW)).toEqual(["claude-fable-5"])
+  })
+
+  it("states no model for keyless activity", () => {
+    const live = applyLifecycleEvent(IDLE_LIVENESS, event("activity", "claude-code", null))
+    expect(liveProviders(live, NOW)).toEqual(["anthropic"])
+    expect(liveModels(live, NOW)).toEqual([])
   })
 })

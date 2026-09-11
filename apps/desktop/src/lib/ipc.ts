@@ -1018,6 +1018,12 @@ export interface LiveSessionPayload {
   agent: string
   /** Epoch seconds. */
   lastActivityAt: number
+  /**
+   * The model of the session's newest analyzed turn, as the provider names
+   * it in a transcript. `null` until an analysis pass publishes a turn. A
+   * meter scoped to one model sweeps from this.
+   */
+  model: string | null
 }
 
 /**

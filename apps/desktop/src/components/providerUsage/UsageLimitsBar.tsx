@@ -25,6 +25,7 @@ import {
   liveUnavailableReason,
   liveWindowElapsed,
   liveWindowLabel,
+  liveWindowSweeps,
   liveWindows,
   orderedLiveAccounts,
   maxLiveUsedPercent,
@@ -66,6 +67,12 @@ export interface UsageLimitsBarProps {
    * meters on the open one, from the top down.
    */
   liveProviders?: readonly string[]
+  /**
+   * The models a live session runs. A meter scoped to one model sweeps only
+   * while that model is in this list, so a limit the reader is not drawing
+   * on stays still.
+   */
+  liveModels?: readonly string[]
 }
 
 /**
@@ -93,6 +100,7 @@ export function UsageLimitsBar({
   onHoverProvider,
   activeProvider,
   liveProviders = [],
+  liveModels = [],
 }: UsageLimitsBarProps) {
   const limited = orderedLiveAccounts(liveDisplayableProviders(live)).filter(
     ({ reading }) => liveWindows(reading).length > 0,
@@ -174,6 +182,7 @@ export function UsageLimitsBar({
               now={at}
               action={index === 0 ? disclosure(true) : undefined}
               live={liveProviders.includes(reading.provider)}
+              liveModels={liveModels}
               activation={
                 activeProvider?.provider === reading.provider ? activeProvider.activation : null
               }
@@ -277,6 +286,7 @@ function ProviderGroup({
   onHover,
   activation,
   live = false,
+  liveModels = [],
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
@@ -285,8 +295,14 @@ function ProviderGroup({
   now: number
   /** The disclosure, on the topmost group only. */
   action?: ReactNode
-  /** Sweep every meter for a live session on this provider, from the top down. */
+  /**
+   * A live session draws on this provider. An account-wide meter then
+   * sweeps, from the top down. A model-scoped meter also needs its model in
+   * `liveModels`.
+   */
   live?: boolean
+  /** The models a live session runs, for the model-scoped meters. */
+  liveModels?: readonly string[]
   onHover?: (provider: string | null, anchor: AnchorRegion | null) => void
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
@@ -326,7 +342,7 @@ function ProviderGroup({
             window={window}
             now={now}
             resetOnHover
-            live={live}
+            live={liveWindowSweeps(window, live, liveModels)}
             row={index}
           />
         ))}

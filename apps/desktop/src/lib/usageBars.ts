@@ -12,6 +12,11 @@ export type UsageBarItem = {
   key: string
   /** The provider slug the window belongs to, for the live blink. */
   provider: string
+  /**
+   * The model this window measures, as the provider names it, or `null` for
+   * an account-wide window. A scoped bar sweeps only while that model runs.
+   */
+  scopeModel: string | null
   label: string
   percent: number
   resetsAt: Date | null
@@ -115,6 +120,7 @@ export function deriveUsageBars(response: LiveUsageSummaryPayload | null): Usage
     group.windows.map((window) => ({
       key: `${group.provider.provider}-${window.id}`,
       provider: group.provider.provider,
+      scopeModel: window.scopeModel,
       label: multiProvider
         ? `${group.provider.displayName} · ${liveWindowLabel(window)}`
         : liveWindowLabel(window),
