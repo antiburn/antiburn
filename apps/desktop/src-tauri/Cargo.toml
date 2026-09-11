@@ -213,9 +213,9 @@ strip = true
 
 # Temporary vendoring for two macOS behavior fixes.
 #
-# The upstream revision moves `NSMenu` attachment into menu tracking so macOS 27
-# continues to deliver primary clicks. The local delta adds an opt-in highlight
-# override so popover visibility owns the status item's persistent highlight.
+# The vendor uses the latest upstream baseline compatible with Tauri.
+# The local patches attach `NSMenu` only during tracking for macOS 27 clicks.
+# They also let popover visibility control the status item's persistent highlight.
 # Native menu tracking still highlights the item and restores the latest
 # override afterward.
 #

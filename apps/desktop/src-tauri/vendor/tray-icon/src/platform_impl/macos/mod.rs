@@ -58,9 +58,8 @@ impl TrayIcon {
         mtm: MainThreadMarker,
     ) -> crate::Result<(Retained<NSStatusItem>, Retained<TrayTarget>)> {
         let forced_highlight = highlight_state.highlight_override.get();
-        let ns_status_item = unsafe {
-            NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength)
-        };
+        let ns_status_item =
+            NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
 
         set_icon_for_ns_status_item_button(
             &ns_status_item,
@@ -108,10 +107,8 @@ impl TrayIcon {
     fn remove(&mut self) {
         if let (Some(ns_status_item), Some(tray_target)) = (&self.ns_status_item, &self.tray_target)
         {
-            unsafe {
-                NSStatusBar::systemStatusBar().removeStatusItem(ns_status_item);
-                tray_target.removeFromSuperview();
-            }
+            NSStatusBar::systemStatusBar().removeStatusItem(ns_status_item);
+            tray_target.removeFromSuperview();
         }
 
         self.ns_status_item = None;
@@ -158,11 +155,9 @@ impl TrayIcon {
         tooltip: Option<S>,
         mtm: MainThreadMarker,
     ) -> crate::Result<()> {
-        unsafe {
-            let tooltip = tooltip.map(|tooltip| NSString::from_str(tooltip.as_ref()));
-            if let Some(button) = ns_status_item.button(mtm) {
-                button.setToolTip(tooltip.as_deref());
-            }
+        let tooltip = tooltip.map(|tooltip| NSString::from_str(tooltip.as_ref()));
+        if let Some(button) = ns_status_item.button(mtm) {
+            button.setToolTip(tooltip.as_deref());
         }
         Ok(())
     }
@@ -183,10 +178,8 @@ impl TrayIcon {
         mtm: MainThreadMarker,
     ) {
         if let Some(title) = title {
-            unsafe {
-                if let Some(button) = ns_status_item.button(mtm) {
-                    button.setTitle(&NSString::from_str(title.as_ref()));
-                }
+            if let Some(button) = ns_status_item.button(mtm) {
+                button.setTitle(&NSString::from_str(title.as_ref()));
             }
         }
     }
@@ -223,22 +216,17 @@ impl TrayIcon {
                 .highlight_override
                 .get()
                 .unwrap_or(false);
-            // SAFETY: The marker requires the main thread. The retained status item keeps its button alive.
-            unsafe {
-                let button = ns_status_item.button(self.mtm).unwrap();
-                button.highlight(highlight);
-            }
+            let button = ns_status_item.button(self.mtm).unwrap();
+            button.highlight(highlight);
         }
     }
 
     pub fn set_icon_as_template(&mut self, is_template: bool) {
         if let Some(ns_status_item) = &self.ns_status_item {
-            unsafe {
-                let button = ns_status_item.button(self.mtm).unwrap();
-                if let Some(nsimage) = button.image() {
-                    nsimage.setTemplate(is_template);
-                    button.setImage(Some(&nsimage));
-                }
+            let button = ns_status_item.button(self.mtm).unwrap();
+            if let Some(nsimage) = button.image() {
+                nsimage.setTemplate(is_template);
+                button.setImage(Some(&nsimage));
             }
         }
         self.attrs.icon_is_template = is_template;
@@ -286,11 +274,9 @@ impl TrayIcon {
 
     pub fn rect(&self) -> Option<Rect> {
         let ns_status_item = self.ns_status_item.as_deref()?;
-        unsafe {
-            let button = ns_status_item.button(self.mtm).unwrap();
-            let window = button.window();
-            window.map(|window| get_tray_rect(&window))
-        }
+        let button = ns_status_item.button(self.mtm).unwrap();
+        let window = button.window();
+        window.map(|window| get_tray_rect(&window))
     }
 
     pub fn ns_status_item(&self) -> Option<&Retained<NSStatusItem>> {
@@ -310,7 +296,7 @@ fn set_icon_for_ns_status_item_button(
     icon_is_template: bool,
     mtm: MainThreadMarker,
 ) -> crate::Result<()> {
-    let button = unsafe { ns_status_item.button(mtm).unwrap() };
+    let button = ns_status_item.button(mtm).unwrap();
 
     if let Some(icon) = icon {
         let png_icon = icon.inner.to_png()?;
@@ -320,21 +306,19 @@ fn set_icon_for_ns_status_item_button(
         let icon_height: f64 = 18.0;
         let icon_width: f64 = (width as f64) / (height as f64 / icon_height);
 
-        unsafe {
-            // build our icon
-            let nsdata = NSData::from_vec(png_icon);
+        // build our icon
+        let nsdata = NSData::from_vec(png_icon);
 
-            let nsimage = NSImage::initWithData(NSImage::alloc(), &nsdata).unwrap();
-            let new_size = NSSize::new(icon_width, icon_height);
+        let nsimage = NSImage::initWithData(NSImage::alloc(), &nsdata).unwrap();
+        let new_size = NSSize::new(icon_width, icon_height);
 
-            button.setImage(Some(&nsimage));
-            nsimage.setSize(new_size);
-            // The image is to the right of the title
-            button.setImagePosition(NSCellImagePosition::ImageLeft);
-            nsimage.setTemplate(icon_is_template);
-        }
+        button.setImage(Some(&nsimage));
+        nsimage.setSize(new_size);
+        // The image is to the right of the title
+        button.setImagePosition(NSCellImagePosition::ImageLeft);
+        nsimage.setTemplate(icon_is_template);
     } else {
-        unsafe { button.setImage(None) };
+        button.setImage(None);
     }
 
     Ok(())
@@ -421,7 +405,7 @@ define_class!(
 
         #[unsafe(method(otherMouseDown:))]
         fn on_other_mouse_down(&self, event: &NSEvent) {
-            let button_number = unsafe { event.buttonNumber() };
+            let button_number = event.buttonNumber();
             if button_number == 2 {
                 send_mouse_event(
                     self,
@@ -437,7 +421,7 @@ define_class!(
 
         #[unsafe(method(otherMouseUp:))]
         fn on_other_mouse_up(&self, event: &NSEvent) {
-            let button_number = unsafe { event.buttonNumber() };
+            let button_number = event.buttonNumber();
             if button_number == 2 {
                 send_mouse_event(
                     self,
@@ -506,28 +490,24 @@ define_class!(
 impl TrayTarget {
     fn update_dimensions(&self) {
         let mtm = MainThreadMarker::from(self);
-        unsafe {
-            let button = self.ivars().status_item.button(mtm).unwrap();
-            self.setFrame(button.frame());
-        }
+        let button = self.ivars().status_item.button(mtm).unwrap();
+        self.setFrame(button.frame());
     }
 }
 
 fn on_tray_click(this: &TrayTarget, button: MouseButton) {
     let mtm = MainThreadMarker::from(this);
-    unsafe {
-        let ns_button = this.ivars().status_item.button(mtm).unwrap();
-        let menu_on_left_click = this.ivars().menu_on_left_click.get();
-        let menu_on_right_click = this.ivars().menu_on_right_click.get();
-        if (menu_on_right_click && button == MouseButton::Right)
-            || (menu_on_left_click && button == MouseButton::Left)
-        {
-            if !show_menu(this) {
-                apply_click_highlight(this, button, &ns_button);
-            }
-        } else {
+    let ns_button = this.ivars().status_item.button(mtm).unwrap();
+    let menu_on_left_click = this.ivars().menu_on_left_click.get();
+    let menu_on_right_click = this.ivars().menu_on_right_click.get();
+    if (menu_on_right_click && button == MouseButton::Right)
+        || (menu_on_left_click && button == MouseButton::Left)
+    {
+        if !show_menu(this) {
             apply_click_highlight(this, button, &ns_button);
         }
+    } else {
+        apply_click_highlight(this, button, &ns_button);
     }
 }
 
@@ -559,8 +539,7 @@ fn apply_click_highlight(this: &TrayTarget, mouse_button: MouseButton, button: &
         mouse_button,
         this.ivars().highlight_state.highlight_override.get(),
     ) {
-        // SAFETY: TrayTarget runs on the main thread. Its retained status item owns this button.
-        unsafe { button.highlight(highlight) };
+        button.highlight(highlight);
     }
 }
 
@@ -570,11 +549,8 @@ fn apply_primary_highlight(this: &TrayTarget, highlight: bool) {
         this.ivars().highlight_state.highlight_override.get(),
     ) {
         let mtm = MainThreadMarker::from(this);
-        // SAFETY: The marker requires the main thread. The target retains the status item and its button.
-        unsafe {
-            let button = this.ivars().status_item.button(mtm).unwrap();
-            button.highlight(highlight);
-        }
+        let button = this.ivars().status_item.button(mtm).unwrap();
+        button.highlight(highlight);
     }
 }
 
@@ -626,52 +602,50 @@ fn send_mouse_event(
     click_event: Option<MouseClickEvent>,
 ) {
     let mtm = MainThreadMarker::from(this);
-    unsafe {
-        let tray_id = TrayIconId(this.ivars().id.to_string());
+    let tray_id = TrayIconId(this.ivars().id.to_string());
 
-        // icon position & size
-        let window = event.window(mtm).unwrap();
-        let icon_rect = get_tray_rect(&window);
+    // icon position & size
+    let window = event.window(mtm).unwrap();
+    let icon_rect = get_tray_rect(&window);
 
-        // cursor position
-        let mouse_location = NSEvent::mouseLocation();
-        let scale_factor = window.backingScaleFactor();
-        let cursor_position = crate::dpi::LogicalPosition::new(
-            mouse_location.x,
-            flip_window_screen_coordinates(mouse_location.y),
-        )
-        .to_physical(scale_factor);
+    // cursor position
+    let mouse_location = NSEvent::mouseLocation();
+    let scale_factor = window.backingScaleFactor();
+    let cursor_position = crate::dpi::LogicalPosition::new(
+        mouse_location.x,
+        flip_window_screen_coordinates(mouse_location.y),
+    )
+    .to_physical(scale_factor);
 
-        let event = match mouse_event_type {
-            MouseEventType::Click => {
-                let click_event = click_event.unwrap();
-                TrayIconEvent::Click {
-                    id: tray_id,
-                    position: cursor_position,
-                    rect: icon_rect,
-                    button: click_event.button,
-                    button_state: click_event.state,
-                }
+    let event = match mouse_event_type {
+        MouseEventType::Click => {
+            let click_event = click_event.unwrap();
+            TrayIconEvent::Click {
+                id: tray_id,
+                position: cursor_position,
+                rect: icon_rect,
+                button: click_event.button,
+                button_state: click_event.state,
             }
-            MouseEventType::Enter => TrayIconEvent::Enter {
-                id: tray_id,
-                position: cursor_position,
-                rect: icon_rect,
-            },
-            MouseEventType::Leave => TrayIconEvent::Leave {
-                id: tray_id,
-                position: cursor_position,
-                rect: icon_rect,
-            },
-            MouseEventType::Move => TrayIconEvent::Move {
-                id: tray_id,
-                position: cursor_position,
-                rect: icon_rect,
-            },
-        };
+        }
+        MouseEventType::Enter => TrayIconEvent::Enter {
+            id: tray_id,
+            position: cursor_position,
+            rect: icon_rect,
+        },
+        MouseEventType::Leave => TrayIconEvent::Leave {
+            id: tray_id,
+            position: cursor_position,
+            rect: icon_rect,
+        },
+        MouseEventType::Move => TrayIconEvent::Move {
+            id: tray_id,
+            position: cursor_position,
+            rect: icon_rect,
+        },
+    };
 
-        TrayIconEvent::send(event);
-    }
+    TrayIconEvent::send(event);
 }
 
 #[derive(Debug)]
@@ -700,7 +674,7 @@ struct MouseClickEvent {
 /// This conversion happens to be symmetric, so we only need this one function
 /// to convert between the two coordinate systems.
 fn flip_window_screen_coordinates(y: f64) -> f64 {
-    unsafe { CGDisplayPixelsHigh(CGMainDisplayID()) as f64 - y }
+    CGDisplayPixelsHigh(CGMainDisplayID()) as f64 - y
 }
 
 #[cfg(test)]

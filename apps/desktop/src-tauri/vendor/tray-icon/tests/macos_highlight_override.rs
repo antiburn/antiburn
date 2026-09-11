@@ -53,18 +53,14 @@ fn main() {
         tray: &tray_icon::TrayIcon,
         mtm: MainThreadMarker,
     ) -> objc2::rc::Retained<objc2_app_kit::NSStatusBarButton> {
-        // SAFETY: The marker requires the main thread. The tray retains the status item and returns a retained button.
-        unsafe {
-            tray.ns_status_item()
-                .expect("the status item is visible")
-                .button(mtm)
-                .expect("the status item has a button")
-        }
+        tray.ns_status_item()
+            .expect("the status item is visible")
+            .button(mtm)
+            .expect("the status item has a button")
     }
 
     fn is_highlighted(tray: &tray_icon::TrayIcon, mtm: MainThreadMarker) -> bool {
-        // SAFETY: The marker requires the main thread, and the retained button remains alive during this call.
-        unsafe { button(tray, mtm).isHighlighted() }
+        button(tray, mtm).isHighlighted()
     }
 
     fn dispatch_primary_event(
@@ -73,10 +69,9 @@ fn main() {
         event_type: NSEventType,
     ) {
         let button = button(tray, mtm);
-        // SAFETY: The marker requires the main thread. Retained objects keep the window, event, and target alive.
-        unsafe {
-            let window = button.window().expect("the status button has a window");
-            let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+
+        let window = button.window().expect("the status button has a window");
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
                 event_type,
                 NSPoint::new(0.0, 0.0),
                 NSEventModifierFlags::empty(),
@@ -88,16 +83,15 @@ fn main() {
                 1.0,
             )
             .expect("create a native mouse event");
-            let target = button
-                .subviews()
-                .lastObject()
-                .expect("the status button has the tray event target");
+        let target = button
+            .subviews()
+            .lastObject()
+            .expect("the status button has the tray event target");
 
-            match event_type {
-                NSEventType::LeftMouseDown => target.mouseDown(&event),
-                NSEventType::LeftMouseUp => target.mouseUp(&event),
-                _ => panic!("only primary mouse events are supported"),
-            }
+        match event_type {
+            NSEventType::LeftMouseDown => target.mouseDown(&event),
+            NSEventType::LeftMouseUp => target.mouseUp(&event),
+            _ => panic!("only primary mouse events are supported"),
         }
     }
 

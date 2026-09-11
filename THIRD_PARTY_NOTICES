@@ -705,7 +705,7 @@ tracing-serde@0.2.0 | MIT | https://github.com/tokio-rs/tracing
 tracing-subscriber@0.3.23 | MIT | https://github.com/tokio-rs/tracing
 tracing@0.1.44 | MIT | https://github.com/tokio-rs/tracing
 transpose@0.2.3 | MIT OR Apache-2.0 | https://github.com/ejmahler/transpose
-tray-icon@0.24.1 | MIT OR Apache-2.0 | https://github.com/tauri-apps/tray-icon
+tray-icon@0.24.2 | MIT OR Apache-2.0 | https://github.com/tauri-apps/tray-icon
 try-lock@0.2.5 | MIT | https://github.com/seanmonstar/try-lock
 typeid@1.0.3 | MIT OR Apache-2.0 | https://github.com/dtolnay/typeid
 typenum@1.20.1 | MIT OR Apache-2.0 | https://github.com/paholg/typenum
@@ -6546,7 +6546,7 @@ Apache License
 
 Used by:
   muda@0.19.3
-  tray-icon@0.24.1
+  tray-icon@0.24.2
 
 MIT License
 
