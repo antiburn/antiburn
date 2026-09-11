@@ -366,7 +366,7 @@ export function BurnCheckTargetActions({
       {hasAction && (
         <div
           ref={bindActionRoot}
-          className={`${embedded ? "" : "mt-3 "}flex flex-wrap items-center gap-2`}
+          className={`${embedded ? "" : "mt-3 "}flex flex-col items-center gap-2`}
         >
           {target.autoFix.status === "available" && (
             <button
@@ -377,7 +377,7 @@ export function BurnCheckTargetActions({
               className="ui-push-button burn-check-action type-callout gap-1 disabled:opacity-100"
             >
               {action.applied ? (
-                <Check size={12} className="text-share-work-text" aria-hidden="true" />
+                <Check size={12} className="text-token-in" aria-hidden="true" />
               ) : (
                 <Wrench size={12} aria-hidden="true" />
               )}
@@ -393,10 +393,10 @@ export function BurnCheckTargetActions({
               type="button"
               disabled={action.copied || action.busy !== null}
               onClick={() => void copy()}
-              className="ui-push-button burn-check-action type-callout gap-1 disabled:opacity-100"
+              className="ui-push-button burn-check-action mx-auto w-full max-w-sm type-callout gap-1 disabled:opacity-100"
             >
               {action.copied ? (
-                <Check size={12} className="text-share-work-text" aria-hidden="true" />
+                <Check size={12} className="text-token-in" aria-hidden="true" />
               ) : (
                 <Clipboard size={12} aria-hidden="true" />
               )}
@@ -406,7 +406,7 @@ export function BurnCheckTargetActions({
         </div>
       )}
       {action.status && !action.review && (
-        <p role="alert" className="mt-3 type-callout text-system-red-text">
+        <p role="alert" className="mt-3 type-callout text-label-secondary">
           {action.status}
         </p>
       )}

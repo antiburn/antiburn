@@ -46,11 +46,14 @@ export function BurnChecksView({
               </p>
               <section
                 data-skeleton="hero"
-                className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-6 py-6"
+                className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-[var(--space-2xl)] py-[calc(var(--space-lg)*2)]"
               >
                 <div className="contents">
-                  <Skeleton data-skeleton-slot="icon" className="h-22 w-22 rounded-full" />
-                  <div className="min-w-0 space-y-1">
+                  <Skeleton
+                    data-skeleton-slot="icon"
+                    className="h-[88px] w-[88px] rounded-full"
+                  />
+                  <div className="flex min-h-[88px] min-w-0 flex-col justify-between">
                     <Skeleton className="h-4 w-24" />
                     <Skeleton data-skeleton-slot="result" className="h-9 w-40" />
                     <Skeleton data-skeleton-slot="summary" className="h-4 w-72 max-w-full" />
@@ -61,7 +64,7 @@ export function BurnChecksView({
               <div className="mt-8 px-1">
                 <Skeleton data-skeleton="group-label" className="h-6 w-28" />
               </div>
-              <div className="mt-3 overflow-hidden rounded-control border border-separator bg-surface-card/50">
+              <div className="mt-3 overflow-hidden rounded-control border border-separator/40 bg-surface-card/50">
                 {["w-40", "w-32", "w-44"].map((width) => (
                   <div
                     key={width}

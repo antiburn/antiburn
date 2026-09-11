@@ -19,7 +19,7 @@ export function BurnCheckTargetDetail({
   const status = watchStatus(target)
   const guidance = CHECK_UI[target.finding.detector]
   return (
-    <article className="min-w-0 rounded-control border border-separator bg-surface-card p-4">
+    <article className="min-w-0 rounded-control bg-surface-card/75 p-4">
       <div className="flex min-w-0 items-start gap-2">
         {renderAgentIcon(target.finding.agent, 16)}
         <h3 className="min-w-0 wrap-anywhere type-title-3 text-label">{targetTitle(target)}</h3>

@@ -97,7 +97,7 @@ export function BurnChecksSavings({ wins }: { wins: readonly AggregateWinPayload
     )
   return (
     <section aria-labelledby="burn-checks-savings" className="mt-4">
-      <div className="overflow-hidden rounded-control border border-separator bg-surface-card/50">
+      <div className="overflow-hidden rounded-control bg-surface-card/50">
         <button
           type="button"
           aria-expanded={open}
@@ -105,7 +105,7 @@ export function BurnChecksSavings({ wins }: { wins: readonly AggregateWinPayload
           onClick={() => setOpen((value) => !value)}
           className="flex w-full flex-wrap items-center gap-4 px-4 py-3.5 text-left hover:bg-surface-hover active:transform-none active:opacity-100"
         >
-          <span className="flex h-8 w-8 items-center justify-center rounded-control bg-share-work/10 text-share-work-text">
+          <span className="flex h-8 w-8 items-center justify-center rounded-control bg-token-in/10 text-token-in">
             <Sparkles size={16} aria-hidden="true" />
           </span>
           <div className="min-w-0 flex-1">
@@ -118,9 +118,9 @@ export function BurnChecksSavings({ wins }: { wins: readonly AggregateWinPayload
                 : `${supported.length} verified ${supported.length === 1 ? "win" : "wins"} across ${groups.length} check${groups.length === 1 ? "" : "s"}`}
             </p>
           </div>
-          <div className="text-right type-callout tabular-nums text-share-work-text">
+          <div className="text-right type-callout tabular-nums text-label-secondary">
             {paired ? (
-              <p className="type-title-3 text-share-work-text">
+              <p className="type-title-3 text-label-secondary">
                 {tokenTotal(tokenSavings)} · {costTotal(costSavings)} saved
                 {metricCoverage(tokenWins, supported.length)}
               </p>
@@ -128,7 +128,7 @@ export function BurnChecksSavings({ wins }: { wins: readonly AggregateWinPayload
               <>
                 {tokenWins > 0 && (
                   <p
-                    className={costWins === 0 ? "type-title-3 text-share-work-text" : undefined}
+                    className={costWins === 0 ? "type-title-3 text-label-secondary" : undefined}
                   >
                     {tokenTotal(tokenSavings)} saved
                     {metricCoverage(tokenWins, supported.length)}
@@ -137,7 +137,7 @@ export function BurnChecksSavings({ wins }: { wins: readonly AggregateWinPayload
                 {costWins > 0 && (
                   <p
                     className={
-                      tokenWins === 0 ? "type-title-3 text-share-work-text" : undefined
+                      tokenWins === 0 ? "type-title-3 text-label-secondary" : undefined
                     }
                   >
                     {costTotal(costSavings)} saved
@@ -145,7 +145,7 @@ export function BurnChecksSavings({ wins }: { wins: readonly AggregateWinPayload
                   </p>
                 )}
                 {tokenWins === 0 && costWins === 0 && improvementWins > 0 && (
-                  <p className="type-title-3 text-share-work-text">
+                  <p className="type-title-3 text-label-secondary">
                     {improvements.toLocaleString()} improvement
                     {improvements === 1 ? "" : "s"}
                   </p>
@@ -174,7 +174,7 @@ export function BurnChecksSavings({ wins }: { wins: readonly AggregateWinPayload
                   {group.wins.length} verified {group.wins.length === 1 ? "win" : "wins"}
                 </p>
               </div>
-              <div className="text-right type-callout tabular-nums text-share-work-text">
+              <div className="text-right type-callout tabular-nums text-label-secondary">
                 {group.tokenWins > 0 && (
                   <p>
                     {tokenTotal(group.tokenSavings)} saved

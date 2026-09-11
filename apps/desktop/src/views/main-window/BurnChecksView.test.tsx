@@ -285,8 +285,8 @@ describe("BurnChecksView", () => {
     )
   })
 
-  it.each([0, 1, 50, 10_000, null])(
-    "draws the actual burn share for %s basis points",
+  it.each([0, 1, 50, 100, 200, 10_000, null])(
+    "keeps exact labels and a visible positive arc for %s basis points",
     async (basisPoints) => {
       setup(target, false, aggregate, { ...report, estimatedTokenBurnBasisPoints: basisPoints })
       const dial = await screen.findByRole("img", {
@@ -296,6 +296,9 @@ describe("BurnChecksView", () => {
             : `Estimated burn: ${basisPoints / 100}%`,
       })
       const burn = dial.querySelector('[data-segment-id="burn"]')
+      const remainder = dial.querySelector('[data-segment-id="remainder"]')
+      if (remainder) expect(remainder).toHaveClass("text-measure")
+      if (burn) expect(burn).toHaveClass("text-brand-tint")
       if (basisPoints === null) {
         expect(dial.querySelector('[data-segment-id="unknown"]')).toBeTruthy()
         expect(burn).toBeNull()
@@ -306,8 +309,10 @@ describe("BurnChecksView", () => {
           "360",
         )
       } else {
+        const actualAngle = (360 * basisPoints) / 10_000
+        const minimumAngle = (4 / (Math.PI * 80)) * 360
         expect(Number(burn?.getAttribute("data-arc-angle"))).toBeCloseTo(
-          (360 * basisPoints) / 10_000,
+          Math.max(actualAngle, minimumAngle),
           5,
         )
         if (basisPoints < 10_000) expect(burn).toHaveAttribute("stroke-linecap", "butt")
@@ -533,10 +538,10 @@ describe("BurnChecksView", () => {
     const copied = screen.getByRole("button", { name: "Copied" })
     const applied = screen.getByRole("button", { name: "Change applied" })
     expect(copied).toBeDisabled()
-    expect(copied).not.toHaveClass("text-share-work-text")
-    expect(applied).not.toHaveClass("text-share-work-text")
-    expect(copied.querySelector(".lucide-check")).toHaveClass("text-share-work-text")
-    expect(applied.querySelector(".lucide-check")).toHaveClass("text-share-work-text")
+    expect(copied).not.toHaveClass("text-token-in")
+    expect(applied).not.toHaveClass("text-token-in")
+    expect(copied.querySelector(".lucide-check")).toHaveClass("text-token-in")
+    expect(applied.querySelector(".lucide-check")).toHaveClass("text-token-in")
     expect(commands.noteInteraction.mock.calls).toEqual(
       expect.arrayContaining([
         [{ kind: "burnCheckAutoFixReviewed", outcome: "ready" }],
@@ -1066,8 +1071,8 @@ describe("BurnChecksView", () => {
     expect(commands.copyFallback).toHaveBeenCalledWith("unusedMcpServers")
     const copied = screen.getByRole("button", { name: "Copied" })
     expect(copied).toBeDisabled()
-    expect(copied).not.toHaveClass("text-share-work-text")
-    expect(copied.querySelector(".lucide-check")).toHaveClass("text-share-work-text")
+    expect(copied).not.toHaveClass("text-token-in")
+    expect(copied.querySelector(".lucide-check")).toHaveClass("text-token-in")
   })
 
   it("shows a retryable fallback prompt error", async () => {
@@ -1202,7 +1207,7 @@ describe("BurnChecksView", () => {
     expect(detail).not.toHaveClass("border-t", "border-separator")
     expect(within(detail).getByRole("button", { name: /Sample sessions/ })).toHaveClass(
       "type-callout",
-      "text-label-tertiary",
+      "text-label-secondary",
     )
     expect(
       within(detail).queryByText(/API-equivalent cost opportunity/),
@@ -1279,7 +1284,7 @@ describe("BurnChecksView", () => {
     const savings = await screen.findByRole("region", { name: "Your savings" })
     const total = within(savings).getByText("~1,200 · ~$1.25 saved")
     expect(total).toBeVisible()
-    expect(total).toHaveClass("text-share-work-text")
+    expect(total).toHaveClass("text-label-secondary")
     expect(within(savings).getByText("Old model usage")).toHaveClass("text-label")
     expect(within(savings).getByText("2 improvements across 1 check")).toBeVisible()
   })

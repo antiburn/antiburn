@@ -12,6 +12,12 @@ import { BurnCheckDetail } from "./BurnCheckDetail"
 import { BurnCheckTargetDetail } from "./BurnCheckTargetDetail"
 import { BurnChecksSavings } from "./BurnChecksSavings"
 
+const HERO_DIAL_SIZE = 88
+const HERO_DIAL_STROKE = 8
+const MIN_BURN_ARC_LENGTH = 4
+const MIN_BURN_BASIS_POINTS =
+  (MIN_BURN_ARC_LENGTH / (Math.PI * (HERO_DIAL_SIZE - HERO_DIAL_STROKE))) * 10_000
+
 function DisclosureChevron({ open }: { open: boolean }) {
   return (
     <ChevronDown
@@ -116,14 +122,7 @@ function CheckRow({
           </span>
         </span>
         {presentation.metric ? (
-          <span
-            className={cn(
-              "inline-flex items-baseline gap-1.5 type-body tabular-nums",
-              check.estimatedTokenBurnBasisPoints === 0
-                ? "text-share-work-text"
-                : "text-share-waste-text",
-            )}
-          >
+          <span className="inline-flex items-baseline gap-1.5 type-body tabular-nums text-label-secondary">
             {presentation.metric.startsWith("<") && (
               <span className="text-label-secondary">Under</span>
             )}{" "}
@@ -178,7 +177,7 @@ function CheckRow({
             {passed ? (
               <CheckCircle2
                 size={16}
-                className="mt-0.5 text-share-work-text"
+                className="mt-0.5 text-label-secondary"
                 aria-hidden="true"
               />
             ) : null}
@@ -210,7 +209,7 @@ function CheckGroup({
       <h2 id={id} className="px-1 type-title-2 text-label">
         {title}
       </h2>
-      <div className="mt-3 overflow-hidden rounded-control border border-separator bg-surface-card/50">
+      <div className="mt-3 overflow-hidden rounded-control border border-separator/40 bg-surface-card/50">
         {checks.map((check, index) => (
           <CheckRow
             key={check.id}
@@ -237,17 +236,21 @@ export function BurnChecksReport({
   const presentation = checksPresentation(report)
   const hero = checksHeroPresentation(presentation)
   const burnBasisPoints = presentation.estimate.tokenBurnBasisPoints
+  const displayedBurnBasisPoints =
+    burnBasisPoints != null && burnBasisPoints > 0
+      ? Math.max(burnBasisPoints, MIN_BURN_BASIS_POINTS)
+      : burnBasisPoints
   const hasBurnEstimate = hero.state === "failed" && burnBasisPoints != null
   const HeroIcon =
     hero.state === "failed" ? Flame : hero.state === "passed" ? CheckCircle2 : CircleDashed
   const result = hasBurnEstimate ? hero.result.replace(" token burn", "") : hero.result
   return (
     <>
-      <section className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-6 py-6">
-        <div className="grid h-22 w-22 place-items-center">
+      <section className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-[var(--space-2xl)] py-[calc(var(--space-lg)*2)]">
+        <div className="grid h-[88px] w-[88px] place-items-center">
           <SegmentedRadialDial
-            size={88}
-            strokeWidth={5}
+            size={HERO_DIAL_SIZE}
+            strokeWidth={HERO_DIAL_STROKE}
             gapAngle={0}
             strokeLinecap="butt"
             label={
@@ -256,27 +259,31 @@ export function BurnChecksReport({
                 : `Estimated burn: ${burnBasisPoints / 100}%`
             }
             segments={
-              burnBasisPoints == null
+              displayedBurnBasisPoints == null
                 ? [{ id: "unknown", value: 1, className: "text-surface-tertiary" }]
                 : [
-                    { id: "burn", value: burnBasisPoints, className: "text-waste-warn" },
+                    {
+                      id: "burn",
+                      value: displayedBurnBasisPoints,
+                      className: "text-brand-tint",
+                    },
                     {
                       id: "remainder",
-                      value: Math.max(0, 10_000 - burnBasisPoints),
-                      className: "text-share-work",
+                      value: Math.max(0, 10_000 - displayedBurnBasisPoints),
+                      className: "text-measure",
                     },
                   ]
             }
           />
         </div>
-        <div className="min-w-0 max-w-sm">
+        <div className="flex min-h-[88px] min-w-0 max-w-sm flex-col justify-between">
           {hasBurnEstimate && (
             <p className="flex items-center gap-1 type-callout text-label-secondary">
               <Flame size={12} strokeWidth={1.75} aria-hidden="true" />
               Estimated burn
             </p>
           )}
-          <p className="flex items-center gap-2 type-large-title tabular-nums text-label">
+          <p className="flex items-center gap-2 type-large-title font-semibold! tabular-nums text-label">
             {!hasBurnEstimate && (
               <HeroIcon
                 size={22}
@@ -288,12 +295,12 @@ export function BurnChecksReport({
             {hasBurnEstimate ? result.replace("<", "Less than ") : result}
           </p>
           {hasBurnEstimate && (
-            <p className="mt-1 text-pretty type-body text-label-secondary">
+            <p className="text-pretty type-body text-label-secondary">
               Of assessed usage could be avoided.
             </p>
           )}
           {hero.summary && (
-            <p className="mt-1 flex items-center gap-1.5 type-callout text-label-secondary">
+            <p className="flex items-center gap-1.5 type-callout text-label-secondary">
               {hero.state === "failed" && (
                 <span
                   className="h-1 w-1 shrink-0 rounded-full bg-share-waste-text"

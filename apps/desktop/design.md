@@ -553,8 +553,8 @@ counts, order, token-burn percentages, summaries, and semantic status colors. Th
 shared presentation helpers. Do not copy labels or calculate percentages in either surface. Do not
 sum category percentages. Use color only for the compact status icon and metric. Other text and
 surfaces stay neutral. The main view shows failed and passed groups. It hides not-assessed rows;
-the summary never presents incomplete historical evidence as a pending product state. Groups use `surface-card/50`, `rounded-control`,
-separators, and accessible disclosure buttons. Expanded failures use one short, check-specific
+the summary never presents incomplete historical evidence as a pending product state. Groups use `surface-card/50`, a subtle `border-separator/40` outline, `rounded-control`,
+internal row separators, and accessible disclosure buttons. Expanded failures use one short, check-specific
 finding sentence, followed by the available actions. Do not show internal target identities,
 repeated observations, repeated guidance, or detail refresh and bounded-list notices. Only unused MCP servers and unused skills show
 named resource rows. A separate nested disclosure lists bounded sample sessions. Opening a sample selects it in the
@@ -634,20 +634,29 @@ tokens or the menu-bar list's default appearance to achieve it.
 
 The main report keeps Zack’s failed/passed grouping, ordering, disclosure states,
 target loading, sample navigation, and actions. The summary has no card. Use
-Marty’s `SegmentedRadialDial` at 88px diameter with a 5px stroke. Use an
+Marty’s `SegmentedRadialDial` at 88px diameter with an 8px stroke and 100% opacity. Use an
 explicit 88px grid column, a flexible text column, and a 24px gap. The ring
 has no center icon. Put a grey 12px `Flame` before the `type-callout`
-“Estimated burn” label, matching its height. The dial represents the actual
-estimated burn basis points: `waste-warn` for avoidable usage and `share-work`
-for the remainder. Zero gaps and flat endpoints preserve small proportions.
-Unknown estimates show a neutral ring. The accessible name states the exact
-supplied percentage. Other uses retain the component’s rounded endpoints.
+“Estimated burn” label, matching its height. The dial uses `brand-tint` for
+avoidable usage and `measure` darker cyan for the remainder. Positive burn has a
+4px minimum arc length at the stroke centerline, about 1.59% of this ring,
+so tiny issues remain visible. Larger values retain their actual proportions.
+The remainder uses the display share so the ring totals 100%. Zero burn has no
+orange arc, and unknown estimates show a neutral ring. Keep zero gaps and flat
+endpoints. The visible text and accessible name retain the exact supplied value
+or its existing display formatting; the arc can overstate values below the floor.
+This display floor belongs only to the hero call site. Other uses retain the
+shared component’s existing proportions and rounded endpoints.
 
-Use neutral `type-large-title` for the complete percentage. Write “Less than 1%”
+Use neutral `type-large-title` with `font-semibold!` for the complete percentage. Write “Less than 1%”
 for a positive estimate below 1%; do not add decorative decimals. Use `type-body`
 for “Of assessed usage could be avoided.” and `type-callout` for the check count,
-each with 4px above. The failed count has a small `share-waste-text` dot; its words
-stay neutral. Use the documented line heights and 24px vertical hero padding.
+with no extra paragraph margins. The text column has an 88px minimum height and
+distributes its lines to align with the circle. It can grow for wrapped text or
+processing status. The failed count has a small `share-waste-text` dot; its words
+stay neutral. Use the documented line heights and 32px vertical hero padding.
+Use explicit 88px wrapper geometry to match the SVG; rem-based spacing utilities
+do not match it with the app’s 13px root font.
 The page fills the workspace with 32px horizontal padding and no centered
 maximum-width column. The cold skeleton follows this hierarchy.
 
@@ -656,15 +665,17 @@ rows use 16px horizontal and 12px vertical padding, `type-title-3` titles,
 `type-body` summaries, and `font-mono` percentage figures. Metric qualifiers and
 “burn” labels use neutral sans-serif text, with 6px gaps between the pieces. Omit “token” from the main
 view’s displayed metrics; shared percentage calculation and popover copy stay
-unchanged. Check category icons are bare 15px glyphs in `label-secondary`, with no tinted
-container. Keep their existing grid alignment. Match Session Details’ favorability colors: failure summaries,
-and positive row burn estimates use `share-waste-text`; zero burn,
-verified savings, and action-success glyphs use `share-work-text`. Passing words,
-check titles, recommendations, and unknown estimates stay neutral. Use the matching
-fill tokens for status marks. No additional severity bands are inferred.
+unchanged. Check category icons are bare 15px glyphs, with no tinted container. Use
+`label-secondary` for all category icons, including passed checks. Keep their
+existing grid alignment. Failed-session counts use `share-waste-text`; other
+values, savings, and status text below the hero use neutral label colours. Provider logos retain their
+brand colours. Action-success glyphs use `token-in` cyan.
 
-Expanded problems use `surface-card`, `rounded-control`, a separator border, and
-16px padding. Named MCP and skill targets form a responsive grid with a local
+Parent check groups use `surface-card/50` with a subtle `border-separator/40`
+outline. Expanded problems and named targets use borderless `surface-card/75`
+for slightly stronger grouping. Savings retains borderless `surface-card/50`.
+Expanded problems use
+`rounded-control` and 16px padding. Keep internal row dividers. Named MCP and skill targets form a responsive grid with a local
 18rem minimum card width, 12px gaps, and 16px outer padding. Cards stack when
 space is narrow. Long resource names wrap. Regular check details keep one card.
 Every action and sample disclosure stays inside its original problem. The hero
@@ -677,9 +688,16 @@ The opt-in `burn-check-action` variant in `main-window.css` styles the existing
 copy, fix, and change-selection buttons. Keep `ui-push-button` and its standard
 22px control height, 10px horizontal padding, and `rounded-control`. Use regular
 `type-callout` labels, 12px icons, and a 4px gap, matching `PushButton`. The resting surface uses `surface-window`, `separator`,
-and `label`. Enabled hover mixes 12% `brand` into the surface, adds a 45% brand
-border, uses brand ink mixed with 20% `label` for contrast, and applies `shadow-raised`. Press increases the tint to
-20% and removes the shadow. Transitions use `duration-fast`, with `duration-quick`
+and `label`. Enabled hover uses solid `brand` fill and border with
+`selected-ink` text and `shadow-raised`. Press mixes 10% `label` into the
+brand fill and removes the shadow. Transitions use `duration-fast`, with `duration-quick`
 for press movement. The shared keyboard focus ring stays visible. Disabled and
 completed states keep the neutral surface and do not lift or change on hover.
-Success icons retain the documented teal. No other buttons use this variant.
+Success icons use `token-in` cyan. No other buttons use this variant.
+In named target cards, Copy fix prompt fills the available width up to 24rem
+and is horizontally centred. In wide check-level detail panels, actions use
+their natural width and align left beneath the description. Keep the copied
+state in the same slot. Sample-session disclosure labels use semibold callout
+text and the count first, such as “3 Sample sessions”, with no chevron. Hover
+uses `surface-secondary/50` and `label` text with the standard fast transition. Preserve their
+expanded state, keyboard interaction, and accessible disclosure attributes.

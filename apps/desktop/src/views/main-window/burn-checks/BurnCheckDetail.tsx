@@ -1,7 +1,6 @@
-import { Check, ChevronDown, Clipboard, Wrench } from "lucide-react"
+import { Check, Clipboard, Wrench } from "lucide-react"
 import { useCallback, useId, useRef, useState } from "react"
 
-import { cn } from "../../../lib/cn"
 import { noteInteraction } from "../../../lib/ipc"
 import {
   copyPromptFixBurnCheckTargets,
@@ -46,17 +45,9 @@ function Samples({ targets }: { targets: BurnCheckTargetPayload[] }) {
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen((value) => !value)}
-        className="inline-flex items-center gap-1.5 rounded-control py-1 type-callout text-label-tertiary hover:text-label-secondary active:transform-none active:opacity-100"
+        className="-mx-2 inline-flex items-center gap-1.5 rounded-control px-2 py-1 type-callout font-semibold! text-label-secondary transition-colors duration-[var(--duration-fast)] hover:bg-surface-secondary/50 hover:text-label active:transform-none active:opacity-100"
       >
-        Sample sessions ({samples.length})
-        <ChevronDown
-          size={14}
-          className={cn(
-            "transition-transform duration-[var(--duration-fast)]",
-            open && "rotate-180",
-          )}
-          aria-hidden="true"
-        />
+        {samples.length} Sample sessions
       </button>
       <div id={id} hidden={!open} className="mt-1 space-y-1">
         {samples.map((sample) => (
@@ -91,7 +82,7 @@ function Samples({ targets }: { targets: BurnCheckTargetPayload[] }) {
         ))}
       </div>
       {status && (
-        <p role="status" className="mt-2 type-callout text-system-red-text">
+        <p role="status" className="mt-2 type-callout text-label-secondary">
           {status}
         </p>
       )}
@@ -193,14 +184,14 @@ function CheckPromptAction({
         className="ui-push-button burn-check-action type-callout gap-1 disabled:opacity-100"
       >
         {copied ? (
-          <Check size={12} className="text-share-work-text" aria-hidden="true" />
+          <Check size={12} className="text-token-in" aria-hidden="true" />
         ) : (
           <Clipboard size={12} aria-hidden="true" />
         )}
         {copied ? "Copied" : "Copy fix prompt"}
       </button>
       {status && (
-        <p role="alert" className="mt-3 type-callout text-system-red-text">
+        <p role="alert" className="mt-3 type-callout text-label-secondary">
           {status}
         </p>
       )}
@@ -293,7 +284,7 @@ export function BurnCheckDetail({
     new Set(targets.map(watchStatus).filter((status): status is string => status !== null)),
   )
   return (
-    <article className="m-4 min-w-0 rounded-control border border-separator bg-surface-card p-4">
+    <article className="m-4 min-w-0 rounded-control bg-surface-card/75 p-4">
       <p className="type-body text-label-secondary">{CHECK_SENTENCES[detector]}</p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <CheckPromptAction

@@ -127,14 +127,14 @@
 }
 
 .burn-check-action:enabled:hover {
-  background: color-mix(in srgb, var(--color-brand) 12%, var(--color-surface-window));
-  border-color: color-mix(in srgb, var(--color-brand) 45%, transparent);
-  color: color-mix(in srgb, var(--color-brand) 80%, var(--color-label));
+  background: var(--color-brand);
+  border-color: var(--color-brand);
+  color: var(--color-selected-ink);
   box-shadow: var(--shadow-raised);
 }
 
 .burn-check-action:enabled:active {
-  background: color-mix(in srgb, var(--color-brand) 20%, var(--color-surface-window));
+  background: color-mix(in srgb, var(--color-brand) 90%, var(--color-label));
   border-color: var(--color-brand);
   box-shadow: none;
 }

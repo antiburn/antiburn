@@ -2,45 +2,43 @@
 
 ## Scope
 
-Polish Zack’s Burn Checks UI from PR #488 without changing check ordering,
-disclosures, target loading, sample navigation, remediation, or analytics.
-Keith approved the final design after Notate and Discuss review.
+Polish the Burn Checks UI from merged PR #488. Preserve check ordering,
+disclosures, target loading, sample navigation, remediation, and analytics.
+Keith approved opening the PR and fixing any CI failures.
 
-PR #488 is merged into main. This branch contains the cosmetic follow-up.
+## Final design
 
-## Approved design
-
-- Use the full workspace width with 32px horizontal padding.
-- Use the approved 02D label-first hero: an 88px proportional ring, a grey
-  12px flame beside Estimated burn, and neutral large-title percentage text.
-- Show Less than 1% for positive estimates below 1%. Draw the supplied burn
-  proportion without rounded endpoints exaggerating small values.
-- Reuse Marty’s SegmentedRadialDial from commit 9cb51e4f, with an optional
-  flat-cap treatment for this hero. Preserve its default rounded treatment.
-- Keep failed and passed groups. Use bare grey category icons and semantic
-  colors for findings and verified savings.
-- Present named MCP and skill targets in responsive cards. Keep actions and
-  sample disclosures inside their original finding.
-- Match the shared Mac-style push buttons: 22px height, 12px regular text and
-  glyphs, and a 4px gap. Keep the approved orange hover treatment.
-- Match the loading skeleton and desktop design contract to the approved UI.
+- Fill the workspace with the report and responsive finding cards.
+- Use an 88px hero dial with an 8px stroke at full opacity: darker cyan
+  measure for the remainder and brand-tint orange for avoidable usage.
+- Use a 4px minimum positive arc at the call site. This can overstate shares
+  below about 1.59%; visible text and accessible labels retain the supplied
+  value or its existing display formatting. Zero has no issue arc.
+- Reuse the SegmentedRadialDial from commit 9cb51e4f. Its default behaviour
+  remains unchanged; the hero opts into flat endpoints.
+- Align the text and ring with explicit 88px geometry, a 24px gap, and 32px
+  vertical padding. Use a semibold large-title percentage.
+- Use grey category icons and values, with red failed-session counts.
+  Preserve provider logo colours and cyan action-success glyphs.
+- Use subtle parent outlines and borderless surface-card/75 finding cards.
+- Use compact buttons with solid orange hover. Copy buttons fill named
+  target cards up to 24rem; wide check-level panels use left-aligned actions.
+- Use semibold count-first sample disclosures without chevrons and with
+  neutral hover fills. Preserve disclosure semantics and keyboard behaviour.
+- Match the loading skeleton and design contract to the final presentation.
 
 ## Status
 
 | Step | Status |
 | --- | --- |
-| Restore Zack’s functional baseline | Complete |
-| Review eight hero variations and refinements | Complete — 02D approved |
-| Apply native button and grey-icon feedback | Complete |
-| Desktop checks and native review build | Complete |
-| Keith’s review | Approved to move ahead |
-| Pre-push checks | Complete |
+| Restore functional baseline and iterate on design | Complete |
+| Apply approved final UI | Complete |
+| Focused checks and native review build | Complete |
+| Final pre-push checks | In progress |
+| Open PR and resolve CI failures | Authorized; pending |
 
 ## Validation
 
-The final desktop suite passed all 1,401 tests across 111 files. Type checking,
-lint, formatting, design drift, changed-file aislop, and the secrets scan passed.
-The full aislop check passed with one existing duplicate-block warning in the
-unchanged popoverPeekIpc.ts file. The proportional ring
-also has coverage for zero, tiny, partial, complete, and unavailable estimates.
-The native debug bundle built successfully and was launched for review.
+The latest review build passed 52 BurnChecksView tests, lint, type checking,
+formatting, design drift, and changed-file aislop. Native debug bundling passed
+and the app was launched for review. The shared dial has eight additional tests.
