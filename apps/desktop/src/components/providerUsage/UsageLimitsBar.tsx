@@ -32,6 +32,7 @@ import {
 import { providerInitial } from "../../lib/presentation/providerUsage"
 import { SegmentedMeter } from "../ui/SegmentedMeter"
 import { SegmentFigure } from "../ui/SegmentFigure"
+import { Tooltip } from "../presentation/Tooltip"
 import { providerMark } from "./ProviderUsagePrimitives"
 import { UsageRing } from "./UsageRing"
 import { useStableAccountNumbers } from "./useStableAccountNumbers"
@@ -126,6 +127,7 @@ export function UsageLimitsBar({
                 provider={reading}
                 displayName={accountDisplayName(reading, key, accountNumbers, providerCounts)}
                 status={liveProviderStatus(live, reading)}
+                now={at}
                 onHover={onHoverProvider}
                 activation={
                   activeProvider?.provider === reading.provider
@@ -317,58 +319,94 @@ function ProviderRadial({
   provider,
   displayName,
   status,
+  now,
   onHover,
   activation,
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
   status: LiveProviderStatus
+  now: number
   onHover?: ((provider: string | null, anchor: AnchorRegion | null) => void) | undefined
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
   const percent = maxLiveUsedPercent(provider)
-  const figure = percent != null ? `${Math.round(percent)}%` : "no stated figure"
+  const window =
+    percent == null
+      ? undefined
+      : liveWindows(provider).find((window) => window.usedPercent === percent)
+  const expectedFraction = window ? liveWindowElapsed(window, now) : null
+  const windowLabel = window ? liveWindowLabel(window) : null
+  const elapsedPercent = expectedFraction == null ? null : Math.round(expectedFraction * 100)
+  const roundedPercent = percent == null ? null : Math.round(percent)
+  const figure = roundedPercent == null ? "no stated figure" : `${roundedPercent}% used`
   const graceNote =
     status.kind === "grace"
       ? liveGraceNote(status.category, provider.provider, status.ageMs)
       : null
-  const title = graceNote
-    ? `${displayName} — ${figure} — ${graceNote}`
-    : `${displayName} — ${figure}`
   const baseLabel = `${displayName}${
-    percent != null ? ` at ${Math.round(percent)} percent` : ", no stated figure"
+    roundedPercent != null ? ` at ${roundedPercent} percent` : ", no stated figure"
   }`
-  const ariaLabel = graceNote ? `${baseLabel}. ${graceNote}` : baseLabel
-  return (
-    <div
-      role="img"
-      tabIndex={0}
-      onMouseEnter={(event) =>
-        onHover?.(provider.provider, measureAnchorRegion(event.currentTarget))
-      }
-      onMouseLeave={() => onHover?.(null, null)}
-      data-state={activation ?? "idle"}
-      title={title}
-      className="flex shrink-0 items-center gap-1.5 rounded-full px-[var(--space-xs)] py-1 transition-[background-color] duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
-      aria-label={ariaLabel}
-    >
-      <UsageRing
-        percent={percent}
-        mark={providerMark(provider.provider)}
-        glyph={providerInitial(displayName)}
-        size={RING_SIZE}
-        className="block text-label-secondary"
-      />
-      <span
-        aria-hidden="true"
-        className={cn(
-          "type-footnote leading-none",
-          graceNote ? "text-label-tertiary" : "text-label",
-        )}
-      >
-        <SegmentFigure>{percent != null ? `${Math.round(percent)}%` : "—"}</SegmentFigure>
-      </span>
+  const ariaLabel = [
+    baseLabel,
+    windowLabel,
+    elapsedPercent == null ? null : `Pace marker at ${elapsedPercent} percent`,
+    graceNote,
+  ]
+    .filter(Boolean)
+    .join(". ")
+  const tooltip = (
+    <div className="space-y-0.5">
+      <p className="font-medium text-label">
+        {displayName}
+        {windowLabel && ` · ${windowLabel}`}
+      </p>
+      <p className="text-label">
+        <SegmentFigure>{figure}</SegmentFigure>
+      </p>
+      {elapsedPercent != null && (
+        <p className="text-label-secondary">
+          <SegmentFigure>{`${elapsedPercent}% would be on pace by now`}</SegmentFigure>
+        </p>
+      )}
+      {graceNote && <p className="text-label-secondary">{graceNote}</p>}
     </div>
+  )
+  return (
+    <Tooltip label={tooltip} side="bottom" delayMs={1000}>
+      <div
+        role="img"
+        tabIndex={0}
+        onMouseEnter={(event) =>
+          onHover?.(provider.provider, measureAnchorRegion(event.currentTarget))
+        }
+        onMouseLeave={() => onHover?.(null, null)}
+        data-state={activation ?? "idle"}
+        className="flex shrink-0 items-center gap-1.5 rounded-full px-[var(--space-xs)] py-1 transition-[background-color] duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
+        aria-label={ariaLabel}
+      >
+        <UsageRing
+          percent={percent}
+          expectedFraction={expectedFraction}
+          mark={providerMark(provider.provider)}
+          glyph={providerInitial(displayName)}
+          size={RING_SIZE}
+          className="block text-label-secondary"
+        />
+        <span
+          aria-hidden="true"
+          className={cn(
+            "inline-grid type-footnote leading-none",
+            graceNote ? "text-label-tertiary" : "text-label",
+          )}
+        >
+          <SegmentFigure className="invisible col-start-1 row-start-1">100%</SegmentFigure>
+          <SegmentFigure className="col-start-1 row-start-1">
+            {roundedPercent != null ? `${roundedPercent}%` : "—"}
+          </SegmentFigure>
+        </span>
+      </div>
+    </Tooltip>
   )
 }
 
