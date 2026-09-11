@@ -1,10 +1,10 @@
-export interface SegmentedRadialDialSegment {
+interface SegmentedRadialDialSegment {
   id: string
   value: number
   className: string
 }
 
-export interface SegmentedRadialDialProps {
+interface SegmentedRadialDialProps {
   segments: readonly SegmentedRadialDialSegment[]
   size: number
   strokeWidth?: number

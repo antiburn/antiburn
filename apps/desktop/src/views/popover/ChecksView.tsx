@@ -1,26 +1,25 @@
-import { CheckCircle2, CircleDashed, CircleX, Flame, LoaderCircle } from "lucide-react"
+import { CheckCircle2, CircleDashed, Flame, LoaderCircle } from "lucide-react"
 import { useRef } from "react"
 
 import { TextRoll } from "../../components/ui/TextRoll"
+import { BurnCheckSummary } from "../../components/burn-checks/BurnCheckSummary"
+import { BurnCheckFlames } from "../../components/burn-checks/BurnCheckFlames"
+import "../../components/burn-checks/burn-check-summary.css"
 import { measureAnchorRegion } from "../../lib/anchorRegion"
 import type { ChecksCategoryPayload } from "../../lib/insightsIpc"
 import {
   checksHeroPresentation,
   formatTokenBurnPercent,
-  tokenBurnTone,
   type ChecksPresentation,
 } from "../../lib/presentation/checks"
 import { checkRowPresentation } from "../checks/checkUi"
+import { emptyBurnCheckPresentation } from "../../lib/presentation/burnChecks"
 
 function summaryEstimate(presentation: ChecksPresentation): string | null {
   const basisPoints = presentation.estimate.tokenBurnBasisPoints
   return basisPoints == null || presentation.failures.length === 0
     ? null
     : `${formatTokenBurnPercent(basisPoints)} token burn`
-}
-
-function refreshFailureSuffix(presentation: ChecksPresentation): string {
-  return presentation.refreshUnavailable ? " · refresh unavailable" : ""
 }
 
 export function ChecksSummary({
@@ -38,45 +37,41 @@ export function ChecksSummary({
   onLeave: () => void
   onOpen?: () => void
 }) {
-  const failures = presentation?.failures.length ?? 0
-  const wins = presentation?.wins.length ?? 0
-  const hasFindings = failures > 0
-  const hasWins = wins > 0
-  const checksNeedingEvidence = presentation
-    ? [...presentation.failures, ...presentation.wins, ...presentation.unavailable].filter(
-        (category) => category.unavailable > 0,
-      ).length
-    : 0
-  const completePass =
-    hasWins && presentation?.unavailable.length === 0 && checksNeedingEvidence === 0
-  const StatusIcon =
-    presentation == null
-      ? CircleDashed
-      : hasFindings
-        ? CircleX
-        : completePass
-          ? CheckCircle2
-          : CircleDashed
   const estimate = presentation ? summaryEstimate(presentation) : null
+  const burnChecks =
+    presentation?.burnChecks ??
+    emptyBurnCheckPresentation(reportUnavailable ? "unavailable" : "pending")
+  const accessibleLabel = estimate
+    ? `${burnChecks.accessibleDescription} ${estimate}.`
+    : burnChecks.accessibleDescription
+  const tone =
+    burnChecks.counts.failed > 0 ? "failure" : burnChecks.counts.passed > 0 ? "pass" : "neutral"
   const hovered = useRef(false)
   const focused = useRef(false)
+  const summary = useRef<HTMLDivElement>(null)
 
   return (
     <div
+      ref={summary}
       data-state={active ? "active" : "idle"}
+      data-tone={tone}
       onMouseEnter={(event) => {
         hovered.current = true
+        if (event.target instanceof Element && event.target.closest("[data-burn-check-flames]"))
+          return
         if (presentation) onPreview(measureAnchorRegion(event.currentTarget))
       }}
       onMouseLeave={() => {
         hovered.current = false
         if (!focused.current) onLeave()
       }}
-      className="group flex items-center rounded-control hover:bg-surface-hover data-[state=active]:bg-surface-selected"
+      className="burn-check-summary-surface group flex items-center rounded-control bg-surface-card/50 hover:bg-surface-hover/35 data-[state=active]:bg-surface-selected/40"
     >
       <button
         type="button"
         disabled={!presentation}
+        data-burn-check-summary-trigger
+        aria-label={`All burn checks. Last 30 days. ${accessibleLabel}`}
         aria-busy={!presentation && !reportUnavailable}
         onClick={onOpen}
         onFocus={(event) => {
@@ -87,34 +82,32 @@ export function ChecksSummary({
           focused.current = false
           if (!hovered.current) onLeave()
         }}
-        className="grid min-w-0 flex-1 grid-cols-[16px_minmax(0,1fr)_max-content] items-center gap-x-2 rounded-control px-2 py-2 text-left disabled:opacity-100 active:transform-none active:opacity-100"
+        className="min-w-0 flex-1 rounded-control text-left disabled:opacity-100 active:transform-none active:opacity-100"
       >
-        <StatusIcon
-          size={14}
-          strokeWidth={presentation == null ? 2 : 2.5}
-          className={`shrink-0 ${hasFindings ? "text-system-red-text" : completePass ? "text-system-green" : "text-label-tertiary"}`}
-          aria-hidden="true"
-        />
-        <span className="min-w-0">
-          <span className="block type-body font-medium! text-label">Burn checks</span>
-          <span className="block truncate type-footnote text-label-secondary">
-            {presentation &&
-              (hasFindings
-                ? `${failures} check${failures === 1 ? "" : "s"} failed`
-                : hasWins
-                  ? `${wins} check${wins === 1 ? "" : "s"} passed${checksNeedingEvidence > 0 ? ` · ${checksNeedingEvidence} need evidence` : ""}`
-                  : "More evidence needed")}
-            {presentation && refreshFailureSuffix(presentation)}
-            {!presentation &&
-              (reportUnavailable ? "Checks unavailable" : "Checking local sessions…")}
-          </span>
-        </span>
-        <span
-          className={`type-footnote font-medium! tabular-nums ${presentation?.estimate.tokenBurnBasisPoints == null ? "text-label-secondary" : tokenBurnTone(presentation.estimate.tokenBurnBasisPoints)}`}
-        >
-          {presentation && estimate ? <TextRoll text={estimate} /> : null}
-        </span>
+        <BurnCheckSummary presentation={burnChecks} />
       </button>
+      {presentation && estimate && presentation.estimate.tokenBurnBasisPoints != null && (
+        <span
+          className="pr-[var(--space-md)]"
+          data-burn-check-flames
+          onMouseEnter={onLeave}
+          onMouseLeave={(event) => {
+            if (
+              summary.current &&
+              event.relatedTarget instanceof Node &&
+              summary.current.contains(event.relatedTarget) &&
+              !event.currentTarget.contains(document.activeElement)
+            )
+              onPreview(measureAnchorRegion(summary.current))
+          }}
+          onFocus={(event) => {
+            event.stopPropagation()
+            onLeave()
+          }}
+        >
+          <BurnCheckFlames basisPoints={presentation.estimate.tokenBurnBasisPoints} />
+        </span>
+      )}
     </div>
   )
 }

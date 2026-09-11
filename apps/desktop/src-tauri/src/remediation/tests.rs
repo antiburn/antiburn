@@ -584,6 +584,41 @@ fn session_fallback_scope_includes_the_agent() {
 }
 
 #[test]
+fn non_durable_findings_keep_session_or_worker_scope_with_a_workspace() {
+    let secret = [7; 32];
+    let workspace = Some("workspace");
+    let depth = FindingCause::SessionsOverDepth {
+        maximum_tokens: 12_000,
+        limit_tokens: 10_000,
+        requests: Vec::new(),
+        omitted_requests: Some(0),
+    };
+    let cache = FindingCause::CacheChurn {
+        model: "model".into(),
+        repeated_tokens: 100,
+        paid_tokens: 200,
+        threshold_basis_points: 10_000,
+    };
+    let worker = FindingCause::OverpoweredSubagents {
+        parent_model: "parent".into(),
+        worker_model: "worker".into(),
+        worker_ordinal: 1,
+        parent_call_id: Some("call".into()),
+    };
+
+    for cause in [&depth, &cache] {
+        let (kind, first) = finding_scope(&secret, "claude-code", "session-a", cause, workspace);
+        let (_, second) = finding_scope(&secret, "claude-code", "session-b", cause, workspace);
+        assert_eq!(kind, "session");
+        assert_ne!(first, second);
+    }
+    let (kind, first) = finding_scope(&secret, "claude-code", "session-a", &worker, workspace);
+    let (_, second) = finding_scope(&secret, "claude-code", "session-b", &worker, workspace);
+    assert_eq!(kind, "worker");
+    assert_ne!(first, second);
+}
+
+#[test]
 fn a_truncated_assessment_cannot_prove_a_fix() {
     let result = verify_prompt_watch(
         DetectorId::ModelOverthinking,

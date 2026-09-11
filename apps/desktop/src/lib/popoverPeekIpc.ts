@@ -59,6 +59,18 @@ function nativeInvoke<T>(bridge: NativePeekBridge, command: string, args?: objec
   return bridge.invoke(command, args) as Promise<T>
 }
 
+function acknowledgePopoverPeek(
+  command: "popover_peek_presented" | "popover_peek_retarget_ready",
+  generation: number,
+  contentHeight: number | null,
+): Promise<boolean> {
+  const native = nativePeekBridge()
+  const args = { generation, contentHeight }
+  if (native) return nativeInvoke<boolean>(native, command, args)
+  if (!hasShell()) return Promise.resolve(true)
+  return invoke<boolean>(command, args)
+}
+
 /** Retarget the companion beside the popover. */
 export async function showPopoverPeek(
   target: PopoverPeekTarget,
@@ -115,15 +127,7 @@ export async function popoverPeekPresented(
   generation: number,
   contentHeight: number | null,
 ): Promise<boolean> {
-  const native = nativePeekBridge()
-  if (native) {
-    return nativeInvoke<boolean>(native, "popover_peek_presented", {
-      generation,
-      contentHeight,
-    })
-  }
-  if (!hasShell()) return true
-  return invoke<boolean>("popover_peek_presented", { generation, contentHeight })
+  return acknowledgePopoverPeek("popover_peek_presented", generation, contentHeight)
 }
 
 /** Move the current native window only after its neutral target shell commits. */
@@ -131,15 +135,7 @@ export async function popoverPeekRetargetReady(
   generation: number,
   contentHeight: number | null,
 ): Promise<boolean> {
-  const native = nativePeekBridge()
-  if (native) {
-    return nativeInvoke<boolean>(native, "popover_peek_retarget_ready", {
-      generation,
-      contentHeight,
-    })
-  }
-  if (!hasShell()) return true
-  return invoke<boolean>("popover_peek_retarget_ready", { generation, contentHeight })
+  return acknowledgePopoverPeek("popover_peek_retarget_ready", generation, contentHeight)
 }
 
 /** Confirm that React committed the cleared generation before native hiding. */

@@ -36,112 +36,71 @@ pub(super) fn sample_sessions(findings: &[CurrentFinding]) -> Vec<BurnCheckSampl
 }
 
 pub(super) fn burn_check_display_facts(target: &CachedTarget) -> BurnCheckDisplayFacts {
-    use antiburn_local::remediation::BuiltInToolTokens;
-
     let finding = &target.findings[0].finding;
     let observed_at_ms = target.findings[0].observed_at_ms;
-    let (resource_kind, resource_identity, current_value, replacement_value, mut quantity, unit) =
-        match finding.cause() {
-            FindingCause::SessionsOverDepth { maximum_tokens, .. } => (
-                BurnCheckResourceKind::Session,
-                None,
-                None,
-                None,
-                Some(*maximum_tokens),
-                Some(BurnCheckQuantityUnit::Tokens),
-            ),
-            FindingCause::ModelOverthinking {
-                model,
-                reasoning,
-                turns,
-                ..
-            } => (
-                BurnCheckResourceKind::Reasoning,
-                safe_display_value(model),
-                safe_display_value(reasoning),
-                target
-                    .config
-                    .as_ref()
-                    .filter(|config| config.operation.setting == ConfigSetting::Reasoning)
-                    .and_then(|config| safe_display_value(&config.operation.proposed_value)),
-                Some(*turns),
-                Some(BurnCheckQuantityUnit::Turns),
-            ),
-            FindingCause::OverpoweredSubagents { worker_model, .. } => (
-                BurnCheckResourceKind::Worker,
-                safe_display_value(worker_model),
-                safe_display_value(worker_model),
-                None,
-                Some(1),
-                Some(BurnCheckQuantityUnit::Resources),
-            ),
-            FindingCause::UnusedMcpServer { server } => (
-                BurnCheckResourceKind::McpServer,
-                safe_display_value(server),
-                None,
-                None,
-                Some(1),
-                Some(BurnCheckQuantityUnit::Resources),
-            ),
-            FindingCause::UnusedBuiltInTool { tool, tokens } => (
-                BurnCheckResourceKind::BuiltInTool,
-                safe_display_value(tool),
-                None,
-                None,
-                Some(match tokens {
-                    BuiltInToolTokens::Definition(value) => *value,
-                    BuiltInToolTokens::Replicated(value) => {
-                        u64::try_from(*value).unwrap_or(u64::MAX)
-                    }
-                }),
-                Some(BurnCheckQuantityUnit::Tokens),
-            ),
-            FindingCause::UnusedSkill { skill } => (
-                BurnCheckResourceKind::Skill,
-                safe_display_value(skill),
-                None,
-                None,
-                Some(1),
-                Some(BurnCheckQuantityUnit::Resources),
-            ),
-            FindingCause::OldModelUsage {
-                model,
-                replacement,
-                turns,
-                ..
-            } => (
-                BurnCheckResourceKind::Model,
-                safe_display_value(model),
-                safe_display_value(model),
-                safe_display_value(replacement),
-                Some(*turns),
-                Some(BurnCheckQuantityUnit::Turns),
-            ),
-            FindingCause::OveruseOfFastMode {
-                model,
-                delegated_turns,
-                ..
-            } => (
-                BurnCheckResourceKind::Speed,
-                safe_display_value(model),
-                Some("fast".to_owned()),
-                None,
-                Some(*delegated_turns),
-                Some(BurnCheckQuantityUnit::Turns),
-            ),
-            FindingCause::CacheChurn {
-                model,
-                repeated_tokens,
-                ..
-            } => (
-                BurnCheckResourceKind::Cache,
-                safe_display_value(model),
-                None,
-                None,
-                Some(*repeated_tokens),
-                Some(BurnCheckQuantityUnit::Tokens),
-            ),
-        };
+    let (resource_kind, resource_identity, current_value, replacement_value) = match finding.cause()
+    {
+        FindingCause::SessionsOverDepth { .. } => {
+            (BurnCheckResourceKind::Session, None, None, None)
+        }
+        FindingCause::ModelOverthinking {
+            model, reasoning, ..
+        } => (
+            BurnCheckResourceKind::Reasoning,
+            safe_display_value(model),
+            safe_display_value(reasoning),
+            target
+                .config
+                .as_ref()
+                .filter(|config| config.operation.setting == ConfigSetting::Reasoning)
+                .and_then(|config| safe_display_value(&config.operation.proposed_value)),
+        ),
+        FindingCause::OverpoweredSubagents { worker_model, .. } => (
+            BurnCheckResourceKind::Worker,
+            safe_display_value(worker_model),
+            safe_display_value(worker_model),
+            None,
+        ),
+        FindingCause::UnusedMcpServer { server } => (
+            BurnCheckResourceKind::McpServer,
+            safe_display_value(server),
+            None,
+            None,
+        ),
+        FindingCause::UnusedBuiltInTool { tool, .. } => (
+            BurnCheckResourceKind::BuiltInTool,
+            safe_display_value(tool),
+            None,
+            None,
+        ),
+        FindingCause::UnusedSkill { skill } => (
+            BurnCheckResourceKind::Skill,
+            safe_display_value(skill),
+            None,
+            None,
+        ),
+        FindingCause::OldModelUsage {
+            model, replacement, ..
+        } => (
+            BurnCheckResourceKind::Model,
+            safe_display_value(model),
+            safe_display_value(model),
+            safe_display_value(replacement),
+        ),
+        FindingCause::OveruseOfFastMode { model, .. } => (
+            BurnCheckResourceKind::Speed,
+            safe_display_value(model),
+            Some("fast".to_owned()),
+            None,
+        ),
+        FindingCause::CacheChurn { model, .. } => (
+            BurnCheckResourceKind::Cache,
+            safe_display_value(model),
+            None,
+            None,
+        ),
+    };
+    let (mut quantity, unit) = finding_quantity(finding.cause());
     if target.findings.len() > 1 && quantity.is_some() {
         quantity = target.findings.iter().try_fold(0_u64, |total, finding| {
             let (value, finding_unit) = finding_quantity(finding.finding.cause());

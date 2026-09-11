@@ -32,7 +32,7 @@ export function BurnCheckTargetDetail({
           {status}
         </p>
       )}
-      <SampleSessions target={target} />
+      <SampleSessions samples={target.samples} />
     </article>
   )
 }

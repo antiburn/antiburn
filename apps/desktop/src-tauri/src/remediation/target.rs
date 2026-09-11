@@ -98,14 +98,13 @@ pub(super) fn target_identity(
     let workspace_key = canonical_workspace
         .and_then(Path::to_str)
         .map(|workspace| hashed_parts_with_secret(secret, b"workspace", &[workspace]));
-    let (mut scope_kind, mut scope_key) = if let Some(workspace_key) = workspace_key.as_ref() {
-        ("project".to_owned(), workspace_key.clone())
-    } else {
-        (
-            "session".to_owned(),
-            session_scope_key(secret, agent.slug(), &finding.session_id),
-        )
-    };
+    let (mut scope_kind, mut scope_key) = finding_scope(
+        secret,
+        agent.slug(),
+        &finding.session_id,
+        finding.finding.cause(),
+        workspace_key.as_deref(),
+    );
     let mut physical_target_key = None;
     let attributed = match finding.finding.cause() {
         FindingCause::OldModelUsage { .. }
@@ -180,6 +179,47 @@ pub(super) fn target_identity(
 
 pub(super) fn session_scope_key(secret: &[u8; 32], agent: &str, session_id: &str) -> String {
     hashed_parts_with_secret(secret, b"session", &[agent, session_id])
+}
+
+pub(super) fn finding_scope(
+    secret: &[u8; 32],
+    agent: &str,
+    session_id: &str,
+    cause: &FindingCause,
+    workspace_key: Option<&str>,
+) -> (String, String) {
+    match cause {
+        FindingCause::SessionsOverDepth { .. } | FindingCause::CacheChurn { .. } => (
+            "session".to_owned(),
+            session_scope_key(secret, agent, session_id),
+        ),
+        FindingCause::OverpoweredSubagents {
+            worker_ordinal,
+            parent_call_id,
+            ..
+        } => (
+            "worker".to_owned(),
+            hashed_parts_with_secret(
+                secret,
+                b"worker",
+                &[
+                    agent,
+                    session_id,
+                    &worker_ordinal.to_string(),
+                    parent_call_id.as_deref().unwrap_or_default(),
+                ],
+            ),
+        ),
+        _ => workspace_key.map_or_else(
+            || {
+                (
+                    "session".to_owned(),
+                    session_scope_key(secret, agent, session_id),
+                )
+            },
+            |workspace_key| ("project".to_owned(), workspace_key.to_owned()),
+        ),
+    }
 }
 
 pub(crate) fn passive_remediations(
