@@ -22,6 +22,13 @@ Burn Checks part of Phase 3 is implemented as of 2026-09-10. Other Phase 2 and
 Phase 3 proposals remain unimplemented. Collector verification, production
 reports, and cohort review remain operational work.
 
+The limit-factor plan mapping was refined on 2026-09-11. Claude's `max` plan
+can report `max_5x` or `max_20x` from its reviewed tier, and OpenAI's
+`prolite` plan now has its own value. Existing coarse values remain the
+fallback for absent or unrecognized inputs. Reports must segment this change
+by the first app version that contains it; earlier `max` and `other` events
+cannot be split retrospectively.
+
 ## Coverage at the audited revision
 
 The closed catalog had nine events. Envelope fields provided event IDs, rotating
@@ -217,6 +224,27 @@ attempts; expose that category instead of treating every missing completion as
 failure. Do not introduce persistent operation or work identifiers.
 
 ### Phase 3: targeted diagnostics and measurement quality
+
+#### Limit-factor plan mapping (implemented 2026-09-11)
+
+The product question is whether learned factor accuracy differs across the
+provider plans that the Usage surface already identifies. The metric is the
+distribution of `antiburn.limit_factor_observed` by provider, lane, and mapped
+plan, using reporting installations as the denominator. This supports plan
+mix and estimate-quality decisions without sending account or billing data.
+
+The factor learner owns the trigger. It passes the plan and tier from the
+latest learned point to the analytics boundary. The event carries only the
+closed `plan` values `free`, `pro`, `max`, `max_5x`, `max_20x`, `team`,
+`enterprise`, `plus`, `prolite`, `business`, `edu`, `unknown`, and `other`.
+Claude's Max tier values and OpenAI's Pro Lite value require their matching
+provider; unknown or absent input uses the existing coarse fallback.
+
+The existing first-per-provider/lane rule and 24-hour minimum remain in force.
+The deduplication tuple includes the mapped plan, so a tier change is eligible
+under the existing changed-tuple rule. Background learning keeps its current
+cadence and maximum volume. Historical coarse values cannot be reclassified;
+reports segment the refined mapping at its first app-version boundary.
 
 #### Burn Checks integration (implemented 2026-09-10)
 

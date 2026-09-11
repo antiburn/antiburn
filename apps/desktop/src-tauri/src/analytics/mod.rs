@@ -471,12 +471,17 @@ mod enabled {
         learned
             .iter()
             .filter_map(|factor| {
-                let label = LiveUsageProvider::from_provider_id(&factor.provider)?.as_str();
+                let provider = LiveUsageProvider::from_provider_id(&factor.provider)?;
+                let label = provider.as_str();
                 let detail = limit_factor_lane_detail(factor.lane)?;
                 Some(LimitFactorObservation {
                     label,
                     detail,
-                    plan: event::map_plan(factor.plan.as_deref()),
+                    plan: event::map_plan(
+                        provider,
+                        factor.plan.as_deref(),
+                        factor.plan_tier.as_deref(),
+                    ),
                     factor_band: event::factor_band(factor.usd_per_percent),
                     residual_band: event::residual_band(factor.residual),
                 })
@@ -1629,6 +1634,7 @@ mod enabled {
             lane: &'static str,
             usd_per_percent: f64,
             plan: Option<&str>,
+            plan_tier: Option<&str>,
             residual: Option<(f64, f64)>,
         ) -> LearnedFactor {
             LearnedFactor {
@@ -1636,6 +1642,7 @@ mod enabled {
                 lane,
                 usd_per_percent,
                 plan: plan.map(str::to_string),
+                plan_tier: plan_tier.map(str::to_string),
                 residual,
             }
         }
@@ -1647,6 +1654,7 @@ mod enabled {
                 crate::store::provider_limit::LANE_FIVE_HOUR,
                 5.0,
                 Some("Max"),
+                Some("default_claude_max_5x"),
                 Some((50.0, 48.0)),
             )];
             assert_eq!(
@@ -1654,7 +1662,7 @@ mod enabled {
                 vec![LimitFactorObservation {
                     label: "anthropic",
                     detail: "short",
-                    plan: "max",
+                    plan: "max_5x",
                     factor_band: "4_to_under_8",
                     residual_band: "within_5",
                 }]
@@ -1669,6 +1677,7 @@ mod enabled {
                 40.0,
                 None,
                 None,
+                None,
             )];
             let candidates = limit_factor_observed_candidates(&learned);
             assert_eq!(candidates[0].detail, "long");
@@ -1678,11 +1687,37 @@ mod enabled {
         }
 
         #[test]
+        fn provider_tiers_reach_the_candidate_event_as_closed_plan_values() {
+            let learned = vec![
+                learned_factor(
+                    crate::provider_usage::providers::ANTHROPIC,
+                    crate::store::provider_limit::LANE_FIVE_HOUR,
+                    5.0,
+                    Some("max"),
+                    Some("default_claude_max_20x"),
+                    None,
+                ),
+                learned_factor(
+                    crate::provider_usage::providers::OPENAI,
+                    crate::store::provider_limit::LANE_FIVE_HOUR,
+                    5.0,
+                    Some("prolite"),
+                    None,
+                    None,
+                ),
+            ];
+            let candidates = limit_factor_observed_candidates(&learned);
+            assert_eq!(candidates[0].plan, "max_20x");
+            assert_eq!(candidates[1].plan, "prolite");
+        }
+
+        #[test]
         fn an_unrecognized_provider_or_lane_reports_nothing() {
             let unrecognized_provider = vec![learned_factor(
                 "some-future-provider",
                 crate::store::provider_limit::LANE_WEEKLY,
                 5.0,
+                None,
                 None,
                 None,
             )];
@@ -1694,6 +1729,7 @@ mod enabled {
                 5.0,
                 None,
                 None,
+                None,
             )];
             assert!(limit_factor_observed_candidates(&unrecognized_lane).is_empty());
         }
@@ -1702,8 +1738,9 @@ mod enabled {
         fn a_pair_fires_first_then_only_on_a_changed_tuple_at_least_a_day_later() {
             let mut last = BTreeMap::new();
             let key = ("anthropic", "short");
-            let tuple_a = ("max", "2_to_under_4", "within_5");
-            let tuple_b = ("max", "4_to_under_8", "within_5");
+            let tuple_a = ("max_5x", "2_to_under_4", "within_5");
+            let tuple_b = ("max_20x", "2_to_under_4", "within_5");
+            let tuple_c = ("max_5x", "4_to_under_8", "within_5");
             let start = Instant::now();
 
             assert!(
@@ -1726,6 +1763,15 @@ mod enabled {
                 "a changed tuple inside the 24-hour floor is still suppressed"
             );
             assert!(
+                !limit_factor_observed_is_new(
+                    &last,
+                    key,
+                    tuple_c,
+                    start + Duration::from_secs(3_600)
+                ),
+                "a changed factor band inside the 24-hour floor is still suppressed"
+            );
+            assert!(
                 limit_factor_observed_is_new(
                     &last,
                     key,
@@ -1734,6 +1780,12 @@ mod enabled {
                 ),
                 "a changed tuple past the floor fires again"
             );
+            assert!(limit_factor_observed_is_new(
+                &last,
+                key,
+                tuple_c,
+                start + LIMIT_FACTOR_MIN_INTERVAL
+            ));
             // A different pair is judged independently.
             assert!(limit_factor_observed_is_new(
                 &last,

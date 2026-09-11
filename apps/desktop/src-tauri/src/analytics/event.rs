@@ -844,22 +844,40 @@ pub fn bucket(count: u64) -> &'static str {
     }
 }
 
-/// Map a provider-reported plan name to the closed vocabulary
-/// `antiburn.limit_factor_observed` sends.
+/// Map the plan and tier to fixed analytics values.
 ///
-/// The raw string never leaves this machine: it names a plan the reader
-/// chose, which is exactly the kind of value this file's own module docs say
-/// has nowhere to be put. `None` (no plan reported) and an empty or
-/// all-whitespace string both become `unknown`; a plan name outside the
-/// listed set becomes `other`, so a provider renaming or adding a plan tier
-/// widens no vocabulary a reader was not already told about.
+/// Missing or blank plans map to `unknown`.
+/// Unlisted plans map to `other`.
+/// Specific Max tiers and Pro Lite require the matching provider.
+/// Raw plan and tier strings stay on this machine.
 #[cfg(feature = "analytics")]
-pub fn map_plan(plan: Option<&str>) -> &'static str {
+pub fn map_plan(
+    provider: LiveUsageProvider,
+    plan: Option<&str>,
+    plan_tier: Option<&str>,
+) -> &'static str {
     let Some(plan) = plan else {
         return "unknown";
     };
-    match plan.trim().to_lowercase().as_str() {
-        "" => "unknown",
+    let plan = plan.trim().to_ascii_lowercase();
+    if plan.is_empty() {
+        return "unknown";
+    }
+    if provider == LiveUsageProvider::Anthropic && plan == "max" {
+        match plan_tier
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("default_claude_max_5x") => return "max_5x",
+            Some("default_claude_max_20x") => return "max_20x",
+            _ => {}
+        }
+    }
+    if provider == LiveUsageProvider::Openai && plan == "prolite" {
+        return "prolite";
+    }
+    match plan.as_str() {
         "free" => "free",
         "pro" => "pro",
         "max" => "max",
@@ -1012,18 +1030,76 @@ mod tests {
     /// `other` rather than the raw text.
     #[test]
     fn an_unlisted_plan_name_maps_to_other_rather_than_leaking_its_text() {
-        assert_eq!(map_plan(None), "unknown");
-        assert_eq!(map_plan(Some("")), "unknown");
-        assert_eq!(map_plan(Some("   ")), "unknown");
-        assert_eq!(map_plan(Some("Max")), "max");
-        assert_eq!(map_plan(Some(" pro ")), "pro");
-        assert_eq!(map_plan(Some("FREE")), "free");
-        assert_eq!(map_plan(Some("team")), "team");
-        assert_eq!(map_plan(Some("enterprise")), "enterprise");
-        assert_eq!(map_plan(Some("plus")), "plus");
-        assert_eq!(map_plan(Some("business")), "business");
-        assert_eq!(map_plan(Some("edu")), "edu");
-        assert_eq!(map_plan(Some("some-future-plan")), "other");
+        let provider = LiveUsageProvider::Anthropic;
+        assert_eq!(map_plan(provider, None, None), "unknown");
+        assert_eq!(map_plan(provider, Some(""), None), "unknown");
+        assert_eq!(map_plan(provider, Some("   "), None), "unknown");
+        assert_eq!(map_plan(provider, Some("Max"), None), "max");
+        assert_eq!(map_plan(provider, Some(" pro "), None), "pro");
+        assert_eq!(map_plan(provider, Some("FREE"), None), "free");
+        assert_eq!(map_plan(provider, Some("team"), None), "team");
+        assert_eq!(map_plan(provider, Some("enterprise"), None), "enterprise");
+        assert_eq!(map_plan(provider, Some("plus"), None), "plus");
+        assert_eq!(map_plan(provider, Some("business"), None), "business");
+        assert_eq!(map_plan(provider, Some("edu"), None), "edu");
+        assert_eq!(map_plan(provider, Some("some-future-plan"), None), "other");
+    }
+
+    #[test]
+    fn provider_specific_plan_values_stay_in_their_provider_vocabulary() {
+        assert_eq!(
+            map_plan(
+                LiveUsageProvider::Anthropic,
+                Some("max"),
+                Some("default_claude_max_5x")
+            ),
+            "max_5x"
+        );
+        assert_eq!(
+            map_plan(
+                LiveUsageProvider::Anthropic,
+                Some("MAX"),
+                Some("default_claude_max_20x")
+            ),
+            "max_20x"
+        );
+        assert_eq!(
+            map_plan(
+                LiveUsageProvider::Anthropic,
+                Some("max"),
+                Some("new_claude_max_tier")
+            ),
+            "max"
+        );
+        assert_eq!(
+            map_plan(LiveUsageProvider::Openai, Some("prolite"), None),
+            "prolite"
+        );
+        assert_eq!(
+            map_plan(LiveUsageProvider::Anthropic, Some("prolite"), None),
+            "other"
+        );
+        assert_eq!(
+            map_plan(LiveUsageProvider::Google, Some("prolite"), None),
+            "other"
+        );
+    }
+
+    #[test]
+    fn codex_plan_values_keep_the_existing_closed_mappings() {
+        for (raw, mapped) in [
+            ("pro", "pro"),
+            ("plus", "plus"),
+            ("team", "team"),
+            ("enterprise", "enterprise"),
+            ("prolite", "prolite"),
+        ] {
+            assert_eq!(map_plan(LiveUsageProvider::Openai, Some(raw), None), mapped);
+        }
+        assert_eq!(
+            map_plan(LiveUsageProvider::Openai, Some("future_codex_plan"), None),
+            "other"
+        );
     }
 
     #[test]
