@@ -325,6 +325,7 @@ export interface AutoFixReviewPayload {
   agent: string
   scope: "global" | "project" | "session" | "worker"
   setting: "model" | "reasoning"
+  configFile: string
   currentValue: string
   proposedValue: string
   effect: "futureModelSelection" | "futureReasoningEffort"

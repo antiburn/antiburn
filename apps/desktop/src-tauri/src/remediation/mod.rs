@@ -554,6 +554,7 @@ impl RemediationController {
                 ConfigSetting::Model => AutoFixSetting::Model,
                 ConfigSetting::Reasoning => AutoFixSetting::Reasoning,
             },
+            config_file: display_config_file(prepared.physical_identity().0, &context.home_root),
             current_value: config.operation.expected_value.clone(),
             proposed_value: config.operation.proposed_value.clone(),
             effect: match config.operation.setting {
@@ -1043,6 +1044,12 @@ impl RemediationController {
             .map_err(|_| ControllerError::PersistenceFailed)?
             .ok_or(ControllerError::TargetChanged)
     }
+}
+
+fn display_config_file(path: &Path, home: &Path) -> String {
+    path.strip_prefix(home)
+        .map(|relative| format!("~/{}", relative.display()))
+        .unwrap_or_else(|_| path.display().to_string())
 }
 
 const fn remediation_policy_is_current(definition: &WatchDefinition) -> bool {

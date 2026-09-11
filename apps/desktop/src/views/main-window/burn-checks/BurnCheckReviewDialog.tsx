@@ -76,6 +76,18 @@ export function BurnCheckReviewDialog({
             <dt className="type-footnote text-label-tertiary">Scope</dt>
             <dd className="mt-0.5 type-callout text-label">{scopeLabel(review.scope)}</dd>
           </div>
+          <div className="col-span-2">
+            <dt className="type-footnote text-label-tertiary">Config file</dt>
+            <dd className="mt-0.5 break-all type-callout font-mono text-label-secondary">
+              {review.configFile}
+            </dd>
+          </div>
+          <div className="col-span-2">
+            <dt className="type-footnote text-label-tertiary">Config change</dt>
+            <dd className="mt-0.5 type-callout font-mono text-label">
+              {review.currentValue} → {review.proposedValue}
+            </dd>
+          </div>
         </dl>
         {status && (
           <p role="alert" className="mt-4 type-callout text-system-red-text">

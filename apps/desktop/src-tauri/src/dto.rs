@@ -1030,6 +1030,7 @@ pub struct AutoFixReviewPayload {
     pub agent: String,
     pub scope: BurnCheckScopeKind,
     pub setting: AutoFixSetting,
+    pub config_file: String,
     pub current_value: String,
     pub proposed_value: String,
     pub effect: AutoFixEffect,
@@ -1901,6 +1902,7 @@ impl From<crate::remediation::AutoFixReview> for AutoFixReviewPayload {
                 crate::remediation::AutoFixSetting::Model => AutoFixSetting::Model,
                 crate::remediation::AutoFixSetting::Reasoning => AutoFixSetting::Reasoning,
             },
+            config_file: value.config_file,
             current_value: value.current_value,
             proposed_value: value.proposed_value,
             effect: match value.effect {
@@ -2759,6 +2761,7 @@ mod tests {
                 agent: "claude-code".into(),
                 scope: BurnCheckScopeKind::Project,
                 setting: AutoFixSetting::Model,
+                config_file: "~/.claude/settings.json".into(),
                 current_value: "old-model".into(),
                 proposed_value: "new-model".into(),
                 effect: AutoFixEffect::FutureModelSelection,
@@ -2766,6 +2769,7 @@ mod tests {
             })
             .unwrap();
             assert!(review.get("preparedOperationId").is_some());
+            assert_eq!(review["configFile"], "~/.claude/settings.json");
             assert!(review.get("path").is_none());
             assert!(review.get("originalBytes").is_none());
             assert!(review.get("config").is_none());

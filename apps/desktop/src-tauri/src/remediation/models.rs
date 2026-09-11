@@ -265,6 +265,7 @@ pub struct AutoFixReview {
     pub agent: AgentKind,
     pub scope: BurnCheckScopeKind,
     pub setting: AutoFixSetting,
+    pub config_file: String,
     pub current_value: String,
     pub proposed_value: String,
     pub effect: AutoFixEffect,

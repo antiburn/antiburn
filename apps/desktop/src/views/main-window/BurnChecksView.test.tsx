@@ -208,6 +208,7 @@ beforeEach(() => {
       agent: "claude-code",
       scope: "global",
       setting: "model",
+      configFile: "~/.claude/settings.json",
       currentValue: "claude-opus-4-6",
       proposedValue: "claude-sonnet-5",
       effect: "futureModelSelection",
@@ -475,6 +476,8 @@ describe("BurnChecksView", () => {
     const dialog = await screen.findByRole("dialog", { name: "Fix claude-opus-4-6" })
     expect(dialog).toHaveTextContent("AgentClaude Code")
     expect(dialog).toHaveTextContent("SettingModel")
+    expect(dialog).toHaveTextContent("Config file~/.claude/settings.json")
+    expect(dialog).toHaveTextContent("Config changeclaude-opus-4-6 → claude-sonnet-5")
     expect(dialog).toHaveTextContent("This plan changes future model selection")
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
     await waitFor(() =>
@@ -667,6 +670,7 @@ describe("BurnChecksView", () => {
           agent: "claude-code",
           scope: "global",
           setting: "model",
+          configFile: "~/.claude/settings.json",
           currentValue: "claude-opus-4-6",
           proposedValue: "claude-sonnet-5",
           effect: "futureModelSelection",
@@ -699,6 +703,7 @@ describe("BurnChecksView", () => {
           agent: "claude-code",
           scope: "global",
           setting: "model",
+          configFile: "~/.claude/settings.json",
           currentValue: "claude-opus-4-6",
           proposedValue: "claude-sonnet-5",
           effect: "futureModelSelection",
@@ -849,6 +854,7 @@ describe("BurnChecksView", () => {
         agent: "claude-code",
         scope: "project",
         setting: "reasoning",
+        configFile: "~/.claude/settings.json",
         currentValue: "max",
         proposedValue: "medium",
         effect: "futureReasoningEffort",
