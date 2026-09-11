@@ -863,3 +863,9 @@ The menu-bar Burn Checks summary uses `surface-card/50` at rest and
 `surface-secondary/70` on hover or focus within, with a `duration-fast` colour
 transition. Its summary button uses a pointer cursor. Hover does not open the
 checks companion; clicking opens Burn Checks in the main window.
+
+On macOS, Burn Checks reserves a fixed 40px drag strip above its scroll area,
+using `--main-window-titlebar-height` and `data-tauri-drag-region`. The strip
+remains available in loading and error states. Sidebar dragging remains
+available; report controls scroll below the strip and stay interactive.
+Windows and Linux use their native title bars without this added strip.

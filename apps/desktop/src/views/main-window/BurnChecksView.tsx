@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react"
 
+import { isMacOS } from "../../lib/platform"
+
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { Skeleton } from "../../components/ui/Skeleton"
 import { type BurnChecksSession } from "./BurnChecksSession"
@@ -21,6 +23,13 @@ export function BurnChecksView({
   if (!report)
     return (
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-window">
+        {isMacOS() && (
+          <div
+            className="h-[var(--main-window-titlebar-height)] shrink-0"
+            data-tauri-drag-region
+            aria-hidden="true"
+          />
+        )}
         <h1 className="sr-only">Burn checks</h1>
         {state.error ? (
           <div className="flex flex-1 items-center justify-center text-center">
@@ -91,6 +100,13 @@ export function BurnChecksView({
     )
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-window">
+      {isMacOS() && (
+        <div
+          className="h-[var(--main-window-titlebar-height)] shrink-0"
+          data-tauri-drag-region
+          aria-hidden="true"
+        />
+      )}
       <ScrollPane className="min-h-0" topEdgeFade>
         <div className="w-full px-8 py-6">
           <h1 className="sr-only">Burn checks</h1>
