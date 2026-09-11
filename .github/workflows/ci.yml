@@ -209,6 +209,10 @@ jobs:
         working-directory: apps/desktop/src-tauri/crates/anchored-window
         run: cargo fmt --check
 
+      - name: Check vendored tray crate formatting
+        working-directory: apps/desktop/src-tauri/vendor/tray-icon
+        run: cargo fmt --check
+
   desktop-backend-checks:
     name: desktop app (backend, ${{ matrix.check.name }}, ${{ matrix.workspace.name }}, ${{ matrix.platform.name }})
     needs: classify
@@ -293,6 +297,18 @@ jobs:
       - name: Run ${{ matrix.check.name }}
         working-directory: ${{ matrix.workspace.directory }}
         run: cargo ${{ matrix.check.command }}
+
+      - name: Check vendored tray library and tests
+        if: matrix.workspace.name == 'shell' && matrix.check.name == 'Clippy'
+        working-directory: apps/desktop/src-tauri/vendor/tray-icon
+        run: cargo clippy --locked --lib --tests -- -D warnings
+
+      - name: Test vendored tray library and native harness
+        if: matrix.workspace.name == 'shell' && matrix.check.name == 'Tests'
+        working-directory: apps/desktop/src-tauri/vendor/tray-icon
+        env:
+          TRAY_ICON_RUN_NATIVE_TEST: "1"
+        run: cargo test --locked --lib --test macos_highlight_override
 
       - name: Check the analytics-enabled shell
         if: matrix.workspace.name == 'shell' && matrix.check.name == 'Clippy'
