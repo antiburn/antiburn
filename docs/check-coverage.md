@@ -1,6 +1,6 @@
 # Burn Check Source Coverage
 
-Audit date: 2026-09-10.
+Audit date: 2026-09-11.
 
 This document covers local passive evidence only. Coverage must not use hooks,
 new extensions, runtime subscriptions, or agent calls to fill evidence gaps. Existing
@@ -126,6 +126,16 @@ An overflow or oversized UUID records `CapExceeded`, makes attribution
 incomplete, and blocks every clean result that needs complete affected evidence.
 An oversized resume identity set is rejected instead of being trusted.
 
+Codex cache and token checks use one observation for a matching
+`token_usage_record.payload.usage` and `event_msg`/`token_count.info.last_token_usage`
+pair within five seconds. Available request identities separate same-format
+requests with equal usage. The reader retains one recent observation.
+Their cumulative `thread_token_usage`
+and `total_token_usage` values are cross checks only because the two producer
+paths can report different bases. Repeated legacy rows and cross-format copies
+remain deduplicated across resume boundaries. An unmatched valid per-response
+record remains evidence; malformed usage remains partial.
+
 Maintainer confirmation (2026-09-10): raise the identity cap to 16,384 as an
 interim measure for longer sessions. Reviewed passive alternatives include
 indexed local relationship queries and bounded batch processing. Those
@@ -152,7 +162,7 @@ identity is retained without copying private document bodies into evidence.
 | Pi                          | T                   | `EffortSemantics::AgentSelectedPolicy` evaluates the saved agent-selected thinking level, not translated provider effort. Reviewed native routes and branch/fork policy state are retained. Missing levels/routes and unknown models fail closed; provider overrides are not guessed.                                                   |
 | Pi                          | S                   | Existing output from the official subagent example extension supplies nested `toolResult` messages, exact native call/worker identity, and actual models. This is finding-only. Arbitrary extensions, fork ancestry, requested aliases, and a nonpremium observed worker cannot establish clean.                                        |
 | Pi                          | M, B, K, F          | Confirmed unsupported for the reviewed sources. Tool calls and bounded skill invocation identity do not establish historical resource exposure or speed. No alternative local proof was identified.                                                                                                                                     |
-| Claude, Codex, OpenCode, Pi | C                   | Durable request provider/API fields and the compatible-request query select reviewed cache-write or uncached-input accounting. Main-thread identity, order, token classes, model, route, and compaction boundaries constrain pairs. Unknown or incompatible segments remain partial, not clean. Google cache policy remains unreviewed. |
+| Claude, Codex, OpenCode, Pi | C                   | Durable request provider/API fields and the compatible-request query select reviewed cache-write or uncached-input accounting. Main-thread identity, order, token classes, model, route, and compaction boundaries constrain pairs. Codex pairs `token_usage_record` with equivalent `token_count` usage by per-response fields; cumulative fields do not decide equivalence. Unknown or incompatible segments remain partial, not clean. Google cache policy remains unreviewed. |
 | OpenCode                    | C                   | Both accepted export and SQLite shapes use validated ordered history. `parentID` identifies the user being answered, not the predecessor. Missing wrappers/timestamps, duplicate or out-of-order messages, and unresolved forks prevent complete history. CoreV2 `session_message` is not the existing SQLite table contract.           |
 | Cursor                      | D, O                | O retains direct timed-model findings; the source gate denies clean on every surface. D remains unavailable because the current reader does not emit request-usage evidence. Synthetic source-gate tests do not establish native parsing support.                                                                                       |
 | Cursor                      | T, S, M, B, K, F, C | Broader surface characterization is deferred. Current settings, relations, inventories, and cache evidence remain partial, unknown, or unsupported as listed; no new parity claim is made.                                                                                                                                              |
