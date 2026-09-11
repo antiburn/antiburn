@@ -91,6 +91,8 @@ pub(crate) fn event_from_row(row: &TurnRow) -> NormalizedEvent {
     };
     event.tools = synthesize_tools(row);
     event.model = row.model.clone();
+    event.provider = row.provider.clone();
+    event.api = row.api.clone();
     event.thinking_mode = row.effort.clone();
     event.speed = row.speed.clone();
     event.has_thinking = row.has_thinking;

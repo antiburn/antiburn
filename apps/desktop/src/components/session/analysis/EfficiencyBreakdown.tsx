@@ -67,13 +67,21 @@ const METRIC_GUIDANCE: Record<MetricKey, string[]> = {
   ],
 }
 
+/** Neutral advice replaces text that requires a benchmark. */
+const NEUTRAL_GUIDANCE_OVERRIDES: Partial<Record<MetricKey, string[]>> = {
+  costPerMTok: [
+    "Craft tight workflows, and use cheaper models when they're good enough.",
+    "The Context tab shows how spend splits across work, rewrite, and carry.",
+  ],
+}
+
 interface ShareRow {
   key: ShareMetricKey
   label: string
   /* The slice keeps one color for the life of the feature, so a reader
-     recognizes it between sessions. Real work is the label ink, rewrite
-     waste is the brand orange, because waste is the burn antiburn is named
-     for, and carry stays the mid neutral. */
+     recognizes it between sessions. Real work takes the measure blue, the
+     same blue the cost scale draws its reading in. Rewrite waste takes the
+     mid neutral and carry the brand orange. */
   inkClassName: string
 }
 
@@ -81,17 +89,17 @@ const SHARE_ROWS: ShareRow[] = [
   {
     key: "realWorkShare",
     label: "Real Work %",
-    inkClassName: "bg-label",
+    inkClassName: "bg-measure",
   },
   {
     key: "rewriteShare",
     label: "Rewrite Waste %",
-    inkClassName: "bg-brand-tint",
+    inkClassName: "bg-share-carry",
   },
   {
     key: "carryShare",
     label: "Carry %",
-    inkClassName: "bg-share-carry",
+    inkClassName: "bg-brand-tint",
   },
 ]
 
@@ -141,10 +149,10 @@ function shareSegments(metrics: EfficiencyMetrics): ShareSegment[] {
 
 /**
  * The $/MTok scale as a bullet graph. Three grey bands mark good, middle,
- * and bad at fixed thirds, a thin brand measure runs from zero to this
- * session's reading, and a dark line marks the edge of the good band. Under
- * each band sit its word and its dollar range, so the scale labels itself
- * and the reading needs no tag.
+ * and bad at fixed thirds, and a thin blue measure runs from zero to this
+ * session's reading. Under each band sit its word and its dollar range, so
+ * the scale labels itself and the reading needs no tag. The band steps and
+ * the ranges already mark every edge, so no separate target line is drawn.
  *
  * A fill that grows to the reading was the wrong form for this metric: a low
  * $/MTok is a good result, so a good session drew almost nothing. The question
@@ -160,18 +168,16 @@ function CostScaleBar({
 }) {
   const scale = efficiencyThermometer(metric.value, "costPerMTok", profile)
   const [, low, high] = scale.ticks
-  const ranges = [`under ${low}`, `${low} – ${high}`, `over ${high}`]
+  // The outer ranges show both middle boundaries and leave space for the floating section picker.
+  const ranges = [`under ${low}`, null, `over ${high}`]
   const last = scale.segments.length - 1
-  // The good band ends at the first edge when lower is better, and starts at
-  // the second edge when higher is better.
-  const targetPosition = scale.segments[0] === "good" ? 1 / 3 : 2 / 3
   return (
     <div
       data-testid="thermometer-costPerMTok"
       data-position={scale.position.toFixed(3)}
       aria-hidden
     >
-      <div className="relative flex h-3">
+      <div className="relative flex h-6">
         {scale.segments.map((band, index) => (
           <span
             key={band}
@@ -186,13 +192,8 @@ function CostScaleBar({
         ))}
         <span
           data-testid="cost-measure"
-          className="absolute inset-y-1 left-0 rounded-e-sm bg-brand-tint"
+          className="absolute inset-y-1 left-0 rounded-e-sm bg-measure"
           style={{ width: `${scale.position * 100}%` }}
-        />
-        <span
-          data-testid="cost-target"
-          className="absolute -inset-y-0.5 w-0.5 -translate-x-1/2 bg-label"
-          style={{ left: `${targetPosition * 100}%` }}
         />
       </div>
       <div className="mt-1 flex">
@@ -202,7 +203,8 @@ function CostScaleBar({
             data-testid={`cost-band-word-${band}`}
             data-current={band === metric.band || undefined}
             className={cn(
-              "flex flex-1 flex-col type-caption text-label-tertiary tabular-nums",
+              "flex flex-1 flex-col text-label-tertiary tabular-nums",
+              "type-body",
               index === 0 && "items-start",
               index === last && "items-end",
               index > 0 && index < last && "items-center",
@@ -211,7 +213,7 @@ function CostScaleBar({
             <span className={cn("font-medium", band === metric.band && "text-label")}>
               {efficiencyBandWord(band, "costPerMTok")}
             </span>
-            <span>{ranges[index]}</span>
+            {ranges[index] && <span>{ranges[index]}</span>}
           </span>
         ))}
       </div>
@@ -219,18 +221,14 @@ function CostScaleBar({
   )
 }
 
-/**
- * The three shares as one composition. They are parts of a single whole, so
- * they draw as one track: each run takes its slice of the width, in that
- * slice's own color. Three separate meters hid the only fact that matters,
- * which is how the session divided its cost.
- */
+/** The track shows each share as part of the total cost. */
 function CompositionTrack({ segments }: { segments: ShareSegment[] }) {
   return (
     <div
       data-testid="efficiency-composition"
+      data-height="bar"
       aria-hidden
-      className="flex h-1 gap-px overflow-hidden rounded-full bg-surface-secondary"
+      className="flex gap-px overflow-hidden bg-surface-secondary h-6 rounded-control"
     >
       {segments.map((segment) => (
         <span
@@ -245,40 +243,28 @@ function CompositionTrack({ segments }: { segments: ShareSegment[] }) {
   )
 }
 
-/**
- * The guidance for one reading, as the body of its tooltip. It names what the
- * reading measures, states the band it should sit in, and says what to change.
- *
- * The composition rows keep their guidance in a tooltip so the block stays
- * the height of its readings. A panel that grows and shrinks under the rows
- * moves everything below it every time the pointer crosses a row. The cost
- * reading stands alone on its tab, so it prints the same guidance inline.
- */
+/** The tooltip explains the reading, its expected band, and the suggested changes. */
 function MetricGuidance({
   metricKey,
-  profile,
-  inline = false,
+  guidanceProfile,
 }: {
   metricKey: MetricKey
-  profile: EfficiencyProfile
-  inline?: boolean
+  guidanceProfile: EfficiencyProfile | null
 }) {
-  const leadClass = inline ? "text-label-secondary" : "text-label"
-  const restClass = inline ? "text-label-tertiary" : "text-label-secondary"
+  const metricGuidance =
+    guidanceProfile === null
+      ? (NEUTRAL_GUIDANCE_OVERRIDES[metricKey] ?? METRIC_GUIDANCE[metricKey])
+      : METRIC_GUIDANCE[metricKey]
+  const advice = [...efficiencyThresholdGuidance(metricKey, guidanceProfile), ...metricGuidance]
   return (
-    <div className={cn("space-y-1 text-pretty", inline && "type-callout")}>
+    <div className="space-y-1 text-pretty">
       {METRIC_SUMMARY[metricKey].map((sentence) => (
-        <p key={sentence} className={leadClass}>
+        <p key={sentence} className="text-label">
           {sentence}
         </p>
       ))}
-      {efficiencyThresholdGuidance(metricKey, profile).map((sentence) => (
-        <p key={sentence} className={restClass}>
-          {sentence}
-        </p>
-      ))}
-      {METRIC_GUIDANCE[metricKey].map((sentence) => (
-        <p key={sentence} className={restClass}>
+      {advice.map((sentence) => (
+        <p key={sentence} className="text-label-secondary">
           {sentence}
         </p>
       ))}
@@ -289,49 +275,65 @@ function MetricGuidance({
 const ROW_CLASS =
   "-mx-1.5 rounded-control px-1.5 py-1 type-body transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover focus-visible:bg-surface-hover"
 
-/**
- * The $/MTok reading: label and figure on one baseline, its scale underneath,
- * and its guidance printed below the scale. This metric is not part of the
- * composition, so it keeps the scale the other readings gave up, and it has
- * the room on its own tab to explain itself without a tooltip.
- */
+/** The hero figure opens guidance in a tooltip. The scale shows the bands below it. */
 function CostRowLine({
   metric,
   profile,
+  guidanceProfile,
 }: {
   metric: EfficiencyMetric
   profile: EfficiencyProfile
+  guidanceProfile: EfficiencyProfile | null
 }) {
   return (
     <div className="type-body" data-testid="cost-row">
-      <span className="flex items-baseline justify-between gap-2 pb-1">
-        <span className="truncate text-label-secondary">$/MTok</span>
-        <span className="shrink-0 text-label tabular-nums">
-          {formatCostPerMTok(metric.value)}
-        </span>
-      </span>
+      <Tooltip
+        label={<MetricGuidance metricKey="costPerMTok" guidanceProfile={guidanceProfile} />}
+        side="bottom"
+        delayMs={150}
+      >
+        <div
+          data-testid="cost-hero"
+          tabIndex={0}
+          className={cn(ROW_CLASS, "my-2 flex flex-wrap items-center gap-x-4 gap-y-1 pb-3")}
+        >
+          <span
+            className={cn(
+              "type-display font-semibold! tabular-nums",
+              metric.band === "bad" ? "text-brand" : "text-label",
+            )}
+          >
+            {formatCostPerMTok(metric.value)}
+          </span>
+          <span className="flex flex-col type-callout">
+            <span className="font-semibold text-label">$/MTOK</span>
+            <span className="text-label-secondary">
+              per million tokens of work: context growth and output only
+            </span>
+          </span>
+        </div>
+      </Tooltip>
       <CostScaleBar metric={metric} profile={profile} />
-      <div className="mt-3" data-testid="cost-guidance">
-        <MetricGuidance metricKey="costPerMTok" profile={profile} inline />
-      </div>
     </div>
   )
 }
 
 /**
- * One line of the composition legend: the slice's color, its name, its share,
- * and the band word. The run in the track above carries the size, so the row
- * carries no bar of its own.
+ * One composition line shows the slice color, name, share, and band word.
+ * The track shows the size, so the row has no bar.
  */
 function ShareRowLine({
   segment,
-  profile,
+  guidanceProfile,
 }: {
   segment: ShareSegment
-  profile: EfficiencyProfile
+  guidanceProfile: EfficiencyProfile | null
 }) {
   return (
-    <Tooltip label={<MetricGuidance metricKey={segment.key} profile={profile} />} delayMs={150}>
+    <Tooltip
+      label={<MetricGuidance metricKey={segment.key} guidanceProfile={guidanceProfile} />}
+      delayMs={150}
+    >
       <div
         data-testid={`share-row-${segment.key}`}
         className={cn(ROW_CLASS, "flex items-baseline gap-2")}
@@ -357,7 +359,7 @@ function ShareRowPlaceholder({ row }: { row: ShareRow }) {
     <div className={cn(ROW_CLASS, "flex items-baseline gap-2")}>
       <span
         aria-hidden
-        className={cn("size-2 shrink-0 self-center rounded-full bg-surface-tertiary")}
+        className="size-2 shrink-0 self-center rounded-full bg-surface-tertiary"
       />
       <span className="min-w-0 flex-1 truncate text-label-secondary">{row.label}</span>
       <span className="shrink-0 text-label tabular-nums">—</span>
@@ -377,21 +379,31 @@ export function EfficiencyBreakdown({ metrics, section }: EfficiencyBreakdownPro
 
   return (
     <div className="flex flex-col" data-testid="efficiency-block">
-      {showCost && <CostRowLine metric={metrics.costPerMTok} profile={metrics.profile} />}
+      {showCost && (
+        <CostRowLine
+          metric={metrics.costPerMTok}
+          profile={metrics.profile}
+          guidanceProfile={metrics.guidanceProfile}
+        />
+      )}
       {showCost && showComposition && (
         <div className="my-3 border-b border-dashed border-separator" />
       )}
       {!showComposition ? null : segments.length > 0 ? (
         <>
           <CompositionTrack segments={segments} />
-          <div className="mt-2 flex flex-col">
+          <div data-testid="composition-legend" className="flex flex-col mt-3">
             {segments.map((segment) => (
-              <ShareRowLine key={segment.key} segment={segment} profile={metrics.profile} />
+              <ShareRowLine
+                key={segment.key}
+                segment={segment}
+                guidanceProfile={metrics.guidanceProfile}
+              />
             ))}
           </div>
         </>
       ) : (
-        <div className="flex flex-col">
+        <div data-testid="composition-legend" className="flex flex-col">
           {SHARE_ROWS.map((row) => (
             <ShareRowPlaceholder key={row.key} row={row} />
           ))}

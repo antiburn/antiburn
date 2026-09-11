@@ -1,7 +1,32 @@
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { PopoverPeekData } from "../../lib/popoverPeekIpc"
+import { emptyBurnCheckPresentation } from "../../lib/presentation/burnChecks"
 import { PopoverPeekController } from "./PopoverPeekController"
+
+const analytics = vi.hoisted(() => ({
+  conceal: vi.fn(),
+  expose: vi.fn((_options: unknown) => 41),
+  observeLiveUsage: vi.fn(),
+  suspend: vi.fn(),
+}))
+
+vi.mock("../../lib/surfaceExposure", () => ({
+  SurfaceExposureTracker: class {
+    expose(options: unknown) {
+      return analytics.expose(options)
+    }
+    observeLiveUsage(summary: unknown, provider: unknown, generation: unknown) {
+      analytics.observeLiveUsage(summary, provider, generation)
+    }
+    conceal() {
+      analytics.conceal()
+    }
+    suspend() {
+      analytics.suspend()
+    }
+  },
+}))
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -34,6 +59,77 @@ function providerData(generatedAt: string): PopoverPeekData {
   }
 }
 
+function checksData(): PopoverPeekData {
+  return {
+    kind: "checks",
+    presentation: {
+      failures: [],
+      wins: [],
+      unavailable: [],
+      refreshUnavailable: false,
+      estimate: { tokenBurnBasisPoints: null },
+      burnChecks: emptyBurnCheckPresentation("pending"),
+    },
+  }
+}
+
+function expiredProviderData(): PopoverPeekData {
+  const generatedAt = new Date("2026-09-08T01:00:00Z").toISOString()
+  return {
+    kind: "provider",
+    summary: { providers: [], generatedAt },
+    live: {
+      providers: [
+        {
+          provider: "anthropic",
+          accountKey: null,
+          displayName: "Claude",
+          support: "live",
+          freshness: "stale",
+          sourceLabel: "cached usage",
+          observedAt: new Date("2026-09-08T00:40:00Z").toISOString(),
+          windows: [
+            {
+              id: "five-hour",
+              role: "primaryShort",
+              kind: "rolling",
+              scopeModel: null,
+              usedPercent: 50,
+              startsAt: null,
+              resetsAt: null,
+              hasNonzeroUsageInCurrentPeriod: true,
+              forecast: {
+                unavailableReason: "stale",
+                confidence: null,
+                consumptionRate: null,
+                paceRatio: null,
+                paceTrend: null,
+                runwayAt: null,
+                usedToday: null,
+              },
+            },
+          ],
+          extraUsage: null,
+          resetCredits: null,
+          plan: null,
+          accountUuid: null,
+          accountEmail: null,
+        },
+      ],
+      errors: [
+        {
+          source: "claude",
+          provider: "anthropic",
+          displayName: "Claude",
+          category: "rateLimited",
+        },
+      ],
+      meters: [{ provider: "anthropic", displayName: "Claude", shown: true }],
+      generatedAt,
+    },
+  }
+}
+
 function controllerWith(data: (generation: number) => Promise<PopoverPeekData>) {
   return new PopoverPeekController({
     data,
@@ -44,6 +140,202 @@ function controllerWith(data: (generation: number) => Promise<PopoverPeekData>) 
 }
 
 describe("PopoverPeekController", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it("records a preview only after its candidate is promoted", async () => {
+    const loaded = deferred<PopoverPeekData>()
+    const controller = controllerWith(vi.fn(() => loaded.promise))
+
+    controller.accept(request(1, "first"))
+    loaded.resolve(providerData("first"))
+    await loaded.promise
+    await Promise.resolve()
+    expect(analytics.expose).not.toHaveBeenCalled()
+
+    controller.confirmPresented(1)
+    expect(analytics.expose).not.toHaveBeenCalled()
+    controller.promote(1)
+
+    expect(analytics.expose).toHaveBeenCalledWith({
+      surface: "provider_preview",
+      origin: "user",
+      identity: 1,
+      state: "empty",
+    })
+    expect(analytics.observeLiveUsage).toHaveBeenCalledWith(
+      expect.objectContaining({ generatedAt: "first" }),
+      "first",
+      41,
+    )
+  })
+
+  it("does not record a promoted candidate without native visibility confirmation", async () => {
+    const loaded = deferred<PopoverPeekData>()
+    const controller = controllerWith(vi.fn(() => loaded.promise))
+
+    controller.accept(request(1, "first"))
+    loaded.resolve(providerData("first"))
+    await loaded.promise
+    await Promise.resolve()
+    controller.promote(1)
+
+    expect(controller.getSnapshot().presented).toMatchObject({ request: { generation: 1 } })
+    expect(analytics.expose).not.toHaveBeenCalled()
+  })
+
+  it("starts the timeout when a cold loading preview becomes visible", async () => {
+    const ready = vi.fn(async () => true)
+    const controller = new PopoverPeekController({
+      data: vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),
+      listen: vi.fn(async () => () => undefined),
+      ready,
+      state: vi.fn(async () => ({
+        generation: 0,
+        target: null,
+        rendererReady: false,
+        visible: false,
+        awaitingRetargetCommit: false,
+        awaitingPresentation: false,
+        awaitingConcealment: false,
+      })),
+    })
+    Object.defineProperty(window, "__ANTIBURN_WINDOW_GENERATION__", {
+      configurable: true,
+      value: 9,
+    })
+    controller.commitRenderer(document.createElement("div"))
+    const unsubscribe = controller.subscribe(() => undefined)
+    await vi.waitFor(() => expect(ready).toHaveBeenCalledWith(9))
+    await Promise.resolve()
+
+    controller.accept(request(1, "first"))
+
+    expect(analytics.expose).toHaveBeenCalledWith({
+      surface: "provider_preview",
+      origin: "user",
+      identity: 1,
+    })
+    unsubscribe()
+  })
+
+  it("waits for native confirmation before recording seeded content", () => {
+    const controller = controllerWith(
+      vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),
+    )
+    controller.accept({
+      ...request(2, "second"),
+      initialPresentation: providerData("seeded"),
+    })
+
+    expect(analytics.expose).not.toHaveBeenCalled()
+    controller.confirmPresented(2)
+
+    expect(analytics.expose).toHaveBeenCalledWith(
+      expect.objectContaining({ surface: "provider_preview", identity: 2 }),
+    )
+  })
+
+  it("records an empty checks preview after native confirmation", () => {
+    const controller = controllerWith(
+      vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),
+    )
+    controller.accept({
+      generation: 3,
+      target: { kind: "checks" },
+      retargetCommitRequired: true,
+      initialPresentation: checksData(),
+    })
+
+    controller.confirmPresented(3)
+
+    expect(analytics.expose).toHaveBeenCalledWith({
+      surface: "checks_preview",
+      origin: "user",
+      identity: 3,
+      state: "empty",
+    })
+  })
+
+  it("does not treat unavailable-only checks as ready data", () => {
+    const controller = controllerWith(
+      vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),
+    )
+    const data = checksData()
+    if (data.kind === "checks") {
+      data.presentation.unavailable.push({
+        id: "cacheChurn",
+        finding: 0,
+        clean: 0,
+        unavailable: 3,
+        estimatedTokenBurnBasisPoints: null,
+      })
+    }
+    controller.accept({
+      generation: 3,
+      target: { kind: "checks" },
+      retargetCommitRequired: true,
+      initialPresentation: data,
+    })
+
+    controller.confirmPresented(3)
+
+    expect(analytics.expose).toHaveBeenCalledWith(expect.objectContaining({ state: "empty" }))
+  })
+
+  it("reports assessed checks as ready data", () => {
+    const controller = controllerWith(
+      vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),
+    )
+    const data = checksData()
+    if (data.kind === "checks") {
+      data.presentation.wins.push({
+        id: "cacheChurn",
+        finding: 0,
+        clean: 3,
+        unavailable: 0,
+        estimatedTokenBurnBasisPoints: 0,
+      })
+    }
+    controller.accept({
+      generation: 4,
+      target: { kind: "checks" },
+      retargetCommitRequired: true,
+      initialPresentation: data,
+    })
+
+    controller.confirmPresented(4)
+
+    expect(analytics.expose).toHaveBeenCalledWith(expect.objectContaining({ state: "ready" }))
+  })
+
+  it("reports an expired provider cache as an error", () => {
+    const controller = controllerWith(
+      vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),
+    )
+    controller.accept({
+      ...request(4, "anthropic"),
+      initialPresentation: expiredProviderData(),
+    })
+
+    controller.confirmPresented(4)
+
+    expect(analytics.expose).toHaveBeenCalledWith(expect.objectContaining({ state: "error" }))
+  })
+
+  it("ends the preview exposure when the shell conceals it", () => {
+    const controller = controllerWith(
+      vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),
+    )
+    controller.accept(request(1, "first"))
+    analytics.conceal.mockClear()
+
+    controller.accept(request(2, null))
+
+    expect(analytics.conceal).toHaveBeenCalledOnce()
+  })
+
   it("marks a cold request as loading without a presented payload", () => {
     const controller = controllerWith(
       vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),

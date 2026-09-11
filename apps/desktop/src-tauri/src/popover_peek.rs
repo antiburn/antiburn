@@ -4,8 +4,7 @@ use std::time::Duration;
 
 use antiburn_anchored_window::{
     AnchorRegion, AnchoredWindowConfig, AnchoredWindowManager, AnchoredWindowRequest,
-    AnchoredWindowState, HeightPolicy, InteractionPolicy, PlacementPolicy, PointerExitPolicy,
-    RevealPolicy, WindowMaterial,
+    AnchoredWindowState, PointerExitPolicy,
 };
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
@@ -79,32 +78,32 @@ pub type PopoverPeekManager = AnchoredWindowManager<PopoverPeekTarget, PopoverPe
 const MAX_CONTENT_HEIGHT: f64 = 780.0;
 
 pub fn manager() -> PopoverPeekManager {
-    AnchoredWindowManager::new(AnchoredWindowConfig {
+    let manager = AnchoredWindowManager::new(AnchoredWindowConfig {
         label: LABEL.to_string(),
         anchor_label: crate::popover::LABEL.to_string(),
-        route: "index.html#/popover-peek".to_string(),
+        route: if cfg!(target_os = "macos") {
+            "native-peek.html"
+        } else {
+            "index.html#/popover-peek"
+        }
+        .to_string(),
         title: "antiburn".to_string(),
         width: 380.0,
-        material: WindowMaterial::Popover {
-            corner_radius: crate::popover::CORNER_RADIUS,
-        },
-        interaction: InteractionPolicy::Passive,
-        reveal: RevealPolicy::ImmediatePlaceholder,
-        height: HeightPolicy::Content {
-            initial: 320.0,
-            min: 60.0,
-            max: MAX_CONTENT_HEIGHT,
-        },
-        placement: PlacementPolicy::LeftPreferred {
-            gap: 8.0,
-            screen_margin: 8.0,
-        },
+        corner_radius: crate::popover::CORNER_RADIUS,
+        initial_height: 320.0,
+        min_height: 60.0,
+        max_height: MAX_CONTENT_HEIGHT,
+        gap: 8.0,
+        screen_margin: 8.0,
         conceal_fallback: Duration::from_millis(80),
         pointer_exit: Some(PointerExitPolicy {
             edge_tolerance: 12.0,
             outside_delay: Duration::from_millis(180),
         }),
-    })
+    });
+    #[cfg(target_os = "macos")]
+    let manager = manager.with_native_handler(native_request);
+    manager
 }
 
 fn validate_popover_caller(actual: &str) -> Result<(), String> {
@@ -241,18 +240,23 @@ pub fn get_popover_peek_data(
     manager: tauri::State<'_, PopoverPeekManager>,
 ) -> Result<PopoverPeekData, String> {
     validate_peek_caller(window.label())?;
-    let target = current_target(&manager, generation)?;
+    peek_data(window.app_handle(), &manager, generation)
+}
+
+fn peek_data(
+    app: &tauri::AppHandle,
+    manager: &PopoverPeekManager,
+    generation: u64,
+) -> Result<PopoverPeekData, String> {
+    let target = current_target(manager, generation)?;
     match target {
         PopoverPeekTarget::Provider {
             provider,
             utc_offset_minutes,
         } => {
-            let local = crate::commands::provider_usage_summary(
-                window.app_handle(),
-                Some(utc_offset_minutes),
-            )?;
-            let live = crate::commands::cached_live_usage(window.app_handle());
-            current_target(&manager, generation)?;
+            let local = crate::commands::provider_usage_summary(app, Some(utc_offset_minutes))?;
+            let live = crate::commands::cached_live_usage(app);
+            current_target(manager, generation)?;
             Ok(selected_provider_data(&provider, local, live))
         }
         PopoverPeekTarget::Checks => {
@@ -306,7 +310,7 @@ pub fn popover_peek_ready(
 ) -> Result<bool, String> {
     validate_peek_caller(window.label())?;
     manager
-        .renderer_ready(&window, generation)
+        .renderer_ready(window.app_handle(), generation)
         .map_err(|error| error.to_string())
 }
 
@@ -360,11 +364,102 @@ pub fn popover_peek_concealed(
     Ok(manager.concealed(window.app_handle(), generation))
 }
 
-pub fn prewarm(app: &tauri::AppHandle) {
+#[cfg(target_os = "macos")]
+fn native_request(
+    app: &tauri::AppHandle,
+    command: &str,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Generation {
+        generation: u64,
+    }
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Presentation {
+        generation: u64,
+        content_height: Option<f64>,
+    }
+    let manager = app.state::<PopoverPeekManager>();
+    let result = match command {
+        "get_popover_peek_state" => {
+            if args != serde_json::json!({}) {
+                return Err("unexpected state arguments".into());
+            }
+            serde_json::to_value(manager.state())
+        }
+        "get_popover_peek_data" => {
+            let args: Generation =
+                serde_json::from_value(args).map_err(|error| error.to_string())?;
+            serde_json::to_value(peek_data(app, &manager, args.generation)?)
+        }
+        "popover_peek_ready" | "popover_peek_concealed" => {
+            let args: Generation =
+                serde_json::from_value(args).map_err(|error| error.to_string())?;
+            let accepted = if command == "popover_peek_ready" {
+                manager
+                    .renderer_ready(app, args.generation)
+                    .map_err(|error| error.to_string())?
+            } else {
+                manager.concealed(app, args.generation)
+            };
+            serde_json::to_value(accepted)
+        }
+        "popover_peek_presented" | "popover_peek_retarget_ready" => {
+            let args: Presentation =
+                serde_json::from_value(args).map_err(|error| error.to_string())?;
+            let accepted = if command == "popover_peek_presented" {
+                current_target(&manager, args.generation)?;
+                manager.presented(app, args.generation, args.content_height)
+            } else {
+                manager.retarget_committed_with_height(app, args.generation, args.content_height)
+            };
+            serde_json::to_value(accepted.map_err(|error| error.to_string())?)
+        }
+        "note_interaction" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Note {
+                interaction: crate::analytics::event::Interaction,
+            }
+            let note: Note = serde_json::from_value(args).map_err(|error| error.to_string())?;
+            validate_native_interaction(&note.interaction)?;
+            if manager.state().visible {
+                crate::analytics::record_interaction(app, note.interaction);
+            }
+            Ok(serde_json::Value::Null)
+        }
+        _ => return Err("unsupported native preview command".into()),
+    };
+    result.map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn validate_native_interaction(
+    interaction: &crate::analytics::event::Interaction,
+) -> Result<(), String> {
+    use crate::analytics::event::{Interaction, StateSurface, Surface};
+    match interaction {
+        Interaction::SurfaceViewed {
+            surface: Surface::ProviderPreview | Surface::ChecksPreview,
+            ..
+        }
+        | Interaction::SurfaceStateObserved {
+            surface: StateSurface::ProviderPreview | StateSurface::ChecksPreview,
+            ..
+        }
+        | Interaction::LiveUsageStateObserved { .. } => Ok(()),
+        _ => Err("the native preview cannot report this interaction".into()),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn rebuild_if_targeted(app: &tauri::AppHandle) {
     if let Some(manager) = app.try_state::<PopoverPeekManager>()
-        && let Err(error) = manager.prewarm(app)
+        && let Err(error) = manager.rebuild_if_targeted(app)
     {
-        ::tracing::warn!(event = "popover_peek_prewarm_failed", companion_label = LABEL, error = %error);
+        ::tracing::warn!(event = "popover_peek_rebuild_failed", companion_label = LABEL, error = %error);
     }
 }
 
@@ -435,6 +530,26 @@ mod tests {
         assert!(validate_state_caller(LABEL).is_ok());
         assert!(validate_state_caller("popover").is_ok());
         assert!(validate_state_caller("settings").is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_analytics_cannot_report_unrelated_surfaces() {
+        use crate::analytics::event::{Interaction, Origin, Surface};
+        assert!(
+            validate_native_interaction(&Interaction::SurfaceViewed {
+                surface: Surface::ProviderPreview,
+                origin: Origin::User
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_native_interaction(&Interaction::SurfaceViewed {
+                surface: Surface::Settings,
+                origin: Origin::User
+            })
+            .is_err()
+        );
     }
 
     #[test]

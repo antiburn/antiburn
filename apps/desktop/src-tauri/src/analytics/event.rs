@@ -1,11 +1,16 @@
 //! The event payload: every field that may ever leave this machine, named once.
 //!
-//! This module is the enforcement point for the promise the Privacy pane makes.
-//! [`Event`] has no free-form field — no map, no `serde_json::Value`, no
-//! `String` a caller chooses the contents of — so there is nowhere for a path,
-//! a repository name, a session title, or a credential to be put. Adding a
-//! field here is the only way to widen what is sent, which makes widening it a
-//! visible act in review rather than an accident at a call site.
+//! This module enforces the promise the Privacy pane makes. Almost every
+//! [`Event`] field is a `&'static str` the caller passes in. No caller can put
+//! a path, a repository name, a session title, or a credential here. There
+//! are two bounded exceptions, not a free-form map or a `serde_json::Value`.
+//! `properties.resourceUsage` is a closed nested struct.
+//! `properties.unrecognizedTypes` is a sanitized `Vec<String>` of transcript
+//! record type names. `analytics::sanitize_unrecognized_types` caps its count
+//! and length and filters it to a fixed character set before it reaches this
+//! struct. Adding a field here is the only way to widen what antiburn sends.
+//! That makes widening it a visible act in review, not an accident at a call
+//! site.
 //!
 //! Counts are bucketed for the same reason. An exact session count, reported
 //! repeatedly over weeks, is a fingerprint even without an identifier attached
@@ -24,11 +29,12 @@ use serde::Serialize;
 pub enum EventName {
     /// The application started.
     AppLaunched,
-    /// The first run finished. Carries nothing: which step a reader stopped
-    /// on would be worth knowing, but nothing reports abandonment, and a doc
-    /// comment describing an unbuilt capability is how a catalog starts to
-    /// overstate itself.
+    /// A new or explicitly restarted setup flow finished.
+    #[cfg(feature = "analytics")]
     OnboardingFinished,
+    /// A new or explicitly restarted setup flow became visible.
+    #[cfg(feature = "analytics")]
+    OnboardingStarted,
     /// One fixed onboarding step became visible.
     #[cfg(feature = "analytics")]
     OnboardingStepViewed,
@@ -48,6 +54,45 @@ pub enum EventName {
     /// Claude's limit-reset diagnostic changed during this run.
     #[cfg(feature = "analytics")]
     ClaudeLimitResetObserved,
+    /// A product surface became visible.
+    #[cfg(feature = "analytics")]
+    SurfaceViewed,
+    /// A Settings pane became visible.
+    #[cfg(feature = "analytics")]
+    SettingsPaneViewed,
+    /// A visible surface presented a terminal or timed-out data state.
+    #[cfg(feature = "analytics")]
+    SurfaceStateObserved,
+    /// A provider state appeared on a visible usage surface.
+    #[cfg(feature = "analytics")]
+    LiveUsageStateObserved,
+    /// An ordinary live-usage refresh published a changed coarse usage band.
+    #[cfg(feature = "analytics")]
+    UsageObserved,
+    /// A learning pass produced a first or changed coarse limit factor.
+    #[cfg(feature = "analytics")]
+    LimitFactorObserved,
+    /// One hourly summary describes the shell's coarse resource use.
+    #[cfg(feature = "analytics")]
+    ResourceUsageObserved,
+    /// An Auto Fix review reached a closed preparation outcome.
+    #[cfg(feature = "analytics")]
+    BurnCheckAutoFixReviewed,
+    /// The reader confirmed one reviewed Auto Fix operation.
+    #[cfg(feature = "analytics")]
+    BurnCheckAutoFixConfirmed,
+    /// A confirmed Auto Fix operation reached a closed result.
+    #[cfg(feature = "analytics")]
+    BurnCheckAutoFixCompleted,
+    /// A fix prompt request reached a closed preparation outcome.
+    #[cfg(feature = "analytics")]
+    BurnCheckPromptPrepared,
+    /// A prepared fix prompt was copied to the clipboard.
+    #[cfg(feature = "analytics")]
+    BurnCheckPromptCopied,
+    /// A verified or recurred result appeared during a deliberate exposure.
+    #[cfg(feature = "analytics")]
+    BurnCheckOutcomeObserved,
 }
 
 /// Every event this application may send.
@@ -62,6 +107,7 @@ pub enum EventName {
 pub const EVERY_EVENT: &[EventName] = &[
     EventName::AppLaunched,
     EventName::OnboardingFinished,
+    EventName::OnboardingStarted,
     EventName::OnboardingStepViewed,
     EventName::ScanCompleted,
     EventName::SettingToggled,
@@ -69,6 +115,19 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::ErrorOccurred,
     EventName::UnrecognizedRecordsObserved,
     EventName::ClaudeLimitResetObserved,
+    EventName::SurfaceViewed,
+    EventName::SettingsPaneViewed,
+    EventName::SurfaceStateObserved,
+    EventName::LiveUsageStateObserved,
+    EventName::UsageObserved,
+    EventName::LimitFactorObserved,
+    EventName::ResourceUsageObserved,
+    EventName::BurnCheckAutoFixReviewed,
+    EventName::BurnCheckAutoFixConfirmed,
+    EventName::BurnCheckAutoFixCompleted,
+    EventName::BurnCheckPromptPrepared,
+    EventName::BurnCheckPromptCopied,
+    EventName::BurnCheckOutcomeObserved,
 ];
 
 #[cfg(feature = "analytics")]
@@ -77,6 +136,7 @@ impl EventName {
         match self {
             EventName::AppLaunched => "antiburn.app_launched",
             EventName::OnboardingFinished => "antiburn.onboarding_finished",
+            EventName::OnboardingStarted => "antiburn.onboarding_started",
             EventName::OnboardingStepViewed => "antiburn.onboarding_step_viewed",
             EventName::ScanCompleted => "antiburn.scan_completed",
             EventName::SettingToggled => "antiburn.setting_toggled",
@@ -84,6 +144,19 @@ impl EventName {
             EventName::ErrorOccurred => "antiburn.error_occurred",
             EventName::UnrecognizedRecordsObserved => "antiburn.unrecognized_records_observed",
             EventName::ClaudeLimitResetObserved => "antiburn.claude_limit_reset_observed",
+            EventName::SurfaceViewed => "antiburn.surface_viewed",
+            EventName::SettingsPaneViewed => "antiburn.settings_pane_viewed",
+            EventName::SurfaceStateObserved => "antiburn.surface_state_observed",
+            EventName::LiveUsageStateObserved => "antiburn.live_usage_state_observed",
+            EventName::UsageObserved => "antiburn.usage_observed",
+            EventName::LimitFactorObserved => "antiburn.limit_factor_observed",
+            EventName::ResourceUsageObserved => "antiburn.resource_usage_observed",
+            EventName::BurnCheckAutoFixReviewed => "antiburn.burn_check_auto_fix_reviewed",
+            EventName::BurnCheckAutoFixConfirmed => "antiburn.burn_check_auto_fix_confirmed",
+            EventName::BurnCheckAutoFixCompleted => "antiburn.burn_check_auto_fix_completed",
+            EventName::BurnCheckPromptPrepared => "antiburn.burn_check_prompt_prepared",
+            EventName::BurnCheckPromptCopied => "antiburn.burn_check_prompt_copied",
+            EventName::BurnCheckOutcomeObserved => "antiburn.burn_check_outcome_observed",
         }
     }
 }
@@ -118,11 +191,12 @@ pub struct Event {
     /// Required by the collector, not optional: a payload without it is
     /// rejected outright, so this is the contract's floor rather than
     /// something antiburn chose to add. It is also the *least* persistent
-    /// thing in the payload — minted in memory, never written to disk, gone
-    /// when the process exits, and replaced after
-    /// [`super::SESSION_TIMEOUT`] of inactivity. It cannot outlive a run, so
-    /// it cannot join one to another; the rotating [`Event::anonymous_id`]
-    /// remains the longest-lived identifier here.
+    /// thing in the payload — its generator state lives in memory, is gone
+    /// when the process exits, and is replaced after
+    /// [`super::SESSION_TIMEOUT`] of inactivity. The generator cannot continue
+    /// into another run. Queued event payloads include the captured value until
+    /// delivery or withdrawal. The rotating [`Event::anonymous_id`] remains the
+    /// longest-lived generator state here.
     pub session_id: String,
     /// Event name, in antiburn's own namespace.
     pub event: String,
@@ -153,6 +227,9 @@ pub struct Properties {
     /// under WSL. Same rules as [`Properties::label`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<&'static str>,
+    /// The closed origin for a surface state or visible Burn Check result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<&'static str>,
     /// The short-window usage position returned with a Claude reset probe.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_band: Option<&'static str>,
@@ -180,6 +257,27 @@ pub struct Properties {
     /// Whether Claude returned a next-availability timestamp.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_reset_available: Option<&'static str>,
+    /// A learned limit factor's mapped plan name, or `unknown` or `other`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<&'static str>,
+    /// A learned limit factor's coarse dollars-per-percent band.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub factor_band: Option<&'static str>,
+    /// How far the meter and the factor's own estimate disagree, banded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub residual_band: Option<&'static str>,
+    /// These bands describe process and local-store resource use for one bounded window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_usage: Option<super::resources::schema::ResourceUsageSummary>,
+    /// Sanitized transcript record type names. This field appears only on
+    /// `antiburn.unrecognized_records_observed`.
+    /// `analytics::sanitize_unrecognized_types` checks each name before it
+    /// reaches this struct. It keeps at most 16 names. Each name must be
+    /// non-empty, ASCII, at most 64 bytes long, and made only of characters
+    /// in `[A-Za-z0-9_.:/-]`. A name that fails this check becomes the fixed
+    /// sentinel `<rejected>`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unrecognized_types: Option<Vec<String>>,
 }
 
 /// What a caller may attach to an event.
@@ -188,7 +286,7 @@ pub struct Properties {
 /// which are indistinguishable to the compiler and so silently swappable at a
 /// call site. Naming them makes a mix-up a compile error instead of a wrong
 /// value arriving in a dashboard nobody cross-checks.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Facts {
     /// A bucketed magnitude, never an exact count.
     pub bucket: Option<&'static str>,
@@ -196,6 +294,8 @@ pub struct Facts {
     pub label: Option<&'static str>,
     /// The secondary dimension, where the event has one.
     pub detail: Option<&'static str>,
+    /// The closed origin for a surface state or visible Burn Check result.
+    pub origin: Option<&'static str>,
     pub usage_band: Option<&'static str>,
     pub response_shape: Option<&'static str>,
     pub eligibility: Option<&'static str>,
@@ -205,6 +305,13 @@ pub struct Facts {
     pub reset_availability: Option<&'static str>,
     pub resets_per_week: Option<&'static str>,
     pub next_reset_available: Option<&'static str>,
+    pub plan: Option<&'static str>,
+    pub factor_band: Option<&'static str>,
+    pub residual_band: Option<&'static str>,
+    #[cfg(feature = "analytics")]
+    pub resource_usage: Option<super::resources::schema::ResourceUsageSummary>,
+    /// Sanitized transcript record type names. See [`Properties::unrecognized_types`].
+    pub unrecognized_types: Option<Vec<String>>,
 }
 
 #[cfg(feature = "analytics")]
@@ -248,7 +355,7 @@ pub struct Context {
 /// outside it, and every string that reaches the payload is a `&'static str`
 /// this file wrote. Every doc comment below that says "closed" means this.
 #[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Interaction {
     /// A fixed onboarding step became visible.
     OnboardingStepViewed { step: OnboardingStep },
@@ -259,6 +366,179 @@ pub enum Interaction {
         agent: AgentKind,
         environment: Environment,
     },
+    /// A fixed product surface became visible.
+    SurfaceViewed { surface: Surface, origin: Origin },
+    /// A visible surface presented a data state.
+    SurfaceStateObserved {
+        surface: StateSurface,
+        state: SurfaceState,
+        origin: Origin,
+    },
+    /// A fixed Settings pane became visible.
+    SettingsPaneViewed { pane: SettingsPane },
+    /// A provider state appeared on a visible usage surface.
+    LiveUsageStateObserved {
+        provider: LiveUsageProvider,
+        state: LiveUsageState,
+        origin: Origin,
+    },
+    /// An Auto Fix review request completed.
+    BurnCheckAutoFixReviewed { outcome: AutoFixReviewOutcome },
+    /// The reader confirmed the operation shown in an Auto Fix review.
+    BurnCheckAutoFixConfirmed,
+    /// A confirmed Auto Fix operation completed.
+    BurnCheckAutoFixCompleted { outcome: AutoFixOutcome },
+    /// A fix prompt request completed.
+    BurnCheckPromptPrepared { outcome: PromptPreparationOutcome },
+    /// A prepared fix prompt reached the clipboard.
+    BurnCheckPromptCopied,
+    /// A later result appeared in the visible Burn Checks workspace.
+    BurnCheckOutcomeObserved {
+        outcome: BurnCheckOutcome,
+        origin: BurnCheckOrigin,
+    },
+}
+
+/// A product surface whose visibility is measured.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Surface {
+    Activity,
+    SessionDetail,
+    ProviderPreview,
+    ChecksPreview,
+    Hud,
+    HudDetail,
+    Settings,
+    BurnChecks,
+}
+
+/// A surface that can present a measured data state.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StateSurface {
+    Activity,
+    SessionDetail,
+    ProviderPreview,
+    ChecksPreview,
+    Hud,
+    HudDetail,
+    Settings,
+    Insights,
+    BurnChecks,
+}
+
+/// A closed Auto Fix review preparation result.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoFixReviewOutcome {
+    Ready,
+    Stale,
+    Expired,
+    Conflict,
+    Unavailable,
+    Failed,
+}
+
+/// A closed result from one confirmed Auto Fix operation.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoFixOutcome {
+    AppliedAwaitingVerification,
+    RecoveryNeeded,
+    Stale,
+    Expired,
+    Conflict,
+    Unavailable,
+    Failed,
+}
+
+/// A closed result from one prompt preparation request.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptPreparationOutcome {
+    Ready,
+    Stale,
+    Expired,
+    Unavailable,
+    Failed,
+}
+
+/// A later Burn Check result that the workspace can present.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BurnCheckOutcome {
+    Verified,
+    Recurred,
+}
+
+/// Whether the measured verification watch started passively or from an action.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BurnCheckOrigin {
+    Passive,
+    Action,
+}
+
+/// Why a surface became visible.
+#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Origin {
+    User,
+    Automatic,
+}
+
+/// A visible surface's coarse presentation state.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceState {
+    Ready,
+    Empty,
+    Error,
+    LoadingTimeout,
+}
+
+/// A pane in the fixed Settings window.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsPane {
+    General,
+    Appearance,
+    Sources,
+    Privacy,
+    Notifications,
+    Usage,
+    Insights,
+    About,
+}
+
+/// A provider with a supported live-usage source.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveUsageProvider {
+    Anthropic,
+    Openai,
+    Google,
+}
+
+/// A provider state that a visible usage surface can present.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveUsageState {
+    Fresh,
+    Stale,
+    Authentication,
+    RateLimited,
+    Unavailable,
+    NoCredentials,
+}
+
+/// Which setup lifecycle is active.
+#[cfg(feature = "analytics")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnboardingFlow {
+    New,
+    Restart,
 }
 
 /// A screen in the fixed first-run flow.
@@ -301,9 +581,233 @@ impl Interaction {
                     ..Facts::default()
                 },
             ),
+            Interaction::SurfaceViewed { surface, origin } => (
+                EventName::SurfaceViewed,
+                Facts {
+                    label: Some(surface.as_str()),
+                    detail: Some(origin.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::SurfaceStateObserved {
+                surface,
+                state,
+                origin,
+            } => (
+                EventName::SurfaceStateObserved,
+                Facts {
+                    label: Some(surface.as_str()),
+                    detail: Some(state.as_str()),
+                    origin: Some(origin.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::SettingsPaneViewed { pane } => (
+                EventName::SettingsPaneViewed,
+                Facts {
+                    label: Some(pane.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::LiveUsageStateObserved {
+                provider, state, ..
+            } => (
+                EventName::LiveUsageStateObserved,
+                Facts {
+                    label: Some(provider.as_str()),
+                    detail: Some(state.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::BurnCheckAutoFixReviewed { outcome } => (
+                EventName::BurnCheckAutoFixReviewed,
+                Facts {
+                    detail: Some(outcome.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::BurnCheckAutoFixConfirmed => {
+                (EventName::BurnCheckAutoFixConfirmed, Facts::default())
+            }
+            Interaction::BurnCheckAutoFixCompleted { outcome } => (
+                EventName::BurnCheckAutoFixCompleted,
+                Facts {
+                    detail: Some(outcome.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::BurnCheckPromptPrepared { outcome } => (
+                EventName::BurnCheckPromptPrepared,
+                Facts {
+                    detail: Some(outcome.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::BurnCheckPromptCopied => {
+                (EventName::BurnCheckPromptCopied, Facts::default())
+            }
+            Interaction::BurnCheckOutcomeObserved { outcome, origin } => (
+                EventName::BurnCheckOutcomeObserved,
+                Facts {
+                    detail: Some(outcome.as_str()),
+                    origin: Some(origin.as_str()),
+                    ..Facts::default()
+                },
+            ),
         }
     }
 }
+
+#[cfg(feature = "analytics")]
+macro_rules! wire_values {
+    ($type:ty, { $($variant:path => $value:literal),+ $(,)? }) => {
+        impl $type {
+            pub(crate) fn as_str(self) -> &'static str {
+                match self {
+                    $($variant => $value),+
+                }
+            }
+        }
+    };
+}
+
+#[cfg(feature = "analytics")]
+wire_values!(Surface, {
+    Surface::Activity => "activity",
+    Surface::SessionDetail => "session_detail",
+    Surface::ProviderPreview => "provider_preview",
+    Surface::ChecksPreview => "checks_preview",
+    Surface::Hud => "hud",
+    Surface::HudDetail => "hud_detail",
+    Surface::Settings => "settings",
+    Surface::BurnChecks => "burn_checks",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(StateSurface, {
+    StateSurface::Activity => "activity",
+    StateSurface::SessionDetail => "session_detail",
+    StateSurface::ProviderPreview => "provider_preview",
+    StateSurface::ChecksPreview => "checks_preview",
+    StateSurface::Hud => "hud",
+    StateSurface::HudDetail => "hud_detail",
+    StateSurface::Settings => "settings",
+    StateSurface::Insights => "insights",
+    StateSurface::BurnChecks => "burn_checks",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(AutoFixReviewOutcome, {
+    AutoFixReviewOutcome::Ready => "ready",
+    AutoFixReviewOutcome::Stale => "stale",
+    AutoFixReviewOutcome::Expired => "expired",
+    AutoFixReviewOutcome::Conflict => "conflict",
+    AutoFixReviewOutcome::Unavailable => "unavailable",
+    AutoFixReviewOutcome::Failed => "failed",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(AutoFixOutcome, {
+    AutoFixOutcome::AppliedAwaitingVerification => "applied_awaiting_verification",
+    AutoFixOutcome::RecoveryNeeded => "recovery_needed",
+    AutoFixOutcome::Stale => "stale",
+    AutoFixOutcome::Expired => "expired",
+    AutoFixOutcome::Conflict => "conflict",
+    AutoFixOutcome::Unavailable => "unavailable",
+    AutoFixOutcome::Failed => "failed",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(PromptPreparationOutcome, {
+    PromptPreparationOutcome::Ready => "ready",
+    PromptPreparationOutcome::Stale => "stale",
+    PromptPreparationOutcome::Expired => "expired",
+    PromptPreparationOutcome::Unavailable => "unavailable",
+    PromptPreparationOutcome::Failed => "failed",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(BurnCheckOutcome, {
+    BurnCheckOutcome::Verified => "verified",
+    BurnCheckOutcome::Recurred => "recurred",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(BurnCheckOrigin, {
+    BurnCheckOrigin::Passive => "passive",
+    BurnCheckOrigin::Action => "action",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(Origin, {
+    Origin::User => "user",
+    Origin::Automatic => "automatic",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(SurfaceState, {
+    SurfaceState::Ready => "ready",
+    SurfaceState::Empty => "empty",
+    SurfaceState::Error => "error",
+    SurfaceState::LoadingTimeout => "loading_timeout",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(SettingsPane, {
+    SettingsPane::General => "general",
+    SettingsPane::Appearance => "appearance",
+    SettingsPane::Sources => "sources",
+    SettingsPane::Privacy => "privacy",
+    SettingsPane::Notifications => "notifications",
+    SettingsPane::Usage => "usage",
+    SettingsPane::Insights => "insights",
+    SettingsPane::About => "about",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(LiveUsageProvider, {
+    LiveUsageProvider::Anthropic => "anthropic",
+    LiveUsageProvider::Openai => "openai",
+    LiveUsageProvider::Google => "google",
+});
+
+#[cfg(feature = "analytics")]
+impl LiveUsageProvider {
+    /// The provider category for a canonical provider id, from
+    /// [`crate::provider_usage::providers`].
+    ///
+    /// `antiburn.usage_observed` reports for the same providers
+    /// `antiburn.live_usage_state_observed` does, so both read this one
+    /// closed mapping rather than keeping two vocabularies in step by hand.
+    /// An id outside the three known providers returns `None`, so a future
+    /// source cannot silently widen what a label can say.
+    pub fn from_provider_id(provider: &str) -> Option<LiveUsageProvider> {
+        match provider {
+            id if id == crate::provider_usage::providers::ANTHROPIC => {
+                Some(LiveUsageProvider::Anthropic)
+            }
+            id if id == crate::provider_usage::providers::OPENAI => Some(LiveUsageProvider::Openai),
+            id if id == crate::provider_usage::providers::GOOGLE => Some(LiveUsageProvider::Google),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(feature = "analytics")]
+wire_values!(LiveUsageState, {
+    LiveUsageState::Fresh => "fresh",
+    LiveUsageState::Stale => "stale",
+    LiveUsageState::Authentication => "authentication",
+    LiveUsageState::RateLimited => "rate_limited",
+    LiveUsageState::Unavailable => "unavailable",
+    LiveUsageState::NoCredentials => "no_credentials",
+});
+
+#[cfg(feature = "analytics")]
+wire_values!(OnboardingFlow, {
+    OnboardingFlow::New => "new",
+    OnboardingFlow::Restart => "restart",
+});
 
 #[cfg(feature = "analytics")]
 impl OnboardingStep {
@@ -340,6 +844,82 @@ pub fn bucket(count: u64) -> &'static str {
     }
 }
 
+/// Map a provider-reported plan name to the closed vocabulary
+/// `antiburn.limit_factor_observed` sends.
+///
+/// The raw string never leaves this machine: it names a plan the reader
+/// chose, which is exactly the kind of value this file's own module docs say
+/// has nowhere to be put. `None` (no plan reported) and an empty or
+/// all-whitespace string both become `unknown`; a plan name outside the
+/// listed set becomes `other`, so a provider renaming or adding a plan tier
+/// widens no vocabulary a reader was not already told about.
+#[cfg(feature = "analytics")]
+pub fn map_plan(plan: Option<&str>) -> &'static str {
+    let Some(plan) = plan else {
+        return "unknown";
+    };
+    match plan.trim().to_lowercase().as_str() {
+        "" => "unknown",
+        "free" => "free",
+        "pro" => "pro",
+        "max" => "max",
+        "team" => "team",
+        "enterprise" => "enterprise",
+        "plus" => "plus",
+        "business" => "business",
+        "edu" => "edu",
+        _ => "other",
+    }
+}
+
+/// Reduce a learned dollars-per-percent factor to a power-of-two band.
+///
+/// Each band doubles the band below it, so a reader can group adjacent bands
+/// later without a change to this vocabulary. Non-finite and non-positive
+/// input map to the lowest band.
+#[cfg(feature = "analytics")]
+pub fn factor_band(usd_per_percent: f64) -> &'static str {
+    if usd_per_percent.is_nan() || usd_per_percent < 1.0 {
+        "under_1"
+    } else if usd_per_percent < 2.0 {
+        "1_to_under_2"
+    } else if usd_per_percent < 4.0 {
+        "2_to_under_4"
+    } else if usd_per_percent < 8.0 {
+        "4_to_under_8"
+    } else if usd_per_percent < 16.0 {
+        "8_to_under_16"
+    } else if usd_per_percent < 32.0 {
+        "16_to_under_32"
+    } else if usd_per_percent < 64.0 {
+        "32_to_under_64"
+    } else if usd_per_percent < 128.0 {
+        "64_to_under_128"
+    } else {
+        "128_and_over"
+    }
+}
+
+/// Reduce a period's residual to a coarse band: how far the meter and the
+/// factor's own estimate for the same span disagree.
+///
+/// `None` (no residual computed yet for this lane) is `unknown`, not `0`,
+/// so a missing measurement is never read as a perfect one.
+#[cfg(feature = "analytics")]
+pub fn residual_band(residual: Option<(f64, f64)>) -> &'static str {
+    let Some((meter_percent, estimated_percent)) = residual else {
+        return "unknown";
+    };
+    let difference = (meter_percent - estimated_percent).abs();
+    if difference <= 5.0 {
+        "within_5"
+    } else if difference <= 20.0 {
+        "within_20"
+    } else {
+        "over_20"
+    }
+}
+
 /// The surface class the collector partitions on. antiburn is a desktop
 /// application, and the contract's vocabulary has one value for that.
 #[cfg(feature = "analytics")]
@@ -359,7 +939,28 @@ pub fn arch() -> &'static str {
 
 #[cfg(all(test, feature = "analytics"))]
 mod tests {
+    use super::super::resources::schema::{
+        CoverageBand, CpuBand, IoRateBand, MemoryBand, ResourceUsageSummary,
+    };
     use super::*;
+
+    fn resource_summary() -> ResourceUsageSummary {
+        ResourceUsageSummary {
+            memory_mean: MemoryBand::From100ToUnder250Mib,
+            memory_max: MemoryBand::From250ToUnder500Mib,
+            memory_coverage: CoverageBand::Full,
+            cpu_average: CpuBand::From10ToUnder25Percent,
+            cpu_coverage: CoverageBand::Partial,
+            read_rate_average: IoRateBand::Zero,
+            read_coverage: CoverageBand::Full,
+            write_rate_average: IoRateBand::Unavailable,
+            write_coverage: CoverageBand::None,
+            database_size: MemoryBand::From50ToUnder100Mib,
+            database_coverage: CoverageBand::Full,
+            wal_size: MemoryBand::Under50Mib,
+            wal_coverage: CoverageBand::Partial,
+        }
+    }
 
     fn sample() -> Event {
         Event {
@@ -374,6 +975,7 @@ mod tests {
                 bucket: Some("10-49"),
                 label: Some("claude-code"),
                 detail: Some("native"),
+                origin: Some("user"),
                 usage_band: Some("80_to_under_100"),
                 response_shape: Some("object"),
                 eligibility: Some("eligible"),
@@ -383,6 +985,11 @@ mod tests {
                 reset_availability: Some("available"),
                 resets_per_week: Some("1"),
                 next_reset_available: Some("present"),
+                plan: Some("max"),
+                factor_band: Some("2_to_under_4"),
+                residual_band: Some("within_5"),
+                resource_usage: Some(resource_summary()),
+                unrecognized_types: Some(vec!["custom_event".to_string()]),
             },
             context: Context {
                 app_version: "antiburn:1.2.3".into(),
@@ -400,6 +1007,64 @@ mod tests {
         assert_eq!(bucket(4_000), "1000+");
     }
 
+    /// A recognized plan name maps case- and whitespace-insensitively; an
+    /// absent plan is `unknown`; anything else, including an empty string, is
+    /// `other` rather than the raw text.
+    #[test]
+    fn an_unlisted_plan_name_maps_to_other_rather_than_leaking_its_text() {
+        assert_eq!(map_plan(None), "unknown");
+        assert_eq!(map_plan(Some("")), "unknown");
+        assert_eq!(map_plan(Some("   ")), "unknown");
+        assert_eq!(map_plan(Some("Max")), "max");
+        assert_eq!(map_plan(Some(" pro ")), "pro");
+        assert_eq!(map_plan(Some("FREE")), "free");
+        assert_eq!(map_plan(Some("team")), "team");
+        assert_eq!(map_plan(Some("enterprise")), "enterprise");
+        assert_eq!(map_plan(Some("plus")), "plus");
+        assert_eq!(map_plan(Some("business")), "business");
+        assert_eq!(map_plan(Some("edu")), "edu");
+        assert_eq!(map_plan(Some("some-future-plan")), "other");
+    }
+
+    #[test]
+    fn the_factor_band_boundaries_step_by_powers_of_two() {
+        assert_eq!(factor_band(f64::NAN), "under_1");
+        assert_eq!(factor_band(f64::NEG_INFINITY), "under_1");
+        assert_eq!(factor_band(-1.0), "under_1");
+        assert_eq!(factor_band(0.0), "under_1");
+        assert_eq!(factor_band(0.99), "under_1");
+        assert_eq!(factor_band(1.0), "1_to_under_2");
+        assert_eq!(factor_band(1.99), "1_to_under_2");
+        assert_eq!(factor_band(2.0), "2_to_under_4");
+        assert_eq!(factor_band(3.99), "2_to_under_4");
+        assert_eq!(factor_band(4.0), "4_to_under_8");
+        assert_eq!(factor_band(7.99), "4_to_under_8");
+        assert_eq!(factor_band(8.0), "8_to_under_16");
+        assert_eq!(factor_band(15.99), "8_to_under_16");
+        assert_eq!(factor_band(16.0), "16_to_under_32");
+        assert_eq!(factor_band(31.99), "16_to_under_32");
+        assert_eq!(factor_band(32.0), "32_to_under_64");
+        assert_eq!(factor_band(63.99), "32_to_under_64");
+        assert_eq!(factor_band(64.0), "64_to_under_128");
+        assert_eq!(factor_band(127.99), "64_to_under_128");
+        assert_eq!(factor_band(128.0), "128_and_over");
+        assert_eq!(factor_band(1_000.0), "128_and_over");
+        assert_eq!(factor_band(f64::INFINITY), "128_and_over");
+    }
+
+    #[test]
+    fn the_residual_band_boundaries_match_the_absolute_difference() {
+        assert_eq!(residual_band(None), "unknown");
+        assert_eq!(residual_band(Some((50.0, 50.0))), "within_5");
+        assert_eq!(residual_band(Some((50.0, 45.0))), "within_5");
+        assert_eq!(residual_band(Some((50.0, 44.9))), "within_20");
+        assert_eq!(residual_band(Some((50.0, 30.0))), "within_20");
+        assert_eq!(residual_band(Some((50.0, 29.9))), "over_20");
+        // Order does not matter: a factor that under- or over-estimates by
+        // the same amount lands in the same band.
+        assert_eq!(residual_band(Some((29.9, 50.0))), "over_20");
+    }
+
     /// The complete wire surface, pinned.
     ///
     /// This test cannot read the Privacy pane, so it does not pretend to: it
@@ -412,7 +1077,7 @@ mod tests {
     /// `apps/desktop/src/views/settings/PrivacyPane.tsx` is the bug this
     /// comment exists to prevent.
     #[test]
-    fn the_wire_payload_is_exactly_these_twenty_two_fields() {
+    fn the_wire_payload_is_exactly_these_twenty_eight_fields() {
         let json = serde_json::to_value(sample()).expect("serializes");
         let object = json.as_object().expect("an object");
         let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
@@ -446,13 +1111,19 @@ mod tests {
                 "detail",
                 "eligibility",
                 "experiment",
+                "factorBand",
                 "ineligibleReason",
                 "label",
                 "nextResetAvailable",
+                "origin",
+                "plan",
                 "resetArm",
                 "resetAvailability",
                 "resetsPerWeek",
+                "residualBand",
+                "resourceUsage",
                 "responseShape",
+                "unrecognizedTypes",
                 "usageBand",
             ]
         );
@@ -481,8 +1152,8 @@ mod tests {
     #[test]
     fn no_user_or_organisation_identity_is_ever_carried() {
         let json = serde_json::to_string(&sample()).expect("serializes");
-        // `sessionId` is deliberately absent from this list: it identifies a
-        // run of the process, not a person, and never reaches disk.
+        // `sessionId` is deliberately absent from this list. It identifies a
+        // run of the process rather than a person.
         for forbidden in ["userId", "orgId", "email", "locale"] {
             assert!(!json.contains(forbidden), "{forbidden} in {json}");
         }
@@ -494,6 +1165,7 @@ mod tests {
         event.properties.bucket = None;
         event.properties.label = None;
         event.properties.detail = None;
+        event.properties.origin = None;
         event.properties.usage_band = None;
         event.properties.response_shape = None;
         event.properties.eligibility = None;
@@ -503,10 +1175,76 @@ mod tests {
         event.properties.reset_availability = None;
         event.properties.resets_per_week = None;
         event.properties.next_reset_available = None;
+        event.properties.plan = None;
+        event.properties.factor_band = None;
+        event.properties.residual_band = None;
+        event.properties.resource_usage = None;
+        event.properties.unrecognized_types = None;
         let json = serde_json::to_string(&event).expect("serializes");
         assert!(!json.contains("bucket"), "{json}");
         assert!(!json.contains("label"), "{json}");
         assert!(!json.contains("detail"), "{json}");
+        assert!(!json.contains("\"origin\""), "{json}");
+        assert!(!json.contains("\"plan\""), "{json}");
+        assert!(!json.contains("factorBand"), "{json}");
+        assert!(!json.contains("residualBand"), "{json}");
+        assert!(!json.contains("resourceUsage"), "{json}");
+        assert!(!json.contains("unrecognizedTypes"), "{json}");
+    }
+
+    /// `unrecognizedTypes` appears as a JSON array only on the event it
+    /// belongs to. Every other event carries `None` for this field, so the
+    /// key is absent from its wire payload.
+    #[test]
+    fn unrecognized_types_appears_only_on_its_own_event() {
+        let mut carrying = sample();
+        carrying.event = EventName::UnrecognizedRecordsObserved.as_str().into();
+        carrying.properties.unrecognized_types = Some(vec!["custom_event".to_string()]);
+        let json = serde_json::to_value(&carrying).expect("serializes");
+        let types = json["properties"]["unrecognizedTypes"]
+            .as_array()
+            .expect("unrecognizedTypes is an array");
+        assert_eq!(types, &[serde_json::json!("custom_event")]);
+
+        let mut other = sample();
+        other.properties.unrecognized_types = None;
+        let json = serde_json::to_string(&other).expect("serializes");
+        assert!(!json.contains("unrecognizedTypes"), "{json}");
+    }
+
+    #[test]
+    fn resource_usage_has_only_the_typed_nested_allowlist() {
+        let mut event = sample();
+        event.event = EventName::ResourceUsageObserved.as_str().into();
+        event.properties.resource_usage = Some(resource_summary());
+
+        let json = serde_json::to_value(event).expect("serializes");
+        let resource = json["properties"]["resourceUsage"]
+            .as_object()
+            .expect("resourceUsage object");
+        let mut keys: Vec<_> = resource.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "cpuAverage",
+                "cpuCoverage",
+                "databaseCoverage",
+                "databaseSize",
+                "memoryCoverage",
+                "memoryMax",
+                "memoryMean",
+                "readCoverage",
+                "readRateAverage",
+                "walCoverage",
+                "walSize",
+                "writeCoverage",
+                "writeRateAverage",
+            ]
+        );
+        assert_eq!(resource["cpuAverage"], "from10_to_under25_percent");
+        assert_eq!(resource["readRateAverage"], "zero");
+        assert_eq!(resource["writeRateAverage"], "unavailable");
     }
 
     /// The compiler, not a reviewer, keeps [`EVERY_EVENT`] complete.
@@ -526,12 +1264,26 @@ mod tests {
                 | EventName::SessionOpened
                 | EventName::ErrorOccurred
                 | EventName::UnrecognizedRecordsObserved
-                | EventName::ClaudeLimitResetObserved => true,
+                | EventName::OnboardingStarted
+                | EventName::SurfaceViewed
+                | EventName::SettingsPaneViewed
+                | EventName::SurfaceStateObserved
+                | EventName::LiveUsageStateObserved
+                | EventName::ClaudeLimitResetObserved
+                | EventName::UsageObserved
+                | EventName::LimitFactorObserved
+                | EventName::ResourceUsageObserved
+                | EventName::BurnCheckAutoFixReviewed
+                | EventName::BurnCheckAutoFixConfirmed
+                | EventName::BurnCheckAutoFixCompleted
+                | EventName::BurnCheckPromptPrepared
+                | EventName::BurnCheckPromptCopied
+                | EventName::BurnCheckOutcomeObserved => true,
             }
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            9,
+            23,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -587,6 +1339,9 @@ mod tests {
             13 => "thirteen",
             14 => "fourteen",
             22 => "twenty-two",
+            23 => "twenty-three",
+            27 => "twenty-seven",
+            28 => "twenty-eight",
             other => panic!("no word for {other} fields; add one and update the documents"),
         };
 
@@ -625,6 +1380,69 @@ mod tests {
         assert_eq!(facts.label, Some("claude-code"));
         assert_eq!(facts.detail, Some("wsl"));
         assert_eq!(facts.bucket, None);
+
+        let (name, facts) = Interaction::SurfaceStateObserved {
+            surface: StateSurface::ProviderPreview,
+            state: SurfaceState::LoadingTimeout,
+            origin: Origin::User,
+        }
+        .resolve();
+        assert_eq!(name, EventName::SurfaceStateObserved);
+        assert_eq!(facts.label, Some("provider_preview"));
+        assert_eq!(facts.detail, Some("loading_timeout"));
+        assert_eq!(facts.origin, Some("user"));
+
+        let (name, facts) = Interaction::LiveUsageStateObserved {
+            provider: LiveUsageProvider::Google,
+            state: LiveUsageState::RateLimited,
+            origin: Origin::User,
+        }
+        .resolve();
+        assert_eq!(name, EventName::LiveUsageStateObserved);
+        assert_eq!(facts.label, Some("google"));
+        assert_eq!(facts.detail, Some("rate_limited"));
+        assert_eq!(facts.origin, None);
+
+        let (name, facts) = Interaction::BurnCheckAutoFixCompleted {
+            outcome: AutoFixOutcome::RecoveryNeeded,
+        }
+        .resolve();
+        assert_eq!(name, EventName::BurnCheckAutoFixCompleted);
+        assert_eq!(facts.detail, Some("recovery_needed"));
+        assert_eq!(facts.label, None);
+
+        let (name, facts) = Interaction::BurnCheckOutcomeObserved {
+            outcome: BurnCheckOutcome::Recurred,
+            origin: BurnCheckOrigin::Passive,
+        }
+        .resolve();
+        assert_eq!(name, EventName::BurnCheckOutcomeObserved);
+        assert_eq!(facts.detail, Some("recurred"));
+        assert_eq!(facts.origin, Some("passive"));
+    }
+
+    /// `usage_observed` reads the same closed vocabulary
+    /// `live_usage_state_observed` does, rather than trusting a new source's
+    /// provider id outright. A provider this build does not recognize maps to
+    /// `None`, so the caller skips it instead of inventing a fourth label.
+    #[test]
+    fn an_unrecognised_provider_id_has_no_usage_observed_label() {
+        assert_eq!(
+            LiveUsageProvider::from_provider_id(crate::provider_usage::providers::ANTHROPIC),
+            Some(LiveUsageProvider::Anthropic)
+        );
+        assert_eq!(
+            LiveUsageProvider::from_provider_id(crate::provider_usage::providers::OPENAI),
+            Some(LiveUsageProvider::Openai)
+        );
+        assert_eq!(
+            LiveUsageProvider::from_provider_id(crate::provider_usage::providers::GOOGLE),
+            Some(LiveUsageProvider::Google)
+        );
+        assert_eq!(
+            LiveUsageProvider::from_provider_id("some-future-provider"),
+            None
+        );
     }
 
     /// The renderer cannot invent a value. This is the whole reason the IPC
@@ -653,6 +1471,36 @@ mod tests {
             "environment": "Ubuntu-24.04",
         });
         assert!(serde_json::from_value::<Interaction>(unknown_environment).is_err());
+
+        let extra_property = serde_json::json!({
+            "kind": "surfaceViewed",
+            "surface": "activity",
+            "origin": "user",
+            "repository": "private-name",
+        });
+        assert!(serde_json::from_value::<Interaction>(extra_property).is_err());
+
+        let unknown_origin = serde_json::json!({
+            "kind": "surfaceViewed",
+            "surface": "activity",
+            "origin": "background_poll",
+        });
+        assert!(serde_json::from_value::<Interaction>(unknown_origin).is_err());
+
+        let private_action_fields = serde_json::json!({
+            "kind": "burnCheckAutoFixCompleted",
+            "outcome": "applied_awaiting_verification",
+            "path": "/Users/someone/work",
+            "watchId": "private-watch",
+        });
+        assert!(serde_json::from_value::<Interaction>(private_action_fields).is_err());
+
+        let unknown_result = serde_json::json!({
+            "kind": "burnCheckOutcomeObserved",
+            "outcome": "fixed_with_1234_tokens",
+            "origin": "action",
+        });
+        assert!(serde_json::from_value::<Interaction>(unknown_result).is_err());
     }
 
     #[test]

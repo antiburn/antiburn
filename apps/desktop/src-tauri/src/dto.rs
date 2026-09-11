@@ -12,7 +12,7 @@
 
 use antiburn_local::analysis::{
     ActiveSessionsSummary, EfficiencyTotals, EvidenceValue, FAST_SPEED_KEY, ModelRun,
-    QuotaLimitKind, RepeatedContextAccounting, SessionCost, SessionEvidence,
+    QuotaLimitKind, RepeatedContextAccounting, SessionCost, SessionEvidence, SourceFormat,
 };
 use antiburn_local::insights::{
     BadgeId, BadgeStatus, DetectorId, DetectorStatus, EfficiencyReport, NotAssessedReason,
@@ -434,7 +434,8 @@ pub enum SessionLimitMetric {
     FiveHour,
 }
 
-/// One session's estimated share of a provider-reported allowance.
+/// One session's estimated share of a provider account's learned
+/// dollars-per-percent limit factor.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionLimitAllocation {
@@ -445,12 +446,18 @@ pub struct SessionLimitAllocation {
     pub provider: String,
     pub display_name: String,
     pub account_key: Option<String>,
+    /// The lane the factor belongs to (`weekly` or `fiveHour`). No longer a
+    /// specific provider window: the factor is a standing property of the
+    /// account and lane, not of one allowance period.
     pub window_id: String,
-    pub resets_at: String,
     pub percent: f64,
+    /// `learned` when the factor point came from a meter delta, `seeded`
+    /// when it came from a single first-reading estimate. The percentage
+    /// remains an estimate, never a bill, either way.
+    pub confidence: String,
 }
 
-/// Current per-session estimates, computed from local turns and live limits.
+/// Materialized per-session allowance estimates.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionLimitAllocationSummary {
@@ -589,7 +596,7 @@ pub struct InsightsReportPayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChecksCategoryPayload {
-    pub id: &'static str,
+    pub id: BurnCheckDetectorId,
     pub finding: u64,
     pub clean: u64,
     pub unavailable: u64,
@@ -602,9 +609,542 @@ pub struct ChecksCategoryPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ChecksReportPayload {
     pub evidence_settled: bool,
+    /// Sessions with evidence that is queued or processing for this report window.
+    pub pending_evidence: u64,
     /// Hundredths of one percent, bounded to `0..=10000`.
     pub estimated_token_burn_basis_points: Option<u16>,
     pub categories: Vec<ChecksCategoryPayload>,
+}
+
+/// One accepted detector identifier on the remediation IPC boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckDetectorId {
+    SessionsOverDepth,
+    ModelOverthinking,
+    OverpoweredSubagents,
+    UnusedMcpServers,
+    UnusedBuiltInTools,
+    UnusedSkills,
+    OldModelUsage,
+    OveruseOfFastMode,
+    CacheChurn,
+}
+
+impl From<BurnCheckDetectorId> for DetectorId {
+    fn from(value: BurnCheckDetectorId) -> Self {
+        match value {
+            BurnCheckDetectorId::SessionsOverDepth => Self::SessionsOverDepth,
+            BurnCheckDetectorId::ModelOverthinking => Self::ModelOverthinking,
+            BurnCheckDetectorId::OverpoweredSubagents => Self::OverpoweredSubagents,
+            BurnCheckDetectorId::UnusedMcpServers => Self::UnusedMcpServers,
+            BurnCheckDetectorId::UnusedBuiltInTools => Self::UnusedBuiltInTools,
+            BurnCheckDetectorId::UnusedSkills => Self::UnusedSkills,
+            BurnCheckDetectorId::OldModelUsage => Self::OldModelUsage,
+            BurnCheckDetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
+            BurnCheckDetectorId::CacheChurn => Self::CacheChurn,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckSourceFormat {
+    ClaudeJsonl,
+    CodexRolloutJsonl,
+    OpenCodeJsonl,
+    OpenCodeSqliteV2,
+    PiV3Jsonl,
+    CursorJsonl,
+    CursorCliAgentJsonl,
+    CursorCliStoreDb,
+    CursorIdeComposer,
+    CursorLegacyChatJson,
+    AntigravityJson,
+    AntigravityBrainJsonl,
+    AntigravityCascadeJson,
+    AntigravityWorkspaceChatJson,
+    AntigravitySqlite,
+    CopilotCliJsonl,
+    CopilotIdeChatJson,
+    ClineSessionJson,
+    KiroSessionJson,
+    KiroChat,
+    AmpThreadJson,
+    AmpFileChanges,
+    WindsurfWorkspaceJson,
+    WindsurfMirrorJson,
+    WindsurfCascadeProtobuf,
+    Uncharacterized,
+}
+
+impl From<SourceFormat> for BurnCheckSourceFormat {
+    fn from(value: SourceFormat) -> Self {
+        match value {
+            SourceFormat::ClaudeJsonl => Self::ClaudeJsonl,
+            SourceFormat::CodexRolloutJsonl => Self::CodexRolloutJsonl,
+            SourceFormat::OpenCodeJsonl => Self::OpenCodeJsonl,
+            SourceFormat::OpenCodeSqliteV2 => Self::OpenCodeSqliteV2,
+            SourceFormat::PiV3Jsonl => Self::PiV3Jsonl,
+            SourceFormat::CursorJsonl => Self::CursorJsonl,
+            SourceFormat::CursorCliAgentJsonl => Self::CursorCliAgentJsonl,
+            SourceFormat::CursorCliStoreDb => Self::CursorCliStoreDb,
+            SourceFormat::CursorIdeComposer => Self::CursorIdeComposer,
+            SourceFormat::CursorLegacyChatJson => Self::CursorLegacyChatJson,
+            SourceFormat::AntigravityJson => Self::AntigravityJson,
+            SourceFormat::AntigravityBrainJsonl => Self::AntigravityBrainJsonl,
+            SourceFormat::AntigravityCascadeJson => Self::AntigravityCascadeJson,
+            SourceFormat::AntigravityWorkspaceChatJson => Self::AntigravityWorkspaceChatJson,
+            SourceFormat::AntigravitySqlite => Self::AntigravitySqlite,
+            SourceFormat::CopilotCliJsonl => Self::CopilotCliJsonl,
+            SourceFormat::CopilotIdeChatJson => Self::CopilotIdeChatJson,
+            SourceFormat::ClineSessionJson => Self::ClineSessionJson,
+            SourceFormat::KiroSessionJson => Self::KiroSessionJson,
+            SourceFormat::KiroChat => Self::KiroChat,
+            SourceFormat::AmpThreadJson => Self::AmpThreadJson,
+            SourceFormat::AmpFileChanges => Self::AmpFileChanges,
+            SourceFormat::WindsurfWorkspaceJson => Self::WindsurfWorkspaceJson,
+            SourceFormat::WindsurfMirrorJson => Self::WindsurfMirrorJson,
+            SourceFormat::WindsurfCascadeProtobuf => Self::WindsurfCascadeProtobuf,
+            SourceFormat::Uncharacterized => Self::Uncharacterized,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckFindingPayload {
+    pub detector: BurnCheckDetectorId,
+    pub agent: String,
+    pub source_format: BurnCheckSourceFormat,
+    pub observation: String,
+    pub labels: Vec<String>,
+    pub omitted: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckResourceKind {
+    Session,
+    Reasoning,
+    Worker,
+    McpServer,
+    BuiltInTool,
+    Skill,
+    Model,
+    Speed,
+    Cache,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckScopeKind {
+    Global,
+    Project,
+    Session,
+    Worker,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckQuantityUnit {
+    Tokens,
+    Turns,
+    Resources,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckEstimateMethod {
+    RepeatedContextAboveDepthCap,
+    AssumedOutputReduction,
+    WorkerModelPriceDifference,
+    McpDefinitionExposure,
+    BuiltInDefinitionReplication,
+    InjectedSkillDocument,
+    OldModelPriceDifference,
+    FastTierPricePremium,
+    CacheRehydrationPriceDifference,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckEstimatedValuePayload {
+    pub value: f64,
+    pub unit: BurnCheckSavingsUnit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckSavingsUnit {
+    LiteralInputTokens,
+    AssumedOutputTokens,
+    CacheClassTokens,
+    ApiEquivalentUsd,
+    Improvements,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckVerificationLimit {
+    FreshEvidenceFromSameSourceAndTarget,
+    ExactPositiveControlRequired,
+    CurrentEvidenceCannotProveFix,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckDisplayFactsPayload {
+    pub resource_kind: BurnCheckResourceKind,
+    pub resource_identity: Option<String>,
+    pub current_value: Option<String>,
+    pub replacement_value: Option<String>,
+    pub scope_kind: BurnCheckScopeKind,
+    pub quantity: Option<u64>,
+    pub quantity_unit: Option<BurnCheckQuantityUnit>,
+    pub observation_count: u64,
+    pub first_observed_at_ms: i64,
+    pub last_observed_at_ms: i64,
+    pub estimate_method: Option<BurnCheckEstimateMethod>,
+    pub estimated_opportunity: Option<BurnCheckEstimatedValuePayload>,
+    pub verification_limit: BurnCheckVerificationLimit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum AutoFixAvailabilityPayload {
+    Available,
+    Unavailable { reason: AutoFixUnavailableReason },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PromptFixAvailabilityPayload {
+    Available,
+    Unavailable { reason: PromptFixUnavailableReason },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoFixUnavailableReason {
+    UnsupportedOrUnprovenTarget,
+    ActiveWatch,
+    SafetyCheckFailed,
+    TargetNotFound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckCoverageLimit {
+    CurrentPublishedEvidenceOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckWatchLifecycle {
+    Reserved,
+    Writing,
+    RecoveryNeeded,
+    Watching,
+    Fixed,
+    Recurred,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckVerificationReason {
+    MissingPostBoundaryEvidence,
+    WriteOutcomeUnknown,
+    VerificationUnavailable,
+    UnsupportedAgent,
+    HomeUnavailable,
+    PhysicalTargetChanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum BurnCheckVerificationPayload {
+    Reserved,
+    Watching {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<BurnCheckVerificationReason>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        method_revision: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        evidence_revision: Option<String>,
+    },
+    Fixed {
+        method_revision: u32,
+        evidence_revision: String,
+    },
+    StillUnresolved {
+        method_revision: u32,
+        evidence_revision: String,
+    },
+    Recurred {
+        method_revision: u32,
+        evidence_revision: String,
+    },
+    RecoveryNeeded {
+        reason: BurnCheckVerificationReason,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        checked_at_epoch: Option<i64>,
+    },
+    VerificationUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckSavingsMethod {
+    OldModelPriceDifference,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckSavingsUnknownReason {
+    MissingRates,
+    MissingEvidence,
+    MissingRevision,
+    ArithmeticOverflow,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum BurnCheckSavingsPayload {
+    Pending {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        method_revision: Option<u32>,
+    },
+    Unavailable,
+    Unknown {
+        reason: BurnCheckSavingsUnknownReason,
+        method_revision: u32,
+    },
+    Known {
+        method: BurnCheckSavingsMethod,
+        method_revision: u32,
+        pricing_revision: String,
+        api_equivalent_cost_avoided_usd: f64,
+        measured_through_ms: i64,
+        recurrence_ms: Option<i64>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckWatchPayload {
+    pub watch_id: String,
+    pub origin: AggregateWinOrigin,
+    pub lifecycle: BurnCheckWatchLifecycle,
+    pub verification: BurnCheckVerificationPayload,
+    pub savings: BurnCheckSavingsPayload,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckTargetPayload {
+    pub finding_id: String,
+    pub action_id: String,
+    pub finding: BurnCheckFindingPayload,
+    pub display: BurnCheckDisplayFactsPayload,
+    pub occurrence_count: u64,
+    pub auto_fix: AutoFixAvailabilityPayload,
+    pub prompt_fix: PromptFixAvailabilityPayload,
+    pub watch: Option<BurnCheckWatchPayload>,
+    pub coverage_limits: Vec<BurnCheckCoverageLimit>,
+    pub samples: Vec<BurnCheckSamplePayload>,
+    pub expires_at_epoch: i64,
+}
+
+/// Privacy-safe metadata and an opaque route to one local sample session.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckSamplePayload {
+    pub navigation_handle: String,
+    pub title: String,
+    pub agent: String,
+    pub surface: BurnCheckSampleSurface,
+    pub observed_at_ms: i64,
+}
+
+/// Safe source category for a sample session display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BurnCheckSampleSurface {
+    Cli,
+    IdeDesktop,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum OpenBurnCheckSampleOutcome {
+    Opened,
+    Deleted,
+    Expired,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckTargetListPayload {
+    pub targets: Vec<BurnCheckTargetPayload>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "outcome",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PrepareAutoFixBurnCheckTargetOutcome {
+    ReviewReady { review: AutoFixReviewPayload },
+    Stale,
+    Expired,
+    Conflict,
+    Unavailable { reason: AutoFixUnavailableReason },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoFixReviewPayload {
+    pub prepared_operation_id: String,
+    pub expires_at_epoch: i64,
+    pub agent: String,
+    pub scope: BurnCheckScopeKind,
+    pub setting: AutoFixSetting,
+    pub config_file: String,
+    pub current_value: String,
+    pub proposed_value: String,
+    pub effect: AutoFixEffect,
+    pub side_effect: AutoFixSideEffect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoFixSetting {
+    Model,
+    Reasoning,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoFixEffect {
+    FutureModelSelection,
+    FutureReasoningEffort,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoFixSideEffect {
+    ModelBehaviorMayChange,
+    ResponsesMayUseLessReasoning,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "outcome",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ApplyPreparedBurnCheckOperationOutcome {
+    AppliedAwaitingVerification { watch_id: String },
+    RecoveryNeeded { watch_id: String },
+    Stale,
+    Expired,
+    Conflict,
+    Unavailable { reason: AutoFixUnavailableReason },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateWinsPayload {
+    pub wins: Vec<AggregateWinPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateWinPayload {
+    pub finding_id: String,
+    pub detector: BurnCheckDetectorId,
+    pub origin: AggregateWinOrigin,
+    pub display: BurnCheckDisplayFactsPayload,
+    pub savings: AggregateSavingsPayload,
+    pub starts_at_ms: i64,
+    pub ends_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AggregateWinOrigin {
+    Passive,
+    Action,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateSavingsPayload {
+    pub token_savings: Option<u64>,
+    pub api_equivalent_cost_avoided_usd: Option<f64>,
+    pub improvement_count: Option<u64>,
+    pub method: Option<BurnCheckEstimateMethod>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PromptFixUnavailableReason {
+    TargetNotFound,
+    PromptSizeLimit,
+    EssentialIdentityUnavailable,
+    DeferredAgent,
+    UnsupportedSourceFormat,
+    CheckUnsupportedForAgent,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "outcome",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum CopyPromptFixBurnCheckTargetOutcome {
+    PromptReady {
+        prompt: String,
+        watch: BurnCheckWatchPayload,
+    },
+    Stale,
+    Expired,
+    Unavailable {
+        reason: PromptFixUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "outcome",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum CopyPromptFixBurnCheckOutcome {
+    PromptReady { prompt: String },
+    Unavailable,
 }
 
 /// Report calculation state plus the evidence backlog counts.
@@ -993,6 +1533,438 @@ fn detector_id_str(id: DetectorId) -> &'static str {
     }
 }
 
+impl From<DetectorId> for BurnCheckDetectorId {
+    fn from(value: DetectorId) -> Self {
+        match value {
+            DetectorId::SessionsOverDepth => Self::SessionsOverDepth,
+            DetectorId::ModelOverthinking => Self::ModelOverthinking,
+            DetectorId::OverpoweredSubagents => Self::OverpoweredSubagents,
+            DetectorId::UnusedMcpServers => Self::UnusedMcpServers,
+            DetectorId::UnusedBuiltInTools => Self::UnusedBuiltInTools,
+            DetectorId::UnusedSkills => Self::UnusedSkills,
+            DetectorId::OldModelUsage => Self::OldModelUsage,
+            DetectorId::OveruseOfFastMode => Self::OveruseOfFastMode,
+            DetectorId::CacheChurn => Self::CacheChurn,
+        }
+    }
+}
+
+impl From<crate::remediation::AutoFixUnavailableReason> for AutoFixUnavailableReason {
+    fn from(value: crate::remediation::AutoFixUnavailableReason) -> Self {
+        match value {
+            crate::remediation::AutoFixUnavailableReason::UnsupportedOrUnprovenTarget => {
+                Self::UnsupportedOrUnprovenTarget
+            }
+            crate::remediation::AutoFixUnavailableReason::ActiveWatch => Self::ActiveWatch,
+            crate::remediation::AutoFixUnavailableReason::SafetyCheckFailed => {
+                Self::SafetyCheckFailed
+            }
+        }
+    }
+}
+
+impl From<antiburn_local::remediation::RemediationUnavailableReason>
+    for PromptFixUnavailableReason
+{
+    fn from(value: antiburn_local::remediation::RemediationUnavailableReason) -> Self {
+        use antiburn_local::remediation::RemediationUnavailableReason;
+        match value {
+            RemediationUnavailableReason::PromptSizeLimit => Self::PromptSizeLimit,
+            RemediationUnavailableReason::EssentialIdentityUnavailable => {
+                Self::EssentialIdentityUnavailable
+            }
+            RemediationUnavailableReason::DeferredAgent => Self::DeferredAgent,
+            RemediationUnavailableReason::UnsupportedSourceFormat => Self::UnsupportedSourceFormat,
+            RemediationUnavailableReason::CheckUnsupportedForAgent => {
+                Self::CheckUnsupportedForAgent
+            }
+        }
+    }
+}
+
+impl From<crate::remediation::BurnCheckScopeKind> for BurnCheckScopeKind {
+    fn from(value: crate::remediation::BurnCheckScopeKind) -> Self {
+        match value {
+            crate::remediation::BurnCheckScopeKind::Global => Self::Global,
+            crate::remediation::BurnCheckScopeKind::Project => Self::Project,
+            crate::remediation::BurnCheckScopeKind::Session => Self::Session,
+            crate::remediation::BurnCheckScopeKind::Worker => Self::Worker,
+        }
+    }
+}
+
+impl From<crate::remediation::BurnCheckEstimateMethod> for BurnCheckEstimateMethod {
+    fn from(value: crate::remediation::BurnCheckEstimateMethod) -> Self {
+        match value {
+            crate::remediation::BurnCheckEstimateMethod::RepeatedContextAboveDepthCap => {
+                Self::RepeatedContextAboveDepthCap
+            }
+            crate::remediation::BurnCheckEstimateMethod::AssumedOutputReduction => {
+                Self::AssumedOutputReduction
+            }
+            crate::remediation::BurnCheckEstimateMethod::WorkerModelPriceDifference => {
+                Self::WorkerModelPriceDifference
+            }
+            crate::remediation::BurnCheckEstimateMethod::McpDefinitionExposure => {
+                Self::McpDefinitionExposure
+            }
+            crate::remediation::BurnCheckEstimateMethod::BuiltInDefinitionReplication => {
+                Self::BuiltInDefinitionReplication
+            }
+            crate::remediation::BurnCheckEstimateMethod::InjectedSkillDocument => {
+                Self::InjectedSkillDocument
+            }
+            crate::remediation::BurnCheckEstimateMethod::OldModelPriceDifference => {
+                Self::OldModelPriceDifference
+            }
+            crate::remediation::BurnCheckEstimateMethod::FastTierPricePremium => {
+                Self::FastTierPricePremium
+            }
+            crate::remediation::BurnCheckEstimateMethod::CacheRehydrationPriceDifference => {
+                Self::CacheRehydrationPriceDifference
+            }
+        }
+    }
+}
+
+impl From<crate::remediation::BurnCheckDisplayFacts> for BurnCheckDisplayFactsPayload {
+    fn from(value: crate::remediation::BurnCheckDisplayFacts) -> Self {
+        use crate::remediation::{
+            BurnCheckQuantityUnit as Quantity, BurnCheckResourceKind as Resource,
+            BurnCheckVerificationLimit as Limit,
+        };
+        Self {
+            resource_kind: match value.resource_kind {
+                Resource::Session => BurnCheckResourceKind::Session,
+                Resource::Reasoning => BurnCheckResourceKind::Reasoning,
+                Resource::Worker => BurnCheckResourceKind::Worker,
+                Resource::McpServer => BurnCheckResourceKind::McpServer,
+                Resource::BuiltInTool => BurnCheckResourceKind::BuiltInTool,
+                Resource::Skill => BurnCheckResourceKind::Skill,
+                Resource::Model => BurnCheckResourceKind::Model,
+                Resource::Speed => BurnCheckResourceKind::Speed,
+                Resource::Cache => BurnCheckResourceKind::Cache,
+            },
+            resource_identity: value.resource_identity,
+            current_value: value.current_value,
+            replacement_value: value.replacement_value,
+            scope_kind: value.scope_kind.into(),
+            quantity: value.quantity,
+            quantity_unit: value.quantity_unit.map(|unit| match unit {
+                Quantity::Tokens => BurnCheckQuantityUnit::Tokens,
+                Quantity::Turns => BurnCheckQuantityUnit::Turns,
+                Quantity::Resources => BurnCheckQuantityUnit::Resources,
+            }),
+            observation_count: value.observation_count,
+            first_observed_at_ms: value.first_observed_at_ms,
+            last_observed_at_ms: value.last_observed_at_ms,
+            estimate_method: value.estimate_method.map(Into::into),
+            estimated_opportunity: value.estimated_opportunity.map(|estimate| {
+                BurnCheckEstimatedValuePayload {
+                    value: estimate.value,
+                    unit: match estimate.unit {
+                        antiburn_local::remediation::SavingsUnit::LiteralInputTokens => {
+                            BurnCheckSavingsUnit::LiteralInputTokens
+                        }
+                        antiburn_local::remediation::SavingsUnit::AssumedOutputTokens => {
+                            BurnCheckSavingsUnit::AssumedOutputTokens
+                        }
+                        antiburn_local::remediation::SavingsUnit::CacheClassTokens => {
+                            BurnCheckSavingsUnit::CacheClassTokens
+                        }
+                        antiburn_local::remediation::SavingsUnit::ApiEquivalentUsd => {
+                            BurnCheckSavingsUnit::ApiEquivalentUsd
+                        }
+                        antiburn_local::remediation::SavingsUnit::Improvements => {
+                            BurnCheckSavingsUnit::Improvements
+                        }
+                    },
+                }
+            }),
+            verification_limit: match value.verification_limit {
+                Limit::FreshEvidenceFromSameSourceAndTarget => {
+                    BurnCheckVerificationLimit::FreshEvidenceFromSameSourceAndTarget
+                }
+                Limit::ExactPositiveControlRequired => {
+                    BurnCheckVerificationLimit::ExactPositiveControlRequired
+                }
+                Limit::CurrentEvidenceCannotProveFix => {
+                    BurnCheckVerificationLimit::CurrentEvidenceCannotProveFix
+                }
+            },
+        }
+    }
+}
+
+impl From<crate::store::RemediationState> for BurnCheckWatchLifecycle {
+    fn from(value: crate::store::RemediationState) -> Self {
+        match value {
+            crate::store::RemediationState::Reserved => Self::Reserved,
+            crate::store::RemediationState::Writing => Self::Writing,
+            crate::store::RemediationState::RecoveryNeeded => Self::RecoveryNeeded,
+            crate::store::RemediationState::Watching => Self::Watching,
+            crate::store::RemediationState::Fixed => Self::Fixed,
+            crate::store::RemediationState::Recurred => Self::Recurred,
+        }
+    }
+}
+
+impl From<crate::remediation::VerificationReason> for BurnCheckVerificationReason {
+    fn from(value: crate::remediation::VerificationReason) -> Self {
+        match value {
+            crate::remediation::VerificationReason::MissingPostBoundaryEvidence => {
+                Self::MissingPostBoundaryEvidence
+            }
+            crate::remediation::VerificationReason::WriteOutcomeUnknown => {
+                Self::WriteOutcomeUnknown
+            }
+            crate::remediation::VerificationReason::VerificationUnavailable => {
+                Self::VerificationUnavailable
+            }
+            crate::remediation::VerificationReason::UnsupportedAgent => Self::UnsupportedAgent,
+            crate::remediation::VerificationReason::HomeUnavailable => Self::HomeUnavailable,
+            crate::remediation::VerificationReason::PhysicalTargetChanged => {
+                Self::PhysicalTargetChanged
+            }
+        }
+    }
+}
+
+impl From<crate::remediation::VerificationStatus> for BurnCheckVerificationPayload {
+    fn from(value: crate::remediation::VerificationStatus) -> Self {
+        use crate::remediation::VerificationStatus;
+
+        match value {
+            VerificationStatus::Reserved => Self::Reserved,
+            VerificationStatus::Watching {
+                reason,
+                method_revision,
+                evidence_revision,
+            } => Self::Watching {
+                reason: reason.map(Into::into),
+                method_revision,
+                evidence_revision,
+            },
+            VerificationStatus::Fixed {
+                method_revision,
+                evidence_revision,
+            } => Self::Fixed {
+                method_revision,
+                evidence_revision,
+            },
+            VerificationStatus::StillUnresolved {
+                method_revision,
+                evidence_revision,
+            } => Self::StillUnresolved {
+                method_revision,
+                evidence_revision,
+            },
+            VerificationStatus::Recurred {
+                method_revision,
+                evidence_revision,
+            } => Self::Recurred {
+                method_revision,
+                evidence_revision,
+            },
+            VerificationStatus::RecoveryNeeded {
+                reason,
+                checked_at_epoch,
+            } => Self::RecoveryNeeded {
+                reason: reason.into(),
+                checked_at_epoch,
+            },
+            VerificationStatus::VerificationUnavailable => Self::VerificationUnavailable,
+        }
+    }
+}
+
+impl From<crate::remediation::SavingsUnknownReason> for BurnCheckSavingsUnknownReason {
+    fn from(value: crate::remediation::SavingsUnknownReason) -> Self {
+        match value {
+            crate::remediation::SavingsUnknownReason::MissingRates => Self::MissingRates,
+            crate::remediation::SavingsUnknownReason::MissingEvidence => Self::MissingEvidence,
+            crate::remediation::SavingsUnknownReason::MissingRevision => Self::MissingRevision,
+            crate::remediation::SavingsUnknownReason::ArithmeticOverflow => {
+                Self::ArithmeticOverflow
+            }
+        }
+    }
+}
+
+impl From<crate::remediation::SavingsStatus> for BurnCheckSavingsPayload {
+    fn from(value: crate::remediation::SavingsStatus) -> Self {
+        use crate::remediation::SavingsStatus;
+
+        match value {
+            SavingsStatus::Pending { method_revision } => Self::Pending { method_revision },
+            SavingsStatus::Unavailable => Self::Unavailable,
+            SavingsStatus::Unknown {
+                reason,
+                method_revision,
+            } => Self::Unknown {
+                reason: reason.into(),
+                method_revision,
+            },
+            SavingsStatus::Known {
+                method: crate::remediation::SavingsMethod::OldModelPriceDifference,
+                method_revision,
+                pricing_revision,
+                api_equivalent_cost_avoided_usd,
+                measured_through_ms,
+                recurrence_ms,
+            } => Self::Known {
+                method: BurnCheckSavingsMethod::OldModelPriceDifference,
+                method_revision,
+                pricing_revision,
+                api_equivalent_cost_avoided_usd,
+                measured_through_ms,
+                recurrence_ms,
+            },
+        }
+    }
+}
+
+impl From<crate::remediation::WatchStatus> for BurnCheckWatchPayload {
+    fn from(value: crate::remediation::WatchStatus) -> Self {
+        Self {
+            watch_id: value.watch_id,
+            origin: match value.origin {
+                crate::remediation::RemediationOrigin::Passive => AggregateWinOrigin::Passive,
+                crate::remediation::RemediationOrigin::Action => AggregateWinOrigin::Action,
+            },
+            lifecycle: value.lifecycle.into(),
+            verification: value.verification.into(),
+            savings: value.savings.into(),
+        }
+    }
+}
+
+impl From<crate::remediation::BurnCheckTarget> for BurnCheckTargetPayload {
+    fn from(value: crate::remediation::BurnCheckTarget) -> Self {
+        let finding = value.finding;
+        Self {
+            finding_id: value.finding_id,
+            action_id: value.action_id,
+            finding: BurnCheckFindingPayload {
+                detector: finding.detector.into(),
+                agent: finding.agent.slug().to_owned(),
+                source_format: finding.source_format.into(),
+                observation: finding.observation,
+                labels: finding.facts.labels,
+                omitted: finding.facts.omitted,
+            },
+            display: value.display.into(),
+            occurrence_count: u64::try_from(value.occurrences).unwrap_or(u64::MAX),
+            auto_fix: match value.auto_fix {
+                crate::remediation::AutoFixAvailability::Available => {
+                    AutoFixAvailabilityPayload::Available
+                }
+                crate::remediation::AutoFixAvailability::Unavailable(reason) => {
+                    AutoFixAvailabilityPayload::Unavailable {
+                        reason: reason.into(),
+                    }
+                }
+            },
+            prompt_fix: match value.prompt_fix {
+                crate::remediation::PromptFixAvailability::Available => {
+                    PromptFixAvailabilityPayload::Available
+                }
+                crate::remediation::PromptFixAvailability::Unavailable(reason) => {
+                    PromptFixAvailabilityPayload::Unavailable {
+                        reason: reason.into(),
+                    }
+                }
+            },
+            watch: value.watch.map(Into::into),
+            coverage_limits: value
+                .coverage_limits
+                .into_iter()
+                .map(|limit| match limit {
+                    crate::remediation::CoverageLimit::CurrentPublishedEvidenceOnly => {
+                        BurnCheckCoverageLimit::CurrentPublishedEvidenceOnly
+                    }
+                })
+                .collect(),
+            samples: Vec::new(),
+            expires_at_epoch: value.expires_at_epoch,
+        }
+    }
+}
+
+impl From<crate::remediation::AutoFixReview> for AutoFixReviewPayload {
+    fn from(value: crate::remediation::AutoFixReview) -> Self {
+        Self {
+            prepared_operation_id: value.prepared_operation_id,
+            expires_at_epoch: value.expires_at_epoch,
+            agent: value.agent.slug().to_owned(),
+            scope: value.scope.into(),
+            setting: match value.setting {
+                crate::remediation::AutoFixSetting::Model => AutoFixSetting::Model,
+                crate::remediation::AutoFixSetting::Reasoning => AutoFixSetting::Reasoning,
+            },
+            config_file: value.config_file,
+            current_value: value.current_value,
+            proposed_value: value.proposed_value,
+            effect: match value.effect {
+                crate::remediation::AutoFixEffect::FutureModelSelection => {
+                    AutoFixEffect::FutureModelSelection
+                }
+                crate::remediation::AutoFixEffect::FutureReasoningEffort => {
+                    AutoFixEffect::FutureReasoningEffort
+                }
+            },
+            side_effect: match value.side_effect {
+                crate::remediation::AutoFixSideEffect::ModelBehaviorMayChange => {
+                    AutoFixSideEffect::ModelBehaviorMayChange
+                }
+                crate::remediation::AutoFixSideEffect::ResponsesMayUseLessReasoning => {
+                    AutoFixSideEffect::ResponsesMayUseLessReasoning
+                }
+            },
+        }
+    }
+}
+
+impl From<crate::remediation::AggregateWins> for AggregateWinsPayload {
+    fn from(value: crate::remediation::AggregateWins) -> Self {
+        Self {
+            wins: value
+                .wins
+                .into_iter()
+                .map(|win| AggregateWinPayload {
+                    finding_id: win.finding_id,
+                    detector: win.detector.into(),
+                    origin: match win.origin.as_str() {
+                        "passive" => AggregateWinOrigin::Passive,
+                        "action" => AggregateWinOrigin::Action,
+                        _ => unreachable!("the store validates contribution origins"),
+                    },
+                    display: win.display.into(),
+                    savings: AggregateSavingsPayload {
+                        token_savings: win.savings.token_savings,
+                        api_equivalent_cost_avoided_usd: win
+                            .savings
+                            .api_equivalent_cost_avoided_usd,
+                        improvement_count: win.savings.improvement_count,
+                        method: win.savings.method.map(Into::into),
+                    },
+                    starts_at_ms: win.starts_at_ms,
+                    ends_at_ms: win.ends_at_ms,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<crate::remediation::BurnCheckTargetList> for BurnCheckTargetListPayload {
+    fn from(value: crate::remediation::BurnCheckTargetList) -> Self {
+        Self {
+            targets: value.targets.into_iter().map(Into::into).collect(),
+            truncated: value.truncated,
+        }
+    }
+}
+
 fn not_assessed_reason_str(reason: NotAssessedReason) -> &'static str {
     match reason {
         NotAssessedReason::NoSessionsInWindow => "noSessionsInWindow",
@@ -1106,13 +2078,17 @@ impl From<EfficiencyReport> for InsightsReportPayload {
 }
 
 impl ChecksReportPayload {
-    pub fn from_report(report: &EfficiencyReport, evidence_settled: bool) -> Self {
+    pub fn from_report(
+        report: &EfficiencyReport,
+        evidence_settled: bool,
+        pending_evidence: u64,
+    ) -> Self {
         let categories = DetectorId::ALL
             .iter()
             .map(|&id| {
                 let counts = report.detectors[id.index()];
                 ChecksCategoryPayload {
-                    id: detector_id_str(id),
+                    id: id.into(),
                     finding: counts.finding,
                     clean: counts.clean,
                     unavailable: counts.unavailable,
@@ -1123,6 +2099,7 @@ impl ChecksReportPayload {
             .collect();
         Self {
             evidence_settled,
+            pending_evidence,
             estimated_token_burn_basis_points: report.estimated_token_burn_basis_points,
             categories,
         }
@@ -1397,9 +2374,9 @@ mod tests {
         use std::collections::{BTreeMap, BTreeSet};
 
         use antiburn_local::analysis::{
-            ContextEvidence, EvidenceSource, ModelTokens, RelationConfidence, RelationProvenance,
-            RepeatedContext, SessionEvidenceAccumulator, SourceCapabilities, SourceKind,
-            SubagentChild, TurnCounts, TurnFacts,
+            ContextEvidence, EvidenceSource, ModelControlObservation, ModelTokens,
+            RelationConfidence, RelationProvenance, RepeatedContext, SessionEvidenceAccumulator,
+            SourceCapabilities, SourceKind, SubagentChild, TurnCounts, TurnFacts,
         };
         use antiburn_local::insights::{
             CoverageCounts, DetectorCounts, DetectorFindings, EfficiencyReportAccumulator,
@@ -1562,11 +2539,12 @@ mod tests {
             };
 
             let value =
-                serde_json::to_value(ChecksReportPayload::from_report(&report, true)).unwrap();
+                serde_json::to_value(ChecksReportPayload::from_report(&report, true, 0)).unwrap();
             assert!(value["categories"][0].get("examples").is_none());
             assert!(value.get("coverage").is_none());
             assert!(value.get("quotaPressure").is_none());
             assert_eq!(value["evidenceSettled"], true);
+            assert_eq!(value["pendingEvidence"], 0);
             assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_625);
             assert_eq!(value["categories"][0]["estimatedTokenBurnBasisPoints"], 500);
             assert_eq!(
@@ -1585,7 +2563,8 @@ mod tests {
                 [
                     "categories",
                     "estimatedTokenBurnBasisPoints",
-                    "evidenceSettled"
+                    "evidenceSettled",
+                    "pendingEvidence"
                 ]
             );
             let category_keys: Vec<&str> = value["categories"][0]
@@ -1609,8 +2588,9 @@ mod tests {
             assert_eq!(value["categories"][0]["unavailable"], 1);
 
             let value =
-                serde_json::to_value(ChecksReportPayload::from_report(&report, false)).unwrap();
+                serde_json::to_value(ChecksReportPayload::from_report(&report, false, 4)).unwrap();
             assert_eq!(value["evidenceSettled"], false);
+            assert_eq!(value["pendingEvidence"], 4);
             assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_625);
         }
 
@@ -1665,6 +2645,156 @@ mod tests {
                 .map(String::as_str)
                 .collect();
             assert_eq!(keys, ["calculating", "pending", "processing"]);
+        }
+
+        #[test]
+        fn burn_check_contract_serializes_tagged_states_and_decimal_savings() {
+            let payload = BurnCheckWatchPayload {
+                watch_id: "opaque-watch".into(),
+                origin: AggregateWinOrigin::Action,
+                lifecycle: BurnCheckWatchLifecycle::Fixed,
+                verification: BurnCheckVerificationPayload::Fixed {
+                    method_revision: 3,
+                    evidence_revision: "source-7".into(),
+                },
+                savings: BurnCheckSavingsPayload::Known {
+                    method: BurnCheckSavingsMethod::OldModelPriceDifference,
+                    method_revision: 4,
+                    pricing_revision: "pricing-9".into(),
+                    api_equivalent_cost_avoided_usd: -1.25,
+                    measured_through_ms: 500,
+                    recurrence_ms: Some(450),
+                },
+            };
+
+            let value = serde_json::to_value(payload).unwrap();
+            assert_eq!(value["watchId"], "opaque-watch");
+            assert_eq!(value["origin"], "action");
+            assert_eq!(value["lifecycle"], "fixed");
+            assert_eq!(value["verification"]["status"], "fixed");
+            assert_eq!(value["verification"]["methodRevision"], 3);
+            assert_eq!(value["savings"]["status"], "known");
+            assert_eq!(value["savings"]["method"], "oldModelPriceDifference");
+            assert!(value["savings"].get("tokenEquivalentSavings").is_none());
+            assert_eq!(value["savings"]["apiEquivalentCostAvoidedUsd"], -1.25);
+            assert_eq!(value["savings"]["measuredThroughMs"], 500);
+            assert_eq!(value["savings"]["recurrenceMs"], 450);
+
+            let outcome = serde_json::to_value(
+                ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification {
+                    watch_id: "opaque-watch".into(),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                outcome,
+                serde_json::json!({
+                    "outcome": "appliedAwaitingVerification",
+                    "watchId": "opaque-watch"
+                })
+            );
+        }
+
+        #[test]
+        fn burn_check_review_and_display_dtos_expose_only_semantic_facts() {
+            let display = BurnCheckDisplayFactsPayload {
+                resource_kind: BurnCheckResourceKind::Model,
+                resource_identity: Some("old-model".into()),
+                current_value: Some("old-model".into()),
+                replacement_value: Some("new-model".into()),
+                scope_kind: BurnCheckScopeKind::Project,
+                quantity: Some(3),
+                quantity_unit: Some(BurnCheckQuantityUnit::Turns),
+                observation_count: 2,
+                first_observed_at_ms: 100,
+                last_observed_at_ms: 200,
+                estimate_method: Some(BurnCheckEstimateMethod::OldModelPriceDifference),
+                estimated_opportunity: Some(BurnCheckEstimatedValuePayload {
+                    value: -1.25,
+                    unit: BurnCheckSavingsUnit::ApiEquivalentUsd,
+                }),
+                verification_limit:
+                    BurnCheckVerificationLimit::FreshEvidenceFromSameSourceAndTarget,
+            };
+            let value = serde_json::to_value(display).unwrap();
+            let keys = value
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            assert_eq!(
+                keys,
+                [
+                    "currentValue",
+                    "estimateMethod",
+                    "estimatedOpportunity",
+                    "firstObservedAtMs",
+                    "lastObservedAtMs",
+                    "observationCount",
+                    "quantity",
+                    "quantityUnit",
+                    "replacementValue",
+                    "resourceIdentity",
+                    "resourceKind",
+                    "scopeKind",
+                    "verificationLimit",
+                ]
+            );
+            assert_eq!(value["estimatedOpportunity"]["value"], -1.25);
+            assert_eq!(value["estimatedOpportunity"]["unit"], "apiEquivalentUsd");
+            let serialized = value.to_string();
+            for private_name in [
+                "path",
+                "sessionId",
+                "callId",
+                "evidence",
+                "config",
+                "prompt",
+            ] {
+                assert!(!serialized.contains(private_name));
+            }
+
+            let review = serde_json::to_value(AutoFixReviewPayload {
+                prepared_operation_id: "prepared".into(),
+                expires_at_epoch: 300,
+                agent: "claude-code".into(),
+                scope: BurnCheckScopeKind::Project,
+                setting: AutoFixSetting::Model,
+                config_file: "~/.claude/settings.json".into(),
+                current_value: "old-model".into(),
+                proposed_value: "new-model".into(),
+                effect: AutoFixEffect::FutureModelSelection,
+                side_effect: AutoFixSideEffect::ModelBehaviorMayChange,
+            })
+            .unwrap();
+            assert!(review.get("preparedOperationId").is_some());
+            assert_eq!(review["configFile"], "~/.claude/settings.json");
+            assert!(review.get("path").is_none());
+            assert!(review.get("originalBytes").is_none());
+            assert!(review.get("config").is_none());
+
+            assert_eq!(
+                serde_json::to_value(AutoFixSetting::Reasoning).unwrap(),
+                "reasoning"
+            );
+            assert_eq!(
+                serde_json::to_value(AutoFixEffect::FutureReasoningEffort).unwrap(),
+                "futureReasoningEffort"
+            );
+            assert_eq!(
+                serde_json::to_value(AutoFixSideEffect::ResponsesMayUseLessReasoning).unwrap(),
+                "responsesMayUseLessReasoning"
+            );
+        }
+
+        #[test]
+        fn burn_check_detector_request_rejects_unknown_values() {
+            assert_eq!(
+                serde_json::from_str::<BurnCheckDetectorId>("\"oldModelUsage\"").unwrap(),
+                BurnCheckDetectorId::OldModelUsage
+            );
+            assert!(serde_json::from_str::<BurnCheckDetectorId>("\"futureDetector\"").is_err());
         }
 
         /// The badge wire shape carries identifiers only.
@@ -1755,6 +2885,18 @@ mod tests {
                     delegated: 0,
                 },
             );
+            models.control_observations.push(ModelControlObservation {
+                provider: None,
+                api: None,
+                model: "claude-opus-4-6".to_owned(),
+                effort: Some("max".to_owned()),
+                speed: None,
+                last_ts_ms: i64::MAX,
+                turns: TurnCounts {
+                    main_loop: 2,
+                    delegated: 0,
+                },
+            });
             models.fast_modes.insert(
                 FAST_SPEED_KEY.to_owned(),
                 TurnCounts {
@@ -1762,6 +2904,18 @@ mod tests {
                     delegated: 2,
                 },
             );
+            models.control_observations.push(ModelControlObservation {
+                provider: None,
+                api: None,
+                model: "claude-opus-4-6".to_owned(),
+                effort: None,
+                speed: Some(FAST_SPEED_KEY.to_owned()),
+                last_ts_ms: i64::MAX,
+                turns: TurnCounts {
+                    main_loop: 0,
+                    delegated: 2,
+                },
+            });
 
             let EvidenceValue::Complete(subagents) = &mut evidence.subagents else {
                 panic!("synthetic subagent evidence must be complete");
@@ -1774,6 +2928,8 @@ mod tests {
             subagents.children.push(SubagentChild {
                 ordinal: 1,
                 parent_model: Some("claude-opus-4-6".to_owned()),
+                parent_call_id: None,
+                observed_child_models: subagents.delegated_models.clone(),
                 child_model: EvidenceValue::Unsupported,
                 confidence: RelationConfidence::Observed,
                 provenance: RelationProvenance::TaskToolUse,
@@ -1897,5 +3053,24 @@ mod tests {
         assert!(value["tokens"].is_null());
         assert_eq!(value["modelRuns"], serde_json::json!([]));
         assert!(value["startedAtEpoch"].is_null());
+    }
+
+    #[test]
+    fn burn_check_sample_payload_exposes_no_session_identity() {
+        let value = serde_json::to_value(BurnCheckSamplePayload {
+            navigation_handle: "opaque-handle".to_owned(),
+            title: "Sample session".to_owned(),
+            agent: "codex".to_owned(),
+            surface: BurnCheckSampleSurface::Cli,
+            observed_at_ms: 1_760_000_000_000,
+        })
+        .expect("serialize");
+        let encoded = value.to_string();
+
+        assert_eq!(value["navigationHandle"], "opaque-handle");
+        assert_eq!(value["surface"], "cli");
+        assert!(!encoded.contains("sessionId"));
+        assert!(!encoded.contains("environmentKey"));
+        assert!(!encoded.contains("wslDistro"));
     }
 }

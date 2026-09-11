@@ -19,7 +19,7 @@ use tauri::image::Image;
 use tauri::menu::CheckMenuItem;
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, Wry};
+use tauri::{Emitter, Manager, Wry};
 
 #[cfg(debug_assertions)]
 use crate::commands;
@@ -88,28 +88,47 @@ impl Default for UsageMeter {
     }
 }
 
-/// Linux only: the item that stands in for the click the backend never reports.
+const MENU_MAIN: &str = "open-main";
 #[cfg(target_os = "linux")]
-const MENU_OPEN: &str = "open";
+const MENU_OPEN_POPOVER: &str = "open-popover";
 const MENU_PIN: &str = "pin";
 const MENU_SETTINGS: &str = "settings";
 #[cfg(debug_assertions)]
 const MENU_RESET_ONBOARDING: &str = "reset-onboarding";
 #[cfg(debug_assertions)]
 const MENU_RANDOM_USAGE: &str = "random-usage";
+#[cfg(debug_assertions)]
+const MENU_BURN_CHECKS: &str = "burn-checks";
 const MENU_QUIT: &str = "quit";
 
 /// Title case, matching "Quit antiburn" and the platform's own menus.
 const PIN_LABEL: &str = "Pin Window";
 const UNPIN_LABEL: &str = "Unpin Window";
 
-/// Linux only, and title case for the same reason the pin labels are.
-#[cfg(target_os = "linux")]
 const OPEN_LABEL: &str = "Open antiburn";
+#[cfg(target_os = "linux")]
+const OPEN_POPOVER_LABEL: &str = "Open Usage Popover";
 #[cfg(debug_assertions)]
 const RESET_ONBOARDING_LABEL: &str = "Reset Onboarding";
 #[cfg(debug_assertions)]
 const RANDOM_USAGE_LABEL: &str = "Simulate Random Usage";
+#[cfg(debug_assertions)]
+const BURN_CHECKS_LABEL: &str = "Simulate Burn Checks";
+
+/// Debug-only state that replaces a report with stable sample findings.
+#[cfg(debug_assertions)]
+pub struct DebugBurnChecks {
+    enabled: Mutex<bool>,
+}
+
+#[cfg(debug_assertions)]
+impl Default for DebugBurnChecks {
+    fn default() -> Self {
+        Self {
+            enabled: Mutex::new(false),
+        }
+    }
+}
 
 /// The tray menu items whose text follows app state.
 ///
@@ -122,6 +141,8 @@ pub struct TrayMenu {
     pin: MenuItem<Wry>,
     #[cfg(debug_assertions)]
     random_usage: CheckMenuItem<Wry>,
+    #[cfg(debug_assertions)]
+    burn_checks: CheckMenuItem<Wry>,
 }
 
 struct BuiltMenu {
@@ -129,6 +150,8 @@ struct BuiltMenu {
     pin: MenuItem<Wry>,
     #[cfg(debug_assertions)]
     random_usage: CheckMenuItem<Wry>,
+    #[cfg(debug_assertions)]
+    burn_checks: CheckMenuItem<Wry>,
 }
 
 /// The label the pin item carries for a given state — it names the action, not
@@ -144,9 +167,13 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
         pin: menu.pin,
         #[cfg(debug_assertions)]
         random_usage: menu.random_usage,
+        #[cfg(debug_assertions)]
+        burn_checks: menu.burn_checks,
     });
+    #[cfg(debug_assertions)]
+    app.manage(DebugBurnChecks::default());
 
-    TrayIconBuilder::with_id(TRAY_ID)
+    let tray = TrayIconBuilder::with_id(TRAY_ID)
         .icon(Image::from_bytes(TRAY_ICON)?)
         // macOS renders template images tinted for the current menu-bar
         // appearance, including the inverted pressed state.
@@ -159,7 +186,12 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
         .show_menu_on_left_click(false)
         .on_tray_icon_event(on_tray_event)
         .on_menu_event(on_menu_event)
-        .build(app)
+        .build(app)?;
+
+    #[cfg(target_os = "macos")]
+    tray.with_inner_tray_icon(|inner| inner.set_highlight_override(Some(false)))?;
+
+    Ok(tray)
 }
 
 /// Register the tray meter after the initial full icon is visible.
@@ -235,6 +267,48 @@ fn toggle_random_usage(app: &AppHandle) -> bool {
         .unwrap_or_default();
     sync_usage(app, &summary, active, false);
     false
+}
+
+/// Toggle stable sample findings without writing simulated data to the store.
+#[cfg(debug_assertions)]
+fn toggle_burn_checks(app: &AppHandle) -> bool {
+    let Some(state) = app.try_state::<DebugBurnChecks>() else {
+        return false;
+    };
+    let mut enabled = state
+        .enabled
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *enabled = !*enabled;
+    *enabled
+}
+
+/// Replace the report display with predictable development findings.
+#[cfg(debug_assertions)]
+pub(crate) fn simulate_burn_checks(app: &AppHandle, report: &mut crate::dto::ChecksReportPayload) {
+    let enabled = app.try_state::<DebugBurnChecks>().is_some_and(|state| {
+        *state
+            .enabled
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
+    if !enabled {
+        return;
+    }
+    report.estimated_token_burn_basis_points = Some(125);
+    report.evidence_settled = false;
+    report.pending_evidence = 12;
+    for category in &mut report.categories {
+        category.finding = 0;
+        category.clean = 8;
+        category.unavailable = 0;
+        category.estimated_token_burn_basis_points = None;
+    }
+    if let Some(category) = report.categories.first_mut() {
+        category.finding = 3;
+        category.clean = 5;
+        category.estimated_token_burn_basis_points = Some(125);
+    }
 }
 
 #[cfg(debug_assertions)]
@@ -492,20 +566,39 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         false,
         None::<&str>,
     )?;
+    #[cfg(debug_assertions)]
+    let burn_checks_item = CheckMenuItem::with_id(
+        app,
+        MENU_BURN_CHECKS,
+        BURN_CHECKS_LABEL,
+        true,
+        false,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit antiburn", true, None::<&str>)?;
+    let main_item = MenuItem::with_id(app, MENU_MAIN, OPEN_LABEL, true, None::<&str>)?;
     #[cfg(target_os = "linux")]
-    let open_item = MenuItem::with_id(app, MENU_OPEN, OPEN_LABEL, true, None::<&str>)?;
+    let open_popover_item = MenuItem::with_id(
+        app,
+        MENU_OPEN_POPOVER,
+        OPEN_POPOVER_LABEL,
+        true,
+        None::<&str>,
+    )?;
 
     let items: Vec<&dyn IsMenuItem<Wry>> = vec![
+        &main_item,
         #[cfg(target_os = "linux")]
-        &open_item,
+        &open_popover_item,
         &pin_item,
         &settings_item,
         #[cfg(debug_assertions)]
         &reset_onboarding_item,
         #[cfg(debug_assertions)]
         &random_usage_item,
+        #[cfg(debug_assertions)]
+        &burn_checks_item,
         &separator,
         &quit_item,
     ];
@@ -515,6 +608,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         pin: pin_item,
         #[cfg(debug_assertions)]
         random_usage: random_usage_item,
+        #[cfg(debug_assertions)]
+        burn_checks: burn_checks_item,
     })
 }
 
@@ -535,10 +630,15 @@ fn on_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
 
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
-        // The AppIndicator backend reports no click events, so this item is the
-        // popover's entry point on Linux.
+        MENU_MAIN => {
+            if let Err(error) =
+                crate::open_launch_surface(app, crate::main_window::OpenTrigger::Interaction)
+            {
+                ::tracing::error!(event = "main_window_open_failed", trigger = "tray", error = %error);
+            }
+        }
         #[cfg(target_os = "linux")]
-        MENU_OPEN => popover::open_from_tray_menu(app),
+        MENU_OPEN_POPOVER => popover::open_from_tray_menu(app),
         MENU_PIN => {
             // The item names the action, so choosing it always means "do the
             // other thing"; the popover is re-shown by `set_pinned`, because
@@ -581,9 +681,20 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                 ::tracing::warn!(event = "tray_random_usage_relabel_failed", enabled, error = %error);
             }
         }
+        #[cfg(debug_assertions)]
+        MENU_BURN_CHECKS => {
+            let enabled = toggle_burn_checks(app);
+            if let Some(menu) = app.try_state::<TrayMenu>()
+                && let Err(error) = menu.burn_checks.set_checked(enabled)
+            {
+                ::tracing::warn!(event = "tray_burn_checks_relabel_failed", enabled, error = %error);
+            }
+            let _ = app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
+        }
         MENU_QUIT => {
             // Exit code 0 distinguishes a deliberate quit from the window
             // closes the shell suppresses (see `on_window_event`).
+            crate::main_window::flush_placement(app);
             app.exit(0);
         }
         _ => {}
@@ -604,54 +715,22 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
 /// Every open and every close already runs through that pair, so no caller —
 /// including the tray menu's own pin — has to remember the icon separately.
 ///
-/// # A known flicker on the opening click
+/// The vendored tray backend treats this override as the visibility contract.
+/// Primary mouse events cannot replace it, and native menu tracking restores
+/// its latest value. Remove the patch only when upstream provides both this
+/// control and the macOS 27 menu attachment fix recorded in `Cargo.toml`.
 ///
-/// tray-icon's `mouseUp:` calls `highlight(false)` and only then hands the
-/// click on, so this function re-lights a button that went dark ~185µs
-/// earlier. That gap is visible: `NSCell`'s highlight drawing is immediate and
-/// flushed, not deferred to the next frame, so the dark state reaches the
-/// screen as its own paint. Opening the popover therefore blinks once.
-///
-/// Measured, not guessed — Tauri delivers the tray event ~13µs after
-/// `mouseUp:` begins, so this is not event-loop latency and no reordering on
-/// this side can close it. Two alternatives were tried and rejected against
-/// the running app: driving the button's `state` instead (a status button is
-/// momentary, so `state` has no rendering at all), and forcing
-/// `PushOnPushOff` so `state` would paint a background (it still does not).
-/// `highlight(_:)` is the only property that renders, and tray-icon clears it
-/// on every mouse-up.
-///
-/// Removing the blink means stopping that call, which means carrying a fork of
-/// tray-icon rather than tracking the upstream revision already pinned in
-/// `Cargo.toml`. Judged not worth it for one frame, deliberately rather than by
-/// omission; the `[patch.crates-io]` note records the same decision.
-///
-/// macOS-only; a no-op elsewhere. Stateless — the caller says what the icon
-/// should look like, not what to change.
+/// macOS-only; a no-op elsewhere.
 #[cfg(target_os = "macos")]
 pub fn set_highlight(app: &AppHandle, on: bool) {
-    use objc2::MainThreadMarker;
-
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
-    // Tauri marshals the closure onto the main thread either way: inline when
-    // the caller is already there (the tray click, the window-event handler,
-    // the global click monitor), or via a blocking event-loop round-trip when
-    // it isn't (the `hide_popover` command, which runs on the async runtime).
-    // The closure takes no lock, so neither path can deadlock.
-    let _ = tray.with_inner_tray_icon(move |inner| {
-        let Some(mtm) = MainThreadMarker::new() else {
-            return;
-        };
-        let Some(item) = inner.ns_status_item() else {
-            return;
-        };
-        let Some(button) = item.button(mtm) else {
-            return;
-        };
-        button.highlight(on);
-    });
+    if let Err(error) =
+        tray.with_inner_tray_icon(move |inner| inner.set_highlight_override(Some(on)))
+    {
+        ::tracing::warn!(event = "tray_highlight_update_failed", on, error = %error);
+    }
 }
 
 #[cfg(not(target_os = "macos"))]

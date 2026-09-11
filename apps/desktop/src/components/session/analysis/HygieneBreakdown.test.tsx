@@ -5,6 +5,7 @@ import type { SessionHygienePayload } from "../../../lib/insightsIpc"
 import {
   INITIAL_SESSION_HYGIENE,
   sessionHygieneChecks,
+  sessionHygieneDocumentation,
 } from "../../../lib/presentation/sessionHygiene"
 import { HygieneBreakdown } from "./HygieneBreakdown"
 
@@ -40,6 +41,95 @@ function view() {
 }
 
 describe("HygieneBreakdown", () => {
+  it.each([true, false])("uses Burn Check marks with inlineGuidance=%s", (inlineGuidance) => {
+    render(
+      <HygieneBreakdown
+        checks={sessionHygieneChecks(PAYLOAD)}
+        inlineGuidance={inlineGuidance}
+        collapsePassing={false}
+      />,
+    )
+
+    for (const { name, iconClass, colorClass, strokeWidth } of [
+      {
+        name: "Session overdepth",
+        iconClass: "lucide-circle-alert",
+        colorClass: "text-burn-check-failure-fill",
+        strokeWidth: "2.5",
+      },
+      {
+        name: "Model overthinking",
+        iconClass: "lucide-circle-check",
+        colorClass: "text-burn-check-pass-fill",
+        strokeWidth: "2",
+      },
+    ]) {
+      const row = inlineGuidance
+        ? screen.getByRole("group", { name })
+        : screen.getByRole("button", { name: `${name} details` }).parentElement!
+      const icon = row.querySelector(`.${iconClass}`)
+      expect(icon).toHaveClass(colorClass)
+      expect(icon).toHaveAttribute("stroke-width", strokeWidth)
+      expect(icon).toHaveAttribute("width", "14")
+      expect(icon).toHaveAttribute("height", "14")
+      expect(icon).toHaveAttribute("aria-hidden", "true")
+    }
+
+    if (!inlineGuidance) {
+      expect(screen.getByText("Failed")).toHaveClass("text-burn-check-failure-text")
+      for (const word of screen.getAllByText("Passed")) {
+        expect(word).toHaveClass("text-label-secondary")
+      }
+    }
+  })
+
+  it("carries each check at three densities and opens its advice in a tooltip", () => {
+    const checks = sessionHygieneChecks(PAYLOAD)
+    render(<HygieneBreakdown checks={checks} inlineGuidance />)
+    expect(screen.queryByRole("button")).toBeNull()
+    expect(screen.getAllByRole("group")).toHaveLength(5)
+    expect(screen.queryByText("Overpowered subagents")).toBeNull()
+
+    for (const check of checks.filter((item) => item.status !== "notAssessed")) {
+      const documentation = sessionHygieneDocumentation(check)
+      const row = screen.getByRole("group", { name: check.name })
+      // The name shows at every width. The verdict word and the summary
+      // ride along in the markup, and the stylesheet reveals each of them
+      // at the pane width that has the room for it.
+      expect(row).toHaveAttribute("tabindex", "0")
+      expect(row).toHaveClass("session-check-cell")
+      expect(row.querySelector(".session-check-word")).toHaveTextContent(
+        check.status === "finding" ? "Failed" : "Passed",
+      )
+      expect(row.querySelector(".session-check-summary")).toHaveTextContent(
+        documentation.summary,
+      )
+      // The advice never sits in the row. It waits in the tooltip.
+      for (const advice of documentation.guidance) {
+        expect(screen.queryByText(advice)).toBeNull()
+      }
+
+      fireEvent.focus(row)
+      expect(screen.getAllByText(documentation.summary).length).toBeGreaterThan(1)
+      for (const advice of documentation.guidance) {
+        expect(screen.getAllByText(advice).length).toBeGreaterThan(0)
+      }
+      fireEvent.blur(row)
+      for (const advice of documentation.guidance) {
+        expect(screen.queryByText(advice)).toBeNull()
+      }
+    }
+
+    // A finding names the evidence that caused it before its advice.
+    const finding = screen.getByRole("group", { name: "Session overdepth" })
+    fireEvent.focus(finding)
+    expect(screen.getAllByText(/475,000 tokens/).length).toBeGreaterThan(0)
+    for (const evidence of screen.getAllByText(/475,000 tokens/)) {
+      expect(evidence).toHaveClass("text-burn-check-failure-text")
+    }
+    fireEvent.blur(finding)
+  })
+
   it("omits unavailable checks from the summary and detail rows", () => {
     view()
 
@@ -90,6 +180,9 @@ describe("HygieneBreakdown", () => {
     )
     expect(guidanceRegion.firstElementChild).not.toHaveClass("px-3", "pb-3")
     expect(guidanceRegion.querySelector('[class*="text-sm"]')).toBeNull()
+    expect(screen.getByText(/475,000 tokens/).parentElement).toHaveClass(
+      "text-burn-check-failure-text",
+    )
 
     fireEvent.click(screen.getByRole("button", { name: "4/5 passed" }))
     fireEvent.click(screen.getByRole("button", { name: "Model overthinking details" }))

@@ -9,7 +9,8 @@ use antiburn_local::analysis::{SessionEvidence, TurnRowStore};
 use antiburn_local::insights::{DetectorId, eligible};
 use antiburn_local::model::AgentKind;
 use tauri::{Emitter, Manager};
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::Notify;
+use tokio::task::JoinSet;
 
 use crate::analysis::{self, EvidencePass, PassOutcome, PassSignal, UnreadableReason};
 use crate::commands;
@@ -23,6 +24,8 @@ use crate::store::{
 pub(crate) const LEASE_SECS: i64 = 300;
 pub(crate) const LEASE_RENEW_SECS: u64 = 60;
 pub(crate) const IDLE_POLL_SECS: u64 = 60;
+/// Parse several independent transcripts at once without saturating the machine.
+const WORKER_CONCURRENCY: usize = 4;
 pub(crate) const BACKOFF_BASE_SECS: i64 = 30;
 pub(crate) const BACKOFF_MAX_SECS: i64 = 900;
 pub(crate) const MAX_EVIDENCE_ATTEMPTS: i64 = 5;
@@ -39,27 +42,10 @@ pub(crate) const EVIDENCE_ERROR_UNSUPPORTED: &str = "source-unsupported";
 /// this suffix safely.
 const UNREADABLE_REASON_SEPARATOR: &str = ":";
 
-struct Permits {
-    cpu: Semaphore,
-    source: Semaphore,
-    provider_db: Semaphore,
-}
-
-impl Default for Permits {
-    fn default() -> Self {
-        Self {
-            cpu: Semaphore::new(1),
-            source: Semaphore::new(1),
-            provider_db: Semaphore::new(1),
-        }
-    }
-}
-
-/// This handle wakes the worker and limits its shared processing resources.
+/// This handle wakes the worker.
 #[derive(Default)]
 pub struct WorkerHandle {
     wake: Notify,
-    permits: Permits,
 }
 
 pub(crate) type PassFuture = Pin<Box<dyn Future<Output = EvidencePass> + Send>>;
@@ -80,12 +66,6 @@ type RecordAnalyzer<'a> = dyn Fn(
     + Send
     + Sync
     + 'a;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PermitKind {
-    Source,
-    ProviderDb,
-}
 
 /// `store` is a cheap handle (see [`Store`]'s doc comment): this clones it
 /// once per pass into a [`FencedTurnRowStore`] stamped with `claim_fence`,
@@ -162,31 +142,39 @@ fn run_record_pass_with(
 pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let store_handle: Store = (*app.state::<Store>()).clone();
-        let run_pass = move |record: &SessionRecord, signal: PassSignal, claim_fence: i64| {
-            run_record_pass(record, signal, claim_fence, store_handle.clone())
-        };
-        let announce_app = app.clone();
-        let announce = move |entry: ActivityEntry| {
-            let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
-        };
-        let report_app = app.clone();
-        let announce_idle = move || {
-            let _ = report_app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
-        };
-        let clock = || unix_now();
-        let store = app.state::<Store>();
-        let handle = app.state::<WorkerHandle>();
-        worker_loop(
-            &store,
-            &handle,
-            &clock,
-            &run_pass,
-            &announce,
-            &announce_idle,
-        )
-        .await;
+        let mut workers = JoinSet::new();
+        for _ in 0..WORKER_CONCURRENCY {
+            workers.spawn(run_worker(app.clone()));
+        }
+        while workers.join_next().await.is_some() {}
     })
+}
+
+async fn run_worker(app: tauri::AppHandle) {
+    let store_handle: Store = (*app.state::<Store>()).clone();
+    let run_pass = move |record: &SessionRecord, signal: PassSignal, claim_fence: i64| {
+        run_record_pass(record, signal, claim_fence, store_handle.clone())
+    };
+    let announce_app = app.clone();
+    let announce = move |entry: ActivityEntry| {
+        let _ = announce_app.emit(commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
+    };
+    let report_app = app.clone();
+    let announce_idle = move || {
+        let _ = report_app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
+    };
+    let clock = || unix_now();
+    let store = app.state::<Store>();
+    let handle = app.state::<WorkerHandle>();
+    worker_loop(
+        &store,
+        &handle,
+        &clock,
+        &run_pass,
+        &announce,
+        &announce_idle,
+    )
+    .await;
 }
 
 pub fn wake(app: &tauri::AppHandle) {
@@ -200,13 +188,6 @@ pub(crate) fn backoff_secs(retry_count: i64) -> i64 {
     BACKOFF_BASE_SECS
         .saturating_mul(1_i64.checked_shl(exponent).unwrap_or(i64::MAX))
         .min(BACKOFF_MAX_SECS)
-}
-
-pub(crate) fn permit_for_source_kind(source_kind: &str) -> PermitKind {
-    match source_kind {
-        "providerDb" => PermitKind::ProviderDb,
-        _ => PermitKind::Source,
-    }
 }
 
 /// Classifies a provider against the shipped detector fact
@@ -349,7 +330,6 @@ fn lease_renew_interval() -> Duration {
 
 pub(crate) async fn process_next(
     store: &Store,
-    handle: &WorkerHandle,
     clock: &(dyn Fn() -> i64 + Send + Sync),
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(ActivityEntry) + Send + Sync),
@@ -367,20 +347,6 @@ pub(crate) async fn process_next(
         apply_outcome(store, &claim, &pass, clock())?;
         return Ok(true);
     };
-    let _cpu = handle
-        .permits
-        .cpu
-        .acquire()
-        .await
-        .map_err(|_| anyhow::anyhow!("CPU permit closed"))?;
-    let permit = match permit_for_source_kind(&record.source_kind) {
-        PermitKind::Source => &handle.permits.source,
-        PermitKind::ProviderDb => &handle.permits.provider_db,
-    };
-    let _source = permit
-        .acquire()
-        .await
-        .map_err(|_| anyhow::anyhow!("source permit closed"))?;
     let signal = PassSignal::new();
     let mut pass = run_pass(&record, signal.clone(), claim.claim_fence);
     let mut progress = signal.progress();
@@ -416,6 +382,43 @@ pub(crate) async fn process_next(
     Ok(true)
 }
 
+pub(crate) async fn process_next_work(
+    store: &Store,
+    clock: &(dyn Fn() -> i64 + Send + Sync),
+    run_pass: &PassRunner<'_>,
+    announce: &(dyn Fn(ActivityEntry) + Send + Sync),
+) -> anyhow::Result<bool> {
+    let now = clock();
+    if let Some(recovery) = store.next_remediation_write_recovery(now)? {
+        crate::remediation::recover_uncertain_write(store, &recovery, now)?;
+        return Ok(true);
+    }
+    let remediation_first = store.take_remediation_work_turn();
+    if remediation_first && let Some(remediation) = store.next_dirty_remediation()? {
+        let _ = crate::remediation::evaluate_dirty_remediation(
+            store.state_dir(),
+            store,
+            &remediation,
+            clock(),
+        )?;
+        return Ok(true);
+    }
+    let processed = process_next(store, clock, run_pass, announce).await?;
+    if processed {
+        return Ok(true);
+    }
+    if !remediation_first && let Some(remediation) = store.next_dirty_remediation()? {
+        let _ = crate::remediation::evaluate_dirty_remediation(
+            store.state_dir(),
+            store,
+            &remediation,
+            clock(),
+        )?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 pub(crate) async fn worker_loop(
     store: &Store,
     handle: &WorkerHandle,
@@ -426,9 +429,10 @@ pub(crate) async fn worker_loop(
 ) {
     let mut processed = false;
     loop {
-        match process_next(store, handle, clock, run_pass, announce).await {
+        match process_next_work(store, clock, run_pass, announce).await {
             Ok(true) => {
                 processed = true;
+                announce_idle();
                 continue;
             }
             Ok(false) => {

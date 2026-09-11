@@ -3,6 +3,7 @@ import { Component, useState, useSyncExternalStore } from "react"
 import { ProviderGlyph } from "../components/providerUsage/ProviderUsagePrimitives"
 import { Skeleton } from "../components/ui/Skeleton"
 import {
+  getPopoverPeekState,
   popoverPeekConcealed,
   popoverPeekPresented,
   popoverPeekRetargetReady,
@@ -193,7 +194,12 @@ function candidateContent(
 function PeekPayloadContent({ payload }: { payload: PeekPayload }) {
   if (payload.kind === "unavailable") return <PeekUnavailable />
   if (payload.data.kind === "checks") {
-    return <ChecksPeek presentation={payload.data.presentation} />
+    return (
+      <ChecksPeek
+        presentation={payload.data.presentation}
+        pendingEvidence={payload.data.pendingEvidence}
+      />
+    )
   }
   return (
     <>
@@ -214,6 +220,21 @@ function PeekContent({
   const request = snapshot.requested
   if (!request.target) return <Standby generation={request.generation} />
   const presented = presentedContent(snapshot)
+  const confirmVisibleGeneration = async (generation: number, transition: Promise<boolean>) => {
+    const transitioned = await transition
+    if (!transitioned) {
+      const state = await getPopoverPeekState().catch(() => null)
+      if (state?.generation !== generation || !state.target || !state.visible) return false
+    }
+    controller.confirmPresented(generation)
+    return true
+  }
+  const acknowledgePresentation = async (generation: number, height: number) => {
+    return confirmVisibleGeneration(generation, popoverPeekPresented(generation, height))
+  }
+  const commitRetarget = async (generation: number, height: number | null) => {
+    return confirmVisibleGeneration(generation, popoverPeekRetargetReady(generation, height))
+  }
   return (
     <AnchoredContentPresenter
       key={request.initialPresentation ? request.generation : "retained"}
@@ -228,8 +249,8 @@ function PeekContent({
       initialPresentationCommitRequired={
         request.initialPresentation != null && !request.retargetCommitRequired
       }
-      commitRetarget={popoverPeekRetargetReady}
-      acknowledge={popoverPeekPresented}
+      commitRetarget={commitRetarget}
+      acknowledge={acknowledgePresentation}
       onPromote={controller.promote}
       onDiscard={controller.discard}
     />

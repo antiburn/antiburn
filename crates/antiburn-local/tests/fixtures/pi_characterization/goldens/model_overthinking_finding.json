@@ -37,13 +37,16 @@
       "fastTier": false,
       "harnessVersion": false,
       "linearRecordOrder": false,
+      "mcpInventory": false,
       "modelIdentity": true,
       "quotaIncidents": false,
       "reasoningEffortTier": true,
       "recordIdentity": true,
+      "repeatedContextAccounting": null,
       "requestContextTokens": true,
       "serviceTier": false,
-      "skillMcpAttribution": false,
+      "skillInventory": false,
+      "sourceFormat": "pi_v3_jsonl",
       "subagentModels": false,
       "subagentRelationships": false,
       "threadIdentity": true,
@@ -115,6 +118,20 @@
             "turns": 1
           }
         },
+        "controlObservations": [
+          {
+            "api": "anthropic-messages",
+            "effort": "max",
+            "lastTsMs": 1767312301000,
+            "model": "claude-opus-4-6",
+            "provider": "anthropic",
+            "speed": null,
+            "turns": {
+              "delegated": 0,
+              "mainLoop": 1
+            }
+          }
+        ],
         "dominantMainModel": "claude-opus-4-6",
         "effortSignal": {
           "eligibleTurns": 1,
@@ -126,7 +143,16 @@
             "mainLoop": 1
           }
         },
+        "effortTiersByModel": {
+          "claude-opus-4-6": {
+            "max": {
+              "delegated": 0,
+              "mainLoop": 1
+            }
+          }
+        },
         "fastModes": {},
+        "fastModesByModel": {},
         "serviceTiers": {
           "state": "unsupported"
         },
@@ -138,20 +164,20 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 18,
-      "evidenceSchemaRevision": 14,
+      "analyzerRevision": 23,
+      "evidenceSchemaRevision": 18,
       "harnessVersion": {
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 28,
+      "parserRevision": 32,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
     "quotaIncidents": {
       "state": "unsupported"
     },
-    "schemaRevision": 14,
+    "schemaRevision": 18,
     "subagents": {
       "state": "unsupported"
     },
@@ -4195,6 +4221,7 @@
     "contextWindowSource": "inferred",
     "events": [
       {
+        "api": "anthropic-messages",
         "compactionPostTokens": null,
         "compactionPreTokens": null,
         "compactionTrigger": null,
@@ -4203,6 +4230,7 @@
         "messageId": null,
         "model": "claude-opus-4-6",
         "parentUuid": "ot-1",
+        "provider": "anthropic",
         "role": "assistant",
         "source": "parent",
         "speed": null,

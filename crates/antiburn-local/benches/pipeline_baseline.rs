@@ -23,12 +23,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use antiburn_local::analysis::{
-    ANALYZER_REVISION, AppendOnlyGuarantee, BoundedJsonlReader, ClaudeAdapter, CompositeSink,
+    ANALYZER_REVISION, AppendOnlyGuarantee, BoundedJsonlReader, ClaudeSessionReader, CompositeSink,
     EVIDENCE_SCHEMA_REVISION, EvidenceSource, MAX_RECORD_BYTES, MemoryTurnRowStore,
     NormalizedRecord, PARSER_REVISION, RawSource, RecordSink, SessionEvidence,
     SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
     SourceCapabilities, SourceClaim, SourceKind, TurnRowSink, TurnRowStore, VisitOutcome,
-    adapter_for, normalize_source,
+    normalize_source, reader_for,
 };
 use antiburn_local::discovery::source_version::{FingerprintInputs, SourceStat, head_hash_of};
 use antiburn_local::insights::{
@@ -444,7 +444,7 @@ fn full_reparse(criterion: &mut Criterion) {
             |bencher, _| {
                 bencher.iter(|| {
                     let mut composite = composite_for(&input);
-                    let outcome = ClaudeAdapter
+                    let outcome = ClaudeSessionReader
                         .visit_claimed(
                             &input,
                             &claim,
@@ -486,7 +486,7 @@ fn antigravity(criterion: &mut Criterion) {
             |bencher, _| {
                 bencher.iter(|| {
                     let mut composite = composite_for(&input);
-                    let outcome = adapter_for("antigravity")
+                    let outcome = reader_for("antigravity")
                         .visit_claimed(
                             &input,
                             &claim,
@@ -516,7 +516,7 @@ fn antigravity(criterion: &mut Criterion) {
     group.bench_function("cascade_claimed_nested_steps", |bencher| {
         bencher.iter(|| {
             let mut composite = composite_for(&input);
-            let outcome = adapter_for("antigravity")
+            let outcome = reader_for("antigravity")
                 .visit_claimed(
                     &input,
                     &claim,
@@ -554,7 +554,7 @@ fn antigravity_native_db(criterion: &mut Criterion) {
             |bencher, layout| {
                 bencher.iter(|| {
                     let mut composite = composite_for(&layout.input);
-                    let outcome = adapter_for("antigravity")
+                    let outcome = reader_for("antigravity")
                         .visit(&layout.input, &mut composite)
                         .expect("synthetic native Antigravity layout must stream");
                     composite.observe_source_outcome(outcome);
@@ -569,7 +569,7 @@ fn antigravity_native_db(criterion: &mut Criterion) {
     group.bench_function("db_only_1000_generations", |bencher| {
         bencher.iter(|| {
             let mut composite = composite_for(&db_only.input);
-            let outcome = adapter_for("antigravity")
+            let outcome = reader_for("antigravity")
                 .visit(&db_only.input, &mut composite)
                 .expect("synthetic Antigravity DB must stream");
             composite.observe_source_outcome(outcome);
@@ -582,7 +582,7 @@ fn antigravity_native_db(criterion: &mut Criterion) {
     group.bench_function("generation_with_280KiB_irrelevant_fields", |bencher| {
         bencher.iter(|| {
             let mut composite = composite_for(&padded.input);
-            let outcome = adapter_for("antigravity")
+            let outcome = reader_for("antigravity")
                 .visit(&padded.input, &mut composite)
                 .expect("padded Antigravity generation must stream");
             composite.observe_source_outcome(outcome);
@@ -613,7 +613,7 @@ fn pi(criterion: &mut Criterion) {
             |bencher, _| {
                 bencher.iter(|| {
                     let mut composite = composite_for(&input);
-                    let outcome = adapter_for("pi")
+                    let outcome = reader_for("pi")
                         .visit_claimed(
                             &input,
                             &claim,
@@ -662,7 +662,7 @@ fn stage_split(criterion: &mut Criterion) {
     group.bench_function("normalize_noop_sink", |bencher| {
         bencher.iter(|| {
             let mut sink = NoopSink;
-            adapter_for("claude")
+            reader_for("claude")
                 .visit(&input, &mut sink)
                 .expect("synthetic source must stream")
         });
@@ -672,7 +672,7 @@ fn stage_split(criterion: &mut Criterion) {
         bencher.iter(|| {
             let mut sink =
                 SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
-            adapter_for("claude")
+            reader_for("claude")
                 .visit(&input, &mut sink)
                 .expect("synthetic source must stream");
             black_box((sink.observed_turns(), sink.retained_bytes()))
@@ -682,7 +682,7 @@ fn stage_split(criterion: &mut Criterion) {
     group.bench_function("normalize_plus_metrics_and_evidence", |bencher| {
         bencher.iter(|| {
             let mut composite = composite_for(&input);
-            let outcome = adapter_for("claude")
+            let outcome = reader_for("claude")
                 .visit(&input, &mut composite)
                 .expect("synthetic source must stream");
             composite.observe_source_outcome(outcome);
@@ -755,7 +755,7 @@ fn materialization(criterion: &mut Criterion) {
     group.bench_function("stream_from_file", |bencher| {
         bencher.iter(|| {
             let mut composite = composite_for(&streamed);
-            let outcome = adapter_for("claude")
+            let outcome = reader_for("claude")
                 .visit(&streamed, &mut composite)
                 .expect("synthetic source must stream");
             composite.observe_source_outcome(outcome);
@@ -773,7 +773,7 @@ fn materialization(criterion: &mut Criterion) {
                 fork_parent_session_id: None,
             };
             let mut composite = composite_for(&inline);
-            let outcome = adapter_for("claude")
+            let outcome = reader_for("claude")
                 .visit(&inline, &mut composite)
                 .expect("synthetic source must stream");
             composite.observe_source_outcome(outcome);
@@ -808,7 +808,7 @@ fn provider_db(criterion: &mut Criterion) {
             |bencher, _| {
                 bencher.iter(|| {
                     let mut composite = composite_for(&input);
-                    let outcome = adapter_for(&input.agent)
+                    let outcome = reader_for(&input.agent)
                         .visit(&input, &mut composite)
                         .expect("synthetic provider DB must be readable");
                     composite.observe_source_outcome(outcome);
@@ -831,7 +831,7 @@ fn report_reduction(criterion: &mut Criterion) {
         let session = generate_session(&SessionSpec::tier_s(131, session_index, 120));
         let input = jsonl_input(&session);
         let mut composite = composite_for(&input);
-        let outcome = adapter_for("claude")
+        let outcome = reader_for("claude")
             .visit(&input, &mut composite)
             .expect("synthetic source must stream");
         composite.observe_source_outcome(outcome);
@@ -893,7 +893,7 @@ fn memory_probes() {
 
     let input = jsonl_input(&large);
     let mut metrics = SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
-    adapter_for("claude")
+    reader_for("claude")
         .visit(&input, &mut metrics)
         .expect("synthetic source must stream");
     println!(
@@ -903,7 +903,7 @@ fn memory_probes() {
     );
 
     let mut composite = composite_for(&input);
-    let outcome = adapter_for("claude")
+    let outcome = reader_for("claude")
         .visit(&input, &mut composite)
         .expect("synthetic source must stream");
     composite.observe_source_outcome(outcome);
@@ -926,7 +926,7 @@ fn memory_probes() {
         fork_parent_session_id: None,
     };
     let mut metrics = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
-    adapter_for("antigravity")
+    reader_for("antigravity")
         .visit(&input, &mut metrics)
         .expect("Antigravity brain source must stream");
     println!(
@@ -972,7 +972,7 @@ fn active_writer_rates() {
                 })
             });
             let mut sink = NoopSink;
-            let outcome = ClaudeAdapter
+            let outcome = ClaudeSessionReader
                 .visit_claimed(
                     &input,
                     &claim,

@@ -50,6 +50,14 @@ describe("renderAgentIcon", () => {
     expect(svg?.querySelector("path")?.getAttribute("d")).toBe(markOf("antigravity").path)
   })
 
+  it("keeps vendor identity while presenting a neutral mark", () => {
+    render(<div data-testid="host">{renderAgentIcon("claude-code", 12, "cli", "neutral")}</div>)
+    const wrapper = screen.getByTestId("host").firstElementChild
+    expect(wrapper).toHaveAttribute("aria-label", "Claude Code")
+    expect(wrapper).toHaveClass("text-label-tertiary")
+    expect(wrapper?.querySelector("svg")?.style.color).toBe("")
+  })
+
   it.each(["cli", "ide_desktop", "unknown"] as const)(
     "draws a surface glyph for an unknown slug on %s",
     (surface) => {

@@ -1,30 +1,9 @@
-//! Overpowered Subagents: premium main-loop models that spawn
-//! subagents on the same premium tier.
-//!
-//! Claude delegated model evidence applies to the session. A sidechain root
-//! does not identify its `Task` spawn, so the evidence does not invent an edge.
-//!
-//! The "main-loop model" is the dominant `scope='main'` model
-//! (`ModelEvidence::dominant_main_model`, the most-active model by turn
-//! count). Older evidence and harnesses that have not filled the field
-//! yet fall back to `children[].parent_model`, folded the same
-//! dominant way: any premium value wins.
-//!
-//! Premium status is judged under each model's own family's reviewed
-//! premium policy (`ReportCatalogs::families`). An unreviewed family
-//! (including `ModelFamily::Unknown`) can prove neither premium nor
-//! non-premium for its models.
-//!
-//! Partial-evidence rules:
-//! - Observed premium parent and delegated models permit a finding.
-//! - Partial subagent evidence prevents clean when no finding exists.
-//! - Missing parent or delegated model evidence reports the contract gap.
-//! - A delegated or parent model whose family policy is not reviewed
-//!   reports the contract gap instead of assuming non-premium, unless a
-//!   finding is already proven from another observed model.
+//! Finds premium parent and child models linked by a native task.
+//! Aggregate models do not prove ancestry, including in older persisted evidence.
 
-use crate::analysis::{EvidenceValue, SessionEvidence, SubagentEvidence};
+use crate::analysis::SessionEvidence;
 use crate::pricing::canonical_model_key;
+use crate::remediation::FindingCause;
 
 use super::{Observation, ReportCatalogs, model_family, observed};
 
@@ -38,85 +17,65 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
     if !has_subagent_activity {
         return Observation::NoFinding;
     }
-    let group_is_partial = matches!(&evidence.subagents, EvidenceValue::Partial { .. });
-    if subagents.delegated_models.is_empty() {
-        return if group_is_partial {
-            Observation::NoFinding
-        } else {
-            Observation::ContractIncomplete
-        };
-    }
-
-    let mut any_premium_delegate = false;
-    let mut any_unreviewed_delegate = false;
-    for model in &subagents.delegated_models {
-        match premium_verdict(model, catalogs) {
-            Some(true) => any_premium_delegate = true,
-            Some(false) => {}
-            None => any_unreviewed_delegate = true,
+    let mut incomplete = subagents.children.is_empty();
+    for child in &subagents.children {
+        if child.observed_child_models.is_empty() {
+            incomplete = true;
+            continue;
         }
-    }
-    if !any_premium_delegate {
-        return if any_unreviewed_delegate {
-            // A delegated model's family is not reviewed for premium
-            // tier. It might be premium; the session cannot prove it
-            // is not.
-            Observation::ContractIncomplete
-        } else {
-            Observation::NoFinding
-        };
-    }
-
-    let dominant_main_model =
-        observed(&evidence.models).and_then(|models| models.dominant_main_model.as_deref());
-    let parent_verdict = match dominant_main_model {
-        Some(model) => premium_verdict(model, catalogs),
-        None => fallback_parent_verdict(subagents, catalogs),
-    };
-    match parent_verdict {
-        Some(true) => Observation::Finding,
-        Some(false) => Observation::NoFinding,
-        None => {
-            if group_is_partial {
-                Observation::NoFinding
-            } else {
-                Observation::ContractIncomplete
+        let parent = child
+            .parent_model
+            .as_deref()
+            .and_then(|model| premium_verdict(model, catalogs));
+        for model in &child.observed_child_models {
+            match (parent, premium_verdict(model, catalogs)) {
+                (Some(true), Some(true)) => return Observation::Finding,
+                (Some(_), Some(_)) => {}
+                _ => incomplete = true,
             }
         }
     }
+    if incomplete {
+        if matches!(
+            evidence.subagents,
+            crate::analysis::EvidenceValue::Partial { .. }
+        ) {
+            Observation::NoFinding
+        } else {
+            Observation::ContractIncomplete
+        }
+    } else {
+        Observation::NoFinding
+    }
 }
 
-/// Folds every child's `parent_model` into one dominant-style verdict
-/// for when no `dominant_main_model` was computed. `Some(true)` (a
-/// proven premium parent) wins; failing that, an unreviewed family
-/// wins over a proven `Some(false)`; no parent model observed at all
-/// reports `None`, the same as an unreviewed family.
-fn fallback_parent_verdict(
-    subagents: &SubagentEvidence,
+pub(super) fn finding_causes(
+    evidence: &SessionEvidence,
     catalogs: &ReportCatalogs,
-) -> Option<bool> {
-    let mut any_true = false;
-    let mut any_unreviewed = false;
-    let mut any_observed = false;
-    for model in subagents
-        .children
-        .iter()
-        .filter_map(|child| child.parent_model.as_deref())
-    {
-        any_observed = true;
-        match premium_verdict(model, catalogs) {
-            Some(true) => any_true = true,
-            Some(false) => {}
-            None => any_unreviewed = true,
+) -> Vec<FindingCause> {
+    let Some(subagents) = observed(&evidence.subagents) else {
+        return Vec::new();
+    };
+    let mut causes = Vec::new();
+    for child in &subagents.children {
+        let Some(parent_model) = child.parent_model.as_ref() else {
+            continue;
+        };
+        if premium_verdict(parent_model, catalogs) != Some(true) {
+            continue;
+        }
+        for worker_model in &child.observed_child_models {
+            if premium_verdict(worker_model, catalogs) == Some(true) {
+                causes.push(FindingCause::OverpoweredSubagents {
+                    parent_model: parent_model.clone(),
+                    worker_model: worker_model.clone(),
+                    worker_ordinal: child.ordinal,
+                    parent_call_id: child.parent_call_id.clone(),
+                });
+            }
         }
     }
-    if any_true {
-        Some(true)
-    } else if any_unreviewed || !any_observed {
-        None
-    } else {
-        Some(false)
-    }
+    causes
 }
 
 /// One model's premium verdict under its family's reviewed policy.
@@ -136,7 +95,9 @@ fn premium_verdict(model: &str, catalogs: &ReportCatalogs) -> Option<bool> {
 mod tests {
     use super::super::test_support::claude_evidence;
     use super::*;
-    use crate::analysis::{ModelTokens, RelationConfidence, RelationProvenance, SubagentChild};
+    use crate::analysis::{
+        EvidenceValue, ModelTokens, RelationConfidence, RelationProvenance, SubagentChild,
+    };
 
     fn evidence_with_models(
         parent_model: Option<&str>,
@@ -155,6 +116,8 @@ mod tests {
         subagents.children.push(SubagentChild {
             ordinal: 1,
             parent_model: parent_model.map(str::to_owned),
+            parent_call_id: Some("call-1".to_owned()),
+            observed_child_models: subagents.delegated_models.clone(),
             child_model: EvidenceValue::Unsupported,
             confidence: RelationConfidence::Observed,
             provenance: RelationProvenance::TaskToolUse,
@@ -213,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn premium_parent_and_delegated_models_are_a_finding_via_the_children_fallback() {
+    fn premium_parent_and_child_models_are_a_finding_when_paired() {
         let evidence = evidence_with_models(Some("claude-opus-4-6"), &["claude-opus-4-7-20260115"]);
 
         assert_eq!(
@@ -223,14 +186,41 @@ mod tests {
     }
 
     #[test]
-    fn a_dominant_main_model_wins_over_a_lower_cost_parent_child() {
-        // The child's `parent_model` claims a non-premium parent, but
-        // `dominant_main_model` (the real signal now) is premium.
+    fn a_dominant_main_model_does_not_replace_the_actual_parent() {
         let evidence = with_dominant_main_model(
             evidence_with_models(Some("claude-sonnet-4-6"), &["claude-opus-4-6"]),
             "claude-opus-4-6",
         );
 
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::NoFinding
+        );
+    }
+
+    #[test]
+    fn legacy_aggregates_do_not_prove_ancestry() {
+        let mut evidence = with_dominant_main_model(
+            evidence_with_models(Some("claude-opus-4-6"), &["claude-opus-4-6"]),
+            "claude-opus-4-6",
+        );
+        let EvidenceValue::Complete(subagents) = &mut evidence.subagents else {
+            unreachable!()
+        };
+        subagents.children[0].observed_child_models.clear();
+        subagents.children[0].parent_call_id = None;
+        assert_eq!(
+            evaluate(&evidence, &ReportCatalogs::default()),
+            Observation::ContractIncomplete
+        );
+    }
+
+    #[test]
+    fn a_lower_cost_dominant_model_does_not_hide_a_premium_pair() {
+        let evidence = with_dominant_main_model(
+            evidence_with_models(Some("claude-opus-4-6"), &["claude-opus-4-6"]),
+            "claude-sonnet-4-6",
+        );
         assert_eq!(
             evaluate(&evidence, &ReportCatalogs::default()),
             Observation::Finding

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use antiburn_local::analysis::{
@@ -8,6 +8,7 @@ use antiburn_local::analysis::{
 
 use super::*;
 use crate::store::EvidenceStatus;
+use crate::store::{Remediation, RemediationEvidenceGuard, RemediationState};
 
 mod resume_tests;
 
@@ -42,6 +43,126 @@ fn claim(store: &Store, id: &str, now: i64) -> EvidenceClaim {
         .claim_next_evidence(&crate::agents::evidence_cohort(), now, LEASE_SECS)
         .unwrap()
         .unwrap()
+}
+
+fn seed_dirty_remediation(store: &Store) {
+    let claim = claim(store, "remediation-baseline", 10);
+    let source = store.session(&claim.key).unwrap().unwrap();
+    let mut pass = published_pass(&source);
+    pass.analysis.analyzed_generation = claim.source_generation;
+    assert!(apply_outcome(store, &claim, &pass, 10).unwrap());
+    let evidence = store.evidence(&claim.key).unwrap().unwrap();
+    let guard = RemediationEvidenceGuard {
+        environment_key: "native".into(),
+        agent: "claude-code".into(),
+        session_id: "remediation-baseline".into(),
+        source_generation: claim.source_generation,
+        published_fence: evidence.published_fence.unwrap(),
+        source_fingerprint: Some("sv1:remediation-baseline".into()),
+        processed_fingerprint: evidence.processed_fingerprint,
+        parser_revision: evidence.parser_revision.unwrap(),
+        analyzer_revision: evidence.analyzer_revision.unwrap(),
+        evidence_schema_revision: evidence.evidence_schema_revision.unwrap(),
+    };
+    assert!(store.create_or_reuse_remediation(&Remediation {
+        remediation_id: "worker-remediation".into(), target_key: "worker-target".into(),
+        environment_key: "native".into(), agent: "claude-code".into(),
+        scope_kind: "session".into(), scope_key: "scope".into(), state: RemediationState::Watching,
+        definition_json: r#"{"version":1,"detector":"unused_skills","canonicalIdentity":"target","sourceFormat":"ClaudeJsonl","workspaceKey":null,"provider":null,"api":null,"oldModel":null,"replacement":null,"physicalTargetKey":null,"verificationMethodRevision":1,"savingsMethodRevision":1,"pricingRevision":null,"oldPricing":null,"replacementPricing":null}"#.into(),
+        result_json: r#"{"version":1}"#.into(), created_at_epoch: 10, effective_boundary_ms: Some(10_000),
+    }, &[guard]).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn a_dirty_watch_has_priority_and_a_restart_loses_no_work() {
+    let temporary = tempfile::tempdir().unwrap();
+    let store = Store::open(temporary.path()).unwrap();
+    seed_dirty_remediation(&store);
+    store
+        .upsert_sessions(
+            &[record("priority-evidence")],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let passes = AtomicUsize::new(0);
+    let runner = |record: &SessionRecord, _: PassSignal, _: i64| {
+        passes.fetch_add(1, Ordering::SeqCst);
+        let pass = published_pass(record);
+        Box::pin(async move { pass }) as PassFuture
+    };
+    assert!(
+        process_next_work(&store, &|| 100, &runner, &|_| {})
+            .await
+            .unwrap()
+    );
+    assert_eq!(passes.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        store
+            .remediation("worker-remediation")
+            .unwrap()
+            .unwrap()
+            .evaluated_revision,
+        1
+    );
+    drop(store);
+
+    let restarted = Store::open(temporary.path()).unwrap();
+    let no_evidence = |record: &SessionRecord, _: PassSignal, _: i64| {
+        let pass = published_pass(record);
+        Box::pin(async move { pass }) as PassFuture
+    };
+    assert!(
+        process_next_work(&restarted, &|| 101, &no_evidence, &|_| {})
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        restarted
+            .remediation("worker-remediation")
+            .unwrap()
+            .unwrap()
+            .state,
+        RemediationState::Watching
+    );
+}
+
+#[tokio::test]
+async fn evidence_and_remediation_work_alternate_when_both_stay_ready() {
+    let store = store();
+    seed_dirty_remediation(&store);
+    store
+        .upsert_sessions(
+            &[record("fair-evidence")],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let passes = AtomicUsize::new(0);
+    let runner = |record: &SessionRecord, _: PassSignal, _: i64| {
+        passes.fetch_add(1, Ordering::SeqCst);
+        let pass = published_pass(record);
+        Box::pin(async move { pass }) as PassFuture
+    };
+    assert!(
+        process_next_work(&store, &|| 100, &runner, &|_| {})
+            .await
+            .unwrap()
+    );
+    {
+        let connection = store.lock();
+        connection
+            .execute(
+                "UPDATE remediation SET dirty_revision = dirty_revision + 1,
+                    updated_at_epoch = 101 WHERE remediation_id = 'worker-remediation'",
+                [],
+            )
+            .unwrap();
+    }
+    assert!(
+        process_next_work(&store, &|| 101, &runner, &|_| {})
+            .await
+            .unwrap()
+    );
+    assert_eq!(passes.load(Ordering::SeqCst), 1);
 }
 
 fn failed_pass(outcome: PassOutcome) -> EvidencePass {
@@ -141,11 +262,13 @@ fn evidence_with(capabilities: SourceCapabilities) -> SessionEvidence {
 
 fn no_capabilities() -> SourceCapabilities {
     SourceCapabilities {
+        source_format: antiburn_local::analysis::SourceFormat::Uncharacterized,
         request_context_tokens: false,
         cache_write_tokens: false,
         timestamps_and_order: false,
         tool_invocations: false,
-        skill_mcp_attribution: false,
+        skill_inventory: false,
+        mcp_inventory: false,
         tool_definitions: false,
         model_identity: false,
         token_classes: false,
@@ -160,6 +283,7 @@ fn no_capabilities() -> SourceCapabilities {
         linear_record_order: false,
         quota_incidents: false,
         harness_version: false,
+        repeated_context_accounting: None,
     }
 }
 
@@ -231,13 +355,12 @@ async fn a_generic_agent_session_completes_terminally_through_process_next() {
     store
         .upsert_sessions(&[copilot_record], &crate::agents::evidence_cohort())
         .unwrap();
-    let handle = WorkerHandle::default();
     let runner = |record: &SessionRecord, _: PassSignal, _: i64| {
         let pass = generic_published_pass(record);
         Box::pin(async move { pass }) as PassFuture
     };
 
-    let processed = process_next(&store, &handle, &|| 100, &runner, &|_| {})
+    let processed = process_next(&store, &|| 100, &runner, &|_| {})
         .await
         .unwrap();
     assert!(processed);
@@ -504,12 +627,10 @@ async fn progress_renews_the_lease() {
     store
         .upsert_sessions(&[record("progress")], &crate::agents::evidence_cohort())
         .unwrap();
-    let handle = Arc::new(WorkerHandle::default());
     let clock = Arc::new(AtomicI64::new(100));
     let signal = Arc::new(Mutex::new(None::<PassSignal>));
     let release = Arc::new(Notify::new());
     let task_store = Arc::clone(&store);
-    let task_handle = Arc::clone(&handle);
     let task_clock = Arc::clone(&clock);
     let task_signal = Arc::clone(&signal);
     let task_release = Arc::clone(&release);
@@ -524,7 +645,6 @@ async fn progress_renews_the_lease() {
         };
         process_next(
             &task_store,
-            &task_handle,
             &|| task_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
@@ -568,12 +688,10 @@ async fn a_stalled_pass_stops_renewing() {
     store
         .upsert_sessions(&[record("stalled")], &crate::agents::evidence_cohort())
         .unwrap();
-    let handle = Arc::new(WorkerHandle::default());
     let clock = Arc::new(AtomicI64::new(100));
     let entered = Arc::new(AtomicBool::new(false));
     let release = Arc::new(Notify::new());
     let task_store = Arc::clone(&store);
-    let task_handle = Arc::clone(&handle);
     let task_clock = Arc::clone(&clock);
     let task_entered = Arc::clone(&entered);
     let task_release = Arc::clone(&release);
@@ -588,7 +706,6 @@ async fn a_stalled_pass_stops_renewing() {
         };
         process_next(
             &task_store,
-            &task_handle,
             &|| task_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
@@ -627,12 +744,10 @@ async fn a_lost_renewal_cancels_without_a_post_claim_write() {
     store
         .upsert_sessions(&[record("lost")], &crate::agents::evidence_cohort())
         .unwrap();
-    let handle = Arc::new(WorkerHandle::default());
     let clock = Arc::new(AtomicI64::new(100));
     let signal = Arc::new(Mutex::new(None::<PassSignal>));
     let release = Arc::new(Notify::new());
     let task_store = Arc::clone(&store);
-    let task_handle = Arc::clone(&handle);
     let task_clock = Arc::clone(&clock);
     let task_signal = Arc::clone(&signal);
     let task_release = Arc::clone(&release);
@@ -647,7 +762,6 @@ async fn a_lost_renewal_cancels_without_a_post_claim_write() {
         };
         process_next(
             &task_store,
-            &task_handle,
             &|| task_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
@@ -680,12 +794,10 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
     store
         .upsert_sessions(&[record("stale-pass")], &crate::agents::evidence_cohort())
         .unwrap();
-    let handle = Arc::new(WorkerHandle::default());
     let clock = Arc::new(AtomicI64::new(100));
     let first_signal_slot = Arc::new(Mutex::new(None::<PassSignal>));
     let first_release = Arc::new(Notify::new());
     let first_store = Arc::clone(&store);
-    let first_handle = Arc::clone(&handle);
     let first_clock = Arc::clone(&clock);
     let first_task_signal = Arc::clone(&first_signal_slot);
     let first_task_release = Arc::clone(&first_release);
@@ -700,7 +812,6 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
         };
         process_next(
             &first_store,
-            &first_handle,
             &|| first_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
@@ -723,7 +834,6 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
     let second_signal_slot = Arc::new(Mutex::new(None::<PassSignal>));
     let second_release = Arc::new(Notify::new());
     let second_store = Arc::clone(&store);
-    let second_handle = Arc::clone(&handle);
     let second_clock = Arc::clone(&clock);
     let second_task_signal = Arc::clone(&second_signal_slot);
     let second_task_release = Arc::clone(&second_release);
@@ -739,7 +849,6 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
         };
         process_next(
             &second_store,
-            &second_handle,
             &|| second_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
@@ -779,28 +888,51 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
 }
 
 #[tokio::test]
-async fn permits_are_held_before_the_pass_is_scheduled() {
-    let store = store();
+async fn the_worker_loop_runs_one_pass_at_a_time() {
+    let store = Arc::new(store());
     store
-        .upsert_sessions(&[record("permit")], &crate::agents::evidence_cohort())
+        .upsert_sessions(
+            &[record("serial-one"), record("serial-two")],
+            &crate::agents::evidence_cohort(),
+        )
         .unwrap();
-    let handle = WorkerHandle::default();
-    let permit = handle.permits.cpu.acquire().await.unwrap();
-    let entered = Arc::new(AtomicBool::new(false));
-    let entered_by_pass = entered.clone();
-    let runner = move |_: &SessionRecord, _: PassSignal, _: i64| {
-        entered_by_pass.store(true, Ordering::SeqCst);
-        Box::pin(async { failed_pass(PassOutcome::SourceMissing) }) as PassFuture
-    };
-    let future = process_next(&store, &handle, &|| 100, &runner, &|_| {});
-    tokio::pin!(future);
-    assert!(
-        tokio::time::timeout(Duration::from_millis(10), &mut future)
-            .await
-            .is_err()
-    );
-    assert!(!entered.load(Ordering::SeqCst));
-    drop(permit);
+    let handle = Arc::new(WorkerHandle::default());
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum = Arc::new(AtomicUsize::new(0));
+    let completed = Arc::new(AtomicUsize::new(0));
+    let all_completed = Arc::new(Notify::new());
+
+    let task_store = Arc::clone(&store);
+    let task_handle = Arc::clone(&handle);
+    let task_active = Arc::clone(&active);
+    let task_maximum = Arc::clone(&maximum);
+    let task_completed = Arc::clone(&completed);
+    let task_all_completed = Arc::clone(&all_completed);
+    let task = tokio::spawn(async move {
+        let runner = move |_: &SessionRecord, _: PassSignal, _: i64| {
+            let active = Arc::clone(&task_active);
+            let maximum = Arc::clone(&task_maximum);
+            let completed = Arc::clone(&task_completed);
+            let all_completed = Arc::clone(&task_all_completed);
+            Box::pin(async move {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                maximum.fetch_max(current, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                if completed.fetch_add(1, Ordering::SeqCst) + 1 == 2 {
+                    all_completed.notify_one();
+                }
+                failed_pass(PassOutcome::SourceMissing)
+            }) as PassFuture
+        };
+        worker_loop(&task_store, &task_handle, &|| 100, &runner, &|_| {}, &|| {}).await;
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), all_completed.notified())
+        .await
+        .expect("both passes complete");
+    task.abort();
+    assert_eq!(maximum.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -818,8 +950,7 @@ async fn the_store_is_lockable_while_a_pass_runs() {
             failed_pass(PassOutcome::SourceMissing)
         }) as PassFuture
     };
-    let handle = WorkerHandle::default();
-    let future = process_next(&store, &handle, &|| 100, &runner, &|_| {});
+    let future = process_next(&store, &|| 100, &runner, &|_| {});
     tokio::pin!(future);
     assert!(
         tokio::time::timeout(Duration::from_millis(10), &mut future)
@@ -849,15 +980,9 @@ async fn a_published_completion_announces_one_list_entry() {
     let announced = Mutex::new(Vec::new());
 
     assert!(
-        process_next(
-            &store,
-            &WorkerHandle::default(),
-            &|| 100,
-            &runner,
-            &|entry| {
-                announced.lock().unwrap().push(entry);
-            }
-        )
+        process_next(&store, &|| 100, &runner, &|entry| {
+            announced.lock().unwrap().push(entry);
+        })
         .await
         .unwrap()
     );
@@ -882,15 +1007,9 @@ async fn a_backed_off_outcome_announces_nothing() {
     let announced = Mutex::new(Vec::new());
 
     assert!(
-        process_next(
-            &store,
-            &WorkerHandle::default(),
-            &|| 100,
-            &runner,
-            &|entry| {
-                announced.lock().unwrap().push(entry);
-            }
-        )
+        process_next(&store, &|| 100, &runner, &|entry| {
+            announced.lock().unwrap().push(entry);
+        })
         .await
         .unwrap()
     );
@@ -910,7 +1029,7 @@ async fn a_changed_source_backs_off_through_the_worker() {
         Box::pin(async { failed_pass(PassOutcome::SourceChanged) }) as PassFuture
     };
 
-    process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+    process_next(&store, &|| 100, &runner, &|_| {})
         .await
         .unwrap();
     let key = SessionKey::new("native", "claude-code", "worker-changed");
@@ -933,7 +1052,7 @@ async fn an_unsupported_pass_is_terminal_through_the_worker() {
         Box::pin(async { failed_pass(PassOutcome::Unsupported) }) as PassFuture
     };
 
-    process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+    process_next(&store, &|| 100, &runner, &|_| {})
         .await
         .unwrap();
     let key = SessionKey::new("native", "claude-code", "worker-unsupported");
@@ -955,7 +1074,7 @@ async fn a_missing_source_stops_being_claimed_through_the_worker() {
         Box::pin(async { failed_pass(PassOutcome::SourceMissing) }) as PassFuture
     };
 
-    process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+    process_next(&store, &|| 100, &runner, &|_| {})
         .await
         .unwrap();
     let key = SessionKey::new("native", "claude-code", "worker-missing");
@@ -986,15 +1105,9 @@ async fn an_unreadable_source_reaches_the_cap_through_the_worker() {
     let key = SessionKey::new("native", "claude-code", "worker-unreadable");
 
     for attempt in 0..=MAX_EVIDENCE_ATTEMPTS {
-        process_next(
-            &store,
-            &WorkerHandle::default(),
-            &|| clock.load(Ordering::SeqCst),
-            &runner,
-            &|_| {},
-        )
-        .await
-        .unwrap();
+        process_next(&store, &|| clock.load(Ordering::SeqCst), &runner, &|_| {})
+            .await
+            .unwrap();
         let row = store.evidence(&key).unwrap().unwrap();
         if attempt == MAX_EVIDENCE_ATTEMPTS {
             assert_eq!(row.status, EvidenceStatus::Failed);
@@ -1065,7 +1178,7 @@ async fn a_published_pass_leaves_the_expected_turn_rows_under_its_claim_fence() 
     };
 
     assert!(
-        process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+        process_next(&store, &|| 100, &runner, &|_| {})
             .await
             .unwrap()
     );
@@ -1166,7 +1279,7 @@ async fn a_linked_forks_pass_publishes_turn_rows_only_for_its_own_turns() {
     };
 
     assert!(
-        process_next(&store, &WorkerHandle::default(), &|| 100, &runner, &|_| {})
+        process_next(&store, &|| 100, &runner, &|_| {})
             .await
             .unwrap()
     );
@@ -1264,23 +1377,17 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
     };
 
     assert!(
-        process_next(
-            &store,
-            &WorkerHandle::default(),
-            &|| 1_767_225_610,
-            &runner,
-            &|_| {},
-        )
-        .await
-        .unwrap()
+        process_next(&store, &|| 1_767_225_610, &runner, &|_| {},)
+            .await
+            .unwrap()
     );
     let stored = store.evidence(&pi.key).unwrap().unwrap();
     assert_eq!(stored.status, EvidenceStatus::Ready);
     let evidence_json = stored.evidence_json.as_deref().unwrap();
-    assert!(evidence_json.contains("\"schemaRevision\":14"));
+    assert!(evidence_json.contains("\"schemaRevision\":18"));
     let evidence: SessionEvidence = serde_json::from_str(evidence_json).unwrap();
     assert_eq!(evidence.capabilities, SourceCapabilities::pi());
-    assert_eq!(evidence.schema_revision, 14);
+    assert_eq!(evidence.schema_revision, 18);
 
     let report = crate::insights_report::reduce_report(
         data_dir.path().to_path_buf(),
@@ -1308,6 +1415,10 @@ async fn pi_file_flows_through_worker_persistence_and_report() {
     );
     assert_eq!(
         report.detectors[DetectorId::OldModelUsage.index()].assessed,
+        0
+    );
+    assert_eq!(
+        report.detectors[DetectorId::OldModelUsage.index()].unavailable,
         1
     );
 }
@@ -1348,13 +1459,6 @@ fn errors_carry_no_transcript_content() {
         assert!(allowed.contains(&error.as_str()));
         assert!(!error.contains(SOURCE_CONTENT));
     }
-}
-
-#[test]
-fn a_permit_is_chosen_per_source_kind() {
-    assert_eq!(permit_for_source_kind("file"), PermitKind::Source);
-    assert_eq!(permit_for_source_kind("inline"), PermitKind::Source);
-    assert_eq!(permit_for_source_kind("providerDb"), PermitKind::ProviderDb);
 }
 
 #[tokio::test]

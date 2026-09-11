@@ -1129,6 +1129,64 @@ async fn an_orchestrator_cursor_gates_unchanged_children_and_advances_on_child_g
     assert!(advanced.records[0].updated_at_epoch.unwrap() > first_epoch);
 }
 
+#[tokio::test]
+async fn claude_sidecar_changes_bypass_the_unchanged_source_gate() {
+    let home = tempfile::TempDir::new().unwrap();
+    let parent = write_claude_session(home.path(), "sidecar-source");
+    let child_dir = parent.parent().unwrap().join("sidecar-source/subagents");
+    std::fs::create_dir_all(&child_dir).unwrap();
+    let child = child_dir.join("agent-child.jsonl");
+    std::fs::write(&child, "{}\n").unwrap();
+    let sidecar = child.with_extension("meta.json");
+    let store = crate::store::Store::open_in_memory(home.path()).unwrap();
+    let log = log(AgentKind::Claude, parent.clone(), 1_800_000_000);
+    let first = describe_with_states(
+        vec![log.clone()],
+        home.path(),
+        &HashSet::new(),
+        &store.session_records().unwrap(),
+    )
+    .await;
+    let mut previous = first.records[0].clone();
+    for content in [
+        Some(r#"{"toolUseId":"call-a"}"#),
+        Some(r#"{"toolUseId":"call-b"}"#),
+        None,
+    ] {
+        store
+            .upsert_sessions(std::slice::from_ref(&previous), &agents::evidence_cohort())
+            .unwrap();
+        assert!(
+            reuse_unchanged_record(&log, Some(&previous), None)
+                .await
+                .is_some()
+        );
+        match content {
+            Some(content) => std::fs::write(&sidecar, content).unwrap(),
+            None => std::fs::remove_file(&sidecar).unwrap(),
+        }
+        assert!(
+            reuse_unchanged_record(&log, Some(&previous), None)
+                .await
+                .is_none()
+        );
+        let next = describe_with_states(
+            vec![log.clone()],
+            home.path(),
+            &HashSet::new(),
+            &store.session_records().unwrap(),
+        )
+        .await;
+        assert_ne!(previous.activity_cursor, next.records[0].activity_cursor);
+        assert_eq!(
+            previous.source_fingerprint,
+            next.records[0].source_fingerprint
+        );
+        assert_eq!(previous.updated_at_epoch, next.records[0].updated_at_epoch);
+        previous = next.records[0].clone();
+    }
+}
+
 /// A synthetic Claude sidechain transcript: `agentId` on every record and
 /// `isSidechain: true`, written beside top-level sessions the way current
 /// agent versions do.
@@ -1429,6 +1487,48 @@ fn records_to_persist_keeps_only_changed_or_returned_rows() {
 }
 
 #[test]
+fn scoped_persistence_skips_unchanged_rows_without_calling_the_store() {
+    let records = vec![record("claude-code", "steady", Some(1_000))];
+    let calls = std::cell::Cell::new(0);
+
+    let persisted = persist_changed_records(&records, &[], &[], |_| {
+        calls.set(calls.get() + 1);
+        Ok(())
+    })
+    .unwrap();
+
+    assert!(!persisted);
+    assert_eq!(calls.get(), 0);
+}
+
+#[test]
+fn scoped_persistence_writes_changed_new_and_returned_rows_once() {
+    let changed = record("claude-code", "changed", Some(1_000));
+    let new = record("claude-code", "new", Some(2_000));
+    let returned = record("codex", "returned", Some(3_000));
+    let unchanged = record("codex", "steady", Some(4_000));
+    let records = vec![changed.clone(), new.clone(), returned.clone(), unchanged];
+    let writes = Mutex::new(Vec::new());
+
+    let persisted = persist_changed_records(
+        &records,
+        &[changed.key.clone(), new.key.clone()],
+        std::slice::from_ref(&returned.key),
+        |batch| {
+            writes.lock().unwrap().push(batch.to_vec());
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert!(persisted);
+    assert_eq!(
+        writes.into_inner().unwrap(),
+        vec![vec![changed, new, returned]]
+    );
+}
+
+#[test]
 fn per_agent_totals_count_sessions_and_keep_the_newest_activity() {
     let records = vec![
         record("claude-code", "a", Some(1_000)),
@@ -1449,6 +1549,22 @@ fn per_agent_totals_count_sessions_and_keep_the_newest_activity() {
 #[test]
 fn a_pass_with_nothing_discovered_reports_no_agents() {
     assert!(per_agent_totals(&[]).is_empty());
+}
+
+/// A scoped pass counts only its named agents, not the whole install, so its
+/// count is not comparable to a full pass's count. Only a full pass may
+/// report to analytics, on success or on failure.
+#[test]
+fn only_a_full_pass_reports_a_scan_outcome() {
+    let scoped = PassScope::Agents(std::collections::BTreeSet::from([AgentKind::Claude]));
+
+    assert_eq!(
+        scan_report(&PassScope::Full, Some(1_000)),
+        Some(Some(1_000))
+    );
+    assert_eq!(scan_report(&PassScope::Full, None), Some(None));
+    assert_eq!(scan_report(&scoped, Some(3)), None, "a scoped success");
+    assert_eq!(scan_report(&scoped, None), None, "a scoped failure");
 }
 
 #[test]
@@ -1562,6 +1678,38 @@ async fn a_second_request_before_the_scheduler_wakes_is_coalesced() {
     assert!(second.is_err(), "only one notify should have been queued");
 }
 
+#[test]
+fn a_slow_scheduler_retains_one_bounded_merged_watcher_burst() {
+    let controller = ScanController::default();
+    for index in 0..10_000 {
+        controller.push_burst(watch::WatchBurst {
+            paths: vec![std::path::PathBuf::from(format!(
+                "/tmp/{index:05}-{}",
+                "x".repeat(1024)
+            ))],
+            events: 1,
+            overflowed: false,
+        });
+    }
+
+    let pending = controller
+        .pending_burst
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let burst = pending.as_ref().expect("one merged burst stays pending");
+    assert_eq!(burst.events, 10_000);
+    assert!(burst.overflowed);
+    assert!(burst.paths.len() <= watch::MAX_BURST_PATHS);
+    assert!(
+        burst
+            .paths
+            .iter()
+            .map(|path| path.as_os_str().as_encoded_bytes().len())
+            .sum::<usize>()
+            <= watch::MAX_BURST_PATH_BYTES
+    );
+}
+
 /// R4: the tick and the watcher triggers cannot plausibly have introduced a
 /// repository the list has not already seen, so they alone skip the refresh.
 #[test]
@@ -1616,24 +1764,43 @@ fn a_cancel_request_only_applies_while_a_pass_is_running() {
 
 #[test]
 fn the_scheduler_ticks_at_the_fallback_rate_when_the_watcher_is_not_healthy() {
+    assert_eq!(tick_for_health(false), watch::FALLBACK_TICK);
+    assert_eq!(tick_for_health(true), TICK);
+}
+
+#[tokio::test(start_paused = true)]
+async fn watcher_health_transitions_update_the_deadline_without_postponing_it() {
+    let last_full_pass = tokio::time::Instant::now();
+    let healthy_deadline = last_full_pass + TICK;
+
+    let degraded = deadline_after_health_change(healthy_deadline, last_full_pass, true, false);
+    assert_eq!(degraded, last_full_pass + watch::FALLBACK_TICK);
     assert_eq!(
-        tick_for(&watch::WatcherStatus::default()),
-        watch::FALLBACK_TICK
+        deadline_after_health_change(degraded, last_full_pass, false, false),
+        degraded,
+        "identical degraded updates cannot postpone reconciliation"
     );
     assert_eq!(
-        tick_for(&watch::WatcherStatus {
-            active: true,
-            failed_roots: vec![std::path::PathBuf::from("/home/avery/.codex/sessions")],
-        }),
-        watch::FALLBACK_TICK
+        deadline_after_health_change(degraded, last_full_pass, false, true),
+        healthy_deadline,
+        "recovery restores the cadence from the last full pass"
     );
-    assert_eq!(
-        tick_for(&watch::WatcherStatus {
-            active: true,
-            failed_roots: Vec::new(),
-        }),
-        TICK
-    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn alternating_health_cannot_move_reconciliation_past_five_minutes() {
+    let last_full_pass = tokio::time::Instant::now();
+    let hard_deadline = last_full_pass + TICK;
+    let mut deadline = hard_deadline;
+    let mut healthy = true;
+
+    for _ in 0..100 {
+        let next_health = !healthy;
+        deadline = deadline_after_health_change(deadline, last_full_pass, healthy, next_health);
+        assert!(deadline <= hard_deadline);
+        healthy = next_health;
+        tokio::time::advance(Duration::from_secs(10)).await;
+    }
 }
 
 #[tokio::test]

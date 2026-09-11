@@ -9,8 +9,8 @@ use antiburn_local::analysis::{
     MemoryTurnRowStore, NormalizedSession, OrderingObservation, PARSER_REVISION, PartialReason,
     RawSource, RecordCoverage, SessionCollector, SessionEvidence, SessionEvidenceAccumulator,
     SessionInput, SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnFacts,
-    TurnRowSink, TurnRowStore, TurnScope, adapter_for, analyze_session, analyze_sources_with,
-    merge_metrics, merge_subagent_events, normalize_source,
+    TurnRowSink, TurnRowStore, TurnScope, analyze_session, analyze_sources_with, merge_metrics,
+    merge_subagent_events, normalize_source, reader_for,
 };
 use antiburn_local::insights::{
     CoverageCounts, DetectorId, DetectorStatus, EfficiencyReport, EfficiencyReportAccumulator,
@@ -269,7 +269,7 @@ fn three_record_source() -> String {
 fn stream_claude(input: &SessionInput) -> SessionMetricsAccumulator {
     let mut accumulator =
         SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
-    adapter_for("claude")
+    reader_for("claude")
         .visit(input, &mut accumulator)
         .expect("Claude source must be visited");
     accumulator
@@ -290,7 +290,7 @@ fn stream_composite(input: &SessionInput) -> CompositeSink {
         None,
     );
     let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for("claude")
+    let outcome = reader_for("claude")
         .visit(input, &mut composite)
         .expect("Claude source must be visited");
     composite.observe_source_outcome(outcome);
@@ -334,7 +334,7 @@ fn collect_claude(
     input: &SessionInput,
 ) -> (RecordCoverage, BTreeSet<PartialReason>, NormalizedSession) {
     let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
-    adapter_for("claude")
+    reader_for("claude")
         .visit(input, &mut collector)
         .expect("Claude source must be visited");
     let coverage = collector.coverage();
@@ -653,7 +653,8 @@ fn the_capability_matrix_names_every_group_and_every_capability() {
         "reasoning_effort_tier",
         "fast_tier",
         "tool_invocations",
-        "skill_mcp_attribution",
+        "skill_inventory",
+        "mcp_inventory",
         "compaction_boundaries",
         "subagent_relationships",
         "tool_definitions",
@@ -706,11 +707,11 @@ fn a_delegated_turn_without_a_model_degrades_subagent_evidence() {
 }
 
 #[test]
-fn delegated_models_unblock_overpowered_subagents() {
+fn delegated_models_without_native_linkage_do_not_prove_overpowered_subagents() {
     let report = fixture_report("delegated_models");
     assert!(matches!(
         report.detector_statuses[DetectorId::OverpoweredSubagents.index()],
-        DetectorStatus::Findings(_)
+        DetectorStatus::NotAssessed(NotAssessedReason::EvidenceContractIncomplete)
     ));
 }
 
@@ -1314,10 +1315,14 @@ fn a_resumed_sessions_in_file_replay_contributes_nothing_but_a_diagnostic() {
     let EvidenceValue::Complete(cache) = evidence.cache else {
         panic!("a resumed replay must keep the cache group complete");
     };
-    let EvidenceValue::Complete(repeated_context) = cache.repeated_context else {
-        panic!("repeated context must be complete");
+    let EvidenceValue::Partial {
+        observed: repeated_context,
+        reason: CoverageReason::AttributionIncomplete,
+    } = cache.repeated_context
+    else {
+        panic!("the compaction must break the repeated-context baseline");
     };
-    assert_eq!(repeated_context.pairs_skipped, 0);
+    assert_eq!(repeated_context.pairs_skipped, 1);
     let EvidenceValue::Complete(compactions) = evidence.compactions else {
         panic!("compactions must be complete");
     };
@@ -1500,7 +1505,7 @@ fn a_builtin_named_skill_resolves_when_its_marker_arrives_later() {
         fork_parent_session_id: None,
     };
     let mut metrics = SessionMetricsAccumulator::new("claude", "builtin-named-skill");
-    adapter_for("claude")
+    reader_for("claude")
         .visit(&input, &mut metrics)
         .expect("synthetic command source must stream");
     let metrics = metrics.metrics();
@@ -1547,7 +1552,7 @@ fn builtin_commands_do_not_exhaust_late_skill_metric_candidates() {
         fork_parent_session_id: None,
     };
     let mut metrics = SessionMetricsAccumulator::new("claude", "builtin-command-budget");
-    adapter_for("claude")
+    reader_for("claude")
         .visit(&input, &mut metrics)
         .expect("synthetic command source must stream");
     assert_eq!(metrics.metrics().skill_uses.len(), 1);
@@ -1670,7 +1675,7 @@ fn invalid_utf8_inside_an_oversized_record_does_not_omit_the_session() {
     source.push(b'\n');
     let input = file_input_bytes("invalid-oversized", &source, &directory);
     let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
-    let visit_succeeded = adapter_for("claude").visit(&input, &mut collector).is_ok();
+    let visit_succeeded = reader_for("claude").visit(&input, &mut collector).is_ok();
     let actual = (
         visit_succeeded,
         collector.coverage(),
@@ -1700,7 +1705,7 @@ fn invalid_utf8_inside_an_unterminated_tail_does_not_omit_the_session() {
     source.push(0xff);
     let input = file_input_bytes("invalid-tail", &source, &directory);
     let mut collector = SessionCollector::new(input.agent.clone(), input.session_id.clone());
-    let visit_succeeded = adapter_for("claude").visit(&input, &mut collector).is_ok();
+    let visit_succeeded = reader_for("claude").visit(&input, &mut collector).is_ok();
     let actual = (
         visit_succeeded,
         collector.coverage(),
@@ -1811,7 +1816,7 @@ fn stream_fork_replay_inputs(
             scope,
         );
         let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-        let outcome = adapter_for("claude")
+        let outcome = reader_for("claude")
             .visit(input, &mut composite)
             .expect("Claude source must be visited");
         composite.observe_source_outcome(outcome);
@@ -1937,7 +1942,7 @@ fn a_claude_fork_with_a_known_parent_excludes_the_inherited_prefix_from_its_own_
         None,
     );
     let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for("claude")
+    let outcome = reader_for("claude")
         .visit(&input, &mut composite)
         .expect("fork source must be visited");
     composite.observe_source_outcome(outcome);

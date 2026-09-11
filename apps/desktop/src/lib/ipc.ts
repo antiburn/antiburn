@@ -1,22 +1,12 @@
 /**
- * The typed edge of the shell's IPC surface.
- *
- * Every command the Rust side exposes has exactly one wrapper here, and the
- * views call nothing else. That keeps the command names in one file, gives the
- * payloads a declared shape, and means the whole surface can be mocked at one
- * module boundary in tests.
- *
- * The bundle also has to load in a plain browser (`pnpm dev:web`, unit tests)
- * where no shell is attached. Every wrapper therefore reports *absence* rather
- * than throwing, so views render a degraded state instead of crashing.
- *
- * None of these payloads comes from a service of ours. The local engine
- * produces them on this machine.
+ * Typed shell IPC edge, including re-exported feature edges.
+ * Wrappers tolerate a browser without the shell and expose one test boundary.
  */
 
 import { invoke, isTauri } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
+import { nativePeekBridge } from "./nativePeekBridge"
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
 import type {
@@ -31,7 +21,9 @@ import type {
   SessionLimitAllocationSummaryPayload,
 } from "./providerUsageIpc"
 
+export * from "./mainWindowIpc"
 export * from "./providerUsageIpc"
+export type { SettingsPane } from "./settingsPanes"
 
 /* -------------------------------------------------------------------------
  * Payload shapes — mirrors of `src-tauri/src/dto.rs`
@@ -214,6 +206,20 @@ export interface SessionIdentityPayload {
   agent: string
   sessionId: string
   wslDistro: string | null
+}
+
+/** One revisioned request to show a session in the retained main window. */
+export interface MainWindowSessionRequest {
+  revision: number
+  target: SessionIdentityPayload
+}
+
+export type MainWindowSectionId = "activity" | "burnChecks"
+
+/** One revisioned request to select a retained main-window section. */
+export interface MainWindowSectionRequest {
+  revision: number
+  section: MainWindowSectionId
 }
 
 /** One end of a local fork relation. */
@@ -489,14 +495,46 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sessionBadgeMetric: "cost",
 }
 
-/* -------------------------------------------------------------------------
- * Commands
- * ---------------------------------------------------------------------- */
-
 /** Tell the shell that React committed this renderer generation. */
 export async function windowReady(generation: number): Promise<void> {
   if (!hasShell()) return
   await invoke("window_ready", { generation })
+}
+
+/** Tell the shell that the retained main window committed this renderer generation. */
+export async function mainWindowReady(generation: number): Promise<void> {
+  if (!hasShell()) return
+  await invoke("main_window_ready", { generation })
+}
+
+/** Whether the retained main renderer can present work. */
+export async function getMainWindowVisible(): Promise<boolean> {
+  if (!hasShell()) return true
+  return invoke<boolean>("get_main_window_visible")
+}
+
+/** Open or focus the main window and select one exact local session. */
+export async function openMainWindowSession(target: SessionIdentityPayload): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_main_window_session", { target })
+}
+
+/** Open or focus the main window and select one top-level section. */
+export async function openMainWindowSection(section: MainWindowSectionId): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_main_window_section", { section })
+}
+
+/** Take the latest section that arrived before the main renderer could listen. */
+export async function takeMainWindowSectionTarget(): Promise<MainWindowSectionRequest | null> {
+  if (!hasShell()) return null
+  return invoke<MainWindowSectionRequest | null>("take_main_window_section_target")
+}
+
+/** Take the latest target that arrived before the main renderer could listen. */
+export async function takeMainWindowSessionTarget(): Promise<MainWindowSessionRequest | null> {
+  if (!hasShell()) return null
+  return invoke<MainWindowSessionRequest | null>("take_main_window_session_target")
 }
 
 /** Tell the shell that the popover's initial activity and usage state settled. */
@@ -505,9 +543,7 @@ export async function popoverContentReady(generation: number): Promise<void> {
   await invoke("popover_content_ready", { generation })
 }
 
-/**
- * Version stamp of the active runtime pricing catalog.
- */
+/** Version stamp of the active runtime pricing catalog. */
 export async function engineCatalogVersion(): Promise<string | null> {
   if (!hasShell()) return null
   return invoke<string>("engine_catalog_version")
@@ -740,6 +776,73 @@ export type Interaction =
       step: "welcome" | "agents_detected" | "sources_and_repos" | "ready"
     }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" }
+  | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
+  | {
+      kind: "surfaceStateObserved"
+      surface: StateSurface
+      state: SurfaceState
+      origin: SurfaceOrigin
+    }
+  | { kind: "settingsPaneViewed"; pane: SettingsPane }
+  | {
+      kind: "liveUsageStateObserved"
+      provider: LiveUsageProvider
+      state: LiveUsageState
+      origin: SurfaceOrigin
+    }
+  | { kind: "burnCheckAutoFixReviewed"; outcome: AutoFixReviewAnalyticsOutcome }
+  | { kind: "burnCheckAutoFixConfirmed" }
+  | { kind: "burnCheckAutoFixCompleted"; outcome: AutoFixAnalyticsOutcome }
+  | { kind: "burnCheckPromptPrepared"; outcome: PromptPreparationAnalyticsOutcome }
+  | { kind: "burnCheckPromptCopied" }
+  | {
+      kind: "burnCheckOutcomeObserved"
+      outcome: "verified" | "recurred"
+      origin: "passive" | "action"
+    }
+
+export type Surface =
+  | "activity"
+  | "session_detail"
+  | "provider_preview"
+  | "checks_preview"
+  | "hud"
+  | "hud_detail"
+  | "settings"
+  | "burn_checks"
+
+export type StateSurface = Surface | "insights"
+export type SurfaceOrigin = "user" | "automatic"
+export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"
+export type LiveUsageProvider = "anthropic" | "openai" | "google"
+export type LiveUsageState =
+  "fresh" | "stale" | "authentication" | "rate_limited" | "unavailable" | "no_credentials"
+export type AutoFixReviewAnalyticsOutcome =
+  "ready" | "stale" | "expired" | "conflict" | "unavailable" | "failed"
+export type AutoFixAnalyticsOutcome =
+  | "applied_awaiting_verification"
+  | "recovery_needed"
+  | "stale"
+  | "expired"
+  | "conflict"
+  | "unavailable"
+  | "failed"
+export type PromptPreparationAnalyticsOutcome =
+  "ready" | "stale" | "expired" | "unavailable" | "failed"
+
+function isNativePeekInteraction(interaction: Interaction): boolean {
+  switch (interaction.kind) {
+    case "surfaceViewed":
+    case "surfaceStateObserved":
+      return (
+        interaction.surface === "provider_preview" || interaction.surface === "checks_preview"
+      )
+    case "liveUsageStateObserved":
+      return true
+    default:
+      return false
+  }
+}
 
 /**
  * Report one interaction. Fire-and-forget, and silent on failure.
@@ -750,6 +853,14 @@ export type Interaction =
  * one gate rather than two that can drift apart.
  */
 export function noteInteraction(interaction: Interaction): void {
+  const native = nativePeekBridge()
+  if (native) {
+    if (!isNativePeekInteraction(interaction)) return
+    void native.invoke("note_interaction", { interaction }).catch(() => {
+      // Analytics errors must not interrupt the preview.
+    })
+    return
+  }
   if (!hasShell()) return
   void invoke("note_interaction", { interaction }).catch(() => {
     // Analytics must never surface an error into something the reader asked
@@ -930,6 +1041,12 @@ export const EMPTY_LIVE_USAGE: LiveUsageSummaryPayload = {
 export async function getLatestSessionActivity(): Promise<number | null> {
   if (!hasShell()) return null
   return invoke<number | null>("get_latest_session_activity")
+}
+
+/** Return whether the retained HUD renderer should run background work. */
+export async function isOverlayWorkActive(): Promise<boolean> {
+  if (!hasShell()) return false
+  return invoke<boolean>("is_overlay_work_active")
 }
 
 /** One usage bar as the hover detail window renders it. */
@@ -1189,11 +1306,46 @@ export async function setNudgeHovered(hovered: boolean): Promise<void> {
   await invoke("nudge_set_hovered", { hovered })
 }
 
-/* -------------------------------------------------------------------------
- * Events
- * ---------------------------------------------------------------------- */
-
 const noShellUnlisten: UnlistenFn = () => undefined
+
+/** Event the shell emits when the main renderer can start or stop presenting work. */
+export const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
+
+/** Event carrying a revisioned session target to an existing main renderer. */
+export const MAIN_WINDOW_SESSION_TARGET_EVENT = "main:session-target"
+
+/** Event carrying a revisioned section target to an existing main renderer. */
+export const MAIN_WINDOW_SECTION_TARGET_EVENT = "main:section-target"
+
+/** Subscribe to main-window presentation visibility. */
+export async function onMainWindowVisibilityChanged(
+  handler: (visible: boolean) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<boolean>(MAIN_WINDOW_VISIBILITY_CHANGED_EVENT, (event) =>
+    handler(event.payload),
+  )
+}
+
+/** Subscribe to session targets sent to the retained main renderer. */
+export async function onMainWindowSessionTarget(
+  handler: (request: MainWindowSessionRequest) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<MainWindowSessionRequest>(MAIN_WINDOW_SESSION_TARGET_EVENT, (event) =>
+    handler(event.payload),
+  )
+}
+
+/** Subscribe to section targets sent to the retained main renderer. */
+export async function onMainWindowSectionTarget(
+  handler: (request: MainWindowSectionRequest) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<MainWindowSectionRequest>(MAIN_WINDOW_SECTION_TARGET_EVENT, (event) =>
+    handler(event.payload),
+  )
+}
 
 /** Event names the scan emits. Mirrors `src-tauri/src/scan.rs`. */
 export const SCAN_EVENTS = {
@@ -1236,6 +1388,15 @@ export async function onSettingsChanged(
 ): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen<AppSettings>(SETTINGS_CHANGED_EVENT, (event) => handler(event.payload))
+}
+
+/** Event emitted after the Settings window reaches the screen. */
+export const SETTINGS_SHOWN_EVENT = "settings:shown"
+
+/** Subscribe to the Settings window reaching the screen. */
+export async function onSettingsShown(handler: () => void): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen(SETTINGS_SHOWN_EVENT, () => handler())
 }
 
 /**

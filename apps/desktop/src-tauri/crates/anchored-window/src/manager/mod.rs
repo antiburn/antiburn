@@ -1,16 +1,17 @@
 mod tasks;
 mod window;
 
+use crate::companion::CompanionWindow;
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
-use tauri::{Emitter, Manager, WebviewWindow};
+use tauri::{Emitter, Manager};
 
 #[cfg(target_os = "macos")]
 use crate::geometry::Rect;
 use crate::lifecycle::{Lifecycle, RequestTransition};
 use crate::model::{
     AnchorRegion, AnchoredWindowConfig, AnchoredWindowLifecycleEvent, AnchoredWindowRenderRequest,
-    AnchoredWindowRequest, AnchoredWindowState, RevealPolicy, initial_height,
+    AnchoredWindowRequest, AnchoredWindowState, normalized_heights,
 };
 use crate::{REQUEST_EVENT, STATE_EVENT, platform};
 
@@ -20,6 +21,10 @@ struct Inner<T, P> {
     frame_update: Mutex<()>,
     #[cfg(target_os = "macos")]
     native_frame: Arc<Mutex<Option<Rect>>>,
+    #[cfg(target_os = "macos")]
+    native_window: Mutex<Option<CompanionWindow>>,
+    #[cfg(target_os = "macos")]
+    native_handler: Option<crate::macos::NativeRequestHandler>,
     #[cfg(target_os = "linux")]
     pointer_tracker: Arc<crate::linux::PointerTracker>,
 }
@@ -37,7 +42,8 @@ where
 {
     /// Create one manager for a host-owned anchor and companion configuration.
     pub fn new(config: AnchoredWindowConfig) -> Self {
-        let initial_height = initial_height(config.height);
+        let (initial_height, _, _) =
+            normalized_heights(config.initial_height, config.min_height, config.max_height);
         Self {
             inner: Arc::new(Inner {
                 config,
@@ -45,29 +51,75 @@ where
                 frame_update: Mutex::new(()),
                 #[cfg(target_os = "macos")]
                 native_frame: Arc::new(Mutex::new(None)),
+                #[cfg(target_os = "macos")]
+                native_window: Mutex::new(None),
+                #[cfg(target_os = "macos")]
+                native_handler: None,
                 #[cfg(target_os = "linux")]
                 pointer_tracker: Arc::new(crate::linux::PointerTracker::new()),
             }),
         }
     }
 
-    /// Build the hidden renderer if it does not exist yet.
-    pub fn prewarm(&self, app: &tauri::AppHandle) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    pub fn with_native_handler(mut self, handler: crate::macos::NativeRequestHandler) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("configure the manager before sharing")
+            .native_handler = Some(handler);
+        self
+    }
+
+    fn companion(&self, _app: &tauri::AppHandle) -> Option<CompanionWindow> {
+        #[cfg(target_os = "macos")]
+        {
+            self.inner
+                .native_window
+                .lock()
+                .expect("native companion slot mutex must not be poisoned")
+                .clone()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            _app.get_webview_window(&self.inner.config.label)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn native_renderer_failed(&self, app: &tauri::AppHandle, renderer_generation: u64) {
         let _frame_update = self.lock_frame_update();
-        self.ensure_window(app).map(|_| ())
+        if !self.lock_lifecycle().renderer_failed(renderer_generation) {
+            return;
+        }
+        if let Some(window) = self
+            .inner
+            .native_window
+            .lock()
+            .expect("native companion slot mutex must not be poisoned")
+            .take()
+        {
+            let _ = window.destroy();
+        }
+        let _ = self.emit_state(app);
     }
 
-    /// Retarget the resident renderer and apply its configured reveal policy.
-    pub fn request(
-        &self,
-        app: &tauri::AppHandle,
-        target: T,
-        anchor_region: AnchorRegion,
-    ) -> tauri::Result<AnchoredWindowRequest<T>> {
-        self.request_with_presentation(app, target, anchor_region, None)
+    fn normalized_heights(&self) -> (f64, f64, f64) {
+        normalized_heights(
+            self.inner.config.initial_height,
+            self.inner.config.min_height,
+            self.inner.config.max_height,
+        )
     }
 
-    /// Retarget the resident renderer with optional instigator-owned content.
+    /// Rebuild a destroyed renderer only while a target still owns it.
+    pub fn rebuild_if_targeted(&self, app: &tauri::AppHandle) -> tauri::Result<bool> {
+        let _frame_update = self.lock_frame_update();
+        if self.lock_lifecycle().target.is_none() {
+            return Ok(false);
+        }
+        self.ensure_window(app).map(|_| true)
+    }
+
+    /// Retarget the active renderer with optional instigator-owned content.
     pub fn request_with_presentation(
         &self,
         app: &tauri::AppHandle,
@@ -98,8 +150,7 @@ where
         let transition = self.lock_lifecycle().request(
             target,
             anchor_region,
-            self.inner.config.reveal,
-            initial_height(self.inner.config.height),
+            self.normalized_heights().0,
             initial_presentation,
         );
         let render_request = self.lock_lifecycle().pending_render_request();
@@ -109,7 +160,7 @@ where
     fn apply_request_transition(
         &self,
         app: &tauri::AppHandle,
-        window: &WebviewWindow,
+        window: &CompanionWindow,
         transition: RequestTransition<T>,
         delivery_pending: bool,
     ) -> tauri::Result<AnchoredWindowRequest<T>> {
@@ -129,9 +180,7 @@ where
                 request,
                 reveal_now,
             } => {
-                if self.inner.config.reveal == RevealPolicy::AfterPresentation {
-                    platform::hide(window)
-                } else if reveal_now {
+                if reveal_now {
                     self.reveal_placeholder(app, window)
                 } else {
                     Ok(())
@@ -144,11 +193,8 @@ where
     fn retry_pending_native_transition(
         &self,
         app: &tauri::AppHandle,
-        window: &WebviewWindow,
+        window: &CompanionWindow,
     ) -> tauri::Result<()> {
-        if self.inner.config.reveal == RevealPolicy::AfterPresentation {
-            return platform::hide(window);
-        }
         let should_reveal = {
             let lifecycle = self.lock_lifecycle();
             lifecycle.renderer_ready
@@ -163,7 +209,7 @@ where
 
     fn deliver_render_request(
         &self,
-        window: &WebviewWindow,
+        window: &CompanionWindow,
         request: Option<AnchoredWindowRenderRequest<T, P>>,
     ) -> tauri::Result<()> {
         let Some(request) = request else {
@@ -173,15 +219,6 @@ where
         let delivered = self.lock_lifecycle().mark_delivered(request.generation);
         debug_assert!(delivered, "the frame update serializes renderer delivery");
         Ok(())
-    }
-
-    /// Apply the retained native frame after the renderer commits the new target shell.
-    pub fn retarget_committed(
-        &self,
-        app: &tauri::AppHandle,
-        generation: u64,
-    ) -> tauri::Result<bool> {
-        self.retarget_committed_with_height(app, generation, None)
     }
 
     /// Apply the retained frame after the renderer commits the new target.
@@ -194,7 +231,7 @@ where
         content_height: Option<f64>,
     ) -> tauri::Result<bool> {
         let _frame_update = self.lock_frame_update();
-        let Some(window) = app.get_webview_window(&self.inner.config.label) else {
+        let Some(window) = self.companion(app) else {
             return Ok(false);
         };
         let presented = {
@@ -244,7 +281,7 @@ where
             (request, lifecycle.renderer_ready)
         };
         let render_request = self.lock_lifecycle().render_request();
-        if let Some(window) = app.get_webview_window(&self.inner.config.label) {
+        if let Some(window) = self.companion(app) {
             platform::hide(&window)?;
         }
         {
@@ -260,22 +297,25 @@ where
     /// Mark the current renderer load ready and deliver the latest request.
     pub fn renderer_ready(
         &self,
-        window: &WebviewWindow,
+        app: &tauri::AppHandle,
         renderer_generation: u64,
     ) -> tauri::Result<bool> {
         let _frame_update = self.lock_frame_update();
+        let Some(window) = self.companion(app) else {
+            return Ok(false);
+        };
         let Some(reveal_now) = ({
             let mut lifecycle = self.lock_lifecycle();
-            lifecycle.renderer_ready(renderer_generation, self.inner.config.reveal)
+            lifecycle.renderer_ready(renderer_generation)
         }) else {
             return Ok(false);
         };
         let request = self.lock_lifecycle().pending_render_request();
         if reveal_now {
-            self.reveal_placeholder(window.app_handle(), window)?;
+            self.reveal_placeholder(app, &window)?;
         }
-        self.deliver_render_request(window, request)?;
-        if let Err(error) = self.emit_state(window.app_handle()) {
+        self.deliver_render_request(&window, request)?;
+        if let Err(error) = self.emit_state(app) {
             tracing::warn!(%error, "failed to emit anchored-window renderer state");
         }
         Ok(true)
@@ -289,7 +329,7 @@ where
         content_height: Option<f64>,
     ) -> tauri::Result<bool> {
         let _frame_update = self.lock_frame_update();
-        let Some(window) = app.get_webview_window(&self.inner.config.label) else {
+        let Some(window) = self.companion(app) else {
             return Ok(false);
         };
         let (presentation_pending, reveal_pending, should_apply_frame) = {
@@ -317,7 +357,7 @@ where
             }
             #[cfg(target_os = "linux")]
             self.inner.pointer_tracker.reset_for_show();
-            platform::show(&window, self.inner.config.interaction)?;
+            platform::show(&window)?;
         }
         let should_reveal = presentation_pending && self.lock_lifecycle().presented(generation);
         if should_reveal && let Err(error) = self.emit_state(app) {
@@ -332,7 +372,7 @@ where
         if !self.lock_lifecycle().concealment_is_current(generation) {
             return false;
         }
-        if let Some(window) = app.get_webview_window(&self.inner.config.label)
+        if let Some(window) = self.companion(app)
             && let Err(error) = platform::hide(&window)
         {
             tracing::warn!(%error, "failed to hide the concealed anchored window");
@@ -341,6 +381,9 @@ where
         let concealed = self.lock_lifecycle().concealed(generation);
         if concealed && let Err(error) = self.emit_state(app) {
             tracing::warn!(%error, "failed to emit anchored-window concealed state");
+        }
+        if concealed {
+            self.schedule_renderer_retirement(app, generation);
         }
         concealed
     }
@@ -363,9 +406,7 @@ where
                 if !self.lock_lifecycle().can_reposition() {
                     return;
                 }
-                if let Some(companion) = window
-                    .app_handle()
-                    .get_webview_window(&self.inner.config.label)
+                if let Some(companion) = self.companion(window.app_handle())
                     && let Err(error) =
                         self.apply_size_and_position(window.app_handle(), &companion)
                 {
@@ -387,6 +428,82 @@ where
         self.lock_lifecycle().renderer_destroyed();
         #[cfg(target_os = "linux")]
         self.inner.pointer_tracker.reset_for_install();
+    }
+
+    fn schedule_renderer_retirement(&self, app: &tauri::AppHandle, generation: u64) {
+        let manager = Arc::downgrade(&self.inner);
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::task::yield_now().await;
+            let Some(inner) = manager.upgrade() else {
+                return;
+            };
+            Self { inner }.retire_renderer_if_current(&app, generation);
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    fn retire_renderer_if_current(&self, app: &tauri::AppHandle, generation: u64) {
+        let manager = Self {
+            inner: Arc::clone(&self.inner),
+        };
+        let retirement_app = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            manager.retire_renderer_on_main_thread(&retirement_app, generation);
+        }) {
+            tracing::warn!(%error, "failed to schedule anchored panel retirement");
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn retire_renderer_if_current(&self, app: &tauri::AppHandle, generation: u64) {
+        let _frame_update = self.lock_frame_update();
+        if !self
+            .lock_lifecycle()
+            .renderer_retirement_is_current(generation)
+        {
+            return;
+        }
+        if let Some(window) = self.companion(app)
+            && let Err(error) = window.destroy()
+        {
+            tracing::warn!(%error, "failed to destroy the concealed anchored window");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn retire_renderer_on_main_thread(&self, app: &tauri::AppHandle, generation: u64) {
+        let _frame_update = self.lock_frame_update();
+        if !self
+            .lock_lifecycle()
+            .renderer_retirement_is_current(generation)
+        {
+            return;
+        }
+        let Some(window) = self.companion(app) else {
+            return;
+        };
+        self.inner
+            .native_window
+            .lock()
+            .expect("native companion slot mutex must not be poisoned")
+            .take();
+        window.destroy_on_main_thread();
+        self.lock_lifecycle().renderer_destroyed();
+    }
+
+    /// Release the native companion before the application event loop stops.
+    #[cfg(target_os = "macos")]
+    pub fn shutdown(&self) {
+        if let Some(window) = self
+            .inner
+            .native_window
+            .lock()
+            .expect("native companion slot mutex must not be poisoned")
+            .take()
+        {
+            window.destroy_on_main_thread();
+        }
     }
 
     fn lock_lifecycle(&self) -> std::sync::MutexGuard<'_, Lifecycle<T, P>> {

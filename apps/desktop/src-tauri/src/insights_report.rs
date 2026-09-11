@@ -8,16 +8,37 @@ use antiburn_local::analysis::{
     PARSER_REVISION, SessionEvidence, SourceOrigin,
 };
 use antiburn_local::insights::{
-    CoverageBucket, CoverageCounts, EfficiencyReport, EfficiencyReportAccumulator, ReportCatalogs,
-    ReportContext, ReportWindow, SessionTokenBurnEvidence, TokenBurnSourceEvidence,
+    CoverageBucket, CoverageCounts, DetectorId, EfficiencyReport, EfficiencyReportAccumulator,
+    ReportCatalogs, ReportContext, ReportWindow, SessionTokenBurnEvidence, TokenBurnSourceEvidence,
     TokenBurnTurnAccumulator, TokenBurnTurnEvidence,
 };
+use antiburn_local::model_catalog::ModelCatalog;
+use antiburn_local::pricing::ModelTokens;
+use antiburn_local::remediation::{Finding, FindingAssessment, ModelVerificationObservation};
 use anyhow::{Context, Result, ensure};
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
-use crate::store::open_read_only;
+use crate::remediation::WatchDefinition;
+use crate::store::{RemediationRecord, open_read_only};
+
+mod findings;
+
+pub(crate) use findings::{
+    CurrentDetectorAssessment, ensure_not_cancelled, old_model_remediation_evidence,
+    publication_findings_in, remediation_assessments,
+};
+#[allow(unused_imports)]
+pub use findings::{ReportCancelled, is_cancelled, reduce_report, reduce_report_blocking};
+#[cfg(test)]
+use findings::{
+    checked_add_tokens, fair_bounded_selection, list_current_findings_on_snapshot,
+    model_attribution_matches, revalidate_current_finding_on_snapshot,
+};
+pub use findings::{list_current_findings, revalidate_current_finding};
 
 const REPORT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const CURRENT_FINDING_SESSION_SCAN_BUDGET: usize = 512;
+const CURRENT_FINDING_LIMIT: usize = 512;
 
 const CURRENT_EVIDENCE_PREDICATE: &str = "
     e.status = 'ready'
@@ -86,6 +107,60 @@ SELECT scope, model, effort, speed, ts_ms, input_tokens, output_tokens,
    AND claim_fence = ?4
    AND role = 'assistant'";
 
+const CURRENT_FINDINGS_SQL: &str = "
+SELECT e.evidence_json, s.environment_key, s.agent, s.session_id,
+       s.source_generation, e.published_fence, s.source_fingerprint,
+       e.processed_fingerprint, e.parser_revision, e.analyzer_revision,
+       e.evidence_schema_revision, a.metrics_schema_revision,
+       s.started_at_epoch, s.cwd, a.initial_context_json,
+        e.effective_model_target_hash, e.effective_model_scope, e.effective_model,
+        e.effective_reasoning_target_hash, e.effective_reasoning_scope, e.effective_reasoning
+  FROM session s
+  JOIN session_evidence e
+    ON e.environment_key = s.environment_key
+   AND e.agent = s.agent
+   AND e.session_id = s.session_id
+  JOIN session_analysis a
+    ON a.environment_key = s.environment_key
+   AND a.agent = s.agent
+   AND a.session_id = s.session_id
+   AND NOT (a.analyzed_generation IS NOT s.source_generation)
+   AND NOT (a.parser_revision IS NOT ?4)
+   AND NOT (a.analyzer_revision IS NOT ?5)
+   AND NOT (a.metrics_schema_revision IS NOT ?7)
+ WHERE s.environment_key = ?1
+   AND s.started_at_epoch >= ?2
+   AND s.started_at_epoch < ?3
+    AND {current}
+  ORDER BY s.started_at_epoch DESC, s.agent DESC, s.session_id DESC
+  LIMIT ?8";
+
+const CURRENT_FINDING_BY_KEY_SQL: &str = "
+SELECT e.evidence_json, s.environment_key, s.agent, s.session_id,
+       s.source_generation, e.published_fence, s.source_fingerprint,
+       e.processed_fingerprint, e.parser_revision, e.analyzer_revision,
+       e.evidence_schema_revision, a.metrics_schema_revision,
+       s.started_at_epoch, s.cwd, a.initial_context_json,
+        e.effective_model_target_hash, e.effective_model_scope, e.effective_model,
+        e.effective_reasoning_target_hash, e.effective_reasoning_scope, e.effective_reasoning
+  FROM session s
+  JOIN session_evidence e
+    ON e.environment_key = s.environment_key
+   AND e.agent = s.agent
+   AND e.session_id = s.session_id
+  JOIN session_analysis a
+    ON a.environment_key = s.environment_key
+   AND a.agent = s.agent
+   AND a.session_id = s.session_id
+   AND NOT (a.analyzed_generation IS NOT s.source_generation)
+   AND NOT (a.parser_revision IS NOT ?4)
+   AND NOT (a.analyzer_revision IS NOT ?5)
+   AND NOT (a.metrics_schema_revision IS NOT ?7)
+ WHERE s.environment_key = ?1
+   AND s.agent = ?2
+   AND s.session_id = ?3
+   AND {current}";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportRequest {
     pub environment_key: String,
@@ -97,50 +172,56 @@ pub struct ReportRequest {
 pub struct ReducedReport {
     pub report: EfficiencyReport,
     pub evidence_settled: bool,
+    pub pending_evidence: u64,
 }
 
-/// Marks a reduction that stopped because its caller cancelled it.
-///
-/// The reduction reads one snapshot and writes nothing, so a cancelled
-/// run leaves the durable evidence state untouched.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReportCancelled;
+/// Selects one detector's current findings in a bounded report window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentFindingsRequest {
+    pub environment_key: String,
+    pub window: ReportWindow,
+    pub detector: DetectorId,
+}
 
-impl std::fmt::Display for ReportCancelled {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("the insights report reduction was cancelled")
+/// One trusted finding and the exact projection version that produced it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CurrentFinding {
+    pub finding: Finding,
+    pub environment_key: String,
+    pub agent: String,
+    pub session_id: String,
+    pub source_generation: i64,
+    pub published_fence: i64,
+    pub source_fingerprint: Option<String>,
+    pub processed_fingerprint: Option<String>,
+    pub parser_revision: i64,
+    pub analyzer_revision: i64,
+    pub evidence_schema_revision: i64,
+    pub metrics_schema_revision: i64,
+    pub catalog_revision: i64,
+    pub started_at_epoch: i64,
+    pub(crate) observed_at_ms: i64,
+    workspace_candidate: Option<PathBuf>,
+    pub(crate) effective_model_target_hash: Option<String>,
+    pub(crate) effective_model_scope: Option<String>,
+    pub(crate) effective_model: Option<String>,
+    pub(crate) effective_reasoning_target_hash: Option<String>,
+    pub(crate) effective_reasoning_scope: Option<String>,
+    pub(crate) effective_reasoning: Option<String>,
+}
+
+impl CurrentFinding {
+    /// Returns the private path candidate for trusted configuration inspection.
+    pub(crate) fn workspace_candidate(&self) -> Option<&Path> {
+        self.workspace_candidate.as_deref()
     }
 }
 
-impl std::error::Error for ReportCancelled {}
-
-/// Tells whether an error marks a cancelled reduction.
-pub fn is_cancelled(error: &anyhow::Error) -> bool {
-    error.is::<ReportCancelled>()
-}
-
-fn ensure_not_cancelled(cancel: &AtomicBool) -> Result<()> {
-    if cancel.load(Ordering::SeqCst) {
-        return Err(anyhow::Error::new(ReportCancelled));
-    }
-    Ok(())
-}
-
-/// Reduces one report without blocking the async runtime.
-///
-/// The cancel flag is a cooperative probe: `spawn_blocking` tasks cannot
-/// be aborted, so the reduction checks the flag between phases and per
-/// cohort row, and returns [`ReportCancelled`] when it is set.
-pub async fn reduce_report(
-    data_dir: PathBuf,
-    request: ReportRequest,
-    cancel: Arc<AtomicBool>,
-) -> Result<ReducedReport> {
-    tokio::task::spawn_blocking(move || {
-        reduce_with_state_on_snapshot(&data_dir, request, &mut || {}, &cancel, &mut || {})
-    })
-    .await
-    .context("report reduction task failed")?
+/// One bounded set of current findings in newest-session order.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CurrentFindingsPage {
+    pub findings: Vec<CurrentFinding>,
+    pub truncated: bool,
 }
 
 #[cfg(test)]
@@ -269,6 +350,7 @@ fn reduce_with_state_on_snapshot(
     Ok(ReducedReport {
         report,
         evidence_settled: pending_evidence == 0,
+        pending_evidence,
     })
 }
 
@@ -544,17 +626,176 @@ mod tests {
     use std::thread;
 
     use antiburn_local::analysis::{
-        EVIDENCE_SCHEMA_REVISION, EvidenceSource, METRICS_SCHEMA_REVISION,
-        SessionEvidenceAccumulator, SourceCapabilities, SourceKind, TurnFacts, TurnRow,
+        EVIDENCE_SCHEMA_REVISION, EligibilityEvidence, EvidenceSource, EvidenceValue, LoadedSource,
+        METRICS_SCHEMA_REVISION, ModelControlObservation, ModelTokens as AnalysisModelTokens,
+        RepeatedContext, RepeatedContextAccounting, SessionEvidenceAccumulator, SessionTimeRange,
+        SignalCoverage, SourceCapabilities, SourceKind, TurnCounts, TurnFacts, TurnRow,
         TurnRowStore, TurnScope,
     };
+    use antiburn_local::model::AgentKind;
     use tempfile::TempDir;
 
     use super::*;
     use crate::store::{
         AnalysisRecord, EvidenceCompletion, EvidenceFailure, FencedTurnRowStore,
-        ProjectionRevisions, PublishedEvidence, SessionKey, SessionRecord, Store,
+        ProjectionRevisions, PublishedEvidence, RepositoryRecord, SessionKey, SessionRecord, Store,
     };
+
+    #[test]
+    fn publication_cap_gives_all_nine_detectors_an_opportunity() {
+        let buckets = DetectorId::ALL
+            .into_iter()
+            .map(|detector| (0..150).map(move |index| (detector, index)).collect())
+            .collect();
+
+        let selected = fair_bounded_selection(buckets, 100);
+
+        assert_eq!(selected.len(), 100);
+        for detector in DetectorId::ALL {
+            assert_eq!(
+                selected
+                    .iter()
+                    .filter(|(found, _)| *found == detector)
+                    .count(),
+                11 + usize::from(detector.index() < 1),
+            );
+        }
+        assert_eq!(selected[0], (DetectorId::SessionsOverDepth, 0));
+        assert_eq!(selected[1], (DetectorId::ModelOverthinking, 0));
+    }
+
+    #[test]
+    fn old_model_attribution_keeps_global_and_project_targets_separate() {
+        let definition = WatchDefinition {
+            version: 1,
+            detector: "old_model_usage".into(),
+            canonical_identity: "target".into(),
+            source_format: "ClaudeJsonl".into(),
+            workspace_key: Some("workspace".into()),
+            workspace_relative_cwd: None,
+            provider: Some("anthropic".into()),
+            api: Some("messages".into()),
+            old_model: Some("old".into()),
+            replacement: Some("new".into()),
+            resource: None,
+            physical_target_key: Some("global-target".into()),
+            config_setting: Some("model".into()),
+            config_expected_value: Some("old".into()),
+            config_proposed_value: Some("new".into()),
+            verification_method_revision: 1,
+            remediation_policy_revision: Some(1),
+            savings_method_revision: 1,
+            pricing_revision: None,
+            old_pricing: None,
+            replacement_pricing: None,
+            catalog_revision: Some(ReportCatalogs::default().revision),
+            target_model: None,
+            target_control: None,
+        };
+        assert!(model_attribution_matches(
+            &definition,
+            "claude-code",
+            "global",
+            Some("global-target"),
+            Some("global"),
+            Some("new"),
+            (Some("anthropic"), Some("messages")),
+        ));
+        assert!(!model_attribution_matches(
+            &definition,
+            "claude-code",
+            "global",
+            Some("project-target"),
+            Some("project"),
+            Some("new"),
+            (Some("anthropic"), Some("messages")),
+        ));
+    }
+
+    #[test]
+    fn routed_model_attribution_normalizes_config_values_and_requires_the_reviewed_route() {
+        let definition = WatchDefinition {
+            version: 1,
+            detector: "old_model_usage".into(),
+            canonical_identity: "target".into(),
+            source_format: "OpenCodeJsonl".into(),
+            workspace_key: None,
+            workspace_relative_cwd: None,
+            provider: Some("openai".into()),
+            api: Some("responses".into()),
+            old_model: Some("gpt-5.5".into()),
+            replacement: Some("gpt-5.6-sol".into()),
+            resource: None,
+            physical_target_key: Some("config-target".into()),
+            config_setting: Some("model".into()),
+            config_expected_value: Some("openai/gpt-5.5".into()),
+            config_proposed_value: Some("openai/gpt-5.6-sol".into()),
+            verification_method_revision: 1,
+            remediation_policy_revision: Some(1),
+            savings_method_revision: 1,
+            pricing_revision: None,
+            old_pricing: None,
+            replacement_pricing: None,
+            catalog_revision: Some(ReportCatalogs::default().revision),
+            target_model: None,
+            target_control: None,
+        };
+        assert!(model_attribution_matches(
+            &definition,
+            "opencode",
+            "global",
+            Some("config-target"),
+            Some("global"),
+            Some("openai/gpt-5.6-sol"),
+            (Some("openai"), Some("responses")),
+        ));
+        let mut pi = definition.clone();
+        pi.source_format = "PiV3Jsonl".into();
+        pi.api = Some("openai-responses".into());
+        assert!(model_attribution_matches(
+            &pi,
+            "pi",
+            "global",
+            Some("config-target"),
+            Some("global"),
+            Some("openai/gpt-5.6-sol"),
+            (Some("openai"), Some("openai-responses")),
+        ));
+        for (provider, api, attributed) in [
+            (
+                Some("gateway"),
+                Some("responses"),
+                Some("openai/gpt-5.6-sol"),
+            ),
+            (Some("openai"), Some("messages"), Some("openai/gpt-5.6-sol")),
+            (
+                Some("openai"),
+                Some("responses"),
+                Some("gateway/gpt-5.6-sol"),
+            ),
+        ] {
+            assert!(!model_attribution_matches(
+                &definition,
+                "opencode",
+                "global",
+                Some("config-target"),
+                Some("global"),
+                attributed,
+                (provider, api),
+            ));
+        }
+    }
+
+    #[test]
+    fn remediation_token_accumulation_reports_overflow_without_mutation() {
+        let mut tokens = ModelTokens {
+            input_tokens: u64::MAX,
+            ..ModelTokens::default()
+        };
+        let before = tokens.clone();
+        assert!(!checked_add_tokens(&mut tokens, 1, 0, 0, 0));
+        assert_eq!(tokens, before);
+    }
 
     fn request() -> ReportRequest {
         ReportRequest {
@@ -687,8 +928,17 @@ mod tests {
     }
 
     fn session(session_id: &str, updated_at_epoch: i64, fingerprint: &str) -> SessionRecord {
+        session_for("claude-code", session_id, updated_at_epoch, fingerprint)
+    }
+
+    fn session_for(
+        agent: &str,
+        session_id: &str,
+        updated_at_epoch: i64,
+        fingerprint: &str,
+    ) -> SessionRecord {
         SessionRecord {
-            key: SessionKey::new("native", "claude-code", session_id),
+            key: SessionKey::new("native", agent, session_id),
             source_kind: "file".to_owned(),
             source_label: format!("/home/avery/.claude/{session_id}.jsonl"),
             wsl_distro: None,
@@ -721,13 +971,90 @@ mod tests {
         status: PublishedEvidence,
         turn_count: usize,
     ) {
+        publish_evidence_with_mutator(
+            store,
+            session_id,
+            started_at_epoch,
+            status,
+            turn_count,
+            |_| {},
+        );
+    }
+
+    fn publish_evidence_with_mutator(
+        store: &Store,
+        session_id: &str,
+        started_at_epoch: i64,
+        status: PublishedEvidence,
+        turn_count: usize,
+        mutate: impl FnOnce(&mut SessionEvidence),
+    ) {
+        publish_evidence_with_mutators(
+            store,
+            session_id,
+            started_at_epoch,
+            status,
+            turn_count,
+            |_| {},
+            mutate,
+        );
+    }
+
+    fn publish_evidence_with_mutators(
+        store: &Store,
+        session_id: &str,
+        started_at_epoch: i64,
+        status: PublishedEvidence,
+        turn_count: usize,
+        mutate_session: impl FnOnce(&mut SessionRecord),
+        mutate_evidence: impl FnOnce(&mut SessionEvidence),
+    ) {
+        publish_evidence_for_agent(
+            store,
+            EvidenceFixture {
+                agent: "claude-code",
+                capabilities: SourceCapabilities::claude(),
+                session_id,
+                started_at_epoch,
+                status,
+                turn_count,
+            },
+            mutate_session,
+            mutate_evidence,
+        );
+    }
+
+    struct EvidenceFixture<'a> {
+        agent: &'a str,
+        capabilities: SourceCapabilities,
+        session_id: &'a str,
+        started_at_epoch: i64,
+        status: PublishedEvidence,
+        turn_count: usize,
+    }
+
+    fn publish_evidence_for_agent(
+        store: &Store,
+        fixture: EvidenceFixture<'_>,
+        mutate_session: impl FnOnce(&mut SessionRecord),
+        mutate_evidence: impl FnOnce(&mut SessionEvidence),
+    ) {
+        let EvidenceFixture {
+            agent,
+            capabilities,
+            session_id,
+            started_at_epoch,
+            status,
+            turn_count,
+        } = fixture;
         let fingerprint = format!("sv1:{session_id}");
-        let session = session(session_id, started_at_epoch, &fingerprint);
+        let mut session = session_for(agent, session_id, started_at_epoch, &fingerprint);
+        mutate_session(&mut session);
         store
-            .upsert_sessions(std::slice::from_ref(&session), &["claude-code"])
+            .upsert_sessions(std::slice::from_ref(&session), &[agent])
             .unwrap();
         let claim = store
-            .claim_next_evidence(&["claude-code"], 10, 60)
+            .claim_next_evidence(&[agent], 10, 60)
             .unwrap()
             .unwrap();
         assert_eq!(claim.key, session.key);
@@ -744,6 +1071,8 @@ mod tests {
                     role: "assistant",
                     ts_ms: Some(1_000 + turn_index as i64),
                     model: Some("claude-sonnet-5".to_owned()),
+                    provider: None,
+                    api: None,
                     effort: Some("high".to_owned()),
                     speed: None,
                     input_tokens: 10,
@@ -765,13 +1094,14 @@ mod tests {
                 .collect::<Vec<_>>();
             writer.write_turn_rows(&turns).unwrap();
         }
-        let evidence = SessionEvidenceAccumulator::new(EvidenceSource {
-            agent: "claude-code".to_owned(),
+        let mut evidence = SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: agent.to_owned(),
             session_id: session_id.to_owned(),
             kind: SourceKind::File,
-            capabilities: SourceCapabilities::claude(),
+            capabilities,
         })
         .evidence(&TurnFacts::default());
+        mutate_evidence(&mut evidence);
         let analysis = AnalysisRecord {
             key: session.key,
             model_breakdown_json: "{}".to_owned(),
@@ -807,6 +1137,1626 @@ mod tests {
             started_at_epoch,
             PublishedEvidence::Ready,
         );
+    }
+
+    #[test]
+    fn opencode_cache_findings_for_one_route_return_one_environment_target() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        for index in 0..20 {
+            publish_evidence_for_agent(
+                &store,
+                EvidenceFixture {
+                    agent: AgentKind::OpenCode.slug(),
+                    capabilities: SourceCapabilities::opencode(),
+                    session_id: &format!("cache-{index:02}"),
+                    started_at_epoch: 120 + index,
+                    status: PublishedEvidence::Ready,
+                    turn_count: 0,
+                },
+                |_| {},
+                |evidence| {
+                    evidence.eligibility = EvidenceValue::Complete(EligibilityEvidence {
+                        turns: 1,
+                        assistant_turns: 1,
+                        ..EligibilityEvidence::default()
+                    });
+                    evidence.time_range = EvidenceValue::Complete(SessionTimeRange {
+                        first_ts_ms: 1_000 + index * 1_000,
+                        last_ts_ms: 1_000 + index * 1_000,
+                        timestamped_turns: 1,
+                    });
+                    let EvidenceValue::Complete(models) = &mut evidence.models else {
+                        panic!("OpenCode model evidence must be complete");
+                    };
+                    models.dominant_main_model = Some("gpt-5.6-luna".to_owned());
+                    models.by_model.insert(
+                        "gpt-5.6-luna".to_owned(),
+                        AnalysisModelTokens {
+                            turns: 1,
+                            first_ts_ms: 1_000 + index * 1_000,
+                            last_ts_ms: 1_000 + index * 1_000,
+                            ..AnalysisModelTokens::default()
+                        },
+                    );
+                    let EvidenceValue::Complete(cache) = &mut evidence.cache else {
+                        panic!("OpenCode cache evidence must be complete");
+                    };
+                    cache.repeated_context = EvidenceValue::Complete(RepeatedContext {
+                        accounting: RepeatedContextAccounting::UncachedInput,
+                        repeated_tokens: 100,
+                        pairs_considered: 1,
+                        pairs_skipped: 0,
+                        paid_tokens: 100,
+                    });
+                },
+            );
+        }
+
+        let controller = crate::remediation::RemediationController::new(data_dir.path().to_owned());
+        let listed = controller
+            .list_burn_check_targets(
+                &store,
+                DetectorId::CacheChurn,
+                crate::remediation::BurnCheckTargetContext {
+                    environment_key: "native".into(),
+                    window: request().window,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(listed.targets.len(), 20);
+        assert!(listed.targets.iter().all(|target| {
+            target.occurrences == 1
+                && target.display.observation_count == 1
+                && target.display.quantity == Some(100)
+                && target.sample_sessions.len() == 1
+                && target.watch.is_none()
+        }));
+    }
+
+    fn publish_attributed_model_turn(
+        data_dir: &Path,
+        store: &Store,
+        session_id: &str,
+        started_at_epoch: i64,
+        timestamp_ms: i64,
+        model: &str,
+    ) {
+        publish_evidence_with_turns(
+            store,
+            session_id,
+            started_at_epoch,
+            PublishedEvidence::Ready,
+            1,
+        );
+        let connection = rusqlite::Connection::open(crate::store::database_path(data_dir)).unwrap();
+        connection
+            .execute(
+                "UPDATE turn SET ts_ms = ?1, model = ?2, provider = 'anthropic', api = 'messages'
+                  WHERE environment_key = 'native' AND agent = 'claude-code' AND session_id = ?3",
+                params![timestamp_ms, model, session_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE session_evidence SET effective_model_target_hash = 'physical',
+                    effective_model_scope = 'global', effective_model = ?1
+                  WHERE environment_key = 'native' AND agent = 'claude-code' AND session_id = ?2",
+                params![model, session_id],
+            )
+            .unwrap();
+    }
+
+    #[derive(Clone, Copy)]
+    struct RoutedModelFixture<'a> {
+        agent: AgentKind,
+        capabilities: SourceCapabilities,
+        api: &'a str,
+    }
+
+    fn publish_routed_attributed_model_turn(
+        data_dir: &Path,
+        store: &Store,
+        fixture: RoutedModelFixture<'_>,
+        session_id: &str,
+        started_at_epoch: i64,
+        timestamp_ms: i64,
+        model: &str,
+    ) {
+        let RoutedModelFixture {
+            agent,
+            capabilities,
+            api,
+        } = fixture;
+        publish_evidence_for_agent(
+            store,
+            EvidenceFixture {
+                agent: agent.slug(),
+                capabilities,
+                session_id,
+                started_at_epoch,
+                status: PublishedEvidence::Ready,
+                turn_count: 1,
+            },
+            |_| {},
+            |evidence| {
+                evidence.time_range = EvidenceValue::Complete(SessionTimeRange {
+                    first_ts_ms: timestamp_ms,
+                    last_ts_ms: timestamp_ms,
+                    timestamped_turns: 1,
+                });
+                let EvidenceValue::Complete(eligibility) = &mut evidence.eligibility else {
+                    panic!("the routed fixture must have complete eligibility");
+                };
+                eligibility.assistant_turns = 1;
+                let EvidenceValue::Complete(models) = &mut evidence.models else {
+                    panic!("the routed fixture must have complete model evidence");
+                };
+                models.by_model.insert(
+                    model.into(),
+                    antiburn_local::analysis::ModelTokens {
+                        input: 10,
+                        turns: 1,
+                        first_ts_ms: timestamp_ms,
+                        last_ts_ms: timestamp_ms,
+                        ..Default::default()
+                    },
+                );
+                models.control_observations = vec![ModelControlObservation {
+                    provider: Some("openai".into()),
+                    api: Some(api.into()),
+                    model: model.into(),
+                    effort: None,
+                    speed: None,
+                    last_ts_ms: timestamp_ms,
+                    turns: TurnCounts {
+                        main_loop: 1,
+                        delegated: 0,
+                    },
+                }];
+            },
+        );
+        let connection = rusqlite::Connection::open(crate::store::database_path(data_dir)).unwrap();
+        connection
+            .execute(
+                "UPDATE turn SET ts_ms = ?1, model = ?2, provider = 'openai', api = ?3
+                  WHERE environment_key = 'native' AND agent = ?4 AND session_id = ?5",
+                params![timestamp_ms, model, api, agent.slug(), session_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE session_evidence SET effective_model_target_hash = 'physical',
+                    effective_model_scope = 'global', effective_model = ?1
+                  WHERE environment_key = 'native' AND agent = ?2 AND session_id = ?3",
+                params![format!("openai/{model}"), agent.slug(), session_id],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn opencode_and_pi_replacement_evidence_verifies_and_stops_at_recurrence() {
+        for (fixture, source) in [
+            (
+                RoutedModelFixture {
+                    agent: AgentKind::OpenCode,
+                    capabilities: SourceCapabilities::opencode(),
+                    api: "responses",
+                },
+                "OpenCodeJsonl",
+            ),
+            (
+                RoutedModelFixture {
+                    agent: AgentKind::Pi,
+                    capabilities: SourceCapabilities::pi(),
+                    api: "openai-responses",
+                },
+                "PiV3Jsonl",
+            ),
+        ] {
+            let agent = fixture.agent;
+            let api = fixture.api;
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_routed_attributed_model_turn(
+                data_dir.path(),
+                &store,
+                fixture,
+                "replacement",
+                102,
+                102_000,
+                "gpt-5.6-sol",
+            );
+            let definition = WatchDefinition {
+                version: 1,
+                detector: "old_model_usage".into(),
+                canonical_identity: "identity".into(),
+                source_format: source.into(),
+                workspace_key: None,
+                workspace_relative_cwd: None,
+                provider: Some("openai".into()),
+                api: Some(api.into()),
+                old_model: Some("gpt-5.5".into()),
+                replacement: Some("gpt-5.6-sol".into()),
+                resource: None,
+                physical_target_key: Some("physical".into()),
+                config_setting: Some("model".into()),
+                config_expected_value: Some("openai/gpt-5.5".into()),
+                config_proposed_value: Some("openai/gpt-5.6-sol".into()),
+                verification_method_revision: 1,
+                remediation_policy_revision: Some(1),
+                savings_method_revision: 1,
+                pricing_revision: Some("test-pricing".into()),
+                old_pricing: Some(antiburn_local::pricing::ModelPricing {
+                    input_cost_per_token: 2.0,
+                    output_cost_per_token: 0.0,
+                    cache_read_cost_per_token: 0.0,
+                    cache_write_cost_per_token: 0.0,
+                }),
+                replacement_pricing: Some(antiburn_local::pricing::ModelPricing {
+                    input_cost_per_token: 1.0,
+                    output_cost_per_token: 0.0,
+                    cache_read_cost_per_token: 0.0,
+                    cache_write_cost_per_token: 0.0,
+                }),
+                catalog_revision: Some(ReportCatalogs::default().revision),
+                target_model: None,
+                target_control: None,
+            };
+            let record = crate::store::RemediationRecord {
+                remediation_id: "watch".into(),
+                target_key: "target".into(),
+                environment_key: "native".into(),
+                agent: agent.slug().into(),
+                scope_kind: "global".into(),
+                scope_key: "physical".into(),
+                state: crate::store::RemediationState::Watching,
+                dirty_revision: 1,
+                evaluated_revision: 0,
+                definition_json: serde_json::to_string(&definition).unwrap(),
+                result_json: r#"{"version":1}"#.into(),
+                created_at_epoch: 100,
+                updated_at_epoch: 100,
+                effective_boundary_ms: Some(100_000),
+                verified_at_epoch: None,
+                recurred_at_epoch: None,
+                action_joined_at_ms: None,
+            };
+            let replacement = old_model_remediation_evidence(
+                data_dir.path(),
+                &record,
+                &definition,
+                100_000,
+                None,
+            )
+            .unwrap();
+            assert_eq!(replacement.observations.len(), 1, "{agent:?}");
+            let replacement_tokens = replacement.replacement_tokens.clone().unwrap();
+            assert_eq!(replacement_tokens.input_tokens, 10);
+            let savings = antiburn_local::remediation::estimate_old_model_savings(
+                &antiburn_local::remediation::OldModelSavingsInput {
+                    interval: antiburn_local::remediation::SavingsInterval {
+                        boundary_ms: 100_000,
+                        measured_through_ms: 102_000,
+                        recurrence_ms: None,
+                    },
+                    tokens: Some(replacement_tokens),
+                    old_pricing: definition.old_pricing.clone(),
+                    replacement_pricing: definition.replacement_pricing.clone(),
+                    pricing_revision: definition.pricing_revision.clone(),
+                },
+            );
+            let antiburn_local::remediation::OldModelSavingsEstimate::Known(savings) = savings
+            else {
+                panic!("{agent:?} replacement savings must be known");
+            };
+            assert_eq!(savings.api_equivalent_cost_avoided_usd, 10.0);
+            let target = antiburn_local::remediation::OldModelVerificationTarget {
+                scope: "physical".into(),
+                provider: Some("openai".into()),
+                api: Some(api.into()),
+                old_model: "gpt-5.5".into(),
+                replacement: "gpt-5.6-sol".into(),
+            };
+            assert_eq!(
+                antiburn_local::remediation::verify_old_model(
+                    &target,
+                    antiburn_local::remediation::VerificationStage::Watching,
+                    100_000,
+                    &replacement.observations,
+                )
+                .outcome,
+                antiburn_local::remediation::VerificationOutcome::Fixed
+            );
+
+            publish_routed_attributed_model_turn(
+                data_dir.path(),
+                &store,
+                fixture,
+                "recurrence",
+                103,
+                103_000,
+                "gpt-5.5",
+            );
+            let recurred = old_model_remediation_evidence(
+                data_dir.path(),
+                &record,
+                &definition,
+                100_000,
+                Some(102_000),
+            )
+            .unwrap();
+            assert_eq!(recurred.recurrence_ms, Some(103_000), "{agent:?}");
+            assert_eq!(recurred.replacement_tokens.unwrap().input_tokens, 10);
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn opencode_and_pi_old_model_controller_applies_once_to_temporary_configs() {
+        for (fixture, path, config) in [
+            (
+                RoutedModelFixture {
+                    agent: AgentKind::OpenCode,
+                    capabilities: SourceCapabilities::opencode(),
+                    api: "responses",
+                },
+                ".config/opencode/opencode.json",
+                r#"{"model":"openai/gpt-5.5"}"#,
+            ),
+            (
+                RoutedModelFixture {
+                    agent: AgentKind::Pi,
+                    capabilities: SourceCapabilities::pi(),
+                    api: "openai-responses",
+                },
+                ".pi/agent/settings.json",
+                r#"{"defaultProvider":"openai","defaultModel":"gpt-5.5"}"#,
+            ),
+        ] {
+            let agent = fixture.agent;
+            let data_dir = TempDir::new().unwrap();
+            let home = data_dir.path().join("home");
+            let config_path = home.join(path);
+            std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+            std::fs::write(&config_path, config).unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_routed_attributed_model_turn(
+                data_dir.path(),
+                &store,
+                fixture,
+                "old-model",
+                2_000_000_000,
+                2_000_000_000_000,
+                "gpt-5.5",
+            );
+            let key = SessionKey::new("native", agent.slug(), "old-model");
+            let evidence_json: String = store
+                .lock()
+                .query_row(
+                    "SELECT evidence_json FROM session_evidence
+                      WHERE environment_key = 'native' AND agent = ?1 AND session_id = 'old-model'",
+                    [agent.slug()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let attribution = crate::remediation::publication_config_attribution_with_home(
+                &store,
+                &key,
+                PublishedEvidence::Ready,
+                &evidence_json,
+                &home,
+            )
+            .unwrap()
+            .model
+            .unwrap();
+            store
+                .lock()
+                .execute(
+                    "UPDATE session_evidence SET effective_model_target_hash = ?1,
+                        effective_model_scope = ?2, effective_model = ?3
+                      WHERE environment_key = 'native' AND agent = ?4 AND session_id = 'old-model'",
+                    params![attribution.0, attribution.1, attribution.2, agent.slug()],
+                )
+                .unwrap();
+            let controller = crate::remediation::RemediationController::new(data_dir.path().into());
+            let listed = controller
+                .list_burn_check_targets_with_home(
+                    &store,
+                    DetectorId::OldModelUsage,
+                    crate::remediation::BurnCheckTargetContext {
+                        environment_key: "native".into(),
+                        window: ReportWindow {
+                            start_epoch: 1_900_000_000,
+                            end_epoch: 2_100_000_000,
+                        },
+                    },
+                    &home,
+                )
+                .unwrap();
+            assert_eq!(listed.targets.len(), 1, "{agent:?}");
+            assert_eq!(
+                listed.targets[0].auto_fix,
+                crate::remediation::AutoFixAvailability::Available
+            );
+            let review = controller
+                .prepare_auto_fix_burn_check_target(&store, &listed.targets[0].action_id)
+                .unwrap();
+            assert_eq!(review.current_value, "openai/gpt-5.5");
+            assert_eq!(review.proposed_value, "openai/gpt-5.6-sol");
+            let applied = controller
+                .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
+                .unwrap();
+            assert_eq!(
+                controller
+                    .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
+                    .unwrap(),
+                applied
+            );
+            assert!(
+                std::fs::read_to_string(config_path)
+                    .unwrap()
+                    .contains("gpt-5.6-sol")
+            );
+        }
+    }
+
+    #[test]
+    fn old_model_evaluation_defers_recurrence_and_keeps_cumulative_savings() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_attributed_model_turn(
+            data_dir.path(),
+            &store,
+            "old-before-fix",
+            101,
+            101_000,
+            "claude-opus-4-8",
+        );
+        publish_attributed_model_turn(
+            data_dir.path(),
+            &store,
+            "fix",
+            102,
+            102_000,
+            "claude-opus-5",
+        );
+        let definition = WatchDefinition {
+            version: 1,
+            detector: "old_model_usage".into(),
+            canonical_identity: "identity".into(),
+            source_format: "ClaudeJsonl".into(),
+            workspace_key: None,
+            workspace_relative_cwd: None,
+            provider: Some("anthropic".into()),
+            api: Some("messages".into()),
+            old_model: Some("claude-opus-4-8".into()),
+            replacement: Some("claude-opus-5".into()),
+            resource: None,
+            physical_target_key: Some("physical".into()),
+            config_setting: Some("model".into()),
+            config_expected_value: Some("claude-opus-4-8".into()),
+            config_proposed_value: Some("claude-opus-5".into()),
+            verification_method_revision: 1,
+            remediation_policy_revision: Some(1),
+            savings_method_revision: 1,
+            pricing_revision: Some("test-pricing".into()),
+            old_pricing: Some(antiburn_local::pricing::ModelPricing {
+                input_cost_per_token: 2.0,
+                output_cost_per_token: 0.0,
+                cache_read_cost_per_token: 0.0,
+                cache_write_cost_per_token: 0.0,
+            }),
+            replacement_pricing: Some(antiburn_local::pricing::ModelPricing {
+                input_cost_per_token: 1.0,
+                output_cost_per_token: 0.0,
+                cache_read_cost_per_token: 0.0,
+                cache_write_cost_per_token: 0.0,
+            }),
+            catalog_revision: Some(ReportCatalogs::default().revision),
+            target_model: None,
+            target_control: None,
+        };
+        rusqlite::Connection::open(crate::store::database_path(data_dir.path()))
+            .unwrap()
+            .execute(
+                "INSERT INTO remediation (remediation_id, target_key, environment_key, agent,
+                    scope_kind, scope_key, state, dirty_revision, evaluated_revision,
+                    definition_json, result_json, created_at_epoch, updated_at_epoch,
+                    effective_boundary_ms)
+                 VALUES ('interval', 'target', 'native', 'claude-code', 'global', 'physical',
+                    'watching', 1, 0, ?1,
+                    '{\"version\":1,\"verification\":{\"status\":\"watching\"},\"savings\":{\"status\":\"pending\"}}',
+                    100, 100, 100000)",
+                [serde_json::to_string(&definition).unwrap()],
+            )
+            .unwrap();
+        store
+            .upsert_remediation_display_snapshot(&crate::store::RemediationDisplaySnapshot {
+                remediation_id: "interval".into(),
+                origin: "passive".into(),
+                display_snapshot_json: serde_json::json!({
+                    "version": 1,
+                    "findingId": "target",
+                    "display": {
+                        "resourceKind": "model",
+                        "resourceIdentity": "claude-opus-4-8",
+                        "currentValue": "claude-opus-4-8",
+                        "replacementValue": "claude-opus-5",
+                        "scopeKind": "global",
+                        "quantity": 1,
+                        "quantityUnit": "turns",
+                        "observationCount": 1,
+                        "firstObservedAtMs": 101000,
+                        "lastObservedAtMs": 101000,
+                        "estimateMethod": "oldModelPriceDifference",
+                        "verificationLimit": "freshEvidenceFromSameSourceAndTarget"
+                    }
+                })
+                .to_string(),
+                effective_boundary_ms: 100_000,
+                verified_boundary_ms: None,
+                recurred_boundary_ms: None,
+            })
+            .unwrap();
+
+        let record = store.remediation("interval").unwrap().unwrap();
+        assert!(
+            crate::remediation::evaluate_dirty_remediation(data_dir.path(), &store, &record, 102)
+                .unwrap()
+        );
+        let fixed = store.remediation("interval").unwrap().unwrap();
+        assert_eq!(fixed.state, crate::store::RemediationState::Fixed);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&fixed.result_json).unwrap()["observedAtMs"],
+            102_000
+        );
+
+        store
+            .lock()
+            .execute(
+                "UPDATE remediation SET dirty_revision = dirty_revision + 1 WHERE remediation_id = 'interval'",
+                [],
+            )
+            .unwrap();
+        let fixed_without_new_evidence = store.remediation("interval").unwrap().unwrap();
+        assert!(
+            crate::remediation::evaluate_dirty_remediation(
+                data_dir.path(),
+                &store,
+                &fixed_without_new_evidence,
+                102,
+            )
+            .unwrap()
+        );
+        let fixed_without_new_evidence = store.remediation("interval").unwrap().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&fixed_without_new_evidence.result_json)
+                .unwrap()["verification"]["status"],
+            "fixed"
+        );
+
+        publish_attributed_model_turn(
+            data_dir.path(),
+            &store,
+            "more-savings",
+            103,
+            103_000,
+            "claude-opus-5",
+        );
+        let fixed = store.remediation("interval").unwrap().unwrap();
+        assert_eq!(fixed.verified_at_epoch, Some(102));
+        assert!(fixed.updated_at_epoch >= 104);
+        assert!(
+            crate::remediation::evaluate_dirty_remediation(data_dir.path(), &store, &fixed, 103)
+                .unwrap()
+        );
+        let cumulative = store.remediation("interval").unwrap().unwrap();
+        let cumulative_result: serde_json::Value =
+            serde_json::from_str(&cumulative.result_json).unwrap();
+        assert_eq!(
+            cumulative_result["savings"]["apiEquivalentCostAvoidedUsd"],
+            20.0
+        );
+        assert_eq!(cumulative_result["verification"]["status"], "fixed");
+
+        publish_attributed_model_turn(
+            data_dir.path(),
+            &store,
+            "recurrence",
+            104,
+            104_000,
+            "claude-opus-4-8",
+        );
+        let fixed = store.remediation("interval").unwrap().unwrap();
+        assert_eq!(fixed.verified_at_epoch, Some(102));
+        assert!(fixed.updated_at_epoch >= 104);
+        let snapshot = old_model_remediation_evidence(
+            data_dir.path(),
+            &fixed,
+            &definition,
+            100_000,
+            Some(102_000),
+        )
+        .unwrap();
+        assert_eq!(snapshot.recurrence_ms, Some(104_000));
+        assert!(
+            crate::remediation::evaluate_dirty_remediation(data_dir.path(), &store, &fixed, 104)
+                .unwrap()
+        );
+        let recurred = store.remediation("interval").unwrap().unwrap();
+        let recurred_result: serde_json::Value =
+            serde_json::from_str(&recurred.result_json).unwrap();
+        assert_eq!(recurred.state, crate::store::RemediationState::Recurred);
+        assert_eq!(recurred_result["observedAtMs"], 104_000);
+        assert_eq!(
+            recurred_result["savings"]["apiEquivalentCostAvoidedUsd"],
+            20.0
+        );
+        let retained_contribution = store.remediation_contributions(1_000).unwrap();
+        assert_eq!(retained_contribution.len(), 1);
+        for session_id in ["old-before-fix", "fix", "more-savings", "recurrence"] {
+            assert!(
+                store
+                    .delete_session(&SessionKey::new("native", "claude-code", session_id))
+                    .unwrap()
+            );
+        }
+        store
+            .lock()
+            .execute(
+                "UPDATE remediation SET dirty_revision = dirty_revision + 1
+                  WHERE remediation_id = 'interval'",
+                [],
+            )
+            .unwrap();
+        let retained = store.remediation("interval").unwrap().unwrap();
+        assert!(
+            crate::remediation::evaluate_dirty_remediation(
+                data_dir.path(),
+                &store,
+                &retained,
+                105,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            store.remediation("interval").unwrap().unwrap().state,
+            crate::store::RemediationState::Recurred
+        );
+        assert_eq!(
+            store.remediation_contributions(1_000).unwrap(),
+            retained_contribution
+        );
+    }
+
+    fn publish_mcp_findings(
+        store: &Store,
+        session_id: &str,
+        started_at_epoch: i64,
+        servers: &[&str],
+    ) {
+        publish_evidence_with_mutator(
+            store,
+            session_id,
+            started_at_epoch,
+            PublishedEvidence::Ready,
+            1,
+            |evidence| {
+                let EvidenceValue::Complete(eligibility) = &mut evidence.eligibility else {
+                    panic!("the Claude fixture must have complete eligibility");
+                };
+                eligibility.assistant_turns = 1;
+                let EvidenceValue::Complete(sources) = &mut evidence.context_sources else {
+                    panic!("the Claude fixture must have complete context sources");
+                };
+                sources.mcp_coverage = EvidenceValue::Complete(());
+                for server in servers {
+                    sources.mcp_servers.insert(
+                        (*server).to_owned(),
+                        LoadedSource {
+                            description: None,
+                            configured: true,
+                            available: true,
+                            injected: true,
+                            invoked: false,
+                            token_count: None,
+                            origin: EvidenceValue::Unsupported,
+                        },
+                    );
+                }
+            },
+        );
+    }
+
+    fn publish_invoked_mcp(store: &Store, session_id: &str, started_at_epoch: i64, server: &str) {
+        publish_evidence_with_mutator(
+            store,
+            session_id,
+            started_at_epoch,
+            PublishedEvidence::Ready,
+            1,
+            |evidence| {
+                let EvidenceValue::Complete(eligibility) = &mut evidence.eligibility else {
+                    panic!("the Claude fixture must have complete eligibility");
+                };
+                eligibility.assistant_turns = 1;
+                let EvidenceValue::Complete(sources) = &mut evidence.context_sources else {
+                    panic!("the Claude fixture must have complete context sources");
+                };
+                sources.mcp_coverage = EvidenceValue::Complete(());
+                sources.mcp_servers.insert(
+                    server.to_owned(),
+                    LoadedSource {
+                        description: None,
+                        configured: true,
+                        available: true,
+                        injected: true,
+                        invoked: true,
+                        token_count: None,
+                        origin: EvidenceValue::Unsupported,
+                    },
+                );
+            },
+        );
+    }
+
+    fn publish_reasoning_at_cwd(
+        store: &Store,
+        session_id: &str,
+        started_at_epoch: i64,
+        observed_at_ms: i64,
+        cwd: &Path,
+        effort: &str,
+    ) {
+        publish_evidence_with_mutators(
+            store,
+            session_id,
+            started_at_epoch,
+            PublishedEvidence::Ready,
+            0,
+            |session| session.cwd = Some(cwd.to_string_lossy().into_owned()),
+            |evidence| {
+                evidence.time_range = EvidenceValue::Complete(SessionTimeRange {
+                    first_ts_ms: observed_at_ms,
+                    last_ts_ms: observed_at_ms,
+                    timestamped_turns: 2,
+                });
+                let EvidenceValue::Complete(eligibility) = &mut evidence.eligibility else {
+                    panic!("the Claude fixture must have complete eligibility");
+                };
+                eligibility.assistant_turns = 2;
+                let EvidenceValue::Complete(models) = &mut evidence.models else {
+                    panic!("the Claude fixture must have complete model evidence");
+                };
+                models.effort_signal = SignalCoverage {
+                    eligible_turns: 2,
+                    present_turns: 2,
+                };
+                models.control_observations = vec![ModelControlObservation {
+                    provider: Some("anthropic".into()),
+                    api: Some("messages".into()),
+                    model: "claude-opus-5".into(),
+                    effort: Some(effort.into()),
+                    speed: None,
+                    last_ts_ms: observed_at_ms,
+                    turns: TurnCounts {
+                        main_loop: 2,
+                        delegated: 0,
+                    },
+                }];
+            },
+        );
+    }
+
+    #[cfg(not(windows))]
+    struct ReasoningFixture {
+        agent: AgentKind,
+        capabilities: SourceCapabilities,
+        path: &'static str,
+        config: &'static str,
+        provider: &'static str,
+        api: &'static str,
+        model: &'static str,
+        effort: &'static str,
+    }
+
+    #[cfg(not(windows))]
+    fn publish_reasoning_for_agent(
+        store: &Store,
+        home: &Path,
+        fixture: &ReasoningFixture,
+        session_id: &str,
+    ) {
+        publish_evidence_for_agent(
+            store,
+            EvidenceFixture {
+                agent: fixture.agent.slug(),
+                capabilities: fixture.capabilities,
+                session_id,
+                started_at_epoch: 120,
+                status: PublishedEvidence::Ready,
+                turn_count: 0,
+            },
+            |_| {},
+            |evidence| {
+                evidence.time_range = EvidenceValue::Complete(SessionTimeRange {
+                    first_ts_ms: 120_000,
+                    last_ts_ms: 120_000,
+                    timestamped_turns: 2,
+                });
+                let EvidenceValue::Complete(eligibility) = &mut evidence.eligibility else {
+                    panic!("the fixture must have complete eligibility");
+                };
+                eligibility.assistant_turns = 2;
+                let EvidenceValue::Complete(models) = &mut evidence.models else {
+                    panic!("the fixture must have complete model evidence");
+                };
+                models.effort_signal = SignalCoverage {
+                    eligible_turns: 2,
+                    present_turns: 2,
+                };
+                models.control_observations = vec![ModelControlObservation {
+                    provider: Some(fixture.provider.into()),
+                    api: Some(fixture.api.into()),
+                    model: fixture.model.into(),
+                    effort: Some(fixture.effort.into()),
+                    speed: None,
+                    last_ts_ms: 120_000,
+                    turns: TurnCounts {
+                        main_loop: 2,
+                        delegated: 0,
+                    },
+                }];
+            },
+        );
+        let key = SessionKey::new("native", fixture.agent.slug(), session_id);
+        let evidence_json: String = store
+            .lock()
+            .query_row(
+                "SELECT evidence_json FROM session_evidence
+                  WHERE environment_key = 'native' AND agent = ?1 AND session_id = ?2",
+                rusqlite::params![fixture.agent.slug(), session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let attribution = crate::remediation::publication_config_attribution_with_home(
+            store,
+            &key,
+            PublishedEvidence::Ready,
+            &evidence_json,
+            home,
+        )
+        .unwrap();
+        let reasoning = attribution.reasoning.expect("reasoning attribution");
+        store
+            .lock()
+            .execute(
+                "UPDATE session_evidence
+                    SET effective_reasoning_target_hash = ?3,
+                        effective_reasoning_scope = ?4,
+                        effective_reasoning = ?5
+                  WHERE environment_key = 'native' AND agent = ?1 AND session_id = ?2",
+                rusqlite::params![
+                    fixture.agent.slug(),
+                    session_id,
+                    reasoning.0,
+                    reasoning.1,
+                    reasoning.2
+                ],
+            )
+            .unwrap();
+    }
+
+    fn requeue_without_source_change(store: &Store, session_id: &str) {
+        store
+            .lock()
+            .execute(
+                "UPDATE session_evidence SET status = 'pending'
+                  WHERE environment_key = 'native' AND agent = 'claude-code'
+                    AND session_id = ?1",
+                [session_id],
+            )
+            .unwrap();
+    }
+
+    fn trusted_repository(root: &Path, key: &str) -> RepositoryRecord {
+        RepositoryRecord {
+            key: key.into(),
+            repo_name: key.into(),
+            full_name: format!("owner/{key}"),
+            status: "accessible".into(),
+            repo_root: Some(root.to_string_lossy().into_owned()),
+            suspected_path: None,
+            worktree_count: 1,
+            session_count: 1,
+            wsl_distro: None,
+            enabled: true,
+        }
+    }
+
+    fn finding_request() -> CurrentFindingsRequest {
+        CurrentFindingsRequest {
+            environment_key: "native".to_owned(),
+            window: request().window,
+            detector: DetectorId::UnusedMcpServers,
+        }
+    }
+
+    #[test]
+    fn current_finding_reads_evidence_and_analysis_from_one_snapshot() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_mcp_findings(&store, "snapshot", 120, &["server-a"]);
+        let writer = Store::open(data_dir.path()).unwrap();
+        let mut changed = false;
+
+        let page = list_current_findings_on_snapshot(
+            data_dir.path(),
+            finding_request(),
+            &mut || {
+                if !changed {
+                    change_source(&writer, "snapshot", &[]);
+                    publish_mcp_findings(&writer, "snapshot", 120, &["server-b"]);
+                    changed = true;
+                }
+            },
+            &mut || {},
+        )
+        .unwrap();
+
+        assert_eq!(page.findings.len(), 1);
+        assert_eq!(page.findings[0].source_generation, 1);
+        assert_eq!(
+            page.findings[0].source_fingerprint.as_deref(),
+            Some("sv1:snapshot")
+        );
+        assert_eq!(
+            page.findings[0].processed_fingerprint.as_deref(),
+            Some("sv1:snapshot")
+        );
+        assert_eq!(page.findings[0].parser_revision, PARSER_REVISION);
+        assert_eq!(page.findings[0].analyzer_revision, ANALYZER_REVISION);
+        assert_eq!(
+            page.findings[0].evidence_schema_revision,
+            EVIDENCE_SCHEMA_REVISION
+        );
+        assert_eq!(
+            page.findings[0].metrics_schema_revision,
+            METRICS_SCHEMA_REVISION
+        );
+        assert_eq!(
+            page.findings[0].catalog_revision,
+            ReportCatalogs::default().revision
+        );
+        assert_eq!(page.findings[0].started_at_epoch, 120);
+        assert!(page.findings[0].workspace_candidate().is_none());
+        let next = list_current_findings(data_dir.path(), finding_request()).unwrap();
+        let antiburn_local::remediation::FindingCause::UnusedMcpServer { server, .. } =
+            next.findings[0].finding.cause()
+        else {
+            panic!("the MCP detector must return an MCP cause");
+        };
+        assert_eq!(server, "server-b");
+        assert!(next.findings[0].source_generation > page.findings[0].source_generation);
+    }
+
+    #[test]
+    fn publication_skips_permanently_unverifiable_passive_findings() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_mcp_findings(&store, "historical", 120, &["server-a"]);
+        let count: i64 = store
+            .lock()
+            .query_row("SELECT COUNT(*) FROM remediation", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn passive_and_controller_targets_share_the_longest_trusted_root_and_group_quantities() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        let parent = data_dir.path().join("work");
+        let project = parent.join("project");
+        let nested = project.join("src/module");
+        std::fs::create_dir_all(&nested).unwrap();
+        store
+            .replace_repositories(&[
+                trusted_repository(&parent, "parent"),
+                trusted_repository(&project, "project"),
+            ])
+            .unwrap();
+
+        publish_reasoning_at_cwd(&store, "first", 120, 120_000, &nested, "max");
+        publish_reasoning_at_cwd(&store, "second", 121, 121_000, &nested, "max");
+        let passive = store
+            .lock()
+            .query_row(
+                "SELECT remediation_id, scope_kind, scope_key FROM remediation",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(passive.1, "project");
+        assert_eq!(
+            passive.2,
+            crate::remediation::hashed_workspace_key(&store, &project.canonicalize().unwrap())
+                .unwrap()
+        );
+
+        let controller = crate::remediation::RemediationController::new(data_dir.path().to_owned());
+        let listed = controller
+            .list_burn_check_targets(
+                &store,
+                DetectorId::ModelOverthinking,
+                crate::remediation::BurnCheckTargetContext {
+                    environment_key: "native".into(),
+                    window: request().window,
+                },
+            )
+            .unwrap();
+        assert_eq!(listed.targets.len(), 1);
+        assert_eq!(
+            listed.targets[0].watch.as_ref().unwrap().watch_id,
+            passive.0
+        );
+        assert_eq!(listed.targets[0].occurrences, 2);
+        assert_eq!(listed.targets[0].display.quantity, Some(4));
+    }
+
+    #[test]
+    fn generic_corrections_revoke_fixed_proof_and_keep_recurred_attempts_closed() {
+        for recur_before_correction in [false, true] {
+            let data_dir = TempDir::new().unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            let project = data_dir.path().join("project");
+            std::fs::create_dir(&project).unwrap();
+            store
+                .replace_repositories(&[trusted_repository(&project, "project")])
+                .unwrap();
+
+            publish_reasoning_at_cwd(&store, "baseline", 120, 120_000, &project, "max");
+            let boundary_ms: i64 = store
+                .lock()
+                .query_row("SELECT effective_boundary_ms FROM remediation", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            let proof_start = boundary_ms.div_euclid(1_000).saturating_add(1);
+            let proof_ms = proof_start.saturating_mul(1_000).saturating_add(1);
+            publish_reasoning_at_cwd(&store, "proof", proof_start, proof_ms, &project, "medium");
+            let proof_assessments = remediation_assessments(
+                data_dir.path(),
+                "native",
+                "claude-code",
+                DetectorId::ModelOverthinking,
+                boundary_ms,
+            )
+            .unwrap();
+            assert_eq!(proof_assessments.assessments.len(), 1);
+            assert_eq!(
+                proof_assessments.assessments[0].assessment,
+                FindingAssessment::Clean
+            );
+            let dirty = store.next_dirty_remediation().unwrap().unwrap();
+            assert!(
+                crate::remediation::evaluate_dirty_remediation(
+                    data_dir.path(),
+                    &store,
+                    &dirty,
+                    proof_start,
+                )
+                .unwrap()
+            );
+            let fixed = store.remediation(&dirty.remediation_id).unwrap().unwrap();
+            assert_eq!(
+                fixed.state,
+                crate::store::RemediationState::Fixed,
+                "{}",
+                fixed.result_json
+            );
+            assert_eq!(store.remediation_contributions(1_000).unwrap().len(), 1);
+
+            let corrected_session = if recur_before_correction {
+                let recurrence_start = proof_start.saturating_add(1);
+                let recurrence_ms = recurrence_start.saturating_mul(1_000).saturating_add(1);
+                publish_reasoning_at_cwd(
+                    &store,
+                    "recurrence",
+                    recurrence_start,
+                    recurrence_ms,
+                    &project,
+                    "max",
+                );
+                let dirty = store.next_dirty_remediation().unwrap().unwrap();
+                assert!(
+                    crate::remediation::evaluate_dirty_remediation(
+                        data_dir.path(),
+                        &store,
+                        &dirty,
+                        recurrence_start,
+                    )
+                    .unwrap()
+                );
+                assert_eq!(
+                    store
+                        .remediation(&dirty.remediation_id)
+                        .unwrap()
+                        .unwrap()
+                        .state,
+                    crate::store::RemediationState::Recurred
+                );
+                ("recurrence", recurrence_start, recurrence_ms, "medium")
+            } else {
+                ("proof", proof_start, proof_ms, "max")
+            };
+            requeue_without_source_change(&store, corrected_session.0);
+            publish_reasoning_at_cwd(
+                &store,
+                corrected_session.0,
+                corrected_session.1,
+                corrected_session.2,
+                &project,
+                corrected_session.3,
+            );
+
+            let dirty = store.next_dirty_remediation().unwrap().unwrap();
+            let terminal_state = dirty.state;
+            assert!(
+                crate::remediation::evaluate_dirty_remediation(
+                    data_dir.path(),
+                    &store,
+                    &dirty,
+                    corrected_session.1,
+                )
+                .unwrap()
+            );
+            let corrected = store.remediation(&dirty.remediation_id).unwrap().unwrap();
+            let result: serde_json::Value = serde_json::from_str(&corrected.result_json).unwrap();
+            assert_eq!(corrected.state, terminal_state);
+            if terminal_state == crate::store::RemediationState::Recurred {
+                assert_eq!(result["verification"]["status"], "recurred");
+                assert_eq!(store.remediation_contributions(1_000).unwrap().len(), 1);
+            } else {
+                assert_eq!(result["verification"]["status"], "verificationUnavailable");
+                assert!(store.remediation_contributions(1_000).unwrap().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn controller_action_joins_the_attempt_created_by_publication() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        let project = data_dir.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        store
+            .replace_repositories(&[trusted_repository(&project, "project")])
+            .unwrap();
+        publish_reasoning_at_cwd(&store, "joined", 120, 120_000, &project, "max");
+        let passive_id: String = store
+            .lock()
+            .query_row("SELECT remediation_id FROM remediation", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let controller = crate::remediation::RemediationController::new(data_dir.path().to_owned());
+
+        let listed = controller
+            .list_burn_check_targets(
+                &store,
+                DetectorId::ModelOverthinking,
+                crate::remediation::BurnCheckTargetContext {
+                    environment_key: "native".into(),
+                    window: request().window,
+                },
+            )
+            .unwrap();
+        assert_eq!(listed.targets.len(), 1);
+        assert_eq!(
+            listed.targets[0].watch.as_ref().unwrap().watch_id,
+            passive_id
+        );
+
+        let action = controller
+            .copy_prompt_fix_burn_check_target(&store, &listed.targets[0].action_id)
+            .unwrap();
+        assert!(action.prompt.contains("Remediation reference: ABR-"));
+        assert_eq!(action.watch.watch_id, passive_id);
+        assert_eq!(
+            action.watch.origin,
+            crate::remediation::RemediationOrigin::Passive
+        );
+        let joined = store.remediation(&passive_id).unwrap().unwrap();
+        assert!(joined.action_joined_at_ms.is_some());
+        let count: i64 = store
+            .lock()
+            .query_row("SELECT COUNT(*) FROM remediation", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn check_prompt_batch_revalidates_and_records_all_selected_targets() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_mcp_findings(&store, "first", 120, &["server-a", "server-b"]);
+        let controller = crate::remediation::RemediationController::new(data_dir.path().to_owned());
+        let listed = controller
+            .list_burn_check_targets(
+                &store,
+                DetectorId::UnusedMcpServers,
+                crate::remediation::BurnCheckTargetContext {
+                    environment_key: "native".into(),
+                    window: request().window,
+                },
+            )
+            .unwrap();
+        let action_ids = listed
+            .targets
+            .iter()
+            .map(|target| target.action_id.clone())
+            .collect::<Vec<_>>();
+
+        let prompt = controller
+            .copy_prompt_fix_burn_check_targets(&store, &action_ids)
+            .unwrap()
+            .prompt;
+
+        assert_eq!(prompt.matches("Exact target ").count(), action_ids.len());
+        assert_eq!(
+            store
+                .lock()
+                .query_row("SELECT COUNT(*) FROM remediation", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            i64::try_from(action_ids.len()).unwrap()
+        );
+        assert_eq!(
+            controller.copy_prompt_fix_burn_check_targets(&store, &[]),
+            Err(crate::remediation::ControllerError::CheckPromptUnavailable)
+        );
+    }
+
+    #[test]
+    fn invoked_named_resource_in_a_later_clean_assessment_stays_verification_unavailable() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_mcp_findings(&store, "baseline", 120, &["server-a"]);
+        let controller = crate::remediation::RemediationController::new(data_dir.path().to_owned());
+        let listed = controller
+            .list_burn_check_targets(
+                &store,
+                DetectorId::UnusedMcpServers,
+                crate::remediation::BurnCheckTargetContext {
+                    environment_key: "native".into(),
+                    window: request().window,
+                },
+            )
+            .unwrap();
+        let action = controller
+            .copy_prompt_fix_burn_check_target(&store, &listed.targets[0].action_id)
+            .unwrap();
+        assert_eq!(
+            action.watch.verification,
+            crate::remediation::VerificationStatus::VerificationUnavailable
+        );
+
+        publish_invoked_mcp(&store, "later-clean", 121, "server-a");
+        let dirty = store.next_dirty_remediation().unwrap().unwrap();
+        assert!(
+            crate::remediation::evaluate_dirty_remediation(data_dir.path(), &store, &dirty, 122,)
+                .unwrap()
+        );
+        let retained = store.remediation(&dirty.remediation_id).unwrap().unwrap();
+        assert_eq!(retained.state, crate::store::RemediationState::Watching);
+        let result: serde_json::Value = serde_json::from_str(&retained.result_json).unwrap();
+        assert_eq!(result["verification"]["status"], "verificationUnavailable");
+        assert!(store.remediation_contributions(1_000).unwrap().is_empty());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn reasoning_targets_list_and_prepare_for_supported_agents() {
+        let cases = [
+            ReasoningFixture {
+                agent: AgentKind::Claude,
+                capabilities: SourceCapabilities::claude(),
+                path: ".claude/settings.json",
+                config: r#"{"model":"claude-opus-5","effortLevel":"max"}"#,
+                provider: "anthropic",
+                api: "messages",
+                model: "claude-opus-5",
+                effort: "max",
+            },
+            ReasoningFixture {
+                agent: AgentKind::Codex,
+                capabilities: SourceCapabilities::codex(),
+                path: ".codex/config.toml",
+                config: "model = \"gpt-5.6-sol\"\nmodel_reasoning_effort = \"xhigh\"\n",
+                provider: "openai",
+                api: "responses",
+                model: "gpt-5.6-sol",
+                effort: "xhigh",
+            },
+            ReasoningFixture {
+                agent: AgentKind::Pi,
+                capabilities: SourceCapabilities::pi(),
+                path: ".pi/agent/settings.json",
+                config: r#"{"defaultProvider":"openai","defaultModel":"gpt-5.6","defaultThinkingLevel":"max"}"#,
+                provider: "openai",
+                api: "openai-responses",
+                model: "gpt-5.6",
+                effort: "max",
+            },
+        ];
+
+        for case in cases {
+            let data_dir = TempDir::new().unwrap();
+            let home = data_dir.path().join("home");
+            let config_path = home.join(case.path);
+            std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+            std::fs::write(&config_path, case.config).unwrap();
+            let store = Store::open(data_dir.path()).unwrap();
+            publish_reasoning_for_agent(&store, &home, &case, "reasoning");
+            let controller =
+                crate::remediation::RemediationController::new(data_dir.path().to_owned());
+            let listed = controller
+                .list_burn_check_targets_with_home(
+                    &store,
+                    DetectorId::ModelOverthinking,
+                    crate::remediation::BurnCheckTargetContext {
+                        environment_key: "native".into(),
+                        window: request().window,
+                    },
+                    &home,
+                )
+                .unwrap();
+
+            assert_eq!(listed.targets.len(), 1, "{:?}", case.agent);
+            assert_eq!(
+                listed.targets[0].auto_fix,
+                crate::remediation::AutoFixAvailability::Available,
+                "{:?}",
+                case.agent
+            );
+            let review = controller
+                .prepare_auto_fix_burn_check_target(&store, &listed.targets[0].action_id)
+                .unwrap();
+            assert_eq!(
+                review.setting,
+                crate::remediation::AutoFixSetting::Reasoning
+            );
+            assert_eq!(review.current_value, case.effort);
+            assert_eq!(review.proposed_value, "medium");
+            let applied = controller
+                .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
+                .unwrap();
+            assert_eq!(
+                controller
+                    .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
+                    .unwrap(),
+                applied
+            );
+            assert!(
+                std::fs::read_to_string(&config_path)
+                    .unwrap()
+                    .contains("medium")
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn action_origin_watching_watch_blocks_prepare_while_passive_watches_can_upgrade() {
+        let data_dir = TempDir::new().unwrap();
+        let home = data_dir.path().join("home");
+        let case = ReasoningFixture {
+            agent: AgentKind::Pi,
+            capabilities: SourceCapabilities::pi(),
+            path: ".pi/agent/settings.json",
+            config: r#"{"defaultProvider":"openai","defaultModel":"gpt-5.6","defaultThinkingLevel":"max"}"#,
+            provider: "openai",
+            api: "openai-responses",
+            model: "gpt-5.6",
+            effort: "max",
+        };
+        let config_path = home.join(case.path);
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(&config_path, case.config).unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_reasoning_for_agent(&store, &home, &case, "reasoning");
+        let controller = crate::remediation::RemediationController::new(data_dir.path().to_owned());
+        let initial = controller
+            .list_burn_check_targets_with_home(
+                &store,
+                DetectorId::ModelOverthinking,
+                crate::remediation::BurnCheckTargetContext {
+                    environment_key: "native".into(),
+                    window: request().window,
+                },
+                &home,
+            )
+            .unwrap();
+        controller
+            .copy_prompt_fix_burn_check_target(&store, &initial.targets[0].action_id)
+            .unwrap();
+        let listed = controller
+            .list_burn_check_targets_with_home(
+                &store,
+                DetectorId::ModelOverthinking,
+                crate::remediation::BurnCheckTargetContext {
+                    environment_key: "native".into(),
+                    window: request().window,
+                },
+                &home,
+            )
+            .unwrap();
+        assert_eq!(
+            listed.targets[0].auto_fix,
+            crate::remediation::AutoFixAvailability::Unavailable(
+                crate::remediation::AutoFixUnavailableReason::ActiveWatch
+            )
+        );
+        assert_eq!(
+            controller.prepare_auto_fix_burn_check_target(&store, &listed.targets[0].action_id),
+            Err(crate::remediation::ControllerError::AutoFixUnavailable(
+                crate::remediation::AutoFixUnavailableReason::ActiveWatch
+            ))
+        );
+    }
+
+    #[test]
+    fn current_findings_bound_no_match_session_scans_and_continue() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        for index in 0..=CURRENT_FINDING_SESSION_SCAN_BUDGET {
+            publish_ready(&store, &format!("no-match-{index:03}"), 120);
+        }
+        publish_mcp_findings(&store, "older-finding", 110, &["server-a"]);
+        let mut first_scan_count = 0;
+
+        let first = list_current_findings_on_snapshot(
+            data_dir.path(),
+            finding_request(),
+            &mut || first_scan_count += 1,
+            &mut || panic!("the MCP detector must not load turn evidence"),
+        )
+        .unwrap();
+
+        assert!(first.findings.is_empty());
+        assert_eq!(first_scan_count, CURRENT_FINDING_SESSION_SCAN_BUDGET + 1);
+        assert!(first.truncated);
+
+        let controller = crate::remediation::RemediationController::new(data_dir.path().to_owned());
+        let fallback = controller
+            .copy_prompt_fix_burn_check(
+                &store,
+                DetectorId::UnusedMcpServers,
+                crate::remediation::BurnCheckTargetContext {
+                    environment_key: "native".into(),
+                    window: request().window,
+                },
+            )
+            .unwrap();
+        assert!(fallback.prompt.contains("Failed check\nUnused MCP servers"));
+        assert!(fallback.prompt.contains(
+            "Representative session evidence (inspect only; not configuration edit targets):\n- \"/home/avery/.claude/older-finding.jsonl\""
+        ));
+
+        let assessments = remediation_assessments(
+            data_dir.path(),
+            "native",
+            "claude-code",
+            DetectorId::UnusedMcpServers,
+            -1,
+        )
+        .unwrap();
+        assert_eq!(
+            assessments.assessments.len(),
+            CURRENT_FINDING_SESSION_SCAN_BUDGET
+        );
+        assert!(assessments.truncated);
+    }
+
+    #[test]
+    fn check_level_prompt_is_denied_without_a_failed_check_or_when_a_target_exists() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        let controller = crate::remediation::RemediationController::new(data_dir.path().to_owned());
+        let context = crate::remediation::BurnCheckTargetContext {
+            environment_key: "native".into(),
+            window: request().window,
+        };
+        assert_eq!(
+            controller.copy_prompt_fix_burn_check(
+                &store,
+                DetectorId::UnusedMcpServers,
+                context.clone()
+            ),
+            Err(crate::remediation::ControllerError::CheckPromptUnavailable)
+        );
+
+        publish_mcp_findings(&store, "current-finding", 120, &["server-a"]);
+        assert_eq!(
+            controller.copy_prompt_fix_burn_check(&store, DetectorId::UnusedMcpServers, context),
+            Err(crate::remediation::ControllerError::CheckPromptUnavailable)
+        );
+    }
+
+    #[test]
+    fn non_token_detector_skips_turn_evidence_during_listing_and_revalidation() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_mcp_findings(&store, "target", 120, &["target-server"]);
+        let mut turn_probes = 0;
+
+        let page = list_current_findings_on_snapshot(
+            data_dir.path(),
+            finding_request(),
+            &mut || {},
+            &mut || turn_probes += 1,
+        )
+        .unwrap();
+        assert_eq!(page.findings.len(), 1);
+        assert_eq!(turn_probes, 0);
+
+        assert!(
+            revalidate_current_finding_on_snapshot(data_dir.path(), &page.findings[0], &mut || {
+                turn_probes += 1
+            },)
+            .unwrap()
+        );
+        assert_eq!(turn_probes, 0);
+    }
+
+    #[test]
+    fn current_findings_reject_changed_generations_and_pending_evidence() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_mcp_findings(&store, "current", 120, &["current-server"]);
+        publish_mcp_findings(&store, "changed", 121, &["changed-server"]);
+        change_source(&store, "changed", &[]);
+        publish_mcp_findings(&store, "pending", 122, &["pending-server"]);
+        change_source(&store, "pending", &["claude-code"]);
+
+        let page = list_current_findings(data_dir.path(), finding_request()).unwrap();
+
+        assert_eq!(page.findings.len(), 1);
+        assert_eq!(page.findings[0].session_id, "current");
+        assert!(!page.truncated);
+    }
+
+    #[test]
+    fn revalidation_requires_the_exact_detector_cause() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        publish_mcp_findings(&store, "target", 120, &["target-server"]);
+        publish_mcp_findings(&store, "other", 121, &["other-server"]);
+        let page = list_current_findings(data_dir.path(), finding_request()).unwrap();
+        let target = page
+            .findings
+            .iter()
+            .find(|finding| finding.session_id == "target")
+            .unwrap();
+        let other = page
+            .findings
+            .iter()
+            .find(|finding| finding.session_id == "other")
+            .unwrap();
+
+        assert!(revalidate_current_finding(data_dir.path(), target).unwrap());
+        let mut wrong_cause = target.clone();
+        wrong_cause.finding = other.finding.clone();
+        assert!(!revalidate_current_finding(data_dir.path(), &wrong_cause).unwrap());
     }
 
     #[test]

@@ -28,44 +28,115 @@
 //!   field. The rule skips each no-signal turn and reports the signal
 //!   as missing only when no turn carries an effort value.
 
-use std::collections::BTreeSet;
-
 use crate::analysis::SessionEvidence;
+use crate::model_catalog::{
+    ModelCatalog, ReviewedModelCatalog, Support, fixed_route_target, model_control_target,
+};
+use crate::remediation::FindingCause;
 
-use super::{ModelFamily, Observation, ReportCatalogs, model_family, observed};
+use super::{Observation, ReportCatalogs, observed};
 
 pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) -> Observation {
     if let Some(models) = observed(&evidence.models) {
-        let present_families: BTreeSet<ModelFamily> = models
-            .by_model
-            .keys()
-            .map(|model| model_family(model))
-            .collect();
-
+        let catalog = ReviewedModelCatalog::new(catalogs);
         let mut contract_incomplete = false;
-        for (tier, turns) in &models.effort_tiers {
+        if !models.control_observations.is_empty() {
+            for observation in &models.control_observations {
+                let Some(effort) = observation.effort.as_ref() else {
+                    continue;
+                };
+                if observation.turns.main_loop + observation.turns.delegated == 0 {
+                    continue;
+                }
+                let mut target = model_control_target(
+                    &evidence.identity.agent,
+                    observation.provider.as_deref(),
+                    observation.api.as_deref(),
+                    &observation.model,
+                );
+                target.raw_effort = Some(effort.clone());
+                match catalog.resolve(&target) {
+                    Support::Supported(definition) => match definition.effort {
+                        Support::Supported(Some(effort)) => {
+                            if definition.family_policy.effort.above_cap.contains(&effort) {
+                                return Observation::Finding;
+                            }
+                        }
+                        Support::Supported(None) => {}
+                        Support::Unsupported { .. } | Support::Unknown { .. } => {
+                            contract_incomplete = true;
+                        }
+                    },
+                    Support::Unsupported { .. } | Support::Unknown { .. } => {
+                        contract_incomplete = true;
+                    }
+                }
+            }
+            if contract_incomplete {
+                return Observation::ContractIncomplete;
+            }
+            let coverage = models.effort_signal;
+            return if coverage.present_turns == 0
+                || coverage.present_turns < coverage.eligible_turns
+            {
+                Observation::SignalMissing
+            } else {
+                Observation::NoFinding
+            };
+        }
+        let attributed = models
+            .effort_tiers_by_model
+            .iter()
+            .flat_map(|(model, tiers)| {
+                tiers
+                    .iter()
+                    .map(move |(tier, turns)| (Some(model.as_str()), tier, turns))
+            });
+        let legacy = models
+            .effort_tiers
+            .iter()
+            .map(|(tier, turns)| (None, tier, turns));
+        for (model, tier, turns) in attributed.chain(
+            models
+                .effort_tiers_by_model
+                .is_empty()
+                .then_some(legacy)
+                .into_iter()
+                .flatten(),
+        ) {
             if turns.main_loop + turns.delegated == 0 {
                 continue;
             }
-            let normalized = tier.trim().to_lowercase();
-            let above_cap = present_families.iter().any(|family| {
-                catalogs
-                    .families
-                    .get(family)
-                    .is_some_and(|policy| policy.effort.above_cap.contains(&normalized))
+            let model = model.or_else(|| {
+                (models.by_model.len() == 1)
+                    .then(|| models.by_model.keys().next())
+                    .flatten()
+                    .map(String::as_str)
             });
-            if above_cap {
-                return Observation::Finding;
-            }
-            let recognized = present_families.iter().any(|family| {
-                !matches!(family, ModelFamily::Unknown)
-                    && catalogs
-                        .families
-                        .get(family)
-                        .is_some_and(|policy| policy.effort.recognized.contains(&normalized))
-            });
-            if !recognized {
+            let Some(model) = model else {
                 contract_incomplete = true;
+                continue;
+            };
+            let Some(mut target) = fixed_route_target(&evidence.identity.agent, model) else {
+                contract_incomplete = true;
+                continue;
+            };
+            target.raw_effort = Some(tier.clone());
+            match catalog.resolve(&target) {
+                Support::Supported(definition) => match definition.effort {
+                    Support::Supported(Some(effort)) => {
+                        if definition.family_policy.effort.above_cap.contains(&effort) {
+                            return Observation::Finding;
+                        }
+                    }
+                    Support::Supported(None) => {}
+                    Support::Unsupported { .. } | Support::Unknown { .. } => {
+                        contract_incomplete = true;
+                    }
+                },
+                Support::Unsupported { .. } | Support::Unknown { .. } => {
+                    contract_incomplete = true;
+                }
             }
         }
         if contract_incomplete {
@@ -77,18 +148,121 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         // This rule also covers zero eligible turns, because
         // `present_turns` is then zero too.
         let coverage = models.effort_signal;
-        if coverage.present_turns == 0 {
+        if coverage.present_turns == 0 || coverage.present_turns < coverage.eligible_turns {
             return Observation::SignalMissing;
         }
     }
     Observation::NoFinding
 }
 
+pub(super) fn finding_causes(
+    evidence: &SessionEvidence,
+    catalogs: &ReportCatalogs,
+) -> Vec<FindingCause> {
+    let Some(models) = observed(&evidence.models) else {
+        return Vec::new();
+    };
+    let catalog = ReviewedModelCatalog::new(catalogs);
+    let mut grouped =
+        std::collections::BTreeMap::<(Option<String>, Option<String>, String, String), u64>::new();
+    if !models.control_observations.is_empty() {
+        for observation in &models.control_observations {
+            let Some(raw_effort) = observation.effort.as_ref() else {
+                continue;
+            };
+            let turns = observation.turns.main_loop + observation.turns.delegated;
+            if turns == 0 {
+                continue;
+            }
+            let mut target = model_control_target(
+                &evidence.identity.agent,
+                observation.provider.as_deref(),
+                observation.api.as_deref(),
+                &observation.model,
+            );
+            target.raw_effort = Some(raw_effort.clone());
+            let Support::Supported(definition) = catalog.resolve(&target) else {
+                continue;
+            };
+            let Support::Supported(Some(effort)) = definition.effort else {
+                continue;
+            };
+            if definition.family_policy.effort.above_cap.contains(&effort) {
+                *grouped
+                    .entry((
+                        observation.provider.clone(),
+                        observation.api.clone(),
+                        observation.model.clone(),
+                        effort,
+                    ))
+                    .or_default() += turns;
+            }
+        }
+    } else {
+        for (model, tiers) in &models.effort_tiers_by_model {
+            for (raw_effort, turns) in tiers {
+                let count = turns.main_loop + turns.delegated;
+                let Some(mut target) = fixed_route_target(&evidence.identity.agent, model) else {
+                    continue;
+                };
+                target.raw_effort = Some(raw_effort.clone());
+                let Support::Supported(definition) = catalog.resolve(&target) else {
+                    continue;
+                };
+                let Support::Supported(Some(effort)) = definition.effort else {
+                    continue;
+                };
+                if count > 0 && definition.family_policy.effort.above_cap.contains(&effort) {
+                    *grouped
+                        .entry((None, None, model.clone(), effort))
+                        .or_default() += count;
+                }
+            }
+        }
+        if models.effort_tiers_by_model.is_empty() && models.by_model.len() == 1 {
+            let model = models.by_model.keys().next().expect("one model");
+            for (raw_effort, turns) in &models.effort_tiers {
+                let count = turns.main_loop + turns.delegated;
+                let Some(mut target) = fixed_route_target(&evidence.identity.agent, model) else {
+                    continue;
+                };
+                target.raw_effort = Some(raw_effort.clone());
+                let Support::Supported(definition) = catalog.resolve(&target) else {
+                    continue;
+                };
+                let Support::Supported(Some(effort)) = definition.effort else {
+                    continue;
+                };
+                if count > 0 && definition.family_policy.effort.above_cap.contains(&effort) {
+                    *grouped
+                        .entry((None, None, model.clone(), effort))
+                        .or_default() += count;
+                }
+            }
+        }
+    }
+    grouped
+        .into_iter()
+        .map(
+            |((provider, api, model, reasoning), turns)| FindingCause::ModelOverthinking {
+                provider,
+                api,
+                model,
+                reasoning,
+                turns,
+            },
+        )
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::claude_evidence;
     use super::*;
-    use crate::analysis::{CoverageReason, EvidenceValue, ModelTokens, SignalCoverage, TurnCounts};
+    use crate::analysis::{
+        CoverageReason, EvidenceValue, ModelControlObservation, ModelTokens, SignalCoverage,
+        TurnCounts,
+    };
 
     /// Builds evidence with one effort-tier entry, one Claude `by_model`
     /// entry (so the Claude family is present), and full effort-signal
@@ -99,6 +273,9 @@ mod tests {
 
     fn with_tier_and_model(tier: &str, model: &str, partial: bool) -> SessionEvidence {
         let mut evidence = claude_evidence("effort");
+        if model.starts_with("gpt-") {
+            evidence.identity.agent = "codex".to_owned();
+        }
         let EvidenceValue::Complete(mut models) = evidence.models else {
             unreachable!()
         };
@@ -152,6 +329,40 @@ mod tests {
     }
 
     #[test]
+    fn explicit_claude_routes_preserve_findings_and_reject_unknown_routes() {
+        let catalogs = ReportCatalogs::default();
+        for (provider, effort, expected) in [
+            ("anthropic", "max", Observation::Finding),
+            ("anthropic", "medium", Observation::NoFinding),
+            ("anthropic", "custom", Observation::ContractIncomplete),
+            ("gateway", "medium", Observation::ContractIncomplete),
+        ] {
+            let mut evidence = with_tier(effort, false);
+            evidence.identity.agent = "claude-code".to_owned();
+            let EvidenceValue::Complete(models) = &mut evidence.models else {
+                unreachable!()
+            };
+            models.control_observations.push(ModelControlObservation {
+                provider: Some(provider.to_owned()),
+                api: Some("messages".to_owned()),
+                model: "claude-sonnet-5".to_owned(),
+                effort: Some(effort.to_owned()),
+                speed: None,
+                last_ts_ms: 200,
+                turns: TurnCounts {
+                    main_loop: 1,
+                    delegated: 0,
+                },
+            });
+            assert_eq!(
+                evaluate(&evidence, &catalogs),
+                expected,
+                "{provider}/{effort}"
+            );
+        }
+    }
+
+    #[test]
     fn no_effort_signal_present_reports_the_signal_as_missing() {
         // Zero eligible turns leaves `present_turns` at zero too. This
         // also proves the eligible_turns == 0 case stays missing.
@@ -162,10 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_effort_signal_coverage_without_a_finding_is_no_finding() {
-        // At least one turn carries an effort value. The rule assesses
-        // that turn instead of reporting the signal as missing. A turn
-        // without the signal is not negative evidence.
+    fn partial_effort_signal_coverage_without_a_finding_is_missing() {
         let catalogs = ReportCatalogs::default();
         let mut evidence = claude_evidence("partial-effort-coverage");
         let EvidenceValue::Complete(mut models) = evidence.models else {
@@ -177,7 +385,7 @@ mod tests {
         };
         evidence.models = EvidenceValue::Complete(models);
 
-        assert_eq!(evaluate(&evidence, &catalogs), Observation::NoFinding);
+        assert_eq!(evaluate(&evidence, &catalogs), Observation::SignalMissing);
     }
 
     #[test]

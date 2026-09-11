@@ -52,9 +52,9 @@ use super::read_source;
 use crate::analysis::framing::{BoundedJsonlReader, FramedRecord, PartialReason, RecordSkip};
 use crate::analysis::initial_context::CodexContextAccumulator;
 use crate::analysis::interface::{
-    ContentKind, ContentPart, ContextWindowSource, EvidenceObservation, NormalizedRecord,
-    RawSource, RecordSink, RelationProvenance, ResumedVisit, SessionInput, SessionSummary,
-    TurnContent, VendorAdapter, VisitOutcome,
+    ContentKind, ContentPart, ContextSourceKind, ContextWindowSource, EvidenceObservation,
+    NormalizedRecord, RawSource, RecordSink, RelationProvenance, ResumedVisit, SessionInput,
+    SessionReader, SessionSummary, TurnContent, VisitOutcome,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, ToolCall, Usage};
 use crate::analysis::records::{
@@ -67,11 +67,15 @@ use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, Source
 const MAX_PENDING_FORK_ROWS: usize = 256;
 const MAX_PENDING_FORK_BYTES: usize = 1024 * 1024;
 
-pub struct CodexAdapter;
+pub struct CodexSessionReader;
 
-impl VendorAdapter for CodexAdapter {
+impl SessionReader for CodexSessionReader {
     fn agent(&self) -> &'static str {
         "codex"
+    }
+
+    fn capabilities(&self, _source: &RawSource) -> crate::analysis::SourceCapabilities {
+        crate::analysis::SourceCapabilities::codex()
     }
 
     fn normalize(&self, input: &SessionInput) -> anyhow::Result<NormalizedSession> {
@@ -139,7 +143,7 @@ impl VendorAdapter for CodexAdapter {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
-        CodexAdapter::visit_claimed(self, input, claim, guarantee, cancel, sink)
+        CodexSessionReader::visit_claimed(self, input, claim, guarantee, cancel, sink)
     }
 
     fn visit_claimed_resumed(
@@ -150,17 +154,17 @@ impl VendorAdapter for CodexAdapter {
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<ResumedVisit> {
-        CodexAdapter::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
+        CodexSessionReader::visit_claimed_resumed(self, input, claim, resume, cancel, sink)
     }
 
     fn empty_resume_state(&self) -> Option<crate::analysis::resume::AdapterSnapshot> {
-        Some(CodexAdapter::empty_adapter_snapshot())
+        Some(CodexSessionReader::empty_adapter_snapshot())
     }
 }
 
-impl CodexAdapter {
+impl CodexSessionReader {
     /// A fresh [`CodexStreamState`], serialized. Mirrors
-    /// [`crate::analysis::vendors::claude::ClaudeAdapter::empty_adapter_snapshot`]:
+    /// [`crate::analysis::vendors::claude::ClaudeSessionReader::empty_adapter_snapshot`]:
     /// pairs with a [`StreamSnapshot`] whose [`ResumePoint`][rp] offset is
     /// zero to start the first resumable pass over a source.
     ///
@@ -223,7 +227,7 @@ impl CodexAdapter {
     /// Streams a file from a verified [`StreamSnapshot`], restoring
     /// [`CodexStreamState`] from `resume.adapter` and reading only the bytes
     /// past `resume.resume.offset`. Mirrors
-    /// [`crate::analysis::vendors::claude::ClaudeAdapter::visit_claimed_resumed`]
+    /// [`crate::analysis::vendors::claude::ClaudeSessionReader::visit_claimed_resumed`]
     /// exactly; see its doc comment for the full read/recheck/snapshot shape.
     ///
     /// "Unsettled" rule: a fork sub-agent rollout's ownership can still be
@@ -370,7 +374,7 @@ struct CodexStreamState {
     agent_path: Option<String>,
     /// See [`json_text_codec`]: `postcard` cannot decode a `serde_json::Value`
     /// directly, so this field's wire form is JSON text. Always empty at the
-    /// point [`CodexAdapter::visit_claimed_resumed`] encodes a snapshot (see
+    /// point [`CodexSessionReader::visit_claimed_resumed`] encodes a snapshot (see
     /// its "unsettled" rule), but the codec must not depend on that: it round
     /// trips a populated buffer too.
     #[serde(with = "json_text_codec")]
@@ -386,6 +390,7 @@ struct CodexStreamState {
     context_window: Option<u64>,
     model: Option<String>,
     current_model: Option<String>,
+    current_provider: Option<String>,
     current_thinking_mode: Option<String>,
     current_speed: Option<String>,
     started_at_ms: Option<i64>,
@@ -532,19 +537,14 @@ impl CodexStreamState {
     }
 
     fn process_value(&mut self, value: Value, usage_is_owned: bool, sink: &mut dyn RecordSink) {
+        observe_resource_evidence(&value, usage_is_owned, sink);
         let record_type = value.get("type").and_then(Value::as_str);
         let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
         let is_token_count = is_token_count_record(record_type, payload_type);
         let is_usage_record = is_token_count || record_type == Some("token_usage_record");
-        // A thread-level setting: update it whether or not this record's own
-        // usage belongs to this rollout, so a child rollout's owned turns
-        // still inherit the tier a `thread_settings_applied` record set in
-        // the replayed parent history that precedes them.
-        if let Some(speed) = service_tier_speed(&value) {
-            self.current_speed = Some(speed);
-        }
+        // Child requests inherit the explicit controls from the parent history.
+        self.observe_model_and_effort(&value, usage_is_owned);
         if usage_is_owned {
-            self.observe_model_and_effort(&value);
             if self.context_window.is_none() {
                 self.context_window = value
                     .pointer("/payload/info/model_context_window")
@@ -560,6 +560,8 @@ impl CodexStreamState {
                     EvidenceObservation::SubagentSpawn {
                         ts_ms: value.get("timestamp").and_then(parse_ts),
                         parent_model: self.current_model.clone(),
+                        parent_call_id: None,
+                        child_model: None,
                         provenance: RelationProvenance::SpawnAgentCall,
                     },
                 )));
@@ -581,6 +583,10 @@ impl CodexStreamState {
         }
 
         if let Some(mut event) = record_to_event(&value) {
+            event.provider = self.current_provider.clone();
+            if self.current_provider.as_deref() == Some("openai") {
+                event.api = Some("responses".to_owned());
+            }
             if usage_is_owned {
                 event.model = event.model.or_else(|| self.current_model.clone());
                 event.thinking_mode = self.current_thinking_mode.clone();
@@ -625,19 +631,53 @@ impl CodexStreamState {
         }
     }
 
-    fn observe_model_and_effort(&mut self, value: &Value) {
+    fn observe_model_and_effort(&mut self, value: &Value, usage_is_owned: bool) {
+        let record_type = value.get("type").and_then(Value::as_str);
+        let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
+        let settings =
+            record_type == Some("event_msg") && payload_type == Some("thread_settings_applied");
+        if settings || matches!(record_type, Some("session_meta" | "turn_context")) {
+            // A new request context separates equal usage totals from different requests.
+            self.previous_usage_key = None;
+        }
+        let provider = if record_type == Some("session_meta") {
+            value.pointer("/payload/model_provider")
+        } else if settings {
+            value.pointer("/payload/thread_settings/model_provider_id")
+        } else {
+            None
+        };
+        if let Some(provider) = provider {
+            // An invalid explicit provider must not select the catalog's default route.
+            self.current_provider =
+                Some(codex_control_value(provider).unwrap_or_else(|| "<unknown>".to_owned()));
+        }
+        if settings
+            && value
+                .pointer("/payload/thread_settings/service_tier")
+                .is_some()
+        {
+            self.current_speed = service_tier_speed(value);
+        }
+        if !matches!(
+            record_type,
+            Some("session_meta" | "turn_context" | "token_usage_record" | "response_item")
+        ) && !settings
+            && !(record_type == Some("event_msg") && payload_type == Some("token_count"))
+        {
+            return;
+        }
         if let Some(next_model) = [
             "/payload/model",
             "/payload/info/model",
             "/payload/turn_context/model",
+            "/payload/thread_settings/model",
         ]
         .iter()
-        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|model| !model.is_empty())
+        .find_map(|pointer| value.pointer(pointer))
         {
-            self.current_model = Some(next_model.to_owned());
-            if self.model.is_none() {
+            self.current_model = codex_control_value(next_model);
+            if usage_is_owned && self.model.is_none() {
                 self.model = self.current_model.clone();
             }
         }
@@ -650,11 +690,11 @@ impl CodexStreamState {
             "/payload/collaboration_mode/settings/reasoning_effort",
         ]
         .iter()
-        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|mode| !mode.is_empty())
+        .find_map(|pointer| value.pointer(pointer))
         {
-            self.current_thinking_mode = Some(next_mode.to_owned());
+            self.current_thinking_mode = codex_control_value(next_mode);
+        }
+        if usage_is_owned && self.current_thinking_mode.is_some() {
             self.effort_seen = true;
         }
     }
@@ -689,6 +729,13 @@ impl CodexStreamState {
             } else {
                 Vec::new()
             };
+        if let Some(version) = self.context.harness_version() {
+            sink.record(NormalizedRecord::Observation(Box::new(
+                EvidenceObservation::HarnessVersion {
+                    version: version.to_owned(),
+                },
+            )));
+        }
         let (initial_context, skill_descriptions) = self.context.finish();
         let context_window_source = if self.context_window.is_some() {
             ContextWindowSource::Reported
@@ -708,6 +755,127 @@ impl CodexStreamState {
             skill_descriptions,
         }
     }
+}
+
+fn observe_resource_evidence(value: &Value, owned: bool, sink: &mut dyn RecordSink) {
+    if value.get("type").and_then(Value::as_str) != Some("response_item") {
+        return;
+    }
+    let payload = &value["payload"];
+    match payload["type"].as_str() {
+        Some("tool_search_output") => {
+            // The pinned client emits completed results with namespace tool definitions.
+            let tools = payload["tools"]
+                .as_array()
+                .filter(|_| payload["status"] == "completed" && payload["execution"] == "client");
+            let Some(tools) = tools else {
+                sink.record(NormalizedRecord::Unusable(
+                    PartialReason::AttributionIncomplete,
+                ));
+                return;
+            };
+            for namespace in tools {
+                let Some(name) = namespace["name"].as_str() else {
+                    sink.record(NormalizedRecord::Unusable(
+                        PartialReason::AttributionIncomplete,
+                    ));
+                    continue;
+                };
+                if namespace["type"] != "namespace" {
+                    sink.record(NormalizedRecord::Unusable(
+                        PartialReason::AttributionIncomplete,
+                    ));
+                    continue;
+                }
+                let Some(server) = name.strip_prefix("mcp__") else {
+                    continue;
+                };
+                let valid = resource_name(server)
+                    && !server.contains("__")
+                    && namespace["tools"].as_array().is_some_and(|tools| {
+                        !tools.is_empty()
+                            && tools.iter().all(|tool| {
+                                tool["type"] == "function"
+                                    && tool["name"].as_str().is_some_and(resource_name)
+                                    && tool["parameters"].is_object()
+                            })
+                    });
+                if !valid {
+                    sink.record(NormalizedRecord::Unusable(
+                        PartialReason::AttributionIncomplete,
+                    ));
+                    continue;
+                }
+                sink.record(NormalizedRecord::Observation(Box::new(
+                    EvidenceObservation::ContextSource {
+                        kind: ContextSourceKind::McpServer,
+                        name: server.to_owned(),
+                        description: None,
+                    },
+                )));
+            }
+        }
+        Some("message") if payload["role"] == "user" => {
+            let Some(content) = payload["content"].as_array() else {
+                return;
+            };
+            for part in content {
+                if part["type"] != "input_text" {
+                    continue;
+                }
+                let Some(text) = part["text"].as_str() else {
+                    continue;
+                };
+                if !text.starts_with("<skill>\n") {
+                    continue;
+                }
+                if let Some(name) = selected_skill_name(text) {
+                    sink.record(NormalizedRecord::Observation(Box::new(
+                        EvidenceObservation::SkillInjection {
+                            name: name.to_owned(),
+                            invoked: owned,
+                        },
+                    )));
+                } else {
+                    sink.record(NormalizedRecord::Unusable(
+                        PartialReason::AttributionIncomplete,
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn resource_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= crate::analysis::evidence::EVIDENCE_STRING_CAP
+        && !name
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control() || matches!(ch, '<' | '>' | '/' | '\\'))
+}
+
+fn selected_skill_name(text: &str) -> Option<&str> {
+    let body = text
+        .strip_prefix("<skill>\n<name>")?
+        .strip_suffix("\n</skill>")?;
+    let (name, body) = body.split_once("</name>\n<path>")?;
+    if !resource_name(name) {
+        return None;
+    }
+    let (path, mut document) = body.split_once("</path>\n")?;
+    if path.is_empty() || path.contains(['\n', '<', '>']) {
+        return None;
+    }
+    if let Some(metadata) = document.strip_prefix("<resource_access>") {
+        let (metadata, rest) = metadata.split_once("</resource_access>\n")?;
+        let metadata: Value = serde_json::from_str(metadata).ok()?;
+        if !metadata.is_object() {
+            return None;
+        }
+        document = rest;
+    }
+    (!document.trim().is_empty() && !document.contains("</skill>")).then_some(name)
 }
 
 fn is_developer_message(value: &Value) -> bool {
@@ -847,6 +1015,8 @@ const CODEX_SCALAR_EVIDENCE_KEYS: &[&str] = &[
     "cache_creation_tokens",
     "reasoning_output_tokens",
     "model",
+    "model_provider",
+    "model_provider_id",
     "effort",
     "reasoning_effort",
     "service_tier",
@@ -961,25 +1131,26 @@ fn codex_discriminator(value: &Value) -> String {
     }
 }
 
-/// Read the per-turn speed a `thread_settings_applied` record sets, from its
-/// `payload.thread_settings.service_tier`. Returns `None` for any other
-/// record type, and for a missing or empty tier (the caller then leaves the
-/// current speed unchanged). `"priority"` maps to `"fast"` and `"default"`
-/// maps to `"standard"`, matching Claude's speed vocabulary; any other
-/// non-empty tier is kept as its own raw label, so an unreviewed tier still
-/// shows up as its own key in `fast_modes` instead of vanishing.
+/// Keep control values bounded without converting long identifiers into known catalog values.
+fn codex_control_value(value: &Value) -> Option<String> {
+    let value = value.as_str()?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if value.len() > crate::analysis::evidence::EVIDENCE_STRING_CAP {
+        return Some("<unknown>".to_owned());
+    }
+    Some(value.to_owned())
+}
+
 fn service_tier_speed(value: &Value) -> Option<String> {
     if value.get("type").and_then(Value::as_str) != Some("event_msg")
         || value.pointer("/payload/type").and_then(Value::as_str) != Some("thread_settings_applied")
     {
         return None;
     }
-    let tier = value
-        .pointer("/payload/thread_settings/service_tier")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|tier| !tier.is_empty())?;
-    Some(match tier {
+    let tier = codex_control_value(value.pointer("/payload/thread_settings/service_tier")?)?;
+    Some(match tier.as_str() {
         "priority" => "fast".to_owned(),
         "default" => "standard".to_owned(),
         other => other.to_owned(),
@@ -1006,24 +1177,12 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
     // The model's context-window size, reported on each `token_count` event's
     // `info.model_context_window`. Constant per model; take the first seen.
     let mut context_window = None;
-    // The model id, reported on the `session_meta` / `turn_context` envelope.
-    // Best-effort across the pointers Codex has used; first non-empty wins. `None`
-    // is fine — cost then has no local estimate for the session.
-    let mut model: Option<String> = None;
-    let mut current_model: Option<String> = None;
-    let mut current_thinking_mode: Option<String> = None;
-    // The thread-level speed a `thread_settings_applied` record last set, from
-    // its `service_tier`. Tracked regardless of `usage_is_owned` — see
-    // `service_tier_speed` — so a child rollout's owned turns still inherit
-    // the tier a replayed parent record set before the owned window starts.
-    let mut current_speed: Option<String> = None;
+    let mut controls = CodexStreamState::default();
     // Dedupe state for compaction boundaries: some rollouts write a
     // `context_compacted` event_msg and a top-level `compacted` record
     // back-to-back for the same compaction (see `compaction_event`).
     let mut previous_event_was_boundary = false;
     let mut previous_boundary_ts: Option<i64> = None;
-    // Dedupe state for usage rows (see `usage_record_key`).
-    let mut previous_usage_key: Option<(UsageRecordKey, bool)> = None;
     // Sticky once true: an owned usage object has carried a
     // `CACHE_WRITE_ALIAS_KEYS` key.
     let mut cache_write_tokens_available = false;
@@ -1037,9 +1196,7 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
         }
         if let Ok(value) = serde_json::from_str::<Value>(line) {
             let usage_is_owned = owned_usage_start.is_none_or(|start| line_offset >= start);
-            if let Some(speed) = service_tier_speed(&value) {
-                current_speed = Some(speed);
-            }
+            controls.observe_model_and_effort(&value, usage_is_owned);
             if usage_is_owned && context_window.is_none() {
                 context_window = value
                     .pointer("/payload/info/model_context_window")
@@ -1050,38 +1207,6 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
                 cache_write_tokens_available =
                     usage_record_usage_object(&value).is_some_and(usage_carries_cache_write);
             }
-            if usage_is_owned {
-                if let Some(next_model) = [
-                    "/payload/model",
-                    "/payload/info/model",
-                    "/payload/turn_context/model",
-                ]
-                .iter()
-                .find_map(|p| value.pointer(p).and_then(Value::as_str))
-                .map(str::trim)
-                .filter(|model| !model.is_empty())
-                {
-                    current_model = Some(next_model.to_string());
-                    if model.is_none() {
-                        model = current_model.clone();
-                    }
-                }
-                if let Some(next_mode) = [
-                    "/payload/effort",
-                    "/payload/reasoning_effort",
-                    "/payload/turn_context/effort",
-                    "/payload/turn_context/reasoning_effort",
-                    "/payload/thread_settings/reasoning_effort",
-                    "/payload/collaboration_mode/settings/reasoning_effort",
-                ]
-                .iter()
-                .find_map(|p| value.pointer(p).and_then(Value::as_str))
-                .map(str::trim)
-                .filter(|mode| !mode.is_empty())
-                {
-                    current_thinking_mode = Some(next_mode.to_string());
-                }
-            }
             let record_type = value.get("type").and_then(Value::as_str);
             let payload_type = value.pointer("/payload/type").and_then(Value::as_str);
             let is_usage_record = is_token_count_record(record_type, payload_type)
@@ -1089,17 +1214,22 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
             let inherited_usage = !usage_is_owned && is_usage_record;
             if let Some(key) = usage_record_key(&value) {
                 let key_with_ownership = (key, usage_is_owned);
-                let duplicate_usage = previous_usage_key.as_ref() == Some(&key_with_ownership);
-                previous_usage_key = Some(key_with_ownership);
+                let duplicate_usage =
+                    controls.previous_usage_key.as_ref() == Some(&key_with_ownership);
+                controls.previous_usage_key = Some(key_with_ownership);
                 if duplicate_usage {
                     continue;
                 }
             }
             if !inherited_usage && let Some(mut ev) = record_to_event(&value) {
+                ev.provider = controls.current_provider.clone();
+                if controls.current_provider.as_deref() == Some("openai") {
+                    ev.api = Some("responses".to_owned());
+                }
                 if usage_is_owned {
-                    ev.model = ev.model.or_else(|| current_model.clone());
-                    ev.thinking_mode = current_thinking_mode.clone();
-                    apply_thread_speed(&mut ev, &current_speed);
+                    ev.model = ev.model.or_else(|| controls.current_model.clone());
+                    ev.thinking_mode = controls.current_thinking_mode.clone();
+                    apply_thread_speed(&mut ev, &controls.current_speed);
                 }
                 let duplicate_boundary = ev.is_compaction_boundary
                     && previous_event_was_boundary
@@ -1119,7 +1249,12 @@ fn parse_codex(content: &str) -> (Vec<NormalizedEvent>, Option<u64>, Option<Stri
             }
         }
     }
-    (events, context_window, model, cache_write_tokens_available)
+    (
+        events,
+        context_window,
+        controls.model,
+        cache_write_tokens_available,
+    )
 }
 
 /// Locate the first row whose token usage belongs to a Codex fork itself.
@@ -1354,7 +1489,15 @@ fn function_call_event(payload: &Map<String, Value>, ts: Option<i64>) -> Option<
     // command (so a Bash-class call that runs tests reclassifies to Testing) and
     // the skill name (when this is a `Skill` call) from the same input.
     let input = payload.get("arguments").or_else(|| payload.get("input"));
-    ev.tools.push(tool_call_from_input(name, input));
+    let qualified = payload
+        .get("namespace")
+        .and_then(Value::as_str)
+        .filter(|namespace| namespace.starts_with("mcp__") && resource_name(namespace))
+        .map(|namespace| format!("{namespace}__{name}"));
+    ev.tools.push(tool_call_from_input(
+        qualified.as_deref().unwrap_or(name),
+        input,
+    ));
     Some(ev)
 }
 
@@ -2043,6 +2186,40 @@ mod tests {
                 "unexpected strict classification for {record}"
             );
         }
+        for key in ["model_provider", "model_provider_id"] {
+            let value = serde_json::json!({"type":"unknown", "payload":{key:"custom"}});
+            assert!(!is_inert_codex_record(&value, true));
+            assert!(!is_inert_codex_record(&value, false));
+        }
+    }
+
+    #[test]
+    fn retained_request_controls_are_bounded_and_round_trip() {
+        let mut state = CodexStreamState::default();
+        let long_value = "x".repeat(crate::analysis::evidence::EVIDENCE_STRING_CAP + 1);
+        for _ in 0..1000 {
+            state.observe_model_and_effort(&serde_json::json!({
+                "type":"event_msg", "payload":{"type":"thread_settings_applied", "thread_settings":{
+                    "model_provider_id":long_value, "model":long_value,
+                    "reasoning_effort":long_value, "service_tier":long_value
+                }}
+            }), true);
+        }
+        for value in [
+            &state.current_provider,
+            &state.current_model,
+            &state.current_thinking_mode,
+            &state.current_speed,
+        ] {
+            assert_eq!(value.as_deref(), Some("<unknown>"));
+        }
+        let snapshot = postcard::to_allocvec(&state).unwrap();
+        assert!(snapshot.len() < 1024);
+        let restored: CodexStreamState = postcard::from_bytes(&snapshot).unwrap();
+        assert_eq!(restored.current_provider, state.current_provider);
+        assert_eq!(restored.current_model, state.current_model);
+        assert_eq!(restored.current_thinking_mode, state.current_thinking_mode);
+        assert_eq!(restored.current_speed, state.current_speed);
     }
 
     #[test]
@@ -2060,7 +2237,7 @@ mod tests {
 
     #[test]
     fn record_to_event_changes_require_an_inertness_review() {
-        const EXPECTED_FINGERPRINT: u64 = 13_546_544_228_035_879_293;
+        const EXPECTED_FINGERPRINT: u64 = 6_996_697_630_133_459_451;
         let source = include_str!("codex.rs").replace("\r\n", "\n");
         let start = source.find("fn observe_model_and_effort").unwrap();
         let end = source.find("\n#[cfg(test)]\nmod tests").unwrap();
@@ -2277,7 +2454,7 @@ mod tests {
             fork_parent_session_id: None,
         };
         let mut sink = SessionCollector::new("codex", "synthetic-token-usage");
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit synthetic token usage session");
         let coverage = sink.coverage();
@@ -2455,7 +2632,7 @@ mod tests {
         };
         let mut sink = ObservationCapturingSink::default();
 
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit old-allowlist-with-signal session");
 
@@ -2486,7 +2663,7 @@ mod tests {
         };
         let mut sink = ObservationCapturingSink::default();
 
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit zero-component-heartbeat session");
 
@@ -2598,7 +2775,7 @@ mod tests {
         };
         let mut sink = ContentCapturingSink::default();
 
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit content session");
 
@@ -2714,7 +2891,7 @@ mod tests {
         };
         let mut sink = SessionCollector::new("codex", "fork-speed");
 
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit fork speed session");
         let session = sink.into_session().expect("fork speed session finishes");
@@ -2779,7 +2956,7 @@ mod tests {
         };
         let mut sink = ObservationCapturingSink::default();
 
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit spawn-owned session");
 
@@ -2827,7 +3004,7 @@ mod tests {
         };
         let mut sink = ObservationCapturingSink::default();
 
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit spawn-replayed-prefix session");
 
@@ -2850,7 +3027,7 @@ mod tests {
         };
         let mut sink = ObservationCapturingSink::default();
 
-        CodexAdapter
+        CodexSessionReader
             .visit(&input, &mut sink)
             .expect("visit spawn-other-name session");
 
@@ -2944,8 +3121,59 @@ mod tests {
                     tail_hash: head_hash_of(&[]),
                     tail_len: 0,
                 },
-                adapter: CodexAdapter::empty_adapter_snapshot(),
+                adapter: CodexSessionReader::empty_adapter_snapshot(),
             })
+        }
+
+        #[test]
+        fn resumed_requests_keep_the_explicit_custom_provider() {
+            let directory = TempDir::new().unwrap();
+            let prefix = concat!(
+                r#"{"type":"session_meta","payload":{"model_provider":"custom"}}"#,
+                "\n",
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.6","effort":"high"}}"#,
+                "\n",
+                r#"{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"service_tier":"priority"}}}"#,
+                "\n",
+            );
+            let path = write_source(&directory, prefix.as_bytes());
+            let input = file_input(&path);
+            let mut collector = SessionCollector::new("codex", "claimed-session");
+            let first = CodexSessionReader
+                .visit_claimed_resumed(
+                    &input,
+                    &claim_for_path(&path),
+                    &fresh_snapshot(),
+                    &|| false,
+                    &mut collector,
+                )
+                .unwrap();
+            OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap()
+                .write_all(SECOND_RECORD.as_bytes())
+                .unwrap();
+            let mut resumed = SessionCollector::new("codex", "claimed-session");
+            CodexSessionReader
+                .visit_claimed_resumed(
+                    &input,
+                    &claim_for_path(&path),
+                    &snapshot_from(first.resume.unwrap()),
+                    &|| false,
+                    &mut resumed,
+                )
+                .unwrap();
+            let session = resumed.into_session().unwrap();
+            assert_eq!(session.events.len(), 1);
+            let event = &session.events[0];
+            assert_eq!(event.provider.as_deref(), Some("custom"));
+            assert!(event.api.is_none());
+            assert_eq!(event.thinking_mode.as_deref(), Some("high"));
+            assert_eq!(event.speed.as_deref(), Some("fast"));
+            let mut full = SessionCollector::new("codex", "claimed-session");
+            CodexSessionReader.visit(&input, &mut full).unwrap();
+            assert_eq!(session, full.into_session().unwrap());
         }
 
         #[test]
@@ -2956,7 +3184,7 @@ mod tests {
             let input = file_input(&path);
             let mut collector = SessionCollector::new("codex", "claimed-session");
 
-            let visit = CodexAdapter
+            let visit = CodexSessionReader
                 .visit_claimed_resumed(&input, &claim, &fresh_snapshot(), &|| false, &mut collector)
                 .expect("resumed visit of a fresh file");
 
@@ -2980,7 +3208,7 @@ mod tests {
             let input = file_input(&path);
             let mut first_pass = SessionCollector::new("codex", "claimed-session");
             let first_claim = claim_for_path(&path);
-            let first_visit = CodexAdapter
+            let first_visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &first_claim,
@@ -3001,7 +3229,7 @@ mod tests {
             let second_claim = claim_for_path(&path);
             let mut second_pass = SessionCollector::new("codex", "claimed-session");
 
-            let second_visit = CodexAdapter
+            let second_visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &second_claim,
@@ -3040,7 +3268,7 @@ mod tests {
             let input = file_input(&path);
             let first_claim = claim_for_path(&path);
             let mut first_pass = SessionCollector::new("codex", "claimed-session");
-            let first_visit = CodexAdapter
+            let first_visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &first_claim,
@@ -3061,7 +3289,7 @@ mod tests {
                 .expect("append legacy usage record");
             let second_claim = claim_for_path(&path);
             let mut second_pass = SessionCollector::new("codex", "claimed-session");
-            let second_visit = CodexAdapter
+            let second_visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &second_claim,
@@ -3084,7 +3312,7 @@ mod tests {
             let input = file_input(&path);
             let first_claim = claim_for_path(&path);
             let mut first_pass = SessionCollector::new("codex", "claimed-session");
-            let first_visit = CodexAdapter
+            let first_visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &first_claim,
@@ -3104,7 +3332,7 @@ mod tests {
             let rewritten_claim = claim_for_path(&path);
             let mut second_pass = SessionCollector::new("codex", "claimed-session");
 
-            let visit = CodexAdapter
+            let visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &rewritten_claim,
@@ -3139,7 +3367,7 @@ mod tests {
             let input = file_input(&path);
             let mut collector = SessionCollector::new("codex", "claimed-session");
 
-            let visit = CodexAdapter
+            let visit = CodexSessionReader
                 .visit_claimed_resumed(&input, &claim, &fresh_snapshot(), &|| false, &mut collector)
                 .expect("resumed visit of a pending fork");
 
@@ -3173,7 +3401,7 @@ mod tests {
             let claim = claim_for_path(&path);
             let input = file_input(&path);
             let mut first_pass = SessionCollector::new("codex", "claimed-session");
-            let first_visit = CodexAdapter
+            let first_visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &claim,
@@ -3202,7 +3430,7 @@ mod tests {
             // whenever a resumed pass carries no snapshot forward.
             let bootstrap_claim = claim_for_path(&path);
             let mut second_pass = SessionCollector::new("codex", "claimed-session");
-            let second_visit = CodexAdapter
+            let second_visit = CodexSessionReader
                 .visit_claimed_resumed(
                     &input,
                     &bootstrap_claim,

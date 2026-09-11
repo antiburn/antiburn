@@ -245,6 +245,12 @@ pub(crate) fn fill_use_counts(
     mcp_tool_calls: &HashMap<String, u32>,
     tool_calls_by_name: &HashMap<String, u32>,
 ) {
+    let skill_names = breakdown
+        .sources
+        .iter()
+        .filter(|row| row.source == InitialContextTokenSource::Skill.as_str())
+        .filter_map(|row| row.source_name.clone())
+        .collect::<Vec<_>>();
     for row in &mut breakdown.sources {
         let Some(name) = row.source_name.as_deref() else {
             continue;
@@ -252,7 +258,7 @@ pub(crate) fn fill_use_counts(
         row.use_count = if row.source == InitialContextTokenSource::Skill.as_str() {
             skill_uses
                 .iter()
-                .filter(|skill_use| skill_use.name.eq_ignore_ascii_case(name))
+                .filter(|skill_use| skill_alias_matches(&skill_use.name, name, &skill_names))
                 .count() as u32
         } else if row.source == InitialContextTokenSource::Mcp.as_str() {
             mcp_tool_calls
@@ -276,6 +282,24 @@ pub(crate) fn fill_use_counts(
             0
         };
     }
+}
+
+fn skill_alias_matches(invocation: &str, loaded_name: &str, loaded_names: &[String]) -> bool {
+    if invocation.eq_ignore_ascii_case(loaded_name) {
+        return true;
+    }
+    if invocation.contains(':') {
+        return false;
+    }
+    let mut matches = loaded_names.iter().filter(|candidate| {
+        candidate
+            .rsplit(':')
+            .next()
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(invocation))
+    });
+    matches.next().is_some_and(|candidate| {
+        matches.next().is_none() && candidate.eq_ignore_ascii_case(loaded_name)
+    })
 }
 
 enum InitialContextTokenParseResult {
@@ -391,6 +415,10 @@ pub(crate) struct CodexContextAccumulator {
 }
 
 impl CodexContextAccumulator {
+    pub(crate) fn harness_version(&self) -> Option<&str> {
+        self.cli_version.as_deref()
+    }
+
     pub(crate) fn observe(&mut self, value: &Value) {
         match value.get("type").and_then(Value::as_str) {
             Some("session_meta") => {
@@ -516,17 +544,14 @@ impl ClaudeContextAccumulator {
                     return;
                 }
                 let text = extract_claude_message_text(value);
-                if text.contains("Base directory for this skill:") {
-                    let name = parse_claude_loaded_skill_name(&text);
-                    if let Some((name, path)) =
-                        name.as_deref().zip(parse_claude_loaded_skill_path(&text))
-                    {
+                if let Some(name) = parse_claude_loaded_skill_name(&text) {
+                    if let Some(path) = parse_claude_loaded_skill_path(&text) {
                         let origin = classify_claude_filesystem_path(path, self.cwd.as_deref());
-                        self.record_skill_origin(name, claude_origin_rank::PREAMBLE_PATH, origin);
+                        self.record_skill_origin(&name, claude_origin_rank::PREAMBLE_PATH, origin);
                     }
                     self.source_rows.push(InitialContextTokenSourceCount {
                         source: InitialContextTokenSource::Skill,
-                        source_name: name,
+                        source_name: Some(name),
                         token_count: estimate_tokens(&text),
                         origin: SourceOrigin::Unknown,
                         deferred: false,
@@ -578,18 +603,32 @@ impl ClaudeContextAccumulator {
                             .cloned()
                             .unwrap_or_default();
                         for skill in &skills {
-                            let (Some(name), Some(path)) = (
+                            let (Some(name), Some(path), Some(content)) = (
                                 skill.get("name").and_then(Value::as_str),
                                 skill.get("path").and_then(Value::as_str),
+                                skill.get("content").and_then(Value::as_str),
                             ) else {
                                 continue;
                             };
+                            if name.trim().is_empty()
+                                || path.trim().is_empty()
+                                || content.trim().is_empty()
+                            {
+                                continue;
+                            }
                             let origin =
                                 classify_claude_invoked_skill_path(path, self.cwd.as_deref());
                             self.record_skill_origin(
                                 name,
                                 claude_origin_rank::INVOKED_SKILLS,
                                 origin,
+                            );
+                            push_named_source(
+                                &mut self.source_rows,
+                                InitialContextTokenSource::Skill,
+                                Some(name.trim().to_owned()),
+                                origin,
+                                content,
                             );
                         }
                     }
@@ -1019,18 +1058,13 @@ fn parse_named_markdown_bullets(
     rows
 }
 
-/// Parse a `"- <name>: <description>"` skill-listing bullet into its name, the
-/// post-colon description text (trimmed, with any trailing Codex `(file: <path>)`
-/// locator removed), and that locator's path when present. The name half keeps
-/// the original validation (no internal space, backtick-stripped); splitting on
-/// the first `": "` first (falling back to a bare `:`) lets a plugin-qualified
-/// name such as `browser:control-in-app-browser` survive, since a valid name
-/// never contains a space and so never contains `": "` itself. `None` for a
-/// non-bullet line or a multi-word/empty name.
-fn parse_markdown_bullet(line: &str) -> Option<(String, String, Option<String>)> {
+/// Parse a skill bullet into its name, description, and optional Codex file locator.
+/// Split at the first colon-space separator, or the last colon, to preserve namespaced names.
+/// Reject empty names and names with spaces.
+pub(crate) fn parse_markdown_bullet(line: &str) -> Option<(String, String, Option<String>)> {
     let line = line.trim_start();
     let rest = line.strip_prefix("- ")?;
-    let (name, description) = rest.split_once(": ").or_else(|| rest.split_once(':'))?;
+    let (name, description) = rest.split_once(": ").or_else(|| rest.rsplit_once(':'))?;
     let name = name.trim().trim_matches('`');
     if name.is_empty() || name.contains(' ') {
         return None;
@@ -1081,15 +1115,15 @@ fn push_named_source(
 }
 
 fn parse_claude_loaded_skill_path(text: &str) -> Option<&str> {
-    text.lines()
-        .find_map(|line| line.strip_prefix("Base directory for this skill: "))
+    let (path, document) = text
+        .strip_prefix("Base directory for this skill: ")?
+        .split_once('\n')?;
+    (!document.trim().is_empty()).then_some(path)
 }
 
 fn parse_claude_loaded_skill_name(text: &str) -> Option<String> {
     parse_claude_loaded_skill_path(text)
-        .and_then(|path| path.rsplit('/').next())
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
+        .and_then(crate::analysis::vendors::claude::skill_base_name_from_path)
 }
 
 fn section_bounds(text: &str, heading: &str) -> Option<(usize, usize)> {
@@ -1121,6 +1155,70 @@ fn estimate_tokens(text: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn namespaced_listing_names_keep_empty_descriptions() {
+        assert_eq!(
+            parse_markdown_bullet("- plugin:review:"),
+            Some(("plugin:review".to_owned(), String::new(), None))
+        );
+        assert_eq!(
+            parse_markdown_bullet("- plugin:review:Review code."),
+            Some(("plugin:review".to_owned(), "Review code.".to_owned(), None))
+        );
+    }
+
+    #[test]
+    fn claude_report_context_counts_only_recorded_documents_and_listing_text() {
+        let mut accumulator = ClaudeContextAccumulator::default();
+        for value in [
+            serde_json::json!({"type":"attachment","attachment":{
+                "type":"skill_listing","content":"- plugin:review: Review code."
+            }}),
+            serde_json::json!({"type":"user","isMeta":true,"message":{
+                "content":"Quoted marker: Base directory for this skill: /synthetic/skills/quoted\nNot a document."
+            }}),
+            serde_json::json!({"type":"user","isMeta":true,"message":{
+                "content":"Base directory for this skill: /synthetic/skills/empty"
+            }}),
+            serde_json::json!({"type":"attachment","attachment":{
+                "type":"dynamic_skill","skillDir":"/synthetic/skills","displayPath":".claude/skills","skillNames":["dynamic"]
+            }}),
+        ] {
+            accumulator.observe(&value);
+        }
+        let (context, descriptions) = accumulator.finish_with_probe(&|_| true, &test_catalog());
+        let context = context.unwrap();
+        assert_eq!(context.sources.len(), 1);
+        assert_eq!(
+            context.sources[0].source_name.as_deref(),
+            Some("plugin:review")
+        );
+        assert_eq!(
+            context.sources[0].token_count,
+            estimate_tokens("- plugin:review: Review code.\n") as u64
+        );
+        assert_eq!(descriptions["plugin:review"], "Review code.");
+    }
+
+    #[test]
+    fn skill_aliases_resolve_only_when_unique() {
+        assert!(skill_alias_matches(
+            "deploy",
+            "plugin:deploy",
+            &["plugin:deploy".to_owned()]
+        ));
+        assert!(!skill_alias_matches(
+            "deploy",
+            "a:deploy",
+            &["a:deploy".to_owned(), "b:deploy".to_owned()]
+        ));
+        assert!(skill_alias_matches(
+            "a:deploy",
+            "a:deploy",
+            &["a:deploy".to_owned(), "b:deploy".to_owned()]
+        ));
+    }
 
     /// The committed fixture catalogue, not the embedded production one — so
     /// these tests stay deterministic regardless of what a local build or CI

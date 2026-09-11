@@ -3,12 +3,12 @@
 //!
 //! The finding is an absence claim about invocation: a definition
 //! occupies the session's context but the transcript never calls it.
-//! Absence can only be read from a complete, named catalogue, so partial
-//! or missing evidence never permits a finding.
+//! Findings require complete invocation coverage for the named definitions.
+//! The catalogue does not prove the full historical inventory, so the report cannot claim clean.
 //!
 //! Partial-evidence rules:
 //! - No partial evidence permits a finding. The rule needs complete
-//!   `context_sources`, `tools`, and `eligibility` groups, and needs the
+//!   `tools` and `eligibility` groups, and needs the
 //!   nested `tool_definitions` map itself `Complete` (not `Partial`): a
 //!   partial map may have missed the invoking record, and a
 //!   never-invoked flag from it would be a false positive.
@@ -18,7 +18,7 @@
 //!   session's harness version or model did not resolve against the
 //!   built-in tool catalogue. That reports `SignalMissing`, not clean
 //!   and not a finding.
-//! - Partial evidence in any required group prevents clean.
+//! - An unrelated partial resource group does not block a finding.
 //!
 //! Exclusions: a situational tool (one that enters the request only
 //! when used, such as `Skill` or `enter_plan_mode`) carries no idle
@@ -30,13 +30,22 @@
 use std::collections::BTreeMap;
 
 use crate::analysis::tool_catalog::{comparable_tool_name, situational_tools};
-use crate::analysis::{EvidenceValue, SessionEvidence, ToolDefinition};
+use crate::analysis::{EvidenceCoverage, EvidenceValue, SessionEvidence, ToolDefinition};
+use crate::insights::SessionTokenBurnEvidence;
+use crate::insights::report::{Fact, FactState};
+use crate::remediation::{BuiltInToolTokens, FindingCause};
 
 use super::{Observation, complete};
 
 pub(crate) fn evaluate(evidence: &SessionEvidence) -> Observation {
     let (Some(sources), Some(_tools), Some(eligibility)) = (
-        complete(&evidence.context_sources),
+        match &evidence.context_sources {
+            EvidenceValue::Complete(sources)
+            | EvidenceValue::Partial {
+                observed: sources, ..
+            } => Some(sources),
+            EvidenceValue::Unsupported => None,
+        },
         complete(&evidence.tools),
         complete(&evidence.eligibility),
     ) else {
@@ -58,6 +67,33 @@ pub(crate) fn evaluate(evidence: &SessionEvidence) -> Observation {
     }
 }
 
+pub(super) fn source_assessable(
+    evidence: &SessionEvidence,
+    source_evidence: Option<&SessionTokenBurnEvidence>,
+) -> bool {
+    source_evidence
+        .and_then(|value| value.built_in_tool_sources.as_ref())
+        .is_some()
+        && Fact::ToolDefinitions.state(evidence) == FactState::Unsupported
+        && matches!(evidence.coverage, EvidenceCoverage::Complete)
+        && matches!(&evidence.tools, EvidenceValue::Complete(_))
+        && complete(&evidence.eligibility).is_some_and(|value| value.assistant_turns > 0)
+}
+
+pub(super) fn evaluate_with_source_evidence(
+    evidence: &SessionEvidence,
+    source_evidence: Option<&SessionTokenBurnEvidence>,
+) -> Observation {
+    if !source_assessable(evidence, source_evidence) {
+        return evaluate(evidence);
+    }
+    if unused_sources(evidence, source_evidence).next().is_some() {
+        Observation::Finding
+    } else {
+        Observation::NoFinding
+    }
+}
+
 /// True when `definitions` names at least one built-in tool that costs
 /// real context, was not deferred, was never invoked, and is not on
 /// `agent`'s situational list.
@@ -74,6 +110,73 @@ fn has_unused_definition(agent: &str, definitions: &BTreeMap<String, ToolDefinit
     })
 }
 
+pub(super) fn finding_causes(evidence: &SessionEvidence) -> Vec<FindingCause> {
+    let Some(sources) = super::observed(&evidence.context_sources) else {
+        return Vec::new();
+    };
+    let Some(definitions) = super::complete(&sources.tool_definitions) else {
+        return Vec::new();
+    };
+    let situational: Vec<String> = situational_tools(&evidence.identity.agent)
+        .iter()
+        .map(|name| comparable_tool_name(name))
+        .collect();
+    definitions
+        .iter()
+        .filter(|(name, definition)| {
+            definition.tokens > 0
+                && !definition.deferred
+                && !definition.invoked
+                && !situational.contains(&comparable_tool_name(name))
+        })
+        .map(|(tool, definition)| FindingCause::UnusedBuiltInTool {
+            tool: tool.clone(),
+            tokens: BuiltInToolTokens::Definition(u64::from(definition.tokens)),
+        })
+        .collect()
+}
+
+pub(super) fn finding_causes_with_source_evidence(
+    evidence: &SessionEvidence,
+    source_evidence: Option<&SessionTokenBurnEvidence>,
+) -> Vec<FindingCause> {
+    if !source_assessable(evidence, source_evidence) {
+        return finding_causes(evidence);
+    }
+    let mut causes = unused_sources(evidence, source_evidence)
+        .map(|source| FindingCause::UnusedBuiltInTool {
+            tool: source.name.clone(),
+            tokens: BuiltInToolTokens::Replicated(source.replicated_tokens),
+        })
+        .collect::<Vec<_>>();
+    causes.sort_by(|left, right| match (left, right) {
+        (
+            FindingCause::UnusedBuiltInTool { tool: left, .. },
+            FindingCause::UnusedBuiltInTool { tool: right, .. },
+        ) => left.cmp(right),
+        _ => core::cmp::Ordering::Equal,
+    });
+    causes
+}
+
+fn unused_sources<'a>(
+    evidence: &'a SessionEvidence,
+    source_evidence: Option<&'a SessionTokenBurnEvidence>,
+) -> impl Iterator<Item = &'a crate::insights::TokenBurnSourceEvidence> {
+    let situational = situational_tools(&evidence.identity.agent);
+    source_evidence
+        .and_then(|value| value.built_in_tool_sources.as_ref())
+        .into_iter()
+        .flatten()
+        .filter(move |source| {
+            source.replicated_tokens > 0
+                && !source.invoked
+                && !situational
+                    .iter()
+                    .any(|name| comparable_tool_name(name) == comparable_tool_name(&source.name))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -81,6 +184,7 @@ mod tests {
     use super::super::test_support::claude_evidence;
     use super::*;
     use crate::analysis::CoverageReason;
+    use crate::insights::TokenBurnSourceEvidence;
 
     fn unused(tokens: u32) -> ToolDefinition {
         ToolDefinition {
@@ -111,6 +215,19 @@ mod tests {
             evaluate(&with_definition("bash", unused(100))),
             Observation::Finding
         );
+    }
+
+    #[test]
+    fn incomplete_resource_inventory_does_not_block_built_in_tools() {
+        let mut evidence = with_definition("bash", unused(100));
+        let EvidenceValue::Complete(sources) = evidence.context_sources else {
+            unreachable!()
+        };
+        evidence.context_sources = EvidenceValue::Partial {
+            observed: sources,
+            reason: CoverageReason::AttributionIncomplete,
+        };
+        assert_eq!(evaluate(&evidence), Observation::Finding);
     }
 
     #[test]
@@ -184,5 +301,33 @@ mod tests {
         };
         eligibility.assistant_turns = 0;
         assert_eq!(evaluate(&evidence), Observation::NoFinding);
+    }
+
+    #[test]
+    fn source_attribution_produces_a_replicated_token_cause() {
+        let mut evidence = with_definition("bash", unused(100));
+        let EvidenceValue::Complete(sources) = &mut evidence.context_sources else {
+            unreachable!()
+        };
+        sources.tool_definitions = EvidenceValue::Unsupported;
+        let mut source_evidence = SessionTokenBurnEvidence::default();
+        source_evidence.built_in_tool_sources = Some(vec![TokenBurnSourceEvidence {
+            scope: "agent:bundled".to_owned(),
+            name: "Write".to_owned(),
+            replicated_tokens: u128::from(u64::MAX) + 9,
+            invoked: false,
+        }]);
+
+        assert_eq!(
+            evaluate_with_source_evidence(&evidence, Some(&source_evidence)),
+            Observation::Finding
+        );
+        assert_eq!(
+            finding_causes_with_source_evidence(&evidence, Some(&source_evidence)),
+            vec![FindingCause::UnusedBuiltInTool {
+                tool: "Write".to_owned(),
+                tokens: BuiltInToolTokens::Replicated(u128::from(u64::MAX) + 9),
+            }]
+        );
     }
 }

@@ -6,15 +6,15 @@ listed here is not claimed — a cell that is absent means "not supported", not
 
 ## Platforms
 
-| Platform | v1 support |
-| --- | --- |
-| macOS 13 or later (Apple silicon and Intel) | Supported |
-| macOS 12 or earlier | Not supported; the bundle declares macOS 13 as its minimum |
-| Windows 11 (x86-64) | Supported |
-| Windows 10 | Not tested; no support claimed |
-| Linux, mainstream x86-64 desktops with a system tray | Supported; it runs on the X11 backend there — through XWayland on a Wayland session — because it places its own popover and notification windows; a session with no X server leaves that placement to the compositor |
-| Linux without a system tray (or an AppIndicator host) | Not supported — antiburn is a tray application |
-| Mobile | Out of scope |
+| Platform                                              | v1 support                                                                                                                                                                                                           |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS 13 or later (Apple silicon and Intel)           | Supported                                                                                                                                                                                                            |
+| macOS 12 or earlier                                   | Not supported; the bundle declares macOS 13 as its minimum                                                                                                                                                           |
+| Windows 11 (x86-64)                                   | Supported                                                                                                                                                                                                            |
+| Windows 10                                            | Not tested; no support claimed                                                                                                                                                                                       |
+| Linux, mainstream x86-64 desktops with a system tray  | Supported; it runs on the X11 backend there — through XWayland on a Wayland session — because it places its own popover and notification windows; a session with no X server leaves that placement to the compositor |
+| Linux without a system tray (or an AppIndicator host) | Not supported — antiburn is a tray application                                                                                                                                                                       |
+| Mobile                                                | Out of scope                                                                                                                                                                                                         |
 
 ## Agents
 
@@ -22,23 +22,44 @@ antiburn reads session data that a coding agent has already written to disk.
 Plan limits are separate: antiburn can ask a provider for those figures as
 described in [Network](#network).
 
-| Agent | Native (macOS / Windows / Linux) | WSL | Notes |
-| --- | --- | --- | --- |
-| Claude Code | Supported | Supported | |
-| Codex | Supported | Supported | |
-| OpenCode | Supported | Supported | Dedicated session analysis and Insights |
-| Cursor | Supported | Not supported | |
-| GitHub Copilot | Supported | Not supported | |
-| Cline | Supported | Not supported | |
-| Kiro | Supported | Not supported | |
-| Amp | Supported | Not supported | |
-| Pi | macOS and Linux only | Not supported | Pi v3 CLI sessions only, including `PI_AGENT_DIR`; dedicated analysis and Insights; excluded on native Windows and WSL; no Pi-specific live plan meter |
-| Antigravity | Supported, **disk-only** | Not supported | Native `agy`/IDE SQLite usage plus brain JSONL and saved cascade analysis |
-| Windsurf | Supported, **disk-only** | Not supported | Documented local files only |
+| Agent          | Native (macOS / Windows / Linux) | WSL           | Notes                                                                                                                                                  |
+| -------------- | -------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Claude Code    | Supported                        | Supported     |                                                                                                                                                        |
+| Codex          | Supported                        | Supported     |                                                                                                                                                        |
+| OpenCode       | Supported                        | Supported     | Dedicated session analysis and Insights                                                                                                                |
+| Cursor         | Supported                        | Not supported |                                                                                                                                                        |
+| GitHub Copilot | Supported                        | Not supported |                                                                                                                                                        |
+| Cline          | Supported                        | Not supported |                                                                                                                                                        |
+| Kiro           | Supported                        | Not supported |                                                                                                                                                        |
+| Amp            | Supported                        | Not supported |                                                                                                                                                        |
+| Pi             | macOS and Linux only             | Not supported | Pi v3 CLI sessions only, including `PI_AGENT_DIR`; dedicated analysis and Insights; excluded on native Windows and WSL; no Pi-specific live plan meter |
+| Antigravity    | Supported, **disk-only**         | Not supported | Native `agy`/IDE SQLite usage plus brain JSONL and saved cascade analysis                                                                              |
+| Windsurf       | Supported, **disk-only**         | Not supported | Documented local files only                                                                                                                            |
 
 **Disk-only** means sessions come from the agent's own documented local files; the
 live language-server APIs those two editors expose aren't read, so a session that
 exists only in memory will not appear.
+
+## Burn Check remediation
+
+The main Burn checks workspace shows supported findings for Claude Code, Codex,
+OpenCode, Pi, and Antigravity. Safe bounded prompts cover the exact check matrix
+in [Burn Check Source Coverage](check-coverage.md#automatic-editor-support).
+
+| Agent       | Auto Fix on macOS and Linux | Other current support         |
+| ----------- | --------------------------- | ----------------------------- |
+| Claude Code | Model and reasoning         | Prompts for all nine checks   |
+| Codex       | Model and reasoning         | Prompts for all nine checks   |
+| OpenCode    | Model                       | Prompts for D, S, K, O, and C |
+| Pi          | Model and reasoning         | Prompts for D, T, S, O, and C |
+| Antigravity | None                        | Prompts for D and O           |
+
+Auto Fix changes one existing effective global or project setting after a
+separate review and confirmation. Native Windows can read supported setting
+attribution but cannot apply a change. Pi session discovery remains unavailable
+on native Windows. WSL is separate and cannot edit native host config. See the
+[implementation guide](remediation.md) for precedence, verification, savings,
+privacy, and exact unavailable cases.
 
 **Session analysis** — the timeline, phases, context, token, and cost views — need a
 transcript format antiburn understands in detail. Where it has only a generic parse,
@@ -56,7 +77,7 @@ the tokens a transcript recorded. They are **API-equivalent estimates**, not a b
   and the provider's total is then labelled as a floor;
 - work done on another machine is not counted, because antiburn cannot see it.
 
-Provider Usage shows what was *spent* on this machine. It never shows a percentage,
+Provider Usage shows what was _spent_ on this machine. It never shows a percentage,
 an allowance, a remaining balance, or a reset time: a transcript records spend, and a
 denominator would have to be invented.
 
@@ -75,6 +96,22 @@ not ours:
 - the limits appear above the spend estimates and never replace them. See
   [Network](#network) for the connections and the switch that controls them.
 
+Session cards can also show an estimated cumulative share of a provider allowance
+across recorded five-hour or weekly periods. antiburn distributes each provider
+percentage over matching local session work, so this is an estimate and can exceed
+100%. A partial coverage label means the estimate can omit usage or use incomplete
+account or provider-history evidence. This session estimate remains after a provider
+reset. The provider meter still shows only the current allowance period.
+
+For Codex, antiburn can also read the rate-limit metadata a session's own rollout
+file already recorded, so a directly or singly attributed account has meter history
+from before this app was installed, not only from readings taken while it ran. This
+bounded, resumable local read looks only at each rollout file's `token_count` rate-
+limit events; it does not read or retain transcript message content. A rollout
+reading older than the local data retention setting is never imported. An account
+that resolves to more than one Codex login on this machine is skipped, the same as
+for a live reading.
+
 ## What antiburn stores
 
 antiburn keeps its own local data under the application's data directory. Settings →
@@ -84,8 +121,12 @@ content recorded in a transcript, session identity and locations, counts, durati
 token totals, phase distributions, cost estimates, skill details, derived session
 evidence — bounded facts about which models, tools, skills, and MCP servers a
 session used, and any quota limits it recorded hitting, never the transcript's
-text — session relations, and the last successful plan-limit reading. This data stays on the
-device and is never uploaded.
+text — session relations, the last successful plan-limit reading, and timestamped
+provider usage readings for an opaque account key. Provider usage readings stay
+for up to 90 days, or a shorter selected session-data retention period. Clearing
+local data removes them. antiburn retains compact per-session allowance estimates
+while their sessions remain, even after the raw provider readings expire. This data
+stays on the device and is never uploaded.
 
 The coding agents' source transcripts remain their files. antiburn may copy data from
 them into its own local store, but it never modifies or deletes the source files.
@@ -136,22 +177,40 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   and require the next package to be installed manually.
 - **Anonymised product analytics** are the one thing antiburn reports to us.
   Official release builds start with it on, including during onboarding. The Ready
-  screen explains it, and the switch is in Settings → Privacy. The event schema has twenty-two fields and
+  screen explains it, and the switch is in Settings → Privacy. The event schema has twenty-eight fields and
   no others: the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier replaced every 30 days;
-  a random application-run identifier; the event name; the time it happened and the time it was delivered; the
+  a random analytics-session identifier; the event name; the time it happened and the time it was delivered; the
   processor architecture; a count rounded into a range where the event has one;
-  a short label naming which setting changed or which kind of failure occurred,
-  never the value; a second fixed label where needed; a coarse five-hour usage
+  a short label naming a surface, Settings pane, provider, setting, agent
+  category, or failure category, never work content or an entered value; a
+  second fixed label where needed; whether a visible state followed a user or
+  automatic exposure, or whether a Burn Check watch started passively or from
+  an action; a coarse five-hour usage
   band; the reset response shape; eligibility, experiment membership, experiment
   arm, and availability states; an allowlisted ineligibility reason; a reset-count
-  bucket; whether a next-reset date was present; the app version; and the operating system. The payload has no
-  field able to carry anything else. Because each event is timestamped and the
-  identifier lasts up to 30 days, the events do show roughly when the
-  application is used within that window; they do not show what it was used on.
+  bucket; whether a next-reset date was present; a learned session-limit
+  factor's plan mapped to a fixed list; that factor's dollars-per-percent value
+  reduced to a coarse band; how far that factor's estimate and the provider's
+  own meter disagree, also reduced to a coarse band; a nested hourly summary of
+  fixed bands and coverage for antiburn's own shell CPU, memory, process I/O,
+  database size, and database-log size; up to 16 sanitized unknown transcript
+  record type names, each checked against a fixed character set and length,
+  with a rejected name replaced by a fixed placeholder instead of being sent;
+  the app version; and the operating system. The payload has no
+  field able to carry anything else. The analytics-session identifier changes
+  after 30 minutes without a captured analytics event, when the app restarts,
+  or when the installation identifier rotates.
+  Its generator is memory-only, but each queued event stores the value on disk
+  until that event is sent or removed. Background events can keep it active, so
+  it does not measure a user visit or time spent. Because each event is
+  timestamped and the installation identifier lasts up to 30 days, the events
+  do show roughly when events were captured within that window; they do not show
+  the content or identity of what the app was used on. Resource ranges can
+  reveal coarse app work intensity and local data volume.
   [analytics.md](analytics.md) is the complete account: every field,
   the full event catalog, and how to verify all of it yourself.
-  Never sent: sessions, transcripts, prompts, titles, file paths, repository or
+  Never sent: session content, transcripts, prompts, titles, file paths, repository or
   branch names, token counts, costs, or credentials. Switching it off deletes
   the identifier and anything still queued. The endpoint also stores the request
   IP address and user-agent. Raw events are retained until the operator deletes
@@ -212,5 +271,6 @@ rather than staying silent.
 
 If an agent on this list is not discovered on a supported platform, that is a bug —
 please open an issue with the agent, its version, your platform, and where its
-session files live. Security issues go to the private channel in
-[`SECURITY.md`](../SECURITY.md) instead.
+session files live. Not sure it is a bug? Ask in the
+[antiburn Slack](https://antiburn.ai/slack) first. Security issues go to the
+private channel in [`SECURITY.md`](../SECURITY.md) instead.

@@ -31,8 +31,6 @@ rodio = { version = "0.22", default-features = false, features = ["playback"] }
 # swallowed rather than propagated, so the log is the only way to find out that
 # a machine has no working output device.
 tracing = "0.1"
-# Only for `Tuning`, which crosses the IPC boundary to the dev sound bench.
-serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 # WAV writing for the `dump_sounds_for_listening` test only — it exists so a

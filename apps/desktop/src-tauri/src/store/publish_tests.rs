@@ -105,6 +105,8 @@ fn turn_row(turn_index: u64) -> TurnRow {
         role: "assistant",
         ts_ms: Some(1_000 + turn_index as i64),
         model: Some("claude-opus-4-6".into()),
+        provider: None,
+        api: None,
         effort: None,
         speed: None,
         input_tokens: 10,
@@ -160,8 +162,11 @@ fn a_lost_race_from_a_zero_baseline_publishes_no_evidence_no_analysis_and_no_tur
     advance_source_generation_past(&store, &key);
     let evidence_before = store.evidence(&key).unwrap().unwrap();
     assert_eq!(evidence_before.evidence_json, None);
-    let completion =
-        evidence_completion(&claim, PublishedEvidence::Ready, "{\"lost\":true}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     let published = store
         .publish_projections(&record, None, &completion, &[], &[])
@@ -201,8 +206,11 @@ fn a_lost_race_leaves_relations_untouched() {
     let relations_before = store.relations(&key).unwrap();
 
     advance_source_generation_past(&store, &key);
-    let completion =
-        evidence_completion(&claim, PublishedEvidence::Ready, "{\"lost\":true}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     let losing_relations = [RelationRecord {
         kind: RelationKind::Subagent,
         related_id: "should-not-land".into(),
@@ -248,7 +256,11 @@ fn a_won_race_removes_turn_rows_from_every_superseded_fence_and_keeps_only_its_o
     writer
         .write_turn_rows(&[turn_row(0), turn_row(1), turn_row(2)])
         .unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -296,7 +308,11 @@ fn published_turn_rows_returns_the_winning_pass_rows_in_order() {
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     let written = [turn_row(2), turn_row(0), turn_row(1)];
     writer.write_turn_rows(&written).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -326,7 +342,11 @@ fn published_turn_rows_serves_the_last_published_fence_while_a_newer_claim_is_in
     let key = record.key.clone();
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -412,7 +432,11 @@ fn published_fence_equals_claim_fence_for_every_terminal_status() {
         let key = record.key.clone();
         let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
         writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
-        let completion = evidence_completion(&claim, status, "{}".into());
+        let completion = evidence_completion(
+            &claim,
+            status,
+            crate::store::test_support::evidence_json(&claim.key),
+        );
         assert!(
             store
                 .publish_projections(&record, None, &completion, &[], &[])
@@ -443,7 +467,11 @@ fn a_second_publish_supersedes_the_first_in_published_turn_rows() {
     let key = record.key.clone();
     let first_writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     first_writer.write_turn_rows(&[turn_row(0)]).unwrap();
-    let first_completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let first_completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &first_completion, &[], &[])
@@ -468,7 +496,11 @@ fn a_second_publish_supersedes_the_first_in_published_turn_rows() {
     next_writer
         .write_turn_rows(&[turn_row(0), turn_row(1)])
         .unwrap();
-    let next_completion = evidence_completion(&next_claim, PublishedEvidence::Ready, "{}".into());
+    let next_completion = evidence_completion(
+        &next_claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&next_claim.key),
+    );
     assert!(
         store
             .publish_projections(&next_record, None, &next_completion, &[], &[])
@@ -492,7 +524,11 @@ fn publish_projections_stamps_published_fence_with_the_completion_claim_fence() 
     let key = record.key.clone();
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0)]).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -513,8 +549,11 @@ fn a_lost_race_does_not_stamp_published_fence() {
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0)]).unwrap();
     advance_source_generation_past(&store, &key);
-    let completion =
-        evidence_completion(&claim, PublishedEvidence::Ready, "{\"lost\":true}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         !store
@@ -532,7 +571,11 @@ fn a_requeue_and_a_reclaim_leave_published_fence_intact() {
     let key = record.key.clone();
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0)]).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -569,7 +612,11 @@ fn fail_evidence_leaves_published_fence_intact() {
     let key = record.key.clone();
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0)]).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -612,7 +659,11 @@ fn published_turn_rows_serves_the_last_published_fence_after_a_requeue() {
     let key = record.key.clone();
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0), turn_row(1)]).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])

@@ -8,7 +8,12 @@ import { useCallback, useRef, useState, type ReactNode } from "react"
 
 import { cn } from "../../lib/cn"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
-import { agentDisplayName, type AgentSurface } from "../../lib/presentation/agents"
+import {
+  agentDisplayName,
+  agentProvider,
+  type AgentIconAppearance,
+  type AgentSurface,
+} from "../../lib/presentation/agents"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import {
@@ -29,11 +34,12 @@ import { SessionStatusBar } from "./SessionStatusBar"
 import { SessionTooltipOwner } from "./SessionTooltipOwner"
 import { type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
 import { ScrollPane } from "../ui/ScrollPane"
-import { SegmentedControl } from "../ui/SegmentedControl"
+import { ListDisplayToolbar } from "../ui/ListDisplayToolbar"
 import { countGroupedItems, groupActivityByDay } from "../activity/activityFeedGrouping"
 import { useActivityGroupPinning, type ViewportRef } from "../activity/useActivityGroupPinning"
 import type {
   LiveUsageSummaryPayload,
+  LiveUsageWindowPayload,
   SessionLimitAllocationPayload,
   SessionLimitAllocationSummaryPayload,
 } from "../../lib/ipc"
@@ -45,6 +51,7 @@ type SessionAgentIconRenderer = (
   slug: string,
   size: number,
   surface?: AgentSurface,
+  appearance?: AgentIconAppearance,
 ) => ReactNode
 
 /** One coding session in the list. */
@@ -86,6 +93,16 @@ export interface SessionListProps {
   emptyDescription?: string
   /** Open a session's analysis. Omitted leaves rows inert. */
   onOpenSession?: (entry: SessionListEntry) => void
+  /** Select one session without opening it. This enables arrow-key navigation. */
+  onSelect?: (entry: SessionListEntry) => void
+  /** Move focus to the selected session's detail pane. */
+  onOpenDetail?: (entry: SessionListEntry) => void
+  /** Stable local identity for the selected session. */
+  selectedKey?: string | null
+  /** Pause hidden presentation work while keeping the list mounted. */
+  active?: boolean
+  /** Let a window host use the list header as a native drag region. */
+  draggableHeader?: boolean
   /** The scrolling viewport, for a host that needs to observe it. */
   viewportRef?: ViewportRef
   initialScrollOffset?: number | (() => number)
@@ -100,9 +117,6 @@ export interface SessionListProps {
   onBadgeMetricChange?: (metric: "cost" | "weeklyPercent" | "fiveHourPercent") => void
   liveUsage?: LiveUsageSummaryPayload
   sessionLimitAllocations?: SessionLimitAllocationSummaryPayload
-  onLimitBadgeHover?: (
-    badge: { provider: string; windowId: string; percent: number } | null,
-  ) => void
 }
 
 function primaryLine(entry: SessionListEntry): string {
@@ -116,11 +130,6 @@ type BadgeMetric = "cost" | "weeklyPercent" | "fiveHourPercent"
 
 function keepScrollOffset(): false {
   return false
-}
-
-function allocationIsCurrent(allocation: SessionLimitAllocationPayload, now: number): boolean {
-  const resetsAt = Date.parse(allocation.resetsAt)
-  return Number.isFinite(resetsAt) && now < resetsAt
 }
 
 function isFiveHourWindow(provider: string, id: string): boolean {
@@ -140,26 +149,71 @@ function hasDisplayedFiveHourWindow(live: LiveUsageSummaryPayload | undefined): 
     : false
 }
 
+/** Whether a window reports the metric a session limit badge shows. */
+function windowMatchesMetric(
+  provider: string,
+  window: LiveUsageWindowPayload,
+  metric: Exclude<BadgeMetric, "cost">,
+): boolean {
+  return metric === "weeklyPercent"
+    ? window.kind === "weekly"
+    : isFiveHourWindow(provider, window.id)
+}
+
+/**
+ * Whether `live` affirmatively shows the provider that bills `agent` has no
+ * window of `metric`.
+ *
+ * This can say so only when `live` has loaded and the agent resolves to one
+ * fixed provider. Neither condition proves absence on its own: a missing
+ * summary just has not loaded yet, and an agent with no fixed provider (its
+ * route depends on the model) has no single provider to check.
+ */
+function providerConfirmsNoWindow(
+  live: LiveUsageSummaryPayload | undefined,
+  agent: string,
+  metric: Exclude<BadgeMetric, "cost">,
+): boolean {
+  if (!live) return false
+  const provider = agentProvider(agent)
+  if (!provider) return false
+  return !liveDisplayableProviders(live).some(
+    (entry) =>
+      entry.provider === provider &&
+      liveWindows(entry).some((window) => windowMatchesMetric(provider, window, metric)),
+  )
+}
+
 function sessionLimitBadge(
   metric: Exclude<BadgeMetric, "cost">,
+  agent: string,
+  liveUsage: LiveUsageSummaryPayload | undefined,
   allocation?: SessionLimitAllocationPayload,
 ): {
   label: string
   percent: number | null
   provider?: string
   windowId?: string
+  unknown?: boolean
 } {
-  if (!allocation || !Number.isFinite(allocation.percent)) {
+  if (allocation && Number.isFinite(allocation.percent)) {
+    return {
+      label: `Estimated share of your ${allocation.displayName} ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit.`,
+      percent: allocation.percent,
+      provider: allocation.provider,
+      windowId: allocation.windowId,
+    }
+  }
+  if (providerConfirmsNoWindow(liveUsage, agent, metric)) {
     return {
       label: `No ${metric === "weeklyPercent" ? "weekly" : "5h"} limit for this session.`,
       percent: null,
     }
   }
   return {
-    label: `Estimated share of your ${allocation.displayName} ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit.`,
-    percent: allocation.percent,
-    provider: allocation.provider,
-    windowId: allocation.windowId,
+    label: `Share of your ${metric === "weeklyPercent" ? "weekly" : "5-hour"} limit is not known for this session.`,
+    percent: null,
+    unknown: true,
   }
 }
 
@@ -211,8 +265,14 @@ interface SessionRowProps {
   entry: SessionListEntry
   hygiene: SessionHygienePayload
   onOpen?: () => void
+  onSelect?: () => void
+  onOpenDetail?: () => void
+  selected?: boolean
+  tabIndex?: number
+  active?: boolean
   renderAgentIcon?: SessionAgentIconRenderer | undefined
   wslIcon?: ReactNode | undefined
+  showRepository?: boolean | undefined
   showCost?: boolean
   limitBadge?:
     | {
@@ -220,9 +280,9 @@ interface SessionRowProps {
         percent: number | null
         provider?: string
         windowId?: string
+        unknown?: boolean
       }
     | undefined
-  onLimitBadgeHover?: SessionListProps["onLimitBadgeHover"]
 }
 
 /**
@@ -236,36 +296,138 @@ function SessionRow({
   entry,
   hygiene,
   onOpen,
+  onSelect,
+  onOpenDetail,
+  selected = false,
+  tabIndex,
+  active = true,
   renderAgentIcon,
   wslIcon,
+  showRepository = false,
   limitBadge,
-  onLimitBadgeHover,
   showCost = true,
 }: SessionRowProps) {
-  const clickable = !!entry.sessionId && !!onOpen
+  const selectionMode = !!entry.sessionId && !!onSelect
+  const clickable = !!entry.sessionId && (!!onOpen || selectionMode)
   const primary = primaryLine(entry)
-  const hasRepo = entry.repo !== ""
   const modelRuns = entry.modelRuns ?? []
   const modelPairs = modelRunShortPairs(modelRuns)
+  const modelNames = modelRunNames(modelRuns)
+  const firstModel = modelPairs[0]
+  const additionalModelCount = Math.max(0, modelPairs.length - 1)
+  const hasContextAnchor = modelPairs.length > 0
+  const hasRepo =
+    entry.repo !== "" && (showRepository || (!hasContextAnchor && !renderAgentIcon))
+  const repositoryLabel = entry.repo
+    ? `${entry.repo}${entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}`
+    : ""
+  const compactTrailingTime = hasRepo && repositoryLabel.length > 18
   const hygieneChecks = sessionHygieneChecks(hygiene)
+  const hasContextDetails = !!entry.branch || !!entry.wslDistro
+  const hasContextIdentity = hasContextAnchor || hasRepo || hasContextDetails
+  const contextDescription = [
+    `Session source: ${agentDisplayName(entry.agent)}.`,
+    modelNames.length > 0 ? `Models: ${modelNames.join(", ")}.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+  const contextTooltip = (
+    <div className="flex min-w-[180px] flex-col gap-y-2" data-session-context-tooltip="">
+      <div className="flex items-center gap-x-2">
+        {renderAgentIcon && (
+          <span
+            className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
+            aria-hidden="true"
+          >
+            {renderAgentIcon(entry.agent, 16, entry.surface, "neutral")}
+          </span>
+        )}
+        <span className="min-w-0 truncate type-callout font-medium! text-label">
+          {agentDisplayName(entry.agent)}
+        </span>
+      </div>
+
+      {modelNames.length > 0 && (
+        <div className="flex flex-col gap-y-0.5">
+          <span className="type-caption text-label-tertiary">Models</span>
+          {modelNames.map((name) => (
+            <span key={name} className="font-mono type-footnote text-label">
+              {name}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+  const titleContent = (
+    <div className="relative z-10 flex min-w-0 flex-1 items-center gap-x-1">
+      <TruncatedText
+        // One ink for every title. The shimmer overlay is the only
+        // difference an active session shows.
+        className="min-w-0 type-body font-medium! text-label"
+        text={primary}
+        lines={1}
+        shimmer={entry.isActive && active}
+        scrollOnHover
+      />
+
+      {entry.hasForkParent && (
+        <Tooltip label="Forked from another session" delayMs={500}>
+          <span
+            className="inline-flex shrink-0 text-label-tertiary"
+            aria-label="Forked from another session"
+          >
+            <GitFork size={12} strokeWidth={2} aria-hidden="true" />
+          </span>
+        </Tooltip>
+      )}
+      {!!entry.forkChildCount && (
+        <Tooltip
+          label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
+          delayMs={500}
+        >
+          <span
+            className="inline-flex shrink-0 text-label-tertiary"
+            aria-label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
+          >
+            <GitBranchPlus size={12} strokeWidth={2} aria-hidden="true" />
+          </span>
+        </Tooltip>
+      )}
+    </div>
+  )
 
   return (
     <div
       className={cn(
-        "group relative",
-        "w-full grid grid-cols-[14px_minmax(0,1fr)] gap-x-2 gap-y-1",
+        "session-card group relative isolate overflow-hidden",
+        "w-full grid grid-cols-[14px_minmax(0,1fr)] gap-x-2 gap-y-0.5",
         "items-center",
-        "rounded-[var(--radius-popover)] bg-surface-card/50 px-3 py-3",
-        "transition-colors duration-[var(--duration-fast)] ease-out",
-        entry.isActive && "activity-row-active",
+        "rounded-[var(--radius-popover)] px-3 py-3",
+        selected ? "bg-surface-selected/60" : "bg-session-card",
+        entry.isActive && active && "activity-row-active",
+        clickable && "cursor-pointer",
         clickable &&
-          "cursor-pointer hover:bg-surface-secondary/50 [&:has([data-state*=open])]:bg-surface-secondary/50",
+          !selected &&
+          "hover:bg-surface-secondary/50 [&:has([data-state*=open])]:bg-surface-secondary/50",
       )}
       {...(clickable
         ? {
             role: "button" as const,
-            tabIndex: 0,
-            onClick: onOpen,
+            tabIndex: tabIndex ?? 0,
+            "aria-current": selected ? ("true" as const) : undefined,
+            "data-session-row": "",
+            onClick: selectionMode
+              ? (event: React.MouseEvent<HTMLDivElement>) => {
+                  const target = event.target as Element
+                  const nestedControl = target.closest(
+                    'button, a, input, select, textarea, [role="button"]',
+                  )
+                  if (nestedControl && nestedControl !== event.currentTarget) return
+                  event.currentTarget.focus()
+                  onSelect?.()
+                }
+              : onOpen,
             onKeyDown: (event: React.KeyboardEvent) => {
               // Only when the row itself has focus: a nested control's Enter
               // belongs to that control, not to the card behind it.
@@ -274,7 +436,12 @@ function SessionRow({
                 (event.key === "Enter" || event.key === " ")
               ) {
                 event.preventDefault()
-                onOpen?.()
+                if (selectionMode) {
+                  if (event.key === "Enter") onOpenDetail?.()
+                  else onSelect?.()
+                } else {
+                  onOpen?.()
+                }
               }
             },
           }
@@ -282,103 +449,61 @@ function SessionRow({
     >
       {entry.isActive && <span className="sr-only">Active session</span>}
 
-      <div className="row-1 col-2">
+      {renderAgentIcon && (
+        <span
+          className="session-vendor-watermark pointer-events-none absolute -right-1.5 -bottom-1.5 z-0 inline-flex h-10 w-10 items-center justify-center"
+          aria-hidden="true"
+          data-session-vendor-watermark=""
+        >
+          {renderAgentIcon(entry.agent, 40, entry.surface, "neutral")}
+        </span>
+      )}
+
+      <div className="relative z-10 col-span-full">
         <SessionStatusBar
           checks={hygieneChecks}
           evidenceState={hygiene.evidenceState}
           cost={showCost ? (entry.cost ?? null) : null}
           limitBadge={limitBadge}
-          onLimitBadgeHover={(badge) => {
-            if (badge?.percent == null || !badge.provider || !badge.windowId) {
-              onLimitBadgeHover?.(null)
-              return
-            }
-            onLimitBadgeHover?.({
-              provider: badge.provider,
-              windowId: badge.windowId,
-              percent: badge.percent,
-            })
-          }}
         />
       </div>
 
-      <span className="row-2 col-1 h-full pt-[3px]">
-        {renderAgentIcon?.(entry.agent, 14, entry.surface)}
-      </span>
+      <div className="col-2 min-w-0">{titleContent}</div>
 
-      <div className="col-2 flex min-w-0 items-center gap-x-1">
-        <TruncatedText
-          // One ink for every title. The shimmer overlay is the only
-          // difference an active session shows.
-          className="min-w-0 mt-px mb-0.5 type-body-large text-label"
-          text={primary}
-          lines={2}
-          shimmer={entry.isActive}
-        />
-
-        {entry.hasForkParent && (
-          <Tooltip label="Forked from another session" delayMs={500}>
-            <span
-              className="inline-flex shrink-0 text-label-tertiary"
-              aria-label="Forked from another session"
-            >
-              <GitFork size={12} strokeWidth={2} aria-hidden="true" />
-            </span>
-          </Tooltip>
-        )}
-        {!!entry.forkChildCount && (
-          <Tooltip
-            label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
-            delayMs={500}
-          >
-            <span
-              className="inline-flex shrink-0 text-label-tertiary"
-              aria-label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
-            >
-              <GitBranchPlus size={12} strokeWidth={2} aria-hidden="true" />
-            </span>
-          </Tooltip>
-        )}
-      </div>
-
-      {modelPairs.length > 0 && (
-        <div className="col-2 min-w-0 space-y-px">
-          <div
-            className="min-w-0 max-w-full truncate type-callout text-label-tertiary"
-            title={modelRunNames(modelRuns).join("\n")}
-          >
-            {modelPairs.map((pair, index) => (
-              <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
-                {index > 0 && " · "}
-                <span className="font-medium">{pair.model}</span>
-                {pair.thinkingMode && (
-                  <span className="type-caption"> {pair.thinkingMode}</span>
-                )}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {(entry.timestamp || hasRepo || entry.branch || entry.wslDistro) && (
-        <div className="col-2 w-full flex justify-between">
-          {(hasRepo || entry.branch || entry.wslDistro) && (
-            <div className="flex min-w-0 items-baseline gap-x-2">
-              {hasRepo && (
-                <Tooltip
-                  label={
-                    entry.additionalRepos?.length
-                      ? `Also observed: ${entry.additionalRepos.join(", ")}`
-                      : entry.repo
-                  }
-                >
-                  <span className="min-w-0 truncate type-callout text-label-tertiary">
-                    {entry.repo}
-                    {entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}
+      {(hasContextIdentity || entry.timestamp) && (
+        <div
+          className="relative z-10 col-2 flex w-full min-w-0 items-baseline gap-x-2"
+          data-session-context-row=""
+        >
+          {hasContextAnchor && (
+            <Tooltip label={contextTooltip}>
+              <div
+                aria-label={contextDescription}
+                className="flex shrink-0 items-baseline gap-x-1.5 type-callout text-label-tertiary"
+              >
+                {firstModel && (
+                  <span className="shrink-0 whitespace-nowrap">
+                    <span className="font-semibold! text-label-secondary">
+                      {firstModel.model}
+                    </span>
+                    {firstModel.thinkingMode && <span> {firstModel.thinkingMode}</span>}
                   </span>
-                </Tooltip>
-              )}
+                )}
 
+                {additionalModelCount > 0 && (
+                  <span
+                    className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-surface-tertiary/40 px-1 font-mono type-metadata font-medium! tabular-nums text-label-tertiary"
+                    data-additional-model-count=""
+                  >
+                    +{additionalModelCount}
+                  </span>
+                )}
+              </div>
+            </Tooltip>
+          )}
+
+          {hasContextDetails && (
+            <div className="flex min-w-0 items-center gap-x-1.5 overflow-hidden">
               <WslOriginBadge
                 distro={entry.wslDistro}
                 {...(wslIcon ? { icon: wslIcon } : {})}
@@ -393,15 +518,33 @@ function SessionRow({
             </div>
           )}
 
-          {entry.timestamp && (
-            <time
-              dateTime={entry.timestamp}
-              aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
-              // The host row reveals the timestamp on hover.
-              className="tabular-nums type-footnote font-mono text-label-tertiary opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:opacity-100"
+          {(hasRepo || entry.timestamp) && (
+            <div
+              className="session-trailing-metadata ml-auto flex min-w-0 flex-1 items-baseline justify-end gap-x-0.5 font-mono type-metadata tabular-nums text-label-tertiary"
+              data-session-trailing-metadata=""
             >
-              {relativeTime(entry.timestamp)}
-            </time>
+              {hasRepo && <span className="min-w-0 truncate">{repositoryLabel}</span>}
+
+              {hasRepo && entry.timestamp && (
+                <span className="shrink-0" aria-hidden="true">
+                  ·
+                </span>
+              )}
+
+              {entry.timestamp && (
+                <time
+                  dateTime={entry.timestamp}
+                  aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
+                  // The host row reveals the timestamp on hover.
+                  className="shrink-0 whitespace-nowrap"
+                >
+                  {relativeTime(
+                    entry.timestamp,
+                    compactTrailingTime ? { compact: true } : undefined,
+                  )}
+                </time>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -421,6 +564,11 @@ export function SessionList({
   emptyTitle,
   emptyDescription = "Coding sessions appear here as they are discovered on this machine.",
   onOpenSession,
+  onSelect,
+  onOpenDetail,
+  selectedKey,
+  active = true,
+  draggableHeader = false,
   viewportRef,
   initialScrollOffset = 0,
   initialMeasurementsCache,
@@ -432,25 +580,20 @@ export function SessionList({
   onBadgeMetricChange,
   liveUsage,
   sessionLimitAllocations,
-  onLimitBadgeHover,
 }: SessionListProps) {
-  const currentTime = now?.getTime() ?? Date.now()
   const fiveHourAvailable =
     badgeMetric === "fiveHourPercent" ||
     hasDisplayedFiveHourWindow(liveUsage) ||
     (sessionLimitAllocations?.allocations.some(
-      (allocation) =>
-        allocation.metric === "fiveHour" && allocationIsCurrent(allocation, currentTime),
+      (allocation) => allocation.metric === "fiveHour",
     ) ??
       false)
   const selectedMetric = badgeMetric
   const allocationBySession = new Map(
-    (sessionLimitAllocations?.allocations ?? [])
-      .filter((allocation) => allocationIsCurrent(allocation, currentTime))
-      .map((allocation) => [
-        `${localSessionKey(allocation.agent, allocation.sessionId, allocation.wslDistro)}:${allocation.metric}`,
-        allocation,
-      ]),
+    (sessionLimitAllocations?.allocations ?? []).map((allocation) => [
+      `${localSessionKey(allocation.agent, allocation.sessionId, allocation.wslDistro)}:${allocation.metric}`,
+      allocation,
+    ]),
   )
   const items = entries.map((entry, index) => ({
     entry,
@@ -462,6 +605,14 @@ export function SessionList({
   }))
 
   const groups = groupActivityByDay(items, { days, ...(now ? { now } : {}) })
+  const visibleRepositories = new Set<string>()
+  for (const group of groups) {
+    for (const { entry } of group.items) {
+      if (entry.repo) visibleRepositories.add(entry.repo)
+      for (const repo of entry.additionalRepos ?? []) visibleRepositories.add(repo)
+    }
+  }
+  const showRepositories = visibleRepositories.size > 1
   const visibleCount = countGroupedItems(groups)
   let rowPosition = 0
   const virtualItems: VirtualSessionItem[] = groups.flatMap((group, groupIndex) => [
@@ -482,20 +633,33 @@ export function SessionList({
     })),
   ])
   const rowIndexes = virtualItems.flatMap((item, index) => (item.type === "row" ? [index] : []))
-  const hygieneSessions = groups.flatMap((group) =>
-    group.items.flatMap(({ entry }) =>
-      entry.sessionId
-        ? [
-            {
-              agent: entry.agent,
-              sessionId: entry.sessionId,
-              wslDistro: entry.wslDistro ?? null,
-            },
-          ]
-        : [],
-    ),
+  const selectableRowIndexes = virtualItems.flatMap((item, index) =>
+    item.type === "row" && item.item.entry.sessionId ? [index] : [],
   )
+  const hygieneSessions = active
+    ? groups.flatMap((group) =>
+        group.items.flatMap(({ entry }) =>
+          entry.sessionId
+            ? [
+                {
+                  agent: entry.agent,
+                  sessionId: entry.sessionId,
+                  wslDistro: entry.wslDistro ?? null,
+                },
+              ]
+            : [],
+        ),
+      )
+    : []
   const hygieneBySession = useSessionHygiene(hygieneSessions)
+  const firstSelectableKey = groups
+    .flatMap((group) => group.items)
+    .find((item) => item.entry.sessionId)?.key
+  const rovingKey = groups.some((group) =>
+    group.items.some((item) => item.entry.sessionId && item.key === selectedKey),
+  )
+    ? selectedKey
+    : firstSelectableKey
 
   const { assignViewportRef, registerHeading, pinnedLabel } = useActivityGroupPinning(
     groups.map((group) => group.label),
@@ -526,6 +690,12 @@ export function SessionList({
         if (item.type === "heading") indexes.add(index)
       })
       if (pendingFocusIndex !== null) indexes.add(pendingFocusIndex)
+      if (onSelect && rovingKey) {
+        const tabStopIndex = virtualItems.findIndex(
+          (item) => item.type === "row" && item.item.key === rovingKey,
+        )
+        if (tabStopIndex >= 0) indexes.add(tabStopIndex)
+      }
 
       const activeElement = document.activeElement
       if (activeElement && scrollElementRef.current?.contains(activeElement)) {
@@ -547,32 +717,72 @@ export function SessionList({
     (node: HTMLDivElement | null) => {
       virtualizer.measureElement(node)
       if (!node || Number(node.dataset.index) !== pendingFocusIndex) return
-      node.querySelector<HTMLElement>('[role="button"][tabindex="0"]')?.focus()
+      node.querySelector<HTMLElement>("[data-session-row]")?.focus()
       setPendingFocusIndex(null)
     },
     [pendingFocusIndex, virtualizer],
   )
+  const focusVirtualRow = useCallback(
+    (index: number) => {
+      const nextRow = scrollElementRef.current?.querySelector<HTMLElement>(
+        `[data-virtual-kind="row"][data-index="${index}"]`,
+      )
+      if (nextRow) {
+        nextRow.querySelector<HTMLElement>("[data-session-row]")?.focus()
+        return
+      }
+      setPendingFocusIndex(index)
+      virtualizer.scrollToIndex(index, { align: "auto" })
+    },
+    [virtualizer],
+  )
   const moveVirtualFocus = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) return
       const target = event.target instanceof Element ? event.target : null
       const currentItem = target?.closest<HTMLElement>('[data-virtual-kind="row"]')
-      if (!currentItem || !target?.closest('[role="button"][tabindex="0"]')) return
+      const sessionRow = target?.closest<HTMLElement>("[data-session-row]")
+      if (!currentItem || !sessionRow) return
+
+      if (
+        onSelect &&
+        target === sessionRow &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
+      ) {
+        const currentIndex = Number(currentItem.dataset.index)
+        const currentPosition = selectableRowIndexes.indexOf(currentIndex)
+        let nextIndex: number | undefined
+        if (event.key === "Home") nextIndex = selectableRowIndexes[0]
+        else if (event.key === "End") nextIndex = selectableRowIndexes.at(-1)
+        else {
+          const offset = event.key === "ArrowDown" ? 1 : -1
+          nextIndex = selectableRowIndexes[currentPosition + offset]
+        }
+        const nextItem = nextIndex === undefined ? undefined : virtualItems[nextIndex]
+        if (
+          nextIndex === undefined ||
+          nextItem?.type !== "row" ||
+          !nextItem.item.entry.sessionId
+        )
+          return
+        event.preventDefault()
+        onSelect(nextItem.item.entry)
+        focusVirtualRow(nextIndex)
+        return
+      }
+
+      if (onSelect) return
+      if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey) return
+      if (!target?.closest('[role="button"][tabindex="0"]')) return
       const currentPosition = rowIndexes.indexOf(Number(currentItem.dataset.index))
       const nextIndex = rowIndexes[currentPosition + (event.shiftKey ? -1 : 1)]
       if (nextIndex === undefined) return
-      const nextRow = scrollElementRef.current?.querySelector<HTMLElement>(
-        `[data-virtual-kind="row"][data-index="${nextIndex}"]`,
-      )
       event.preventDefault()
-      if (nextRow) {
-        nextRow.querySelector<HTMLElement>('[role="button"][tabindex="0"]')?.focus()
-        return
-      }
-      setPendingFocusIndex(nextIndex)
-      virtualizer.scrollToIndex(nextIndex, { align: "auto" })
+      focusVirtualRow(nextIndex)
     },
-    [rowIndexes, virtualizer],
+    [focusVirtualRow, onSelect, rowIndexes, selectableRowIndexes, virtualItems],
   )
   const assignVirtualViewportRef = useCallback(
     (node: HTMLDivElement | null) => {
@@ -594,6 +804,7 @@ export function SessionList({
   return (
     <section
       aria-label="Sessions"
+      data-tauri-drag-region={draggableHeader ? "" : undefined}
       className="flex h-full min-h-0 flex-col pt-2"
       onKeyDownCapture={moveVirtualFocus}
     >
@@ -601,29 +812,32 @@ export function SessionList({
         {visibleCount === 0 ? resolvedEmptyTitle : ""}
       </span>
 
-      {topLabel && (
+      {onBadgeMetricChange && (
+        <ListDisplayToolbar
+          {...(topLabel ? { label: topLabel } : {})}
+          options={[
+            { value: "cost", label: "Cost" },
+            { value: "weeklyPercent", label: "Week %" },
+            ...(fiveHourAvailable
+              ? [{ value: "fiveHourPercent" as const, label: "5h %" }]
+              : []),
+          ]}
+          value={selectedMetric}
+          onChange={onBadgeMetricChange}
+          ariaLabel="Session metric"
+          dragRegion={draggableHeader}
+        />
+      )}
+
+      {topLabel && !onBadgeMetricChange && (
         <div
           data-testid="activity-pinned-group-label"
+          data-tauri-drag-region={draggableHeader ? "deep" : undefined}
           // The inset matches the cards, so the label sits on their left
           // edge. The type matches the usage view's group labels.
-          className="mb-1 flex h-7 shrink-0 items-center justify-between gap-2 px-3 type-caption font-medium tracking-wide uppercase text-label-tertiary"
+          className="mb-1 flex h-7 shrink-0 items-center px-3 type-caption font-medium text-label-tertiary"
         >
           <span>{topLabel}</span>
-          {onBadgeMetricChange && (
-            <SegmentedControl
-              options={[
-                { value: "cost", label: "$" },
-                { value: "weeklyPercent", label: "% week" },
-                ...(fiveHourAvailable
-                  ? [{ value: "fiveHourPercent" as const, label: "% 5h" }]
-                  : []),
-              ]}
-              value={selectedMetric}
-              onChange={onBadgeMetricChange}
-              ariaLabel="Session badge metric"
-              className="normal-case"
-            />
-          )}
         </div>
       )}
 
@@ -669,9 +883,10 @@ export function SessionList({
                               : {})}
                             className={cn(
                               "absolute top-0 left-0 w-full",
-                              ((virtualItem.type === "heading" && virtualItem.groupIndex > 0) ||
-                                (virtualItem.type === "row" && virtualItem.itemIndex > 0)) &&
+                              virtualItem.type === "heading" &&
+                                virtualItem.groupIndex > 0 &&
                                 "pt-2",
+                              virtualItem.type === "row" && virtualItem.itemIndex > 0 && "pt-3",
                             )}
                             style={{ transform: `translateY(${measuredItem.start}px)` }}
                           >
@@ -682,7 +897,7 @@ export function SessionList({
                                 className={
                                   virtualItem.groupIndex === 0
                                     ? "sr-only"
-                                    : "py-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
+                                    : "py-1 type-caption font-medium text-label-tertiary"
                                 }
                               >
                                 {group.label}
@@ -690,6 +905,20 @@ export function SessionList({
                             ) : (
                               <SessionRow
                                 entry={virtualItem.item.entry}
+                                active={active}
+                                selected={virtualItem.item.key === selectedKey}
+                                {...(onSelect && virtualItem.item.entry.sessionId
+                                  ? {
+                                      tabIndex: virtualItem.item.key === rovingKey ? 0 : -1,
+                                      onSelect: () => onSelect(virtualItem.item.entry),
+                                      ...(onOpenDetail
+                                        ? {
+                                            onOpenDetail: () =>
+                                              onOpenDetail(virtualItem.item.entry),
+                                          }
+                                        : {}),
+                                    }
+                                  : {})}
                                 showCost={selectedMetric === "cost"}
                                 hygiene={
                                   virtualItem.item.entry.sessionId
@@ -710,10 +939,13 @@ export function SessionList({
                                   : {})}
                                 {...(renderAgentIcon ? { renderAgentIcon } : {})}
                                 {...(wslIcon ? { wslIcon } : {})}
+                                showRepository={showRepositories}
                                 {...(selectedMetric !== "cost"
                                   ? {
                                       limitBadge: sessionLimitBadge(
                                         selectedMetric,
+                                        virtualItem.item.entry.agent,
+                                        liveUsage,
                                         virtualItem.item.entry.sessionId
                                           ? allocationBySession.get(
                                               `${localSessionKey(
@@ -724,7 +956,6 @@ export function SessionList({
                                             )
                                           : undefined,
                                       ),
-                                      ...(onLimitBadgeHover ? { onLimitBadgeHover } : {}),
                                     }
                                   : {})}
                               />

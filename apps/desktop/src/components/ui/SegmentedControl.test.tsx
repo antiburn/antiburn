@@ -111,6 +111,37 @@ describe("SegmentedControl", () => {
     expect(document.querySelector(".ui-segmented-reduced-fill")).toBeTruthy()
   })
 
+  it("lets native tabs sit at their content width when equalWidth is false", () => {
+    const { unmount } = render(
+      <SegmentedControl
+        options={FOUR}
+        value="a"
+        onChange={() => {}}
+        ariaLabel="Sections"
+        variant="native-tabs"
+      />,
+    )
+    const stretched = screen.getByRole("radiogroup", { name: "Sections" })
+    expect(stretched).toHaveClass("grid")
+    expect(stretched.style.gridTemplateColumns).toBe("repeat(4, minmax(0, 1fr))")
+    unmount()
+
+    render(
+      <SegmentedControl
+        options={FOUR}
+        value="a"
+        onChange={() => {}}
+        ariaLabel="Sections"
+        variant="native-tabs"
+        equalWidth={false}
+      />,
+    )
+    const content = screen.getByRole("radiogroup", { name: "Sections" })
+    expect(content).toHaveClass("inline-grid")
+    expect(content.style.gridTemplateColumns).toBe("")
+    expect(screen.getByRole("radio", { name: "A" })).toHaveClass("px-4")
+  })
+
   it("renders content-width text tabs without segmented-control chrome", () => {
     const onChange = vi.fn()
     render(
@@ -133,7 +164,7 @@ describe("SegmentedControl", () => {
       expect(tablist.className).not.toContain(chrome)
     }
     expect(tablist.getAttribute("style")).toBeNull()
-    expect(document.querySelector(".bg-accent-fill")).toBeNull()
+    expect(document.querySelector(".segmented-control-text-indicator.bg-label")).not.toBeNull()
     expect(document.querySelector(".duration-\\[var\\(--duration-fast\\)\\]")).toBeNull()
 
     const selected = screen.getByRole("tab", { name: "B" })

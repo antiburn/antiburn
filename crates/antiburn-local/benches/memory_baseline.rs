@@ -20,7 +20,7 @@ use antiburn_local::analysis::{
     CompositeSink, EvidenceSource, MemoryTurnRowStore, NormalizedEvent, NormalizedRecord,
     RawSource, RecordSink, Role, SessionEvidenceAccumulator, SessionInput,
     SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind, ToolCall,
-    TurnRowSink, TurnRowStore, Usage, adapter_for, merge_metrics,
+    TurnRowSink, TurnRowStore, Usage, merge_metrics, reader_for,
 };
 use corpus::{
     GeneratedSession, SessionSpec, generate_session, generate_session_of_bytes,
@@ -106,7 +106,7 @@ fn composite_for(input: &SessionInput) -> CompositeSink {
 
 fn run_pipeline(input: &SessionInput) -> String {
     let mut composite = composite_for(input);
-    let outcome = adapter_for(&input.agent)
+    let outcome = reader_for(&input.agent)
         .visit(input, &mut composite)
         .expect("synthetic source must stream");
     composite.observe_source_outcome(outcome);
@@ -203,7 +203,7 @@ fn large_session_split() {
         measure_peak(|| {
             let mut metrics =
                 SessionMetricsAccumulator::new(input.agent.clone(), input.session_id.clone());
-            adapter_for("claude")
+            reader_for("claude")
                 .visit(&input, &mut metrics)
                 .expect("synthetic source must stream");
             let allocator_live_bytes = LIVE_BYTES
@@ -226,7 +226,7 @@ fn large_session_split() {
             repeated_input.agent.clone(),
             repeated_input.session_id.clone(),
         );
-        adapter_for("claude")
+        reader_for("claude")
             .visit(&repeated_input, &mut metrics)
             .expect("synthetic source must stream");
         metrics.retained_bytes()
@@ -317,13 +317,13 @@ fn session_tree_measurement() {
     let live_before = LIVE_BYTES.load(Ordering::Relaxed);
     let (peak, (retained, live)) = measure_peak(|| {
         let mut parent_metrics = SessionMetricsAccumulator::new("claude", "tree-parent");
-        adapter_for("claude")
+        reader_for("claude")
             .visit(&parent_input, &mut parent_metrics)
             .expect("synthetic parent streams");
         let mut children = Vec::new();
         for input in &child_inputs {
             let mut child = SessionMetricsAccumulator::new("claude", &input.session_id);
-            adapter_for("claude")
+            reader_for("claude")
                 .visit(input, &mut child)
                 .expect("synthetic child streams");
             children.push(child);

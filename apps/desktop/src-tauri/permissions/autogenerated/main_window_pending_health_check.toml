@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-main-window-pending-health-check"
+description = "Enables the main_window_pending_health_check command without any pre-configured scope."
+commands.allow = ["main_window_pending_health_check"]
+
+[[permission]]
+identifier = "deny-main-window-pending-health-check"
+description = "Denies the main_window_pending_health_check command without any pre-configured scope."
+commands.deny = ["main_window_pending_health_check"]

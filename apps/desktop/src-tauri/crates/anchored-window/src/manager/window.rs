@@ -1,15 +1,17 @@
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
 
+use crate::companion::CompanionWindow;
 use serde::Serialize;
-use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{Manager, WebviewWindow};
 #[cfg(not(target_os = "macos"))]
 use tauri::{PhysicalPosition, PhysicalSize};
+#[cfg(not(target_os = "macos"))]
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 use crate::geometry::CursorProximity;
 #[cfg(not(target_os = "macos"))]
 use crate::geometry::{Point, Rect, classify_cursor, place_left_preferred};
-use crate::model::{HeightPolicy, PlacementPolicy, normalized_height_policy};
 use crate::platform;
 
 use super::AnchoredWindowManager;
@@ -19,8 +21,8 @@ where
     T: Clone + PartialEq + Send + Sync + Serialize + 'static,
     P: Clone + Send + Sync + Serialize + 'static,
 {
-    pub(super) fn ensure_window(&self, app: &tauri::AppHandle) -> tauri::Result<WebviewWindow> {
-        if let Some(window) = app.get_webview_window(&self.inner.config.label) {
+    pub(super) fn ensure_window(&self, app: &tauri::AppHandle) -> tauri::Result<CompanionWindow> {
+        if let Some(window) = self.companion(app) {
             #[cfg(target_os = "linux")]
             crate::linux::install_pointer_tracking(
                 &window,
@@ -34,60 +36,93 @@ where
             lifecycle.renderer_ready = false;
             (lifecycle.renderer_generation, lifecycle.height)
         };
-        let script = format!(
-            "Object.defineProperty(globalThis, \"__ANTIBURN_WINDOW_GENERATION__\", {{ value: {renderer_generation}, writable: false, configurable: false }});"
-        );
-        let builder = WebviewWindowBuilder::new(
-            app,
-            &self.inner.config.label,
-            WebviewUrl::App(self.inner.config.route.clone().into()),
-        )
-        .initialization_script(script)
-        .title(&self.inner.config.title)
-        .inner_size(self.inner.config.width, initial_height)
-        .resizable(false)
-        .maximizable(false)
-        .minimizable(false)
-        .decorations(false)
-        .shadow(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .visible(false)
-        .focused(false)
-        .transparent(platform::is_transparent(self.inner.config.material))
-        .focusable(self.inner.config.interaction == crate::model::InteractionPolicy::Interactive);
-        let window = platform::configure(builder, self.inner.config.material).build()?;
-        #[cfg(target_os = "linux")]
-        crate::linux::install_pointer_tracking(&window, Arc::clone(&self.inner.pointer_tracker))?;
+        #[cfg(target_os = "macos")]
+        let window = {
+            let manager = std::sync::Arc::downgrade(&self.inner);
+            let failure_app = app.clone();
+            let handler = self.inner.native_handler.ok_or_else(|| {
+                tauri::Error::Io(std::io::Error::other("native companion handler is missing"))
+            })?;
+            let window = crate::macos::NativeWindow::create(
+                app,
+                &self.inner.config,
+                renderer_generation,
+                initial_height,
+                handler,
+                move || {
+                    if let Some(inner) = manager.upgrade() {
+                        Self { inner }.native_renderer_failed(&failure_app, renderer_generation);
+                    }
+                },
+            )?;
+            *self
+                .inner
+                .native_window
+                .lock()
+                .expect("native companion slot mutex must not be poisoned") = Some(window.clone());
+            window
+        };
+        #[cfg(not(target_os = "macos"))]
+        let window = {
+            let script = format!(
+                "Object.defineProperty(globalThis, \"__ANTIBURN_WINDOW_GENERATION__\", {{ value: {renderer_generation}, writable: false, configurable: false }});"
+            );
+            let builder = WebviewWindowBuilder::new(
+                app,
+                &self.inner.config.label,
+                WebviewUrl::App(self.inner.config.route.clone().into()),
+            )
+            .initialization_script(script)
+            .title(&self.inner.config.title)
+            .inner_size(self.inner.config.width, initial_height)
+            .resizable(false)
+            .maximizable(false)
+            .minimizable(false)
+            .decorations(false)
+            .shadow(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .visible(false)
+            .focused(false)
+            .focusable(false);
+            let window = platform::configure(builder).build()?;
+            #[cfg(target_os = "linux")]
+            crate::linux::install_pointer_tracking(
+                &window,
+                Arc::clone(&self.inner.pointer_tracker),
+            )?;
+            window
+        };
         Ok(window)
     }
 
     pub(super) fn apply_size_and_position(
         &self,
         app: &tauri::AppHandle,
-        companion: &WebviewWindow,
+        companion: &CompanionWindow,
     ) -> tauri::Result<()> {
         let Some(anchor) = app.get_webview_window(&self.inner.config.anchor_label) else {
             return Ok(());
         };
-        let PlacementPolicy::LeftPreferred { gap, screen_margin } = self.inner.config.placement;
-        self.apply_platform_frame(&anchor, companion, gap, screen_margin)
+        self.apply_platform_frame(
+            &anchor,
+            companion,
+            self.inner.config.gap,
+            self.inner.config.screen_margin,
+        )
     }
 
     #[cfg(target_os = "macos")]
     fn apply_platform_frame(
         &self,
         anchor: &WebviewWindow,
-        companion: &WebviewWindow,
+        companion: &CompanionWindow,
         gap: f64,
         screen_margin: f64,
     ) -> tauri::Result<()> {
         let (height, anchor_region) = {
             let lifecycle = self.lock_lifecycle();
-            let height = match self.inner.config.height {
-                HeightPolicy::Content { .. } => Some(lifecycle.height),
-                HeightPolicy::MatchAnchor => None,
-            };
+            let height = lifecycle.height;
             (height, lifecycle.anchor_region)
         };
         crate::macos::apply_frame(
@@ -108,7 +143,7 @@ where
     fn apply_platform_frame(
         &self,
         anchor: &WebviewWindow,
-        companion: &WebviewWindow,
+        companion: &CompanionWindow,
         gap: f64,
         screen_margin: f64,
     ) -> tauri::Result<()> {
@@ -121,10 +156,7 @@ where
         let area = monitor.work_area();
         let (height, anchor_region) = {
             let lifecycle = self.lock_lifecycle();
-            let height = match self.inner.config.height {
-                HeightPolicy::Content { .. } => lifecycle.height,
-                HeightPolicy::MatchAnchor => f64::from(size.height) / scale,
-            };
+            let height = lifecycle.height;
             (height, lifecycle.anchor_region)
         };
         companion.set_size(PhysicalSize::new(
@@ -178,7 +210,7 @@ where
         app: &tauri::AppHandle,
         edge_tolerance: f64,
     ) -> Option<CursorProximity> {
-        let Some(window) = app.get_webview_window(&self.inner.config.label) else {
+        let Some(window) = self.companion(app) else {
             return Some(CursorProximity::Outside);
         };
         match window.is_visible() {
@@ -223,22 +255,18 @@ where
     }
 
     pub(super) fn clamp_height(&self, requested: f64) -> f64 {
-        match normalized_height_policy(self.inner.config.height) {
-            HeightPolicy::Content { initial, min, max } => {
-                if requested.is_finite() {
-                    requested.clamp(min, max)
-                } else {
-                    initial
-                }
-            }
-            HeightPolicy::MatchAnchor => requested,
+        let (initial, min, max) = self.normalized_heights();
+        if requested.is_finite() {
+            requested.clamp(min, max)
+        } else {
+            initial
         }
     }
 
     pub(super) fn reveal_placeholder(
         &self,
         app: &tauri::AppHandle,
-        window: &WebviewWindow,
+        window: &CompanionWindow,
     ) -> tauri::Result<()> {
         if let Err(error) = self.apply_size_and_position(app, window) {
             self.lock_lifecycle().force_hidden();
@@ -250,7 +278,7 @@ where
         }
         #[cfg(target_os = "linux")]
         self.inner.pointer_tracker.reset_for_show();
-        if let Err(error) = platform::show(window, self.inner.config.interaction) {
+        if let Err(error) = platform::show(window) {
             self.lock_lifecycle().force_hidden();
             return Err(error);
         }

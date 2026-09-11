@@ -52,12 +52,14 @@ const FINISH_TEARDOWN_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FinishHandoffAction {
+    OpenMain,
     PrewarmPopover,
     DestroyOnboarding,
 }
 
-fn finish_handoff_schedule() -> [(Duration, FinishHandoffAction); 2] {
+fn finish_handoff_schedule() -> [(Duration, FinishHandoffAction); 3] {
     [
+        (Duration::ZERO, FinishHandoffAction::OpenMain),
         (Duration::ZERO, FinishHandoffAction::PrewarmPopover),
         (
             FINISH_TEARDOWN_DELAY,
@@ -96,7 +98,6 @@ impl ManagedWindowReadiness for OnboardingWindowState {
 
 /// Start setup again at Welcome and give it the first-run app presence.
 pub fn restart(app: &AppHandle) -> tauri::Result<()> {
-    apply_activation_policy(app, true);
     let Some(existing) = app.get_webview_window(LABEL) else {
         return open(app);
     };
@@ -241,6 +242,8 @@ pub fn renderer_ready(window: &tauri::WebviewWindow, generation: u64) {
 }
 
 fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    let was_exposed =
+        window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
     center_on_active_monitor(window, WIDTH, HEIGHT);
     window.show()?;
     window.unminimize()?;
@@ -248,6 +251,9 @@ fn show(window: &tauri::WebviewWindow) -> tauri::Result<()> {
     // macOS application and keeps the flow reachable from the Dock.
     window.set_focus()?;
     ::tracing::info!(event = "window_revealed", window = LABEL);
+    if !was_exposed {
+        crate::analytics::record_onboarding_started(window.app_handle());
+    }
     Ok(())
 }
 
@@ -262,17 +268,9 @@ pub fn finish(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(LABEL) {
         let _ = window.hide();
     }
-    // The Dock icon goes at the same moment the notification says where the
-    // app went, which is the whole choreography: one presence is exchanged for
-    // the other in front of the reader rather than behind their back. The nudge
-    // is non-activating, so it survives the policy change instead of being
-    // ordered out by it — hence this line before that one, not after.
-    apply_activation_policy(app, false);
     crate::notifications::note_menu_bar_home(app);
-
-    // `finish` runs inside the onboarding webview's final `set_settings` IPC.
-    // Queue the prewarm after this command yields. Destroy onboarding later so
-    // the command response can leave its renderer.
+    // `finish` runs inside the onboarding webview's final command. Queue the
+    // main window after the response can leave this renderer.
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         for (delay, action) in finish_handoff_schedule() {
@@ -287,6 +285,18 @@ pub fn finish(app: &AppHandle) {
                     return;
                 }
                 match action {
+                    FinishHandoffAction::OpenMain => {
+                        if let Err(error) = crate::main_window::open(
+                            &check_app,
+                            crate::main_window::OpenTrigger::Interaction,
+                        ) {
+                            ::tracing::warn!(
+                                event = "main_window_open_failed",
+                                trigger = "onboarding_finished",
+                                error = %error
+                            );
+                        }
+                    }
                     FinishHandoffAction::PrewarmPopover => {
                         crate::popover::prewarm(&check_app);
                     }
@@ -299,49 +309,6 @@ pub fn finish(app: &AppHandle) {
             });
         }
     });
-}
-
-/// Which kind of application antiburn is while the first run is pending.
-///
-/// The accessory policy — no Dock icon, no ⌘-Tab entry, no application menu —
-/// is right for a finished menu-bar app and a trap for this one. A reader on
-/// step two who clicks another application has no route back: not the Dock, not
-/// ⌘-Tab, not Mission Control, only the menu-bar glyph they have not been told
-/// about yet, because being told about it is what finishing this window *does*.
-///
-/// So antiburn is an ordinary application for exactly as long as it owes
-/// somebody the flow, and an accessory afterwards.
-///
-/// Pure, so the rule is testable without AppKit.
-#[cfg(target_os = "macos")]
-pub fn policy_for(pending: bool) -> tauri::ActivationPolicy {
-    if pending {
-        tauri::ActivationPolicy::Regular
-    } else {
-        tauri::ActivationPolicy::Accessory
-    }
-}
-
-/// Apply [`policy_for`].
-///
-/// Keyed on whether onboarding is *pending*, deliberately, and never on whether
-/// the window is visible: closing the window early hides rather than destroys
-/// it, and a visibility-keyed rule would take the Dock icon away at exactly the
-/// moment the reader most needs it to get back.
-///
-/// A no-op off macOS, where the window carries no `skip_taskbar` and is
-/// therefore already in the taskbar and already alt-tabbable.
-pub fn apply_activation_policy(app: &AppHandle, pending: bool) {
-    #[cfg(target_os = "macos")]
-    {
-        if let Err(error) = app.set_activation_policy(policy_for(pending)) {
-            // Best-effort: the wrong Dock presence is a worse first run, not a
-            // broken one, and there is nothing useful to do about it here.
-            ::tracing::warn!(event = "activation_policy_set_failed", error = %error);
-        }
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = (app, pending);
 }
 
 /// Whether the first-run flow still owes the reader something.
@@ -371,10 +338,11 @@ mod tests {
     }
 
     #[test]
-    fn the_finish_handoff_schedules_prewarm_before_renderer_teardown() {
+    fn the_finish_handoff_schedules_main_and_prewarm_before_teardown() {
         assert_eq!(
             finish_handoff_schedule(),
             [
+                (Duration::ZERO, FinishHandoffAction::OpenMain),
                 (Duration::ZERO, FinishHandoffAction::PrewarmPopover),
                 (
                     FINISH_TEARDOWN_DELAY,
@@ -382,17 +350,5 @@ mod tests {
                 ),
             ]
         );
-    }
-
-    /// Small, but it is the whole rule: antiburn is an ordinary application
-    /// for as long as it owes somebody the first run, and an accessory after.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn the_app_has_a_dock_icon_for_exactly_as_long_as_the_flow_is_owed() {
-        assert!(matches!(policy_for(true), tauri::ActivationPolicy::Regular));
-        assert!(matches!(
-            policy_for(false),
-            tauri::ActivationPolicy::Accessory
-        ));
     }
 }

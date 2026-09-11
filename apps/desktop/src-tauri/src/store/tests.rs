@@ -13,6 +13,7 @@ use super::*;
 mod activity_tests;
 mod coverage_tests;
 mod reconcile_tests;
+mod remediation_tests;
 mod resume_tests;
 mod turn_row_tests;
 
@@ -37,6 +38,210 @@ fn session(session_id: &str, updated_at: i64) -> SessionRecord {
         fork_parent_session_id: None,
         source_fingerprint: None,
     }
+}
+
+fn seed_historical_sessions(store: &Store, count: usize) {
+    let mut connection = store.lock();
+    let transaction = connection.transaction().unwrap();
+    {
+        let mut insert = transaction
+            .prepare(
+                "INSERT INTO session (
+                     environment_key, agent, session_id, source_kind, source_label,
+                     updated_at_epoch, first_seen_at, last_seen_at
+                 ) VALUES ('native', 'cursor', ?1, 'file', ?2, 1,
+                           '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
+            )
+            .unwrap();
+        for index in 0..count {
+            let session_id = format!("historical-{index}");
+            let source_label = format!("/history/{index}.jsonl");
+            insert.execute(params![session_id, source_label]).unwrap();
+        }
+    }
+    transaction.commit().unwrap();
+}
+
+fn bounded_activity_history_result(
+    history_count: usize,
+) -> HashMap<SessionActivityKey, SessionRecord> {
+    let store = store();
+    seed_historical_sessions(&store, history_count);
+
+    let mut native = session("current-native", 2_000);
+    native.activity_cursor = "native-cursor".into();
+    native.activity_source = "event".into();
+    native.source_fingerprint = Some("native-fingerprint".into());
+    let mut wsl = session("current-wsl", 2_100);
+    wsl.key.environment_key = "wsl:ubuntu".into();
+    wsl.wsl_distro = Some("Ubuntu".into());
+    wsl.source_label = native.source_label.clone();
+    wsl.activity_cursor = "wsl-cursor".into();
+    store
+        .upsert_sessions(&[native.clone(), wsl.clone()], &[])
+        .unwrap();
+
+    let keys = [
+        SessionActivityKey::new(
+            native.key.environment_key.clone(),
+            native.key.agent.clone(),
+            native.source_label.clone(),
+        ),
+        SessionActivityKey::new(
+            wsl.key.environment_key.clone(),
+            wsl.key.agent.clone(),
+            wsl.source_label.clone(),
+        ),
+        SessionActivityKey::new("native", "claude-code", "/missing/recent.jsonl"),
+    ];
+    store.session_records_for_activity_keys(&keys).unwrap()
+}
+
+#[test]
+fn bounded_activity_history_does_not_load_the_lifetime_corpus() {
+    let small = bounded_activity_history_result(1_000);
+    let large = bounded_activity_history_result(100_000);
+
+    assert_eq!(small.len(), 2);
+    assert_eq!(large.len(), 2);
+    assert_eq!(small, large);
+
+    let native_key = SessionActivityKey::new(
+        "native",
+        "claude-code",
+        "/home/avery/.claude/projects/demo/current-native.jsonl",
+    );
+    let native = large.get(&native_key).expect("native prior state");
+    assert_eq!(native.activity_cursor, "native-cursor");
+    assert_eq!(native.activity_source, "event");
+    assert_eq!(
+        native.source_fingerprint.as_deref(),
+        Some("native-fingerprint")
+    );
+
+    let wsl_key = SessionActivityKey::new(
+        "wsl:ubuntu",
+        "claude-code",
+        "/home/avery/.claude/projects/demo/current-native.jsonl",
+    );
+    assert_eq!(
+        large
+            .get(&wsl_key)
+            .and_then(|record| record.wsl_distro.as_deref()),
+        Some("Ubuntu")
+    );
+}
+
+#[test]
+fn scan_history_queries_cross_the_key_batch_boundary() {
+    let store = store();
+    let records = (0..=SCAN_HISTORY_KEY_BATCH_SIZE)
+        .map(|index| {
+            let mut record = session(
+                &format!("batch-{index:03}"),
+                2_000 + i64::try_from(index).unwrap(),
+            );
+            record.source_label = format!("/batch/{index:03}.jsonl");
+            record.activity_cursor = format!("cursor-{index:03}");
+            record
+        })
+        .collect::<Vec<_>>();
+    store
+        .upsert_sessions(&records, &crate::agents::evidence_cohort())
+        .unwrap();
+
+    let activity_keys = records
+        .iter()
+        .map(|record| {
+            SessionActivityKey::new(
+                &record.key.environment_key,
+                &record.key.agent,
+                &record.source_label,
+            )
+        })
+        .collect::<Vec<_>>();
+    let by_activity = store
+        .session_records_for_activity_keys(&activity_keys)
+        .unwrap();
+    assert_eq!(by_activity.len(), records.len());
+    assert_eq!(
+        by_activity
+            .get(activity_keys.last().unwrap())
+            .map(|record| record.activity_cursor.as_str()),
+        Some("cursor-256")
+    );
+
+    let session_keys = records
+        .iter()
+        .map(|record| record.key.clone())
+        .collect::<Vec<_>>();
+    let by_session = store
+        .session_records_for_session_keys(&session_keys)
+        .unwrap();
+    assert_eq!(by_session.len(), records.len());
+    assert!(
+        by_session
+            .iter()
+            .any(|record| record.key.session_id == "batch-256")
+    );
+
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence
+                SET status = 'failed', last_error = ?1
+              WHERE session_id IN ('batch-000', 'batch-256')",
+            params![crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING],
+        )
+        .unwrap();
+    let missing = store
+        .sessions_with_missing_source_for(&session_keys)
+        .unwrap()
+        .into_iter()
+        .map(|key| key.session_id)
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        missing,
+        HashSet::from(["batch-000".to_string(), "batch-256".to_string()])
+    );
+}
+
+#[test]
+fn title_history_cohort_preserves_all_native_agent_rows() {
+    let store = store();
+    let mut old_codex = session("old-codex", 1_000);
+    old_codex.key.agent = "codex".into();
+    let mut recent_codex = session("recent-codex", 2_000);
+    recent_codex.key.agent = "codex".into();
+    recent_codex.title = Some("Indexed title".into());
+    recent_codex.title_source = Some("aiGenerated".into());
+    let mut wsl_codex = recent_codex.clone();
+    wsl_codex.key.environment_key = "wsl:ubuntu".into();
+    wsl_codex.key.session_id = "wsl-codex".into();
+    let recent_claude = session("recent-claude", 2_000);
+    store
+        .upsert_sessions(
+            &[old_codex, recent_codex.clone(), wsl_codex, recent_claude],
+            &[],
+        )
+        .unwrap();
+
+    let session_ids = store.native_session_ids_for_agent("codex").unwrap();
+    let records = store
+        .session_records_for_session_keys(&[
+            SessionKey::new("native", "codex", "old-codex"),
+            SessionKey::new("native", "codex", "recent-codex"),
+        ])
+        .unwrap();
+
+    assert_eq!(session_ids, ["old-codex", "recent-codex"]);
+    assert_eq!(records.len(), 2);
+    let recent = records
+        .iter()
+        .find(|record| record.key.session_id == "recent-codex")
+        .expect("recent native Codex row");
+    assert_eq!(recent.title.as_deref(), Some("Indexed title"));
+    assert_eq!(recent.title_source.as_deref(), Some("aiGenerated"));
 }
 
 fn projection_revisions() -> ProjectionRevisions {
@@ -386,6 +591,23 @@ fn events_are_given_up_on_after_a_bounded_number_of_attempts() {
 }
 
 #[test]
+fn the_analytics_queue_reports_depth_and_keeps_the_newest_five_hundred() {
+    let store = store();
+    for index in 0..510 {
+        store
+            .queue_analytics_event("surface_viewed", &index.to_string())
+            .unwrap();
+        let depth = store.analytics_event_count().unwrap();
+        assert_eq!(depth, (index + 1).min(500));
+    }
+
+    assert_eq!(store.analytics_event_count().unwrap(), 500);
+    let pending = store.pending_analytics_events(500).unwrap();
+    assert_eq!(pending.first().unwrap().1, "10");
+    assert_eq!(pending.last().unwrap().1, "509");
+}
+
+#[test]
 fn consent_grants_round_trip_and_revoke_individually() {
     let store = store();
     assert!(store.granted_dirs().unwrap().is_empty());
@@ -611,10 +833,26 @@ fn restarting_onboarding_preserves_local_state_and_is_idempotent() {
     assert_eq!(store.session_count().unwrap(), 1);
     assert_eq!(store.scan_roots().unwrap(), vec!["/home/avery/work"]);
     assert_eq!(store.pending_analytics_events(10).unwrap().len(), 1);
+    assert!(store.onboarding_flow_is_restart());
 
     let (previous_again, restarted_again) = store.restart_onboarding().unwrap();
     assert_eq!(previous_again, expected);
     assert_eq!(restarted_again, expected);
+}
+
+#[test]
+fn a_restarted_onboarding_flow_keeps_its_classification_after_relaunch() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store
+        .update_settings(|settings| settings.onboarding_completed = true)
+        .unwrap();
+    store.restart_onboarding().unwrap();
+    drop(store);
+
+    let reopened = Store::open(directory.path()).unwrap();
+    assert!(!reopened.settings().unwrap().onboarding_completed);
+    assert!(reopened.onboarding_flow_is_restart());
 }
 
 /// Pin the current session shape so migrations remain deliberate. This is not
@@ -692,6 +930,12 @@ fn session_evidence_table_shape_is_stable() {
             "analyzed_at_epoch",
             "last_error",
             "published_fence",
+            "effective_model_target_hash",
+            "effective_model_scope",
+            "effective_model",
+            "effective_reasoning_target_hash",
+            "effective_reasoning_scope",
+            "effective_reasoning",
         ]
     );
 }
@@ -1567,7 +1811,11 @@ fn publish_projections_writes_the_generation_and_revision_columns() {
         metrics_schema_revision: 3,
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -1595,7 +1843,11 @@ fn publish_projections_round_trips_initial_context_json() {
         source_summaries_json: None,
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -1626,7 +1878,11 @@ fn publish_projections_round_trips_source_summaries_json() {
         ),
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -1651,7 +1907,11 @@ fn publish_projections_round_trips_provider_hints_json() {
         provider_hints_json: Some(r#"[{"provider":"anthropic","model":"claude-opus-4-6"}]"#.into()),
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -1674,7 +1934,11 @@ fn publish_projections_round_trips_provider_hints_json() {
 fn publish_projections_never_clears_a_known_start_time() {
     let store = store();
     let (record, claim) = claimed_projection(&store, "known-start", 100, 60);
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, Some(800), &completion, &[], &[])
@@ -1692,7 +1956,11 @@ fn publish_projections_never_clears_a_known_start_time() {
         analyzed_generation: claim.source_generation,
         ..record
     };
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -2083,147 +2351,6 @@ fn live_usage_is_only_active_once_both_the_switch_and_onboarding_agree() {
 }
 
 #[test]
-fn migrating_forward_drops_a_legacy_live_usage_off_row_so_the_new_default_applies() {
-    // Before this build, `liveUsageEnabled` defaulted to false, and
-    // `write_settings` writes every key on every save regardless of whether
-    // it changed — so any install that ever saved settings at all (finishing
-    // onboarding is enough) already carries an explicit `liveUsageEnabled|
-    // false` row from that old default, indistinguishable from a reader who
-    // deliberately opted out. antiburn has no public installs yet to protect
-    // from losing one, so migration V3 just drops the row. Simulated here by
-    // building a v2 database by hand — a real fresh `Store::open_in_memory`
-    // would already be at the latest version and could not exercise the
-    // migration path at all.
-    let connection = rusqlite::Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..2] {
-        connection.execute_batch(sql).unwrap();
-    }
-    connection
-        .execute(
-            "INSERT INTO setting (key, value) VALUES ('liveUsageEnabled', 'false')",
-            [],
-        )
-        .unwrap();
-    connection
-        .pragma_update(None, "user_version", 2i64)
-        .unwrap();
-
-    let store = Store::from_connection(
-        connection,
-        Path::new("/tmp/antiburn-migration-test").to_path_buf(),
-    )
-    .expect("migrates cleanly to the latest version");
-
-    assert_eq!(
-        store.schema_version().unwrap(),
-        super::schema::MIGRATIONS.len() as i64
-    );
-    let remaining: i64 = store
-        .lock()
-        .query_row(
-            "SELECT COUNT(*) FROM setting WHERE key = 'liveUsageEnabled'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(remaining, 0, "the row is gone, not merely reinterpreted");
-    assert!(
-        store.settings().unwrap().live_usage_enabled,
-        "with the legacy row gone, the read path falls through to the new default"
-    );
-}
-
-#[test]
-fn migrating_forward_renames_the_analytics_tables_and_keeps_their_rows() {
-    // V1 through V8 created and used `usage_analytics_event` and
-    // `usage_analytics_identity`. V9 (source generations) does not touch
-    // them. V10 renames both tables to drop the "usage_" prefix, to match
-    // the renamed Rust module and code. Built by hand up to V9 so only the
-    // rename migration runs; a fresh `Store::open_in_memory` would already
-    // be past it.
-    let connection = rusqlite::Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..9] {
-        connection.execute_batch(sql).unwrap();
-    }
-    connection
-        .execute(
-            "INSERT INTO usage_analytics_identity (id, install_id, minted_at)
-             VALUES (1, 'test-install-id', '2026-01-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "INSERT INTO usage_analytics_event (name, payload, queued_at)
-             VALUES ('app_launched', '{}', '2026-01-01T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-    connection
-        .pragma_update(None, "user_version", 9i64)
-        .unwrap();
-
-    let store = Store::from_connection(
-        connection,
-        Path::new("/tmp/antiburn-migration-test").to_path_buf(),
-    )
-    .expect("migrates cleanly to the latest version");
-
-    assert_eq!(
-        store.schema_version().unwrap(),
-        super::schema::MIGRATIONS.len() as i64
-    );
-    let (install_id, event_count): (String, i64) = store
-        .lock()
-        .query_row(
-            "SELECT install_id, (SELECT COUNT(*) FROM analytics_event) FROM analytics_identity",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("the renamed tables carry the rows the old names held");
-    assert_eq!(install_id, "test-install-id");
-    assert_eq!(event_count, 1);
-}
-
-#[test]
-fn migrating_forward_drops_queued_events_for_the_retired_usage_surface() {
-    let connection = rusqlite::Connection::open_in_memory().unwrap();
-    for &sql in &super::schema::MIGRATIONS[..34] {
-        connection.execute_batch(sql).unwrap();
-    }
-    connection
-        .execute(
-            "INSERT INTO analytics_event (name, payload, queued_at) VALUES
-             ('antiburn.usage_viewed', '{}', '2026-01-01T00:00:00Z'),
-             ('antiburn.app_launched', '{}', '2026-01-01T00:00:01Z')",
-            [],
-        )
-        .unwrap();
-    connection
-        .pragma_update(None, "user_version", 34i64)
-        .unwrap();
-
-    let store = Store::from_connection(
-        connection,
-        Path::new("/tmp/antiburn-migration-test").to_path_buf(),
-    )
-    .expect("migrates cleanly to the latest version");
-
-    let remaining_names = {
-        let connection = store.lock();
-        let mut statement = connection
-            .prepare("SELECT name FROM analytics_event ORDER BY id")
-            .unwrap();
-        statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap()
-    };
-    assert_eq!(remaining_names, vec!["antiburn.app_launched"]);
-}
-
-#[test]
 fn migrating_from_every_prior_schema_version_reaches_the_current_head() {
     for start in 0..super::schema::MIGRATIONS.len() {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
@@ -2585,15 +2712,9 @@ async fn analysis_from_rows_serves_a_published_pass_without_reading_a_transcript
         Box::pin(async move { pass }) as crate::insights_worker::PassFuture
     };
     assert!(
-        crate::insights_worker::process_next(
-            &store,
-            &crate::insights_worker::WorkerHandle::default(),
-            &|| 1_100,
-            &runner,
-            &|_| {},
-        )
-        .await
-        .unwrap()
+        crate::insights_worker::process_next(&store, &|| 1_100, &runner, &|_| {},)
+            .await
+            .unwrap()
     );
     assert_eq!(
         store.evidence(&record.key).unwrap().unwrap().status,
@@ -2665,15 +2786,9 @@ async fn analysis_from_rows_still_serves_a_published_pass_after_a_requeue() {
         Box::pin(async move { pass }) as crate::insights_worker::PassFuture
     };
     assert!(
-        crate::insights_worker::process_next(
-            &store,
-            &crate::insights_worker::WorkerHandle::default(),
-            &|| 1_100,
-            &runner,
-            &|_| {},
-        )
-        .await
-        .unwrap()
+        crate::insights_worker::process_next(&store, &|| 1_100, &runner, &|_| {},)
+            .await
+            .unwrap()
     );
 
     // The transcript grew: the drilldown's own nudge requeues the session
@@ -2740,7 +2855,11 @@ fn analysis_from_rows_serves_a_pass_published_unsupported() {
     let key = record.key.clone();
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0)]).unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Unsupported, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Unsupported,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     assert!(
         store
             .publish_projections(&record, None, &completion, &[], &[])
@@ -2806,20 +2925,14 @@ async fn reprocessing_a_revision_one_row_leaves_no_placeholder_in_stored_evidenc
         Box::pin(async move { pass }) as crate::insights_worker::PassFuture
     };
     assert!(
-        crate::insights_worker::process_next(
-            &store,
-            &crate::insights_worker::WorkerHandle::default(),
-            &|| 1_100,
-            &runner,
-            &|_| {},
-        )
-        .await
-        .unwrap()
+        crate::insights_worker::process_next(&store, &|| 1_100, &runner, &|_| {},)
+            .await
+            .unwrap()
     );
 
     let ready = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(ready.status, EvidenceStatus::Ready);
-    assert_eq!(ready.evidence_schema_revision, Some(14));
+    assert_eq!(ready.evidence_schema_revision, Some(18));
     assert!(!ready.evidence_json.unwrap().contains("unimplemented"));
 }
 
@@ -2848,20 +2961,14 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
         }) as crate::insights_worker::PassFuture
     };
     assert!(
-        crate::insights_worker::process_next(
-            &store,
-            &crate::insights_worker::WorkerHandle::default(),
-            &|| 1_100,
-            &runner,
-            &|_| {},
-        )
-        .await
-        .unwrap()
+        crate::insights_worker::process_next(&store, &|| 1_100, &runner, &|_| {},)
+            .await
+            .unwrap()
     );
 
     let failed = store.evidence(&record.key).unwrap().unwrap();
     assert_eq!(failed.status, EvidenceStatus::Failed);
-    assert_eq!(failed.evidence_schema_revision, Some(14));
+    assert_eq!(failed.evidence_schema_revision, Some(18));
     assert!(failed.evidence_json.is_none());
 }
 
@@ -3308,7 +3415,7 @@ fn publishing_session_evidence_writes_both_projections_and_the_start_time() {
     let completion = evidence_completion(
         &claim,
         PublishedEvidence::Unsupported,
-        "{\"unsupported\":true}".into(),
+        crate::store::test_support::evidence_json(&claim.key),
     );
 
     assert!(
@@ -3351,7 +3458,11 @@ fn publishing_session_evidence_writes_both_projections_and_the_start_time() {
 fn published_session_evidence_and_analysis_describe_the_same_pass() {
     let store = store();
     let (record, claim) = claimed_projection(&store, "same-pass", 100, 60);
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         store
@@ -3394,7 +3505,11 @@ fn a_stale_generation_publishes_no_session_evidence_and_no_analysis() {
     let source_before = store.session_source_state(&record.key).unwrap().unwrap();
     let analysis_before = store.analysis(&record.key).unwrap().unwrap();
     let evidence_before = store.evidence(&record.key).unwrap().unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
 
     assert!(
         !store
@@ -3430,7 +3545,11 @@ fn a_stale_fence_publishes_no_session_evidence_and_no_analysis() {
     let source_before = store.session_source_state(&record.key).unwrap().unwrap();
     let analysis_before = store.analysis(&record.key).unwrap().unwrap();
     let evidence_before = store.evidence(&record.key).unwrap().unwrap();
-    let completion = evidence_completion(&first_claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &first_claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&first_claim.key),
+    );
 
     assert!(
         !store
@@ -3463,7 +3582,7 @@ fn a_stale_claim_cannot_change_projections_or_relations() {
     let current_completion = evidence_completion(
         &current_claim,
         PublishedEvidence::Ready,
-        "{\"new\":true}".into(),
+        crate::store::test_support::evidence_json(&current_claim.key),
     );
     let current_relations = [RelationRecord {
         kind: RelationKind::Subagent,
@@ -3483,7 +3602,7 @@ fn a_stale_claim_cannot_change_projections_or_relations() {
     let stale_completion = evidence_completion(
         &first_claim,
         PublishedEvidence::Ready,
-        "{\"old\":true}".into(),
+        crate::store::test_support::evidence_json(&first_claim.key),
     );
     let stale_relations = [RelationRecord {
         kind: RelationKind::Subagent,
@@ -3533,7 +3652,11 @@ fn publication_replaces_subagent_relations_in_one_transaction() {
             }],
         )
         .unwrap();
-    let completion = evidence_completion(&claim, PublishedEvidence::Ready, "{}".into());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
     let new_relations = [RelationRecord {
         kind: RelationKind::Subagent,
         related_id: "new-child".into(),
@@ -3737,6 +3860,8 @@ fn turn_row(turn_index: u64) -> TurnRow {
         role: "assistant",
         ts_ms: Some(1_000 + turn_index as i64),
         model: Some("claude-opus-4-6".into()),
+        provider: None,
+        api: None,
         effort: None,
         speed: None,
         input_tokens: 10,

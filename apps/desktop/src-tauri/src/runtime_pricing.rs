@@ -198,6 +198,9 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
             let success = match refresh(&app).await {
                 Ok(invalidated) => {
                     if invalidated {
+                        // The session limit badge prices each session's cost
+                        // against the current pricing table on every read, so
+                        // no durable estimate needs a re-price here.
                         let _ = app.emit(crate::commands::SESSIONS_INVALIDATED_EVENT, ());
                     }
                     true

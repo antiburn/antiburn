@@ -96,7 +96,7 @@ export interface InsightsReportPayload {
 
 export interface ChecksCategoryPayload {
   /** Stable category identifier, e.g. `sessionsOverDepth`. */
-  id: string
+  id: BurnCheckDetectorId
   /** Applicable sessions with a confirmed finding. */
   finding: number
   /** Applicable sessions with complete evidence and no finding. */
@@ -111,9 +111,276 @@ export interface ChecksCategoryPayload {
 export interface ChecksReportPayload {
   /** False while this report snapshot still has queued or running evidence work. */
   evidenceSettled: boolean
+  /** Sessions with evidence queued or processing for this report window. */
+  pendingEvidence: number
   /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */
   estimatedTokenBurnBasisPoints: number | null
   categories: ChecksCategoryPayload[]
+}
+
+export type BurnCheckDetectorId =
+  | "sessionsOverDepth"
+  | "modelOverthinking"
+  | "overpoweredSubagents"
+  | "unusedMcpServers"
+  | "unusedBuiltInTools"
+  | "unusedSkills"
+  | "oldModelUsage"
+  | "overuseOfFastMode"
+  | "cacheChurn"
+
+export type BurnCheckEstimateMethod =
+  | "repeatedContextAboveDepthCap"
+  | "assumedOutputReduction"
+  | "workerModelPriceDifference"
+  | "mcpDefinitionExposure"
+  | "builtInDefinitionReplication"
+  | "injectedSkillDocument"
+  | "oldModelPriceDifference"
+  | "fastTierPricePremium"
+  | "cacheRehydrationPriceDifference"
+
+export interface BurnCheckEstimatedValuePayload {
+  value: number
+  unit:
+    | "literalInputTokens"
+    | "assumedOutputTokens"
+    | "cacheClassTokens"
+    | "apiEquivalentUsd"
+    | "improvements"
+}
+
+export type VerificationCoverageLimit =
+  | "freshEvidenceFromSameSourceAndTarget"
+  | "exactPositiveControlRequired"
+  | "currentEvidenceCannotProveFix"
+
+export type BurnCheckSourceFormat =
+  | "claudeJsonl"
+  | "codexRolloutJsonl"
+  | "openCodeJsonl"
+  | "openCodeSqliteV2"
+  | "piV3Jsonl"
+  | "cursorJsonl"
+  | "cursorCliAgentJsonl"
+  | "cursorCliStoreDb"
+  | "cursorIdeComposer"
+  | "cursorLegacyChatJson"
+  | "antigravityJson"
+  | "antigravityBrainJsonl"
+  | "antigravityCascadeJson"
+  | "antigravityWorkspaceChatJson"
+  | "antigravitySqlite"
+  | "copilotCliJsonl"
+  | "copilotIdeChatJson"
+  | "clineSessionJson"
+  | "kiroSessionJson"
+  | "kiroChat"
+  | "ampThreadJson"
+  | "ampFileChanges"
+  | "windsurfWorkspaceJson"
+  | "windsurfMirrorJson"
+  | "windsurfCascadeProtobuf"
+  | "uncharacterized"
+
+export interface BurnCheckFindingPayload {
+  detector: BurnCheckDetectorId
+  agent: string
+  sourceFormat: BurnCheckSourceFormat
+  observation: string
+  labels: string[]
+  omitted: number
+}
+
+export interface BurnCheckDisplayFactsPayload {
+  resourceKind:
+    | "session"
+    | "reasoning"
+    | "worker"
+    | "mcpServer"
+    | "builtInTool"
+    | "skill"
+    | "model"
+    | "speed"
+    | "cache"
+  resourceIdentity: string | null
+  currentValue: string | null
+  replacementValue: string | null
+  scopeKind: "global" | "project" | "session" | "worker"
+  quantity: number | null
+  quantityUnit: "tokens" | "turns" | "resources" | null
+  observationCount: number
+  firstObservedAtMs: number
+  lastObservedAtMs: number
+  estimateMethod: BurnCheckEstimateMethod | null
+  /** Present only when the backend returns a reviewed value and unit. */
+  estimatedOpportunity: BurnCheckEstimatedValuePayload | null
+  verificationLimit: VerificationCoverageLimit
+}
+
+export type AutoFixUnavailableReason =
+  "unsupportedOrUnprovenTarget" | "activeWatch" | "safetyCheckFailed" | "targetNotFound"
+
+export type AutoFixAvailabilityPayload =
+  { status: "available" } | { status: "unavailable"; reason: AutoFixUnavailableReason }
+
+export type PromptFixAvailabilityPayload =
+  { status: "available" } | { status: "unavailable"; reason: PromptFixUnavailableReason }
+
+export type BurnCheckWatchLifecycle =
+  "reserved" | "writing" | "recoveryNeeded" | "watching" | "fixed" | "recurred"
+
+export type BurnCheckVerificationReason =
+  | "missingPostBoundaryEvidence"
+  | "writeOutcomeUnknown"
+  | "verificationUnavailable"
+  | "unsupportedAgent"
+  | "homeUnavailable"
+  | "physicalTargetChanged"
+
+export type BurnCheckVerificationPayload =
+  | { status: "reserved" }
+  | {
+      status: "watching"
+      reason?: BurnCheckVerificationReason
+      methodRevision?: number
+      evidenceRevision?: string
+    }
+  | { status: "fixed"; methodRevision: number; evidenceRevision: string }
+  | { status: "stillUnresolved"; methodRevision: number; evidenceRevision: string }
+  | { status: "recurred"; methodRevision: number; evidenceRevision: string }
+  | {
+      status: "recoveryNeeded"
+      reason: BurnCheckVerificationReason
+      checkedAtEpoch?: number
+    }
+  | { status: "verificationUnavailable" }
+
+export type BurnCheckSavingsUnknownReason =
+  "missingRates" | "missingEvidence" | "missingRevision" | "arithmeticOverflow"
+
+export type BurnCheckSavingsPayload =
+  | { status: "pending"; methodRevision?: number }
+  | { status: "unavailable" }
+  | {
+      status: "unknown"
+      reason: BurnCheckSavingsUnknownReason
+      methodRevision: number
+    }
+  | {
+      status: "known"
+      method: "oldModelPriceDifference"
+      methodRevision: number
+      pricingRevision: string
+      apiEquivalentCostAvoidedUsd: number
+      measuredThroughMs: number
+      recurrenceMs: number | null
+    }
+
+export interface BurnCheckWatchPayload {
+  watchId: string
+  origin: "passive" | "action"
+  lifecycle: BurnCheckWatchLifecycle
+  verification: BurnCheckVerificationPayload
+  savings: BurnCheckSavingsPayload
+}
+
+export interface BurnCheckTargetPayload {
+  findingId: string
+  actionId: string
+  finding: BurnCheckFindingPayload
+  display: BurnCheckDisplayFactsPayload
+  occurrenceCount: number
+  autoFix: AutoFixAvailabilityPayload
+  promptFix: PromptFixAvailabilityPayload
+  watch: BurnCheckWatchPayload | null
+  coverageLimits: "currentPublishedEvidenceOnly"[]
+  samples: BurnCheckSamplePayload[]
+  expiresAtEpoch: number
+}
+
+/** Bounded display metadata plus an opaque, expiring route to one local session. */
+export interface BurnCheckSamplePayload {
+  navigationHandle: string
+  title: string
+  agent: string
+  surface: "cli" | "ide_desktop" | "unknown"
+  observedAtMs: number
+}
+
+export type OpenBurnCheckSampleOutcome =
+  | { outcome: "opened" }
+  | { outcome: "deleted" }
+  | { outcome: "expired" }
+  | { outcome: "unavailable" }
+
+export interface BurnCheckTargetListPayload {
+  targets: BurnCheckTargetPayload[]
+  truncated: boolean
+}
+
+export interface AutoFixReviewPayload {
+  preparedOperationId: string
+  expiresAtEpoch: number
+  agent: string
+  scope: "global" | "project" | "session" | "worker"
+  setting: "model" | "reasoning"
+  configFile: string
+  currentValue: string
+  proposedValue: string
+  effect: "futureModelSelection" | "futureReasoningEffort"
+  sideEffect: "modelBehaviorMayChange" | "responsesMayUseLessReasoning"
+}
+
+export type PrepareAutoFixBurnCheckTargetOutcome =
+  | { outcome: "reviewReady"; review: AutoFixReviewPayload }
+  | { outcome: "stale" }
+  | { outcome: "expired" }
+  | { outcome: "conflict" }
+  | { outcome: "unavailable"; reason: AutoFixUnavailableReason }
+
+export type ApplyPreparedBurnCheckOperationOutcome =
+  | { outcome: "appliedAwaitingVerification"; watchId: string }
+  | { outcome: "recoveryNeeded"; watchId: string }
+  | { outcome: "stale" }
+  | { outcome: "expired" }
+  | { outcome: "conflict" }
+  | { outcome: "unavailable"; reason: AutoFixUnavailableReason }
+
+export type PromptFixUnavailableReason =
+  | "targetNotFound"
+  | "promptSizeLimit"
+  | "essentialIdentityUnavailable"
+  | "deferredAgent"
+  | "unsupportedSourceFormat"
+  | "checkUnsupportedForAgent"
+
+export type CopyPromptFixBurnCheckTargetOutcome =
+  | { outcome: "promptReady"; prompt: string; watch: BurnCheckWatchPayload }
+  | { outcome: "stale" }
+  | { outcome: "expired" }
+  | { outcome: "unavailable"; reason: PromptFixUnavailableReason }
+
+export type CopyPromptFixBurnCheckOutcome =
+  { outcome: "promptReady"; prompt: string } | { outcome: "unavailable" }
+
+export interface AggregateWinPayload {
+  findingId: string
+  detector: BurnCheckDetectorId
+  origin: "passive" | "action"
+  display: BurnCheckDisplayFactsPayload
+  savings: {
+    tokenSavings: number | null
+    apiEquivalentCostAvoidedUsd: number | null
+    improvementCount: number | null
+    method: BurnCheckEstimateMethod | null
+  }
+  startsAtMs: number
+  endsAtMs: number
+}
+
+export interface AggregateWinsPayload {
+  wins: AggregateWinPayload[]
 }
 
 /** Report calculation state plus the evidence backlog counts. */
@@ -221,6 +488,78 @@ export async function getInsightsReport(): Promise<InsightsReportPayload | null>
 export async function getChecksReport(consumerId: string): Promise<ChecksReportPayload | null> {
   if (!hasShell()) return null
   return invoke<ChecksReportPayload>("get_checks_report", { consumerId })
+}
+
+/** Lists current exact targets for one detector in the native thirty-day context. */
+export async function listBurnCheckTargets(
+  detector: BurnCheckDetectorId,
+): Promise<BurnCheckTargetListPayload | null> {
+  if (!hasShell()) return null
+  return invoke<BurnCheckTargetListPayload>("list_burn_check_targets", {
+    detector,
+  })
+}
+
+/** Prepares one exact automatic change for semantic review. */
+export async function prepareAutoFixBurnCheckTarget(
+  actionId: string,
+): Promise<PrepareAutoFixBurnCheckTargetOutcome | null> {
+  if (!hasShell()) return null
+  return invoke<PrepareAutoFixBurnCheckTargetOutcome>("prepare_auto_fix_burn_check_target", {
+    actionId,
+  })
+}
+
+/** Applies only the operation returned by the matching review. */
+export async function applyPreparedBurnCheckOperation(
+  preparedOperationId: string,
+): Promise<ApplyPreparedBurnCheckOperationOutcome | null> {
+  if (!hasShell()) return null
+  return invoke<ApplyPreparedBurnCheckOperationOutcome>("apply_prepared_burn_check_operation", {
+    preparedOperationId,
+  })
+}
+
+/** Returns a bounded prompt and starts or reuses its verification watch. */
+export async function copyPromptFixBurnCheckTarget(
+  actionId: string,
+): Promise<CopyPromptFixBurnCheckTargetOutcome | null> {
+  if (!hasShell()) return null
+  return invoke<CopyPromptFixBurnCheckTargetOutcome>("copy_prompt_fix_burn_check_target", {
+    actionId,
+  })
+}
+
+/** Returns a generic bounded prompt only for a failed check with no exact target. */
+export async function copyPromptFixBurnCheck(
+  detector: BurnCheckDetectorId,
+): Promise<CopyPromptFixBurnCheckOutcome | null> {
+  if (!hasShell()) return null
+  return invoke<CopyPromptFixBurnCheckOutcome>("copy_prompt_fix_burn_check", { detector })
+}
+
+/** Prepares one bounded prompt for all selected exact targets in a check. */
+export async function copyPromptFixBurnCheckTargets(
+  actionIds: string[],
+): Promise<CopyPromptFixBurnCheckOutcome | null> {
+  if (!hasShell()) return null
+  return invoke<CopyPromptFixBurnCheckOutcome>("copy_prompt_fix_burn_check_targets", {
+    actionIds,
+  })
+}
+
+/** Reads bounded durable wins independently from current findings. */
+export async function getBurnCheckAggregateWins(): Promise<AggregateWinsPayload | null> {
+  if (!hasShell()) return null
+  return invoke<AggregateWinsPayload>("get_burn_check_aggregate_wins")
+}
+
+/** Resolve an opaque sample handle and route through the standard session controller. */
+export async function openBurnCheckSample(
+  navigationHandle: string,
+): Promise<OpenBurnCheckSampleOutcome | null> {
+  if (!hasShell()) return null
+  return invoke<OpenBurnCheckSampleOutcome>("open_burn_check_sample", { navigationHandle })
 }
 
 /** Stop a Checks reduction that no visible popover still needs. */

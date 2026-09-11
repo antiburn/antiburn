@@ -21,7 +21,11 @@
 //! their long work — reading transcripts, analyzing them — outside the lock and
 //! come here only to write the result.
 
+pub(crate) mod codex_rollout_checkpoint;
 pub mod model;
+pub(crate) mod provider_limit;
+pub(crate) mod provider_usage_history;
+mod remediation;
 mod schema;
 
 #[cfg(test)]
@@ -29,11 +33,14 @@ mod privacy_tests;
 #[cfg(test)]
 mod publish_tests;
 #[cfg(test)]
+pub(crate) mod test_support;
+#[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Duration;
 
 use antiburn_local::analysis::{
@@ -47,7 +54,7 @@ use antiburn_local::analysis::{
     query_turn_rows, restamp_source_rows,
 };
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_iter};
 
 use crate::dto::DeferredPermissionDir;
 
@@ -56,9 +63,13 @@ pub use model::{
     EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters,
     MAX_ACTIVITY_DAYS, MILESTONE_OPTIONS, MIN_ACTIVITY_DAYS, Milestones, NudgePlacement,
     OwningSession, ProjectionRevisions, PublishedEvidence, RETAIN_SESSION_DATA_FOREVER,
-    RelationKind, RelationRecord, RepositoryRecord, SessionActivityKey, SessionBadgeMetric,
-    SessionKey, SessionRecord, SessionUsageRecord, SessionUsageTurnRecord, SourcePublishMode,
-    SourcePublishOutcome, SourceVersionState, ThemePreference, UsageEvidenceRecord,
+    RelationKind, RelationRecord, Remediation, RemediationEvidenceGuard, RemediationRecord,
+    RemediationResult, RemediationState, RepositoryRecord, SessionActivityKey, SessionBadgeMetric,
+    SessionKey, SessionRecord, SourcePublishMode, SourcePublishOutcome, SourceVersionState,
+    ThemePreference, UsageEvidenceRecord,
+};
+pub(crate) use remediation::{
+    PassiveRemediation, RemediationContribution, RemediationDisplaySnapshot,
 };
 
 /// Evidence rows that still wait for, or sit in, processing.
@@ -111,6 +122,27 @@ const EVIDENCE_BY_KEY_SQL: &str = "SELECT environment_key, agent, session_id, st
 /// unbounded table on a reader's disk.
 const ANALYTICS_QUEUE_LIMIT: u32 = 500;
 
+/// Maximum activity or session keys bound by one scan-history query.
+///
+/// Three values per key keep each statement below SQLite's legacy 999-value
+/// limit. A scan can issue more batches, but it never loads unrelated rows.
+const SCAN_HISTORY_KEY_BATCH_SIZE: usize = 256;
+
+fn session_records_for_activity_keys_sql(key_count: usize) -> String {
+    let predicates = (0..key_count)
+        .map(|index| {
+            let first = index * 3 + 1;
+            format!(
+                "(s.source_label = ?{} AND s.environment_key = ?{first} AND s.agent = ?{})",
+                first + 2,
+                first + 1
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!("{SESSION_SELECT_SQL}\n WHERE {predicates}")
+}
+
 /// File name of the database inside the app data directory.
 ///
 /// Debug builds use their own file so a half-finished migration cannot damage
@@ -157,6 +189,8 @@ pub fn open_read_only(data_dir: &Path, busy_timeout: Duration) -> Result<Connect
 #[derive(Clone)]
 pub struct Store {
     connection: Arc<Mutex<Connection>>,
+    limit_factor_learn: Arc<Mutex<()>>,
+    remediation_turn: Arc<AtomicBool>,
     /// The directory the engine's own state files (scan roots, ignored paths)
     /// live in. The engine never chooses this; the shell does.
     state_dir: PathBuf,
@@ -192,6 +226,21 @@ const SESSIONS_ACTIVE_SINCE_SQL: &str = "SELECT environment_key, agent, session_
 /// Ceiling on how many uuids [`Store::sessions_owning_turn_uuids`] matches
 /// in one call, applied to the `IN (...)` list it builds.
 const FORK_LINEAGE_UUID_CAP: usize = 8;
+
+/// Keep each watcher lookup below SQLite's host-parameter limit.
+const SOURCE_LABEL_LOOKUP_CHUNK_SIZE: usize = 500;
+
+/// Build the indexed query for one chunk of native file source labels.
+fn native_file_session_activity_keys_sql(source_label_count: usize) -> String {
+    let placeholders = vec!["?"; source_label_count].join(", ");
+    format!(
+        "SELECT agent, source_label
+           FROM session
+          WHERE source_label IN ({placeholders})
+            AND environment_key = 'native'
+            AND source_kind = 'file'"
+    )
+}
 
 /// A scalar subquery counting one session's published turn rows, correlated
 /// to an outer `session s` row. Shared by [`sessions_owning_turn_uuids_sql`]
@@ -269,6 +318,8 @@ impl Store {
         connection.pragma_update(None, "foreign_keys", true)?;
         let store = Store {
             connection: Arc::new(Mutex::new(connection)),
+            limit_factor_learn: Arc::new(Mutex::new(())),
+            remediation_turn: Arc::new(AtomicBool::new(true)),
             state_dir,
         };
         store.migrate()?;
@@ -278,6 +329,10 @@ impl Store {
     /// The directory the engine's state files live in.
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
+    }
+
+    pub(crate) fn take_remediation_work_turn(&self) -> bool {
+        self.remediation_turn.fetch_xor(true, Ordering::Relaxed)
     }
 
     /// Apply every migration the database has not seen yet.
@@ -338,10 +393,25 @@ impl Store {
 
     /// A poisoned lock still holds a usable connection: the panic that poisoned
     /// it happened in a caller, not inside SQLite.
-    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
+    ///
+    /// `pub(crate)` rather than private: [`crate::provider_usage::factor`]'s
+    /// tests build synthetic turns, periods, and observations directly, the
+    /// same way the store's own lifecycle tests do, from outside the `store`
+    /// module tree.
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.connection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Start one shared limit-factor learning pass, or skip work another
+    /// clone already owns.
+    pub(crate) fn try_begin_limit_factor_learn(&self) -> Option<std::sync::MutexGuard<'_, ()>> {
+        match self.limit_factor_learn.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        }
     }
 
     /* --------------------------------------------------------------------
@@ -463,7 +533,25 @@ impl Store {
 
     /// Make setup pending without changing the reader's data or choices.
     pub fn restart_onboarding(&self) -> Result<(AppSettings, AppSettings)> {
-        self.update_settings(|settings| settings.onboarding_completed = false)
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let previous = read_settings(&tx)?;
+        let mut saved = previous.clone();
+        saved.onboarding_completed = false;
+        let saved = saved.normalized();
+        write_settings(&tx, &saved)?;
+        tx.execute(
+            "INSERT INTO setting (key, value) VALUES ('internal:onboardingFlow', 'restart')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [],
+        )?;
+        tx.commit()?;
+        Ok((previous, saved))
+    }
+
+    /// Whether the pending setup flow came from the explicit restart action.
+    pub fn onboarding_flow_is_restart(&self) -> bool {
+        self.internal_value("internal:onboardingFlow").as_deref() == Some("restart")
     }
 
     /// Replace every preference, returning what was actually stored (clamped).
@@ -570,6 +658,15 @@ impl Store {
         Ok(())
     }
 
+    /// Return the current delivery backlog depth.
+    pub fn analytics_event_count(&self) -> Result<u32> {
+        Ok(self
+            .lock()
+            .query_row("SELECT COUNT(*) FROM analytics_event", [], |row| {
+                row.get::<_, u32>(0)
+            })?)
+    }
+
     /// The next batch to attempt, oldest first, as `(id, payload)`.
     pub fn pending_analytics_events(&self, limit: u32) -> Result<Vec<(i64, String)>> {
         let connection = self.lock();
@@ -630,13 +727,26 @@ impl Store {
 
     /// Mint or rotate the installation identifier.
     pub fn set_analytics_identity(&self, install_id: &str) -> Result<()> {
+        self.set_analytics_identity_with_time(install_id, &now_rfc3339())
+    }
+
+    fn set_analytics_identity_with_time(&self, install_id: &str, minted_at: &str) -> Result<()> {
         self.lock().execute(
             "INSERT INTO analytics_identity (id, install_id, minted_at) VALUES (1, ?1, ?2)
              ON CONFLICT(id) DO UPDATE SET install_id = excluded.install_id,
                                            minted_at  = excluded.minted_at",
-            params![install_id, now_rfc3339()],
+            params![install_id, minted_at],
         )?;
         Ok(())
+    }
+
+    #[cfg(all(test, feature = "analytics"))]
+    pub(crate) fn set_analytics_identity_at(
+        &self,
+        install_id: &str,
+        minted_at: &str,
+    ) -> Result<()> {
+        self.set_analytics_identity_with_time(install_id, minted_at)
     }
 
     /// Opting out: the queue and the identity go together, in one transaction.
@@ -709,9 +819,9 @@ impl Store {
                 upsert_session_in(&tx, record)?;
             let generation_increased =
                 previous_generation.is_none_or(|previous| source_generation > previous);
-            if evidence_agents.contains(&record.key.agent.as_str())
-                && (generation_increased || activity_cursor_changed || source_returned)
-            {
+            let evidence_marked_pending = evidence_agents.contains(&record.key.agent.as_str())
+                && (generation_increased || activity_cursor_changed || source_returned);
+            if evidence_marked_pending {
                 mark_evidence_pending_in(&tx, &record.key)?;
             }
         }
@@ -865,11 +975,8 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Return every session's full cached record keyed by environment, agent,
-    /// and source label. A single map keeps the scan's cheap unchanged-source
-    /// gate outside the SQLite lock without allowing native/WSL rows to
-    /// collide, and lets the scan reuse a whole previous record instead of
-    /// re-describing a source that has not changed.
+    /// Return every session's full cached record.
+    #[cfg(test)]
     pub fn session_records(&self) -> Result<HashMap<SessionActivityKey, SessionRecord>> {
         let connection = self.lock();
         let mut statement = connection.prepare(SESSION_SELECT_SQL)?;
@@ -883,6 +990,85 @@ impl Store {
                 record.source_label.clone(),
             );
             records.insert(key, record);
+        }
+        Ok(records)
+    }
+
+    /// Return cached records for the activity sources in one discovery pass.
+    ///
+    /// Each predicate includes the environment and agent. Native and WSL rows
+    /// can therefore share a source label without sharing cached state.
+    pub fn session_records_for_activity_keys(
+        &self,
+        keys: &[SessionActivityKey],
+    ) -> Result<HashMap<SessionActivityKey, SessionRecord>> {
+        let connection = self.lock();
+        let mut records = HashMap::with_capacity(keys.len());
+        for keys in keys.chunks(SCAN_HISTORY_KEY_BATCH_SIZE) {
+            let mut values = Vec::with_capacity(keys.len() * 3);
+            for key in keys {
+                values.push(rusqlite::types::Value::Text(key.environment_key.clone()));
+                values.push(rusqlite::types::Value::Text(key.agent.clone()));
+                values.push(rusqlite::types::Value::Text(key.source_label.clone()));
+            }
+            let mut statement =
+                connection.prepare(&session_records_for_activity_keys_sql(keys.len()))?;
+            let rows = statement.query_map(params_from_iter(values.iter()), session_from_row)?;
+            for row in rows {
+                let record = row?;
+                let key = SessionActivityKey::new(
+                    record.key.environment_key.clone(),
+                    record.key.agent.clone(),
+                    record.source_label.clone(),
+                );
+                records.insert(key, record);
+            }
+        }
+        Ok(records)
+    }
+
+    /// Return native session identities for one agent title index.
+    pub fn native_session_ids_for_agent(&self, agent: &str) -> Result<Vec<String>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT session_id
+               FROM session
+              WHERE environment_key = 'native' AND agent = ?1
+              ORDER BY session_id",
+        )?;
+        let rows = statement.query_map(params![agent], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Return cached records for exact session identities.
+    pub fn session_records_for_session_keys(
+        &self,
+        keys: &[SessionKey],
+    ) -> Result<Vec<SessionRecord>> {
+        let connection = self.lock();
+        let mut records = Vec::with_capacity(keys.len());
+        for keys in keys.chunks(SCAN_HISTORY_KEY_BATCH_SIZE) {
+            let predicates = (0..keys.len())
+                .map(|index| {
+                    let first = index * 3 + 1;
+                    format!(
+                        "(s.environment_key = ?{first} AND s.agent = ?{} AND s.session_id = ?{})",
+                        first + 1,
+                        first + 2
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let mut values = Vec::with_capacity(keys.len() * 3);
+            for key in keys {
+                values.push(rusqlite::types::Value::Text(key.environment_key.clone()));
+                values.push(rusqlite::types::Value::Text(key.agent.clone()));
+                values.push(rusqlite::types::Value::Text(key.session_id.clone()));
+            }
+            let mut statement =
+                connection.prepare(&format!("{SESSION_SELECT_SQL}\n WHERE {predicates}"))?;
+            let rows = statement.query_map(params_from_iter(values.iter()), session_from_row)?;
+            records.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
         }
         Ok(records)
     }
@@ -902,35 +1088,66 @@ impl Store {
             .optional()?)
     }
 
-    /// One native file session's cached record, addressed by its
-    /// `source_label` (the transcript path) rather than its session id.
+    /// Return native file activity keys grouped by their requested transcript
+    /// paths. One lock and bounded query chunks cover the whole watcher burst.
     ///
-    /// T1: the watcher names a changed path, not a session id, so the scoped
-    /// scan classifies a burst's paths against `source_label` before it can
-    /// build a targeted refresh.
-    pub fn session_record_by_source_label(
+    /// A path can match more than one agent row. Keep every full activity key
+    /// so the classifier does not merge agents or native and WSL identities.
+    pub fn native_file_session_activity_keys(
         &self,
-        source_label: &str,
-    ) -> Result<Option<(SessionActivityKey, SessionRecord)>> {
+        source_labels: &BTreeSet<String>,
+    ) -> Result<HashMap<String, BTreeSet<SessionActivityKey>>> {
+        if source_labels.is_empty() {
+            return Ok(HashMap::new());
+        }
         let connection = self.lock();
-        let mut statement = connection.prepare(&format!(
-            "{SESSION_SELECT_SQL}\n              WHERE source_label = ?1"
-        ))?;
-        let record = statement
-            .query_row(params![source_label], session_from_row)
-            .optional()?;
-        Ok(record.map(|record| {
-            let key = SessionActivityKey::new(
-                record.key.environment_key.clone(),
-                record.key.agent.clone(),
-                record.source_label.clone(),
-            );
-            (key, record)
-        }))
+        let labels = source_labels.iter().collect::<Vec<_>>();
+        let mut matches: HashMap<String, BTreeSet<SessionActivityKey>> = HashMap::new();
+        for chunk in labels.chunks(SOURCE_LABEL_LOOKUP_CHUNK_SIZE) {
+            let mut statement =
+                connection.prepare(&native_file_session_activity_keys_sql(chunk.len()))?;
+            let rows = statement.query_map(
+                params_from_iter(chunk.iter().map(|label| label.as_str())),
+                |row| {
+                    let agent = row.get::<_, String>(0)?;
+                    let source_label = row.get::<_, String>(1)?;
+                    Ok((
+                        source_label.clone(),
+                        SessionActivityKey::new("native", agent, source_label),
+                    ))
+                },
+            )?;
+            for row in rows {
+                let (source_label, key) = row?;
+                matches.entry(source_label).or_default().insert(key);
+            }
+        }
+        Ok(matches)
     }
 
-    /// Keys of every session whose evidence last failed because its source
-    /// was missing.
+    /// Return one file session by its complete activity identity.
+    pub fn session_record_by_activity_key(
+        &self,
+        key: &SessionActivityKey,
+    ) -> Result<Option<SessionRecord>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(&format!(
+            "{SESSION_SELECT_SQL}
+              WHERE source_label = ?3
+                AND environment_key = ?1
+                AND agent = ?2
+                AND source_kind = 'file'"
+        ))?;
+        Ok(statement
+            .query_row(
+                params![key.environment_key, key.agent, key.source_label],
+                session_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Keys in `sessions` whose evidence last failed because its source was
+    /// missing.
     ///
     /// R3: a full pass reuses an unchanged row without rewriting it, which
     /// would otherwise leave a session stuck once its source returns —
@@ -938,24 +1155,48 @@ impl Store {
     /// persists these rows through `upsert_sessions` even when the row
     /// itself is unchanged, so its own `source_returned` check runs and
     /// clears the failure.
-    pub fn sessions_with_missing_source(&self) -> Result<Vec<SessionKey>> {
+    pub fn sessions_with_missing_source_for(
+        &self,
+        sessions: &[SessionKey],
+    ) -> Result<Vec<SessionKey>> {
         let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT environment_key, agent, session_id
-               FROM session_evidence
-              WHERE status = 'failed' AND last_error = ?1",
-        )?;
-        let rows = statement.query_map(
-            params![crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING],
-            |row| {
+        let mut missing = Vec::new();
+        for sessions in sessions.chunks(SCAN_HISTORY_KEY_BATCH_SIZE) {
+            let predicates = (0..sessions.len())
+                .map(|index| {
+                    let first = index * 3 + 2;
+                    format!(
+                        "(environment_key = ?{first} AND agent = ?{} AND session_id = ?{})",
+                        first + 1,
+                        first + 2
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let mut values = Vec::with_capacity(sessions.len() * 3 + 1);
+            values.push(rusqlite::types::Value::Text(
+                crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING.to_string(),
+            ));
+            for key in sessions {
+                values.push(rusqlite::types::Value::Text(key.environment_key.clone()));
+                values.push(rusqlite::types::Value::Text(key.agent.clone()));
+                values.push(rusqlite::types::Value::Text(key.session_id.clone()));
+            }
+            let mut statement = connection.prepare(&format!(
+                "SELECT environment_key, agent, session_id
+                   FROM session_evidence
+                  WHERE status = 'failed' AND last_error = ?1 AND ({predicates})"
+            ))?;
+            let rows = statement.query_map(params_from_iter(values.iter()), |row| {
                 Ok(SessionKey::new(
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                 ))
-            },
-        )?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            })?;
+            missing.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+        Ok(missing)
     }
 
     /// One session's persisted source version and optional start time.
@@ -1076,9 +1317,8 @@ impl Store {
             .iter()
             .map(|agent| rusqlite::types::Value::Text((*agent).to_string()))
             .collect();
-        let enrolled = transaction.execute(
-            &format!(
-                "INSERT INTO session_evidence (environment_key, agent, session_id)
+        let enroll_sql = format!(
+            "INSERT INTO session_evidence (environment_key, agent, session_id)
                  SELECT session.environment_key, session.agent, session.session_id
                    FROM session
                   WHERE session.agent IN ({agent_placeholders})
@@ -1086,11 +1326,18 @@ impl Store {
                         SELECT 1 FROM session_evidence
                          WHERE session_evidence.environment_key = session.environment_key
                            AND session_evidence.agent = session.agent
-                           AND session_evidence.session_id = session.session_id
-                    )"
-            ),
-            rusqlite::params_from_iter(agent_values.iter()),
-        )?;
+                            AND session_evidence.session_id = session.session_id
+                     )
+                 RETURNING environment_key, agent"
+        );
+        let mut enroll_statement = transaction.prepare(&enroll_sql)?;
+        let enrolled_scopes = enroll_statement
+            .query_map(rusqlite::params_from_iter(agent_values.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let enrolled = enrolled_scopes.len();
+        drop(enroll_statement);
 
         let parser_parameter = agents.len() + 1;
         let analyzer_parameter = agents.len() + 2;
@@ -1129,7 +1376,8 @@ impl Store {
                                   AND analysis.metrics_schema_revision = ?{metrics_parameter}
                            ))
                        )
-                )"
+                 )
+             RETURNING environment_key, agent"
         );
         let mut update_values = agent_values;
         update_values.extend([
@@ -1138,10 +1386,14 @@ impl Store {
             rusqlite::types::Value::Integer(revisions.metrics_schema_revision),
             rusqlite::types::Value::Integer(revisions.evidence_schema_revision),
         ]);
-        let requeued = transaction.execute(
-            &update_sql,
-            rusqlite::params_from_iter(update_values.iter()),
-        )?;
+        let mut update_statement = transaction.prepare(&update_sql)?;
+        let requeued_scopes = update_statement
+            .query_map(rusqlite::params_from_iter(update_values.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let requeued = requeued_scopes.len();
+        drop(update_statement);
         transaction.commit()?;
         Ok(enrolled + requeued)
     }
@@ -1292,12 +1544,13 @@ impl Store {
         failure: EvidenceFailure,
         last_error: &str,
     ) -> Result<bool> {
-        let connection = self.lock();
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
         let updated = match failure {
             EvidenceFailure::Retry {
                 next_attempt_at_epoch,
                 counts_as_attempt,
-            } => connection.execute(
+            } => transaction.execute(
                 "UPDATE session_evidence AS evidence
                     SET status = 'pending', retry_count = retry_count + ?8,
                         last_error = ?6, claimed_at_epoch = NULL,
@@ -1323,7 +1576,7 @@ impl Store {
                     i64::from(counts_as_attempt),
                 ],
             )?,
-            EvidenceFailure::Failed { revisions } => connection.execute(
+            EvidenceFailure::Failed { revisions } => transaction.execute(
                 "UPDATE session_evidence AS evidence
                     SET status = 'failed', retry_count = retry_count + 1,
                         analyzed_generation = ?5, parser_revision = ?7,
@@ -1354,6 +1607,7 @@ impl Store {
                 ],
             )?,
         };
+        transaction.commit()?;
         Ok(updated > 0)
     }
 
@@ -1378,12 +1632,22 @@ impl Store {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         tx.execute("DELETE FROM session_relation", [])?;
+        tx.execute("DELETE FROM remediation_contribution", [])?;
+        tx.execute("DELETE FROM remediation", [])?;
         tx.execute("DELETE FROM session_analysis", [])?;
         tx.execute("DELETE FROM session_evidence", [])?;
         tx.execute("DELETE FROM turn_content", [])?;
         tx.execute("DELETE FROM session_coverage", [])?;
         tx.execute("DELETE FROM source_resume", [])?;
         tx.execute("DELETE FROM turn", [])?;
+        // These reference `provider_usage_period` and must go before it, the
+        // same way `provider_usage_observation` already does below.
+        tx.execute("DELETE FROM provider_limit_residual", [])?;
+        tx.execute("DELETE FROM provider_limit_learn_cursor", [])?;
+        tx.execute("DELETE FROM provider_limit_factor_sample", [])?;
+        tx.execute("DELETE FROM provider_limit_factor_point", [])?;
+        tx.execute("DELETE FROM provider_usage_observation", [])?;
+        tx.execute("DELETE FROM provider_usage_period", [])?;
         let sessions = tx.execute("DELETE FROM session", [])?;
         tx.execute("DELETE FROM provider_account_seen", [])?;
         tx.execute(
@@ -1432,6 +1696,15 @@ impl Store {
         relations: &[RelationRecord],
         sources: &[SourcePublishOutcome],
     ) -> Result<bool> {
+        let config_attribution = crate::remediation::publication_config_attribution(
+            self,
+            &record.key,
+            completion.status,
+            &completion.evidence_json,
+        )?;
+        let remediation_secret = (completion.status == PublishedEvidence::Ready)
+            .then(|| self.provider_account_secret())
+            .transpose()?;
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
         // The fence every source's rows will share once this pass
@@ -1441,6 +1714,17 @@ impl Store {
         // never published. Read before the claim-race UPDATE below so this
         // still names the *pre*-publish value.
         let existing_published_fence = read_published_fence(&transaction, &record.key)?;
+        let correction_replay = existing_published_fence.is_some()
+            && transaction.query_row(
+                "SELECT analyzed_generation FROM session_evidence
+                      WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![
+                    record.key.environment_key,
+                    record.key.agent,
+                    record.key.session_id
+                ],
+                |row| row.get::<_, Option<i64>>(0),
+            )? == Some(record.analyzed_generation);
         let target_fence = existing_published_fence.unwrap_or(completion.claim_fence);
         transaction.execute(
             "INSERT INTO session_analysis (
@@ -1502,7 +1786,11 @@ impl Store {
                     evidence_json = ?10,
                     analyzed_at_epoch = ?11, retry_count = 0, last_error = NULL,
                     claimed_at_epoch = NULL, lease_expires_at_epoch = NULL,
-                    next_attempt_at_epoch = NULL, published_fence = ?12
+                     next_attempt_at_epoch = NULL, published_fence = ?12,
+                     effective_model_target_hash = ?14,
+                     effective_model_scope = ?15, effective_model = ?16,
+                     effective_reasoning_target_hash = ?17,
+                     effective_reasoning_scope = ?18, effective_reasoning = ?19
               WHERE evidence.environment_key = ?1
                 AND evidence.agent = ?2 AND evidence.session_id = ?3
                 AND evidence.status = 'processing' AND evidence.claim_fence = ?13
@@ -1527,6 +1815,30 @@ impl Store {
                 time::OffsetDateTime::now_utc().unix_timestamp(),
                 target_fence,
                 completion.claim_fence,
+                config_attribution
+                    .model
+                    .as_ref()
+                    .map(|value| value.0.as_str()),
+                config_attribution
+                    .model
+                    .as_ref()
+                    .map(|value| value.1.as_str()),
+                config_attribution
+                    .model
+                    .as_ref()
+                    .map(|value| value.2.as_str()),
+                config_attribution
+                    .reasoning
+                    .as_ref()
+                    .map(|value| value.0.as_str()),
+                config_attribution
+                    .reasoning
+                    .as_ref()
+                    .map(|value| value.1.as_str()),
+                config_attribution
+                    .reasoning
+                    .as_ref()
+                    .map(|value| value.2.as_str()),
             ],
         )?;
         if updated == 0 {
@@ -1685,6 +1997,33 @@ impl Store {
         // so on a resumed pass this finds nothing left to delete.
         delete_turn_rows_except_fence(&transaction, &key, target_fence)?;
         replace_relations_in(&transaction, &record.key, RelationKind::Subagent, relations)?;
+        if completion.status == PublishedEvidence::Ready {
+            let publication_epoch = time::OffsetDateTime::now_utc();
+            remediation::mark_remediations_dirty_in(
+                &transaction,
+                &record.key.environment_key,
+                &record.key.agent,
+                publication_epoch.unix_timestamp(),
+                correction_replay,
+            )?;
+            let findings =
+                crate::insights_report::publication_findings_in(&transaction, &record.key)?;
+            let boundary_ms = i64::try_from(publication_epoch.unix_timestamp_nanos() / 1_000_000)
+                .unwrap_or(i64::MAX);
+            let candidates = crate::remediation::passive_remediations(
+                &transaction,
+                remediation_secret
+                    .as_ref()
+                    .expect("ready publication has a remediation secret"),
+                findings,
+                boundary_ms,
+            )?;
+            remediation::enroll_passive_remediations_in(
+                &transaction,
+                &candidates,
+                publication_epoch.unix_timestamp(),
+            )?;
+        }
         transaction.commit()?;
         Ok(true)
     }
@@ -1698,8 +2037,11 @@ impl Store {
     /// transcript's. Idempotent: requeuing a session already `pending` (or
     /// already claimed) just clears its retry state again.
     pub fn requeue_session_evidence(&self, key: &SessionKey) -> Result<()> {
-        let connection = self.lock();
-        mark_evidence_pending_in(&connection, key)
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        mark_evidence_pending_in(&transaction, key)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Counts one session's turn rows stamped with `claim_fence`.
@@ -1859,6 +2201,60 @@ impl Store {
         Ok(())
     }
 
+    /// Every listed session's cached analysis, in one query rather than one
+    /// per session. A session with no analysis row is absent from the map.
+    pub fn analyses(&self, keys: &[SessionKey]) -> Result<HashMap<SessionKey, AnalysisRecord>> {
+        let mut analyses = HashMap::new();
+        if keys.is_empty() {
+            return Ok(analyses);
+        }
+        let mut clauses = Vec::with_capacity(keys.len());
+        let mut values = Vec::with_capacity(keys.len() * 3);
+        for key in keys.iter().take(500) {
+            clauses.push("(environment_key = ? AND agent = ? AND session_id = ?)");
+            values.push(rusqlite::types::Value::from(key.environment_key.clone()));
+            values.push(rusqlite::types::Value::from(key.agent.clone()));
+            values.push(rusqlite::types::Value::from(key.session_id.clone()));
+        }
+        let sql = format!(
+            "SELECT environment_key, agent, session_id, model_breakdown_json,
+                    pricing_breakdown_json,
+                    inclusive_models_json, initial_context_json, source_summaries_json,
+                    provider_hints_json,
+                    source_fingerprint, pricing_generation, analyzed_generation,
+                    parser_revision, analyzer_revision, metrics_schema_revision
+               FROM session_analysis
+              WHERE {}",
+            clauses.join(" OR ")
+        );
+        let connection = self.lock();
+        let mut statement = connection.prepare(&sql)?;
+        let mut rows = statement.query(rusqlite::params_from_iter(values))?;
+        while let Some(row) = rows.next()? {
+            let record = AnalysisRecord {
+                key: SessionKey::new(
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ),
+                model_breakdown_json: row.get(3)?,
+                pricing_breakdown_json: row.get(4)?,
+                inclusive_models_json: row.get(5)?,
+                initial_context_json: row.get(6)?,
+                source_summaries_json: row.get(7)?,
+                provider_hints_json: row.get(8)?,
+                source_fingerprint: row.get(9)?,
+                pricing_generation: row.get(10)?,
+                analyzed_generation: row.get(11)?,
+                parser_revision: row.get(12)?,
+                analyzer_revision: row.get(13)?,
+                metrics_schema_revision: row.get(14)?,
+            };
+            analyses.insert(record.key.clone(), record);
+        }
+        Ok(analyses)
+    }
+
     /// One session's cached analysis, when it has been computed.
     pub fn analysis(&self, key: &SessionKey) -> Result<Option<AnalysisRecord>> {
         let connection = self.lock();
@@ -1944,99 +2340,6 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// Published timestamped turns at or after `since_ms`, grouped by session.
-    pub fn session_usage_turns(&self, since_ms: i64) -> Result<Vec<SessionUsageRecord>> {
-        let connection = self.lock();
-        let mut statement = connection.prepare(
-            "WITH recent_session AS (
-                SELECT DISTINCT t.environment_key, t.agent, t.session_id
-                  FROM turn t
-                  JOIN session_evidence e
-                    ON e.environment_key = t.environment_key
-                   AND e.agent = t.agent
-                   AND e.session_id = t.session_id
-                   AND e.published_fence = t.claim_fence
-                 WHERE t.ts_ms >= ?1
-            )
-             SELECT s.environment_key, s.agent, s.session_id, s.wsl_distro,
-                    a.provider_hints_json,
-                    COALESCE((
-                        SELECT json_group_array(json_object(
-                            'provider', spa.provider,
-                            'accountKey', spa.account_key
-                        ))
-                          FROM session_provider_account spa
-                         WHERE spa.environment_key = s.environment_key
-                           AND spa.agent = s.agent
-                           AND spa.session_id = s.session_id
-                    ), '[]')
-               FROM recent_session r
-               JOIN session s
-                 ON s.environment_key = r.environment_key
-                AND s.agent = r.agent
-                AND s.session_id = r.session_id
-               LEFT JOIN session_analysis a
-                 ON a.environment_key = s.environment_key
-                AND a.agent = s.agent
-                AND a.session_id = s.session_id",
-        )?;
-        let rows = statement.query_map(params![since_ms], |row| {
-            Ok(SessionUsageRecord {
-                key: SessionKey {
-                    environment_key: row.get(0)?,
-                    agent: row.get(1)?,
-                    session_id: row.get(2)?,
-                },
-                wsl_distro: row.get(3)?,
-                provider_hints_json: row.get(4)?,
-                provider_accounts_json: row.get(5)?,
-                turns: Vec::new(),
-            })
-        })?;
-        let mut sessions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(statement);
-        let indexes: HashMap<_, _> = sessions
-            .iter()
-            .enumerate()
-            .map(|(index, session)| (session.key.clone(), index))
-            .collect();
-        let mut statement = connection.prepare(
-            "SELECT t.environment_key, t.agent, t.session_id,
-                    t.ts_ms, t.model, t.speed, t.input_tokens, t.cache_read_tokens,
-                    t.cache_write_tokens, t.output_tokens
-               FROM turn t
-               JOIN session_evidence e
-                 ON e.environment_key = t.environment_key
-                AND e.agent = t.agent
-                AND e.session_id = t.session_id
-                AND e.published_fence = t.claim_fence
-              WHERE t.ts_ms >= ?1
-              ORDER BY t.ts_ms, t.rowid",
-        )?;
-        let mut rows = statement.query(params![since_ms])?;
-        while let Some(row) = rows.next()? {
-            let key = SessionKey {
-                environment_key: row.get(0)?,
-                agent: row.get(1)?,
-                session_id: row.get(2)?,
-            };
-            let index = indexes
-                .get(&key)
-                .copied()
-                .context("a recent turn has no session metadata")?;
-            sessions[index].turns.push(SessionUsageTurnRecord {
-                ts_ms: row.get(3)?,
-                model: row.get(4)?,
-                speed: row.get(5)?,
-                input_tokens: row.get(6)?,
-                cache_read_tokens: row.get(7)?,
-                cache_write_tokens: row.get(8)?,
-                output_tokens: row.get(9)?,
-            });
-        }
-        Ok(sessions)
     }
 
     /// Bind recent sessions after the account-attribution rollout.
@@ -2968,6 +3271,7 @@ pub(crate) fn apply_session_retention_in(
     now_epoch: i64,
 ) -> Result<usize> {
     if retention_days == RETAIN_SESSION_DATA_FOREVER {
+        Store::apply_provider_usage_retention_in(connection, retention_days, now_epoch)?;
         return Ok(0);
     }
 
@@ -2997,6 +3301,7 @@ pub(crate) fn apply_session_retention_in(
             removed += 1;
         }
     }
+    Store::apply_provider_usage_retention_in(connection, retention_days, now_epoch)?;
     Ok(removed)
 }
 
@@ -3060,11 +3365,8 @@ fn evidence_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceRow> {
     })
 }
 
-/// Column list and join shared by every reader of the `session` table:
-/// [`Store::session_records`], [`Store::session`], and
-/// [`Store::session_record_by_source_label`]. One copy means a schema change
-/// updates every reader together, and [`session_from_row`] stays the single
-/// row mapper for all three.
+/// Every full-record session reader uses this column list and join. One copy
+/// keeps schema changes aligned with [`session_from_row`].
 const SESSION_SELECT_SQL: &str =
     "SELECT environment_key, agent, session_id, source_kind, source_label, wsl_distro,
                     title, title_source, cwd, surface, updated_at_epoch,

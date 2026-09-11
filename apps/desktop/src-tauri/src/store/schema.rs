@@ -12,7 +12,8 @@
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
-    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35,
+    V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
+    V41, V42, V43, V44, V45, V46,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -617,4 +618,393 @@ DELETE FROM session_analysis;
 /// v35 removes queued events for the retired Usage click surface.
 const V35: &str = r#"
 DELETE FROM analytics_event WHERE name = 'antiburn.usage_viewed';
+"#;
+
+/// v36 — durable provider-reported usage observations.
+///
+/// Observations without a provider-stated period boundary deliberately have no
+/// period id. They remain useful history, but cannot support attribution to a
+/// guessed allowance period.
+const V36: &str = r#"
+CREATE TABLE provider_usage_period (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider              TEXT NOT NULL,
+    account_key           TEXT NOT NULL,
+    window_id             TEXT NOT NULL,
+    window_kind           TEXT NOT NULL,
+    window_role           TEXT NOT NULL,
+    scope_key             TEXT NOT NULL,
+    scope_label           TEXT NOT NULL,
+    duration_seconds      INTEGER,
+    starts_at_epoch       INTEGER,
+    resets_at_epoch       INTEGER,
+    first_observed_epoch  INTEGER NOT NULL,
+    last_observed_epoch   INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX provider_usage_period_identity
+    ON provider_usage_period (
+        provider, account_key, window_id, window_kind, window_role, scope_key,
+        last_observed_epoch DESC
+    );
+CREATE INDEX provider_usage_period_reset_identity
+    ON provider_usage_period (
+        provider, account_key, window_id, window_kind, window_role, scope_key,
+        resets_at_epoch
+    );
+CREATE INDEX provider_usage_period_start_identity
+    ON provider_usage_period (
+        provider, account_key, window_id, window_kind, window_role, scope_key,
+        starts_at_epoch
+    );
+
+CREATE TABLE provider_usage_observation (
+    id                        INTEGER PRIMARY KEY,
+    period_id                 INTEGER REFERENCES provider_usage_period(id),
+    provider                  TEXT NOT NULL,
+    account_key               TEXT NOT NULL,
+    window_id                 TEXT NOT NULL,
+    window_kind               TEXT NOT NULL,
+    window_role               TEXT NOT NULL,
+    scope_key                 TEXT NOT NULL,
+    scope_label               TEXT NOT NULL,
+    observed_at_epoch         INTEGER NOT NULL,
+    used_percent              REAL,
+    is_fresh                  INTEGER NOT NULL CHECK (is_fresh IN (0, 1)),
+    is_authoritative          INTEGER NOT NULL CHECK (is_authoritative IN (0, 1)),
+    confidence                TEXT NOT NULL,
+    source_id                 TEXT NOT NULL,
+    reported_starts_at_epoch  INTEGER,
+    reported_resets_at_epoch  INTEGER,
+    UNIQUE (
+        provider, account_key, window_id, window_kind, window_role, scope_key,
+        observed_at_epoch
+    )
+) STRICT;
+
+CREATE INDEX provider_usage_observation_period_time
+    ON provider_usage_observation (period_id, observed_at_epoch);
+CREATE INDEX provider_usage_observation_time
+    ON provider_usage_observation (observed_at_epoch);
+"#;
+
+/// v37 keeps compact per-session contributions after raw observations expire.
+///
+/// The queue separates ingestion from allocation. A provider refresh writes a
+/// small set of period ids, while the worker drains a bounded number later.
+const V37: &str = r#"
+ALTER TABLE provider_usage_period
+    ADD COLUMN allocation_frozen INTEGER NOT NULL DEFAULT 0
+    CHECK (allocation_frozen IN (0, 1));
+
+CREATE TABLE provider_usage_allocation_dirty (
+    period_id          INTEGER PRIMARY KEY REFERENCES provider_usage_period(id),
+    requested_at_epoch INTEGER NOT NULL,
+    generation         INTEGER NOT NULL DEFAULT 1
+) STRICT;
+
+CREATE TABLE provider_usage_allocation_revision (
+    id    INTEGER PRIMARY KEY CHECK (id = 1),
+    value INTEGER NOT NULL
+) STRICT;
+INSERT INTO provider_usage_allocation_revision (id, value) VALUES (1, 0);
+
+UPDATE provider_usage_allocation_revision SET value = 1 WHERE id = 1;
+INSERT INTO provider_usage_allocation_dirty (period_id, requested_at_epoch, generation)
+    SELECT id, last_observed_epoch, 1
+      FROM provider_usage_period
+     WHERE resets_at_epoch IS NOT NULL;
+
+CREATE TABLE provider_usage_session_allocation (
+    period_id        INTEGER NOT NULL REFERENCES provider_usage_period(id),
+    environment_key  TEXT NOT NULL,
+    agent            TEXT NOT NULL,
+    session_id       TEXT NOT NULL,
+    metric           TEXT NOT NULL CHECK (metric IN ('weekly', 'fiveHour')),
+    percent          REAL NOT NULL,
+    basis            TEXT NOT NULL CHECK (basis IN ('price', 'tokens')),
+    partial          INTEGER NOT NULL CHECK (partial IN (0, 1)),
+    computed_at_epoch INTEGER NOT NULL,
+    PRIMARY KEY (period_id, environment_key, agent, session_id),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session(environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX provider_usage_session_allocation_session_metric
+    ON provider_usage_session_allocation
+       (environment_key, agent, session_id, metric, period_id);
+"#;
+
+/// v38 indexes the native watcher lookup by transcript path and full activity
+/// identity. The source kind completes the lookup predicate without changing
+/// the session identity contract.
+const V38: &str = r#"
+CREATE INDEX session_source_lookup
+    ON session (source_label, environment_key, agent, source_kind);
+"#;
+
+/// v39 adds plan tracking to observations, and the tables the learned
+/// dollars-per-percent factor lives in.
+///
+/// A sample and a point outlive the observations that produced them. Sample
+/// retention deletes rows older than the session retention setting, capped at
+/// 365 days; points are never deleted. `store::provider_limit` nulls a
+/// sample's `period_id` before period retention removes the period, so that
+/// deletion needs no `ON DELETE` action here. The same step deletes that
+/// period's cursor row, so period retention itself needs no change.
+///
+/// `provider_limit_learn_cursor` marks how far a period's observations have
+/// been read into samples, so a pass can find a period whose readings are
+/// old — from bootstrap on upgrade or from a backfill — instead of only one
+/// observed in the last 15 minutes.
+const V39: &str = r#"
+ALTER TABLE provider_usage_observation ADD COLUMN plan TEXT;
+ALTER TABLE provider_usage_observation ADD COLUMN plan_tier TEXT;
+
+CREATE TABLE provider_limit_factor_sample (
+    id                  INTEGER PRIMARY KEY,
+    provider            TEXT NOT NULL,
+    account_key         TEXT NOT NULL,
+    lane                TEXT NOT NULL CHECK (lane IN ('weekly', 'fiveHour')),
+    kind                TEXT NOT NULL CHECK (kind IN ('delta', 'window_start', 'unattributed', 'rollout')),
+    period_id           INTEGER REFERENCES provider_usage_period(id),
+    from_epoch          INTEGER NOT NULL,
+    to_epoch            INTEGER NOT NULL,
+    from_percent        REAL NOT NULL,
+    to_percent          REAL NOT NULL,
+    input_usd           REAL NOT NULL,
+    output_usd          REAL NOT NULL,
+    cache_read_usd      REAL NOT NULL,
+    cache_write_usd     REAL NOT NULL,
+    turn_count          INTEGER NOT NULL,
+    plan                TEXT,
+    plan_tier           TEXT,
+    source_id           TEXT NOT NULL,
+    computed_at_epoch   INTEGER NOT NULL,
+    UNIQUE (provider, account_key, lane, from_epoch, to_epoch)
+) STRICT;
+
+CREATE INDEX provider_limit_factor_sample_lane_recent
+    ON provider_limit_factor_sample (provider, account_key, lane, to_epoch DESC);
+CREATE INDEX provider_limit_factor_sample_period
+    ON provider_limit_factor_sample (period_id);
+
+CREATE TABLE provider_limit_factor_point (
+    id                  INTEGER PRIMARY KEY,
+    provider            TEXT NOT NULL,
+    account_key         TEXT NOT NULL,
+    lane                TEXT NOT NULL CHECK (lane IN ('weekly', 'fiveHour')),
+    effective_at_epoch  INTEGER NOT NULL,
+    usd_per_percent     REAL NOT NULL,
+    method              TEXT NOT NULL CHECK (method IN ('delta', 'window_start')),
+    sample_count        INTEGER NOT NULL,
+    plan                TEXT,
+    plan_tier           TEXT,
+    UNIQUE (provider, account_key, lane, effective_at_epoch)
+) STRICT;
+
+CREATE INDEX provider_limit_factor_point_lane_recent
+    ON provider_limit_factor_point (provider, account_key, lane, effective_at_epoch DESC);
+
+CREATE TABLE provider_limit_residual (
+    period_id           INTEGER PRIMARY KEY REFERENCES provider_usage_period(id),
+    computed_at_epoch   INTEGER NOT NULL,
+    meter_percent       REAL NOT NULL,
+    estimated_percent   REAL NOT NULL
+) STRICT;
+
+CREATE TABLE provider_limit_learn_cursor (
+    period_id            INTEGER PRIMARY KEY REFERENCES provider_usage_period(id),
+    learned_through_epoch INTEGER NOT NULL
+) STRICT;
+"#;
+
+/// v40 removes the durable per-session allocator (phase 2 of the limit-factor
+/// plan). The session limit badge now prices straight from
+/// `provider_limit_factor_point`, computed at read time from the session's
+/// own cost — see `commands::session_limit_allocations`.
+///
+/// The dirty queue and its generation counter, and the materialized
+/// per-session rows, drop first because both reference
+/// `provider_usage_period`. `allocation_frozen` drops last, once nothing
+/// references it.
+const V40: &str = r#"
+DROP TABLE provider_usage_allocation_dirty;
+DROP TABLE provider_usage_allocation_revision;
+DROP TABLE provider_usage_session_allocation;
+
+ALTER TABLE provider_usage_period DROP COLUMN allocation_frozen;
+"#;
+
+/// v41 adds the checkpoint the bounded Codex rollout history reader keeps
+/// per session, so a large rollout file resumes from its last read byte
+/// instead of rereading it every pass. Keyed by session and provider, not
+/// by account: the checkpoint tracks how far a file has been read, which
+/// does not depend on which account a later pass resolves the session to.
+///
+/// `FOREIGN KEY ... ON DELETE CASCADE` removes a session's checkpoint row
+/// when the session itself is deleted, the same way `session_provider_account`
+/// relies on the cascade rather than an explicit delete in
+/// `Store::delete_session` or `Store::clear_local_session_data`.
+///
+/// Readers: `store::codex_rollout_checkpoint`,
+/// `provider_usage::codex_rollout_history`.
+const V41: &str = r#"
+CREATE TABLE provider_usage_rollout_checkpoint (
+    environment_key       TEXT NOT NULL,
+    agent                 TEXT NOT NULL,
+    session_id            TEXT NOT NULL,
+    provider              TEXT NOT NULL,
+    source_label          TEXT NOT NULL,
+    cursor_bytes          INTEGER NOT NULL DEFAULT 0 CHECK (cursor_bytes >= 0),
+    source_bytes          INTEGER NOT NULL DEFAULT 0 CHECK (source_bytes >= 0),
+    source_modified_epoch INTEGER,
+    source_identity       TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL CHECK (status IN ('pending', 'retry', 'complete')),
+    retry_count           INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+    next_attempt_epoch    INTEGER NOT NULL DEFAULT 0,
+    updated_at_epoch      INTEGER NOT NULL,
+    completed_at_epoch    INTEGER,
+    PRIMARY KEY (environment_key, agent, session_id, provider),
+    FOREIGN KEY (environment_key, agent, session_id)
+      REFERENCES session(environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+
+CREATE INDEX provider_usage_rollout_checkpoint_ready
+    ON provider_usage_rollout_checkpoint (status, next_attempt_epoch, updated_at_epoch);
+"#;
+
+/// v42 preserves request routes for compatible cache accounting.
+const V42: &str = antiburn_local::analysis::TURN_SCHEMA_V7_SQL;
+
+/// v43 stores the final durable remediation watch lifecycle.
+const V43: &str = r#"
+ALTER TABLE session_evidence ADD COLUMN effective_model_target_hash TEXT;
+ALTER TABLE session_evidence ADD COLUMN effective_model_scope TEXT
+    CHECK (effective_model_scope IN ('global', 'project'));
+ALTER TABLE session_evidence ADD COLUMN effective_model TEXT;
+
+CREATE TABLE remediation (
+    remediation_id TEXT PRIMARY KEY NOT NULL CHECK (length(remediation_id) BETWEEN 1 AND 256),
+    target_key TEXT NOT NULL CHECK (length(target_key) BETWEEN 1 AND 256),
+    environment_key TEXT NOT NULL CHECK (length(environment_key) BETWEEN 1 AND 256),
+    agent TEXT NOT NULL CHECK (length(agent) BETWEEN 1 AND 256),
+    scope_kind TEXT NOT NULL CHECK (scope_kind IN ('global', 'project', 'session')),
+    scope_key TEXT NOT NULL CHECK (length(scope_key) BETWEEN 1 AND 256),
+    state TEXT NOT NULL CHECK (state IN ('reserved', 'writing', 'recoveryNeeded', 'watching', 'fixed', 'recurred')),
+    dirty_revision INTEGER NOT NULL DEFAULT 1 CHECK (dirty_revision >= 1),
+    evaluated_revision INTEGER NOT NULL DEFAULT 0 CHECK (evaluated_revision BETWEEN 0 AND dirty_revision),
+    definition_json TEXT NOT NULL CHECK (
+        length(CAST(definition_json AS BLOB)) BETWEEN 1 AND 32768
+        AND json_valid(definition_json)
+        AND json_type(definition_json, '$.version') IS 'integer'
+        AND json_extract(definition_json, '$.version') > 0),
+    result_json TEXT NOT NULL CHECK (
+        length(CAST(result_json AS BLOB)) BETWEEN 1 AND 32768
+        AND json_valid(result_json)
+        AND json_type(result_json, '$.version') IS 'integer'
+        AND json_extract(result_json, '$.version') > 0),
+    created_at_epoch INTEGER NOT NULL CHECK (created_at_epoch >= 0),
+    updated_at_epoch INTEGER NOT NULL CHECK (updated_at_epoch >= created_at_epoch),
+    effective_boundary_ms INTEGER CHECK (effective_boundary_ms IS NULL OR effective_boundary_ms >= 0),
+    verified_at_epoch INTEGER CHECK (verified_at_epoch IS NULL OR verified_at_epoch BETWEEN created_at_epoch AND updated_at_epoch),
+    recurred_at_epoch INTEGER CHECK (recurred_at_epoch IS NULL OR recurred_at_epoch BETWEEN verified_at_epoch AND updated_at_epoch),
+    CHECK ((state IN ('reserved', 'writing', 'recoveryNeeded') AND effective_boundary_ms IS NULL AND verified_at_epoch IS NULL AND recurred_at_epoch IS NULL)
+        OR (state = 'watching' AND verified_at_epoch IS NULL AND recurred_at_epoch IS NULL)
+        OR (state = 'fixed' AND verified_at_epoch IS NOT NULL AND recurred_at_epoch IS NULL)
+        OR (state = 'recurred' AND verified_at_epoch IS NOT NULL AND recurred_at_epoch IS NOT NULL))
+) STRICT;
+
+CREATE INDEX remediation_dirty
+    ON remediation (updated_at_epoch, remediation_id)
+    WHERE evaluated_revision < dirty_revision AND state IN ('watching', 'fixed');
+CREATE INDEX remediation_scope
+    ON remediation (environment_key, agent, scope_kind, scope_key, updated_at_epoch);
+CREATE UNIQUE INDEX remediation_active_target
+    ON remediation (environment_key, agent, target_key)
+    WHERE state != 'recurred';
+CREATE TRIGGER remediation_state_transition
+BEFORE UPDATE OF state ON remediation
+WHEN NOT (
+    (OLD.state = 'reserved' AND NEW.state IN ('writing', 'watching'))
+    OR (OLD.state = 'watching' AND NEW.state = 'reserved')
+    OR (OLD.state = 'writing' AND NEW.state IN ('recoveryNeeded', 'watching'))
+    OR (OLD.state = 'recoveryNeeded' AND NEW.state IN ('recoveryNeeded', 'watching'))
+    OR (OLD.state = 'watching' AND NEW.state IN ('watching', 'fixed'))
+    OR (OLD.state = 'fixed' AND NEW.state IN ('fixed', 'recurred'))
+)
+BEGIN
+    SELECT RAISE(ABORT, 'invalid remediation state transition');
+END;
+"#;
+
+/// v44 stores safe remediation display facts and durable aggregate wins.
+///
+/// Existing v43 rows stay `NULL`: the migration cannot safely infer display,
+/// origin, or exact evidence boundaries from private watch documents. A
+/// contribution contains only bounded derived facts. It has no session foreign
+/// key, so normal session retention does not erase a confirmed win.
+const V44: &str = r#"
+ALTER TABLE remediation ADD COLUMN origin TEXT
+    CHECK (origin IN ('passive', 'action'));
+ALTER TABLE remediation ADD COLUMN display_snapshot_json TEXT CHECK (
+    display_snapshot_json IS NULL OR (
+        length(CAST(display_snapshot_json AS BLOB)) BETWEEN 1 AND 32768
+        AND json_valid(display_snapshot_json)
+        AND json_type(display_snapshot_json, '$.version') IS 'integer'
+        AND json_extract(display_snapshot_json, '$.version') = 1));
+ALTER TABLE remediation ADD COLUMN verified_boundary_ms INTEGER CHECK (
+    verified_boundary_ms IS NULL OR (
+        verified_boundary_ms >= 0
+        AND effective_boundary_ms IS NOT NULL
+        AND verified_boundary_ms >= effective_boundary_ms));
+ALTER TABLE remediation ADD COLUMN recurred_boundary_ms INTEGER CHECK (
+    recurred_boundary_ms IS NULL OR (
+        recurred_boundary_ms >= 0
+        AND verified_boundary_ms IS NOT NULL
+        AND recurred_boundary_ms >= verified_boundary_ms));
+
+CREATE TABLE remediation_contribution (
+    owner_key TEXT PRIMARY KEY NOT NULL CHECK (length(owner_key) BETWEEN 1 AND 256),
+    remediation_id TEXT NOT NULL CHECK (length(remediation_id) BETWEEN 1 AND 256),
+    detector_id TEXT NOT NULL CHECK (length(detector_id) BETWEEN 1 AND 64),
+    origin TEXT NOT NULL CHECK (origin IN ('passive', 'action')),
+    display_snapshot_json TEXT NOT NULL CHECK (
+        length(CAST(display_snapshot_json AS BLOB)) BETWEEN 1 AND 32768
+        AND json_valid(display_snapshot_json)
+        AND json_type(display_snapshot_json, '$.version') IS 'integer'
+        AND json_extract(display_snapshot_json, '$.version') = 1),
+    facts_json TEXT NOT NULL CHECK (
+        length(CAST(facts_json AS BLOB)) BETWEEN 1 AND 32768
+        AND json_valid(facts_json)
+        AND json_type(facts_json, '$.version') IS 'integer'
+        AND json_extract(facts_json, '$.version') = 1),
+    starts_at_ms INTEGER NOT NULL CHECK (starts_at_ms >= 0),
+    ends_at_ms INTEGER NOT NULL CHECK (ends_at_ms >= starts_at_ms),
+    updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= ends_at_ms)
+) STRICT;
+
+CREATE INDEX remediation_contribution_recent
+    ON remediation_contribution (ends_at_ms DESC, owner_key DESC);
+CREATE INDEX remediation_contribution_remediation
+    ON remediation_contribution (remediation_id);
+"#;
+
+/// v45 marks deliberate actions that join an existing passive attempt.
+///
+/// The migration does not scan old evidence. Only a later winning publication
+/// can create a passive attempt after this schema is installed.
+const V45: &str = r#"
+ALTER TABLE remediation ADD COLUMN action_joined_at_ms INTEGER CHECK (
+    action_joined_at_ms IS NULL OR action_joined_at_ms >= 0);
+ALTER TABLE remediation ADD COLUMN joined_boundary_ms INTEGER CHECK (
+    joined_boundary_ms IS NULL OR joined_boundary_ms >= 0);
+"#;
+
+/// v46 stores exact reasoning-setting attribution without changing shipped model attribution.
+const V46: &str = r#"
+ALTER TABLE session_evidence ADD COLUMN effective_reasoning_target_hash TEXT;
+ALTER TABLE session_evidence ADD COLUMN effective_reasoning_scope TEXT
+    CHECK (effective_reasoning_scope IN ('global', 'project'));
+ALTER TABLE session_evidence ADD COLUMN effective_reasoning TEXT;
 "#;

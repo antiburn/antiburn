@@ -56,6 +56,8 @@ pub mod sources;
 mod tests;
 
 pub use milestones::{MilestoneContent, MilestoneLedger, milestone_content};
+#[cfg(feature = "analytics")]
+pub use model::band_for_percent;
 pub use model::{
     Confidence, Freshness, ProviderUsageError, ProviderUsageSnapshot, UsageScope, UsageWindow,
     UsageWindowKind, WindowRole,
@@ -216,6 +218,7 @@ pub fn summarize(
         collected,
         roster(sources, &hidden),
         store,
+        None,
         now,
         utc_offset_minutes,
     )
@@ -256,6 +259,7 @@ pub fn summarize_collected(
     mut collected: sources::Collected,
     meters: Vec<LiveUsageMeter>,
     store: Option<&crate::store::Store>,
+    storage_app: Option<&tauri::AppHandle>,
     now: i64,
     utc_offset_minutes: i32,
 ) -> LiveUsageSummary {
@@ -310,6 +314,29 @@ pub fn summarize_collected(
             provider = snapshot.provider,
             assigned = snapshot.account.is_some()
         );
+    }
+    if let Some(store) = store {
+        let result = store.record_provider_usage_snapshots(&collected.snapshots);
+        if let Some(app) = storage_app {
+            match crate::storage_health::checked(app, "provider usage history", result) {
+                Ok(_) => {
+                    let learned = crate::provider_usage::factor::learn(store, now);
+                    crate::analytics::record_limit_factor_observed(app, &learned);
+                }
+                Err(_) => {
+                    ::tracing::warn!(event = "provider_usage_history_write_failed");
+                }
+            }
+        } else {
+            match result {
+                Ok(_) => {
+                    crate::provider_usage::factor::learn(store, now);
+                }
+                Err(error) => {
+                    ::tracing::warn!(event = "provider_usage_history_write_failed", error = %error);
+                }
+            }
+        }
     }
     let history = store
         .map(|store| history::record(store, &collected.snapshots))

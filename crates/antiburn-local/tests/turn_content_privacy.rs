@@ -16,7 +16,7 @@ use std::sync::Arc;
 use antiburn_local::analysis::{
     CompositeSink, EvidenceSource, MemoryTurnRowStore, RawSource, SessionEvidenceAccumulator,
     SessionInput, SessionMetricsAccumulator, SourceCapabilities, SourceKind, TurnRowSink,
-    TurnRowStore, TurnSessionKey, adapter_for, delete_turn_rows, normalize_source,
+    TurnRowStore, TurnSessionKey, delete_turn_rows, normalize_source, reader_for,
 };
 use rusqlite::Connection;
 use rusqlite::types::Value as SqlValue;
@@ -137,7 +137,7 @@ fn run_pipeline(
         None,
     );
     let mut composite = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for(agent)
+    let outcome = reader_for(agent)
         .visit(&input, &mut composite)
         .unwrap_or_else(|error| panic!("{agent} adapter must visit its own fixture: {error}"));
     composite.observe_source_outcome(outcome);

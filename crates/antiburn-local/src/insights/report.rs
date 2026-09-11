@@ -58,7 +58,8 @@ pub enum Fact {
     EffortSignal,
     SpeedSignal,
     ToolInvocations,
-    SkillMcpAttribution,
+    SkillInventory,
+    McpInventory,
     ToolDefinitions,
     SubagentRelationships,
     DelegatedModels,
@@ -97,25 +98,25 @@ impl Fact {
                 }
             }
             Self::ToolInvocations => state(&evidence.tools),
-            // `evidence.context_sources` already reports `Unsupported`
-            // when `capabilities.skill_mcp_attribution` is unset (the
-            // sink's own gate), so this fact does not test the flag again.
-            Self::SkillMcpAttribution => state(&evidence.context_sources),
-            // Unlike `SkillMcpAttribution`, the sink never gates
-            // `context_sources` on `capabilities.tool_definitions` — that
-            // group stays supported (Claude, for example) while its
-            // nested `tool_definitions` marker is always `Unsupported`.
-            // This fact must test the flag itself.
-            Self::ToolDefinitions => {
-                if !evidence.capabilities.tool_definitions {
-                    FactState::Unsupported
-                } else {
-                    state(&evidence.context_sources)
+            Self::SkillInventory | Self::McpInventory | Self::ToolDefinitions => {
+                match &evidence.context_sources {
+                    EvidenceValue::Complete(sources)
+                    | EvidenceValue::Partial {
+                        observed: sources, ..
+                    } => match self {
+                        Self::SkillInventory => state(&sources.skill_coverage),
+                        Self::McpInventory => state(&sources.mcp_coverage),
+                        _ => state(&sources.tool_definitions),
+                    },
+                    EvidenceValue::Unsupported => FactState::Unsupported,
                 }
             }
             Self::SubagentRelationships => state(&evidence.subagents),
             Self::DelegatedModels => {
-                if !evidence.capabilities.subagent_models {
+                if !evidence.capabilities.subagent_models
+                    && !detectors::observed(&evidence.subagents)
+                        .is_some_and(|subagents| !subagents.delegated_models.is_empty())
+                {
                     FactState::Unsupported
                 } else {
                     state(&evidence.subagents)
@@ -239,12 +240,8 @@ pub fn requirements(detector: DetectorId) -> DetectorRequirements {
             ],
         },
         DetectorId::UnusedMcpServers => DetectorRequirements {
-            finding: &[Fact::SkillMcpAttribution, Fact::ToolInvocations],
-            clean: &[
-                Fact::SkillMcpAttribution,
-                Fact::ToolInvocations,
-                Fact::Eligibility,
-            ],
+            finding: &[Fact::McpInventory, Fact::ToolInvocations],
+            clean: &[Fact::McpInventory, Fact::ToolInvocations, Fact::Eligibility],
         },
         DetectorId::UnusedBuiltInTools => DetectorRequirements {
             finding: &[Fact::ToolDefinitions, Fact::ToolInvocations],
@@ -255,9 +252,9 @@ pub fn requirements(detector: DetectorId) -> DetectorRequirements {
             ],
         },
         DetectorId::UnusedSkills => DetectorRequirements {
-            finding: &[Fact::SkillMcpAttribution, Fact::ToolInvocations],
+            finding: &[Fact::SkillInventory, Fact::ToolInvocations],
             clean: &[
-                Fact::SkillMcpAttribution,
+                Fact::SkillInventory,
                 Fact::ToolInvocations,
                 Fact::Eligibility,
             ],
@@ -296,10 +293,49 @@ pub fn eligible(detector: DetectorId, evidence: &SessionEvidence) -> bool {
 /// A session supports a clean claim for `detector` when every clean fact
 /// is `Complete`. Only complete evidence can prove absence.
 pub fn clean_facts_complete(detector: DetectorId, evidence: &SessionEvidence) -> bool {
-    requirements(detector)
-        .clean
-        .iter()
-        .all(|fact| fact.state(evidence) == FactState::Complete)
+    // No current reader proves a full historical resource inventory.
+    !matches!(
+        detector,
+        DetectorId::UnusedSkills | DetectorId::UnusedMcpServers | DetectorId::UnusedBuiltInTools
+    ) && evidence.coverage == EvidenceCoverage::Complete
+        && source_supports_clean(evidence.capabilities.source_format)
+        && requirements(detector)
+            .clean
+            .iter()
+            .all(|fact| fact.state(evidence) == FactState::Complete)
+}
+
+/// Complete session facts permit clean results only for characterized source contracts.
+fn source_supports_clean(format: crate::analysis::SourceFormat) -> bool {
+    use crate::analysis::SourceFormat;
+    match format {
+        SourceFormat::ClaudeJsonl
+        | SourceFormat::CodexRolloutJsonl
+        | SourceFormat::OpenCodeJsonl
+        | SourceFormat::OpenCodeSqliteV2
+        | SourceFormat::PiV3Jsonl => true,
+        SourceFormat::CursorJsonl
+        | SourceFormat::CursorCliAgentJsonl
+        | SourceFormat::CursorCliStoreDb
+        | SourceFormat::CursorIdeComposer
+        | SourceFormat::CursorLegacyChatJson
+        | SourceFormat::AntigravityJson
+        | SourceFormat::AntigravityBrainJsonl
+        | SourceFormat::AntigravityCascadeJson
+        | SourceFormat::AntigravityWorkspaceChatJson
+        | SourceFormat::AntigravitySqlite
+        | SourceFormat::CopilotCliJsonl
+        | SourceFormat::CopilotIdeChatJson
+        | SourceFormat::ClineSessionJson
+        | SourceFormat::KiroSessionJson
+        | SourceFormat::KiroChat
+        | SourceFormat::AmpThreadJson
+        | SourceFormat::AmpFileChanges
+        | SourceFormat::WindsurfWorkspaceJson
+        | SourceFormat::WindsurfMirrorJson
+        | SourceFormat::WindsurfCascadeProtobuf
+        | SourceFormat::Uncharacterized => false,
+    }
 }
 
 /// A clean claim is out of reach for `detector` when a clean fact is
@@ -381,8 +417,8 @@ pub struct UnrecognizedRecords {
 pub struct EfficiencyReport {
     pub context: ReportContext,
     pub assessed_sessions: u64,
-    pub detectors: [DetectorCounts; 9],
-    pub detector_statuses: [DetectorStatus; 9],
+    pub detectors: [DetectorCounts; DetectorId::COUNT],
+    pub detector_statuses: [DetectorStatus; DetectorId::COUNT],
     pub quota_pressure: QuotaPressureSection,
     pub catalog_revision: i64,
     pub coverage_reasons: BTreeMap<CoverageReason, u64>,
@@ -392,11 +428,12 @@ pub struct EfficiencyReport {
     /// Token burn is estimated avoidable tokens divided by total used tokens.
     pub estimated_token_burn_basis_points: Option<u16>,
     /// Each detector's token burn uses the same ratio.
-    pub detector_estimated_token_burn_basis_points: [Option<u16>; 9],
+    pub detector_estimated_token_burn_basis_points: [Option<u16>; DetectorId::COUNT],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenBurnSourceEvidence {
+    // Collectors omit source groups when deferred loading prevents token attribution.
     /// The agent and installation scope used for window-level grouping.
     pub scope: String,
     /// The normalized source name used for window-level grouping.
@@ -532,7 +569,7 @@ impl<'a> TokenBurnTurnAccumulator<'a> {
         {
             self.overpowered_subagents = checked_accumulate(
                 self.overpowered_subagents,
-                priced_or_assumed_saving(&turn, &canonical_model, replacement),
+                priced_saving(&turn, &canonical_model, replacement),
             );
         }
         if let Some(replacement) = self
@@ -546,7 +583,7 @@ impl<'a> TokenBurnTurnAccumulator<'a> {
         {
             self.old_model = checked_accumulate(
                 self.old_model,
-                priced_or_assumed_saving(&turn, &canonical_model, &replacement.replacement),
+                priced_saving(&turn, &canonical_model, &replacement.replacement),
             );
         }
         if turn.scope == "delegated"
@@ -784,20 +821,19 @@ fn report_turn_pricing(
     lookup_turn_pricing(model, speed).or_else(|| lookup_turn_pricing(canonical_model, speed))
 }
 
-fn priced_or_assumed_saving(
+fn priced_saving(
     turn: &TokenBurnTurnEvidence,
     canonical_model: &str,
     replacement: &str,
 ) -> Option<u128> {
     let replacement_canonical = canonical_model_key(replacement);
-    let priced = report_turn_pricing(&turn.model, canonical_model, turn.speed.as_deref())
+    report_turn_pricing(&turn.model, canonical_model, turn.speed.as_deref())
         .zip(report_turn_pricing(
             replacement,
             &replacement_canonical,
             turn.speed.as_deref(),
         ))
-        .and_then(|(actual, replacement)| cost_saving_tokens(turn, &actual, &replacement));
-    priced.or_else(|| percentage_of_tokens(turn.total_tokens()?, 10))
+        .and_then(|(actual, replacement)| cost_saving_tokens(turn, &actual, &replacement))
 }
 
 fn model_family_from_canonical(canonical: &str) -> detectors::ModelFamily {
@@ -842,14 +878,13 @@ fn fast_mode_saving(turn: &TokenBurnTurnEvidence, canonical_model: &str) -> Opti
     let standard_canonical = canonical_model
         .strip_suffix("-fast")
         .unwrap_or(canonical_model);
-    let priced = report_turn_pricing(standard_model, standard_canonical, Some("fast"))
+    report_turn_pricing(standard_model, standard_canonical, Some("fast"))
         .zip(report_turn_pricing(
             standard_model,
             standard_canonical,
             None,
         ))
-        .and_then(|(fast, standard)| cost_saving_tokens(turn, &fast, &standard));
-    priced.or_else(|| percentage_of_tokens(turn.total_tokens()?, 10))
+        .and_then(|(fast, standard)| cost_saving_tokens(turn, &fast, &standard))
 }
 
 #[derive(Default)]
@@ -870,17 +905,19 @@ struct SessionTokenContribution {
 
 #[derive(Default)]
 struct TokenBurnAccumulator {
-    complete: bool,
+    total_complete: bool,
     total_tokens: u128,
     // Exact overlap needs one compact contribution per session and source/session pair.
     sessions: Vec<SessionTokenContribution>,
     sources: [BTreeMap<(String, String), SourceAggregate>; 3],
+    source_complete: [bool; 3],
 }
 
 impl TokenBurnAccumulator {
     fn new() -> Self {
         Self {
-            complete: true,
+            total_complete: true,
+            source_complete: [true; 3],
             ..Self::default()
         }
     }
@@ -888,14 +925,14 @@ impl TokenBurnAccumulator {
     fn observe(
         &mut self,
         token_evidence: SessionTokenBurnEvidence,
-        findings: [bool; 9],
+        findings: [bool; DetectorId::COUNT],
         source_eligible: [bool; 3],
     ) {
         if let Some(session_tokens) = token_evidence.total_tokens {
             if let Some(total_tokens) = self.total_tokens.checked_add(session_tokens) {
                 self.total_tokens = total_tokens;
             } else {
-                self.complete = false;
+                self.total_complete = false;
             }
         }
         let session_index = self.sessions.len();
@@ -956,7 +993,7 @@ impl TokenBurnAccumulator {
                 }
                 let entry = aggregate.by_session.entry(session_index).or_default();
                 let Some(total) = entry.checked_add(source.replicated_tokens) else {
-                    self.complete = false;
+                    self.source_complete[index] = false;
                     continue;
                 };
                 *entry = total;
@@ -964,12 +1001,15 @@ impl TokenBurnAccumulator {
         }
     }
 
-    fn finish(self, statuses: &[DetectorStatus; 9]) -> (Option<u16>, [Option<u16>; 9]) {
-        let mut numerators = [None; 9];
+    fn finish(
+        self,
+        statuses: &[DetectorStatus; DetectorId::COUNT],
+    ) -> (Option<u16>, [Option<u16>; DetectorId::COUNT]) {
+        let mut numerators = [None; DetectorId::COUNT];
         let mut combined_by_session = vec![0_u128; self.sessions.len()];
         let mut source_combined_by_session = vec![0_u128; self.sessions.len()];
         let mut source_detector_by_session = vec![0_u128; self.sessions.len()];
-        let can_measure = self.complete && self.total_tokens > 0;
+        let can_measure = self.total_complete && self.total_tokens > 0;
 
         for (detector, value_for) in [
             (
@@ -1022,7 +1062,7 @@ impl TokenBurnAccumulator {
             let Some(total) = self.sessions.iter().try_fold(0_u128, |total, session| {
                 total.checked_add(value_for(session).unwrap_or(0))
             }) else {
-                return (None, [None; 9]);
+                return (None, [None; DetectorId::COUNT]);
             };
             numerators[detector.index()] = Some(total);
             for (index, session) in self.sessions.iter().enumerate() {
@@ -1043,7 +1083,10 @@ impl TokenBurnAccumulator {
                 numerators[detector.index()] = Some(0);
                 continue;
             }
-            if !matches!(statuses[detector.index()], DetectorStatus::Findings(_)) || !can_measure {
+            if !matches!(statuses[detector.index()], DetectorStatus::Findings(_))
+                || !can_measure
+                || !self.source_complete[source_index]
+            {
                 continue;
             }
             source_detector_by_session.fill(0);
@@ -1056,7 +1099,7 @@ impl TokenBurnAccumulator {
                 for (session, tokens) in &aggregate.by_session {
                     let Some(total) = source_detector_by_session[*session].checked_add(*tokens)
                     else {
-                        return (None, [None; 9]);
+                        return (None, [None; DetectorId::COUNT]);
                     };
                     source_detector_by_session[*session] = total;
                 }
@@ -1068,12 +1111,12 @@ impl TokenBurnAccumulator {
                 .iter()
                 .try_fold(0_u128, |total, value| total.checked_add(*value))
             else {
-                return (None, [None; 9]);
+                return (None, [None; DetectorId::COUNT]);
             };
             numerators[detector.index()] = Some(total);
             for (index, value) in source_detector_by_session.iter().enumerate() {
                 let Some(total) = source_combined_by_session[index].checked_add(*value) else {
-                    return (None, [None; 9]);
+                    return (None, [None; DetectorId::COUNT]);
                 };
                 source_combined_by_session[index] = total;
             }
@@ -1096,21 +1139,18 @@ impl TokenBurnAccumulator {
                 })
         };
         let estimates = core::array::from_fn(|index| match &statuses[index] {
-            DetectorStatus::Findings(_) => numerators[index]
-                .and_then(percentage)
-                .map_or(Some(1), |value| Some(value.max(1))),
+            DetectorStatus::Findings(_) => numerators[index].and_then(percentage),
             DetectorStatus::Clean => Some(0),
             DetectorStatus::NotAssessed(_) => None,
         });
-        let has_findings = statuses
-            .iter()
-            .any(|status| matches!(status, DetectorStatus::Findings(_)));
-        let combined = if has_findings {
+        let has_measured_finding = statuses.iter().enumerate().any(|(index, status)| {
+            matches!(status, DetectorStatus::Findings(_)) && numerators[index].is_some()
+        });
+        let combined = if has_measured_finding {
             combined_by_session
                 .into_iter()
                 .try_fold(0_u128, u128::checked_add)
                 .and_then(percentage)
-                .map_or(Some(1), |value| Some(value.max(1)))
         } else {
             None
         };
@@ -1120,8 +1160,8 @@ impl TokenBurnAccumulator {
 
 pub struct EfficiencyReportAccumulator {
     assessed_sessions: u64,
-    detectors: [DetectorCounts; 9],
-    folds: [DetectorFold; 9],
+    detectors: [DetectorCounts; DetectorId::COUNT],
+    folds: [DetectorFold; DetectorId::COUNT],
     quota: QuotaPressureAccumulator,
     catalogs: ReportCatalogs,
     coverage_reasons: BTreeMap<CoverageReason, u64>,
@@ -1148,7 +1188,7 @@ impl EfficiencyReportAccumulator {
     pub fn with_catalogs(catalogs: ReportCatalogs) -> Self {
         Self {
             assessed_sessions: 0,
-            detectors: [DetectorCounts::default(); 9],
+            detectors: [DetectorCounts::default(); DetectorId::COUNT],
             folds: core::array::from_fn(|_| DetectorFold::default()),
             quota: QuotaPressureAccumulator::default(),
             catalogs,
@@ -1177,18 +1217,31 @@ impl EfficiencyReportAccumulator {
     pub fn observe_session_with_token_burn(
         &mut self,
         evidence: SessionEvidence,
-        token_evidence: SessionTokenBurnEvidence,
+        mut token_evidence: SessionTokenBurnEvidence,
     ) {
-        let built_in_sources = token_evidence.built_in_tool_sources.as_ref();
+        let has_built_in_sources = token_evidence
+            .built_in_tool_sources
+            .as_ref()
+            .is_some_and(|sources| !sources.is_empty());
+        if let Some(sources) = &mut token_evidence.built_in_tool_sources {
+            use crate::analysis::tool_catalog::{comparable_tool_name, situational_tools};
+            let situational = situational_tools(&evidence.identity.agent);
+            sources.retain(|source| {
+                !situational
+                    .iter()
+                    .any(|name| comparable_tool_name(name) == comparable_tool_name(&source.name))
+            });
+        }
         let built_in_not_applicable =
             complete(&evidence.eligibility).is_some_and(|value| value.assistant_turns == 0);
-        let built_in_assessable = built_in_sources.is_some_and(|sources| !sources.is_empty())
+        let built_in_assessable = has_built_in_sources
+            && Fact::ToolDefinitions.state(&evidence) == FactState::Unsupported
             && matches!(evidence.coverage, EvidenceCoverage::Complete)
             && matches!(&evidence.tools, EvidenceValue::Complete(_))
             && complete(&evidence.eligibility).is_some_and(|value| value.assistant_turns > 0);
         let source_eligible = [
             eligible(DetectorId::UnusedMcpServers, &evidence),
-            built_in_assessable,
+            built_in_assessable || eligible(DetectorId::UnusedBuiltInTools, &evidence),
             eligible(DetectorId::UnusedSkills, &evidence),
         ];
         self.assessed_sessions += 1;
@@ -1210,7 +1263,7 @@ impl EfficiencyReportAccumulator {
 
         // Lazily allocate the identity example only if this session has a detector gap.
         let mut bounded_example: Option<SessionExample> = None;
-        let mut findings = [false; 9];
+        let mut findings = [false; DetectorId::COUNT];
 
         for detector in DetectorId::ALL {
             let counts = &mut self.detectors[detector.index()];
@@ -1240,31 +1293,20 @@ impl EfficiencyReportAccumulator {
             }
 
             counts.eligible += 1;
-            let observation = if detector == DetectorId::UnusedBuiltInTools {
-                if built_in_assessable {
-                    if built_in_sources
-                        .is_some_and(|sources| sources.iter().any(|source| !source.invoked))
-                    {
-                        detectors::Observation::Finding
-                    } else {
-                        detectors::Observation::NoFinding
-                    }
-                } else {
-                    detectors::evaluate(detector, &evidence, &self.catalogs)
-                }
-            } else {
-                detectors::evaluate(detector, &evidence, &self.catalogs)
-            };
+            let observation = detectors::evaluate_with_source_evidence(
+                detector,
+                &evidence,
+                &self.catalogs,
+                Some(&token_evidence),
+            )
+            .observation;
             match observation {
                 detectors::Observation::Finding => {
                     counts.finding += 1;
                     counts.assessed += 1;
                     findings[detector.index()] = true;
                 }
-                detectors::Observation::NoFinding
-                    if (detector == DetectorId::UnusedBuiltInTools && built_in_assessable)
-                        || clean_facts_complete(detector, &evidence) =>
-                {
+                detectors::Observation::NoFinding if clean_facts_complete(detector, &evidence) => {
                     counts.clean += 1;
                     counts.assessed += 1;
                 }
@@ -1350,19 +1392,84 @@ mod tests {
         FAST_SPEED_KEY, LoadedSource, ModelTokens, PARSER_REVISION, QuotaConfidence,
         QuotaHitSeverity, QuotaIncident, QuotaLimitKind, RepeatedContext,
         RepeatedContextAccounting, SessionEvidenceAccumulator, SessionQuotaEvidence,
-        SignalCoverage, SourceCapabilities, SourceKind, ToolDefinition, TurnCounts, TurnFacts,
+        SignalCoverage, SourceCapabilities, SourceFormat, SourceKind, ToolDefinition, TurnCounts,
+        TurnFacts,
     };
     use crate::insights::detectors::{ModelFamily, ModelReplacementEntry, NotAssessedReason};
     use crate::insights::quota::QuotaPressureSection;
 
+    #[test]
+    fn source_format_serde_keys_are_stable() {
+        let formats = [
+            (SourceFormat::ClaudeJsonl, "claude_jsonl"),
+            (SourceFormat::CodexRolloutJsonl, "codex_rollout_jsonl"),
+            (SourceFormat::OpenCodeJsonl, "open_code_jsonl"),
+            (SourceFormat::OpenCodeSqliteV2, "open_code_sqlite_v2"),
+            (SourceFormat::PiV3Jsonl, "pi_v3_jsonl"),
+            (SourceFormat::CursorJsonl, "cursor_jsonl"),
+            (SourceFormat::CursorCliAgentJsonl, "cursor_cli_agent_jsonl"),
+            (SourceFormat::CursorCliStoreDb, "cursor_cli_store_db"),
+            (SourceFormat::CursorIdeComposer, "cursor_ide_composer"),
+            (
+                SourceFormat::CursorLegacyChatJson,
+                "cursor_legacy_chat_json",
+            ),
+            (SourceFormat::AntigravityJson, "antigravity_json"),
+            (
+                SourceFormat::AntigravityBrainJsonl,
+                "antigravity_brain_jsonl",
+            ),
+            (
+                SourceFormat::AntigravityCascadeJson,
+                "antigravity_cascade_json",
+            ),
+            (
+                SourceFormat::AntigravityWorkspaceChatJson,
+                "antigravity_workspace_chat_json",
+            ),
+            (SourceFormat::AntigravitySqlite, "antigravity_sqlite"),
+            (SourceFormat::CopilotCliJsonl, "copilot_cli_jsonl"),
+            (SourceFormat::CopilotIdeChatJson, "copilot_ide_chat_json"),
+            (SourceFormat::ClineSessionJson, "cline_session_json"),
+            (SourceFormat::KiroSessionJson, "kiro_session_json"),
+            (SourceFormat::KiroChat, "kiro_chat"),
+            (SourceFormat::AmpThreadJson, "amp_thread_json"),
+            (SourceFormat::AmpFileChanges, "amp_file_changes"),
+            (
+                SourceFormat::WindsurfWorkspaceJson,
+                "windsurf_workspace_json",
+            ),
+            (SourceFormat::WindsurfMirrorJson, "windsurf_mirror_json"),
+            (
+                SourceFormat::WindsurfCascadeProtobuf,
+                "windsurf_cascade_protobuf",
+            ),
+            (SourceFormat::Uncharacterized, "uncharacterized"),
+        ];
+
+        for (format, key) in formats {
+            assert_eq!(serde_json::to_value(format).unwrap(), key);
+            assert_eq!(
+                serde_json::from_str::<SourceFormat>(&format!("\"{key}\"")).unwrap(),
+                format
+            );
+        }
+    }
+
     fn evidence(session_id: &str) -> SessionEvidence {
-        SessionEvidenceAccumulator::new(EvidenceSource {
+        let mut row = SessionEvidenceAccumulator::new(EvidenceSource {
             agent: "claude".to_owned(),
             session_id: session_id.to_owned(),
             kind: SourceKind::File,
             capabilities: SourceCapabilities::claude(),
         })
-        .evidence(&TurnFacts::default())
+        .evidence(&TurnFacts::default());
+        let EvidenceValue::Complete(sources) = &mut row.context_sources else {
+            unreachable!()
+        };
+        sources.skill_coverage = EvidenceValue::Complete(());
+        sources.mcp_coverage = EvidenceValue::Complete(());
+        row
     }
 
     /// The same claude evidence with one observed assistant turn, so
@@ -1482,11 +1589,11 @@ mod tests {
         assert_eq!(
             report.detector_estimated_token_burn_basis_points
                 [DetectorId::ModelOverthinking.index()],
-            Some(1)
+            None
         );
         assert_eq!(
             report.detector_estimated_token_burn_basis_points[DetectorId::UnusedSkills.index()],
-            Some(0)
+            None
         );
     }
 
@@ -1525,6 +1632,72 @@ mod tests {
     }
 
     #[test]
+    fn report_time_sources_respect_built_in_applicability() {
+        for (name, tokens, definitions, expected) in [
+            (
+                "Skill",
+                100,
+                EvidenceValue::Unsupported,
+                DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+            ),
+            (
+                "read",
+                0,
+                EvidenceValue::Unsupported,
+                DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+            ),
+            (
+                "read",
+                100,
+                EvidenceValue::Complete(BTreeMap::from([(
+                    "read".to_owned(),
+                    ToolDefinition {
+                        tokens: 100,
+                        invoked: false,
+                        deferred: true,
+                    },
+                )])),
+                DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+            ),
+            (
+                "read",
+                100,
+                EvidenceValue::Partial {
+                    observed: BTreeMap::new(),
+                    reason: CoverageReason::AttributionIncomplete,
+                },
+                DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
+            ),
+        ] {
+            let mut row = evidence_with_work("built-in-applicability");
+            let EvidenceValue::Complete(sources) = &mut row.context_sources else {
+                unreachable!()
+            };
+            sources.tool_definitions = definitions;
+            let mut accumulator = EfficiencyReportAccumulator::new();
+            accumulator.observe_session_with_token_burn(
+                row,
+                SessionTokenBurnEvidence {
+                    total_tokens: Some(1_000),
+                    built_in_tool_sources: Some(vec![TokenBurnSourceEvidence {
+                        scope: "claude:bundled".to_owned(),
+                        name: name.to_owned(),
+                        replicated_tokens: tokens,
+                        invoked: false,
+                    }]),
+                    ..SessionTokenBurnEvidence::default()
+                },
+            );
+            let report = accumulator.finish(context(CoverageCounts::default()));
+            assert_eq!(
+                report.detector_statuses[DetectorId::UnusedBuiltInTools.index()],
+                expected,
+                "{name}: {tokens}"
+            );
+        }
+    }
+
+    #[test]
     fn idle_sessions_exclude_built_in_tools_without_source_attribution() {
         let mut accumulator = EfficiencyReportAccumulator::new();
         accumulator.observe_session(evidence("idle-built-in"));
@@ -1541,7 +1714,7 @@ mod tests {
     }
 
     #[test]
-    fn findings_use_the_floor_when_no_denominator_is_available() {
+    fn findings_without_a_denominator_have_no_estimate() {
         let complete = evidence_with_work("complete");
         let mut unattributed = evidence_with_work("unattributed");
         unattributed.context = EvidenceValue::Complete(ContextEvidence {
@@ -1565,9 +1738,9 @@ mod tests {
         assert_eq!(
             report.detector_estimated_token_burn_basis_points
                 [DetectorId::SessionsOverDepth.index()],
-            Some(1)
+            None
         );
-        assert_eq!(report.estimated_token_burn_basis_points, Some(1));
+        assert_eq!(report.estimated_token_burn_basis_points, None);
     }
 
     #[test]
@@ -1603,7 +1776,7 @@ mod tests {
 
     #[test]
     fn combined_token_burn_uses_the_largest_overlapping_contribution() {
-        let mut findings = [false; 9];
+        let mut findings = [false; DetectorId::COUNT];
         findings[DetectorId::SessionsOverDepth.index()] = true;
         findings[DetectorId::CacheChurn.index()] = true;
 
@@ -1639,7 +1812,7 @@ mod tests {
 
     #[test]
     fn token_burn_percentage_caps_before_the_wire_type_conversion() {
-        let mut findings = [false; 9];
+        let mut findings = [false; DetectorId::COUNT];
         findings[DetectorId::SessionsOverDepth.index()] = true;
         let mut token_burn = TokenBurnAccumulator::new();
         token_burn.observe(
@@ -1662,7 +1835,7 @@ mod tests {
         );
     }
 
-    fn finding_statuses(detectors: &[DetectorId]) -> [DetectorStatus; 9] {
+    fn finding_statuses(detectors: &[DetectorId]) -> [DetectorStatus; DetectorId::COUNT] {
         let mut statuses = core::array::from_fn(|_| {
             DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
         });
@@ -1709,7 +1882,7 @@ mod tests {
     }
 
     #[test]
-    fn every_finding_has_a_positive_numeric_estimate() {
+    fn findings_without_supported_prices_remain_unknown() {
         let all_findings = DetectorId::ALL;
         let mut token_burn = TokenBurnAccumulator::new();
         let mut token_evidence = turn_evidence(
@@ -1742,19 +1915,16 @@ mod tests {
             replicated_tokens: 100,
             invoked: false,
         }]);
-        token_burn.observe(token_evidence, [true; 9], [true; 3]);
+        token_burn.observe(token_evidence, [true; DetectorId::COUNT], [true; 3]);
         let (combined, estimates) = token_burn.finish(&finding_statuses(&all_findings));
 
         assert_eq!(combined, Some(800));
-        for detector in all_findings {
-            assert!(estimates[detector.index()].is_some_and(|value| value > 0));
-        }
         assert_eq!(
             estimates,
             [
                 Some(800),
                 Some(350),
-                Some(500),
+                None,
                 Some(100),
                 Some(100),
                 Some(100),
@@ -1763,6 +1933,105 @@ mod tests {
                 Some(700),
             ]
         );
+    }
+
+    #[test]
+    fn supported_evidence_estimates_each_check_independently() {
+        let all_findings = DetectorId::ALL;
+        let mut token_burn = TokenBurnAccumulator::new();
+        let mut token_evidence = turn_evidence(
+            [
+                token_turn("main", "claude-sonnet-5", Some("max"), None, 1_000),
+                token_turn("delegated", "gpt-6-astra", None, None, 1_000),
+                token_turn("main", "gpt-5.4-mini", None, None, 1_000),
+                token_turn("delegated", "gpt-5.6-sol", None, Some("fast"), 1_000),
+            ],
+            &ReportCatalogs::default(),
+        );
+        token_evidence.total_tokens = Some(10_000);
+        token_evidence.overdepth_avoidable_tokens = Some(800);
+        token_evidence.repeated_context_avoidable_tokens = Some(700);
+        token_evidence.overpowered_subagents = Some(880);
+        token_evidence.old_model = Some(400);
+        token_evidence.mcp_sources = Some(vec![TokenBurnSourceEvidence {
+            scope: "agent:user".to_owned(),
+            name: "server".to_owned(),
+            replicated_tokens: 100,
+            invoked: false,
+        }]);
+        token_evidence.built_in_tool_sources = Some(vec![TokenBurnSourceEvidence {
+            scope: "agent:bundled".to_owned(),
+            name: "tool".to_owned(),
+            replicated_tokens: 100,
+            invoked: false,
+        }]);
+        token_evidence.skill_sources = Some(vec![TokenBurnSourceEvidence {
+            scope: "agent:user".to_owned(),
+            name: "skill".to_owned(),
+            replicated_tokens: 100,
+            invoked: false,
+        }]);
+        token_burn.observe(token_evidence, [true; DetectorId::COUNT], [true; 3]);
+
+        let (combined, estimates) = token_burn.finish(&finding_statuses(&all_findings));
+
+        assert_eq!(combined, Some(880));
+        assert_eq!(
+            estimates,
+            [
+                Some(800),
+                Some(350),
+                Some(880),
+                Some(100),
+                Some(100),
+                Some(100),
+                Some(400),
+                Some(333),
+                Some(700),
+            ]
+        );
+    }
+
+    #[test]
+    fn source_estimate_overflow_does_not_hide_other_known_estimates() {
+        let mut findings = [false; DetectorId::COUNT];
+        findings[DetectorId::SessionsOverDepth.index()] = true;
+        findings[DetectorId::UnusedBuiltInTools.index()] = true;
+        let mut token_burn = TokenBurnAccumulator::new();
+        token_burn.observe(
+            SessionTokenBurnEvidence {
+                total_tokens: Some(1_000),
+                overdepth_avoidable_tokens: Some(100),
+                built_in_tool_sources: Some(vec![
+                    TokenBurnSourceEvidence {
+                        scope: "agent:bundled".to_owned(),
+                        name: "tool".to_owned(),
+                        replicated_tokens: u128::MAX,
+                        invoked: false,
+                    },
+                    TokenBurnSourceEvidence {
+                        scope: "agent:bundled".to_owned(),
+                        name: "tool".to_owned(),
+                        replicated_tokens: 1,
+                        invoked: false,
+                    },
+                ]),
+                ..SessionTokenBurnEvidence::default()
+            },
+            findings,
+            [false, true, false],
+        );
+
+        let (_, estimates) = token_burn.finish(&finding_statuses(&[
+            DetectorId::SessionsOverDepth,
+            DetectorId::UnusedBuiltInTools,
+        ]));
+
+        assert_eq!(
+            estimates[DetectorId::SessionsOverDepth.index()],
+            Some(1_000)
+        );
+        assert_eq!(estimates[DetectorId::UnusedBuiltInTools.index()], None);
     }
 
     #[test]
@@ -1804,7 +2073,7 @@ mod tests {
     }
 
     #[test]
-    fn model_mechanisms_fall_back_to_ten_percent_without_prices() {
+    fn model_mechanisms_do_not_guess_savings_without_prices() {
         let catalogs = ReportCatalogs::default();
         let premium = token_turn("delegated", "gpt-5.5", None, None, 1_000);
         let fast = token_turn("delegated", "unpriced-model", None, Some("fast"), 1_000);
@@ -1812,10 +2081,10 @@ mod tests {
 
         assert_eq!(
             turn_evidence([premium], &catalogs).overpowered_subagents,
-            Some(100)
+            None
         );
-        assert_eq!(turn_evidence([fast], &catalogs).fast_mode, Some(100));
-        assert_eq!(turn_evidence([old], &catalogs).old_model, Some(100));
+        assert_eq!(turn_evidence([fast], &catalogs).fast_mode, None);
+        assert_eq!(turn_evidence([old], &catalogs).old_model, None);
     }
 
     #[test]
@@ -1871,7 +2140,7 @@ mod tests {
         assert_eq!(evidence.model_overthinking, Some(assumed_tokens));
 
         evidence.total_tokens = Some(409_700);
-        let mut findings = [false; 9];
+        let mut findings = [false; DetectorId::COUNT];
         findings[DetectorId::ModelOverthinking.index()] = true;
         let mut token_burn = TokenBurnAccumulator::new();
         token_burn.observe(evidence, findings, [false; 3]);
@@ -2149,7 +2418,7 @@ mod tests {
 
     #[test]
     fn any_window_invocation_suppresses_the_exact_source_estimate() {
-        let mut findings = [false; 9];
+        let mut findings = [false; DetectorId::COUNT];
         findings[DetectorId::UnusedMcpServers.index()] = true;
         let mut token_burn = TokenBurnAccumulator::new();
         for index in 0..5 {
@@ -2179,13 +2448,13 @@ mod tests {
 
         let (combined, estimates) = token_burn.finish(&statuses);
 
-        assert_eq!(combined, Some(1));
-        assert_eq!(estimates[DetectorId::UnusedMcpServers.index()], Some(1));
+        assert_eq!(combined, None);
+        assert_eq!(estimates[DetectorId::UnusedMcpServers.index()], None);
     }
 
     #[test]
     fn cohort_token_burn_state_keeps_one_session_entry_and_one_entry_per_source_pair() {
-        let mut findings = [false; 9];
+        let mut findings = [false; DetectorId::COUNT];
         findings[DetectorId::UnusedMcpServers.index()] = true;
         let mut token_burn = TokenBurnAccumulator::new();
         for _ in 0..100 {
@@ -2218,7 +2487,7 @@ mod tests {
 
     #[test]
     fn missing_source_projection_keeps_available_measured_tokens() {
-        let mut finding = [false; 9];
+        let mut finding = [false; DetectorId::COUNT];
         finding[DetectorId::UnusedMcpServers.index()] = true;
         let mut token_burn = TokenBurnAccumulator::new();
         token_burn.observe(
@@ -2240,7 +2509,7 @@ mod tests {
                 total_tokens: Some(1_000),
                 ..SessionTokenBurnEvidence::default()
             },
-            [false; 9],
+            [false; DetectorId::COUNT],
             [true, false, false],
         );
         let statuses = finding_statuses(&[DetectorId::UnusedMcpServers]);
@@ -2384,7 +2653,7 @@ mod tests {
 
     #[test]
     fn combined_token_burn_adds_disjoint_unused_source_types() {
-        let mut findings = [false; 9];
+        let mut findings = [false; DetectorId::COUNT];
         findings[DetectorId::UnusedMcpServers.index()] = true;
         findings[DetectorId::UnusedSkills.index()] = true;
         let mut token_burn = TokenBurnAccumulator::new();
@@ -2470,7 +2739,6 @@ mod tests {
                 DetectorId::ModelOverthinking,
                 DetectorId::OverpoweredSubagents,
                 DetectorId::UnusedMcpServers,
-                DetectorId::UnusedBuiltInTools,
                 DetectorId::UnusedSkills,
                 DetectorId::OldModelUsage,
                 DetectorId::OveruseOfFastMode,
@@ -2573,8 +2841,6 @@ mod tests {
             DetectorId::SessionsOverDepth,
             DetectorId::ModelOverthinking,
             DetectorId::OverpoweredSubagents,
-            DetectorId::UnusedMcpServers,
-            DetectorId::UnusedSkills,
             DetectorId::OveruseOfFastMode,
             DetectorId::CacheChurn,
             // The reviewed production registry has entries, and this
@@ -2587,14 +2853,17 @@ mod tests {
                 DetectorStatus::Clean
             );
         }
-        // The session carries no observed harness version, so the
-        // built-in tool catalogue never resolves: the signal gap stays
-        // not assessed with a structured reason, distinct from a
-        // capability gap.
+        // The missing harness version leaves nested tool definitions unsupported.
         assert_eq!(
             report.detector_statuses[DetectorId::UnusedBuiltInTools.index()],
-            DetectorStatus::NotAssessed(NotAssessedReason::SignalMissing)
+            DetectorStatus::NotAssessed(NotAssessedReason::CapabilityMissing)
         );
+        for detector in [DetectorId::UnusedMcpServers, DetectorId::UnusedSkills] {
+            assert_eq!(
+                report.detector_statuses[detector.index()],
+                DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence)
+            );
+        }
     }
 
     #[test]
@@ -2643,9 +2912,9 @@ mod tests {
         for detector in [DetectorId::UnusedMcpServers, DetectorId::UnusedSkills] {
             let counts = report.detectors[detector.index()];
             assert_eq!(counts.eligible, 2, "{detector:?}");
-            assert_eq!(counts.assessed, 1, "{detector:?}");
-            assert_eq!(counts.clean, 1, "{detector:?}");
-            assert_eq!(counts.unavailable, 1, "{detector:?}");
+            assert_eq!(counts.assessed, 0, "{detector:?}");
+            assert_eq!(counts.clean, 0, "{detector:?}");
+            assert_eq!(counts.unavailable, 2, "{detector:?}");
             assert_eq!(
                 report.detector_statuses[detector.index()],
                 DetectorStatus::NotAssessed(NotAssessedReason::IncompleteEvidence),
@@ -2660,11 +2929,13 @@ mod tests {
     fn complete_row(session_id: &str) -> SessionEvidence {
         let mut row = evidence_with_work(session_id);
         row.capabilities = SourceCapabilities {
+            source_format: crate::analysis::SourceFormat::ClaudeJsonl,
             request_context_tokens: true,
             cache_write_tokens: true,
             timestamps_and_order: true,
             tool_invocations: true,
-            skill_mcp_attribution: true,
+            skill_inventory: true,
+            mcp_inventory: true,
             tool_definitions: true,
             model_identity: true,
             token_classes: true,
@@ -2679,6 +2950,7 @@ mod tests {
             linear_record_order: true,
             quota_incidents: true,
             harness_version: true,
+            repeated_context_accounting: Some(RepeatedContextAccounting::CacheWrite),
         };
         // An empty map, not a fabricated invoked definition: Unused
         // Built-In Tools reads clean from zero catalogued definitions
@@ -2703,6 +2975,262 @@ mod tests {
         };
     }
 
+    #[test]
+    fn resource_facts_read_independent_nested_coverage_in_either_wrapper() {
+        for fact in [
+            Fact::SkillInventory,
+            Fact::McpInventory,
+            Fact::ToolDefinitions,
+        ] {
+            for wrapper_partial in [false, true] {
+                for expected in [
+                    FactState::Complete,
+                    FactState::Partial,
+                    FactState::Unsupported,
+                ] {
+                    let mut row = complete_row("nested-coverage");
+                    row.capabilities.skill_inventory = false;
+                    row.capabilities.mcp_inventory = false;
+                    row.capabilities.tool_definitions = false;
+                    match expected {
+                        FactState::Complete => (),
+                        FactState::Partial => degrade_fact_to_partial(&mut row, fact),
+                        FactState::Unsupported => degrade_fact_to_unsupported(&mut row, fact),
+                    }
+                    if wrapper_partial {
+                        to_partial(&mut row.context_sources);
+                    }
+                    assert_eq!(
+                        fact.state(&row),
+                        expected,
+                        "{fact:?}, partial wrapper: {wrapper_partial}"
+                    );
+                    for other in [
+                        Fact::SkillInventory,
+                        Fact::McpInventory,
+                        Fact::ToolDefinitions,
+                    ] {
+                        if other != fact {
+                            assert_eq!(other.state(&row), FactState::Complete);
+                        }
+                    }
+                }
+            }
+            let mut row = complete_row("unsupported-wrapper");
+            row.context_sources = EvidenceValue::Unsupported;
+            assert_eq!(fact.state(&row), FactState::Unsupported);
+        }
+    }
+
+    #[test]
+    fn coverage_contract_nested_resource_markers_gate_eligibility_but_not_inventory_clean() {
+        for (detector, fact) in [
+            (DetectorId::UnusedSkills, Fact::SkillInventory),
+            (DetectorId::UnusedMcpServers, Fact::McpInventory),
+            (DetectorId::UnusedBuiltInTools, Fact::ToolDefinitions),
+        ] {
+            for wrapper_partial in [false, true] {
+                for marker in [
+                    FactState::Complete,
+                    FactState::Partial,
+                    FactState::Unsupported,
+                ] {
+                    let mut row = complete_row("resource-marker-contract");
+                    match marker {
+                        FactState::Complete => (),
+                        FactState::Partial => degrade_fact_to_partial(&mut row, fact),
+                        FactState::Unsupported => degrade_fact_to_unsupported(&mut row, fact),
+                    }
+                    if wrapper_partial {
+                        to_partial(&mut row.context_sources);
+                    }
+                    assert_eq!(eligible(detector, &row), marker != FactState::Unsupported);
+                    assert!(!clean_facts_complete(detector, &row));
+                    assert_ne!(
+                        status_for(row, detector),
+                        DetectorStatus::Clean,
+                        "{detector:?}/{marker:?}, partial wrapper: {wrapper_partial}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_contract_partial_sessions_never_read_clean_from_complete_groups() {
+        let mut failures = Vec::new();
+        for format in [
+            crate::analysis::SourceFormat::ClaudeJsonl,
+            crate::analysis::SourceFormat::CodexRolloutJsonl,
+            crate::analysis::SourceFormat::OpenCodeJsonl,
+            crate::analysis::SourceFormat::OpenCodeSqliteV2,
+            crate::analysis::SourceFormat::PiV3Jsonl,
+        ] {
+            let mut row = complete_row("partial-session-contract");
+            row.capabilities.source_format = format;
+            row.coverage = EvidenceCoverage::Partial(CoverageReason::UnrecognizedRecordType);
+            for detector in DetectorId::ALL {
+                if status_for(row.clone(), detector) == DetectorStatus::Clean {
+                    failures.push(format!("{format:?}/{detector:?}"));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "partial sessions returned clean: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn coverage_contract_observed_resources_allow_findings_but_not_inventory_clean() {
+        use crate::analysis::{ContextSourceKind, EvidenceObservation, NormalizedRecord};
+
+        let mut failures = Vec::new();
+        for (detector, observation) in [
+            (
+                DetectorId::UnusedSkills,
+                EvidenceObservation::SkillInjection {
+                    name: "contract-skill".to_owned(),
+                    invoked: false,
+                },
+            ),
+            (
+                DetectorId::UnusedMcpServers,
+                EvidenceObservation::ContextSource {
+                    kind: ContextSourceKind::McpServer,
+                    name: "contract-server".to_owned(),
+                    description: None,
+                },
+            ),
+        ] {
+            let mut sink = SessionEvidenceAccumulator::new(EvidenceSource {
+                agent: "codex".to_owned(),
+                session_id: "observed-resource-contract".to_owned(),
+                kind: SourceKind::Jsonl,
+                capabilities: SourceCapabilities::codex(),
+            });
+            sink.observe(&NormalizedRecord::Observation(Box::new(observation)));
+            let mut facts = TurnFacts::default();
+            facts.eligibility.assistant_turns = 1;
+            let observed = sink.evidence(&facts);
+            assert!(!observed.capabilities.skill_inventory);
+            assert!(!observed.capabilities.mcp_inventory);
+            assert!(
+                matches!(
+                    status_for(observed.clone(), detector),
+                    DetectorStatus::Findings(_)
+                ),
+                "{detector:?}"
+            );
+            let mut invoked = observed;
+            let sources = match &mut invoked.context_sources {
+                EvidenceValue::Complete(sources)
+                | EvidenceValue::Partial {
+                    observed: sources, ..
+                } => sources,
+                EvidenceValue::Unsupported => panic!("the resource must be observed"),
+            };
+            for source in sources
+                .skills
+                .values_mut()
+                .chain(sources.mcp_servers.values_mut())
+            {
+                source.invoked = true;
+            }
+            if status_for(invoked, detector) == DetectorStatus::Clean {
+                failures.push(detector);
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "observed resources cannot prove a complete inventory: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn coverage_contract_report_time_built_in_sources_do_not_prove_inventory_clean() {
+        for invoked in [false, true] {
+            let row = evidence_with_work("observed-built-in-contract");
+            let mut accumulator = EfficiencyReportAccumulator::new();
+            accumulator.observe_session_with_token_burn(
+                row,
+                SessionTokenBurnEvidence {
+                    built_in_tool_sources: Some(vec![TokenBurnSourceEvidence {
+                        scope: "claude:bundled".to_owned(),
+                        name: "read".to_owned(),
+                        replicated_tokens: 100,
+                        invoked,
+                    }]),
+                    ..SessionTokenBurnEvidence::default()
+                },
+            );
+            let report = accumulator.finish(context(CoverageCounts::default()));
+            let status = &report.detector_statuses[DetectorId::UnusedBuiltInTools.index()];
+            if invoked {
+                assert_ne!(
+                    *status,
+                    DetectorStatus::Clean,
+                    "observed definitions do not prove the effective inventory"
+                );
+            } else {
+                assert!(matches!(status, DetectorStatus::Findings(_)));
+            }
+        }
+    }
+
+    #[test]
+    fn coverage_contract_pi_observed_delegation_needs_no_blanket_capabilities() {
+        use crate::analysis::{
+            RelationConfidence, RelationProvenance, SubagentChild, SubagentEvidence,
+        };
+
+        for (worker, finding) in [("claude-opus-4-6", true), ("claude-haiku-4-5", false)] {
+            let mut row = complete_row("pi-observed-delegation-contract");
+            row.identity.agent = "pi".to_owned();
+            row.capabilities = SourceCapabilities::pi();
+            assert!(!row.capabilities.subagent_relationships);
+            assert!(!row.capabilities.subagent_models);
+            let EvidenceValue::Complete(models) = &mut row.models else {
+                unreachable!()
+            };
+            models.dominant_main_model = Some("claude-opus-4-6".to_owned());
+            row.subagents = EvidenceValue::Partial {
+                observed: SubagentEvidence {
+                    spawn_count: 1,
+                    delegated_turns: 1,
+                    delegated_models: BTreeSet::from([worker.to_owned()]),
+                    children: vec![SubagentChild {
+                        ordinal: 1,
+                        parent_model: Some("claude-opus-4-6".to_owned()),
+                        parent_call_id: Some("contract-call".to_owned()),
+                        observed_child_models: BTreeSet::from([worker.to_owned()]),
+                        child_model: EvidenceValue::Unsupported,
+                        confidence: RelationConfidence::Observed,
+                        provenance: RelationProvenance::TaskToolUse,
+                    }],
+                    examples: Vec::new(),
+                },
+                reason: CoverageReason::AttributionIncomplete,
+            };
+            let detector = DetectorId::OverpoweredSubagents;
+            assert!(eligible(detector, &row));
+            assert!(!clean_facts_complete(detector, &row));
+            let status = status_for(row.clone(), detector);
+            assert_ne!(status, DetectorStatus::Clean);
+            assert_eq!(
+                matches!(status, DetectorStatus::Findings(_)),
+                finding,
+                "{worker}"
+            );
+            row.subagents = EvidenceValue::Unsupported;
+            assert!(!eligible(detector, &row));
+            assert!(matches!(
+                status_for(row, detector),
+                DetectorStatus::NotAssessed(_)
+            ));
+        }
+    }
+
     /// Degrades one fact's backing evidence from `Complete` to `Partial`.
     /// `ThreadMembership` has no partial state (`Fact::state` maps its
     /// capability flag straight to `Complete`/`Unsupported`), so this
@@ -2715,8 +3243,15 @@ mod tests {
                 to_partial(&mut row.models)
             }
             Fact::ToolInvocations => to_partial(&mut row.tools),
-            Fact::SkillMcpAttribution | Fact::ToolDefinitions => {
-                to_partial(&mut row.context_sources)
+            Fact::SkillInventory | Fact::McpInventory | Fact::ToolDefinitions => {
+                let EvidenceValue::Complete(sources) = &mut row.context_sources else {
+                    unreachable!()
+                };
+                match fact {
+                    Fact::SkillInventory => to_partial(&mut sources.skill_coverage),
+                    Fact::McpInventory => to_partial(&mut sources.mcp_coverage),
+                    _ => to_partial(&mut sources.tool_definitions),
+                }
             }
             Fact::SubagentRelationships | Fact::DelegatedModels => to_partial(&mut row.subagents),
             Fact::RepeatedContextAccounting | Fact::RecordLinkage => to_partial(&mut row.cache),
@@ -2740,8 +3275,16 @@ mod tests {
                 row.capabilities.service_tier = false;
             }
             Fact::ToolInvocations => row.tools = EvidenceValue::Unsupported,
-            Fact::SkillMcpAttribution => row.context_sources = EvidenceValue::Unsupported,
-            Fact::ToolDefinitions => row.capabilities.tool_definitions = false,
+            Fact::SkillInventory | Fact::McpInventory | Fact::ToolDefinitions => {
+                let EvidenceValue::Complete(sources) = &mut row.context_sources else {
+                    unreachable!()
+                };
+                match fact {
+                    Fact::SkillInventory => sources.skill_coverage = EvidenceValue::Unsupported,
+                    Fact::McpInventory => sources.mcp_coverage = EvidenceValue::Unsupported,
+                    _ => sources.tool_definitions = EvidenceValue::Unsupported,
+                }
+            }
             Fact::SubagentRelationships => row.subagents = EvidenceValue::Unsupported,
             Fact::DelegatedModels => row.capabilities.subagent_models = false,
             // `RepeatedContextAccounting` and `RecordLinkage` both read a
@@ -2794,6 +3337,15 @@ mod tests {
         // detector from reading Clean.
         for detector in DetectorId::ALL {
             let baseline = status_for(complete_row("complete"), detector);
+            if matches!(
+                detector,
+                DetectorId::UnusedSkills
+                    | DetectorId::UnusedMcpServers
+                    | DetectorId::UnusedBuiltInTools
+            ) {
+                assert_ne!(baseline, DetectorStatus::Clean);
+                continue;
+            }
             assert_eq!(
                 baseline,
                 DetectorStatus::Clean,
@@ -2887,7 +3439,11 @@ mod tests {
                     "server-a".to_owned(),
                     LoadedSource {
                         description: None,
+                        configured: true,
+                        available: true,
+                        injected: true,
                         invoked: false,
+                        token_count: None,
                         origin: EvidenceValue::Unsupported,
                     },
                 );
@@ -2900,7 +3456,11 @@ mod tests {
                     "skill-a".to_owned(),
                     LoadedSource {
                         description: None,
+                        configured: true,
+                        available: true,
+                        injected: true,
                         invoked: false,
+                        token_count: None,
                         origin: EvidenceValue::Unsupported,
                     },
                 );
@@ -2928,13 +3488,21 @@ mod tests {
                 let EvidenceValue::Complete(models) = &mut row.models else {
                     unreachable!()
                 };
-                models.fast_modes.insert(
-                    FAST_SPEED_KEY.to_owned(),
-                    TurnCounts {
-                        main_loop: 0,
-                        delegated: 2,
-                    },
-                );
+                let turns = TurnCounts {
+                    main_loop: 0,
+                    delegated: 2,
+                };
+                models
+                    .fast_modes
+                    .insert(FAST_SPEED_KEY.to_owned(), turns.clone());
+                models
+                    .fast_modes_by_model
+                    .entry("claude-sonnet-4-6".to_owned())
+                    .or_default()
+                    .insert(FAST_SPEED_KEY.to_owned(), turns);
+                models
+                    .by_model
+                    .insert("claude-sonnet-4-6".to_owned(), ModelTokens::default());
             }
             DetectorId::CacheChurn => {
                 let EvidenceValue::Complete(models) = &mut row.models else {
@@ -3137,6 +3705,19 @@ mod tests {
                 delegated: 2,
             },
         );
+        models.fast_modes_by_model.insert(
+            "claude-sonnet-4-6".to_owned(),
+            BTreeMap::from([(
+                "fast".to_owned(),
+                TurnCounts {
+                    main_loop: 0,
+                    delegated: 2,
+                },
+            )]),
+        );
+        models
+            .by_model
+            .insert("claude-sonnet-4-6".to_owned(), ModelTokens::default());
         let mut accumulator = EfficiencyReportAccumulator::new();
         accumulator.observe_session(row);
         let report = accumulator.finish(context(CoverageCounts::default()));
@@ -3200,12 +3781,7 @@ mod tests {
     fn capability_gap_examples_keep_the_first_three_sessions() {
         let mut accumulator = EfficiencyReportAccumulator::new();
         for index in 0..5 {
-            let mut row = evidence_with_work(&format!("session-{index}"));
-            // Unused Built-In Tools needs the capability flag itself
-            // (`Fact::ToolDefinitions`), not just a complete
-            // `context_sources` group, so forcing it off is what makes
-            // every session here a capability gap for this detector.
-            row.capabilities.tool_definitions = false;
+            let row = evidence_with_work(&format!("session-{index}"));
             accumulator.observe_session(row);
         }
         let report = accumulator.finish(context(CoverageCounts::default()));

@@ -25,6 +25,8 @@
   --color-surface-secondary: var(--color-bg-secondary);
   --color-surface-tertiary: var(--color-bg-tertiary);
   --color-surface-card: var(--color-bg-card);
+  --color-stats-edge: var(--color-stats-edge-val);
+  --color-session-card: var(--color-bg-session-card);
   /* The quiet band at the head of the menu-bar popover. Fainter than a
      card, so the spend summary reads as the header and not as a row. */
   --color-surface-header: var(--color-bg-header);
@@ -49,6 +51,12 @@
   /* accent-fill is the concrete value; the live system accent token breaks when
      used as a background-color, so backgrounds must use this one. */
   --color-accent-fill: var(--color-accent-fill-val);
+  /* The solid chip of a view picker, and the ink on it. The fill is the
+     neutral furthest from the track: the darkest one on the light theme and
+     the lightest one on the dark theme. A dark chip on a dark track has too
+     little separation to name the selected view. */
+  --color-selected-fill: var(--color-selected-fill-val);
+  --color-selected-ink: var(--color-selected-ink-val);
   /* The antiburn brand orange, in the two-token shape system-orange uses.
      brand-tint fills a large shape — a meter segment, a ring arc, a hover
      wash — and carries the mark unchanged in both themes. brand inks text and
@@ -98,6 +106,13 @@
      see lib/agentIcon.tsx. */
   --color-agent-mark: var(--color-agent-mark-val);
 
+  /* Burn Check outcomes use a feature-specific palette. They do not replace
+     native accents or the broader status palette. */
+  --color-burn-check-failure-fill: var(--color-burn-check-failure-fill-val);
+  --color-burn-check-failure-text: var(--color-burn-check-failure-text-val);
+  --color-burn-check-pass-fill: var(--color-burn-check-pass-fill-val);
+  --color-burn-check-neutral: var(--color-burn-check-neutral-val);
+
   /* Session-analysis chart tokens are theme-adaptive too and live in
    * ./session-analysis-colors.css. */
 
@@ -109,6 +124,7 @@
   /* The design contract's shadow.raised, for a segment or thumb that sits on
      a recessed track. Consume as `shadow-raised`. */
   --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.04);
+  --shadow-stats-card: inset 0 0 0 1px var(--color-stats-edge);
 
   /* A strong ease-out for a control that must feel like it settles rather than
      stops. Tailwind registers `--ease-*`, so this becomes `ease-out-quart`.
@@ -127,6 +143,8 @@
   --color-bg-row-hover: hsl(0 0% 0% / 0.04);
 
   --color-bg-card: hsl(0 0% 0% / 0.04);
+  --color-stats-edge-val: hsl(0 0% 0% / 0.04);
+  --color-bg-session-card: hsl(0 0% 0% / 0.02);
 
   --color-bg-header: hsl(0 0% 0% / 0.025);
   /* Raised fill for text inputs/textareas. Light mode = whiter than surface;
@@ -154,6 +172,8 @@
   --color-accent-val: hsl(211.2 100% 50%);
   --color-accent-fill-val: hsl(210 100% 44.5%);
   --color-accent-hover-val: hsl(210.4 100% 39%);
+  --color-selected-fill-val: hsl(240 6% 26%);
+  --color-selected-ink-val: hsl(0 0% 100%);
 
   /* Brand — the antiburn orange. The mark itself fills large shapes in both
      themes. On a light surface it measures 2.9:1, so text and small glyphs
@@ -184,6 +204,12 @@
   /* Brand-mark ink */
   --color-agent-mark-val: hsl(52 11% 13.3%);
 
+  /* Burn Checks */
+  --color-burn-check-failure-fill-val: hsl(17.6 100% 58.6%);
+  --color-burn-check-failure-text-val: hsl(18 100% 36.4%);
+  --color-burn-check-pass-fill-val: hsl(191.5 83% 36.8%);
+  --color-burn-check-neutral-val: hsl(209 6% 73.7%);
+
   /* Spacing rhythm (multiples of 4) */
   --space-xs: 4px;
   --space-sm: 8px;
@@ -205,6 +231,7 @@
      Animation timings stay with the keyframes that own them in motion.css. */
   --duration-quick: 100ms;
   --duration-fast: 120ms;
+  --duration-medium: 180ms;
   --duration-slow: 300ms;
 
   /* Source-list / sidebar width for multi-pane windows. Geometry vars are not
@@ -249,6 +276,8 @@
     --color-bg-tertiary: hsl(0 0% 100% / 0.18);
     --color-bg-row-hover: hsl(0 0% 100% / 0.07);
     --color-bg-card: hsl(0 0% 100% / 0.08);
+    --color-stats-edge-val: hsl(0 0% 100% / 0.05);
+    --color-bg-session-card: hsl(0 0% 100% / 0.03);
     --color-bg-header: hsl(0 0% 100% / 0.03);
     --color-bg-input: hsl(0 0% 100% / 0.08);
     --color-bg-window: hsl(0 0% 15.6% / 0.8);
@@ -260,6 +289,8 @@
     --color-accent-val: hsl(210 100% 51.9%);
     --color-accent-fill-val: hsl(213.3 92% 48%);
     --color-accent-hover-val: hsl(213.5 91% 42%);
+    --color-selected-fill-val: hsl(240 6% 84%);
+    --color-selected-ink-val: hsl(240 4% 12%);
     /* The mark measures 7.4:1 on a dark surface, so text keeps it too. */
     --color-brand-tint-val: hsl(17.6 100% 58.6%);
     --color-brand-unlit-val: hsl(17.7 75% 58.6%);
@@ -281,6 +312,10 @@
     --color-shimmer-val: hsl(0 0% 100%);
     --color-system-gold-text-val: hsl(43.5 88% 66%);
     --color-agent-mark-val: hsl(60 15% 96.2%);
+    --color-burn-check-failure-fill-val: hsl(17.6 100% 58.6%);
+    --color-burn-check-failure-text-val: hsl(18 100% 68%);
+    --color-burn-check-pass-fill-val: hsl(192 63% 47.6%);
+    --color-burn-check-neutral-val: hsl(210 3% 50.5%);
     /* The system tertiary label is ~25% opacity in dark mode; bump to 62%,
        where small text reaches 4.5:1 on a card (same rationale as light
        mode). The hard case is again the popover: the surface is translucent,
@@ -302,6 +337,7 @@
 
 /* --- Explicit theme override, for platforms with no live system tokens --- */
 :root[data-theme="light"] {
+  --color-stats-edge-val: hsl(0 0% 0% / 0.04);
   --color-bg-primary: hsl(0 0% 100% / 0.85);
   --color-bg-secondary: hsl(0 0% 0% / 0.08);
   --color-bg-tertiary: hsl(0 0% 0% / 0.12);
@@ -309,6 +345,7 @@
      bg-selected at 0.09, so the two states looked the same. */
   --color-bg-row-hover: hsl(0 0% 0% / 0.04);
   --color-bg-card: hsl(0 0% 0% / 0.04);
+  --color-bg-session-card: hsl(0 0% 0% / 0.02);
   --color-bg-header: hsl(0 0% 0% / 0.025);
   --color-bg-input: hsl(0 0% 100%);
   --color-bg-window: hsl(0 0% 96.4%);
@@ -321,6 +358,8 @@
   --color-accent-val: hsl(211.2 100% 50%);
   --color-accent-fill-val: hsl(210 100% 44.5%);
   --color-accent-hover-val: hsl(210.4 100% 39%);
+  --color-selected-fill-val: hsl(240 6% 26%);
+  --color-selected-ink-val: hsl(0 0% 100%);
   --color-brand-tint-val: hsl(17.6 100% 58.6%);
   --color-brand-unlit-val: hsl(17.7 75% 58.6%);
   --color-brand-val: hsl(18 92% 39%);
@@ -341,6 +380,10 @@
   --color-shimmer-val: hsl(0 0% 100%);
   --color-system-gold-text-val: hsl(41 100% 28.6%);
   --color-agent-mark-val: hsl(52 11% 13.3%);
+  --color-burn-check-failure-fill-val: hsl(17.6 100% 58.6%);
+  --color-burn-check-failure-text-val: hsl(18 100% 36.4%);
+  --color-burn-check-pass-fill-val: hsl(191.5 83% 36.8%);
+  --color-burn-check-neutral-val: hsl(209 6% 73.7%);
 }
 
 @media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: light) {
@@ -364,11 +407,13 @@
 }
 
 :root[data-theme="dark"] {
+  --color-stats-edge-val: hsl(0 0% 100% / 0.05);
   --color-bg-primary: hsl(0 0% 11.7% / 0.92);
   --color-bg-secondary: hsl(0 0% 100% / 0.12);
   --color-bg-tertiary: hsl(0 0% 100% / 0.18);
   --color-bg-row-hover: hsl(0 0% 100% / 0.04);
   --color-bg-card: hsl(0 0% 100% / 0.08);
+  --color-bg-session-card: hsl(0 0% 100% / 0.03);
   --color-bg-header: hsl(0 0% 100% / 0.03);
   --color-bg-input: hsl(240 1.6% 23%);
   --color-bg-window: hsl(0 0% 12.5%);
@@ -381,6 +426,8 @@
   --color-accent-val: hsl(210 100% 51.9%);
   --color-accent-fill-val: hsl(213.3 92% 48%);
   --color-accent-hover-val: hsl(213.5 91% 42%);
+  --color-selected-fill-val: hsl(240 6% 84%);
+  --color-selected-ink-val: hsl(240 4% 12%);
   --color-brand-tint-val: hsl(17.6 100% 58.6%);
   --color-brand-unlit-val: hsl(17.7 75% 58.6%);
   --color-brand-val: hsl(17.6 100% 58.6%);
@@ -401,6 +448,10 @@
   --color-shimmer-val: hsl(0 0% 100%);
   --color-system-gold-text-val: hsl(43.5 88% 66%);
   --color-agent-mark-val: hsl(60 15% 96.2%);
+  --color-burn-check-failure-fill-val: hsl(17.6 100% 58.6%);
+  --color-burn-check-failure-text-val: hsl(18 100% 68%);
+  --color-burn-check-pass-fill-val: hsl(192 63% 47.6%);
+  --color-burn-check-neutral-val: hsl(210 3% 50.5%);
 }
 
 /* Must follow the :root[data-theme="dark"] block above — media queries add no

@@ -49,6 +49,7 @@
 //! request at all — and the app never depends on it. The content security
 //! policy limits the webview to local application and IPC connections.
 
+pub mod agent_config;
 mod agents;
 mod analysis;
 mod analytics;
@@ -63,6 +64,8 @@ mod hud;
 mod insights_ipc;
 mod insights_report;
 mod insights_worker;
+mod launch_intent;
+mod main_window;
 #[cfg(feature = "memory-probe")]
 mod memory_probe;
 mod notifications;
@@ -72,6 +75,7 @@ mod popover;
 mod popover_peek;
 mod provider_accounts;
 mod provider_usage;
+pub mod remediation;
 mod repositories;
 mod retention;
 mod runtime_pricing;
@@ -98,6 +102,7 @@ mod window_readiness;
 include!("app_commands.rs");
 
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tauri::{Manager, RunEvent, WindowEvent};
@@ -113,6 +118,12 @@ pub(crate) struct Schedulers(Mutex<Vec<tauri::async_runtime::JoinHandle<()>>>);
 #[derive(Default)]
 struct WindowRebuildState(AtomicUsize);
 
+#[derive(Default)]
+struct RepeatedLaunch {
+    pending: AtomicBool,
+    setup_ready: AtomicBool,
+}
+
 impl WindowRebuildState {
     fn begin(&self) {
         self.0.fetch_add(1, Ordering::AcqRel);
@@ -121,14 +132,10 @@ impl WindowRebuildState {
     fn finish(&self) {
         self.0.fetch_sub(1, Ordering::AcqRel);
     }
-
-    fn is_pending(&self) -> bool {
-        self.0.load(Ordering::Acquire) != 0
-    }
 }
 
 impl Schedulers {
-    fn push(&self, handle: tauri::async_runtime::JoinHandle<()>) {
+    pub(crate) fn push(&self, handle: tauri::async_runtime::JoinHandle<()>) {
         if let Ok(mut handles) = self.0.lock() {
             handles.push(handle);
         }
@@ -164,161 +171,190 @@ pub fn run() {
 
     // `register` installs the non-activating-panel support the notification
     // window needs on macOS; a no-op elsewhere.
-    let builder = antiburn_nudge::register(tauri::Builder::default())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(webview_defaults::plugin())
-        .invoke_handler(with_app_commands!(command_handlers))
-        .on_window_event(on_window_event)
-        .setup(|app| {
-            // A menu-bar app owns no Dock icon and no application menu. The
-            // bundle declares LSUIElement, but development runs are unbundled,
-            // so the policy is also applied here.
-            //
-            // Unconditional on purpose, and applied before the store is even
-            // open: a completed install must never flash a Dock icon while its
-            // settings are being read. The first run overrides it a few lines
-            // below — see `onboarding::policy_for` for why it has to.
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-
-            // Local state lives under the app's own data directory. The engine
-            // never chooses this location; the shell does, and hands it to the
-            // engine's state helpers as an explicit argument.
-            let data_dir = app.path().app_data_dir()?;
-            app.manage(store::Store::open(&data_dir)?);
-            app.manage(runtime_pricing::PricingState::load(&data_dir));
-            app.manage(insights_worker::WorkerHandle::default());
-            app.manage(insights_ipc::InsightsController::default());
-            if let Err(error) = app.state::<store::Store>().reconcile_evidence_revisions(
-                &agents::evidence_cohort(),
-                analysis::projection_revisions(),
-            ) {
-                ::tracing::error!(event = "evidence_reconcile_failed", error = %error);
-            }
-            if let Err(error) = app
-                .state::<store::Store>()
-                .purge_stale_source_resume(analysis::resume_revisions())
-            {
-                ::tracing::error!(event = "source_resume_purge_failed", error = %error);
-            }
-
-            // Apply the persisted theme before any window shows, so the first
-            // paint is already in the reader's chosen appearance. "system" and
-            // anything unrecognized mean: follow the OS.
-            if let Ok(settings) = app.state::<store::Store>().settings() {
-                app.set_theme(match settings.theme.as_str() {
-                    "light" => Some(tauri::Theme::Light),
-                    "dark" => Some(tauri::Theme::Dark),
-                    _ => None,
-                });
-                if settings.onboarding_completed {
-                    startup_registration::reconcile(app.handle(), settings.launch_at_login);
+    let builder = antiburn_nudge::register(
+        tauri::Builder::default()
+            .manage(RepeatedLaunch::default())
+            // Register first so a second process exits before it starts any
+            // background scheduler or scan.
+            .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+                if launch_intent::from_args(&args) == launch_intent::LaunchIntent::Background {
+                    return;
                 }
-            }
-            app.manage(scan::ScanController::default());
-            app.manage(scan::idle::IdleWake::default());
-            app.manage(Schedulers::default());
-            app.manage(popover::PopoverState::default());
-            app.manage(popover_peek::manager());
-            app.manage(updates::UpdaterState::default());
-            app.manage(notifications::NotificationState::default());
-            app.manage(storage_health::StorageHealth::default());
-            app.manage(settings::PendingPane::default());
-            app.manage(settings::SettingsWindowState::default());
-            app.manage(onboarding::OnboardingWindowState::default());
-            app.manage(WindowRebuildState::default());
-            app.manage(nudges::AnchorOverride::default());
-            app.manage(antiburn_nudge::NotificationGate::default());
-
-            // Build the resident placeholder before any hover can request it.
-            popover_peek::prewarm(app.handle());
-
-            tray::create(app.handle())?;
-            tray::install_usage_meter(app.handle());
-            // After the tray, and on the main thread: the monitor reaches the
-            // menu-bar item to unlight it. The popover itself is lazy, and its
-            // dismissal path already treats a missing window as idle.
-            global_click::install(app.handle());
-
-            // The HUD follows the desk it is on: a display that disconnects
-            // sends it to one still connected, and the display coming back
-            // takes it again. The watcher idles while the HUD is closed.
-            hud::spawn_display_watcher(app.handle());
-
-            // The first run gets a window rather than silence. Everything above
-            // is in place by now, so the flow's first paint can already read
-            // settings and ask the engine for its default roots.
-            //
-            // Best-effort on purpose, unlike the four `?`s above: a window that
-            // will not build is not a reason to refuse to start, and the
-            // menu-bar item still reaches the flow (see `popover::toggle`).
-            if onboarding::is_pending(app.handle()) {
-                // Before the window, not after: it should be born into an
-                // application that already has a Dock presence rather than
-                // acquiring one underneath it. The accessory policy applied
-                // above stands for every completed install, so nothing flashes
-                // a Dock icon while the store is being read.
-                onboarding::apply_activation_policy(app.handle(), true);
-                if let Err(error) = onboarding::open(app.handle()) {
-                    ::tracing::warn!(
-                        event = "onboarding_window_open_failed",
-                        trigger = "startup",
-                        error = %error
-                    );
+                let repeated = app.state::<RepeatedLaunch>();
+                repeated.pending.store(true, Ordering::Release);
+                if repeated.setup_ready.load(Ordering::Acquire) {
+                    repeated.pending.store(false, Ordering::Release);
+                    main_window::on_main(app, |app| {
+                        if let Err(error) =
+                            open_launch_surface(app, main_window::OpenTrigger::Interaction)
+                        {
+                            ::tracing::warn!(
+                                event = "launch_surface_open_failed",
+                                trigger = "second_instance",
+                                error = %error
+                            );
+                        }
+                    });
                 }
+            })),
+    )
+    .plugin(tauri_plugin_dialog::init())
+    .plugin(tauri_plugin_opener::init())
+    .plugin(webview_defaults::plugin())
+    .invoke_handler(with_app_commands!(command_handlers))
+    .on_window_event(on_window_event)
+    .setup(|app| {
+        // The main window makes antiburn an ordinary application. Apply
+        // this before any window exists so macOS never changes identity.
+        #[cfg(target_os = "macos")]
+        app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
+        // Capture the platform launch event while setup still runs inside
+        // applicationDidFinishLaunching on macOS.
+        let launch_intent = launch_intent::current();
+
+        // Local state lives under the app's own data directory. The engine
+        // never chooses this location; the shell does, and hands it to the
+        // engine's state helpers as an explicit argument.
+        let data_dir = app.path().app_data_dir()?;
+        app.manage(store::Store::open(&data_dir)?);
+        app.manage(remediation::RemediationController::new(data_dir.clone()));
+        let main_window_state = main_window::MainWindowState::load(&app.state::<store::Store>());
+        app.manage(main_window_state);
+        app.manage(runtime_pricing::PricingState::load(&data_dir));
+        app.manage(insights_worker::WorkerHandle::default());
+        app.manage(insights_ipc::InsightsController::default());
+        if let Err(error) = app.state::<store::Store>().reconcile_evidence_revisions(
+            &agents::evidence_cohort(),
+            analysis::projection_revisions(),
+        ) {
+            ::tracing::error!(event = "evidence_reconcile_failed", error = %error);
+        }
+        if let Err(error) = app
+            .state::<store::Store>()
+            .reconcile_remediations(time::OffsetDateTime::now_utc().unix_timestamp())
+        {
+            ::tracing::error!(event = "remediation_reconcile_failed", error = %error);
+        }
+        if let Err(error) = app
+            .state::<store::Store>()
+            .purge_stale_source_resume(analysis::resume_revisions())
+        {
+            ::tracing::error!(event = "source_resume_purge_failed", error = %error);
+        }
+
+        // Apply the persisted theme before any window shows, so the first
+        // paint is already in the reader's chosen appearance. "system" and
+        // anything unrecognized mean: follow the OS.
+        if let Ok(settings) = app.state::<store::Store>().settings() {
+            app.set_theme(match settings.theme.as_str() {
+                "light" => Some(tauri::Theme::Light),
+                "dark" => Some(tauri::Theme::Dark),
+                _ => None,
+            });
+            if settings.onboarding_completed {
+                startup_registration::reconcile(app.handle(), settings.launch_at_login);
             }
+        }
+        app.manage(scan::ScanController::default());
+        app.manage(scan::idle::IdleWake::default());
+        app.manage(Schedulers::default());
+        app.manage(popover::PopoverState::default());
+        app.manage(popover_peek::manager());
+        app.manage(updates::UpdaterState::default());
+        app.manage(notifications::NotificationState::default());
+        app.manage(storage_health::StorageHealth::default());
+        app.manage(settings::PendingPane::default());
+        app.manage(settings::SettingsWindowState::default());
+        app.manage(onboarding::OnboardingWindowState::default());
+        app.manage(WindowRebuildState::default());
+        app.manage(nudges::AnchorOverride::default());
+        app.manage(antiburn_nudge::NotificationGate::default());
 
-            // Registered before the update scheduler starts, so the first
-            // automatic check can see whether there is anything to check with.
-            install_updater(app.handle());
+        tray::create(app.handle())?;
+        tray::install_usage_meter(app.handle());
+        // After the tray, and on the main thread: the monitor reaches the
+        // menu-bar item to unlight it. The popover itself is lazy, and its
+        // dismissal path already treats a missing window as idle.
+        global_click::install(app.handle());
+        main_window::install_visibility_observers(app.handle());
 
-            // Both calls are inert unless the build configuration is complete
-            // and the reader permits analytics. See `analytics::allowed`.
-            analytics::install(app.handle());
-            analytics::record(
-                app.handle(),
-                analytics::event::EventName::AppLaunched,
-                analytics::event::Facts::default(),
-            );
+        // The HUD follows the desk it is on: a display that disconnects
+        // sends it to one still connected, and the display coming back
+        // takes it again. The watcher idles while the HUD is closed.
+        hud::spawn_display_watcher(app.handle());
 
-            // The notification window's manager and the chime player. The
-            // webview itself is created only when policy delivers a nudge.
-            nudges::init(app.handle())?;
-            // On macOS, ask for the Focus-status authorization when a
-            // completed setup already permits notifications. First runs wait:
-            // apply_settings_transition asks again when onboarding finishes.
-            notifications::maybe_initialize_authorization(app.handle());
-            // The live-usage registry: the sources that can prove a
-            // provider's own limit figures, and the milestone ledger they
-            // feed. Registered before the schedulers so the first pass sees
-            // a populated registry rather than an empty one.
-            let live_usage = {
-                let store = app.state::<store::Store>();
-                usage_alerts::LiveUsage::from_store(&store)
+        // Registered before the update scheduler starts, so the first
+        // automatic check can see whether there is anything to check with.
+        install_updater(app.handle());
+
+        // Both calls are inert unless the build configuration is complete
+        // and the reader permits analytics. See `analytics::allowed`.
+        analytics::install(app.handle());
+        analytics::record(
+            app.handle(),
+            analytics::event::EventName::AppLaunched,
+            analytics::event::Facts::default(),
+        );
+
+        // The notification window's manager and the chime player. The
+        // webview itself is created only when policy delivers a nudge.
+        nudges::init(app.handle())?;
+        // On macOS, ask for the Focus-status authorization when a
+        // completed setup already permits notifications. First runs wait:
+        // apply_settings_transition asks again when onboarding finishes.
+        notifications::maybe_initialize_authorization(app.handle());
+        // The live-usage registry: the sources that can prove a
+        // provider's own limit figures, and the milestone ledger they
+        // feed. Registered before the schedulers so the first pass sees
+        // a populated registry rather than an empty one.
+        let live_usage = {
+            let store = app.state::<store::Store>();
+            usage_alerts::LiveUsage::from_store(&store)
+        };
+        app.manage(live_usage);
+        let settings = app.state::<store::Store>().settings().ok();
+        let snapshot = app.state::<usage_alerts::LiveUsage>().snapshot();
+        tray::sync_usage(
+            app.handle(),
+            &snapshot,
+            settings.is_some_and(|settings| settings.live_usage_active()),
+            true,
+        );
+        if let Some(schedulers) = app.try_state::<Schedulers>() {
+            analytics::install_schedulers(app.handle(), &schedulers);
+            schedulers.push(runtime_pricing::spawn_scheduler(app.handle()));
+            schedulers.push(scan::spawn_scheduler(app.handle()));
+            schedulers.push(scan::idle::spawn(app.handle()));
+            schedulers.push(retention::spawn_scheduler(app.handle()));
+            schedulers.push(insights_worker::spawn(app.handle()));
+            schedulers.push(updates::spawn_scheduler(app.handle()));
+            schedulers.push(usage_alerts::spawn_scheduler(app.handle()));
+            schedulers.push(disk_monitor::spawn_disk_monitor(app.handle().clone()));
+        }
+
+        // Publish setup completion before consuming a launch queued by a
+        // second process. The callback can now use every managed state.
+        let repeated = app.state::<RepeatedLaunch>();
+        repeated.setup_ready.store(true, Ordering::Release);
+        let repeated_launch = repeated.pending.swap(false, Ordering::AcqRel);
+        if launch_intent == launch_intent::LaunchIntent::Explicit || repeated_launch {
+            let trigger = if launch_intent == launch_intent::LaunchIntent::Explicit {
+                main_window::OpenTrigger::ColdLaunch
+            } else {
+                main_window::OpenTrigger::Interaction
             };
-            app.manage(live_usage);
-            let settings = app.state::<store::Store>().settings().ok();
-            let snapshot = app.state::<usage_alerts::LiveUsage>().snapshot();
-            tray::sync_usage(
-                app.handle(),
-                &snapshot,
-                settings.is_some_and(|settings| settings.live_usage_active()),
-                true,
-            );
-            if let Some(schedulers) = app.try_state::<Schedulers>() {
-                schedulers.push(runtime_pricing::spawn_scheduler(app.handle()));
-                schedulers.push(scan::spawn_scheduler(app.handle()));
-                schedulers.push(scan::idle::spawn(app.handle()));
-                schedulers.push(retention::spawn_scheduler(app.handle()));
-                schedulers.push(insights_worker::spawn(app.handle()));
-                schedulers.push(updates::spawn_scheduler(app.handle()));
-                schedulers.push(usage_alerts::spawn_scheduler(app.handle()));
-                schedulers.push(disk_monitor::spawn_disk_monitor(app.handle().clone()));
+            if let Err(error) = open_launch_surface(app.handle(), trigger) {
+                ::tracing::warn!(
+                    event = "launch_surface_open_failed",
+                    trigger = "startup",
+                    error = %error
+                );
             }
+        }
 
-            Ok(())
-        });
+        Ok(())
+    });
 
     #[cfg(not(feature = "memory-probe"))]
     let app = builder.build(tauri::generate_context!());
@@ -334,18 +370,17 @@ pub fn run() {
         })
     });
     app.run(move |app, event| match event {
-        RunEvent::ExitRequested { api, code, .. }
-            if should_prevent_exit(
-                onboarding::is_pending(app),
-                app.state::<WindowRebuildState>().is_pending(),
-                code,
-            ) =>
-        {
+        RunEvent::ExitRequested { api, code, .. } if should_prevent_exit(code) => {
             api.prevent_exit();
         }
         // A deliberate quit: stop the background tasks before the store
         // they write to is dropped.
         RunEvent::Exit => {
+            #[cfg(target_os = "macos")]
+            if let Some(manager) = app.try_state::<popover_peek::PopoverPeekManager>() {
+                manager.shutdown();
+            }
+            main_window::flush_placement(app);
             // Ask a running report reduction to stop at its next probe.
             // The reduction is read-only, so even a task that never sees
             // the flag cannot corrupt durable evidence state.
@@ -358,19 +393,12 @@ pub fn run() {
                 guard.flush();
             }
         }
-        // Clicking the Dock icon. Only reachable while the first run is
-        // pending, because that is the only time antiburn has a Dock icon
-        // (see `onboarding::policy_for`) — and it is exactly then that
-        // somebody who closed the window early has no other way back to it.
-        // A visible affordance that did nothing would be a worse failure
-        // than the one the Dock icon is here to fix.
+        // Clicking the Dock icon restores the surface the current install owns.
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => {
-            if onboarding::is_pending(app)
-                && let Err(error) = onboarding::open(app)
-            {
+            if let Err(error) = open_launch_surface(app, main_window::OpenTrigger::Interaction) {
                 ::tracing::warn!(
-                    event = "onboarding_window_open_failed",
+                    event = "launch_surface_open_failed",
                     trigger = "dock",
                     error = %error
                 );
@@ -380,26 +408,24 @@ pub fn run() {
     });
 }
 
-/// Whether an exit request should be swallowed.
+/// Keep the tray process alive when a window is destroyed.
 ///
-/// A menu-bar app outlives its windows: closing settings, or the popover, must
-/// not quit antiburn, and those arrive here with no exit code. Only the shell's
-/// own `exit(0)` — the tray menu, the settings sidebar — carries one, which is
-/// what distinguishes a deliberate quit from a window close.
-///
-/// The exception is the first run. While it is pending antiburn is an ordinary
-/// Dock application (again, `onboarding::policy_for`), so it has an application
-/// menu and a Dock context menu, both offering Quit, and both arriving here
-/// with `code: None`. Swallowing those would give the reader a Quit item that
-/// silently does nothing at the one moment they have no other way to get rid of
-/// the app. During the first run it quits like the ordinary application it is
-/// pretending to be.
-fn should_prevent_exit(
-    onboarding_pending: bool,
-    window_rebuild_pending: bool,
-    code: Option<i32>,
-) -> bool {
-    code.is_none() && (!onboarding_pending || window_rebuild_pending)
+/// `AppHandle::exit` carries a code and remains the explicit cross-platform
+/// quit path. AppKit termination bypasses this window-destruction request.
+fn should_prevent_exit(code: Option<i32>) -> bool {
+    code.is_none()
+}
+
+/// Open onboarding while it is owed, or the ordinary main window afterwards.
+pub(crate) fn open_launch_surface(
+    app: &tauri::AppHandle,
+    trigger: main_window::OpenTrigger,
+) -> tauri::Result<()> {
+    if onboarding::is_pending(app) {
+        onboarding::open(app)
+    } else {
+        main_window::open(app, trigger)
+    }
 }
 
 /// Stop every background task. Safe to call when none ever started.
@@ -431,13 +457,16 @@ fn finish_retention_cleanup(handle: &mut Option<tauri::async_runtime::JoinHandle
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClosePolicy {
     Allow,
+    HideMain,
     HidePopover,
     HidePendingOnboarding,
     HideNudge,
 }
 
 fn close_policy(label: &str, onboarding_pending: bool) -> ClosePolicy {
-    if label == popover::LABEL {
+    if label == main_window::LABEL {
+        ClosePolicy::HideMain
+    } else if label == popover::LABEL {
         ClosePolicy::HidePopover
     } else if label == antiburn_nudge::NUDGE_LABEL {
         ClosePolicy::HideNudge
@@ -450,6 +479,7 @@ fn close_policy(label: &str, onboarding_pending: bool) -> ClosePolicy {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ManagedWindow {
+    Main,
     Popover,
     Settings,
     Onboarding,
@@ -458,6 +488,7 @@ enum ManagedWindow {
 impl ManagedWindow {
     fn rebuild_after_destroy(self, app: &tauri::AppHandle) {
         match self {
+            Self::Main => main_window::rebuild_after_destroy(app),
             Self::Popover => popover::rebuild_after_destroy(app),
             Self::Settings => settings::rebuild_after_destroy(app),
             Self::Onboarding => onboarding::rebuild_after_destroy(app),
@@ -467,6 +498,7 @@ impl ManagedWindow {
 
 fn rebuild_after_destroy_for_label(label: &str) -> Option<ManagedWindow> {
     match label {
+        main_window::LABEL => Some(ManagedWindow::Main),
         popover::LABEL => Some(ManagedWindow::Popover),
         settings::LABEL => Some(ManagedWindow::Settings),
         onboarding::LABEL => Some(ManagedWindow::Onboarding),
@@ -495,18 +527,27 @@ fn defer_rebuild_after_destroy(app: &tauri::AppHandle, window: ManagedWindow) {
 
 /// Window policy shared by every window the shell creates.
 fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
+    if window.label() == main_window::LABEL
+        && matches!(event, WindowEvent::Focused(_) | WindowEvent::Resized(_))
+        && let Some(main_window) = window.app_handle().get_webview_window(main_window::LABEL)
+    {
+        main_window::emit_visibility_changed(&main_window);
+    }
     if let Some(manager) = window
         .app_handle()
         .try_state::<popover_peek::PopoverPeekManager>()
     {
         manager.handle_anchor_event(window, event);
+        #[cfg(not(target_os = "macos"))]
         if window.label() == popover_peek::LABEL && matches!(event, WindowEvent::Destroyed) {
             manager.handle_companion_destroyed();
-            let app = window.app_handle().clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::task::yield_now().await;
-                popover_peek::prewarm(&app);
-            });
+            if manager.state().target.is_some() {
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::task::yield_now().await;
+                    popover_peek::rebuild_if_targeted(&app);
+                });
+            }
         }
     }
     match event {
@@ -526,6 +567,13 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         WindowEvent::CloseRequested { api, .. } => {
             match close_policy(window.label(), onboarding::is_pending(window.app_handle())) {
                 ClosePolicy::Allow => {}
+                ClosePolicy::HideMain => {
+                    api.prevent_close();
+                    if let Some(window) = window.app_handle().get_webview_window(main_window::LABEL)
+                    {
+                        main_window::close(&window);
+                    }
+                }
                 ClosePolicy::HidePopover => {
                     api.prevent_close();
                     // Through `popover::hide` rather than `window.hide()`, so
@@ -553,6 +601,9 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
             if let Some(rebuild) = rebuild_after_destroy_for_label(window.label()) {
                 defer_rebuild_after_destroy(window.app_handle(), rebuild);
             }
+        }
+        WindowEvent::Moved(_) | WindowEvent::Resized(_) if window.label() == main_window::LABEL => {
+            main_window::schedule_placement_save(window.app_handle());
         }
         _ => {}
     }
@@ -615,26 +666,52 @@ mod tests {
     }
 
     #[test]
-    fn a_window_close_never_quits_the_finished_menu_bar_app() {
-        // Settings and the popover both close with no exit code, and the tray
-        // item is the app's real lifetime.
-        assert!(should_prevent_exit(false, false, None));
-        // The shell's own `exit(0)` is the deliberate quit and always lands.
-        assert!(!should_prevent_exit(false, false, Some(0)));
-        assert!(!should_prevent_exit(true, true, Some(0)));
+    fn main_window_capability_includes_window_actions_without_broad_defaults() {
+        let capability = include_str!("../capabilities/main.json");
+        for expected in [
+            "\"core:webview:allow-internal-toggle-devtools\"",
+            "\"core:event:allow-listen\"",
+            "\"core:event:allow-unlisten\"",
+            "\"core:window:allow-start-dragging\"",
+            "\"core:window:allow-internal-toggle-maximize\"",
+            "\"allow-get-settings\"",
+            "\"allow-get-main-window-visible\"",
+            "\"allow-list-recent-sessions\"",
+            "\"allow-get-session-analysis\"",
+            "\"allow-get-subagent-analysis\"",
+            "\"allow-get-live-usage\"",
+            "\"allow-get-session-limit-allocations\"",
+            "\"allow-get-session-hygiene\"",
+            "\"allow-set-settings\"",
+            "\"allow-reveal-source\"",
+            "\"allow-delete-session-data\"",
+            "\"dialog:allow-confirm\"",
+            "\"allow-main-window-ready\"",
+            "\"allow-main-window-health-ack\"",
+            "\"allow-main-window-pending-health-check\"",
+            "\"allow-report-main-window-render-status\"",
+            "\"allow-report-main-window-render-failure\"",
+            "\"allow-request-main-window-recovery\"",
+            "\"allow-peek-main-window-session-target\"",
+            "\"allow-acknowledge-main-window-session-target\"",
+        ] {
+            assert!(capability.contains(expected), "missing {expected}");
+        }
+        for excluded in ["\"default\"", "dialog:default", "opener:default"] {
+            assert!(!capability.contains(excluded), "unexpected {excluded}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bundled_app_is_not_an_lsui_element_agent() {
+        assert!(!include_str!("../Info.plist").contains("LSUIElement"));
     }
 
     #[test]
-    fn cmd_q_works_while_the_first_run_owns_a_dock_icon() {
-        // The case that matters. A Regular app's application menu and Dock
-        // context menu both offer Quit and both arrive with no code; swallowing
-        // them would ship a Quit item that does nothing.
-        assert!(!should_prevent_exit(true, false, None));
-    }
-
-    #[test]
-    fn a_pending_rebuild_keeps_the_first_run_alive() {
-        assert!(should_prevent_exit(true, true, None));
+    fn window_destruction_stays_resident_but_explicit_exit_lands() {
+        assert!(should_prevent_exit(None));
+        assert!(!should_prevent_exit(Some(0)));
     }
 
     #[test]
@@ -762,6 +839,10 @@ mod tests {
     #[test]
     fn only_transient_or_incomplete_windows_intercept_close() {
         assert_eq!(
+            close_policy(super::main_window::LABEL, false),
+            ClosePolicy::HideMain
+        );
+        assert_eq!(
             close_policy(super::popover::LABEL, false),
             ClosePolicy::HidePopover
         );
@@ -786,6 +867,7 @@ mod tests {
     #[test]
     fn only_managed_windows_select_their_deferred_rebuild_handler() {
         let cases = [
+            (super::main_window::LABEL, super::ManagedWindow::Main),
             (super::popover::LABEL, super::ManagedWindow::Popover),
             (super::settings::LABEL, super::ManagedWindow::Settings),
             (super::onboarding::LABEL, super::ManagedWindow::Onboarding),

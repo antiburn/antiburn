@@ -50,7 +50,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test the CI control plane
-        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/mem-report.test.mjs scripts/verify-linux-appimage.test.mjs scripts/third-party-notices.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs
+        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/classify-ci-changes.test.mjs scripts/mem-report.test.mjs scripts/window-open-report.test.mjs scripts/verify-linux-appimage.test.mjs scripts/third-party-notices.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs
 
       # The drift guard runs here, not in a classified job. It reads the
       # contract, the stylesheets, and the popover window's own corner
@@ -201,6 +201,18 @@ jobs:
         working-directory: apps/desktop/src-tauri/crates/hud
         run: cargo fmt --check
 
+      - name: Check main-window crate formatting
+        working-directory: apps/desktop/src-tauri/crates/main-window
+        run: cargo fmt --check
+
+      - name: Check anchored-window crate formatting
+        working-directory: apps/desktop/src-tauri/crates/anchored-window
+        run: cargo fmt --check
+
+      - name: Check vendored tray crate formatting
+        working-directory: apps/desktop/src-tauri/vendor/tray-icon
+        run: cargo fmt --check
+
   desktop-backend-checks:
     name: desktop app (backend, ${{ matrix.check.name }}, ${{ matrix.workspace.name }}, ${{ matrix.platform.name }})
     needs: classify
@@ -231,6 +243,12 @@ jobs:
             tauri: false
           - name: HUD
             directory: apps/desktop/src-tauri/crates/hud
+            tauri: true
+          - name: main-window
+            directory: apps/desktop/src-tauri/crates/main-window
+            tauri: true
+          - name: anchored-window
+            directory: apps/desktop/src-tauri/crates/anchored-window
             tauri: true
     runs-on: ${{ matrix.platform.os }}
     steps:
@@ -280,8 +298,25 @@ jobs:
         working-directory: ${{ matrix.workspace.directory }}
         run: cargo ${{ matrix.check.command }}
 
+      - name: Check vendored tray library and tests
+        if: matrix.workspace.name == 'shell' && matrix.check.name == 'Clippy'
+        working-directory: apps/desktop/src-tauri/vendor/tray-icon
+        run: cargo clippy --locked --lib --tests -- -D warnings
+
+      - name: Test vendored tray library and native harness
+        if: matrix.workspace.name == 'shell' && matrix.check.name == 'Tests'
+        working-directory: apps/desktop/src-tauri/vendor/tray-icon
+        env:
+          TRAY_ICON_RUN_NATIVE_TEST: "1"
+        run: cargo test --locked --lib --test macos_highlight_override
+
+      - name: Check the analytics-enabled shell
+        if: matrix.workspace.name == 'shell' && matrix.check.name == 'Clippy'
+        working-directory: apps/desktop/src-tauri
+        run: cargo clippy --all-targets --locked --features analytics -- -D warnings
+
       - name: Test the analytics-enabled shell
-        if: matrix.platform.name == 'linux' && matrix.workspace.name == 'shell' && matrix.check.name == 'Tests'
+        if: matrix.workspace.name == 'shell' && matrix.check.name == 'Tests'
         working-directory: apps/desktop/src-tauri
         env:
           ANTIBURN_ANALYTICS_URL: http://127.0.0.1:8787

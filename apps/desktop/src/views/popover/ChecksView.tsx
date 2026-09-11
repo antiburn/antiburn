@@ -1,52 +1,19 @@
-import {
-  Bot,
-  Brain,
-  CheckCircle2,
-  CircleDashed,
-  CircleX,
-  Database,
-  Flame,
-  Gauge,
-  History,
-  Layers3,
-  Server,
-  Wrench,
-  type LucideIcon,
-} from "lucide-react"
+import { CheckCircle2, CircleDashed, Flame, LoaderCircle } from "lucide-react"
 import { useRef } from "react"
 
 import { TextRoll } from "../../components/ui/TextRoll"
+import { BurnCheckSummary } from "../../components/burn-checks/BurnCheckSummary"
+import { BurnCheckFlames } from "../../components/burn-checks/BurnCheckFlames"
+import "../../components/burn-checks/burn-check-summary.css"
 import { measureAnchorRegion } from "../../lib/anchorRegion"
 import type { ChecksCategoryPayload } from "../../lib/insightsIpc"
 import {
-  CHECK_LABELS,
+  checksHeroPresentation,
   formatTokenBurnPercent,
-  tokenBurnTone,
   type ChecksPresentation,
 } from "../../lib/presentation/checks"
-
-const CHECK_ICONS: Record<string, LucideIcon> = {
-  sessionsOverDepth: Layers3,
-  modelOverthinking: Brain,
-  overpoweredSubagents: Bot,
-  unusedMcpServers: Server,
-  unusedBuiltInTools: Wrench,
-  unusedSkills: Wrench,
-  oldModelUsage: History,
-  overuseOfFastMode: Gauge,
-  cacheChurn: Database,
-}
-
-function failureSummary(category: ChecksCategoryPayload): string {
-  const assessed = category.finding + category.clean
-  return `${category.finding}/${assessed} session${assessed === 1 ? "" : "s"} failed`
-}
-
-function tokenEstimate(category: ChecksCategoryPayload): string | null {
-  return category.estimatedTokenBurnBasisPoints == null
-    ? null
-    : `${formatTokenBurnPercent(category.estimatedTokenBurnBasisPoints)} token burn`
-}
+import { checkRowPresentation } from "../checks/checkUi"
+import { emptyBurnCheckPresentation } from "../../lib/presentation/burnChecks"
 
 function summaryEstimate(presentation: ChecksPresentation): string | null {
   const basisPoints = presentation.estimate.tokenBurnBasisPoints
@@ -55,62 +22,58 @@ function summaryEstimate(presentation: ChecksPresentation): string | null {
     : `${formatTokenBurnPercent(basisPoints)} token burn`
 }
 
-function refreshFailureSuffix(presentation: ChecksPresentation): string {
-  return presentation.refreshUnavailable ? " · refresh unavailable" : ""
-}
-
 export function ChecksSummary({
   active,
   presentation,
   reportUnavailable,
   onPreview,
   onLeave,
+  onOpen = () => undefined,
 }: {
   active: boolean
   presentation: ChecksPresentation | null
   reportUnavailable: boolean
   onPreview: (anchor: ReturnType<typeof measureAnchorRegion>) => void
   onLeave: () => void
+  onOpen?: () => void
 }) {
-  const failures = presentation?.failures.length ?? 0
-  const wins = presentation?.wins.length ?? 0
-  const hasFindings = failures > 0
-  const hasWins = wins > 0
-  const checksNeedingEvidence = presentation
-    ? [...presentation.failures, ...presentation.wins, ...presentation.unavailable].filter(
-        (category) => category.unavailable > 0,
-      ).length
-    : 0
-  const completePass =
-    hasWins && presentation?.unavailable.length === 0 && checksNeedingEvidence === 0
-  const StatusIcon =
-    presentation == null
-      ? CircleDashed
-      : hasFindings
-        ? CircleX
-        : completePass
-          ? CheckCircle2
-          : CircleDashed
   const estimate = presentation ? summaryEstimate(presentation) : null
+  const burnChecks =
+    presentation?.burnChecks ??
+    emptyBurnCheckPresentation(reportUnavailable ? "unavailable" : "pending")
+  const accessibleLabel = estimate
+    ? `${burnChecks.accessibleDescription} ${estimate}.`
+    : burnChecks.accessibleDescription
+  const tone =
+    burnChecks.counts.failed > 0 ? "failure" : burnChecks.counts.passed > 0 ? "pass" : "neutral"
   const hovered = useRef(false)
   const focused = useRef(false)
+  const summary = useRef<HTMLDivElement>(null)
 
   return (
     <div
+      ref={summary}
       data-state={active ? "active" : "idle"}
+      data-tone={tone}
       onMouseEnter={(event) => {
         hovered.current = true
+        if (event.target instanceof Element && event.target.closest("[data-burn-check-flames]"))
+          return
         if (presentation) onPreview(measureAnchorRegion(event.currentTarget))
       }}
       onMouseLeave={() => {
         hovered.current = false
         if (!focused.current) onLeave()
       }}
-      className="group flex items-center rounded-control hover:bg-surface-hover data-[state=active]:bg-surface-selected"
+      className="burn-check-summary-surface group flex items-center rounded-control bg-surface-card/50 hover:bg-surface-hover/35 data-[state=active]:bg-surface-selected/40"
     >
-      <div
-        tabIndex={presentation ? 0 : undefined}
+      <button
+        type="button"
+        disabled={!presentation}
+        data-burn-check-summary-trigger
+        aria-label={`All burn checks. Last 30 days. ${accessibleLabel}`}
         aria-busy={!presentation && !reportUnavailable}
+        onClick={onOpen}
         onFocus={(event) => {
           focused.current = true
           if (presentation) onPreview(measureAnchorRegion(event.currentTarget))
@@ -119,65 +82,65 @@ export function ChecksSummary({
           focused.current = false
           if (!hovered.current) onLeave()
         }}
-        className="grid min-w-0 flex-1 grid-cols-[16px_minmax(0,1fr)_max-content] items-center gap-x-2 px-2 py-2 text-left"
+        className="min-w-0 flex-1 rounded-control text-left disabled:opacity-100 active:transform-none active:opacity-100"
       >
-        <StatusIcon
-          size={14}
-          strokeWidth={presentation == null ? 2 : 2.5}
-          className={`shrink-0 ${hasFindings ? "text-system-red-text" : completePass ? "text-system-green" : "text-label-tertiary"}`}
-          aria-hidden="true"
-        />
-        <span className="min-w-0">
-          <span className="block type-body font-medium! text-label">All checks</span>
-          <span className="block truncate type-footnote text-label-secondary">
-            {presentation &&
-              (hasFindings
-                ? `${failures} check${failures === 1 ? "" : "s"} failed`
-                : hasWins
-                  ? `${wins} check${wins === 1 ? "" : "s"} passed${checksNeedingEvidence > 0 ? ` · ${checksNeedingEvidence} need evidence` : ""}`
-                  : "More evidence needed")}
-            {presentation && refreshFailureSuffix(presentation)}
-            {!presentation &&
-              (reportUnavailable ? "Checks unavailable" : "Checking local sessions…")}
-          </span>
-        </span>
+        <BurnCheckSummary presentation={burnChecks} />
+      </button>
+      {presentation && estimate && presentation.estimate.tokenBurnBasisPoints != null && (
         <span
-          className={`type-footnote font-medium! tabular-nums ${presentation?.estimate.tokenBurnBasisPoints == null ? "text-label-secondary" : tokenBurnTone(presentation.estimate.tokenBurnBasisPoints)}`}
+          className="pr-[var(--space-md)]"
+          data-burn-check-flames
+          onMouseEnter={onLeave}
+          onMouseLeave={(event) => {
+            if (
+              summary.current &&
+              event.relatedTarget instanceof Node &&
+              summary.current.contains(event.relatedTarget) &&
+              !event.currentTarget.contains(document.activeElement)
+            )
+              onPreview(measureAnchorRegion(summary.current))
+          }}
+          onFocus={(event) => {
+            event.stopPropagation()
+            onLeave()
+          }}
         >
-          {presentation && estimate ? <TextRoll text={estimate} /> : null}
+          <BurnCheckFlames basisPoints={presentation.estimate.tokenBurnBasisPoints} />
         </span>
-      </div>
+      )}
     </div>
   )
 }
 
-function FailureRows({ failures }: { failures: readonly ChecksCategoryPayload[] }) {
+function CheckRows({ checks }: { checks: readonly ChecksCategoryPayload[] }) {
   return (
     <div className="mt-2 overflow-hidden rounded-control border border-separator">
-      {failures.map((check) => {
-        const Icon = CHECK_ICONS[check.id] ?? CircleX
-        const estimate = tokenEstimate(check)
+      {checks.map((check) => {
+        const row = checkRowPresentation(check)
+        const { Icon } = row
         return (
           <div
             key={check.id}
-            className="group grid grid-cols-[28px_minmax(0,1fr)_max-content] items-center gap-x-2 border-b border-separator bg-surface-card px-2 py-2.5 last:border-b-0"
+            className="grid grid-cols-[28px_minmax(0,1fr)_max-content] items-center gap-x-2 border-b border-separator bg-surface-card px-2 py-2.5 last:border-b-0"
           >
-            <span className="flex h-7 w-7 items-center justify-center rounded-control bg-system-red/10 text-system-red-text">
+            <span
+              className={`flex h-7 w-7 items-center justify-center rounded-control ${row.iconTone}`}
+            >
               <Icon size={15} strokeWidth={2} aria-hidden="true" />
             </span>
             <span className="min-w-0">
               <span className="block truncate type-body font-medium! text-label">
-                {CHECK_LABELS[check.id] ?? check.id}
+                {row.label}
               </span>
-              <span className="block type-footnote tabular-nums text-label-tertiary">
-                {failureSummary(check)}
+              <span className="block truncate type-footnote tabular-nums text-label-tertiary">
+                {row.summary}
               </span>
             </span>
-            {estimate && (
+            {row.metric && (
               <span
-                className={`flex items-center gap-1 type-footnote font-medium! tabular-nums ${tokenBurnTone(check.estimatedTokenBurnBasisPoints!)}`}
+                className={`flex items-center gap-1 type-footnote font-medium! tabular-nums ${row.metricTone}`}
               >
-                <TextRoll text={estimate} />
+                <TextRoll text={row.metric} />
               </span>
             )}
           </div>
@@ -187,53 +150,19 @@ function FailureRows({ failures }: { failures: readonly ChecksCategoryPayload[] 
   )
 }
 
-function WinRows({ wins }: { wins: readonly ChecksCategoryPayload[] }) {
-  return (
-    <div className="mt-2 overflow-hidden rounded-control border border-separator">
-      {wins.map((win) => {
-        const Icon = CHECK_ICONS[win.id] ?? CheckCircle2
-        return (
-          <div
-            key={win.id}
-            className="grid grid-cols-[28px_minmax(0,1fr)] items-center gap-x-2 border-b border-separator bg-surface-card px-2 py-2 last:border-b-0"
-          >
-            <span className="flex h-7 w-7 items-center justify-center rounded-control bg-system-green/10 text-system-green">
-              <Icon size={15} strokeWidth={2} aria-hidden="true" />
-            </span>
-            <span className="min-w-0">
-              <span className="block truncate type-body text-label">
-                {CHECK_LABELS[win.id] ?? win.id}
-              </span>
-              <span className="block truncate type-footnote tabular-nums text-label-tertiary">
-                {win.clean} passed
-              </span>
-            </span>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-export function ChecksPeek({ presentation }: { presentation: ChecksPresentation }) {
-  const { failures, wins, unavailable, estimate } = presentation
-  const hasFindings = failures.length > 0
-  const hasWins = wins.length > 0
-  const checksNeedingEvidence = [...failures, ...wins, ...unavailable].filter(
-    (category) => category.unavailable > 0,
-  ).length
-  const completePass = hasWins && unavailable.length === 0 && checksNeedingEvidence === 0
-  const summaryDetail = hasFindings
-    ? estimate.tokenBurnBasisPoints == null
-      ? null
-      : "Estimated share of tokens spent on avoidable work."
-    : completePass
-      ? `${wins.length} check${wins.length === 1 ? "" : "s"} passed`
-      : hasWins
-        ? `${wins.length} check${wins.length === 1 ? "" : "s"} passed · ${checksNeedingEvidence} need evidence`
-        : "More evidence is needed"
+export function ChecksPeek({
+  presentation,
+  pendingEvidence = 0,
+}: {
+  presentation: ChecksPresentation
+  pendingEvidence?: number | undefined
+}) {
+  const { failures, wins, estimate } = presentation
+  const hero = checksHeroPresentation(presentation)
+  const hasFindings = hero.state === "failed"
+  const completePass = hero.state === "passed"
   const summaryStatus = [
-    summaryDetail,
+    hero.summary,
     presentation.refreshUnavailable ? "Refresh unavailable" : null,
   ]
     .filter(Boolean)
@@ -242,7 +171,7 @@ export function ChecksPeek({ presentation }: { presentation: ChecksPresentation 
   return (
     <div className="px-3 py-3 text-label">
       <div className="flex items-baseline justify-between gap-3 px-1">
-        <h1 className="type-headline text-label">All checks</h1>
+        <h1 className="type-headline text-label">Burn checks</h1>
         <span className="type-footnote text-label-tertiary">Last 30 days</span>
       </div>
 
@@ -251,37 +180,38 @@ export function ChecksPeek({ presentation }: { presentation: ChecksPresentation 
           className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${hasFindings ? "bg-system-red/10 text-system-red-text" : completePass ? "bg-system-green/10 text-system-green" : "bg-surface-secondary text-label-tertiary"}`}
         >
           {hasFindings ? (
-            <Flame size={20} strokeWidth={2.5} aria-hidden="true" />
+            <Flame size={24} strokeWidth={2.5} aria-hidden="true" />
           ) : completePass ? (
-            <CheckCircle2 size={20} strokeWidth={2.5} aria-hidden="true" />
+            <CheckCircle2 size={24} strokeWidth={2.5} aria-hidden="true" />
           ) : (
-            <CircleDashed size={20} strokeWidth={2} aria-hidden="true" />
+            <CircleDashed size={24} strokeWidth={2} aria-hidden="true" />
           )}
         </span>
-        <span className="min-w-0">
-          <span
-            className={`block type-title-2 tabular-nums ${hasFindings && estimate.tokenBurnBasisPoints != null ? tokenBurnTone(estimate.tokenBurnBasisPoints) : "text-label"}`}
-          >
-            {hasFindings ? (
-              estimate.tokenBurnBasisPoints == null ? (
-                `${failures.length} check${failures.length === 1 ? "" : "s"} failed`
-              ) : (
-                <TextRoll
-                  text={`${formatTokenBurnPercent(estimate.tokenBurnBasisPoints)} token burn`}
-                />
-              )
-            ) : completePass ? (
-              "All checks passed"
-            ) : hasWins ? (
-              "No issues found where assessed"
+        <div className="min-w-0">
+          <span className={`block type-title-2 tabular-nums ${hero.tone}`}>
+            {hasFindings && estimate.tokenBurnBasisPoints != null ? (
+              <TextRoll text={hero.result} />
             ) : (
-              "More evidence is needed"
+              hero.result
             )}
           </span>
-          {summaryStatus && (
-            <span className="block type-footnote text-label-secondary">{summaryStatus}</span>
+          {(summaryStatus || pendingEvidence > 0) && (
+            <div className="flex items-center gap-3 type-footnote text-label-secondary">
+              {summaryStatus && <span>{summaryStatus}</span>}
+              {pendingEvidence > 0 && (
+                <p className="flex items-center gap-1.5 text-label-tertiary" role="status">
+                  <LoaderCircle
+                    size={12}
+                    strokeWidth={2}
+                    className="animate-spin"
+                    aria-hidden="true"
+                  />
+                  {`${pendingEvidence} session${pendingEvidence === 1 ? "" : "s"} processing`}
+                </p>
+              )}
+            </div>
           )}
-        </span>
+        </div>
       </section>
 
       {failures.length > 0 && (
@@ -289,7 +219,7 @@ export function ChecksPeek({ presentation }: { presentation: ChecksPresentation 
           <h2 id="checks-attention" className="px-1 type-caption text-label-tertiary">
             Failed checks
           </h2>
-          <FailureRows failures={failures} />
+          <CheckRows checks={failures} />
         </section>
       )}
 
@@ -298,7 +228,7 @@ export function ChecksPeek({ presentation }: { presentation: ChecksPresentation 
           <h2 id="passing-checks" className="px-1 type-caption text-label-tertiary">
             Passed checks
           </h2>
-          <WinRows wins={wins} />
+          <CheckRows checks={wins} />
         </section>
       )}
     </div>

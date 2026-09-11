@@ -144,7 +144,7 @@ nothing. So the preferred display stays at the head, and reconnecting it takes
 the HUD back.
 
 A 2-second poll compares the connected displays and replaces the HUD when the
-set changes. The poll returns at once while the HUD is closed. The same
+set changes. Native visibility parks the poll while the HUD is closed. The same
 resolution runs when the HUD is built and when it reopens, so a display change
 during an off period is also caught.
 
@@ -178,11 +178,11 @@ switch and in Mission Control.
 - Only the first bar blinks during a live session, and only on the HUD. The
   detail window does not blink.
 - A transcript write stays live for 90 seconds.
-- The renderer polls session liveness every 5 seconds.
-- The shell answers each liveness poll with one indexed store query.
-- The renderer polls usage every 60 seconds.
-- Reset labels update every 30 seconds.
+- The renderer reads liveness once when shown. Session and scan events push
+  later changes, and one timer clears the live state at its expiry.
+- The renderer polls usage every 60 seconds while shown.
 - The native hover watcher polls every 100ms while the window is visible.
+- Hiding the HUD parks the native polls and the retained renderer's timers.
 - The HUD uses the Bitcount Prop Single Variable face for captions, numbers,
   and its wordmark.
 

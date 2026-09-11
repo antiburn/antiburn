@@ -2,78 +2,6 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// Whether the companion can receive keyboard focus.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum InteractionPolicy {
-    /// The window displays information without taking focus.
-    Passive,
-    /// The window can become active for controls it owns.
-    Interactive,
-}
-
-/// When the manager reveals a ready companion.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum RevealPolicy {
-    /// Wait until the renderer confirms that it committed the requested content.
-    AfterPresentation,
-    /// Reveal the resident placeholder before the renderer handles the request.
-    ImmediatePlaceholder,
-}
-
-/// How the manager chooses the companion height.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum HeightPolicy {
-    /// Use renderer measurements within fixed bounds.
-    Content {
-        /// The logical height before the first renderer measurement.
-        initial: f64,
-        /// The minimum logical content height.
-        min: f64,
-        /// The maximum logical content height.
-        max: f64,
-    },
-    /// Use the anchor window's current logical height.
-    MatchAnchor,
-}
-
-/// How the companion is placed around its anchor.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum PlacementPolicy {
-    /// Prefer a full fit on the left, then use the right or clamp.
-    LeftPreferred {
-        /// The logical gap between the anchor and companion.
-        gap: f64,
-        /// The minimum logical margin inside the screen work area.
-        screen_margin: f64,
-    },
-}
-
-/// The native surface behind the companion renderer.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum WindowMaterial {
-    /// Use a normal opaque window surface.
-    Opaque,
-    /// Let the renderer paint over a transparent native window.
-    Transparent,
-    /// Use the platform popover material where it is available.
-    Popover {
-        /// The logical corner radius for the native popover material.
-        corner_radius: f64,
-    },
-}
-
 /// Pointer tolerance after the pointer enters a companion window.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PointerExitPolicy {
@@ -127,16 +55,18 @@ pub struct AnchoredWindowConfig {
     pub title: String,
     /// The companion's logical width.
     pub width: f64,
-    /// The native window surface material.
-    pub material: WindowMaterial,
-    /// The companion's focus behavior.
-    pub interaction: InteractionPolicy,
-    /// The companion's reveal behavior.
-    pub reveal: RevealPolicy,
-    /// The companion's height behavior.
-    pub height: HeightPolicy,
-    /// The companion's placement behavior.
-    pub placement: PlacementPolicy,
+    /// The corner radius for the native popover material.
+    pub corner_radius: f64,
+    /// The logical height before the first renderer measurement.
+    pub initial_height: f64,
+    /// The minimum logical content height.
+    pub min_height: f64,
+    /// The maximum logical content height.
+    pub max_height: f64,
+    /// The logical gap between the anchor and companion.
+    pub gap: f64,
+    /// The minimum logical margin inside the screen work area.
+    pub screen_margin: f64,
     /// The maximum wait for renderer-confirmed concealment.
     pub conceal_fallback: Duration,
     /// Optional pointer tolerance after the pointer enters the companion.
@@ -199,21 +129,11 @@ pub struct AnchoredWindowLifecycleEvent<T> {
     pub state: AnchoredWindowState<T>,
 }
 
-pub(crate) fn initial_height(policy: HeightPolicy) -> f64 {
-    match normalized_height_policy(policy) {
-        HeightPolicy::Content { initial, .. } => initial,
-        HeightPolicy::MatchAnchor => 1.0,
-    }
-}
-
-pub(crate) fn normalized_height_policy(policy: HeightPolicy) -> HeightPolicy {
-    let HeightPolicy::Content { initial, min, max } = policy else {
-        return policy;
-    };
+pub(crate) fn normalized_heights(initial: f64, min: f64, max: f64) -> (f64, f64, f64) {
     let min = finite_positive(min, 1.0);
     let max = finite_positive(max, min).max(min);
     let initial = finite_positive(initial, min).clamp(min, max);
-    HeightPolicy::Content { initial, min, max }
+    (initial, min, max)
 }
 
 fn finite_positive(value: f64, fallback: f64) -> f64 {

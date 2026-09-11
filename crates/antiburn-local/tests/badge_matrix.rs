@@ -22,7 +22,7 @@ use std::sync::Arc;
 use antiburn_local::analysis::{
     CompositeSink, EvidenceCoverage, EvidenceSource, MemoryTurnRowStore, RawSource,
     SessionEvidence, SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator,
-    SourceCapabilities, SourceKind, TurnRowSink, TurnRowStore, adapter_for,
+    SourceCapabilities, SourceKind, TurnRowSink, TurnRowStore, reader_for,
 };
 use antiburn_local::insights::{
     BadgeId, BadgeStatus, DetectorId, NotAssessedReason, ReportCatalogs, clean_facts_complete,
@@ -161,7 +161,7 @@ fn evidence_for(
         None,
     );
     let mut sink = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for(agent)
+    let outcome = reader_for(agent)
         .visit(&input, &mut sink)
         .expect("fixture must stream");
     sink.observe_source_outcome(outcome);
@@ -215,6 +215,34 @@ fn insert_message(connection: &Connection, id: &str, session_id: &str, timestamp
             params![id, session_id, timestamp, data],
         )
         .expect("message");
+}
+
+fn insert_child_task(connection: &Connection, model: &str) {
+    let data = serde_json::json!({
+        "type": "tool",
+        "tool": "task",
+        "callID": "call-child",
+        "state": {
+            "status": "completed",
+            "input": {
+                "description": "Inspect code",
+                "prompt": "Inspect code",
+                "subagent_type": "explore"
+            },
+            "metadata": {
+                "sessionId": "child",
+                "model": { "providerID": "test", "modelID": model }
+            },
+            "time": { "start": 21, "end": 50 },
+            "output": "Complete"
+        }
+    });
+    connection
+        .execute(
+            "INSERT INTO part VALUES ('task-child', 'root-assistant', 'root', 21, 21, ?1)",
+            params![data.to_string()],
+        )
+        .expect("child task");
 }
 
 fn opencode_evidence(name: &str) -> SessionEvidence {
@@ -301,6 +329,7 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
                 40,
                 r#"{"role":"assistant","modelID":"claude-opus-4-6","tokens":{"input":10,"output":5}}"#,
             );
+            insert_child_task(&connection, "claude-opus-4-6");
         }
         "overpowered_subagents_clean" => {
             insert_session(&connection, "root", None, 10);
@@ -329,6 +358,7 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
                 40,
                 r#"{"role":"assistant","modelID":"gpt-5.6-sol","tokens":{"input":10,"output":5}}"#,
             );
+            insert_child_task(&connection, "gpt-5.6-sol");
         }
         "overpowered_subagents_openai_luna_no_finding" => {
             insert_session(&connection, "root", None, 10);
@@ -348,6 +378,7 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
                 // GPT-5.6 Luna is not premium: only the Sol prefix is.
                 r#"{"role":"assistant","modelID":"gpt-5.6-luna","tokens":{"input":10,"output":5}}"#,
             );
+            insert_child_task(&connection, "gpt-5.6-luna");
         }
         "excess_cache_rehydration_finding" => {
             insert_session(&connection, "root", None, 10);
@@ -401,7 +432,7 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
         agent: input.agent.clone(),
         session_id: input.session_id.clone(),
         kind: SourceKind::from(&input.source),
-        capabilities: SourceCapabilities::opencode(),
+        capabilities: reader_for("opencode").capabilities(&input.source),
     });
     let store = MemoryTurnRowStore::new(&input.agent, &input.session_id);
     let turn_rows = TurnRowSink::new(
@@ -410,7 +441,7 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
         None,
     );
     let mut sink = CompositeSink::with_turn_rows(metrics, evidence, turn_rows);
-    let outcome = adapter_for("opencode")
+    let outcome = reader_for("opencode")
         .visit(&input, &mut sink)
         .expect("stream opencode source");
     sink.observe_source_outcome(outcome);
@@ -472,34 +503,31 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(SignalMissing),
         },
         Row {
-            // One of two eligible turns carries an effort value. It
-            // shows no finding. Partial coverage now reads clean
-            // instead of SignalMissing. A turn without the signal is
-            // not negative evidence.
+            // One of two eligible turns carries an effort value. The missing
+            // signal prevents a clean result for the complete session.
             harness: "claude",
             fixture: "model_overthinking_partial_coverage_clean",
             badge: ModelOverthinking,
-            expected: Clean,
+            expected: NotAssessed(SignalMissing),
         },
         Row {
             harness: "claude",
             fixture: "delegated_models",
             badge: OverpoweredSubagents,
-            expected: Finding,
+            expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
             harness: "claude",
             fixture: "delegated_turns",
             badge: OverpoweredSubagents,
-            expected: Clean,
+            expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
-            // A reviewed, non-empty registry with an uncatalogued
-            // model reads clean: this fixture's model is not deprecated.
+            // An uncatalogued model cannot prove that the model is current.
             harness: "claude",
             fixture: "records_all_kinds",
             badge: ObsoleteModel,
-            expected: Clean,
+            expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
             harness: "claude",
@@ -542,20 +570,18 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(SignalMissing),
         },
         Row {
-            // One of two eligible turns carries a speed value. It
-            // shows no finding. Partial coverage now reads clean
-            // instead of SignalMissing. A turn without the signal is
-            // not negative evidence.
+            // One of two eligible turns carries a speed value. The missing
+            // signal prevents a clean result for the complete session.
             harness: "claude",
             fixture: "fast_mode_overuse_partial_coverage_clean",
             badge: FastModeOveruse,
-            expected: Clean,
+            expected: NotAssessed(SignalMissing),
         },
         Row {
             harness: "claude",
             fixture: "compaction_with_cache_rehydration",
             badge: ExcessCacheRehydration,
-            expected: Finding,
+            expected: NotAssessed(IncompleteEvidence),
         },
         Row {
             harness: "claude",
@@ -614,12 +640,11 @@ fn matrix() -> Vec<Row> {
             expected: Clean,
         },
         Row {
-            // A reviewed, non-empty registry with an uncatalogued
-            // model reads clean: this fixture's model is not deprecated.
+            // An uncatalogued model cannot prove that the model is current.
             harness: "codex",
             fixture: "records_all_kinds",
             badge: ObsoleteModel,
-            expected: Clean,
+            expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
             harness: "codex",
@@ -642,15 +667,11 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(SignalMissing),
         },
         Row {
-            // This fixture reports no cache-write tokens, and `evidence_sink`
-            // pins Codex to uncached-input accounting. This makes the badge eligible.
-            // Codex uses `linear_record_order` to attest linkage from line order.
-            // This fixture has no record loss, so `RecordLinkage` reads complete.
-            // The badge reads clean under "Conditional using uncached-input accounting".
+            // Compaction and zero-usage rows break the compatible request baseline.
             harness: "codex",
             fixture: "records_all_kinds",
             badge: ExcessCacheRehydration,
-            expected: Clean,
+            expected: NotAssessed(IncompleteEvidence),
         },
         Row {
             harness: "codex",
@@ -702,12 +723,11 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(CapabilityMissing),
         },
         Row {
-            // A reviewed, non-empty registry with an uncatalogued
-            // model reads clean: this fixture's model is not deprecated.
+            // An uncatalogued model cannot prove that the model is current.
             harness: "pi",
             fixture: "minimal_session",
             badge: ObsoleteModel,
-            expected: Clean,
+            expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
             harness: "pi",
@@ -716,16 +736,18 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(CapabilityMissing),
         },
         Row {
+            // Pi V3 does not identify which persisted input tokens are repeated.
             harness: "pi",
             fixture: "excess_cache_rehydration_finding",
             badge: ExcessCacheRehydration,
-            expected: Finding,
+            expected: NotAssessed(CapabilityMissing),
         },
         Row {
+            // Pi V3 cannot prove that repeated paid context is absent.
             harness: "pi",
             fixture: "minimal_session",
             badge: ExcessCacheRehydration,
-            expected: Clean,
+            expected: NotAssessed(CapabilityMissing),
         },
         // ---------------- OpenCode ----------------
         Row {
@@ -747,22 +769,23 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(IncompleteEvidence),
         },
         Row {
+            // OpenCode saves raw variants without an effective effort mapping.
             harness: "opencode",
             fixture: "model_overthinking_finding",
             badge: ModelOverthinking,
-            expected: Finding,
+            expected: NotAssessed(CapabilityMissing),
         },
         Row {
             harness: "opencode",
             fixture: "model_overthinking_clean",
             badge: ModelOverthinking,
-            expected: Clean,
+            expected: NotAssessed(CapabilityMissing),
         },
         Row {
             harness: "opencode",
             fixture: "model_overthinking_signal_missing",
             badge: ModelOverthinking,
-            expected: NotAssessed(SignalMissing),
+            expected: NotAssessed(CapabilityMissing),
         },
         Row {
             harness: "opencode",
@@ -791,12 +814,11 @@ fn matrix() -> Vec<Row> {
             expected: Clean,
         },
         Row {
-            // A reviewed, non-empty registry with an uncatalogued
-            // model reads clean: this fixture's model is not deprecated.
+            // An uncatalogued model cannot prove that the model is current.
             harness: "opencode",
             fixture: "obsolete_model",
             badge: ObsoleteModel,
-            expected: Clean,
+            expected: NotAssessed(EvidenceContractIncomplete),
         },
         Row {
             harness: "opencode",
@@ -805,16 +827,18 @@ fn matrix() -> Vec<Row> {
             expected: NotAssessed(CapabilityMissing),
         },
         Row {
+            // OpenCode JSONL does not identify which paid tokens are repeated.
             harness: "opencode",
             fixture: "excess_cache_rehydration_finding",
             badge: ExcessCacheRehydration,
-            expected: Finding,
+            expected: NotAssessed(CapabilityMissing),
         },
         Row {
+            // OpenCode JSONL cannot prove that repeated paid context is absent.
             harness: "opencode",
             fixture: "excess_cache_rehydration_clean",
             badge: ExcessCacheRehydration,
-            expected: Clean,
+            expected: NotAssessed(CapabilityMissing),
         },
     ]
 }

@@ -10,11 +10,11 @@
 # neither member nor excluded aborts resolution outright ("multiple workspace
 # roots found in the same workspace").
 [workspace]
-exclude = ["crates/anchored-window", "crates/hud", "crates/nudge", "crates/sound", "crates/trace"]
+exclude = ["crates/anchored-window", "crates/hud", "crates/main-window", "crates/nudge", "crates/sound", "crates/trace", "vendor/tray-icon"]
 
 [package]
 name = "antiburn"
-version = "0.4.0"
+version = "0.5.2"
 edition = "2024"
 rust-version = "1.97"
 description = "antiburn desktop application: a tray/menu-bar shell over the local antiburn engine."
@@ -33,7 +33,12 @@ path = "src/lib.rs"
 distribution = []
 # Include the first-party analytics client. Source builds omit it unless the
 # builder selects this feature explicitly.
-analytics = []
+analytics = [
+  "dep:libc",
+  "windows-sys/Win32_Foundation",
+  "windows-sys/Win32_System_ProcessStatus",
+  "windows-sys/Win32_System_Threading",
+]
 # Add local memory fixtures and WebContent PID diagnostics.
 memory-probe = []
 
@@ -54,6 +59,9 @@ antiburn-nudge = { path = "crates/nudge" }
 # The floating usage HUD window: mechanism only. The shell owns its session
 # activity policy and IPC commands.
 antiburn-hud = { path = "crates/hud" }
+# The ordinary application window mechanism. The shell owns persistence,
+# readiness, startup intent, and IPC policy.
+antiburn-main-window = { path = "crates/main-window" }
 # Reusable anchored companion window mechanism. The shell owns targets and IPC policy.
 antiburn-anchored-window = { path = "crates/anchored-window" }
 # The notification chime uses samples synthesized in-process. It has no audio
@@ -101,6 +109,8 @@ rustls = { version = "0.23.43", default-features = false, features = ["ring", "s
 serde = { version = "1", features = ["derive"] }
 # Required by `tauri::generate_context!`, which expands to code in this crate.
 serde_json = "1"
+# Preserves Codex comments and layout during narrow configuration edits.
+toml_edit = "0.25"
 # Supplies SHA-256 to the provider account HMAC.
 sha2 = "0.11"
 # `tray-icon` gives the menu-bar item; `image-png` lets the tray glyph be
@@ -115,6 +125,9 @@ tauri-plugin-opener = "2"
 # The plugin prevents browser-only menus and shortcuts in application webviews.
 # The explicit policy in `src/webview_defaults.rs` keeps focus traversal intact.
 tauri-plugin-prevent-default = "5"
+# Must be registered before other plugins so a repeated launch exits before it
+# can start another background scan scheduler.
+tauri-plugin-single-instance = "2"
 # Emits structured shell events through the process subscriber.
 tracing = "0.1"
 # RFC 3339 stamps for the store's own timestamps.
@@ -135,6 +148,15 @@ getrandom = "0.4"
 # backend each OS needs, with no extra channel crate (`crossbeam-channel`,
 # `flume`) — the watcher forwards events over a `std::sync::mpsc` channel.
 notify = "8"
+# A cross-platform PTY for the Claude credential-refresh touch
+# (`provider_usage/live/sources/claude_touch.rs`). Nothing already in the tree
+# can allocate a PTY, and the Claude CLI refreshes its token only when it runs
+# interactively — see that module's doc for the crate choice.
+portable-pty = "0.9.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Reads clock-tick and page-size units for the bounded analytics process sample.
+libc = { version = "0.2", optional = true }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Desktop-only: GitHub Releases update checks. Registered in release builds
@@ -153,11 +175,11 @@ smappservice-rs = "0.1"
 # popover (`src/global_click.rs`). Feature lists are the exact set those files
 # touch.
 objc2 = "0.6"
-# Block construction for the global monitor and the resign-active observer
+# Block construction for the global monitor and the activation observers
 # (the `block2` features below).
 block2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSCell", "NSControl", "NSView", "NSResponder", "NSColor", "NSFont", "NSFontDescriptor", "NSAttributedString", "NSEvent", "block2"] }
-objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAttributedString", "NSDictionary", "NSValue", "NSObject", "NSURL", "NSError", "NSNotification", "NSOperation", "block2"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSAppleEventDescriptor", "NSAppleEventManager", "NSAttributedString", "NSDictionary", "NSValue", "NSObject", "NSURL", "NSError", "NSNotification", "NSOperation", "block2", "objc2-core-services"] }
 # Subclasses the popover into a non-activating NSPanel (`src/popover/panel.rs`),
 # so opening it does not deactivate the frontmost application. The rev must
 # match the nudge crate's pin so both share one plugin registration.
@@ -189,34 +211,16 @@ opt-level = "s"
 panic = "abort"
 strip = true
 
-# Temporary, and the whole reason it exists is one line of AppKit.
+# Temporary vendoring for two macOS behavior fixes.
 #
-# tray-icon attaches the status item's `NSMenu` once, at construction, and
-# leaves it attached. Through macOS 26 that is harmless — the item's primary
-# button still delivers its clicks and the menu only opens on the secondary
-# one. On **macOS 27** an always-attached menu swallows the primary click
-# outright, so antiburn's menu-bar item would stop opening the popover at all:
-# a menu-bar app with no way into it. The pinned revision moves the attachment
-# to the moment the menu is actually being shown and detaches it again straight
-# after (upstream https://github.com/tauri-apps/tray-icon/pull/341).
+# The upstream revision moves `NSMenu` attachment into menu tracking so macOS 27
+# continues to deliver primary clicks. The local delta adds an opt-in highlight
+# override so popover visibility owns the status item's persistent highlight.
+# Native menu tracking still highlights the item and restores the latest
+# override afterward.
 #
-# The revision is 0.24.1 plus that change, and it is the *only* change: diffed
-# against the 0.24.2 this replaces, `platform_impl/macos/mod.rs` is the sole
-# differing file and this fix is its entire delta. So the version going
-# backwards costs nothing.
-#
-# Remove this — do not bump the rev — as soon as the fix ships in a release,
-# and keep whatever replaces it on the same major/minor line as Tauri's own
-# transitive tray-icon.
-#
-# One thing this deliberately does *not* fix. tray-icon's `mouseUp:` calls
-# `NSStatusBarButton.highlight(false)` unconditionally, before handing the
-# click on, so `tray::set_highlight` re-lights a button that went dark ~185µs
-# earlier — a single visible blink when the popover opens, because AppKit's
-# highlight drawing is flushed immediately rather than deferred to the next
-# frame. Removing it would mean carrying a fork rather than tracking upstream,
-# which is a bigger commitment than a one-frame blink is worth. Decided
-# knowingly; see the note on `tray::set_highlight` for the measurements and
-# for the two alternatives that were tried and did not work.
+# Remove this path patch when a compatible release has equivalent highlight
+# control and retains the macOS 27 menu attachment fix. Keep its version on the
+# same line as Tauri's transitive requirement.
 [patch.crates-io]
-tray-icon = { git = "https://github.com/tauri-apps/tray-icon.git", rev = "0ada43072646fe4454b1f969f4f446dc401fa1aa" }
+tray-icon = { path = "vendor/tray-icon" }

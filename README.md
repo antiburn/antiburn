@@ -1,40 +1,49 @@
 # antiburn
 
-![antiburn — stop hitting your token limits](docs/images/social-preview.png)
+> Tiny, fast, local burn checks for all your coding sessions.
 
-[![CI](https://github.com/antiburn/antiburn/actions/workflows/ci.yml/badge.svg)](https://github.com/antiburn/antiburn/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/antiburn/antiburn?include_prereleases&sort=semver)](https://github.com/antiburn/antiburn/releases/latest)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/user-attachments/assets/3369144d-61b0-4b94-8373-41f2541cba95" />
+  <img width="100%" alt="antiburn: the popover with live limit meters and today's sessions, a session's context chart with a compaction, and its cost and tools breakdowns" src="https://github.com/user-attachments/assets/d1c1404e-4e6e-4ef3-8dbd-726150888e3d" />
+</picture>
+
 [![License](https://img.shields.io/github/license/antiburn/antiburn)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-informational)](docs/support.md)
+[![Release](https://img.shields.io/github/v/release/antiburn/antiburn?filter=antiburn-v*)](https://github.com/antiburn/antiburn/releases/latest)
+[![CI](https://github.com/antiburn/antiburn/actions/workflows/ci.yml/badge.svg)](https://github.com/antiburn/antiburn/actions/workflows/ci.yml)
 [![GitHub stars](https://img.shields.io/github/stars/antiburn/antiburn)](https://github.com/antiburn/antiburn/stargazers)
 [![aislop score](https://badges.scanaislop.com/score/antiburn/antiburn.svg)](https://scanaislop.com/antiburn/antiburn)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
-[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-informational)](docs/support.md)
+[![Slack](https://img.shields.io/badge/Slack-join-4A154B?logo=slack&logoColor=white)](https://antiburn.ai/slack)
 
-Local-first visibility into your AI coding-agent sessions.
+A little free desktop app to check your sessions for the most common causes of token burn - sessions that go too deep, subagents that go too hard, skills and MCPs that go unused, etc etc etc.
 
-antiburn discovers sessions already on your machine, analyzes transcripts
-locally, and shows activity, session analysis, provider usage, and
-API-equivalent cost estimates. Your session content stays on your device.
+antiburn supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, Kiro, Amp, Antigravity, Windsurf, and Pi. See the [support matrix](docs/support.md) for platform limits, discovery details, and local data storage.
 
-It supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, Kiro,
-Amp, Antigravity, Windsurf, and Pi. See the [support matrix](docs/support.md)
-for platform limits, discovery details, and local data storage.
+## Checks
 
-<img width="792" height="1132" alt="antiburn_mac_dark@2x" src="https://github.com/user-attachments/assets/0f182e1e-0857-4f0d-97cc-7527179ddb16" />
-
+- Excess cache rehydration - cache writes are expensive; let's all work out how to avoid too many of them.
+- Fast mode overuse - fast mode is great if you're not close to limit, but be careful if you are.
+- Model overthinking - I know `xhigh` and `ultra` sound cool but they're usually better avoided.
+- Old model usage - worth checking if you're still pinned to old models, especially in subagents.
+- Overpowered subagents - using subagents on premium models is generally a bad idea.
+- Session overdepth - compaction works now, friends don't let friends have 950k context windows.
+- Unused built-in tools - Claude (especially) has a bunch of heavy built-in tools that you should probably disable.
+- Unused MCP servers - MCPs are usually situational, just turn them on when you need them.
+- Unused skills - most of us have skills installed that cost tokens every session, but that we never use any more.
 
 ## Install
 
 macOS or Linux:
 
 ```sh
-curl -fsSL http://antiburn.ai/install.sh | sh
+curl -fsSL https://antiburn.ai/install.sh | sh
 ```
 
 Windows 11 PowerShell:
 
 ```powershell
-irm http://antiburn.ai/install.ps1 | iex
+irm https://antiburn.ai/install.ps1 | iex
 ```
 
 The installers verify release checksums. macOS also verifies the application
@@ -68,14 +77,17 @@ See the [desktop guide](apps/desktop/README.md) for app commands and the
 
 ## Privacy
 
-antiburn needs no account, server, or backend operated by the project. It can
-contact coding-agent providers with credentials already held by your tools to
-read current usage. It downloads public model prices from models.dev without
-sending session data or credentials. Release builds also check GitHub Releases
-for updates and can send anonymised application events. Analytics can be disabled in
-Settings > Privacy and never include sessions, prompts, file paths, repository
-names, or credentials. Builds from a clean checkout have no analytics endpoint.
-See the complete [analytics contract](docs/analytics.md).
+antiburn uses no account, server, or backend. It hits agent provider APIs from your machine, using the same methods your harnesses already do.
+
+antiburn has analytics that we use to improve the app, but analytics events never include anything you care about: sessions, prompts, file paths, repository names, credentials, etc. You can turn analytics off, and builds from a clean checkout have no analytics endpoint. See the complete [analytics contract](docs/analytics.md).
+
+Open source, so if you're worried, point your coding agent at this repo to audit exactly what data leaves the device.
+
+## Community
+
+Questions, fixes, what's burning: join the [antiburn Slack](https://antiburn.ai/slack).
+
+Bugs and feature requests go in [GitHub issues](https://github.com/antiburn/antiburn/issues).
 
 ## Project links
 

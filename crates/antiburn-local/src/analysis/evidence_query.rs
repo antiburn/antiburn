@@ -15,8 +15,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::analysis::evidence::{
     CompactionBoundary, DepthExample, EligibilityEvidence, MAX_COMPACTION_BOUNDARIES,
     MAX_EVIDENCE_EXAMPLES, MAX_MODEL_TRANSITIONS, MAX_MODELS, MAX_SUBAGENT_MODELS, MAX_TIER_LABELS,
-    ModelTokens, ModelTransition, ParseDiagnostics, SessionTimeRange, SignalCoverage, TurnCounts,
-    cap_string, insert_diagnostic_field, record_diagnostic_set_cap,
+    ModelTokens, ModelTransition, ParseDiagnostics, RepeatedContextAccounting, SessionTimeRange,
+    SignalCoverage, TurnCounts, cap_string, insert_diagnostic_field, record_diagnostic_set_cap,
 };
 use crate::analysis::model::{CompactionTrigger, ModelRun};
 use crate::analysis::pricing::strip_window_tag;
@@ -39,6 +39,8 @@ pub struct TurnFacts {
     pub unattributed_turns: u64,
     pub effort_tiers: BTreeMap<String, TurnCounts>,
     pub fast_modes: BTreeMap<String, TurnCounts>,
+    pub effort_tiers_by_model: BTreeMap<String, BTreeMap<String, TurnCounts>>,
+    pub fast_modes_by_model: BTreeMap<String, BTreeMap<String, TurnCounts>>,
     pub tiers_capped: bool,
     pub effort_signal: SignalCoverage,
     pub speed_signal: SignalCoverage,
@@ -72,8 +74,12 @@ pub struct TurnFacts {
     /// The same sum under uncached-input accounting.
     pub repeated_context_uncached_input_paid_tokens: u64,
     pub repeated_context_pairs_considered: u64,
-    /// Adjacent pairs skipped for a missing or non-monotonic `ts_ms`.
+    /// Candidate pairs excluded by route, order, identity, or compaction boundaries.
     pub repeated_context_pairs_skipped: u64,
+    /// Only pairs under this contract contribute to the candidate token totals.
+    pub repeated_context_accounting: Option<RepeatedContextAccounting>,
+    /// Unknown requests or excluded pairs prevent a complete result.
+    pub repeated_context_incomplete: bool,
     pub diagnostics: ParseDiagnostics,
 }
 
@@ -158,6 +164,22 @@ pub fn query_turn_facts(
         "models.fast_modes",
         &mut diagnostics,
     )?;
+    let (effort_tiers_by_model, effort_model_capped) = query_tiers_by_model(
+        conn,
+        key,
+        scope,
+        "effort",
+        "models.effort_tiers_by_model",
+        &mut diagnostics,
+    )?;
+    let (fast_modes_by_model, speed_model_capped) = query_tiers_by_model(
+        conn,
+        key,
+        scope,
+        "speed",
+        "models.fast_modes_by_model",
+        &mut diagnostics,
+    )?;
     let (effort_signal, speed_signal) = query_signal_coverage(conn, key, scope)?;
     let (delegated_models, delegated_models_capped) =
         query_delegated_models(conn, key, scope, &mut diagnostics)?;
@@ -180,7 +202,9 @@ pub fn query_turn_facts(
         unattributed_turns: core.unattributed_turns,
         effort_tiers,
         fast_modes,
-        tiers_capped: effort_capped || fast_capped,
+        effort_tiers_by_model,
+        fast_modes_by_model,
+        tiers_capped: effort_capped || fast_capped || effort_model_capped || speed_model_capped,
         effort_signal,
         speed_signal,
         delegated_turns: core.delegated_turns,
@@ -205,6 +229,9 @@ pub fn query_turn_facts(
         repeated_context_uncached_input_paid_tokens: repeated_context.uncached_input_paid_tokens,
         repeated_context_pairs_considered: repeated_context.pairs_considered,
         repeated_context_pairs_skipped: repeated_context.pairs_skipped,
+        repeated_context_accounting: repeated_context.accounting,
+        repeated_context_incomplete: repeated_context.incomplete
+            || (key.agent == "opencode" && duplicate_turn_identities > 0),
         diagnostics,
     })
 }
@@ -332,7 +359,7 @@ const TURN_ROWS_SQL: &str = "SELECT source_key, thread_id, turn_index, scope, ch
         role, ts_ms, model, effort, speed, input_tokens, cache_read_tokens,
         cache_write_tokens, output_tokens, is_compaction_boundary, message_id,
         uuid, parent_uuid, compaction_trigger, compaction_pre_tokens,
-        compaction_post_tokens, has_thinking, last_tool, subagent_launches
+        compaction_post_tokens, has_thinking, last_tool, subagent_launches, provider, api
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
   ORDER BY source_key, turn_index";
@@ -390,6 +417,8 @@ pub fn query_turn_rows(
                 role,
                 ts_ms: row.get(6)?,
                 model: row.get(7)?,
+                provider: row.get(24)?,
+                api: row.get(25)?,
                 effort: row.get(8)?,
                 speed: row.get(9)?,
                 input_tokens: as_u64(row.get(10)?),
@@ -856,6 +885,59 @@ fn query_tier_map(
     Ok((map, capped))
 }
 
+type TiersByModel = BTreeMap<String, BTreeMap<String, TurnCounts>>;
+
+fn query_tiers_by_model(
+    conn: &Connection,
+    key: &TurnSessionKey<'_>,
+    scope: &FenceScope<'_>,
+    column: &str,
+    field: &'static str,
+    diagnostics: &mut ParseDiagnostics,
+) -> rusqlite::Result<(TiersByModel, bool)> {
+    let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
+    let sql = format!(
+        "SELECT model, {column}, scope FROM turn \
+         WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 \
+         AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6)))) \
+         AND role = 'assistant' AND model IS NOT NULL AND {column} IS NOT NULL ORDER BY rowid"
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let mut rows = statement.query(params![
+        key.environment_key,
+        key.agent,
+        key.session_id,
+        claim_fence,
+        published_fence,
+        source_keys_json
+    ])?;
+    let mut result = TiersByModel::new();
+    let mut capped = false;
+    while let Some(row) = rows.next()? {
+        let raw_model: String = row.get(0)?;
+        let raw_tier: String = row.get(1)?;
+        let scope: String = row.get(2)?;
+        let model = cap_string(field, &raw_model, diagnostics);
+        let tier = cap_string(field, &raw_tier, diagnostics);
+        if model.len() != raw_model.len() || tier.len() != raw_tier.len() {
+            capped = true;
+        }
+        if !result.contains_key(&model) && result.len() == MAX_MODELS {
+            capped = true;
+            note_collection_cap(diagnostics, field);
+            continue;
+        }
+        let tiers = result.entry(model).or_default();
+        if !tiers.contains_key(&tier) && tiers.len() == MAX_TIER_LABELS {
+            capped = true;
+            note_collection_cap(diagnostics, field);
+            continue;
+        }
+        increment_turn_count(tiers.entry(tier).or_default(), scope == "delegated");
+    }
+    Ok((result, capped))
+}
+
 fn increment_turn_count(counts: &mut TurnCounts, delegated: bool) {
     if delegated {
         counts.delegated = counts.delegated.saturating_add(1);
@@ -1128,7 +1210,7 @@ const DUPLICATE_TURN_IDENTITIES_SQL: &str = "SELECT COUNT(*) FROM (
          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
            AND uuid IS NOT NULL
          GROUP BY uuid
-        HAVING COUNT(DISTINCT source_key) > 1
+        HAVING COUNT(DISTINCT source_key) > 1 OR (?2 = 'opencode' AND COUNT(*) > 1)
     )";
 
 fn query_duplicate_turn_identities(
@@ -1158,17 +1240,18 @@ fn query_duplicate_turn_identities(
  * thread. See `RepeatedContext` in `evidence.rs`.
  * ----------------------------------------------------------------- */
 
-/// A sibling scan to [`query_transitions_and_idle_gaps`]'s
-/// `MAIN_THREAD_SCAN_SQL`: it filters to assistant rows only, because a
-/// user or tool row carries no usage to pair.
+/// Scan all main rows so intervening links and compactions can break request pairs.
 const REPEATED_CONTEXT_SCAN_SQL: &str = "SELECT thread_id, ts_ms, input_tokens,
-        cache_read_tokens, cache_write_tokens, is_compaction_boundary
+        cache_read_tokens, cache_write_tokens, is_compaction_boundary,
+        source_key, role, model, provider, api, uuid, parent_uuid, turn_index
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
-    AND scope = 'main' AND role = 'assistant'
-  ORDER BY thread_id, turn_index";
+    AND scope = 'main'
+  ORDER BY source_key, thread_id, turn_index";
 
 struct RepeatedContextTotals {
+    accounting: Option<RepeatedContextAccounting>,
+    incomplete: bool,
     cache_write_tokens: u64,
     uncached_input_tokens: u64,
     /// Sum of the raw cache-write bucket (`RepeatedContext::paid_tokens`
@@ -1181,17 +1264,35 @@ struct RepeatedContextTotals {
     pairs_skipped: u64,
 }
 
-/// One pass over `scope = 'main'` assistant rows, ordered by thread then
-/// turn. Resets the previous row at each `thread_id` boundary, so a pair
-/// never crosses two threads — the same rule
-/// [`query_transitions_and_idle_gaps`] follows. Computes both candidate
-/// sums (cache-write and uncached-input); the sink picks the one the
-/// source's capabilities support.
-///
-/// `is_compaction_boundary` is read but not used here. A compaction
-/// boundary row is a pair member like any other row: the detector
-/// explains a finding's cause from `model_transitions`,
-/// `longest_idle_gap_ms`, and `user_controlled_churn`, not from this sum.
+/// Match explicit native routes, not model names or session-wide provider hints.
+/// OpenCode v1.2.15 Session.getUsage and Pi's native API adapters emit disjoint input, cache-read, and cache-write buckets.
+fn request_accounting(
+    agent: &str,
+    provider: Option<&str>,
+    api: Option<&str>,
+) -> Option<RepeatedContextAccounting> {
+    use RepeatedContextAccounting::{CacheWrite, UncachedInput};
+    match (agent, provider, api) {
+        ("claude" | "claude-code", None, None)
+        | (
+            "claude" | "claude-code",
+            Some("anthropic"),
+            None | Some("messages" | "anthropic-messages"),
+        ) => Some(CacheWrite),
+        ("codex", None, None)
+        | ("codex", Some("openai"), None | Some("responses" | "openai-responses")) => {
+            Some(UncachedInput)
+        }
+        ("opencode", Some("anthropic"), None) => Some(CacheWrite),
+        ("opencode", Some("openai"), None) => Some(UncachedInput),
+        ("pi", Some("anthropic"), Some("anthropic-messages")) => Some(CacheWrite),
+        ("pi", Some("openai"), Some("openai-responses" | "openai-completions"))
+        | ("pi", Some("openai-codex"), Some("openai-codex-responses")) => Some(UncachedInput),
+        _ => None,
+    }
+}
+
+/// Retain one previous request and one link. Other billing modes remain excluded from this contract's partial total.
 fn query_repeated_context(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
@@ -1213,25 +1314,85 @@ fn query_repeated_context(
     let mut uncached_input_paid_tokens: u64 = 0;
     let mut pairs_considered: u64 = 0;
     let mut pairs_skipped: u64 = 0;
-    let mut current_thread: Option<String> = None;
-    let mut previous: Option<(Option<i64>, i64)> = None;
+    let mut accounting = request_accounting(key.agent, None, None);
+    let mut incomplete = false;
+    let mut current_thread = None;
+    let mut previous = None;
+    let mut last_uuid: Option<String> = None;
+    let mut last_index: Option<i64> = None;
     while let Some(row) = rows.next()? {
         let thread_id: String = row.get(0)?;
         let ts_ms: Option<i64> = row.get(1)?;
         let input_tokens: i64 = row.get(2)?;
         let cache_read_tokens: i64 = row.get(3)?;
         let cache_write: i64 = row.get(4)?;
-        let _is_compaction_boundary: bool = row.get(5)?;
-        let depth = input_tokens + cache_read_tokens + cache_write;
-        if current_thread.as_deref() != Some(thread_id.as_str()) {
-            current_thread = Some(thread_id);
+        let is_compaction_boundary: bool = row.get(5)?;
+        let source_key: String = row.get(6)?;
+        let role: String = row.get(7)?;
+        let model: Option<String> = row.get(8)?;
+        let provider: Option<String> = row.get(9)?;
+        let api: Option<String> = row.get(10)?;
+        let uuid: Option<String> = row.get(11)?;
+        let parent_uuid: Option<String> = row.get(12)?;
+        let turn_index: i64 = row.get(13)?;
+        let thread = (source_key, thread_id);
+        if current_thread.as_ref() != Some(&thread) {
+            current_thread = Some(thread);
             previous = None;
+            last_uuid = None;
+            last_index = None;
         }
-        if let Some((previous_ts, previous_depth)) = previous {
+        let linked = if key.agent == "opencode" {
+            // The OpenCode reader validates snapshot order. Native parentID is not a predecessor link.
+            last_index.is_none_or(|index| index.checked_add(1) == Some(turn_index))
+                && uuid.as_deref().is_some_and(|id| !id.is_empty())
+                && uuid != last_uuid
+        } else if key.agent == "codex" {
+            last_index.is_none_or(|index| index.checked_add(1) == Some(turn_index))
+                && (parent_uuid.is_none() || (last_uuid.is_some() && parent_uuid == last_uuid))
+        } else {
+            uuid.as_deref().is_some_and(|id| !id.is_empty())
+                && last_uuid.is_some()
+                && parent_uuid == last_uuid
+                && uuid != last_uuid
+        };
+        last_uuid = uuid;
+        last_index = Some(turn_index);
+        incomplete |= key.agent == "opencode" && is_compaction_boundary;
+        if is_compaction_boundary || !linked {
+            if previous.take().is_some() {
+                pairs_skipped = pairs_skipped.saturating_add(1);
+                incomplete = true;
+            }
+            if is_compaction_boundary {
+                continue;
+            }
+        }
+        if role != "assistant" {
+            continue;
+        }
+        let mode = request_accounting(key.agent, provider.as_deref(), api.as_deref());
+        if accounting.is_none() {
+            accounting = mode;
+        }
+        let depth = as_u64(input_tokens)
+            .saturating_add(as_u64(cache_read_tokens))
+            .saturating_add(as_u64(cache_write));
+        if mode.is_none()
+            || mode != accounting
+            || model.as_deref().is_none_or(|model| model.trim().is_empty())
+            || depth == 0
+        {
+            incomplete = true;
+            pairs_skipped = pairs_skipped.saturating_add(u64::from(previous.take().is_some()));
+            continue;
+        }
+        let route = (model, provider, api);
+        if let Some((previous_ts, previous_depth, previous_route)) = previous {
             let in_order = matches!((previous_ts, ts_ms), (Some(previous_ts), Some(ts_ms)) if ts_ms >= previous_ts);
-            if in_order {
-                pairs_considered += 1;
-                let growth = as_u64((depth - previous_depth).max(0));
+            if in_order && route == previous_route {
+                pairs_considered = pairs_considered.saturating_add(1);
+                let growth = depth.saturating_sub(previous_depth);
                 let paid_cache_write = as_u64(cache_write);
                 let paid_uncached_input = as_u64(input_tokens);
                 cache_write_tokens =
@@ -1242,12 +1403,15 @@ fn query_repeated_context(
                 uncached_input_paid_tokens =
                     uncached_input_paid_tokens.saturating_add(paid_uncached_input);
             } else {
-                pairs_skipped += 1;
+                pairs_skipped = pairs_skipped.saturating_add(1);
+                incomplete = true;
             }
         }
-        previous = Some((ts_ms, depth));
+        previous = Some((ts_ms, depth, route));
     }
     Ok(RepeatedContextTotals {
+        accounting,
+        incomplete,
         cache_write_tokens,
         uncached_input_tokens,
         cache_write_paid_tokens,
@@ -1302,6 +1466,8 @@ mod tests {
             role: "assistant",
             ts_ms: Some(1_000 + turn_index as i64),
             model: Some("model-a".to_owned()),
+            provider: None,
+            api: None,
             effort: None,
             speed: None,
             input_tokens: 10,
@@ -1871,14 +2037,14 @@ mod tests {
     #[test]
     fn three_growing_turns_repeat_no_context() {
         let conn = test_connection();
-        let mut first = base_row("s1", 0);
+        let mut first = cache_row("s1", 0);
         first.input_tokens = 100;
         first.ts_ms = Some(1_000);
-        let mut second = base_row("s1", 1);
+        let mut second = cache_row("s1", 1);
         second.input_tokens = 150;
         second.cache_write_tokens = 20;
         second.ts_ms = Some(1_010);
-        let mut third = base_row("s1", 2);
+        let mut third = cache_row("s1", 2);
         third.input_tokens = 200;
         third.cache_write_tokens = 10;
         third.ts_ms = Some(1_020);
@@ -1890,32 +2056,31 @@ mod tests {
     }
 
     #[test]
-    fn a_full_resend_after_a_model_switch_pays_beyond_growth() {
+    fn a_model_switch_starts_a_new_cache_baseline() {
         let conn = test_connection();
-        let mut first = base_row("s1", 0);
+        let mut first = cache_row("s1", 0);
         first.model = Some("model-a".to_owned());
         first.input_tokens = 1_000;
         first.ts_ms = Some(1_000);
-        let mut second = base_row("s1", 1);
+        let mut second = cache_row("s1", 1);
         second.model = Some("model-b".to_owned());
         second.input_tokens = 0;
         second.cache_write_tokens = 5_000;
         second.ts_ms = Some(2_000);
         insert(&conn, &[first, second]);
         let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
-        // depth grew 1000 -> 5000 (+4000); paid cache-write is 5000, so
-        // 5000 - 4000 = 1000 tokens are repeated, not grown.
-        assert_eq!(facts.repeated_context_cache_write_tokens, 1_000);
-        assert_eq!(facts.repeated_context_pairs_considered, 1);
+        assert_eq!(facts.repeated_context_cache_write_tokens, 0);
+        assert_eq!(facts.repeated_context_pairs_considered, 0);
+        assert_eq!(facts.repeated_context_pairs_skipped, 1);
     }
 
     #[test]
     fn two_threads_never_form_a_cross_thread_pair() {
         let conn = test_connection();
-        let mut thread_a_first = base_row("thread-a", 0);
+        let mut thread_a_first = cache_row("thread-a", 0);
         thread_a_first.input_tokens = 1_000;
         thread_a_first.ts_ms = Some(0);
-        let mut thread_a_second = base_row("thread-a", 1);
+        let mut thread_a_second = cache_row("thread-a", 1);
         // Depth stays flat (1000 -> 1000): the previous turn's content
         // moves from `input` to `cache_read`, and 50 tokens are paid
         // again as `cache_write` with no matching growth.
@@ -1923,7 +2088,7 @@ mod tests {
         thread_a_second.cache_read_tokens = 950;
         thread_a_second.cache_write_tokens = 50;
         thread_a_second.ts_ms = Some(10);
-        let mut thread_b_first = base_row("thread-b", 0);
+        let mut thread_b_first = cache_row("thread-b", 0);
         thread_b_first.input_tokens = 100_000;
         thread_b_first.ts_ms = Some(20);
         insert(&conn, &[thread_a_first, thread_a_second, thread_b_first]);
@@ -1937,7 +2102,7 @@ mod tests {
     #[test]
     fn a_delegated_row_between_two_main_rows_is_ignored() {
         let conn = test_connection();
-        let mut first_main = base_row("s1", 0);
+        let mut first_main = cache_row("s1", 0);
         first_main.input_tokens = 1_000;
         first_main.ts_ms = Some(0);
         let mut delegated = base_row("s1", 1);
@@ -1945,7 +2110,8 @@ mod tests {
         delegated.child_id = Some("s1".to_owned());
         delegated.input_tokens = 900_000;
         delegated.ts_ms = Some(5);
-        let mut second_main = base_row("s1", 2);
+        let mut second_main = cache_row("s1", 2);
+        second_main.parent_uuid = first_main.uuid.clone();
         // Depth stays flat, so the whole cache write (30) is repeated.
         second_main.input_tokens = 0;
         second_main.cache_read_tokens = 970;
@@ -1963,9 +2129,9 @@ mod tests {
     #[test]
     fn a_null_ts_ms_pair_is_skipped_and_counted() {
         let conn = test_connection();
-        let mut first = base_row("s1", 0);
+        let mut first = cache_row("s1", 0);
         first.ts_ms = Some(0);
-        let mut second = base_row("s1", 1);
+        let mut second = cache_row("s1", 1);
         second.ts_ms = None;
         second.cache_write_tokens = 40;
         insert(&conn, &[first, second]);
@@ -1978,11 +2144,11 @@ mod tests {
     #[test]
     fn uncached_input_accounting_reads_repeated_input_beyond_growth_on_codex_shaped_rows() {
         let conn = test_connection();
-        let mut first = base_row("s1", 0);
+        let mut first = cache_row("s1", 0);
         first.input_tokens = 1_000;
         first.cache_write_tokens = 0;
         first.ts_ms = Some(0);
-        let mut second = base_row("s1", 1);
+        let mut second = cache_row("s1", 1);
         // A session with no cache-write tokens (an old Codex CLI, or any
         // source pinned to uncached-input accounting) shows a full
         // uncached resend after cache expiry as input_tokens alone.
@@ -1995,5 +2161,304 @@ mod tests {
         // 6000 - 5000 = 1000 tokens are repeated.
         assert_eq!(facts.repeated_context_uncached_input_tokens, 1_000);
         assert_eq!(facts.repeated_context_cache_write_tokens, 0);
+    }
+
+    fn cache_row(thread: &str, index: u64) -> TurnRow {
+        let mut row = base_row(thread, index);
+        row.uuid = Some(format!("{thread}-{index}"));
+        row.parent_uuid = index
+            .checked_sub(1)
+            .map(|index| format!("{thread}-{index}"));
+        row
+    }
+
+    fn route_facts(agent: &str, rows: &[TurnRow]) -> TurnFacts {
+        let conn = test_connection();
+        conn.execute("UPDATE session SET agent = ?1", [agent])
+            .unwrap();
+        let key = TurnSessionKey { agent, ..KEY };
+        insert_turn_rows(&conn, &key, 1, rows).unwrap();
+        query_turn_facts(&conn, &key, &FenceScope::single(1)).unwrap()
+    }
+
+    #[test]
+    fn known_request_contracts_use_disjoint_input_buckets() {
+        use RepeatedContextAccounting::{CacheWrite, UncachedInput};
+        for (agent, provider, api, expected) in [
+            ("claude", None, None, CacheWrite),
+            ("claude-code", None, None, CacheWrite),
+            ("codex", None, None, UncachedInput),
+            ("opencode", Some("anthropic"), None, CacheWrite),
+            ("opencode", Some("openai"), None, UncachedInput),
+            (
+                "pi",
+                Some("anthropic"),
+                Some("anthropic-messages"),
+                CacheWrite,
+            ),
+            (
+                "pi",
+                Some("openai"),
+                Some("openai-responses"),
+                UncachedInput,
+            ),
+            (
+                "pi",
+                Some("openai"),
+                Some("openai-completions"),
+                UncachedInput,
+            ),
+            (
+                "pi",
+                Some("openai-codex"),
+                Some("openai-codex-responses"),
+                UncachedInput,
+            ),
+        ] {
+            let rows: Vec<_> = (0..3)
+                .map(|index| {
+                    let mut row = cache_row("s1", index);
+                    row.provider = provider.map(str::to_owned);
+                    row.api = api.map(str::to_owned);
+                    row.input_tokens = 50;
+                    row.cache_read_tokens = 40;
+                    row.cache_write_tokens = 10;
+                    row
+                })
+                .collect();
+            let facts = route_facts(agent, &rows);
+            assert_eq!(
+                facts.repeated_context_accounting,
+                Some(expected),
+                "{agent}/{provider:?}/{api:?}"
+            );
+            assert_eq!(facts.repeated_context_pairs_considered, 2);
+            assert_eq!(facts.repeated_context_cache_write_tokens, 20);
+            assert_eq!(facts.repeated_context_uncached_input_tokens, 100);
+            assert!(!facts.repeated_context_incomplete);
+        }
+    }
+
+    #[test]
+    fn unknown_or_missing_routes_never_inherit_a_contract_from_the_model() {
+        for (agent, provider, api) in [
+            ("opencode", None, None),
+            ("opencode", Some("gateway"), None),
+            ("pi", Some("anthropic"), None),
+            ("pi", None, Some("anthropic-messages")),
+            ("pi", Some("gateway"), Some("anthropic-messages")),
+            ("pi", Some("openai"), Some("anthropic-messages")),
+            ("antigravity", Some("anthropic"), Some("anthropic-messages")),
+        ] {
+            let rows: Vec<_> = (0..3)
+                .map(|index| {
+                    let mut row = cache_row("s1", index);
+                    row.model = Some("claude-sonnet-4-6".to_owned());
+                    row.provider = provider.map(str::to_owned);
+                    row.api = api.map(str::to_owned);
+                    row.cache_write_tokens = 1_000;
+                    row
+                })
+                .collect();
+            let facts = route_facts(agent, &rows);
+            assert_eq!(facts.repeated_context_accounting, None);
+            assert_eq!(facts.repeated_context_pairs_considered, 0);
+            assert_eq!(facts.repeated_context_cache_write_tokens, 0);
+            assert!(facts.repeated_context_incomplete);
+        }
+    }
+
+    #[test]
+    fn mixed_modes_keep_only_the_first_contract_as_partial_evidence() {
+        let rows: Vec<_> = (0..6)
+            .map(|index| {
+                let mut row = cache_row("s1", index);
+                let (provider, api) = if !(2..4).contains(&index) {
+                    ("anthropic", "anthropic-messages")
+                } else {
+                    ("openai", "openai-responses")
+                };
+                row.provider = Some(provider.to_owned());
+                row.api = Some(api.to_owned());
+                row.cache_write_tokens = 100;
+                row
+            })
+            .collect();
+        let facts = route_facts("pi", &rows);
+        assert_eq!(
+            facts.repeated_context_accounting,
+            Some(RepeatedContextAccounting::CacheWrite)
+        );
+        assert_eq!(facts.repeated_context_pairs_considered, 2);
+        assert_eq!(facts.repeated_context_cache_write_tokens, 200);
+        assert!(facts.repeated_context_incomplete);
+        let mut capabilities = crate::analysis::SourceCapabilities::pi();
+        capabilities.cache_write_tokens = false;
+        let source = crate::analysis::EvidenceSource {
+            agent: "pi".to_owned(),
+            session_id: "s1".to_owned(),
+            kind: crate::analysis::SourceKind::File,
+            capabilities,
+        };
+        let accumulator = crate::analysis::SessionEvidenceAccumulator::new(source);
+        let live = accumulator.evidence(&facts);
+        let record =
+            serde_json::from_value(serde_json::to_value(accumulator.coverage_record()).unwrap())
+                .unwrap();
+        assert_eq!(live, crate::analysis::evidence_from_facts(&facts, &record));
+        let crate::analysis::EvidenceValue::Complete(cache) = live.cache else {
+            panic!("cache");
+        };
+        let crate::analysis::EvidenceValue::Partial { observed, .. } = cache.repeated_context
+        else {
+            panic!("partial contract");
+        };
+        assert_eq!(observed.accounting, RepeatedContextAccounting::CacheWrite);
+        assert_eq!(observed.repeated_tokens, 200);
+        assert_eq!(observed.paid_tokens, 200);
+
+        let reversed: Vec<_> = rows
+            .into_iter()
+            .map(|mut row| {
+                let (provider, api) = if row.provider.as_deref() == Some("anthropic") {
+                    ("openai", "openai-responses")
+                } else {
+                    ("anthropic", "anthropic-messages")
+                };
+                row.provider = Some(provider.to_owned());
+                row.api = Some(api.to_owned());
+                row
+            })
+            .collect();
+        let facts = route_facts("pi", &reversed);
+        assert_eq!(
+            facts.repeated_context_accounting,
+            Some(RepeatedContextAccounting::UncachedInput)
+        );
+        assert_eq!(facts.repeated_context_pairs_considered, 2);
+        assert_eq!(facts.repeated_context_uncached_input_tokens, 20);
+        assert!(facts.repeated_context_incomplete);
+    }
+
+    #[test]
+    fn route_and_link_gaps_break_pairs_without_losing_later_compatible_pairs() {
+        for gap in [
+            "model",
+            "api",
+            "provider",
+            "missing_route",
+            "missing_id",
+            "missing_parent",
+            "broken_parent",
+            "compaction",
+            "zero_usage",
+        ] {
+            let mut rows: Vec<_> = (0..6)
+                .map(|index| {
+                    let mut row = cache_row("s1", index);
+                    row.provider = Some("openai".to_owned());
+                    row.api = Some("openai-responses".to_owned());
+                    row
+                })
+                .collect();
+            match gap {
+                "model" => rows[2].model = Some("model-b".to_owned()),
+                "api" => rows[2].api = Some("openai-completions".to_owned()),
+                "provider" => {
+                    rows[2].provider = Some("openai-codex".to_owned());
+                    rows[2].api = Some("openai-codex-responses".to_owned());
+                }
+                "missing_route" => rows[2].provider = None,
+                "missing_id" => rows[2].uuid = None,
+                "missing_parent" => rows[2].parent_uuid = None,
+                "broken_parent" => rows[2].parent_uuid = Some("absent".to_owned()),
+                "compaction" => {
+                    rows[2].role = "system";
+                    rows[2].is_compaction_boundary = true;
+                }
+                "zero_usage" => rows[2].input_tokens = 0,
+                _ => unreachable!(),
+            }
+            let facts = route_facts("pi", &rows);
+            let expected = if matches!(gap, "missing_parent" | "broken_parent") {
+                4
+            } else {
+                3
+            };
+            assert_eq!(facts.repeated_context_pairs_considered, expected, "{gap}");
+            assert_eq!(
+                facts.repeated_context_uncached_input_tokens,
+                expected * 10,
+                "{gap}"
+            );
+            assert!(facts.repeated_context_incomplete, "{gap}");
+        }
+    }
+
+    #[test]
+    fn resumed_fence_and_route_round_trip_match_a_full_cache_scan() {
+        let conn = test_connection();
+        let rows: Vec<_> = (0..6)
+            .map(|index| {
+                let mut row = cache_row("s1", index);
+                row.provider = Some("anthropic".to_owned());
+                row.api = Some("anthropic-messages".to_owned());
+                row.cache_write_tokens = 100;
+                if index == 3 {
+                    row.is_compaction_boundary = true;
+                }
+                row
+            })
+            .collect();
+        insert_turn_rows(&conn, &KEY, 1, &rows[..2]).unwrap();
+        insert_turn_rows(&conn, &KEY, 2, &rows[2..]).unwrap();
+        let sources = ["s1".to_owned()];
+        let scope = FenceScope {
+            claim_fence: 2,
+            published: Some(PublishedScope {
+                fence: 1,
+                source_keys: &sources,
+            }),
+        };
+        let restored = query_turn_rows(&conn, &KEY, &scope).unwrap();
+        assert_eq!(restored, rows);
+        for row in &restored {
+            let event = crate::analysis::replay::event_from_row(row);
+            assert_eq!(event.provider, row.provider);
+            assert_eq!(event.api, row.api);
+        }
+        let resumed = query_turn_facts(&conn, &KEY, &scope).unwrap();
+        assert_eq!(resumed, route_facts("claude", &rows));
+        assert_eq!(resumed.repeated_context_pairs_considered, 3);
+        assert_eq!(resumed.repeated_context_cache_write_tokens, 300);
+    }
+
+    #[test]
+    fn main_message_links_are_checked_through_user_and_tool_rows() {
+        let mut rows: Vec<_> = (0..4).map(|index| cache_row("s1", index)).collect();
+        rows[1].role = "user";
+        rows[2].role = "tool";
+        let facts = route_facts("claude", &rows);
+        assert_eq!(facts.repeated_context_pairs_considered, 1);
+        rows[2].parent_uuid = Some("missing".to_owned());
+        let facts = route_facts("claude", &rows);
+        assert_eq!(facts.repeated_context_pairs_considered, 0);
+        assert!(facts.repeated_context_incomplete);
+        rows[2].parent_uuid = rows[1].uuid.clone();
+        rows[3].source_key = "other-source".to_owned();
+        let facts = route_facts("claude", &rows);
+        assert_eq!(facts.repeated_context_pairs_considered, 0);
+    }
+
+    #[test]
+    fn fixed_agents_do_not_count_explicit_unknown_provider_requests() {
+        for agent in ["claude", "claude-code", "codex"] {
+            let mut rows: Vec<_> = (0..4).map(|index| cache_row("s1", index)).collect();
+            rows[2].provider = Some("gateway".to_owned());
+            rows[3].provider = Some("gateway".to_owned());
+            let facts = route_facts(agent, &rows);
+            assert_eq!(facts.repeated_context_pairs_considered, 1);
+            assert!(facts.repeated_context_incomplete);
+        }
     }
 }

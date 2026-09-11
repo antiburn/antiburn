@@ -27,11 +27,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use antiburn_local::analysis::{
-    AppendOnlyGuarantee, ClaudeAdapter, CompositeSink, EvidenceSnapshot, EvidenceSource,
+    AppendOnlyGuarantee, ClaudeSessionReader, CompositeSink, EvidenceSnapshot, EvidenceSource,
     FenceScope, MemoryTurnRowStore, RESUME_SNAPSHOT_REVISION, RawSource, ResumePoint,
     SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SourceCapabilities,
     SourceChangedReason, SourceClaim, SourceKind, StreamSnapshot, TurnRowSink, TurnRowStore,
-    TurnSessionKey, VisitOutcome, adapter_for, query_turn_facts, query_turn_rows,
+    TurnSessionKey, VisitOutcome, query_turn_facts, query_turn_rows, reader_for,
 };
 use antiburn_local::discovery::source_version::head_hash_of;
 use antiburn_local::discovery::{FingerprintInputs, SourceStat};
@@ -76,7 +76,7 @@ fn fresh_snapshot(
             tail_hash: head_hash_of(&[]),
             tail_len: 0,
         },
-        adapter: adapter_for(agent)
+        adapter: reader_for(agent)
             .empty_resume_state()
             .expect("adapter under test must support resume"),
         metrics: SessionMetricsAccumulator::new(agent, session_id),
@@ -212,7 +212,7 @@ fn run_full_pass(
     );
     let input = session_input(agent, session_id, path);
     let claim = claim_for(path);
-    let outcome = adapter_for(agent)
+    let outcome = reader_for(agent)
         .visit_claimed(
             &input,
             &claim,
@@ -269,7 +269,7 @@ fn assert_resume_parity(
     assert!(!steps.is_empty(), "at least one step is required");
     let directory = TempDir::new().expect("tempdir");
     let path = directory.path().join("session.jsonl");
-    let adapter = adapter_for(agent);
+    let adapter = reader_for(agent);
 
     let mut resumed_store = MemoryTurnRowStore::new(agent, session_id);
     let mut snapshot = fresh_snapshot(agent, session_id, capabilities);
@@ -552,7 +552,7 @@ fn a_rewritten_tail_is_rejected_instead_of_resuming() {
             None,
         ),
     );
-    let visit = ClaudeAdapter
+    let visit = ClaudeSessionReader
         .visit_claimed_resumed(
             &input,
             &first_claim,
@@ -598,7 +598,7 @@ fn a_rewritten_tail_is_rejected_instead_of_resuming() {
         ),
     );
 
-    let result = ClaudeAdapter
+    let result = ClaudeSessionReader
         .visit_claimed_resumed(
             &input,
             &rewritten_claim,
@@ -640,7 +640,7 @@ fn a_truncation_below_the_resume_offset_is_rejected_instead_of_resuming() {
             None,
         ),
     );
-    let visit = ClaudeAdapter
+    let visit = ClaudeSessionReader
         .visit_claimed_resumed(
             &input,
             &first_claim,
@@ -686,7 +686,7 @@ fn a_truncation_below_the_resume_offset_is_rejected_instead_of_resuming() {
         ),
     );
 
-    let result = ClaudeAdapter
+    let result = ClaudeSessionReader
         .visit_claimed_resumed(
             &input,
             &truncated_claim,
@@ -733,6 +733,7 @@ fn a_stale_snapshot_revision_is_rejected_by_is_current_and_by_the_adapter() {
         ),
     );
 
-    let result = ClaudeAdapter.visit_claimed_resumed(&input, &claim, &stale, &|| false, &mut sink);
+    let result =
+        ClaudeSessionReader.visit_claimed_resumed(&input, &claim, &stale, &|| false, &mut sink);
     assert!(result.is_err());
 }

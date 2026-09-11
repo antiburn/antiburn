@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { lazy, Suspense, useState } from "react"
 
 import { Card } from "../../components/ui/Card"
 import { Pane } from "../../components/ui/Pane"
@@ -8,9 +8,15 @@ import { revealSource, type AppInfo } from "../../lib/ipc"
 import { detectPlatform, type Platform } from "../../lib/platform"
 import type { SettingsPane } from "../../lib/settingsPanes"
 import { PushButton } from "../../components/ui/PushButton"
-import { AboutDocumentView, type AboutDocumentId } from "./AboutDocumentView"
+import type { AboutDocumentId } from "./AboutDocumentView"
 import { UpdatesSection } from "./UpdatesSection"
 import type { AppSettingsController } from "./useAppSettings"
+
+const AboutDocumentView = lazy(() =>
+  import("./AboutDocumentView").then(({ AboutDocumentView }) => ({
+    default: AboutDocumentView,
+  })),
+)
 
 /** Display names for the masthead; `detectPlatform` reports lowercase ids. */
 const PLATFORM_LABELS: Record<Platform, string> = {
@@ -55,13 +61,21 @@ export function AboutPane({ settings, update, loaded, info, onOpenPane }: AboutP
 
   if (openDocument) {
     return (
-      <AboutDocumentView
-        id={openDocument}
-        onBack={() => {
-          setReturnFocusTo(openDocument)
-          setOpenDocument(null)
-        }}
-      />
+      <Suspense
+        fallback={
+          <p role="status" className="type-body text-label-secondary">
+            Loading document…
+          </p>
+        }
+      >
+        <AboutDocumentView
+          id={openDocument}
+          onBack={() => {
+            setReturnFocusTo(openDocument)
+            setOpenDocument(null)
+          }}
+        />
+      </Suspense>
     )
   }
 

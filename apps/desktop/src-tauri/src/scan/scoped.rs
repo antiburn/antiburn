@@ -21,7 +21,7 @@ use tokio::time::Instant;
 use crate::agents;
 use crate::dto::{ActivityEntry, ScanStatus};
 use crate::storage_health::checked;
-use crate::store::{SessionActivityKey, SessionRecord, Store};
+use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
 
 use super::{PassScope, ScanController, ScanTrigger};
 
@@ -39,6 +39,9 @@ pub const DB_AGENT_REDISCOVER_MIN_INTERVAL: Duration = Duration::from_secs(30);
 /// An indexed-title refresh runs at most this often for each agent.
 pub const TITLE_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Stored sessions loaded at once during an indexed-title refresh.
+const TITLE_REFRESH_PAGE_SIZE: usize = 256;
+
 /// T7: how long the scheduler waits before retrying admitted work that found
 /// a command's pass already holding the running flag.
 pub const SCOPED_RETRY: Duration = Duration::from_millis(500);
@@ -55,7 +58,7 @@ const LOG_PATH_SAMPLE: usize = 8;
 /// What one path in a burst means for the scheduler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ClassifiedPath {
-    Session(SessionActivityKey),
+    Sessions(BTreeSet<SessionActivityKey>),
     IndexedTitles(AgentKind),
     DatabaseAgent(AgentKind),
     Agent(AgentKind),
@@ -72,6 +75,12 @@ pub struct ScopedWork {
     pub agents: BTreeSet<AgentKind>,
     pub db_agents: BTreeSet<AgentKind>,
 }
+
+/// Native file activity keys grouped by their source label.
+pub type ActivityKeysBySourceLabel = HashMap<String, BTreeSet<SessionActivityKey>>;
+
+/// Resolves one batch of candidate source labels.
+pub type SourceLabelLookup<'a> = dyn Fn(&BTreeSet<String>) -> ActivityKeysBySourceLabel + 'a;
 
 impl ScopedWork {
     pub fn is_empty(&self) -> bool {
@@ -91,25 +100,27 @@ impl ScopedWork {
 }
 
 /// Classify every path in a burst against `home` and `lookup`, and fold the
-/// result into one [`ScopedWork`]. Pure over its arguments — no I/O beyond
-/// what `lookup` does — so a test can drive it with a fake lookup and a
-/// synthetic home.
+/// result into one [`ScopedWork`]. The lookup runs once with every distinct
+/// direct and ancestor candidate from the burst.
 ///
-/// `lookup` answers "is this string form a stored native file session's
-/// `source_label`", the store query [`crate::store::Store::session_record_by_source_label`]
-/// backs in production.
+/// The store's indexed native file lookup backs `lookup` in production.
 pub fn classify_burst(
     paths: &[PathBuf],
     home: &Path,
-    lookup: &dyn Fn(&str) -> Option<SessionActivityKey>,
+    lookup: &SourceLabelLookup<'_>,
 ) -> ScopedWork {
     let roots = all_agent_roots(home);
+    let candidates = paths
+        .iter()
+        .flat_map(|path| source_label_candidates(path, &roots))
+        .collect::<BTreeSet<_>>();
+    let matches = lookup(&candidates);
     let mut work = ScopedWork::default();
     let mut ignored = 0usize;
     for path in paths {
-        match classify_path(path, home, &roots, lookup) {
-            ClassifiedPath::Session(key) => {
-                work.sessions.insert(key);
+        match classify_path(path, home, &roots, &matches) {
+            ClassifiedPath::Sessions(keys) => {
+                work.sessions.extend(keys);
             }
             ClassifiedPath::IndexedTitles(agent) => {
                 work.title_agents.insert(agent);
@@ -152,25 +163,12 @@ fn classify_path(
     path: &Path,
     home: &Path,
     roots: &[(AgentKind, WatchRoot)],
-    lookup: &dyn Fn(&str) -> Option<SessionActivityKey>,
+    matches: &HashMap<String, BTreeSet<SessionActivityKey>>,
 ) -> ClassifiedPath {
-    if let Some(key) = lookup(&path.to_string_lossy()) {
-        return ClassifiedPath::Session(key);
-    }
-    // T1's sub-agent form: `<dir>/<sessionId>/subagents/agent-*.jsonl` names
-    // its parent transcript as `<dir>/<sessionId>.jsonl`. Walk ancestors
-    // while they stay under an agent's watch root, stopping at the first
-    // ancestor whose `.jsonl` sibling is a stored session.
-    let mut current = path.parent();
-    while let Some(dir) = current {
-        if !roots.iter().any(|(_, root)| dir.starts_with(&root.path)) {
-            break;
+    for source_label in source_label_candidates(path, roots) {
+        if let Some(keys) = matches.get(&source_label) {
+            return ClassifiedPath::Sessions(keys.clone());
         }
-        let candidate = dir.with_extension("jsonl");
-        if let Some(key) = lookup(&candidate.to_string_lossy()) {
-            return ClassifiedPath::Session(key);
-        }
-        current = dir.parent();
     }
     if let Some(agent) = indexed_title_store_owner(path, home) {
         return ClassifiedPath::IndexedTitles(agent);
@@ -184,6 +182,19 @@ fn classify_path(
         Some(agent) => ClassifiedPath::Agent(agent),
         None => ClassifiedPath::Ignored,
     }
+}
+
+fn source_label_candidates(path: &Path, roots: &[(AgentKind, WatchRoot)]) -> Vec<String> {
+    let mut candidates = vec![path.to_string_lossy().into_owned()];
+    let mut current = path.parent();
+    while let Some(dir) = current {
+        if !roots.iter().any(|(_, root)| dir.starts_with(&root.path)) {
+            break;
+        }
+        candidates.push(dir.with_extension("jsonl").to_string_lossy().into_owned());
+        current = dir.parent();
+    }
+    candidates
 }
 
 fn indexed_title_store_owner(path: &Path, home: &Path) -> Option<AgentKind> {
@@ -445,57 +456,77 @@ async fn refresh_indexed_titles_locked(
     agents: &BTreeSet<AgentKind>,
 ) -> anyhow::Result<ScopedSummary> {
     let store = app.state::<Store>();
-    let previous_map: HashMap<SessionActivityKey, SessionRecord> = store
-        .session_records()?
-        .into_iter()
-        .filter(|(_, record)| {
-            record.key.environment_key == "native"
-                && agents.iter().any(|agent| record.key.agent == agent.slug())
-        })
-        .collect();
-    let mut records: Vec<SessionRecord> = previous_map.values().cloned().collect();
-    let mut changed = Vec::new();
-
-    for agent in agents {
-        let session_ids: Vec<String> = records
-            .iter()
-            .filter(|record| record.key.agent == agent.slug())
-            .map(|record| record.key.session_id.clone())
-            .collect();
-        let mut titles = Explorers::DISK
-            .indexed_session_titles_for(agent, &session_ids)
-            .await;
-        for record in records
-            .iter_mut()
-            .filter(|record| record.key.agent == agent.slug())
-        {
-            let Some(resolved) = titles.remove(&record.key.session_id) else {
-                continue;
-            };
-            if super::apply_indexed_title(record, agent, resolved) {
-                changed.push(record.key.clone());
-            }
-        }
-    }
-
-    let changed_records = super::records_to_persist(&records, &changed, &[]);
-    if !changed_records.is_empty() {
-        checked(
-            app,
-            "The session index",
-            store.upsert_sessions(&changed_records, &agents::evidence_cohort()),
-        )?;
-    }
     let now = super::unix_now();
     let announce_app = app.clone();
     let announce = move |entry: ActivityEntry| {
         let _ = announce_app.emit(crate::commands::SESSION_ENTRY_CHANGED_EVENT, &entry);
     };
-    super::announce_changed_rows(&store, &changed, &previous_map, now, &announce);
+    let mut session_count = 0;
+    let mut changed_count = 0;
+
+    for agent in agents {
+        // Keep only IDs while the external index resolves once. Full cached
+        // records remain bounded to each page of titles that the index found.
+        let session_ids = store.native_session_ids_for_agent(agent.slug())?;
+        session_count += session_ids.len();
+        let titles = Explorers::DISK
+            .indexed_session_titles_for(agent, &session_ids)
+            .await;
+        drop(session_ids);
+
+        let mut title_entries = titles.into_iter();
+        loop {
+            let mut page_titles = title_entries
+                .by_ref()
+                .take(TITLE_REFRESH_PAGE_SIZE)
+                .collect::<HashMap<_, _>>();
+            if page_titles.is_empty() {
+                break;
+            }
+            let page_keys = page_titles
+                .keys()
+                .map(|session_id| SessionKey::new("native", agent.slug(), session_id))
+                .collect::<Vec<_>>();
+            let mut records = store.session_records_for_session_keys(&page_keys)?;
+            let previous_map = records
+                .iter()
+                .map(|record| {
+                    (
+                        SessionActivityKey::new(
+                            record.key.environment_key.clone(),
+                            record.key.agent.clone(),
+                            record.source_label.clone(),
+                        ),
+                        record.clone(),
+                    )
+                })
+                .collect::<HashMap<_, _>>();
+            let mut changed = Vec::new();
+            for record in &mut records {
+                let Some(resolved) = page_titles.remove(&record.key.session_id) else {
+                    continue;
+                };
+                if super::apply_indexed_title(record, agent, resolved) {
+                    changed.push(record.key.clone());
+                }
+            }
+
+            let changed_records = super::records_to_persist(&records, &changed, &[]);
+            if !changed_records.is_empty() {
+                checked(
+                    app,
+                    "The session index",
+                    store.upsert_sessions(&changed_records, &agents::evidence_cohort()),
+                )?;
+            }
+            super::announce_changed_rows(&store, &changed, &previous_map, now, &announce);
+            changed_count += changed.len();
+        }
+    }
 
     Ok(ScopedSummary {
-        sessions: records.len(),
-        re_described: changed.len(),
+        sessions: session_count,
+        re_described: changed_count,
     })
 }
 
@@ -511,9 +542,7 @@ async fn refresh_sessions_locked(
     let mut previous_map: HashMap<SessionActivityKey, SessionRecord> = HashMap::new();
     let mut logs = Vec::new();
     for key in keys {
-        let Some((activity_key, record)) =
-            store.session_record_by_source_label(&key.source_label)?
-        else {
+        let Some(record) = store.session_record_by_activity_key(key)? else {
             continue;
         };
         // Only a native file source can be reused this way; a provider-database
@@ -537,7 +566,7 @@ async fn refresh_sessions_locked(
             updated_at: record.updated_at_epoch,
             environment: DiscoveryEnvironment::Native,
         });
-        previous_map.insert(activity_key, record);
+        previous_map.insert(key.clone(), record);
     }
 
     let announce_app = app.clone();
@@ -546,20 +575,31 @@ async fn refresh_sessions_locked(
     };
 
     let described = super::describe_with_states(logs, &home, &ignored, &previous_map).await;
-    checked(
+    let record_keys = described
+        .records
+        .iter()
+        .map(|record| record.key.clone())
+        .collect::<Vec<_>>();
+    let returned = store.sessions_with_missing_source_for(&record_keys)?;
+    let persisted = checked(
         app,
         "The session index",
-        store.upsert_sessions(&described.records, &agents::evidence_cohort()),
+        super::persist_changed_records(
+            &described.records,
+            &described.changed,
+            &returned,
+            |records| store.upsert_sessions(records, &agents::evidence_cohort()),
+        ),
     )?;
-    crate::insights_worker::wake(app);
-    super::idle::wake(app);
+    if persisted {
+        super::wake_session_workers(app);
+    }
     super::announce_changed_rows(&store, &described.changed, &previous_map, now, &announce);
     for key in &described.rejected {
-        checked(
-            app,
-            "The session index",
-            store.delete_session(key).map(|_| ()),
-        )?;
+        let removed = checked(app, "The session index", store.delete_session(key))?;
+        if removed {
+            super::wake_session_workers(app);
+        }
     }
 
     Ok(ScopedSummary {
@@ -599,6 +639,18 @@ mod tests {
         SessionActivityKey::new("native", "claude-code", source_label)
     }
 
+    fn lookup_for(
+        key: SessionActivityKey,
+    ) -> impl Fn(&BTreeSet<String>) -> HashMap<String, BTreeSet<SessionActivityKey>> {
+        move |source_labels| {
+            source_labels
+                .contains(&key.source_label)
+                .then(|| (key.source_label.clone(), BTreeSet::from([key.clone()])))
+                .into_iter()
+                .collect()
+        }
+    }
+
     /// Cursor's real watch root for `home`, so a `classify_burst` test (which
     /// resolves roots through the actual [`Explorers::DISK`] registry, not a
     /// fake) exercises a path the classifier would really see — the root's
@@ -617,9 +669,7 @@ mod tests {
         let home = PathBuf::from("/home/avery");
         let session_path = home.join(".claude/projects/demo/abc.jsonl");
         let expected = key(&session_path.to_string_lossy());
-        let lookup_key = expected.clone();
-        let lookup =
-            move |label: &str| (label == lookup_key.source_label).then(|| lookup_key.clone());
+        let lookup = lookup_for(expected.clone());
 
         let work = classify_burst(&[session_path], &home, &lookup);
         assert_eq!(work.sessions, BTreeSet::from([expected]));
@@ -633,12 +683,80 @@ mod tests {
         let parent = home.join(".claude/projects/demo/abc.jsonl");
         let subagent = home.join(".claude/projects/demo/abc/subagents/agent-1.jsonl");
         let expected = key(&parent.to_string_lossy());
-        let lookup_key = expected.clone();
-        let lookup =
-            move |label: &str| (label == lookup_key.source_label).then(|| lookup_key.clone());
+        let lookup = lookup_for(expected.clone());
 
         let work = classify_burst(&[subagent], &home, &lookup);
         assert_eq!(work.sessions, BTreeSet::from([expected]));
+    }
+
+    #[test]
+    fn the_nearest_matching_ancestor_keeps_lookup_precedence() {
+        let home = PathBuf::from("/home/avery");
+        let nearest = home.join(".claude/projects/demo/abc/subagents.jsonl");
+        let parent = home.join(".claude/projects/demo/abc.jsonl");
+        let changed = home.join(".claude/projects/demo/abc/subagents/agent-1/data.jsonl");
+        let nearest_key = key(&nearest.to_string_lossy());
+        let parent_key = key(&parent.to_string_lossy());
+        let lookup = move |source_labels: &BTreeSet<String>| {
+            [nearest_key.clone(), parent_key.clone()]
+                .into_iter()
+                .filter(|key| source_labels.contains(&key.source_label))
+                .map(|key| (key.source_label.clone(), BTreeSet::from([key])))
+                .collect()
+        };
+
+        let work = classify_burst(&[changed], &home, &lookup);
+        assert_eq!(
+            work.sessions,
+            BTreeSet::from([key(&nearest.to_string_lossy())])
+        );
+    }
+
+    #[test]
+    fn a_direct_match_precedes_an_ancestor_match() {
+        let home = PathBuf::from("/home/avery");
+        let direct = home.join(".claude/projects/demo/abc/subagents/agent-1.jsonl");
+        let parent = home.join(".claude/projects/demo/abc.jsonl");
+        let direct_key = key(&direct.to_string_lossy());
+        let parent_key = key(&parent.to_string_lossy());
+        let lookup = move |source_labels: &BTreeSet<String>| {
+            [direct_key.clone(), parent_key.clone()]
+                .into_iter()
+                .filter(|key| source_labels.contains(&key.source_label))
+                .map(|key| (key.source_label.clone(), BTreeSet::from([key])))
+                .collect()
+        };
+
+        let work = classify_burst(std::slice::from_ref(&direct), &home, &lookup);
+        assert_eq!(
+            work.sessions,
+            BTreeSet::from([key(&direct.to_string_lossy())])
+        );
+    }
+
+    #[test]
+    fn duplicate_deep_paths_use_one_deduplicated_batch_lookup() {
+        let home = PathBuf::from("/home/avery");
+        let roots = all_agent_roots(&home);
+        let mut changed = home.join(".claude/projects/demo/session/subagents");
+        for depth in 0..40 {
+            changed.push(format!("level-{depth}"));
+        }
+        changed.push("agent-1.jsonl");
+        let expected = source_label_candidates(&changed, &roots)
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let paths = vec![changed; 16];
+        let calls = std::cell::Cell::new(0);
+        let lookup = |source_labels: &BTreeSet<String>| {
+            calls.set(calls.get() + 1);
+            assert_eq!(source_labels, &expected);
+            HashMap::new()
+        };
+
+        let _ = classify_burst(&paths, &home, &lookup);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(expected.len(), 45);
     }
 
     #[test]
@@ -646,20 +764,20 @@ mod tests {
         let home = PathBuf::from("/home/avery");
         let db_path = home.join(".cursor/state.vscdb");
         let roots = [(AgentKind::Cursor, root("/home/avery/.cursor", true))];
-        let lookup = |_: &str| None;
+        let matches = HashMap::new();
 
         assert_eq!(
-            classify_path(&db_path, &home, &roots, &lookup),
+            classify_path(&db_path, &home, &roots, &matches),
             ClassifiedPath::DatabaseAgent(AgentKind::Cursor)
         );
         let wal = home.join(".cursor/state.vscdb-wal");
         assert_eq!(
-            classify_path(&wal, &home, &roots, &lookup),
+            classify_path(&wal, &home, &roots, &matches),
             ClassifiedPath::DatabaseAgent(AgentKind::Cursor)
         );
         let journal = home.join(".cursor/state.vscdb-journal");
         assert_eq!(
-            classify_path(&journal, &home, &roots, &lookup),
+            classify_path(&journal, &home, &roots, &matches),
             ClassifiedPath::DatabaseAgent(AgentKind::Cursor)
         );
     }
@@ -667,7 +785,7 @@ mod tests {
     #[test]
     fn codex_title_store_changes_refresh_titles_only() {
         let home = PathBuf::from("/home/avery");
-        let lookup = |_: &str| None;
+        let lookup = |_: &BTreeSet<String>| HashMap::new();
         let paths = [
             home.join(".codex/state_5.sqlite"),
             home.join(".codex/state_5.sqlite-wal"),
@@ -685,7 +803,7 @@ mod tests {
     #[test]
     fn unrelated_codex_metadata_does_not_request_work() {
         let home = PathBuf::from("/home/avery");
-        let lookup = |_: &str| None;
+        let lookup = |_: &BTreeSet<String>| HashMap::new();
 
         let work = classify_burst(&[home.join(".codex/config.toml")], &home, &lookup);
 
@@ -697,10 +815,10 @@ mod tests {
         let home = PathBuf::from("/home/avery");
         let path = home.join(".codex/sessions/2026/08/01/rollout.jsonl");
         let roots = [(AgentKind::Codex, root("/home/avery/.codex", true))];
-        let lookup = |_: &str| None;
+        let matches = HashMap::new();
 
         assert_eq!(
-            classify_path(&path, &home, &roots, &lookup),
+            classify_path(&path, &home, &roots, &matches),
             ClassifiedPath::Agent(AgentKind::Codex)
         );
     }
@@ -709,10 +827,10 @@ mod tests {
     fn an_unclaimed_path_is_ignored() {
         let path = PathBuf::from("/home/avery/Downloads/random.txt");
         let roots: [(AgentKind, WatchRoot); 0] = [];
-        let lookup = |_: &str| None;
+        let matches = HashMap::new();
 
         assert_eq!(
-            classify_path(&path, Path::new("/home/avery"), &roots, &lookup),
+            classify_path(&path, Path::new("/home/avery"), &roots, &matches),
             ClassifiedPath::Ignored
         );
     }
@@ -726,9 +844,7 @@ mod tests {
         let unclaimed = PathBuf::from("/home/avery/Downloads/random.txt");
 
         let expected_key = key(&session_path.to_string_lossy());
-        let lookup_key = expected_key.clone();
-        let lookup =
-            move |label: &str| (label == lookup_key.source_label).then(|| lookup_key.clone());
+        let lookup = lookup_for(expected_key.clone());
 
         let work = classify_burst(
             &[session_path, db_path, agent_path, unclaimed],
@@ -746,7 +862,7 @@ mod tests {
         let cursor_root = cursor_watch_root(&home);
         let db_path = cursor_root.join("state.vscdb");
         let plain_path = cursor_root.join("some-other-file.json");
-        let lookup = |_: &str| None;
+        let lookup = |_: &BTreeSet<String>| HashMap::new();
 
         let work = classify_burst(&[db_path, plain_path], &home, &lookup);
         assert_eq!(work.agents, BTreeSet::from([AgentKind::Cursor]));

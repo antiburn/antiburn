@@ -102,6 +102,43 @@ test("replaces only the generated dependency section", () => {
   );
 });
 
+test("includes vendored tray-icon attribution and legal text", () => {
+  const vendored = {
+    name: "tray-icon",
+    version: "0.24.1",
+    source: null,
+    repository: "https://github.com/tauri-apps/tray-icon",
+  };
+  const firstParty = { name: "antiburn", version: "0.5.2", source: null };
+  const report = {
+    crates: [
+      { package: vendored, license: "MIT" },
+      { package: firstParty, license: "MIT" },
+    ],
+    licenses: [
+      {
+        text: "Tray library license text",
+        used_by: [{ crate: vendored }, { crate: firstParty }],
+      },
+    ],
+  };
+
+  assert.deepEqual(rustPackages(report), [
+    {
+      name: "tray-icon",
+      version: "0.24.1",
+      license: "MIT",
+      source: "https://github.com/tauri-apps/tray-icon",
+    },
+  ]);
+  assert.deepEqual(legalBodies([], report), [
+    {
+      text: "Tray library license text\n",
+      packages: ["tray-icon@0.24.1"],
+    },
+  ]);
+});
+
 test("rejects an unreviewed frontend license", () => {
   assert.throws(
     () =>

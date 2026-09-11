@@ -30,7 +30,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }))
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ close: closeWindow }),
+  getCurrentWindow: () => ({ close: closeWindow, isVisible: async () => true }),
 }))
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: openDialog,
@@ -802,7 +802,7 @@ describe("SettingsView", () => {
     // earlier version of this test sampled two of them, which is how five
     // fields went unnamed in the pane while the copy claimed to list them all.
     // `analytics::event::Event` is the other half of this pair, and its
-    // `the_wire_payload_is_exactly_these_twenty_two_fields` pins the same number
+    // `the_wire_payload_is_exactly_these_twenty_eight_fields` pins the same number
     // from the Rust side.
     const enumeration = screen.getByRole("button", { name: "Exactly what is sent" })
     fireEvent.click(enumeration)
@@ -810,20 +810,26 @@ describe("SettingsView", () => {
     // `every_document_that_counts_the_fields_counts_the_same_number` greps
     // this pane for that phrase, so it has to survive edits to this section.
     expect(
-      screen.getByText(/schema has twenty-two fields, and these are all of them/i),
+      screen.getByText(/schema has twenty-eight fields, and these are all of them/i),
     ).toBeInTheDocument()
     for (const field of [
       /the word .desktop./i,
       /a random id for the message, so a retry/i,
       /a random installation id/i,
-      /a random id for this run of the app/i,
+      /a random id for a window of captured analytics events/i,
       /the event name/i,
       /when it happened/i,
       /when it was delivered/i,
       /your processor architecture/i,
       /a count rounded to a range/i,
-      /a short label .* which setting you changed/i,
+      /a short label .* which surface, Settings pane, provider/i,
       /a second such label when an event has two things/i,
+      /whether a visible state followed a user or automatic exposure/i,
+      /a learned session-limit factor.s plan, mapped to a fixed list/i,
+      /that factor.s dollars-per-percent value, reduced to a coarse band/i,
+      /how far that factor.s estimate and the provider.s own meter disagree/i,
+      /an hourly summary of antiburn’s own CPU, memory, process I\/O/i,
+      /up to 16 unknown transcript record type names, sanitized/i,
       /the app version/i,
       /your operating system/i,
     ]) {
@@ -838,11 +844,14 @@ describe("SettingsView", () => {
     // neighbouring paragraph: the body is a sibling of nothing predictable,
     // and the id is the component's actual contract.
     const body = document.getElementById(enumeration.getAttribute("aria-controls") ?? "")
-    expect(body?.querySelectorAll("li")).toHaveLength(22)
+    expect(body?.querySelectorAll("li")).toHaveLength(28)
     // The exclusions live in the same body as the list, so a reader checking
     // one against the other does not have to open a second row to find them.
     expect(
       screen.getByText(/file paths, repository or branch names, token counts/i),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/coarse app work intensity and local data volume/i),
     ).toBeInTheDocument()
 
     // The rest of the receipts, each behind its own label. Opening them is the
@@ -855,8 +864,13 @@ describe("SettingsView", () => {
     // all three are asserted from it.
     open("The two identifiers")
     expect(screen.getByText(/replaced every 30 days/i)).toBeInTheDocument()
-    expect(screen.getByText(/roughly when antiburn is used/i)).toBeInTheDocument()
-    expect(screen.getByText(/quitting antiburn ends it/i)).toBeInTheDocument()
+    expect(screen.getByText(/roughly when analytics events were captured/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/each event waiting to be sent keeps a copy on disk/i),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/after 30 minutes without an analytics event/i)).toBeInTheDocument()
+    expect(screen.getByText(/when the installation id rotates/i)).toBeInTheDocument()
+    expect(screen.getByText(/does not measure a visit or time spent/i)).toBeInTheDocument()
     open("How the starting default works")
     expect(
       screen.getByText(/official release builds start with analytics on/i),
@@ -1055,14 +1069,9 @@ describe("SettingsView", () => {
     expect(screen.getByText(/· aarch64$/)).toBeInTheDocument()
   })
 
-  it("quits antiburn from the sidebar, through the shell", async () => {
+  it("keeps application Quit out of the Settings sidebar", () => {
     render(<SettingsView />)
-
-    fireEvent.click(await screen.findByRole("button", { name: "Quit antiburn" }))
-
-    // Through the shell, not by closing a window: a menu-bar app outlives its
-    // windows, and only `exit(0)` is a deliberate quit.
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("quit_app"))
+    expect(screen.queryByRole("button", { name: /quit/i })).toBeNull()
   })
 
   it("opens on the pane the shell was asked for, when the window is new", async () => {

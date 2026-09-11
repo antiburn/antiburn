@@ -1,6 +1,6 @@
 # Privacy policy
 
-Effective: 6 September 2026
+Effective: 8 September 2026
 
 This policy explains the analytics sent by the antiburn desktop application.
 Antiburn is operated by **Cadence AI (Vic) Pty Ltd** ("we", "us"). Contact us
@@ -13,35 +13,70 @@ them locally. It does not upload your sessions, transcripts, prompts, messages,
 titles, source code, file contents, filenames, paths, repository or branch
 names, working directories, token counts, costs, or credentials.
 
+If you confirm an Auto Fix, Antiburn can change one existing supported coding
+agent setting on your computer. It shows the setting, scope, current value, and
+new value before the change. It does not modify a source transcript. Burn Check
+attempts, safe display facts, and verified savings stay in the local database.
+
 Antiburn does not require an account. It does not use a third-party analytics,
 telemetry, crash-reporting, or session-replay SDK.
 
 ## Analytics we collect
 
-Official release builds send limited events about how the application works and
-which features are used. This includes application launch and progress through
-the fixed onboarding steps.
+Official release builds send limited events about how the application works,
+which features are used, and coarse hourly ranges for the application's own
+resource use. This includes application launch and progress through the fixed
+onboarding steps.
 
-The event schema contains twenty-two fields:
+The event schema contains twenty-eight fields:
 
 - the constant product surface `desktop`;
-- random message, installation, and application-run identifiers;
+- random message, installation, and analytics-session identifiers;
 - the event name and capture and delivery times;
 - the processor architecture, operating-system family, and app version;
-- an optional count rounded to a range; and
-- optional labels selected from a fixed list in the application;
+- an optional count rounded to a range;
+- optional labels selected from fixed lists in the application;
+- whether a visible state followed a user or automatic exposure, or whether a
+  Burn Check watch started passively or from an action;
 - a range for Claude's current five-hour usage;
 - whether Claude returned reset data, null, or a malformed value;
 - Claude's reset eligibility and experiment-membership states;
 - an allowlisted reason when Claude reports ineligibility;
 - Claude's reset experiment arm and availability state;
-- the weekly reset count rounded to zero, one, or two-plus; and
-- whether Claude supplied a next-reset date, never the date itself.
+- the weekly reset count rounded to zero, one, or two-plus;
+- whether Claude supplied a next-reset date, never the date itself;
+- a learned session-limit factor's plan, mapped to a fixed list, never the
+  provider's own plan string;
+- that factor's dollars-per-percent value, reduced to a coarse band;
+- how far the factor's estimate and the provider's own meter disagree,
+  reduced to a coarse band;
+- a nested hourly summary containing fixed bands for antiburn's own shell CPU,
+  memory, process read and write I/O, local database size, and database log
+  size, plus `none`, `partial`, or `full` coverage for each measurement; and
+- up to 16 sanitized unknown transcript record type names, each checked
+  against a fixed character set and length before it is sent, with a
+  rejected name replaced by a fixed placeholder rather than sent verbatim.
 
-The installation identifier is random and changes every 30 days. The run
-identifier exists only in memory and changes when the app restarts or after 30
-minutes of inactivity. Neither identifier comes from your hardware, account,
-name, or email address.
+Resource summaries can reveal coarse application work intensity and local data
+volume. They contain no work content, paths, credentials, renderer-process
+counts, whole-machine measurements, exact byte counts, or exact percentages.
+CPU and memory describe the antiburn shell process, not renderer processes or
+whole-app totals. Memory means physical footprint on macOS, resident set size on
+Linux, and working set size on Windows. Linux I/O can include I/O inherited from
+child processes after the shell waits for them. Windows I/O covers all shell-process
+I/O transfer bytes, not physical disk traffic. An unavailable measurement is not
+reported as zero, and the highest memory band is a sampled maximum rather than a
+true peak.
+
+The installation identifier is random and changes every 30 days. The live
+analytics-session identifier is generated in memory and changes when the app
+restarts, when the installation identifier rotates, or after 30 minutes without
+a captured analytics event. Each queued event contains the identifier, so that
+serialized value remains in the local analytics queue on disk until the event
+is sent or removed. Background events can keep an analytics session active, and
+one app run can contain more than one; it does not measure a user visit or time
+spent. Neither identifier comes from your hardware, account, name, or email
+address.
 
 The complete field list, event catalog, and verification steps are in
 [Anonymised analytics](analytics.md).
@@ -55,8 +90,9 @@ type, and app runtime. We store them with the raw event.
 ## Why we use analytics
 
 We use these events to understand whether onboarding works, which product
-features are useful, which operations fail, and when Claude makes its session
-limit-reset feature available. We do not use them for
+features are useful, which operations fail, when Claude makes its session
+limit-reset feature available, and whether antiburn has resource regressions.
+We do not use them for
 advertising, user profiling, or decisions about a person.
 
 We process this data for our legitimate interest in maintaining and improving
