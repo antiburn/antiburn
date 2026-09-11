@@ -132,7 +132,7 @@
       }
     },
     "provenance": {
-      "analyzerRevision": 22,
+      "analyzerRevision": 23,
       "evidenceSchemaRevision": 18,
       "harnessVersion": {
         "state": "unsupported"

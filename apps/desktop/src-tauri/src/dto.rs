@@ -609,6 +609,8 @@ pub struct ChecksCategoryPayload {
 #[serde(rename_all = "camelCase")]
 pub struct ChecksReportPayload {
     pub evidence_settled: bool,
+    /// Sessions with evidence that is queued or processing for this report window.
+    pub pending_evidence: u64,
     /// Hundredths of one percent, bounded to `0..=10000`.
     pub estimated_token_burn_basis_points: Option<u16>,
     pub categories: Vec<ChecksCategoryPayload>,
@@ -2074,7 +2076,11 @@ impl From<EfficiencyReport> for InsightsReportPayload {
 }
 
 impl ChecksReportPayload {
-    pub fn from_report(report: &EfficiencyReport, evidence_settled: bool) -> Self {
+    pub fn from_report(
+        report: &EfficiencyReport,
+        evidence_settled: bool,
+        pending_evidence: u64,
+    ) -> Self {
         let categories = DetectorId::ALL
             .iter()
             .map(|&id| {
@@ -2091,6 +2097,7 @@ impl ChecksReportPayload {
             .collect();
         Self {
             evidence_settled,
+            pending_evidence,
             estimated_token_burn_basis_points: report.estimated_token_burn_basis_points,
             categories,
         }
@@ -2530,11 +2537,12 @@ mod tests {
             };
 
             let value =
-                serde_json::to_value(ChecksReportPayload::from_report(&report, true)).unwrap();
+                serde_json::to_value(ChecksReportPayload::from_report(&report, true, 0)).unwrap();
             assert!(value["categories"][0].get("examples").is_none());
             assert!(value.get("coverage").is_none());
             assert!(value.get("quotaPressure").is_none());
             assert_eq!(value["evidenceSettled"], true);
+            assert_eq!(value["pendingEvidence"], 0);
             assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_625);
             assert_eq!(value["categories"][0]["estimatedTokenBurnBasisPoints"], 500);
             assert_eq!(
@@ -2553,7 +2561,8 @@ mod tests {
                 [
                     "categories",
                     "estimatedTokenBurnBasisPoints",
-                    "evidenceSettled"
+                    "evidenceSettled",
+                    "pendingEvidence"
                 ]
             );
             let category_keys: Vec<&str> = value["categories"][0]
@@ -2577,8 +2586,9 @@ mod tests {
             assert_eq!(value["categories"][0]["unavailable"], 1);
 
             let value =
-                serde_json::to_value(ChecksReportPayload::from_report(&report, false)).unwrap();
+                serde_json::to_value(ChecksReportPayload::from_report(&report, false, 4)).unwrap();
             assert_eq!(value["evidenceSettled"], false);
+            assert_eq!(value["pendingEvidence"], 4);
             assert_eq!(value["estimatedTokenBurnBasisPoints"], 1_625);
         }
 

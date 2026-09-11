@@ -41,6 +41,7 @@ vi.mock("../../lib/ipc", async (importOriginal) => ({
 
 const report: ChecksReportPayload = {
   evidenceSettled: false,
+  pendingEvidence: 0,
   estimatedTokenBurnBasisPoints: 800,
   categories: [
     {
@@ -287,7 +288,7 @@ describe("BurnChecksView", () => {
     setup(target, false, aggregate, report)
     expect((await screen.findAllByText("8% token burn"))[0]).toBeVisible()
     expect(screen.getByText(/1 check failed/)).toBeVisible()
-    expect(screen.getByText(/More evidence is needed/)).toBeVisible()
+    expect(screen.queryByText(/More evidence is needed/)).not.toBeInTheDocument()
     expect(screen.getByRole("heading", { name: "Failed checks" })).toBeVisible()
     expect(screen.getByRole("heading", { name: "Passed checks" })).toBeVisible()
     expect(screen.queryByRole("heading", { name: "Not assessed" })).not.toBeInTheDocument()
@@ -472,13 +473,9 @@ describe("BurnChecksView", () => {
     fireEvent.click(fix)
     expect(commands.prepare).toHaveBeenCalledOnce()
     const dialog = await screen.findByRole("dialog", { name: "Fix claude-opus-4-6" })
-    expect(dialog).toHaveTextContent("claude-opus-4-6 → claude-sonnet-5")
     expect(dialog).toHaveTextContent("AgentClaude Code")
     expect(dialog).toHaveTextContent("SettingModel")
     expect(dialog).toHaveTextContent("This plan changes future model selection")
-    expect(dialog).toHaveTextContent(
-      "Antiburn waits for fresh evidence from the same source and exact target.",
-    )
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Change applied" })).toBeDisabled(),
@@ -827,7 +824,6 @@ describe("BurnChecksView", () => {
   })
 
   it.each([
-    ["expired", { outcome: "expired" }, "This action expired."],
     ["conflict", { outcome: "conflict" }, "Another prepared change conflicts"],
     [
       "unavailable",
@@ -844,7 +840,7 @@ describe("BurnChecksView", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })
 
-  it("renders reasoning operation effects and side effects", async () => {
+  it("renders reasoning operation effects", async () => {
     commands.prepare.mockResolvedValueOnce({
       outcome: "reviewReady",
       review: {
@@ -863,36 +859,6 @@ describe("BurnChecksView", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
     const dialog = await screen.findByRole("dialog")
     expect(dialog).toHaveTextContent("This plan lowers reasoning effort for future requests")
-    expect(dialog).toHaveTextContent("max → medium")
-    expect(dialog).toHaveTextContent("Responses can use less reasoning")
-  })
-
-  it.each([
-    [
-      "freshEvidenceFromSameSourceAndTarget",
-      "Antiburn waits for fresh evidence from the same source and exact target.",
-    ],
-    [
-      "exactPositiveControlRequired",
-      "Antiburn needs fresh evidence that the exact recommended control was used.",
-    ],
-    [
-      "currentEvidenceCannotProveFix",
-      "Current evidence cannot prove this change fixed the finding.",
-    ],
-  ] as const)("renders the %s verification limit", async (verificationLimit, expected) => {
-    setup(
-      {
-        ...target,
-        display: { ...target.display, verificationLimit },
-      },
-      false,
-      aggregate,
-      report,
-    )
-    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
-
-    expect(await screen.findByRole("dialog")).toHaveTextContent(expected)
   })
 
   it("retries clipboard failure without creating a second backend action", async () => {
@@ -1143,7 +1109,6 @@ describe("BurnChecksView", () => {
   })
 
   it.each([
-    ["expired", { outcome: "expired" }, "This reviewed change expired."],
     ["conflict", { outcome: "conflict" }, "Another change now conflicts"],
     [
       "unavailable",

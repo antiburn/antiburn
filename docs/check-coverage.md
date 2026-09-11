@@ -111,6 +111,11 @@ vocabulary; behavior tests separately check finding and clean gates.
 
 ## Evidence Boundaries
 
+Burn checks use only sessions admitted by the repository scan gate. A session
+needs a resolvable Git repository CWD. Disabled roots and their linked
+worktrees are excluded before evidence processing; missing or unresolved CWDs
+are unavailable, never clean.
+
 No current reader proves a full historical resource inventory. All M/B/K checks
 deny session-wide `Clean`, even when a nested observed-resource map is complete.
 A scoped finding requires complete coverage of that observed subset, calls, and
@@ -227,7 +232,7 @@ agent release.
 | Codex       | Reasoning effort            | Auto Fix                   | `CodexRolloutJsonl` T findings only. The publication must bind the observed level to an existing effective top-level `model_reasoning_effort`. The reviewed replacement is `medium`.                                        |
 | Codex       | MCP enablement              | Prompt only                | Exact observed server exposure does not prove resource ownership, dependencies, or the effective layered `enabled` selector at publication.                                                                                 |
 | Codex       | Skill enablement            | Prompt only                | A selected full skill document proves injection, not the path-bound skill source, ownership, dependencies, or effective enablement control.                                                                                 |
-| OpenCode    | Model default               | Auto Fix                   | `OpenCodeJsonl` and `OpenCodeSqliteV2` O findings only. Publication must bind the observed `provider/model` route to the effective merged `model` value. Dynamic, remote, agent, mode, and managed overrides are rejected.  |
+| OpenCode    | Model default               | Auto Fix                   | `OpenCodeJsonl` and `OpenCodeSqliteV2` O findings only. Direct `openai`, `anthropic`, and `google` provider IDs use their reviewed native API when OpenCode omits it. Publication must bind the observed `provider/model` route to the effective merged `model` value. Dynamic, remote, agent, mode, and managed overrides are rejected.  |
 | OpenCode    | Reasoning control           | Unavailable                | The accepted sources have no historical effort map. A variant label is not an effective reasoning control.                                                                                                                  |
 | OpenCode    | MCP control                 | Unavailable                | The accepted sources have no model-facing MCP inventory or publication-time physical control attribution.                                                                                                                   |
 | OpenCode    | Skill control               | Prompt only                | A selected full document can produce a bounded prompt, but it does not identify one effective skill configuration target.                                                                                                   |
@@ -422,11 +427,8 @@ for unsupported named checks. The ledger above records the current decisions.
 Cursor and other agents retain their deferred basic support; these decisions
 do not assert a completed audit of all their native sources.
 
-## Contract Tests
+## Test Coverage
 
-- [`check_coverage_contract.rs`](../crates/antiburn-local/tests/check_coverage_contract.rs)
-  checks every enum key once in each inventory, the nine detector columns, valid
-  status words, partial-fact clean denial, source gates, and direct D/O findings.
 - Agent characterization suites in `crates/antiburn-local/tests/` cover native
   records, missing facts, scoped resources, provider controls, and malformed input.
 - `resume_parity.rs`, `evidence_replay_parity.rs`, and `turn_row_replay_parity.rs`

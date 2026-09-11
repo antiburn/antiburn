@@ -62,38 +62,24 @@ export function checksHeroPresentation(
   presentation: ChecksPresentation,
 ): ChecksHeroPresentation {
   const failureCount = presentation.failures.length
-  const needsEvidence =
-    presentation.unavailable.length > 0 ||
-    [...presentation.failures, ...presentation.wins].some(
-      (category) => category.unavailable > 0,
-    )
   if (failureCount > 0) {
     const failed = `${failureCount} check${failureCount === 1 ? "" : "s"} failed`
     const basisPoints = presentation.estimate.tokenBurnBasisPoints
     return {
       result:
         basisPoints == null ? failed : `${formatTokenBurnPercent(basisPoints)} token burn`,
-      summary:
-        [basisPoints == null ? null : failed, needsEvidence ? "More evidence is needed" : null]
-          .filter(Boolean)
-          .join(" · ") || null,
+      summary: basisPoints == null ? null : failed,
       state: "failed",
       tone: basisPoints == null ? "text-system-red-text" : tokenBurnTone(basisPoints),
     }
   }
 
-  const completePass = presentation.wins.length > 0 && !needsEvidence
+  const completePass = presentation.wins.length > 0
   return {
-    result: completePass
-      ? "All checks passed"
-      : presentation.wins.length > 0
-        ? "No issues found where assessed"
-        : "More evidence is needed",
+    result: completePass ? "No issues found" : "No checks assessed",
     summary: completePass
       ? `${presentation.wins.length} check${presentation.wins.length === 1 ? "" : "s"} passed`
-      : presentation.wins.length > 0
-        ? "More evidence is needed"
-        : null,
+      : null,
     state: completePass ? "passed" : "pending",
     tone: "text-label",
   }

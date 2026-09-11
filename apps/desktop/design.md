@@ -553,7 +553,7 @@ counts, order, token-burn percentages, summaries, and semantic status colors. Th
 shared presentation helpers. Do not copy labels or calculate percentages in either surface. Do not
 sum category percentages. Use color only for the compact status icon and metric. Other text and
 surfaces stay neutral. The main view shows failed and passed groups. It hides not-assessed rows;
-the summary states when more evidence is needed. Groups use `surface-card/50`, `rounded-control`,
+the summary never presents incomplete historical evidence as a pending product state. Groups use `surface-card/50`, `rounded-control`,
 separators, and accessible disclosure buttons. Expanded failures use one short, check-specific
 finding sentence, followed by the available actions. Do not show internal target identities,
 repeated observations, repeated guidance, or detail refresh and bounded-list notices. Only unused MCP servers and unused skills show

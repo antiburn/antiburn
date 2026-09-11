@@ -111,6 +111,8 @@ export interface ChecksCategoryPayload {
 export interface ChecksReportPayload {
   /** False while this report snapshot still has queued or running evidence work. */
   evidenceSettled: boolean
+  /** Sessions with evidence queued or processing for this report window. */
+  pendingEvidence: number
   /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */
   estimatedTokenBurnBasisPoints: number | null
   categories: ChecksCategoryPayload[]

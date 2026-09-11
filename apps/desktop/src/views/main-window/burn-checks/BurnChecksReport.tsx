@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, CircleDashed, Flame } from "lucide-react"
+import { CheckCircle2, ChevronDown, CircleDashed, Flame, LoaderCircle } from "lucide-react"
 import { useCallback, useId, useState } from "react"
 
 import { cn } from "../../../lib/cn"
@@ -242,7 +242,22 @@ export function BurnChecksReport({
         </span>
         <div className="min-w-0 flex-1">
           <p className={cn("type-title-2 tabular-nums", hero.tone)}>{hero.result}</p>
-          {hero.summary && <p className="type-footnote text-label-secondary">{hero.summary}</p>}
+          {(hero.summary || report.pendingEvidence > 0) && (
+            <div className="flex items-center gap-3 type-footnote text-label-secondary">
+              {hero.summary && <p>{hero.summary}</p>}
+              {report.pendingEvidence > 0 && (
+                <p className="flex items-center gap-1.5 text-label-tertiary" role="status">
+                  <LoaderCircle
+                    size={12}
+                    strokeWidth={2}
+                    className="animate-spin"
+                    aria-hidden="true"
+                  />
+                  {`${report.pendingEvidence} session${report.pendingEvidence === 1 ? "" : "s"} processing`}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </section>
       <BurnChecksSavings wins={state.aggregate?.wins ?? []} />

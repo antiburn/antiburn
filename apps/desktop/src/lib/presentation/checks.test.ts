@@ -22,6 +22,7 @@ function category(overrides: Partial<ChecksCategoryPayload> = {}): ChecksCategor
 function report(categories: ChecksCategoryPayload[]): ChecksReportPayload {
   return {
     evidenceSettled: true,
+    pendingEvidence: 0,
     estimatedTokenBurnBasisPoints: 1_625,
     categories,
   }
@@ -55,7 +56,7 @@ describe("Checks presentation", () => {
     })
   })
 
-  it("states when clean assessed results still need more evidence", () => {
+  it("keeps clean assessed results conclusive", () => {
     const presentation = checksPresentation(
       report([
         category({ finding: 0, clean: 8, unavailable: 2 }),
@@ -64,9 +65,9 @@ describe("Checks presentation", () => {
     )
 
     expect(checksHeroPresentation(presentation)).toEqual({
-      result: "No issues found where assessed",
-      summary: "More evidence is needed",
-      state: "pending",
+      result: "No issues found",
+      summary: "2 checks passed",
+      state: "passed",
       tone: "text-label",
     })
   })

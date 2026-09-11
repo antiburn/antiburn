@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom"
 
-import type { AutoFixReviewPayload, VerificationCoverageLimit } from "../../../lib/insightsIpc"
+import type { AutoFixReviewPayload } from "../../../lib/insightsIpc"
 import { agentDisplayName } from "../../../lib/presentation/agents"
 import { scopeLabel } from "./BurnCheckTargetPresentation"
 
@@ -8,7 +8,6 @@ export function BurnCheckReviewDialog({
   title,
   titleId,
   review,
-  verificationLimit,
   busy,
   blocked,
   status,
@@ -18,7 +17,6 @@ export function BurnCheckReviewDialog({
   title: string
   titleId: string
   review: AutoFixReviewPayload
-  verificationLimit: VerificationCoverageLimit
   busy: boolean
   blocked: boolean
   status: string | null
@@ -77,30 +75,6 @@ export function BurnCheckReviewDialog({
           <div className="col-span-2">
             <dt className="type-footnote text-label-tertiary">Scope</dt>
             <dd className="mt-0.5 type-callout text-label">{scopeLabel(review.scope)}</dd>
-          </div>
-          <div className="col-span-2">
-            <dt className="type-footnote text-label-tertiary">Exact change</dt>
-            <dd className="mt-0.5 type-callout font-mono text-label">
-              {review.currentValue} → {review.proposedValue}
-            </dd>
-          </div>
-          <div className="col-span-2">
-            <dt className="type-footnote text-label-tertiary">Behavior limit</dt>
-            <dd className="mt-0.5 type-callout text-label-secondary">
-              {review.sideEffect === "modelBehaviorMayChange"
-                ? "Model behavior can change after this setting changes."
-                : "Responses can use less reasoning after this setting changes."}
-            </dd>
-          </div>
-          <div className="col-span-2">
-            <dt className="type-footnote text-label-tertiary">Verification</dt>
-            <dd className="mt-0.5 type-callout text-label-secondary">
-              {verificationLimit === "freshEvidenceFromSameSourceAndTarget"
-                ? "Antiburn waits for fresh evidence from the same source and exact target."
-                : verificationLimit === "exactPositiveControlRequired"
-                  ? "Antiburn needs fresh evidence that the exact recommended control was used."
-                  : "Current evidence cannot prove this change fixed the finding."}
-            </dd>
           </div>
         </dl>
         {status && (

@@ -78,7 +78,7 @@ function Samples({ targets }: { targets: BurnCheckTargetPayload[] }) {
                   result?.outcome === "deleted"
                     ? "This sample session was deleted."
                     : result?.outcome === "expired"
-                      ? "This sample link expired. Refresh Burn checks and try again."
+                      ? "This sample session is no longer available."
                       : "This sample session is unavailable.",
                 )
               } catch {
@@ -102,9 +102,11 @@ function Samples({ targets }: { targets: BurnCheckTargetPayload[] }) {
 function CheckPromptAction({
   detector,
   targets,
+  refresh,
 }: {
   detector: BurnCheckDetectorId
   targets: BurnCheckTargetPayload[]
+  refresh: () => void
 }) {
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
@@ -161,7 +163,8 @@ function CheckPromptAction({
         if (key.current !== startedKey) return
         if (outcome?.outcome !== "promptReady") {
           setBusy(false)
-          setStatus("This check changed. Refresh Burn checks and try again.")
+          setStatus("Checking the current change.")
+          refresh()
           return
         }
         nextPrompt = outcome.prompt
@@ -194,7 +197,7 @@ function CheckPromptAction({
         ) : (
           <Clipboard size={12} aria-hidden="true" />
         )}
-        {copied ? "Copied" : busy ? "Copying…" : "Copy fix prompt"}
+        {copied ? "Copied" : "Copy fix prompt"}
       </button>
       {status && (
         <p role="alert" className="mt-3 type-callout text-system-red-text">
@@ -219,13 +222,23 @@ function FixAction({
   if (eligible.length === 0) return null
   if (eligible.length === 1)
     return (
-      <BurnCheckTargetActions target={eligible[0]!} refresh={refresh} showPromptFix={false} />
+      <BurnCheckTargetActions
+        target={eligible[0]!}
+        refresh={refresh}
+        showPromptFix={false}
+        embedded
+      />
     )
   return (
     <div className="mt-3">
       {selected ? (
         <>
-          <BurnCheckTargetActions target={selected} refresh={refresh} showPromptFix={false} />
+          <BurnCheckTargetActions
+            target={selected}
+            refresh={refresh}
+            showPromptFix={false}
+            embedded
+          />
           <button
             type="button"
             onClick={() => {
@@ -287,6 +300,7 @@ export function BurnCheckDetail({
           key={targets.map((target) => target.actionId).join(":")}
           detector={detector}
           targets={targets}
+          refresh={refresh}
         />
         <FixAction targets={targets} refresh={refresh} />
       </div>

@@ -172,6 +172,7 @@ pub struct ReportRequest {
 pub struct ReducedReport {
     pub report: EfficiencyReport,
     pub evidence_settled: bool,
+    pub pending_evidence: u64,
 }
 
 /// Selects one detector's current findings in a bounded report window.
@@ -349,6 +350,7 @@ fn reduce_with_state_on_snapshot(
     Ok(ReducedReport {
         report,
         evidence_settled: pending_evidence == 0,
+        pending_evidence,
     })
 }
 
@@ -1948,6 +1950,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
     struct ReasoningFixture {
         agent: AgentKind,
         capabilities: SourceCapabilities,
@@ -1959,6 +1962,7 @@ mod tests {
         effort: &'static str,
     }
 
+    #[cfg(not(windows))]
     fn publish_reasoning_for_agent(
         store: &Store,
         home: &Path,

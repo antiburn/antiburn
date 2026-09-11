@@ -381,7 +381,6 @@ Run focused engine tests first:
 ```bash
 cd crates/antiburn-local
 cargo test remediation
-cargo test --test check_coverage_contract
 ```
 
 Run focused desktop tests next:

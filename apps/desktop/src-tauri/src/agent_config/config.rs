@@ -9,6 +9,7 @@ use antiburn_local::model::AgentKind;
 use super::filesystem::FileIdentity;
 #[cfg(unix)]
 use super::filesystem::FileOwnership;
+#[cfg(not(windows))]
 use super::vendors::OperationSelector;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

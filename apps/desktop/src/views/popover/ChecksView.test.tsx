@@ -162,7 +162,7 @@ describe("Checks", () => {
     expect(container.querySelectorAll(".text-roll")).toHaveLength(2)
     expect(screen.getByText(/1 check failed/)).toBeInTheDocument()
     expect(screen.getByText("7/11 sessions failed")).toBeInTheDocument()
-    expect(screen.getByText(/More evidence is needed/)).toBeInTheDocument()
+    expect(screen.queryByText(/More evidence is needed/)).not.toBeInTheDocument()
     expect(screen.getByText("Passed checks")).toHaveClass("text-label-tertiary")
     expect(
       screen.queryByText("Estimated share of tokens spent on avoidable work."),
@@ -184,6 +184,12 @@ describe("Checks", () => {
     expect(screen.queryByText("Passed")).not.toBeInTheDocument()
     expect(screen.getAllByText("12 passed")).toHaveLength(4)
     expect(screen.queryByRole("button")).not.toBeInTheDocument()
+  })
+
+  it("shows the queued check count below the hero", () => {
+    render(<ChecksPeek presentation={presentation} pendingEvidence={12} />)
+
+    expect(screen.getByRole("status")).toHaveTextContent("12 sessions processing")
   })
 
   it("renders every shared per-check metric in the anchored companion", () => {
@@ -315,8 +321,8 @@ describe("Checks", () => {
         }}
       />,
     )
-    expect(screen.getByText("All checks passed")).toBeInTheDocument()
-    expect(screen.getByText("All checks passed")).toHaveClass("text-label")
+    expect(screen.getByText("No issues found")).toBeInTheDocument()
+    expect(screen.getByText("No issues found")).toHaveClass("text-label")
     const passingIcon = container.querySelector(".lucide-circle-check")
     expect(passingIcon).toBeInTheDocument()
     expect(passingIcon).toHaveAttribute("width", "24")
@@ -333,8 +339,8 @@ describe("Checks", () => {
         }}
       />,
     )
-    expect(screen.getByText("No issues found where assessed")).toBeInTheDocument()
-    expect(screen.getByText("More evidence is needed")).toBeInTheDocument()
+    expect(screen.getByText("No issues found")).toBeInTheDocument()
+    expect(screen.queryByText("More evidence is needed")).not.toBeInTheDocument()
     expect(screen.queryByText("Passed")).not.toBeInTheDocument()
     expect(screen.queryByText("Passed where assessed")).not.toBeInTheDocument()
     const row = screen.getByText("Session overdepth").closest(".grid")

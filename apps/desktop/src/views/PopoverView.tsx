@@ -295,6 +295,7 @@ export function PopoverView() {
                     void peekTriggers.hover({ kind: "checks" }, anchor, {
                       kind: "checks",
                       presentation: checks,
+                      pendingEvidence: state.checksReport?.pendingEvidence ?? 0,
                     })
                   }}
                   onLeave={() => void peekTriggers.leave()}

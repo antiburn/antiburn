@@ -216,7 +216,7 @@ pub const PARSER_REVISION: i64 = 32;
 // Recompute repeated context within compatible request segments.
 // This batch also reassesses nested resource use and paired subagent models.
 // Reassess sessions with the larger thread identity limit.
-pub const ANALYZER_REVISION: i64 = 22;
+pub const ANALYZER_REVISION: i64 = 23;
 // +1 for seam R2: the worker path now derives `inclusive_model_breakdown`
 // and `model_runs` from published turn rows instead of the accumulator
 // (`query_model_breakdown`, `query_model_runs`), so every session in the

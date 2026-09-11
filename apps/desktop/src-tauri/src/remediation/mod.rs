@@ -285,7 +285,7 @@ impl RemediationController {
         Ok(BurnCheckTargetList { targets, truncated })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(windows)))]
     pub(crate) fn list_burn_check_targets_with_home(
         &self,
         store: &Store,

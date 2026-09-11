@@ -123,12 +123,12 @@ function commandFailure({ stage, outcome }: FailureInput): string {
       return "The write result is uncertain. Review the setting before another change."
     case "expired":
       return stage === "prepare"
-        ? "This action expired. Refresh Burn checks and try again."
-        : "This reviewed change expired. Close this review, then prepare it again."
+        ? "Checking the current change."
+        : "Checking the current change before another review."
     case "stale":
       return stage === "prepare"
-        ? "This finding changed. Refresh Burn checks and review the current change."
-        : "This finding changed after review. Close this review and refresh Burn checks."
+        ? "Checking the current change."
+        : "Checking the current change before another review."
     case "conflict":
       return stage === "prepare"
         ? "Another prepared change conflicts with this setting. Refresh and review it again."
@@ -142,10 +142,12 @@ export function BurnCheckTargetActions({
   target,
   refresh,
   showPromptFix = true,
+  embedded = false,
 }: {
   target: BurnCheckTargetPayload
   refresh: () => void
   showPromptFix?: boolean
+  embedded?: boolean
 }) {
   const key = attemptKey(target)
   const [action, setAction] = useState(() => initialAction(key))
@@ -231,6 +233,7 @@ export function BurnCheckTargetActions({
           busy: null,
           status: commandFailure({ stage: "prepare", outcome }),
         }))
+        if (outcome?.outcome === "expired" || outcome?.outcome === "stale") refresh()
       }
     } catch {
       noteInteraction({ kind: "burnCheckAutoFixReviewed", outcome: "failed" })
@@ -284,6 +287,10 @@ export function BurnCheckTargetActions({
         status: commandFailure({ stage: "apply", outcome }),
       }))
       if (outcome?.outcome === "recoveryNeeded") refresh()
+      if (outcome?.outcome === "expired" || outcome?.outcome === "stale") {
+        setAction((value) => ({ ...value, review: null, reviewBlocked: false }))
+        refresh()
+      }
     } catch {
       noteInteraction({ kind: "burnCheckAutoFixCompleted", outcome: "failed" })
       if (clearStaleApply(startedAttemptKey)) return
@@ -315,9 +322,10 @@ export function BurnCheckTargetActions({
             busy: null,
             status:
               outcome?.outcome === "expired" || outcome?.outcome === "stale"
-                ? "This action expired or changed. Refresh Burn checks and try again."
+                ? "Checking the current change."
                 : "A prompt fix is unavailable for this finding.",
           }))
+          if (outcome?.outcome === "expired" || outcome?.outcome === "stale") refresh()
           return
         }
         prompt = outcome.prompt
@@ -356,7 +364,10 @@ export function BurnCheckTargetActions({
   return (
     <>
       {hasAction && (
-        <div ref={bindActionRoot} className="mt-3 flex flex-wrap items-center gap-2">
+        <div
+          ref={bindActionRoot}
+          className={`${embedded ? "" : "mt-3 "}flex flex-wrap items-center gap-2`}
+        >
           {target.autoFix.status === "available" && (
             <button
               ref={trigger}
@@ -389,11 +400,7 @@ export function BurnCheckTargetActions({
               ) : (
                 <Clipboard size={12} aria-hidden="true" />
               )}
-              {action.copied
-                ? "Copied"
-                : action.busy === "copy"
-                  ? "Copying…"
-                  : "Copy fix prompt"}
+              {action.copied ? "Copied" : "Copy fix prompt"}
             </button>
           )}
         </div>
@@ -403,17 +410,11 @@ export function BurnCheckTargetActions({
           {action.status}
         </p>
       )}
-      {action.applied && (
-        <p role="status" className="sr-only">
-          Change applied. Waiting for fresh evidence before this finding can be fixed.
-        </p>
-      )}
       {action.review && (
         <BurnCheckReviewDialog
           title={title}
           titleId={`fix-${target.findingId}-title`}
           review={action.review}
-          verificationLimit={target.display.verificationLimit}
           busy={action.busy === "apply"}
           blocked={action.reviewBlocked}
           status={action.status}

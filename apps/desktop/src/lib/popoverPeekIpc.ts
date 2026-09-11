@@ -40,7 +40,7 @@ export type PopoverPeekData =
       summary: ProviderUsageSummaryPayload
       live: LiveUsageSummaryPayload
     }
-  | { kind: "checks"; presentation: ChecksPresentation }
+  | { kind: "checks"; presentation: ChecksPresentation; pendingEvidence?: number | undefined }
 
 /** Retarget the companion beside the popover. */
 export async function showPopoverPeek(

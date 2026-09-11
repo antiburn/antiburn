@@ -57,6 +57,12 @@ Dedicated reader registration alone does not establish usable session analysis.
 The table lists all 26 `SourceFormat` names from
 `crates/antiburn-local/src/analysis/evidence.rs`, each exactly once.
 
+Before a production session enters the local index, its CWD must resolve to a
+Git repository. The scan maps linked worktrees to the canonical main root and
+rejects missing or unresolved CWDs. A disabled repository is rejected when
+either its CWD or its canonical root is in the existing ignored-path set.
+Newly discovered repositories remain enabled by default.
+
 | `SourceFormat`                 | Agent         | Native source                                                              | Discovery and framing                                                                                                                                          | Parsed facts                                                                                                                                                                  | State                                                                                             |
 | ------------------------------ | ------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `ClaudeJsonl`                  | Claude Code   | `~/.claude/projects/<workspace>/*.jsonl`                                   | Native discovery; bounded JSONL with source claims; resume supported                                                                                           | Usage, token classes, time, models, request controls/routes, calls, observed resource injection, thread links, compactions, exact Task/Agent child pairing                    | Characterized accepted core; observed resources are not full inventories                          |
@@ -95,7 +101,7 @@ name alone does not establish option or accounting semantics.
 | ------------------------- | -------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | Claude Code JSONL         | Explicit provider/API retained when present; absent pair uses the reviewed fixed route | `anthropic` / `messages`                                                               | Request model and parent-call/actual child models                | Core controls/accounting assessable on reviewed routes; explicit unknown or incomplete routes do not use the fallback          |
 | Codex rollout             | `session_meta.model_provider`, thread settings, and explicit inherited fork state      | `openai` / `responses` reviewed route                                                  | `turn_context` and request model fields                          | Request changes retain their own route and controls; custom or invalid providers fail closed                                   |
-| OpenCode JSONL and SQLite | Assistant `providerID` retained in durable rows                                        | Optional API retained; cache query has reviewed native-provider accounting cases       | Assistant `modelID`                                              | Anthropic cache-write and OpenAI uncached-input accounting on compatible history; arbitrary variants remain unsupported effort |
+| OpenCode JSONL and SQLite | Assistant `providerID` retained in durable rows                                        | Optional API retained; direct OpenAI, Anthropic, and Google provider IDs use their reviewed native API only for model remediation | Assistant `modelID` | Anthropic cache-write and OpenAI uncached-input accounting on compatible history; arbitrary variants remain unsupported effort |
 | Pi V3                     | Assistant provider retained per request                                                | Native assistant API retained in durable rows                                          | Assistant model and branch-local model/policy changes            | Reviewed agent-selected policy and compatible-request accounting; missing routes are not copied from an earlier model          |
 | Cursor formats            | No complete provider route is retained                                                 | No API contract is characterized                                                       | Some records and metadata retain model names                     | Model aliases and complete request coverage remain partial or unknown                                                          |
 | Antigravity formats       | No complete provider route is retained                                                 | Installed 2.11.0 descriptor subset is researched; no complete persisted route contract | Direct model strings exist; private numeric enums are incomplete | D/O findings only where facts exist; reviewed native C is unsupported                                                          |
@@ -116,7 +122,7 @@ compactions, or incomplete history prevent clean. OpenCode uses validated
 ordered history, not `parentID` as a fabricated predecessor link.
 
 The route columns use engine turn migration 7 and desktop migration 39. Current
-parser/analyzer/evidence/coverage/resume revisions are 31/22/18/4/6. Existing
+parser/analyzer/evidence/coverage/resume revisions are 32/23/18/4/6. Existing
 revision gates invalidate old projections and snapshots; JSON and binary
 evidence round trips and full/resumed replay are covered by tests.
 
@@ -234,8 +240,7 @@ A target source is complete only when:
 - Provider and model semantics are reviewed where parsing exposes controls or accounting.
 - The corresponding rows in `check-coverage.md` match tested behavior.
 
-The [check coverage contract test](../crates/antiburn-local/tests/check_coverage_contract.rs)
-checks all source keys and the manual matrix structure. Agent characterization,
-resume, replay, and desktop companion tests check behavior separately. The
+Agent characterization, resume, replay, and desktop companion tests check
+behavior separately. The
 [dated confirmation ledger](check-coverage.md#confirmation-ledger) contains the
 pinned upstream research and approved source-scoped limits.

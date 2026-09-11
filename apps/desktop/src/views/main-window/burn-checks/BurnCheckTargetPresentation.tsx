@@ -39,7 +39,7 @@ export function watchStatus(target: BurnCheckTargetPayload): string | null {
     case "reserved":
       return "The change is reserved. Verification has not started."
     case "watching":
-      return "Watching for fresh evidence. The finding is not fixed yet."
+      return null
     case "fixed":
       return null
     case "stillUnresolved":
@@ -115,7 +115,7 @@ export function SampleSessions({ target }: { target: BurnCheckTargetPayload }) {
                   result?.outcome === "deleted"
                     ? "This sample session was deleted."
                     : result?.outcome === "expired"
-                      ? "This sample link expired. Refresh Burn checks and try again."
+                      ? "This sample session is no longer available."
                       : "This sample session is unavailable.",
                 )
               } catch {

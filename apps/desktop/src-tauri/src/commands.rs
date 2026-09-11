@@ -1477,10 +1477,14 @@ pub async fn get_checks_report(
         .state::<InsightsController>()
         .checks_report(data_dir, request, consumer_id)
         .await?;
-    Ok(ChecksReportPayload::from_report(
+    let mut payload = ChecksReportPayload::from_report(
         &reduced.report,
         reduced.evidence_settled,
-    ))
+        reduced.pending_evidence,
+    );
+    #[cfg(debug_assertions)]
+    crate::tray::simulate_burn_checks(app, &mut payload);
+    Ok(payload)
 }
 
 /// Restricts burn-check remediation to the current Checks surface.

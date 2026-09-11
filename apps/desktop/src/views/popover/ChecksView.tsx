@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleDashed, CircleX, Flame } from "lucide-react"
+import { CheckCircle2, CircleDashed, CircleX, Flame, LoaderCircle } from "lucide-react"
 import { useRef } from "react"
 
 import { TextRoll } from "../../components/ui/TextRoll"
@@ -157,7 +157,13 @@ function CheckRows({ checks }: { checks: readonly ChecksCategoryPayload[] }) {
   )
 }
 
-export function ChecksPeek({ presentation }: { presentation: ChecksPresentation }) {
+export function ChecksPeek({
+  presentation,
+  pendingEvidence = 0,
+}: {
+  presentation: ChecksPresentation
+  pendingEvidence?: number | undefined
+}) {
   const { failures, wins, estimate } = presentation
   const hero = checksHeroPresentation(presentation)
   const hasFindings = hero.state === "failed"
@@ -188,7 +194,7 @@ export function ChecksPeek({ presentation }: { presentation: ChecksPresentation 
             <CircleDashed size={24} strokeWidth={2} aria-hidden="true" />
           )}
         </span>
-        <span className="min-w-0">
+        <div className="min-w-0">
           <span className={`block type-title-2 tabular-nums ${hero.tone}`}>
             {hasFindings && estimate.tokenBurnBasisPoints != null ? (
               <TextRoll text={hero.result} />
@@ -196,10 +202,23 @@ export function ChecksPeek({ presentation }: { presentation: ChecksPresentation 
               hero.result
             )}
           </span>
-          {summaryStatus && (
-            <span className="block type-footnote text-label-secondary">{summaryStatus}</span>
+          {(summaryStatus || pendingEvidence > 0) && (
+            <div className="flex items-center gap-3 type-footnote text-label-secondary">
+              {summaryStatus && <span>{summaryStatus}</span>}
+              {pendingEvidence > 0 && (
+                <p className="flex items-center gap-1.5 text-label-tertiary" role="status">
+                  <LoaderCircle
+                    size={12}
+                    strokeWidth={2}
+                    className="animate-spin"
+                    aria-hidden="true"
+                  />
+                  {`${pendingEvidence} session${pendingEvidence === 1 ? "" : "s"} processing`}
+                </p>
+              )}
+            </div>
           )}
-        </span>
+        </div>
       </section>
 
       {failures.length > 0 && (

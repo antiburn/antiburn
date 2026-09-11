@@ -189,6 +189,7 @@ const HEALTHY_STORAGE = { failing: false, message: null }
 
 const CHECKS_REPORT = {
   evidenceSettled: true,
+  pendingEvidence: 0,
   estimatedTokenBurnBasisPoints: 1_625,
   categories: [
     {
