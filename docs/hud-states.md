@@ -162,15 +162,28 @@ outside the visible HUD reach the application underneath it.
 
 ## Stacking and spaces
 
-The HUD and its detail window use the macOS screen-saver window level. A lower
-level is not enough: macOS composites a full-screen space above the status
-level, which hides the HUD behind any full-screen window. The shell sets the
-level again each time it reveals the window, because the toolkit can reset it.
+The HUD and its detail window use nonactivating `NSPanel` subclasses that cannot
+become key or main windows. Hidden creation and native reveal use the same
+panel conversion mechanism as the menu-bar popover, without its keyboard-focus
+step. The app keeps its regular activation policy for ordinary windows.
 
-Both windows join all spaces, so one window follows the reader between spaces.
-The app draws no copy for each space. The windows also join the full-screen
-spaces of other applications, and they hold their position during a space
-switch and in Mission Control.
+Before each reveal, the main-thread callback resolves or converts the panel,
+sets its nonactivating style, and restores its stacking and Space policy. It
+then uses `orderFrontRegardless()` without activating the app. Pending hide
+requests still prevent a queued reveal. Conversion failure leaves the window
+hidden instead of falling back to an ordinary window.
+
+The panels retain the existing screen-saver level (1000) and
+`CanJoinAllSpaces | FullScreenAuxiliary | Stationary | IgnoresCycle` policy.
+The level controls stacking; it does not establish fullscreen-Space eligibility.
+Manual QA of the prior ordinary-window implementation found that level 1000
+alone did not make the HUD appear over another app's fullscreen Space.
+
+The policy requests visibility across Spaces on the HUD's remembered display,
+including fullscreen Spaces. There is only one HUD, not a copy on each display,
+and it does not move to another display merely because an app there enters
+fullscreen. Fullscreen visibility, Space switches, and passive interaction need
+live macOS validation after changes to the native window mechanism.
 
 ## Data and timing
 

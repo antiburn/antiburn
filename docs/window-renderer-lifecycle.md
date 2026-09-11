@@ -64,13 +64,15 @@ native policy before each reveal; popover refocus reapplies it too.
 | Nudge | Status (25) | Passive on arrival; takes key only after hover |
 | Native popover preview | Matches the anchor before presentation | Cannot become key or main |
 
-The HUD uses the screen-saver level to clear fullscreen compositing for its
-ordinary native windows. The nonactivating popover panel stays below system
-menus and status-level nudges. Nudges remain above floating windows. HUD and
-detail additionally use `Stationary | IgnoresCycle`.
+HUD and detail use passive nonactivating panels, retaining their existing
+screen-saver level while the fullscreen fix is validated. Level alone did not
+make their previous ordinary windows visible over fullscreen apps. The
+nonactivating popover panel stays below system menus and status-level nudges.
+Nudges remain above floating windows. HUD and detail additionally use
+`Stationary | IgnoresCycle`.
 
-Popover and nudge resolve or convert their panel in the same main-thread
-callback that configures and reveals it. Failed conversion does not fall back
+HUD, detail, popover, and nudge resolve or convert their panel in the same
+main-thread callback that configures and reveals it. Failed conversion does not fall back
 to an activating Tauri show or focus operation. The popover records reveal
 completion only after native presentation, not after queueing a callback.
 Nudge key release returns focus through the popover's nonactivating path.
