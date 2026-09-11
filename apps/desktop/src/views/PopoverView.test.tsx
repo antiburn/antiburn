@@ -758,36 +758,36 @@ describe("PopoverView", () => {
     expect(screen.getByRole("img", { name: /^Codex at 40 percent\b/ })).toBeInTheDocument()
   })
 
-  it("shows Checks in one passive anchored preview", async () => {
+  it("keeps Checks click-only when hovered or focused", async () => {
     render(<PopoverView />)
-
     await screen.findByText("1 failed")
     const trigger = (await screen.findByTestId("burn-check-headline")).closest("button")!
-    fireEvent.mouseEnter(trigger)
 
-    expect(screen.queryByRole("heading", { name: "Checks" })).not.toBeInTheDocument()
-    await waitFor(() => {
-      expect(trigger.parentElement).toHaveAttribute("data-state", "active")
-      const requests = invoke.mock.calls.filter(([command]) => command === "show_popover_peek")
-      expect(requests).toHaveLength(1)
-      expect(requests[0]?.[1]).toMatchObject({
-        target: { kind: "checks" },
-        initialPresentation: {
-          kind: "checks",
-          presentation: {
-            failures: [expect.objectContaining({ id: "cacheChurn" })],
-            wins: [expect.objectContaining({ id: "sessionsOverDepth" })],
-            refreshUnavailable: false,
-          },
-        },
+    vi.useFakeTimers()
+    try {
+      fireEvent.mouseEnter(trigger)
+      fireEvent.focus(trigger)
+      await act(async () => vi.advanceTimersByTimeAsync(300))
+      expect(trigger.parentElement).toHaveAttribute("data-state", "idle")
+      expect(
+        invoke.mock.calls.filter(([command]) => command === "show_popover_peek"),
+      ).toHaveLength(0)
+      fireEvent.click(trigger)
+      expect(invoke).toHaveBeenCalledWith("open_main_window_section", {
+        section: "burnChecks",
       })
-    })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  it("conceals the Checks preview when the Activity list scrolls", async () => {
+  it("conceals the provider preview when the Activity list scrolls", async () => {
     render(<PopoverView />)
     await screen.findByText("1 failed")
-    fireEvent.mouseEnter((await screen.findByTestId("burn-check-headline")).closest("button")!)
+    fireEvent.mouseEnter(await screen.findByRole("img", { name: /^Codex at 40 percent\b/ }))
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("show_popover_peek", expect.anything()),
+    )
 
     const viewport = screen
       .getByRole("region", { name: "Sessions" })

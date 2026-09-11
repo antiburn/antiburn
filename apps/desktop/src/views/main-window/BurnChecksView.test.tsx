@@ -285,9 +285,51 @@ describe("BurnChecksView", () => {
     )
   })
 
+  it.each([0, 1, 50, 100, 200, 10_000, null])(
+    "keeps exact labels and a visible positive arc for %s basis points",
+    async (basisPoints) => {
+      setup(target, false, aggregate, { ...report, estimatedTokenBurnBasisPoints: basisPoints })
+      const dial = await screen.findByRole("img", {
+        name:
+          basisPoints == null
+            ? "Burn estimate unavailable"
+            : `Estimated burn: ${basisPoints / 100}%`,
+      })
+      const burn = dial.querySelector('[data-segment-id="burn"]')
+      const remainder = dial.querySelector('[data-segment-id="remainder"]')
+      if (remainder) expect(remainder).toHaveClass("text-measure")
+      if (burn) expect(burn).toHaveClass("text-brand-tint")
+      if (basisPoints === null) {
+        expect(dial.querySelector('[data-segment-id="unknown"]')).toBeTruthy()
+        expect(burn).toBeNull()
+      } else if (basisPoints === 0) {
+        expect(burn).toBeNull()
+        expect(dial.querySelector('[data-segment-id="remainder"]')).toHaveAttribute(
+          "data-arc-angle",
+          "360",
+        )
+      } else {
+        const actualAngle = (360 * basisPoints) / 10_000
+        const minimumAngle = (4 / (Math.PI * 80)) * 360
+        expect(Number(burn?.getAttribute("data-arc-angle"))).toBeCloseTo(
+          Math.max(actualAngle, minimumAngle),
+          5,
+        )
+        if (basisPoints < 10_000) expect(burn).toHaveAttribute("stroke-linecap", "butt")
+      }
+    },
+  )
+
   it("renders assessed checks and concise failed details", async () => {
     setup(target, false, aggregate, report)
-    expect((await screen.findAllByText("8% token burn"))[0]).toBeVisible()
+    expect(
+      await screen.findByRole("button", { name: /Old model usage.*8% burn/ }),
+    ).toBeVisible()
+    const dial = screen.getByRole("img", { name: "Estimated burn: 8%" })
+    const arcs = Array.from(dial.querySelectorAll("circle"))
+    expect(arcs.map((arc) => arc.dataset.segmentId)).toEqual(["burn", "remainder"])
+    expect(Number(arcs[0]!.dataset.arcAngle)).toBeCloseTo(28.8)
+    expect(Number(arcs[1]!.dataset.arcAngle)).toBeCloseTo(331.2)
     expect(screen.getByText(/1 check failed/)).toBeVisible()
     expect(screen.queryByText(/More evidence is needed/)).not.toBeInTheDocument()
     expect(screen.getByRole("heading", { name: "Failed checks" })).toBeVisible()
@@ -390,17 +432,19 @@ describe("BurnChecksView", () => {
     setup(target, false, aggregate, allFailures)
 
     for (const metric of [
-      "8% token burn",
-      "3% token burn",
-      "8% token burn",
-      "1% token burn",
-      "<1% token burn",
-      "1% token burn",
-      "4% token burn",
-      "3% token burn",
-      "7% token burn",
+      "8% burn",
+      "3% burn",
+      "8% burn",
+      "1% burn",
+      "Under 1% burn",
+      "1% burn",
+      "4% burn",
+      "3% burn",
+      "7% burn",
     ]) {
-      expect((await screen.findAllByText(metric)).length).toBeGreaterThan(0)
+      expect(
+        (await screen.findAllByRole("button", { name: new RegExp(metric) })).length,
+      ).toBeGreaterThan(0)
     }
   })
 
@@ -412,6 +456,36 @@ describe("BurnChecksView", () => {
     expect(
       screen.queryByText(/^(Session|Worker|Project|Global) scope$/),
     ).not.toBeInTheDocument()
+  })
+
+  it("keeps the macOS drag strip outside the report while loading and after load", async () => {
+    const userAgent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Macintosh")
+    try {
+      const pending = deferred<ChecksReportPayload>()
+      const { view } = setup(target, false, aggregate, pending.promise)
+      const strip = view.container.querySelector("[data-tauri-drag-region]")!
+      expect(strip).toHaveAttribute("aria-hidden", "true")
+      expect(strip).toHaveClass("shrink-0")
+      expect(strip.contains(screen.getByRole("region", { name: "Loading Burn checks" }))).toBe(
+        false,
+      )
+      await act(async () => pending.resolve(report))
+      await screen.findByRole("button", { name: /Old model usage.*8% burn/ })
+      expect(view.container.querySelectorAll("[data-tauri-drag-region]")).toHaveLength(1)
+      expect(view.container.querySelector("[data-tauri-drag-region] button")).toBeNull()
+    } finally {
+      userAgent.mockRestore()
+    }
+  })
+
+  it("uses native title bars without adding a drag strip on Windows", () => {
+    const userAgent = vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Windows")
+    try {
+      const { view } = setup()
+      expect(view.container.querySelector("[data-tauri-drag-region]")).toBeNull()
+    } finally {
+      userAgent.mockRestore()
+    }
   })
 
   it("uses one busy region and one announcement for the shaped loading skeleton", () => {
@@ -494,10 +568,10 @@ describe("BurnChecksView", () => {
     const copied = screen.getByRole("button", { name: "Copied" })
     const applied = screen.getByRole("button", { name: "Change applied" })
     expect(copied).toBeDisabled()
-    expect(copied).not.toHaveClass("text-system-green")
-    expect(applied).not.toHaveClass("text-system-green")
-    expect(copied.querySelector(".lucide-check")).toHaveClass("text-system-green")
-    expect(applied.querySelector(".lucide-check")).toHaveClass("text-system-green")
+    expect(copied).not.toHaveClass("text-token-in")
+    expect(applied).not.toHaveClass("text-token-in")
+    expect(copied.querySelector(".lucide-check")).toHaveClass("text-token-in")
+    expect(applied.querySelector(".lucide-check")).toHaveClass("text-token-in")
     expect(commands.noteInteraction.mock.calls).toEqual(
       expect.arrayContaining([
         [{ kind: "burnCheckAutoFixReviewed", outcome: "ready" }],
@@ -1027,8 +1101,8 @@ describe("BurnChecksView", () => {
     expect(commands.copyFallback).toHaveBeenCalledWith("unusedMcpServers")
     const copied = screen.getByRole("button", { name: "Copied" })
     expect(copied).toBeDisabled()
-    expect(copied).not.toHaveClass("text-system-green")
-    expect(copied.querySelector(".lucide-check")).toHaveClass("text-system-green")
+    expect(copied).not.toHaveClass("text-token-in")
+    expect(copied.querySelector(".lucide-check")).toHaveClass("text-token-in")
   })
 
   it("does not use a fallback prompt when exact targets are unavailable", async () => {
@@ -1179,8 +1253,8 @@ describe("BurnChecksView", () => {
 
     expect(detail).not.toHaveClass("border-t", "border-separator")
     expect(within(detail).getByRole("button", { name: /Sample sessions/ })).toHaveClass(
-      "type-footnote",
-      "text-label-tertiary",
+      "type-callout",
+      "text-label-secondary",
     )
     expect(
       within(detail).queryByText(/API-equivalent cost opportunity/),
@@ -1234,7 +1308,7 @@ describe("BurnChecksView", () => {
 
     const savings = await screen.findByRole("region", { name: "Your savings" })
     expect(within(savings).getByText("2 verified wins")).toBeVisible()
-    expect(within(savings).getAllByText("~1,200 tokens from 1 of 2 wins")).toHaveLength(2)
+    expect(within(savings).getAllByText("~1,200 saved from 1 of 2 wins")).toHaveLength(2)
     expect(within(savings).getAllByText("~$1.25 saved from 1 of 2 wins")).toHaveLength(2)
     expect(within(savings).getByText("Count known for 1 of 2 wins")).toBeVisible()
   })
@@ -1255,9 +1329,9 @@ describe("BurnChecksView", () => {
     })
 
     const savings = await screen.findByRole("region", { name: "Your savings" })
-    const total = within(savings).getByText("~1,200 tokens · ~$1.25 saved")
+    const total = within(savings).getByText("~1,200 · ~$1.25 saved")
     expect(total).toBeVisible()
-    expect(total).toHaveClass("text-label")
+    expect(total).toHaveClass("text-label-secondary")
     expect(within(savings).getByText("Old model usage")).toHaveClass("text-label")
     expect(within(savings).getByText("2 improvements across 1 check")).toBeVisible()
   })

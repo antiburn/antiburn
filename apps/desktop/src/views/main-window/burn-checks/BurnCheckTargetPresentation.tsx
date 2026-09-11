@@ -75,7 +75,7 @@ function noActionReason(target: BurnCheckTargetPayload): string | null {
 export function ActionLimit({ target }: { target: BurnCheckTargetPayload }) {
   const reason = noActionReason(target)
   if (!reason) return null
-  return <p className="mt-2 type-footnote text-label-tertiary">{reason}</p>
+  return <p className="mt-2 type-callout text-label-tertiary">{reason}</p>
 }
 
 export function SampleSessions({ samples }: { samples: BurnCheckSamplePayload[] }) {
@@ -92,12 +92,9 @@ export function SampleSessions({ samples }: { samples: BurnCheckSamplePayload[] 
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen((value) => !value)}
-        className="inline-flex items-center gap-1.5 rounded-control py-1 text-left type-footnote text-label-tertiary hover:text-label-secondary active:transform-none active:opacity-100"
+        className="-mx-2 inline-flex items-center gap-1.5 rounded-control px-2 py-1 text-left type-callout font-semibold! text-label-secondary transition-colors duration-[var(--duration-fast)] hover:bg-surface-secondary/50 hover:text-label active:transform-none active:opacity-100"
       >
-        <span>
-          Sample sessions <span>({displayedSamples.length})</span>
-        </span>
-        <DisclosureChevron open={open} />
+        {displayedSamples.length} Sample sessions
       </button>
       <div id={id} hidden={!open} className="mt-1 space-y-1">
         {displayedSamples.map((sample) => (
@@ -132,7 +129,7 @@ export function SampleSessions({ samples }: { samples: BurnCheckSamplePayload[] 
         ))}
       </div>
       {status && (
-        <p role="status" className="mt-2 type-callout text-system-red-text">
+        <p role="status" className="mt-2 type-callout text-label-secondary">
           {status}
         </p>
       )}

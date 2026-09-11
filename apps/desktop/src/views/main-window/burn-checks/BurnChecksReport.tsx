@@ -3,6 +3,7 @@ import { useCallback, useId, useState } from "react"
 
 import { cn } from "../../../lib/cn"
 import { Skeleton } from "../../../components/ui/Skeleton"
+import { SegmentedRadialDial } from "../../../components/ui/SegmentedRadialDial"
 import type { ChecksCategoryPayload, ChecksReportPayload } from "../../../lib/insightsIpc"
 import { checksHeroPresentation, checksPresentation } from "../../../lib/presentation/checks"
 import { checkRowPresentation } from "../../checks/checkUi"
@@ -11,6 +12,12 @@ import { BurnCheckDetail } from "./BurnCheckDetail"
 import { BurnCheckTargetDetail } from "./BurnCheckTargetDetail"
 import { DisclosureChevron } from "./BurnCheckTargetPresentation"
 import { BurnChecksSavings } from "./BurnChecksSavings"
+
+const HERO_DIAL_SIZE = 88
+const HERO_DIAL_STROKE = 8
+const MIN_BURN_ARC_LENGTH = 4
+const MIN_BURN_BASIS_POINTS =
+  (MIN_BURN_ARC_LENGTH / (Math.PI * (HERO_DIAL_SIZE - HERO_DIAL_STROKE))) * 10_000
 
 function LoadingCheckDetail() {
   return (
@@ -82,29 +89,34 @@ function CheckRow({
           setOpen(next)
           if (check.finding > 0) session.setTargetsVisible(detector, next)
         }}
-        className="grid w-full grid-cols-[28px_minmax(0,1fr)_max-content_14px] items-center gap-x-2 px-3 py-2.5 text-left hover:bg-surface-hover active:transform-none active:opacity-100"
+        className="grid w-full grid-cols-[28px_minmax(0,1fr)_max-content_14px] items-center gap-x-3 px-4 py-3 text-left hover:bg-surface-hover active:transform-none active:opacity-100"
       >
-        <span
-          className={cn(
-            "flex h-7 w-7 items-center justify-center rounded-control",
-            presentation.iconTone,
-          )}
-        >
-          <Icon size={15} strokeWidth={2} aria-hidden="true" />
-        </span>
+        <Icon
+          size={15}
+          strokeWidth={2}
+          className="justify-self-center text-label-secondary"
+          aria-hidden="true"
+        />
         <span className="min-w-0">
-          <span className="block truncate type-body font-medium! text-label">
-            {presentation.label}
-          </span>
-          <span className="block truncate type-footnote tabular-nums text-label-tertiary">
+          <span className="block truncate type-title-3 text-label">{presentation.label}</span>
+          <span
+            className={cn(
+              "mt-0.5 block truncate type-body tabular-nums",
+              check.finding > 0 ? "text-share-waste-text" : "text-label-secondary",
+            )}
+          >
             {presentation.summary}
           </span>
         </span>
         {presentation.metric ? (
-          <span
-            className={cn("type-footnote font-medium! tabular-nums", presentation.metricTone)}
-          >
-            {presentation.metric}
+          <span className="inline-flex items-baseline gap-1.5 type-body tabular-nums text-label-secondary">
+            {presentation.metric.startsWith("<") && (
+              <span className="text-label-secondary">Under</span>
+            )}{" "}
+            <span className="font-mono">
+              {presentation.metric.replace("<", "").replace(" token burn", "")}
+            </span>{" "}
+            <span className="text-label-secondary">burn</span>
           </span>
         ) : (
           <span />
@@ -121,7 +133,7 @@ function CheckRow({
           targets?.data ? (
             targets.data.targets.length > 0 ? (
               check.id === "unusedSkills" || check.id === "unusedMcpServers" ? (
-                <>
+                <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))] items-start gap-3 p-4">
                   {targets.data.targets.map((target) => (
                     <BurnCheckTargetDetail
                       key={target.findingId}
@@ -129,7 +141,7 @@ function CheckRow({
                       refresh={session.refresh}
                     />
                   ))}
-                </>
+                </div>
               ) : (
                 <>
                   <BurnCheckDetail
@@ -150,7 +162,11 @@ function CheckRow({
         ) : (
           <div className="flex items-start gap-3 px-4 py-3">
             {passed ? (
-              <CheckCircle2 size={16} className="mt-0.5 text-system-green" aria-hidden="true" />
+              <CheckCircle2
+                size={16}
+                className="mt-0.5 text-label-secondary"
+                aria-hidden="true"
+              />
             ) : null}
             <p className="type-callout text-label-secondary">
               {`No finding in ${check.clean} complete sessions.`}
@@ -176,11 +192,11 @@ function CheckGroup({
   const id = `burn-checks-${title.replaceAll(" ", "-").toLowerCase()}`
   if (checks.length === 0) return null
   return (
-    <section className="mt-5" aria-labelledby={id}>
-      <h2 id={id} className="px-1 type-caption text-label-tertiary">
+    <section className="mt-8" aria-labelledby={id}>
+      <h2 id={id} className="px-1 type-title-2 text-label">
         {title}
       </h2>
-      <div className="mt-2 overflow-hidden rounded-control border border-separator bg-surface-card/50">
+      <div className="mt-3 overflow-hidden rounded-control border border-separator/40 bg-surface-card/50">
         {checks.map((check, index) => (
           <CheckRow
             key={check.id}
@@ -206,44 +222,94 @@ export function BurnChecksReport({
 }) {
   const presentation = checksPresentation(report)
   const hero = checksHeroPresentation(presentation)
+  const burnBasisPoints = presentation.estimate.tokenBurnBasisPoints
+  const displayedBurnBasisPoints =
+    burnBasisPoints != null && burnBasisPoints > 0
+      ? Math.max(burnBasisPoints, MIN_BURN_BASIS_POINTS)
+      : burnBasisPoints
+  const hasBurnEstimate = hero.state === "failed" && burnBasisPoints != null
   const HeroIcon =
     hero.state === "failed" ? Flame : hero.state === "passed" ? CheckCircle2 : CircleDashed
+  const result = hasBurnEstimate ? hero.result.replace(" token burn", "") : hero.result
   return (
     <>
-      <section className="flex flex-wrap items-center gap-4 rounded-control border border-separator bg-surface-card p-4">
-        <span
-          className={cn(
-            "flex h-10 w-10 items-center justify-center rounded-full",
-            hero.state === "failed"
-              ? "bg-system-red/10 text-system-red-text"
-              : hero.state === "passed"
-                ? "bg-system-green/10 text-system-green"
-                : "bg-surface-secondary text-label-tertiary",
-          )}
-        >
-          <HeroIcon
-            size={24}
-            strokeWidth={hero.state === "pending" ? 2 : 2.5}
-            aria-hidden="true"
+      <section className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-[var(--space-2xl)] py-[calc(var(--space-lg)*2)]">
+        <div className="grid h-[88px] w-[88px] place-items-center">
+          <SegmentedRadialDial
+            size={HERO_DIAL_SIZE}
+            strokeWidth={HERO_DIAL_STROKE}
+            gapAngle={0}
+            strokeLinecap="butt"
+            label={
+              burnBasisPoints == null
+                ? "Burn estimate unavailable"
+                : `Estimated burn: ${burnBasisPoints / 100}%`
+            }
+            segments={
+              displayedBurnBasisPoints == null
+                ? [{ id: "unknown", value: 1, className: "text-surface-tertiary" }]
+                : [
+                    {
+                      id: "burn",
+                      value: displayedBurnBasisPoints,
+                      className: "text-brand-tint",
+                    },
+                    {
+                      id: "remainder",
+                      value: Math.max(0, 10_000 - displayedBurnBasisPoints),
+                      className: "text-measure",
+                    },
+                  ]
+            }
           />
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className={cn("type-title-2 tabular-nums", hero.tone)}>{hero.result}</p>
-          {(hero.summary || report.pendingEvidence > 0) && (
-            <div className="flex items-center gap-3 type-footnote text-label-secondary">
-              {hero.summary && <p>{hero.summary}</p>}
-              {report.pendingEvidence > 0 && (
-                <p className="flex items-center gap-1.5 text-label-tertiary" role="status">
-                  <LoaderCircle
-                    size={12}
-                    strokeWidth={2}
-                    className="animate-spin"
-                    aria-hidden="true"
-                  />
-                  {`${report.pendingEvidence} session${report.pendingEvidence === 1 ? "" : "s"} processing`}
-                </p>
+        </div>
+        <div className="flex min-h-[88px] min-w-0 max-w-sm flex-col justify-between">
+          {hasBurnEstimate && (
+            <p className="flex items-center gap-1 type-callout text-label-secondary">
+              <Flame size={12} strokeWidth={1.75} aria-hidden="true" />
+              Estimated burn
+            </p>
+          )}
+          <p className="flex items-center gap-2 type-large-title font-semibold! tabular-nums text-label">
+            {!hasBurnEstimate && (
+              <HeroIcon
+                size={22}
+                strokeWidth={1.75}
+                className="shrink-0 text-label-secondary"
+                aria-hidden="true"
+              />
+            )}
+            {hasBurnEstimate ? result.replace("<", "Less than ") : result}
+          </p>
+          {hasBurnEstimate && (
+            <p className="text-pretty type-body text-label-secondary">
+              Of assessed usage could be avoided.
+            </p>
+          )}
+          {hero.summary && (
+            <p className="flex items-center gap-1.5 type-callout text-label-secondary">
+              {hero.state === "failed" && (
+                <span
+                  className="h-1 w-1 shrink-0 rounded-full bg-share-waste-text"
+                  aria-hidden="true"
+                />
               )}
-            </div>
+              {hero.summary}
+            </p>
+          )}
+          {report.pendingEvidence > 0 && (
+            <p
+              className="mt-2 flex items-center gap-1.5 type-body text-label-tertiary"
+              role="status"
+            >
+              <LoaderCircle
+                size={12}
+                strokeWidth={2}
+                className="animate-spin"
+                aria-hidden="true"
+              />
+              {`${report.pendingEvidence} session${report.pendingEvidence === 1 ? "" : "s"} processing`}
+            </p>
           )}
         </div>
       </section>

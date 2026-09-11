@@ -19,16 +19,16 @@ export function BurnCheckTargetDetail({
   const status = watchStatus(target)
   const guidance = CHECK_UI[target.finding.detector]
   return (
-    <article className="px-4 py-4">
-      <div className="flex min-w-0 items-center gap-2">
+    <article className="min-w-0 rounded-control bg-surface-card/75 p-4">
+      <div className="flex min-w-0 items-start gap-2">
         {renderAgentIcon(target.finding.agent, 16)}
-        <h3 className="type-body font-semibold! text-label">{targetTitle(target)}</h3>
+        <h3 className="min-w-0 wrap-anywhere type-title-3 text-label">{targetTitle(target)}</h3>
       </div>
-      <p className="mt-1 type-callout text-label-secondary">{guidance.recommendation}</p>
+      <p className="mt-2 type-body text-label-secondary">{guidance.recommendation}</p>
       <BurnCheckTargetActions target={target} refresh={refresh} />
       <ActionLimit target={target} />
       {status && (
-        <p role="status" className="mt-2 type-footnote text-label-secondary">
+        <p role="status" className="mt-2 type-callout text-label-secondary">
           {status}
         </p>
       )}

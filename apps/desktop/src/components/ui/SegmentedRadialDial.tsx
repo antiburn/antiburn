@@ -10,6 +10,7 @@ interface SegmentedRadialDialProps {
   strokeWidth?: number
   gapAngle?: number
   startAngle?: number
+  strokeLinecap?: "round" | "butt"
   label?: string
 }
 
@@ -41,6 +42,7 @@ export function SegmentedRadialDial({
   strokeWidth = 2.5,
   gapAngle = 5,
   startAngle = -90,
+  strokeLinecap = "round",
   label,
 }: SegmentedRadialDialProps) {
   const renderedSize = Math.max(1, finiteOr(size, 16))
@@ -61,7 +63,8 @@ export function SegmentedRadialDial({
     (total, segment) => total + segment.value / maximum,
     0,
   )
-  const capClearanceAngle = roundCapClearanceAngle(renderedStroke, radius)
+  const capClearanceAngle =
+    strokeLinecap === "round" ? roundCapClearanceAngle(renderedStroke, radius) : 0
   const maximumGap =
     validSegments.length > 1 ? (FULL_CIRCLE - MIN_DRAWABLE_ANGLE) / validSegments.length : 0
   const requestedGap = Math.max(0, finiteOr(gapAngle, 0))
@@ -125,7 +128,7 @@ export function SegmentedRadialDial({
               fill="none"
               stroke="currentColor"
               strokeWidth={renderedStroke}
-              strokeLinecap="round"
+              strokeLinecap={strokeLinecap}
               strokeDasharray={`${arcAngle} ${stableNumber(FULL_CIRCLE - arcAngle)}`}
               strokeDashoffset={-segmentStart}
               className={segment.className}
