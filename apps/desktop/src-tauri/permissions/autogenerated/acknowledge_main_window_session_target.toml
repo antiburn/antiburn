@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-acknowledge-main-window-session-target"
+description = "Enables the acknowledge_main_window_session_target command without any pre-configured scope."
+commands.allow = ["acknowledge_main_window_session_target"]
+
+[[permission]]
+identifier = "deny-acknowledge-main-window-session-target"
+description = "Denies the acknowledge_main_window_session_target command without any pre-configured scope."
+commands.deny = ["acknowledge_main_window_session_target"]

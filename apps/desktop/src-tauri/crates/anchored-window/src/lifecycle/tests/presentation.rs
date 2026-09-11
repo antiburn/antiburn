@@ -194,3 +194,37 @@ fn same_target_reentry_does_not_bypass_a_pending_retarget_commit() {
     assert!(!lifecycle.awaiting_retarget_commit);
     assert!(!lifecycle.retarget_committed(second.generation));
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn renderer_failure_clears_the_target_and_rejects_late_failures() {
+    let mut lifecycle = crate::lifecycle::Lifecycle::<&str, ()>::new(100.0);
+    lifecycle.renderer_generation = 2;
+    lifecycle.request(
+        "preview",
+        crate::AnchorRegion {
+            top: 0.0,
+            height: 20.0,
+        },
+        100.0,
+        None,
+    );
+    assert!(!lifecycle.renderer_failed(1));
+    assert_eq!(lifecycle.target, Some("preview"));
+    assert!(lifecycle.renderer_failed(2));
+    assert_eq!(lifecycle.target, None);
+    assert!(!lifecycle.visible);
+    assert!(!lifecycle.renderer_ready);
+    assert_eq!(lifecycle.renderer_generation, 3);
+    lifecycle.request(
+        "replacement",
+        crate::AnchorRegion {
+            top: 0.0,
+            height: 20.0,
+        },
+        100.0,
+        None,
+    );
+    assert!(!lifecycle.renderer_failed(2));
+    assert_eq!(lifecycle.target, Some("replacement"));
+}

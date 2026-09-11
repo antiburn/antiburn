@@ -205,6 +205,10 @@ jobs:
         working-directory: apps/desktop/src-tauri/crates/main-window
         run: cargo fmt --check
 
+      - name: Check anchored-window crate formatting
+        working-directory: apps/desktop/src-tauri/crates/anchored-window
+        run: cargo fmt --check
+
   desktop-backend-checks:
     name: desktop app (backend, ${{ matrix.check.name }}, ${{ matrix.workspace.name }}, ${{ matrix.platform.name }})
     needs: classify
@@ -238,6 +242,9 @@ jobs:
             tauri: true
           - name: main-window
             directory: apps/desktop/src-tauri/crates/main-window
+            tauri: true
+          - name: anchored-window
+            directory: apps/desktop/src-tauri/crates/anchored-window
             tauri: true
     runs-on: ${{ matrix.platform.os }}
     steps:

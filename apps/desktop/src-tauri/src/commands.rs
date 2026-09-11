@@ -129,8 +129,10 @@ pub fn take_settings_pane(app: tauri::AppHandle) -> Option<String> {
 /// background tasks are aborted on the way out.
 #[tauri::command]
 pub fn quit_app(app: tauri::AppHandle) {
-    crate::main_window::flush_placement(&app);
-    app.exit(0);
+    crate::main_window::on_main(&app, |app| {
+        crate::main_window::flush_placement(app);
+        app.exit(0);
+    });
 }
 
 /// Post the settings pane's test notification.

@@ -184,15 +184,17 @@ pub fn run() {
                 repeated.pending.store(true, Ordering::Release);
                 if repeated.setup_ready.load(Ordering::Acquire) {
                     repeated.pending.store(false, Ordering::Release);
-                    if let Err(error) =
-                        open_launch_surface(app, main_window::OpenTrigger::Interaction)
-                    {
-                        ::tracing::warn!(
-                            event = "launch_surface_open_failed",
-                            trigger = "second_instance",
-                            error = %error
-                        );
-                    }
+                    main_window::on_main(app, |app| {
+                        if let Err(error) =
+                            open_launch_surface(app, main_window::OpenTrigger::Interaction)
+                        {
+                            ::tracing::warn!(
+                                event = "launch_surface_open_failed",
+                                trigger = "second_instance",
+                                error = %error
+                            );
+                        }
+                    });
                 }
             })),
     )
@@ -374,6 +376,10 @@ pub fn run() {
         // A deliberate quit: stop the background tasks before the store
         // they write to is dropped.
         RunEvent::Exit => {
+            #[cfg(target_os = "macos")]
+            if let Some(manager) = app.try_state::<popover_peek::PopoverPeekManager>() {
+                manager.shutdown();
+            }
             main_window::flush_placement(app);
             // Ask a running report reduction to stop at its next probe.
             // The reduction is read-only, so even a task that never sees
@@ -532,6 +538,7 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         .try_state::<popover_peek::PopoverPeekManager>()
     {
         manager.handle_anchor_event(window, event);
+        #[cfg(not(target_os = "macos"))]
         if window.label() == popover_peek::LABEL && matches!(event, WindowEvent::Destroyed) {
             manager.handle_companion_destroyed();
             if manager.state().target.is_some() {
@@ -680,6 +687,13 @@ mod tests {
             "\"allow-delete-session-data\"",
             "\"dialog:allow-confirm\"",
             "\"allow-main-window-ready\"",
+            "\"allow-main-window-health-ack\"",
+            "\"allow-main-window-pending-health-check\"",
+            "\"allow-report-main-window-render-status\"",
+            "\"allow-report-main-window-render-failure\"",
+            "\"allow-request-main-window-recovery\"",
+            "\"allow-peek-main-window-session-target\"",
+            "\"allow-acknowledge-main-window-session-target\"",
         ] {
             assert!(capability.contains(expected), "missing {expected}");
         }

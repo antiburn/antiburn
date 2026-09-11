@@ -1,22 +1,12 @@
 /**
- * The typed edge of the shell's IPC surface.
- *
- * Every command the Rust side exposes has exactly one wrapper here, and the
- * views call nothing else. That keeps the command names in one file, gives the
- * payloads a declared shape, and means the whole surface can be mocked at one
- * module boundary in tests.
- *
- * The bundle also has to load in a plain browser (`pnpm dev:web`, unit tests)
- * where no shell is attached. Every wrapper therefore reports *absence* rather
- * than throwing, so views render a degraded state instead of crashing.
- *
- * None of these payloads comes from a service of ours. The local engine
- * produces them on this machine.
+ * Typed shell IPC edge, including re-exported feature edges.
+ * Wrappers tolerate a browser without the shell and expose one test boundary.
  */
 
 import { invoke, isTauri } from "@tauri-apps/api/core"
 import { listen, type UnlistenFn } from "@tauri-apps/api/event"
 
+import { nativePeekBridge } from "./nativePeekBridge"
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
 import type {
@@ -31,6 +21,7 @@ import type {
   SessionLimitAllocationSummaryPayload,
 } from "./providerUsageIpc"
 
+export * from "./mainWindowIpc"
 export * from "./providerUsageIpc"
 export type { SettingsPane } from "./settingsPanes"
 
@@ -504,10 +495,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sessionBadgeMetric: "cost",
 }
 
-/* -------------------------------------------------------------------------
- * Commands
- * ---------------------------------------------------------------------- */
-
 /** Tell the shell that React committed this renderer generation. */
 export async function windowReady(generation: number): Promise<void> {
   if (!hasShell()) return
@@ -556,9 +543,7 @@ export async function popoverContentReady(generation: number): Promise<void> {
   await invoke("popover_content_ready", { generation })
 }
 
-/**
- * Version stamp of the active runtime pricing catalog.
- */
+/** Version stamp of the active runtime pricing catalog. */
 export async function engineCatalogVersion(): Promise<string | null> {
   if (!hasShell()) return null
   return invoke<string>("engine_catalog_version")
@@ -845,6 +830,20 @@ export type AutoFixAnalyticsOutcome =
 export type PromptPreparationAnalyticsOutcome =
   "ready" | "stale" | "expired" | "unavailable" | "failed"
 
+function isNativePeekInteraction(interaction: Interaction): boolean {
+  switch (interaction.kind) {
+    case "surfaceViewed":
+    case "surfaceStateObserved":
+      return (
+        interaction.surface === "provider_preview" || interaction.surface === "checks_preview"
+      )
+    case "liveUsageStateObserved":
+      return true
+    default:
+      return false
+  }
+}
+
 /**
  * Report one interaction. Fire-and-forget, and silent on failure.
  *
@@ -854,6 +853,14 @@ export type PromptPreparationAnalyticsOutcome =
  * one gate rather than two that can drift apart.
  */
 export function noteInteraction(interaction: Interaction): void {
+  const native = nativePeekBridge()
+  if (native) {
+    if (!isNativePeekInteraction(interaction)) return
+    void native.invoke("note_interaction", { interaction }).catch(() => {
+      // Analytics errors must not interrupt the preview.
+    })
+    return
+  }
   if (!hasShell()) return
   void invoke("note_interaction", { interaction }).catch(() => {
     // Analytics must never surface an error into something the reader asked
@@ -1298,10 +1305,6 @@ export async function setNudgeHovered(hovered: boolean): Promise<void> {
   if (!hasShell()) return
   await invoke("nudge_set_hovered", { hovered })
 }
-
-/* -------------------------------------------------------------------------
- * Events
- * ---------------------------------------------------------------------- */
 
 const noShellUnlisten: UnlistenFn = () => undefined
 

@@ -53,6 +53,18 @@ position and focus. Test an installed build for taskbar icon grouping.
 | macOS close, switch away, Command-Tab back   | The retained main window reappears; closing alone never immediately reopens it       |
 | macOS close, then open Settings or popover   | The requested surface appears without reopening the main window                      |
 | Close during initial load                    | Readiness does not unexpectedly reopen the closed window                             |
+| Visible warm open                            | Native focus is immediate and emits no health check                                  |
+| Hidden warm open                             | One generation/request check acknowledges before reveal                              |
+| Close during forced recovery, then reopen    | The watched replacement completes or reaches the terminal dialog                     |
+| Hidden recovery exhausts its budget          | No dialog appears until the next open                                                 |
+| Dead or absent main WebContent               | The native terminal dialog remains usable                                             |
+| Terminal Try Again                           | One fresh watched generation starts; no label overlap occurs                          |
+| Terminal Dismiss, then open                  | The terminal dialog returns with a fresh token                                        |
+| Delayed or duplicate destruction             | Terminal state and its failure budget remain intact                                   |
+| Fallback Reload                              | The fallback's generation starts one watched replacement                             |
+| Commit-phase descendant failure              | Fallback reports without an earlier healthy status                                    |
+| Targeted open during replacement             | The replacement peeks, applies, and acknowledges the requested session                |
+| Navigate after target, then recover           | Recovery does not replay the retired target                                           |
 | Minimize then open                           | The window restores and becomes usable                                               |
 | macOS minimize, switch away, activate        | The main window restores through native unminimize; minimizing alone stays minimized |
 | Switch applications                          | Normal Dock/taskbar switching works; the main window does not hide on blur           |
@@ -109,7 +121,9 @@ Measure three separate paths:
    30 times. Wait for each reveal before closing it again.
 
 The shell writes `main_window_revealed` JSON events containing `open_kind`,
-`elapsed_ms`, and `window: main`. Summarize one benchmark interval with:
+`elapsed_ms`, and `window: main`. A hidden warm sample includes its health
+handshake; a visible warm sample does not run one. Summarize one benchmark
+interval with:
 
 ```bash
 node scripts/window-open-report.mjs /absolute/path/to/benchmark.jsonl
@@ -127,8 +141,53 @@ measure request-to-visible and verify that controls accept input. Record these
 values beside the native timing report; do not equate `show()` completion with
 pixels on screen or successful focus activation.
 
+Also measure `main_window_health_check_started` to `main_window_health_ack`
+for at least 30 hidden warm opens. Include long-hidden (at least ten minutes),
+minimized, and busy-renderer cases. Record median, nearest-rank p95 and p99,
+and sample count. The 300 ms timeout is provisional. Raise it if measured p99
+exceeds approximately one third of the timeout. Sanity-check the provisional
+10-second recovery watchdog against isolated recovery load times. Escalate a
+timeout disagreement for review rather than tuning from a single observation.
+
+Keep three separate labels for native reveal, health acknowledgement, and
+visible content. Neither acknowledgement nor reveal establishes painted pixels.
+The earlier 148 ms first-open and 11 ms warm-open observations have one sample
+each. They are not distributions and must not be used as before/after evidence.
+
 Record the generated frontend entry and imported chunk sizes from the build.
 The navigation-only main entry must not load session analysis or chart code.
+
+## Recovery and terminal-dialog drill
+
+Use only an isolated debug profile and an app instance whose processes you can
+attribute. Never stop another antiburn instance or an unrelated WebContent
+process. Never modify a user's database.
+
+1. Confirm a normal hidden check acknowledges and reveals.
+2. Hang or stop only the isolated main renderer. Open the hidden window and
+   confirm timeout, bounded replacement, and eventual reveal.
+3. Force a committed fallback. Confirm the fallback reveals independently and
+   **Reload** starts recovery for only its generation.
+4. Force three consecutive failures. Confirm the native dialog appears even
+   when the webview is absent or hung.
+5. Choose **Dismiss**, open again, and confirm a new dialog appears.
+6. Choose **Try Again** and confirm a fresh watched generation either becomes
+   ready or returns to terminal. Confirm no duplicate `main` label appears.
+7. Close during forced recovery. Confirm no surprise dialog while closed and
+   confirm reopen still completes or presents the deferred dialog.
+8. Delay a destruction callback beyond terminal entry. Confirm it records a
+   free label without clearing the dialog gate or budget.
+9. Request a session through destroy failure, direct build failure, and deferred
+   build failure. Confirm each replacement peeks and acknowledges it. Include
+   an acknowledgement that arrives while its generation still loads.
+10. Force a descendant callback-ref failure during commit. Confirm fallback is
+    reported without an earlier healthy status.
+11. After a successful target, navigate elsewhere and recover. Confirm the old
+    target does not replay.
+
+A stale dialog callback must not clear a newer dialog, reset its ledger, retry,
+or touch a window. Unit tests establish token validation. Mark native stale
+callback injection as unverified if the isolated fixture cannot produce it.
 
 ## Hidden resources
 
@@ -139,9 +198,14 @@ interval and sample count in each state. Use five samples after 10 seconds of
 settling as the initial protocol, with one second between samples.
 
 Confirm one resident main renderer, no growing renderer count, no accumulating
-listeners or timers, and no additional scan or provider polling loop. Hidden
-CPU should return to its background baseline. Retained memory is expected;
-monotonic growth across repeated cycles needs investigation.
+listeners or timers, and no additional scan or provider polling loop. Include
+30 hide/show cycles, two forced recoveries, and one terminal Try Again. Record
+process count and memory before and after the sequence. Hidden CPU should return
+to its background baseline. Retained memory is expected; monotonic growth across
+repeated cycles needs investigation. Attribute app-owned WebContent before
+publishing combined memory. WebKit helpers can have PPID 1, so shell ancestry
+alone is insufficient. Until attribution is validated, label shell RSS as
+shell-only.
 
 The [popover memory report](memory-reporting.md) measures a different surface.
 Do not describe its shell-plus-popover measurements as a main-window memory

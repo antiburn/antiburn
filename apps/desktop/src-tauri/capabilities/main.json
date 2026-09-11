@@ -15,6 +15,7 @@
     "allow-copy-prompt-fix-burn-check-target",
     "allow-copy-prompt-fix-burn-check",
     "allow-copy-prompt-fix-burn-check-targets",
+    "allow-acknowledge-main-window-session-target",
     "allow-delete-session-data",
     "allow-get-live-usage",
     "allow-get-checks-report",
@@ -34,6 +35,14 @@
     "allow-open-settings-window",
     "allow-open-burn-check-sample",
     "allow-prepare-auto-fix-burn-check-target",
+    "allow-main-window-health-ack",
+    "allow-main-window-pending-health-check",
+    "allow-main-window-ready",
+    "allow-open-settings-window",
+    "allow-peek-main-window-session-target",
+    "allow-report-main-window-render-failure",
+    "allow-report-main-window-render-status",
+    "allow-request-main-window-recovery",
     "allow-reveal-source",
     "allow-set-settings"
   ]
