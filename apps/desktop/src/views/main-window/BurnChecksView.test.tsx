@@ -1032,10 +1032,15 @@ describe("BurnChecksView", () => {
   })
 
   it("does not use a fallback prompt when exact targets are unavailable", async () => {
-    setup({
-      ...target,
-      promptFix: { status: "unavailable", reason: "unsupportedSourceFormat" },
-    }, false, aggregate, report)
+    setup(
+      {
+        ...target,
+        promptFix: { status: "unavailable", reason: "unsupportedSourceFormat" },
+      },
+      false,
+      aggregate,
+      report,
+    )
 
     await screen.findByText("Some sessions used an older model when a newer one was available.")
     expect(screen.queryByRole("button", { name: "Copy fix prompt" })).not.toBeInTheDocument()
