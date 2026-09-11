@@ -29,6 +29,17 @@ fallback for absent or unrecognized inputs. Reports must segment this change
 by the first app version that contains it; earlier `max` and `other` events
 cannot be split retrospectively.
 
+The opt-out withdrawal event is implemented with the consent transition. Its
+durable queue row records the fixed signal before the stored preference changes;
+one bounded final drain may deliver it, then local analytics state is deleted.
+An offline or failed drain is an accepted miss and never retries after disable.
+Use `antiburn.analytics_opted_out` to count observed withdrawals among
+configured installations that had analytics enabled, and exclude it from
+engagement, activation, retention, visit, and time-spent denominators. Segment
+reports at the app-version boundary where this event ships. Missing identity,
+environment-disabled, unconfigured, and crashed-before-delivery cases remain
+unobserved; the event carries no properties beyond the standard envelope.
+
 ## Coverage at the audited revision
 
 The closed catalog had nine events. Envelope fields provided event IDs, rotating

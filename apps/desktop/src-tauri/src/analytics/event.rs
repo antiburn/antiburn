@@ -43,6 +43,9 @@ pub enum EventName {
     ScanCompleted,
     /// A preference changed. The key travels; the value never does.
     SettingToggled,
+    /// The reader withdrew analytics consent.
+    #[cfg(feature = "analytics")]
+    AnalyticsOptedOut,
     /// A session was opened from the activity list.
     #[cfg(feature = "analytics")]
     SessionOpened,
@@ -111,6 +114,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::OnboardingStepViewed,
     EventName::ScanCompleted,
     EventName::SettingToggled,
+    EventName::AnalyticsOptedOut,
     EventName::SessionOpened,
     EventName::ErrorOccurred,
     EventName::UnrecognizedRecordsObserved,
@@ -140,6 +144,7 @@ impl EventName {
             EventName::OnboardingStepViewed => "antiburn.onboarding_step_viewed",
             EventName::ScanCompleted => "antiburn.scan_completed",
             EventName::SettingToggled => "antiburn.setting_toggled",
+            EventName::AnalyticsOptedOut => "antiburn.analytics_opted_out",
             EventName::SessionOpened => "antiburn.session_opened",
             EventName::ErrorOccurred => "antiburn.error_occurred",
             EventName::UnrecognizedRecordsObserved => "antiburn.unrecognized_records_observed",
@@ -1337,6 +1342,7 @@ mod tests {
                 | EventName::OnboardingStepViewed
                 | EventName::ScanCompleted
                 | EventName::SettingToggled
+                | EventName::AnalyticsOptedOut
                 | EventName::SessionOpened
                 | EventName::ErrorOccurred
                 | EventName::UnrecognizedRecordsObserved
@@ -1359,7 +1365,7 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            23,
+            24,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));

@@ -417,15 +417,23 @@ pub const SETTINGS_CHANGED_EVENT: &str = "settings:changed";
 #[tauri::command]
 pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> CommandResult<AppSettings> {
     let store = app.state::<Store>();
-    let (previous, saved, removed) = store
-        .replace_settings_with(&settings, |tx, saved| {
-            crate::store::apply_session_retention_in(
-                tx,
-                saved.session_data_retention_days,
-                crate::retention::unix_now(),
-            )
-        })
-        .map_err(fail)?;
+    let (previous, saved, removed) = {
+        let _analytics_transition = crate::analytics::lock_settings_transition();
+        let result = store
+            .replace_settings_with_transition(&settings, |tx, previous, saved| {
+                // The preference must still save when analytics serialization or
+                // queue storage fails. The withdrawal signal is best effort.
+                let _ = crate::analytics::prepare_opt_out_in_transaction(&app, tx, previous, saved);
+                crate::store::apply_session_retention_in(
+                    tx,
+                    saved.session_data_retention_days,
+                    crate::retention::unix_now(),
+                )
+            })
+            .map_err(fail)?;
+        crate::analytics::handle_settings_transition(&app, &result.0, &result.1);
+        result
+    };
     crate::retention::note_removed(&app, removed);
     apply_settings_transition(&app, &previous, &saved);
     Ok(saved)
@@ -560,13 +568,6 @@ fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, sav
     // function checks all three itself, and repeat calls are free (the gate
     // keeps a once-flag), so no transition edge needs to be computed here.
     crate::notifications::maybe_initialize_authorization(app);
-
-    // Consent changing is the queue's business: turning it off withdraws
-    // whatever is already queued rather than merely pausing it, and destroys
-    // the installation identifier so a later opt-in cannot be joined to this
-    // one. Routed through the same hub as every other consequence so the two
-    // can never drift apart.
-    crate::analytics::handle_settings_transition(app, previous, saved);
 
     // Which switch moved, never what it moved to, and only from this closed
     // list. A key alone answers "is this control being found at all"; the
