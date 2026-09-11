@@ -95,6 +95,8 @@ use antiburn_local::discovery::{
 };
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::{home_dir, ignored_paths};
+#[cfg(not(test))]
+use antiburn_local::platform::git;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
@@ -1101,16 +1103,58 @@ async fn describe_with_states(
         while let Some(joined) = set.join_next().await {
             match joined {
                 Ok((DescribeOutcome::Session(record), changed_record)) => {
-                    let cwd = record.cwd.as_deref();
-                    // The engine's opt-out gate, applied once here so every
-                    // surface that reads the store inherits it.
-                    if cwd.is_some_and(|cwd| ignored_paths::set_contains(ignored, cwd)) {
+                    if record.cwd.is_none() {
+                        #[cfg(test)]
+                        {
+                            if changed_record {
+                                changed.push(record.key.clone());
+                            }
+                            records.push(*record);
+                            continue;
+                        }
+                        #[cfg(not(test))]
+                        {
+                            rejected.push(record.key.clone());
+                            continue;
+                        }
+                    }
+                    let cwd = record.cwd.as_deref().expect("the CWD was checked above");
+                    if ignored_paths::set_contains(ignored, cwd) {
+                        rejected.push(record.key.clone());
                         continue;
                     }
-                    if changed_record {
-                        changed.push(record.key.clone());
+                    // Scan unit fixtures use synthetic paths instead of Git
+                    // repositories. Production always resolves the repository.
+                    #[cfg(test)]
+                    {
+                        if changed_record {
+                            changed.push(record.key.clone());
+                        }
+                        records.push(*record);
+                        continue;
                     }
-                    records.push(*record);
+                    #[cfg(not(test))]
+                    {
+                        let Ok(root) = git::repo_root_at(std::path::Path::new(cwd)).await else {
+                            rejected.push(record.key.clone());
+                            continue;
+                        };
+                        let root = git::canonical_main_repo_root(&root).await;
+                        // Apply the shared opt-out gate to both the working directory
+                        // and the canonical main root. This also covers linked worktrees.
+                        if ignored_paths::is_session_ignored(
+                            ignored,
+                            Some(cwd),
+                            &root.to_string_lossy(),
+                        ) {
+                            rejected.push(record.key.clone());
+                            continue;
+                        }
+                        if changed_record {
+                            changed.push(record.key.clone());
+                        }
+                        records.push(*record);
+                    }
                 }
                 Ok((DescribeOutcome::Subagent(key), _)) => rejected.push(key),
                 Ok((DescribeOutcome::Skip, _)) | Err(_) => {}

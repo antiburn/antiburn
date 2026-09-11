@@ -39,6 +39,7 @@ mod tests;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Duration;
 
@@ -66,6 +67,9 @@ pub use model::{
     RemediationResult, RemediationState, RepositoryRecord, SessionActivityKey, SessionBadgeMetric,
     SessionKey, SessionRecord, SourcePublishMode, SourcePublishOutcome, SourceVersionState,
     ThemePreference, UsageEvidenceRecord,
+};
+pub(crate) use remediation::{
+    PassiveRemediation, RemediationContribution, RemediationDisplaySnapshot,
 };
 
 /// Evidence rows that still wait for, or sit in, processing.
@@ -186,6 +190,7 @@ pub fn open_read_only(data_dir: &Path, busy_timeout: Duration) -> Result<Connect
 pub struct Store {
     connection: Arc<Mutex<Connection>>,
     limit_factor_learn: Arc<Mutex<()>>,
+    remediation_turn: Arc<AtomicBool>,
     /// The directory the engine's own state files (scan roots, ignored paths)
     /// live in. The engine never chooses this; the shell does.
     state_dir: PathBuf,
@@ -314,6 +319,7 @@ impl Store {
         let store = Store {
             connection: Arc::new(Mutex::new(connection)),
             limit_factor_learn: Arc::new(Mutex::new(())),
+            remediation_turn: Arc::new(AtomicBool::new(true)),
             state_dir,
         };
         store.migrate()?;
@@ -323,6 +329,10 @@ impl Store {
     /// The directory the engine's state files live in.
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
+    }
+
+    pub(crate) fn take_remediation_work_turn(&self) -> bool {
+        self.remediation_turn.fetch_xor(true, Ordering::Relaxed)
     }
 
     /// Apply every migration the database has not seen yet.
@@ -1622,6 +1632,7 @@ impl Store {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         tx.execute("DELETE FROM session_relation", [])?;
+        tx.execute("DELETE FROM remediation_contribution", [])?;
         tx.execute("DELETE FROM remediation", [])?;
         tx.execute("DELETE FROM session_analysis", [])?;
         tx.execute("DELETE FROM session_evidence", [])?;
@@ -1685,12 +1696,15 @@ impl Store {
         relations: &[RelationRecord],
         sources: &[SourcePublishOutcome],
     ) -> Result<bool> {
-        let model_attribution = crate::remediation::publication_model_attribution(
+        let config_attribution = crate::remediation::publication_config_attribution(
             self,
             &record.key,
             completion.status,
             &completion.evidence_json,
         )?;
+        let remediation_secret = (completion.status == PublishedEvidence::Ready)
+            .then(|| self.provider_account_secret())
+            .transpose()?;
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
         // The fence every source's rows will share once this pass
@@ -1700,6 +1714,17 @@ impl Store {
         // never published. Read before the claim-race UPDATE below so this
         // still names the *pre*-publish value.
         let existing_published_fence = read_published_fence(&transaction, &record.key)?;
+        let correction_replay = existing_published_fence.is_some()
+            && transaction.query_row(
+                "SELECT analyzed_generation FROM session_evidence
+                      WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+                params![
+                    record.key.environment_key,
+                    record.key.agent,
+                    record.key.session_id
+                ],
+                |row| row.get::<_, Option<i64>>(0),
+            )? == Some(record.analyzed_generation);
         let target_fence = existing_published_fence.unwrap_or(completion.claim_fence);
         transaction.execute(
             "INSERT INTO session_analysis (
@@ -1763,7 +1788,9 @@ impl Store {
                     claimed_at_epoch = NULL, lease_expires_at_epoch = NULL,
                      next_attempt_at_epoch = NULL, published_fence = ?12,
                      effective_model_target_hash = ?14,
-                     effective_model_scope = ?15, effective_model = ?16
+                     effective_model_scope = ?15, effective_model = ?16,
+                     effective_reasoning_target_hash = ?17,
+                     effective_reasoning_scope = ?18, effective_reasoning = ?19
               WHERE evidence.environment_key = ?1
                 AND evidence.agent = ?2 AND evidence.session_id = ?3
                 AND evidence.status = 'processing' AND evidence.claim_fence = ?13
@@ -1788,9 +1815,30 @@ impl Store {
                 time::OffsetDateTime::now_utc().unix_timestamp(),
                 target_fence,
                 completion.claim_fence,
-                model_attribution.as_ref().map(|value| value.0.as_str()),
-                model_attribution.as_ref().map(|value| value.1.as_str()),
-                model_attribution.as_ref().map(|value| value.2.as_str()),
+                config_attribution
+                    .model
+                    .as_ref()
+                    .map(|value| value.0.as_str()),
+                config_attribution
+                    .model
+                    .as_ref()
+                    .map(|value| value.1.as_str()),
+                config_attribution
+                    .model
+                    .as_ref()
+                    .map(|value| value.2.as_str()),
+                config_attribution
+                    .reasoning
+                    .as_ref()
+                    .map(|value| value.0.as_str()),
+                config_attribution
+                    .reasoning
+                    .as_ref()
+                    .map(|value| value.1.as_str()),
+                config_attribution
+                    .reasoning
+                    .as_ref()
+                    .map(|value| value.2.as_str()),
             ],
         )?;
         if updated == 0 {
@@ -1950,11 +1998,30 @@ impl Store {
         delete_turn_rows_except_fence(&transaction, &key, target_fence)?;
         replace_relations_in(&transaction, &record.key, RelationKind::Subagent, relations)?;
         if completion.status == PublishedEvidence::Ready {
+            let publication_epoch = time::OffsetDateTime::now_utc();
             remediation::mark_remediations_dirty_in(
                 &transaction,
                 &record.key.environment_key,
                 &record.key.agent,
-                time::OffsetDateTime::now_utc().unix_timestamp(),
+                publication_epoch.unix_timestamp(),
+                correction_replay,
+            )?;
+            let findings =
+                crate::insights_report::publication_findings_in(&transaction, &record.key)?;
+            let boundary_ms = i64::try_from(publication_epoch.unix_timestamp_nanos() / 1_000_000)
+                .unwrap_or(i64::MAX);
+            let candidates = crate::remediation::passive_remediations(
+                &transaction,
+                remediation_secret
+                    .as_ref()
+                    .expect("ready publication has a remediation secret"),
+                findings,
+                boundary_ms,
+            )?;
+            remediation::enroll_passive_remediations_in(
+                &transaction,
+                &candidates,
+                publication_epoch.unix_timestamp(),
             )?;
         }
         transaction.commit()?;

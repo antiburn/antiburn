@@ -933,6 +933,9 @@ fn session_evidence_table_shape_is_stable() {
             "effective_model_target_hash",
             "effective_model_scope",
             "effective_model",
+            "effective_reasoning_target_hash",
+            "effective_reasoning_scope",
+            "effective_reasoning",
         ]
     );
 }

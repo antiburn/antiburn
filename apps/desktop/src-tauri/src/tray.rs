@@ -19,7 +19,7 @@ use tauri::image::Image;
 use tauri::menu::CheckMenuItem;
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, Wry};
+use tauri::{Emitter, Manager, Wry};
 
 #[cfg(debug_assertions)]
 use crate::commands;
@@ -97,6 +97,8 @@ const MENU_SETTINGS: &str = "settings";
 const MENU_RESET_ONBOARDING: &str = "reset-onboarding";
 #[cfg(debug_assertions)]
 const MENU_RANDOM_USAGE: &str = "random-usage";
+#[cfg(debug_assertions)]
+const MENU_BURN_CHECKS: &str = "burn-checks";
 const MENU_QUIT: &str = "quit";
 
 /// Title case, matching "Quit antiburn" and the platform's own menus.
@@ -110,6 +112,23 @@ const OPEN_POPOVER_LABEL: &str = "Open Usage Popover";
 const RESET_ONBOARDING_LABEL: &str = "Reset Onboarding";
 #[cfg(debug_assertions)]
 const RANDOM_USAGE_LABEL: &str = "Simulate Random Usage";
+#[cfg(debug_assertions)]
+const BURN_CHECKS_LABEL: &str = "Simulate Burn Checks";
+
+/// Debug-only state that replaces a report with stable sample findings.
+#[cfg(debug_assertions)]
+pub struct DebugBurnChecks {
+    enabled: Mutex<bool>,
+}
+
+#[cfg(debug_assertions)]
+impl Default for DebugBurnChecks {
+    fn default() -> Self {
+        Self {
+            enabled: Mutex::new(false),
+        }
+    }
+}
 
 /// The tray menu items whose text follows app state.
 ///
@@ -122,6 +141,8 @@ pub struct TrayMenu {
     pin: MenuItem<Wry>,
     #[cfg(debug_assertions)]
     random_usage: CheckMenuItem<Wry>,
+    #[cfg(debug_assertions)]
+    burn_checks: CheckMenuItem<Wry>,
 }
 
 struct BuiltMenu {
@@ -129,6 +150,8 @@ struct BuiltMenu {
     pin: MenuItem<Wry>,
     #[cfg(debug_assertions)]
     random_usage: CheckMenuItem<Wry>,
+    #[cfg(debug_assertions)]
+    burn_checks: CheckMenuItem<Wry>,
 }
 
 /// The label the pin item carries for a given state — it names the action, not
@@ -144,7 +167,11 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
         pin: menu.pin,
         #[cfg(debug_assertions)]
         random_usage: menu.random_usage,
+        #[cfg(debug_assertions)]
+        burn_checks: menu.burn_checks,
     });
+    #[cfg(debug_assertions)]
+    app.manage(DebugBurnChecks::default());
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(Image::from_bytes(TRAY_ICON)?)
@@ -235,6 +262,48 @@ fn toggle_random_usage(app: &AppHandle) -> bool {
         .unwrap_or_default();
     sync_usage(app, &summary, active, false);
     false
+}
+
+/// Toggle stable sample findings without writing simulated data to the store.
+#[cfg(debug_assertions)]
+fn toggle_burn_checks(app: &AppHandle) -> bool {
+    let Some(state) = app.try_state::<DebugBurnChecks>() else {
+        return false;
+    };
+    let mut enabled = state
+        .enabled
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *enabled = !*enabled;
+    *enabled
+}
+
+/// Replace the report display with predictable development findings.
+#[cfg(debug_assertions)]
+pub(crate) fn simulate_burn_checks(app: &AppHandle, report: &mut crate::dto::ChecksReportPayload) {
+    let enabled = app.try_state::<DebugBurnChecks>().is_some_and(|state| {
+        *state
+            .enabled
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    });
+    if !enabled {
+        return;
+    }
+    report.estimated_token_burn_basis_points = Some(125);
+    report.evidence_settled = false;
+    report.pending_evidence = 12;
+    for category in &mut report.categories {
+        category.finding = 0;
+        category.clean = 8;
+        category.unavailable = 0;
+        category.estimated_token_burn_basis_points = None;
+    }
+    if let Some(category) = report.categories.first_mut() {
+        category.finding = 3;
+        category.clean = 5;
+        category.estimated_token_burn_basis_points = Some(125);
+    }
 }
 
 #[cfg(debug_assertions)]
@@ -492,6 +561,15 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         false,
         None::<&str>,
     )?;
+    #[cfg(debug_assertions)]
+    let burn_checks_item = CheckMenuItem::with_id(
+        app,
+        MENU_BURN_CHECKS,
+        BURN_CHECKS_LABEL,
+        true,
+        false,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit antiburn", true, None::<&str>)?;
     let main_item = MenuItem::with_id(app, MENU_MAIN, OPEN_LABEL, true, None::<&str>)?;
@@ -514,6 +592,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         &reset_onboarding_item,
         #[cfg(debug_assertions)]
         &random_usage_item,
+        #[cfg(debug_assertions)]
+        &burn_checks_item,
         &separator,
         &quit_item,
     ];
@@ -523,6 +603,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         pin: pin_item,
         #[cfg(debug_assertions)]
         random_usage: random_usage_item,
+        #[cfg(debug_assertions)]
+        burn_checks: burn_checks_item,
     })
 }
 
@@ -593,6 +675,16 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             {
                 ::tracing::warn!(event = "tray_random_usage_relabel_failed", enabled, error = %error);
             }
+        }
+        #[cfg(debug_assertions)]
+        MENU_BURN_CHECKS => {
+            let enabled = toggle_burn_checks(app);
+            if let Some(menu) = app.try_state::<TrayMenu>()
+                && let Err(error) = menu.burn_checks.set_checked(enabled)
+            {
+                ::tracing::warn!(event = "tray_burn_checks_relabel_failed", enabled, error = %error);
+            }
+            let _ = app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
         }
         MENU_QUIT => {
             // Exit code 0 distinguishes a deliberate quit from the window

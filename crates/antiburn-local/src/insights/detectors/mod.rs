@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::analysis::{EvidenceValue, SessionEvidence};
 use crate::pricing::canonical_model_key;
-use crate::remediation::{BuiltInToolTokens, FindingCause};
+use crate::remediation::FindingCause;
 
 use super::report::{DetectorCounts, MAX_EXAMPLES_PER_DETECTOR, SessionExample};
 use super::status::DetectorId;
@@ -433,18 +433,12 @@ pub(crate) fn built_in_source_assessable(
     evidence: &SessionEvidence,
     source_evidence: Option<&super::report::SessionTokenBurnEvidence>,
 ) -> bool {
-    detector == DetectorId::UnusedBuiltInTools
-        && source_evidence
-            .and_then(|value| value.built_in_tool_sources.as_ref())
-            .is_some()
-        && super::report::Fact::ToolDefinitions.state(evidence)
-            == super::report::FactState::Unsupported
-        && matches!(
-            evidence.coverage,
-            crate::analysis::EvidenceCoverage::Complete
-        )
-        && matches!(&evidence.tools, EvidenceValue::Complete(_))
-        && complete(&evidence.eligibility).is_some_and(|value| value.assistant_turns > 0)
+    match detector {
+        DetectorId::UnusedBuiltInTools => {
+            unused_built_in_tools::source_assessable(evidence, source_evidence)
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn evaluate_with_source_evidence(
@@ -453,30 +447,14 @@ pub(crate) fn evaluate_with_source_evidence(
     catalogs: &ReportCatalogs,
     source_evidence: Option<&super::report::SessionTokenBurnEvidence>,
 ) -> DetectorEvaluation {
-    if !built_in_source_assessable(detector, evidence, source_evidence) {
-        return evaluate(detector, evidence, catalogs);
-    }
-    let situational = crate::analysis::tool_catalog::situational_tools(&evidence.identity.agent);
-    if source_evidence
-        .and_then(|value| value.built_in_tool_sources.as_ref())
-        .into_iter()
-        .flatten()
-        .any(|source| {
-            source.replicated_tokens > 0
-                && !source.invoked
-                && !situational.iter().any(|name| {
-                    crate::analysis::tool_catalog::comparable_tool_name(name)
-                        == crate::analysis::tool_catalog::comparable_tool_name(&source.name)
-                })
-        })
-    {
-        DetectorEvaluation {
-            observation: Observation::Finding,
-        }
-    } else {
-        DetectorEvaluation {
-            observation: Observation::NoFinding,
-        }
+    match detector {
+        DetectorId::UnusedBuiltInTools => DetectorEvaluation {
+            observation: unused_built_in_tools::evaluate_with_source_evidence(
+                evidence,
+                source_evidence,
+            ),
+        },
+        _ => evaluate(detector, evidence, catalogs),
     }
 }
 
@@ -486,39 +464,13 @@ pub(crate) fn finding_causes_with_source_evidence(
     catalogs: &ReportCatalogs,
     source_evidence: Option<&super::report::SessionTokenBurnEvidence>,
 ) -> Vec<FindingCause> {
-    if !built_in_source_assessable(detector, evidence, source_evidence) {
-        return finding_causes(detector, evidence, catalogs);
-    }
-    let situational = crate::analysis::tool_catalog::situational_tools(&evidence.identity.agent);
-    let mut causes = source_evidence
-        .and_then(|value| value.built_in_tool_sources.as_ref())
-        .into_iter()
-        .flatten()
-        .filter(|source| {
-            source.replicated_tokens > 0
-                && !source.invoked
-                && !situational.iter().any(|name| {
-                    crate::analysis::tool_catalog::comparable_tool_name(name)
-                        == crate::analysis::tool_catalog::comparable_tool_name(&source.name)
-                })
-        })
-        .map(|source| FindingCause::UnusedBuiltInTool {
-            tool: source.name.clone(),
-            tokens: BuiltInToolTokens::Replicated(source.replicated_tokens),
-        })
-        .collect::<Vec<_>>();
-    causes.sort_by(|left, right| match (left, right) {
-        (
-            FindingCause::UnusedBuiltInTool { tool: left, .. },
-            FindingCause::UnusedBuiltInTool { tool: right, .. },
-        ) => left.cmp(right),
-        _ => core::cmp::Ordering::Equal,
-    });
-    debug_assert!(
-        causes
-            .iter()
-            .all(|cause| cause.detector() == DetectorId::UnusedBuiltInTools)
-    );
+    let causes = match detector {
+        DetectorId::UnusedBuiltInTools => {
+            unused_built_in_tools::finding_causes_with_source_evidence(evidence, source_evidence)
+        }
+        _ => finding_causes(detector, evidence, catalogs),
+    };
+    debug_assert!(causes.iter().all(|cause| cause.detector() == detector));
     causes
 }
 
@@ -616,7 +568,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use crate::analysis::ToolDefinition;
-    use crate::insights::{SessionTokenBurnEvidence, TokenBurnSourceEvidence};
+    use crate::remediation::BuiltInToolTokens;
 
     fn counts(eligible: u64, finding: u64, clean: u64, unavailable: u64) -> DetectorCounts {
         DetectorCounts {
@@ -870,39 +822,6 @@ mod tests {
             vec![FindingCause::UnusedBuiltInTool {
                 tool: "Read".to_owned(),
                 tokens: BuiltInToolTokens::Definition(73),
-            }]
-        );
-
-        let mut fallback_evidence = evidence;
-        let EvidenceValue::Complete(sources) = &mut fallback_evidence.context_sources else {
-            unreachable!()
-        };
-        sources.tool_definitions = EvidenceValue::Unsupported;
-        let mut source_evidence = SessionTokenBurnEvidence::default();
-        source_evidence.built_in_tool_sources = Some(vec![TokenBurnSourceEvidence {
-            scope: "agent:bundled".to_owned(),
-            name: "Write".to_owned(),
-            replicated_tokens: u128::from(u64::MAX) + 9,
-            invoked: false,
-        }]);
-        let fallback = evaluate_with_source_evidence(
-            DetectorId::UnusedBuiltInTools,
-            &fallback_evidence,
-            &ReportCatalogs::default(),
-            Some(&source_evidence),
-        );
-        assert_eq!(fallback.observation, Observation::Finding);
-        let fallback_causes = finding_causes_with_source_evidence(
-            DetectorId::UnusedBuiltInTools,
-            &fallback_evidence,
-            &ReportCatalogs::default(),
-            Some(&source_evidence),
-        );
-        assert_eq!(
-            fallback_causes,
-            vec![FindingCause::UnusedBuiltInTool {
-                tool: "Write".to_owned(),
-                tokens: BuiltInToolTokens::Replicated(u128::from(u64::MAX) + 9),
             }]
         );
     }

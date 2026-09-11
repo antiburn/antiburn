@@ -110,6 +110,7 @@ pub struct RemediationRecord {
     pub effective_boundary_ms: Option<i64>,
     pub verified_at_epoch: Option<i64>,
     pub recurred_at_epoch: Option<i64>,
+    pub action_joined_at_ms: Option<i64>,
 }
 
 /// A remediation verification result ready for guarded persistence.
@@ -118,7 +119,7 @@ pub struct RemediationResult {
     pub state: RemediationState,
     pub result_json: String,
     pub evaluated_at_epoch: i64,
-    pub transition_at_epoch: Option<i64>,
+    pub transition_at_ms: Option<i64>,
 }
 
 impl SessionKey {

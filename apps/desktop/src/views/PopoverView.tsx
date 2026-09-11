@@ -17,6 +17,7 @@ import { AnchoredTriggerController } from "../lib/anchoredTrigger"
 import {
   DEFAULT_SETTINGS,
   noteInteraction,
+  openMainWindowSection,
   openMainWindowSession,
   openGithubRepo,
   openSettingsWindow,
@@ -294,9 +295,14 @@ export function PopoverView() {
                     void peekTriggers.hover({ kind: "checks" }, anchor, {
                       kind: "checks",
                       presentation: checks,
+                      pendingEvidence: state.checksReport?.pendingEvidence ?? 0,
                     })
                   }}
                   onLeave={() => void peekTriggers.leave()}
+                  onOpen={() => {
+                    void peekTriggers.leave()
+                    void openMainWindowSection("burnChecks")
+                  }}
                 />
               </div>
             </div>

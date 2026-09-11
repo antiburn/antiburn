@@ -208,6 +208,20 @@ export interface SessionIdentityPayload {
   wslDistro: string | null
 }
 
+/** One revisioned request to show a session in the retained main window. */
+export interface MainWindowSessionRequest {
+  revision: number
+  target: SessionIdentityPayload
+}
+
+export type MainWindowSectionId = "activity" | "burnChecks"
+
+/** One revisioned request to select a retained main-window section. */
+export interface MainWindowSectionRequest {
+  revision: number
+  section: MainWindowSectionId
+}
+
 /** One end of a local fork relation. */
 export interface SessionRelationPayload {
   identity: SessionIdentityPayload
@@ -487,6 +501,42 @@ export async function windowReady(generation: number): Promise<void> {
   await invoke("window_ready", { generation })
 }
 
+/** Tell the shell that the retained main window committed this renderer generation. */
+export async function mainWindowReady(generation: number): Promise<void> {
+  if (!hasShell()) return
+  await invoke("main_window_ready", { generation })
+}
+
+/** Whether the retained main renderer can present work. */
+export async function getMainWindowVisible(): Promise<boolean> {
+  if (!hasShell()) return true
+  return invoke<boolean>("get_main_window_visible")
+}
+
+/** Open or focus the main window and select one exact local session. */
+export async function openMainWindowSession(target: SessionIdentityPayload): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_main_window_session", { target })
+}
+
+/** Open or focus the main window and select one top-level section. */
+export async function openMainWindowSection(section: MainWindowSectionId): Promise<void> {
+  if (!hasShell()) return
+  await invoke("open_main_window_section", { section })
+}
+
+/** Take the latest section that arrived before the main renderer could listen. */
+export async function takeMainWindowSectionTarget(): Promise<MainWindowSectionRequest | null> {
+  if (!hasShell()) return null
+  return invoke<MainWindowSectionRequest | null>("take_main_window_section_target")
+}
+
+/** Take the latest target that arrived before the main renderer could listen. */
+export async function takeMainWindowSessionTarget(): Promise<MainWindowSessionRequest | null> {
+  if (!hasShell()) return null
+  return invoke<MainWindowSessionRequest | null>("take_main_window_session_target")
+}
+
 /** Tell the shell that the popover's initial activity and usage state settled. */
 export async function popoverContentReady(generation: number): Promise<void> {
   if (!hasShell()) return
@@ -740,6 +790,16 @@ export type Interaction =
       state: LiveUsageState
       origin: SurfaceOrigin
     }
+  | { kind: "burnCheckAutoFixReviewed"; outcome: AutoFixReviewAnalyticsOutcome }
+  | { kind: "burnCheckAutoFixConfirmed" }
+  | { kind: "burnCheckAutoFixCompleted"; outcome: AutoFixAnalyticsOutcome }
+  | { kind: "burnCheckPromptPrepared"; outcome: PromptPreparationAnalyticsOutcome }
+  | { kind: "burnCheckPromptCopied" }
+  | {
+      kind: "burnCheckOutcomeObserved"
+      outcome: "verified" | "recurred"
+      origin: "passive" | "action"
+    }
 
 export type Surface =
   | "activity"
@@ -749,6 +809,7 @@ export type Surface =
   | "hud"
   | "hud_detail"
   | "settings"
+  | "burn_checks"
 
 export type StateSurface = Surface | "insights"
 export type SurfaceOrigin = "user" | "automatic"
@@ -756,6 +817,18 @@ export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"
 export type LiveUsageProvider = "anthropic" | "openai" | "google"
 export type LiveUsageState =
   "fresh" | "stale" | "authentication" | "rate_limited" | "unavailable" | "no_credentials"
+export type AutoFixReviewAnalyticsOutcome =
+  "ready" | "stale" | "expired" | "conflict" | "unavailable" | "failed"
+export type AutoFixAnalyticsOutcome =
+  | "applied_awaiting_verification"
+  | "recovery_needed"
+  | "stale"
+  | "expired"
+  | "conflict"
+  | "unavailable"
+  | "failed"
+export type PromptPreparationAnalyticsOutcome =
+  "ready" | "stale" | "expired" | "unavailable" | "failed"
 
 function isNativePeekInteraction(interaction: Interaction): boolean {
   switch (interaction.kind) {
@@ -1234,6 +1307,45 @@ export async function setNudgeHovered(hovered: boolean): Promise<void> {
 }
 
 const noShellUnlisten: UnlistenFn = () => undefined
+
+/** Event the shell emits when the main renderer can start or stop presenting work. */
+export const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT = "main:visibility-changed"
+
+/** Event carrying a revisioned session target to an existing main renderer. */
+export const MAIN_WINDOW_SESSION_TARGET_EVENT = "main:session-target"
+
+/** Event carrying a revisioned section target to an existing main renderer. */
+export const MAIN_WINDOW_SECTION_TARGET_EVENT = "main:section-target"
+
+/** Subscribe to main-window presentation visibility. */
+export async function onMainWindowVisibilityChanged(
+  handler: (visible: boolean) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<boolean>(MAIN_WINDOW_VISIBILITY_CHANGED_EVENT, (event) =>
+    handler(event.payload),
+  )
+}
+
+/** Subscribe to session targets sent to the retained main renderer. */
+export async function onMainWindowSessionTarget(
+  handler: (request: MainWindowSessionRequest) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<MainWindowSessionRequest>(MAIN_WINDOW_SESSION_TARGET_EVENT, (event) =>
+    handler(event.payload),
+  )
+}
+
+/** Subscribe to section targets sent to the retained main renderer. */
+export async function onMainWindowSectionTarget(
+  handler: (request: MainWindowSectionRequest) => void,
+): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen<MainWindowSectionRequest>(MAIN_WINDOW_SECTION_TARGET_EVENT, (event) =>
+    handler(event.payload),
+  )
+}
 
 /** Event names the scan emits. Mirrors `src-tauri/src/scan.rs`. */
 export const SCAN_EVENTS = {

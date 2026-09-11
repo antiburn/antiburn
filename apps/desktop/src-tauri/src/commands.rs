@@ -34,19 +34,23 @@ use crate::agents::kind_from_slug;
 use crate::analysis;
 use crate::consent;
 use crate::dto::{
-    ActivityEntry, AgentScanState, AppInfo, AutoFixBurnCheckTargetOutcome,
-    AutoFixUnavailableReason, BurnCheckDetectorId, BurnCheckTargetListPayload, ChecksReportPayload,
+    ActivityEntry, AgentScanState, AggregateWinsPayload, AppInfo,
+    ApplyPreparedBurnCheckOperationOutcome, AutoFixUnavailableReason, BurnCheckDetectorId,
+    BurnCheckTargetListPayload, ChecksReportPayload, CopyPromptFixBurnCheckOutcome,
     CopyPromptFixBurnCheckTargetOutcome, DeferredPermissionDir, HygieneSummaryPayload,
     InsightsReportPayload, InsightsStatusPayload, LiveUsageSummary, OrchestrationStatus,
-    PromptFixUnavailableReason, ProviderUsageSummary, RepositoryItem, ScanStatus, SessionAnalysis,
-    SessionHygienePayload, SessionHygieneRequest, SessionIdentity, SessionLimitAllocation,
-    SessionLimitAllocationSummary, SessionRelation, SessionRelations, SubagentMember,
+    PrepareAutoFixBurnCheckTargetOutcome, PromptFixUnavailableReason, ProviderUsageSummary,
+    RepositoryItem, ScanStatus, SessionAnalysis, SessionHygienePayload, SessionHygieneRequest,
+    SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary, SessionRelation,
+    SessionRelations, SubagentMember,
 };
 use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
 use crate::popover;
 use crate::provider_usage;
-use crate::remediation::{BurnCheckTargetContext, ControllerError, RemediationController};
+use crate::remediation::{
+    BurnCheckSampleSession, BurnCheckTargetContext, ControllerError, RemediationController,
+};
 use crate::repositories;
 use crate::scan::{self, ScanController, ScanTrigger};
 use crate::settings;
@@ -1462,8 +1466,8 @@ pub async fn get_checks_report(
     window: tauri::WebviewWindow,
     consumer_id: String,
 ) -> CommandResult<ChecksReportPayload> {
-    if window.label() != popover::LABEL {
-        return Err(fail("only the popover can read the Checks report"));
+    if !matches!(window.label(), popover::LABEL | crate::main_window::LABEL) {
+        return Err(fail("only Checks surfaces can read the Checks report"));
     }
     if consumer_id.is_empty() || consumer_id.len() > 128 {
         return Err(fail("the Checks consumer ID is invalid"));
@@ -1475,18 +1479,24 @@ pub async fn get_checks_report(
         .state::<InsightsController>()
         .checks_report(data_dir, request, consumer_id)
         .await?;
-    Ok(ChecksReportPayload::from_report(
+    let mut payload = ChecksReportPayload::from_report(
         &reduced.report,
         reduced.evidence_settled,
-    ))
+        reduced.pending_evidence,
+    );
+    #[cfg(debug_assertions)]
+    crate::tray::simulate_burn_checks(app, &mut payload);
+    Ok(payload)
 }
 
 /// Restricts burn-check remediation to the current Checks surface.
 fn ensure_checks_window(label: &str) -> CommandResult<()> {
-    if label == popover::LABEL {
+    if matches!(label, popover::LABEL | crate::main_window::LABEL) {
         Ok(())
     } else {
-        Err(fail("only the popover can use burn check remediation"))
+        Err(fail(
+            "only the main window and popover can use burn check remediation",
+        ))
     }
 }
 
@@ -1499,7 +1509,8 @@ pub async fn list_burn_check_targets(
     let app = window.app_handle().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let request = insights_report_request(epoch_now());
-        app.state::<RemediationController>()
+        let list = app
+            .state::<RemediationController>()
             .list_burn_check_targets(
                 &app.state::<Store>(),
                 detector.into(),
@@ -1508,73 +1519,159 @@ pub async fn list_burn_check_targets(
                     window: request.window,
                 },
             )
-            .map(Into::into)
-            .map_err(|_| "unable to list burn check targets".to_owned())
+            .map_err(|_| "unable to list burn check targets".to_owned())?;
+        let mut sample_identities = BTreeSet::new();
+        let samples = list
+            .targets
+            .iter()
+            .map(|target| {
+                let unique_samples =
+                    unique_sample_sessions(&target.sample_sessions, &mut sample_identities);
+                crate::main_window::sample_payloads(&app, &unique_samples)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut payload: BurnCheckTargetListPayload = list.into();
+        for (target, samples) in payload.targets.iter_mut().zip(samples) {
+            target.samples = samples;
+        }
+        Ok(payload)
     })
     .await
     .map_err(|_| "unable to list burn check targets".to_owned())?
 }
 
-fn auto_fix_outcome(
+fn unique_sample_sessions(
+    samples: &[BurnCheckSampleSession],
+    seen: &mut BTreeSet<(String, String, String)>,
+) -> Vec<BurnCheckSampleSession> {
+    samples
+        .iter()
+        .filter(|sample| {
+            seen.insert((
+                sample.environment_key.clone(),
+                sample.agent.clone(),
+                sample.session_id.clone(),
+            ))
+        })
+        .cloned()
+        .collect()
+}
+
+fn prepare_auto_fix_outcome(
+    result: Result<crate::remediation::AutoFixReview, ControllerError>,
+) -> CommandResult<PrepareAutoFixBurnCheckTargetOutcome> {
+    match result {
+        Ok(review) => Ok(PrepareAutoFixBurnCheckTargetOutcome::ReviewReady {
+            review: review.into(),
+        }),
+        Err(ControllerError::TargetExpired) => Ok(PrepareAutoFixBurnCheckTargetOutcome::Expired),
+        Err(ControllerError::TargetChanged) => Ok(PrepareAutoFixBurnCheckTargetOutcome::Stale),
+        Err(ControllerError::Conflict) => Ok(PrepareAutoFixBurnCheckTargetOutcome::Conflict),
+        Err(ControllerError::TargetNotFound) => {
+            Ok(PrepareAutoFixBurnCheckTargetOutcome::Unavailable {
+                reason: AutoFixUnavailableReason::TargetNotFound,
+            })
+        }
+        Err(ControllerError::AutoFixUnavailable(reason)) => {
+            Ok(PrepareAutoFixBurnCheckTargetOutcome::Unavailable {
+                reason: reason.into(),
+            })
+        }
+        Err(ControllerError::PromptUnavailable(_))
+        | Err(ControllerError::CheckPromptUnavailable)
+        | Err(ControllerError::ApplyFailed(_))
+        | Err(ControllerError::RecoveryNeeded { .. })
+        | Err(ControllerError::PersistenceFailed)
+        | Err(ControllerError::Internal) => Err("unable to prepare burn check fix".to_owned()),
+    }
+}
+
+fn apply_prepared_outcome(
     result: Result<crate::remediation::AutoFixResult, ControllerError>,
-) -> CommandResult<AutoFixBurnCheckTargetOutcome> {
+) -> CommandResult<ApplyPreparedBurnCheckOperationOutcome> {
     use crate::agent_config::ApplyError;
 
     match result {
-        Ok(result) => Ok(AutoFixBurnCheckTargetOutcome::AppliedAwaitingVerification {
-            watch_id: result.watch_id,
-        }),
+        Ok(result) => Ok(
+            ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification {
+                watch_id: result.watch_id,
+            },
+        ),
         Err(ControllerError::RecoveryNeeded { watch_id }) => {
-            Ok(AutoFixBurnCheckTargetOutcome::RecoveryNeeded { watch_id })
+            Ok(ApplyPreparedBurnCheckOperationOutcome::RecoveryNeeded { watch_id })
         }
-        Err(ControllerError::TargetExpired) => Ok(AutoFixBurnCheckTargetOutcome::Expired),
-        Err(ControllerError::TargetChanged) => Ok(AutoFixBurnCheckTargetOutcome::Stale),
-        Err(ControllerError::Conflict) => Ok(AutoFixBurnCheckTargetOutcome::Conflict),
-        Err(ControllerError::TargetNotFound) => Ok(AutoFixBurnCheckTargetOutcome::Unavailable {
-            reason: AutoFixUnavailableReason::TargetNotFound,
-        }),
+        Err(ControllerError::TargetExpired) => Ok(ApplyPreparedBurnCheckOperationOutcome::Expired),
+        Err(ControllerError::TargetChanged) => Ok(ApplyPreparedBurnCheckOperationOutcome::Stale),
+        Err(ControllerError::Conflict) => Ok(ApplyPreparedBurnCheckOperationOutcome::Conflict),
+        Err(ControllerError::TargetNotFound) => {
+            Ok(ApplyPreparedBurnCheckOperationOutcome::Unavailable {
+                reason: AutoFixUnavailableReason::TargetNotFound,
+            })
+        }
         Err(ControllerError::AutoFixUnavailable(reason)) => {
-            Ok(AutoFixBurnCheckTargetOutcome::Unavailable {
+            Ok(ApplyPreparedBurnCheckOperationOutcome::Unavailable {
                 reason: reason.into(),
             })
         }
         Err(ControllerError::ApplyFailed(ApplyError::Conflict(_))) => {
-            Ok(AutoFixBurnCheckTargetOutcome::Conflict)
+            Ok(ApplyPreparedBurnCheckOperationOutcome::Conflict)
         }
         Err(ControllerError::ApplyFailed(ApplyError::Unavailable(_))) => {
-            Ok(AutoFixBurnCheckTargetOutcome::Unavailable {
+            Ok(ApplyPreparedBurnCheckOperationOutcome::Unavailable {
                 reason: AutoFixUnavailableReason::SafetyCheckFailed,
             })
         }
         Err(ControllerError::PromptUnavailable(_))
+        | Err(ControllerError::CheckPromptUnavailable)
         | Err(ControllerError::ApplyFailed(ApplyError::Readback(_)))
         | Err(ControllerError::PersistenceFailed)
         | Err(ControllerError::Internal) => Err("unable to auto fix burn check target".to_owned()),
     }
 }
 
-/// Applies the supported automatic change for one opaque current target.
+/// Prepares one exact automatic change for review without reserving a write.
 #[tauri::command]
-pub async fn auto_fix_burn_check_target(
+pub async fn prepare_auto_fix_burn_check_target(
     window: tauri::WebviewWindow,
-    target_id: String,
-) -> CommandResult<AutoFixBurnCheckTargetOutcome> {
+    action_id: String,
+) -> CommandResult<PrepareAutoFixBurnCheckTargetOutcome> {
+    ensure_checks_window(window.label())?;
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        prepare_auto_fix_outcome(
+            app.state::<RemediationController>()
+                .prepare_auto_fix_burn_check_target(&app.state::<Store>(), &action_id),
+        )
+    })
+    .await
+    .map_err(|_| "unable to prepare burn check fix".to_owned())?
+}
+
+/// Applies only the exact operation returned by the review command.
+#[tauri::command]
+pub async fn apply_prepared_burn_check_operation(
+    window: tauri::WebviewWindow,
+    prepared_operation_id: String,
+) -> CommandResult<ApplyPreparedBurnCheckOperationOutcome> {
     ensure_checks_window(window.label())?;
     let app = window.app_handle().clone();
     let action_app = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        auto_fix_outcome(
+        apply_prepared_outcome(
             action_app
                 .state::<RemediationController>()
-                .auto_fix_burn_check_target(&action_app.state::<Store>(), &target_id),
+                .apply_prepared_burn_check_operation(
+                    &action_app.state::<Store>(),
+                    &prepared_operation_id,
+                ),
         )
     })
     .await
-    .map_err(|_| "unable to auto fix burn check target".to_owned())??;
+    .map_err(|_| "unable to apply prepared burn check operation".to_owned())??;
     if matches!(
         outcome,
-        AutoFixBurnCheckTargetOutcome::AppliedAwaitingVerification { .. }
-            | AutoFixBurnCheckTargetOutcome::RecoveryNeeded { .. }
+        ApplyPreparedBurnCheckOperationOutcome::AppliedAwaitingVerification { .. }
+            | ApplyPreparedBurnCheckOperationOutcome::RecoveryNeeded { .. }
     ) {
         crate::insights_worker::wake(&app);
     }
@@ -1619,6 +1716,7 @@ fn prompt_fix_outcome(
             Ok(CopyPromptFixBurnCheckTargetOutcome::Unavailable { reason })
         }
         Err(ControllerError::AutoFixUnavailable(_))
+        | Err(ControllerError::CheckPromptUnavailable)
         | Err(ControllerError::Conflict)
         | Err(ControllerError::ApplyFailed(_))
         | Err(ControllerError::RecoveryNeeded { .. })
@@ -1631,7 +1729,7 @@ fn prompt_fix_outcome(
 #[tauri::command]
 pub async fn copy_prompt_fix_burn_check_target(
     window: tauri::WebviewWindow,
-    target_id: String,
+    action_id: String,
 ) -> CommandResult<CopyPromptFixBurnCheckTargetOutcome> {
     ensure_checks_window(window.label())?;
     let app = window.app_handle().clone();
@@ -1640,7 +1738,7 @@ pub async fn copy_prompt_fix_burn_check_target(
         prompt_fix_outcome(
             action_app
                 .state::<RemediationController>()
-                .copy_prompt_fix_burn_check_target(&action_app.state::<Store>(), &target_id),
+                .copy_prompt_fix_burn_check_target(&action_app.state::<Store>(), &action_id),
         )
     })
     .await
@@ -1654,14 +1752,99 @@ pub async fn copy_prompt_fix_burn_check_target(
     Ok(outcome)
 }
 
-/// Cancel Checks work when the popover renderer is released.
+/// Returns a bounded generic prompt only when a failed check has no exact target.
+#[tauri::command]
+pub async fn copy_prompt_fix_burn_check(
+    window: tauri::WebviewWindow,
+    detector: BurnCheckDetectorId,
+) -> CommandResult<CopyPromptFixBurnCheckOutcome> {
+    ensure_checks_window(window.label())?;
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let request = insights_report_request(epoch_now());
+        match app
+            .state::<RemediationController>()
+            .copy_prompt_fix_burn_check(
+                &app.state::<Store>(),
+                detector.into(),
+                BurnCheckTargetContext {
+                    environment_key: request.environment_key,
+                    window: request.window,
+                },
+            ) {
+            Ok(result) => Ok(CopyPromptFixBurnCheckOutcome::PromptReady {
+                prompt: result.prompt,
+            }),
+            Err(ControllerError::CheckPromptUnavailable) => {
+                Ok(CopyPromptFixBurnCheckOutcome::Unavailable)
+            }
+            Err(_) => Err("unable to copy burn check prompt".to_owned()),
+        }
+    })
+    .await
+    .map_err(|_| "unable to copy burn check prompt".to_owned())?
+}
+
+/// Returns one bounded prompt for all selected current targets in one check.
+#[tauri::command]
+pub async fn copy_prompt_fix_burn_check_targets(
+    window: tauri::WebviewWindow,
+    action_ids: Vec<String>,
+) -> CommandResult<CopyPromptFixBurnCheckOutcome> {
+    ensure_checks_window(window.label())?;
+    let app = window.app_handle().clone();
+    let action_app = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        match action_app
+            .state::<RemediationController>()
+            .copy_prompt_fix_burn_check_targets(&action_app.state::<Store>(), &action_ids)
+        {
+            Ok(result) => Ok(CopyPromptFixBurnCheckOutcome::PromptReady {
+                prompt: result.prompt,
+            }),
+            Err(ControllerError::TargetExpired)
+            | Err(ControllerError::TargetChanged)
+            | Err(ControllerError::TargetNotFound)
+            | Err(ControllerError::CheckPromptUnavailable)
+            | Err(ControllerError::PromptUnavailable(_)) => {
+                Ok(CopyPromptFixBurnCheckOutcome::Unavailable)
+            }
+            Err(_) => Err("unable to copy burn check prompt".to_owned()),
+        }
+    })
+    .await
+    .map_err(|_| "unable to copy burn check prompt".to_owned())??;
+    if matches!(outcome, CopyPromptFixBurnCheckOutcome::PromptReady { .. }) {
+        crate::insights_worker::wake(&app);
+    }
+    Ok(outcome)
+}
+
+/// Returns bounded durable wins without reading current findings.
+#[tauri::command]
+pub async fn get_burn_check_aggregate_wins(
+    window: tauri::WebviewWindow,
+) -> CommandResult<AggregateWinsPayload> {
+    ensure_checks_window(window.label())?;
+    let app = window.app_handle().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<RemediationController>()
+            .aggregate_wins(&app.state::<Store>())
+            .map(Into::into)
+            .map_err(|_| "unable to read burn check aggregate wins".to_owned())
+    })
+    .await
+    .map_err(|_| "unable to read burn check aggregate wins".to_owned())?
+}
+
+/// Release one Checks consumer without affecting another visible surface.
 #[tauri::command]
 pub fn cancel_checks_report(
     window: tauri::WebviewWindow,
     consumer_id: String,
 ) -> CommandResult<()> {
-    if window.label() != popover::LABEL {
-        return Err(fail("only the popover can cancel the Checks report"));
+    if !matches!(window.label(), popover::LABEL | crate::main_window::LABEL) {
+        return Err(fail("only Checks surfaces can cancel the Checks report"));
     }
     if consumer_id.is_empty() || consumer_id.len() > 128 {
         return Err(fail("the Checks consumer ID is invalid"));
@@ -2327,30 +2510,59 @@ mod tests {
     #[test]
     fn burn_check_remediation_rejects_unrelated_windows() {
         assert!(ensure_checks_window(popover::LABEL).is_ok());
+        assert!(ensure_checks_window(crate::main_window::LABEL).is_ok());
         assert!(ensure_checks_window("settings").is_err());
         assert!(ensure_checks_window("onboarding").is_err());
+        assert!(ensure_checks_window(crate::popover_peek::LABEL).is_err());
+    }
+
+    #[test]
+    fn sample_sessions_are_unique_across_a_combined_target_list() {
+        let sample = |session_id: &str| BurnCheckSampleSession {
+            environment_key: "native".to_owned(),
+            agent: "codex".to_owned(),
+            session_id: session_id.to_owned(),
+            observed_at_ms: 1,
+        };
+        let mut seen = BTreeSet::new();
+
+        let first = unique_sample_sessions(&[sample("one"), sample("two")], &mut seen);
+        let second = unique_sample_sessions(&[sample("two"), sample("three")], &mut seen);
+
+        assert_eq!(first.len(), 2);
+        assert_eq!(
+            second
+                .iter()
+                .map(|sample| sample.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["three"]
+        );
     }
 
     #[test]
     fn expected_auto_fix_failures_map_to_closed_outcomes() {
         assert!(matches!(
-            auto_fix_outcome(Err(ControllerError::TargetExpired)).unwrap(),
-            AutoFixBurnCheckTargetOutcome::Expired
+            apply_prepared_outcome(Err(ControllerError::TargetExpired)).unwrap(),
+            ApplyPreparedBurnCheckOperationOutcome::Expired
         ));
         assert!(matches!(
-            auto_fix_outcome(Err(ControllerError::TargetChanged)).unwrap(),
-            AutoFixBurnCheckTargetOutcome::Stale
+            apply_prepared_outcome(Err(ControllerError::TargetChanged)).unwrap(),
+            ApplyPreparedBurnCheckOperationOutcome::Stale
         ));
         assert!(matches!(
-            auto_fix_outcome(Err(ControllerError::ApplyFailed(
+            apply_prepared_outcome(Err(ControllerError::ApplyFailed(
                 crate::agent_config::ApplyError::Conflict(
                     crate::agent_config::ApplyConflict::ChangedContent
                 )
             )))
             .unwrap(),
-            AutoFixBurnCheckTargetOutcome::Conflict
+            ApplyPreparedBurnCheckOperationOutcome::Conflict
         ));
-        assert!(auto_fix_outcome(Err(ControllerError::Internal)).is_err());
+        assert!(apply_prepared_outcome(Err(ControllerError::Internal)).is_err());
+        assert!(matches!(
+            prepare_auto_fix_outcome(Err(ControllerError::TargetExpired)).unwrap(),
+            PrepareAutoFixBurnCheckTargetOutcome::Expired
+        ));
     }
 
     #[test]

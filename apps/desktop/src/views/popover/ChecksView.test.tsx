@@ -1,12 +1,12 @@
 import { fireEvent, render, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-import type { ChecksCategoryPayload } from "../../lib/insightsIpc"
+import type { BurnCheckDetectorId, ChecksCategoryPayload } from "../../lib/insightsIpc"
 import type { ChecksPresentation } from "../../lib/presentation/checks"
 import { ChecksPeek, ChecksSummary } from "./ChecksView"
 
 function category(
-  id: string,
+  id: BurnCheckDetectorId,
   overrides: Partial<ChecksCategoryPayload> = {},
 ): ChecksCategoryPayload {
   return {
@@ -42,7 +42,7 @@ const presentation: ChecksPresentation = {
 }
 
 describe("Checks", () => {
-  it("opens the All checks companion on hover and focus", () => {
+  it("opens the Burn checks companion on hover and focus", () => {
     const onPreview = vi.fn()
     render(
       <ChecksSummary
@@ -56,8 +56,7 @@ describe("Checks", () => {
 
     expect(screen.getByText("16% token burn").closest(".text-system-red-text")).not.toBeNull()
     expect(screen.queryByText("Last 30 days")).not.toBeInTheDocument()
-    const trigger = screen.getByText("All checks").closest("[tabindex]")!
-    expect(screen.queryByRole("button")).not.toBeInTheDocument()
+    const trigger = screen.getByRole("button", { name: /Burn checks/ })
     fireEvent.mouseEnter(trigger)
     fireEvent.focus(trigger)
     expect(onPreview).toHaveBeenCalledTimes(2)
@@ -105,7 +104,7 @@ describe("Checks", () => {
       />,
     )
     const summary = container.firstElementChild!
-    const trigger = screen.getByText("All checks").closest("[tabindex]")!
+    const trigger = screen.getByRole("button", { name: /Burn checks/ })
     fireEvent.mouseEnter(summary)
     fireEvent.focus(trigger)
     fireEvent.mouseLeave(summary)
@@ -138,8 +137,8 @@ describe("Checks", () => {
         onLeave={vi.fn()}
       />,
     )
-    const summary = screen.getByText("All checks").parentElement?.parentElement
-    expect(summary).not.toHaveAttribute("tabindex")
+    const summary = screen.getByRole("button", { name: /Burn checks/ })
+    expect(summary).toBeDisabled()
   })
 
   it("ends the loading state when the report is unavailable", () => {
@@ -161,13 +160,13 @@ describe("Checks", () => {
     expect(screen.getByText("16% token burn")).toBeInTheDocument()
     expect(screen.getByText("12% token burn")).toBeInTheDocument()
     expect(container.querySelectorAll(".text-roll")).toHaveLength(2)
-    expect(screen.queryByText("1 check failed")).not.toBeInTheDocument()
+    expect(screen.getByText(/1 check failed/)).toBeInTheDocument()
     expect(screen.getByText("7/11 sessions failed")).toBeInTheDocument()
-    expect(screen.queryByText(/need evidence/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/More evidence is needed/)).not.toBeInTheDocument()
     expect(screen.getByText("Passed checks")).toHaveClass("text-label-tertiary")
-    const explainer = screen.getByText("Estimated share of tokens spent on avoidable work.")
-    expect(explainer).toBeInTheDocument()
-    expect(explainer.closest("section")).toHaveClass("bg-surface-card")
+    expect(
+      screen.queryByText("Estimated share of tokens spent on avoidable work."),
+    ).not.toBeInTheDocument()
     expect(screen.getByText("Failed checks").nextElementSibling).toHaveClass("mt-2")
     expect(screen.getByText("Passed checks").nextElementSibling).toHaveClass("mt-2")
     expect(container.querySelector(".lucide-flame")).toBeInTheDocument()
@@ -185,6 +184,75 @@ describe("Checks", () => {
     expect(screen.queryByText("Passed")).not.toBeInTheDocument()
     expect(screen.getAllByText("12 passed")).toHaveLength(4)
     expect(screen.queryByRole("button")).not.toBeInTheDocument()
+  })
+
+  it("shows the queued check count below the hero", () => {
+    render(<ChecksPeek presentation={presentation} pendingEvidence={12} />)
+
+    expect(screen.getByRole("status")).toHaveTextContent("12 sessions processing")
+  })
+
+  it("renders every shared per-check metric in the anchored companion", () => {
+    const failures = [
+      category("sessionsOverDepth", {
+        finding: 1,
+        clean: 0,
+        estimatedTokenBurnBasisPoints: 800,
+      }),
+      category("modelOverthinking", {
+        finding: 1,
+        clean: 0,
+        estimatedTokenBurnBasisPoints: 350,
+      }),
+      category("overpoweredSubagents", {
+        finding: 1,
+        clean: 0,
+        estimatedTokenBurnBasisPoints: 880,
+      }),
+      category("unusedMcpServers", {
+        finding: 1,
+        clean: 0,
+        estimatedTokenBurnBasisPoints: 100,
+      }),
+      category("unusedBuiltInTools", {
+        finding: 1,
+        clean: 0,
+        estimatedTokenBurnBasisPoints: 1,
+      }),
+      category("unusedSkills", { finding: 1, clean: 0, estimatedTokenBurnBasisPoints: 100 }),
+      category("oldModelUsage", { finding: 1, clean: 0, estimatedTokenBurnBasisPoints: 400 }),
+      category("overuseOfFastMode", {
+        finding: 1,
+        clean: 0,
+        estimatedTokenBurnBasisPoints: 333,
+      }),
+      category("cacheChurn", { finding: 1, clean: 0, estimatedTokenBurnBasisPoints: 700 }),
+    ]
+
+    render(
+      <ChecksPeek
+        presentation={{
+          ...presentation,
+          failures,
+          wins: [],
+          estimate: { tokenBurnBasisPoints: 880 },
+        }}
+      />,
+    )
+
+    for (const metric of [
+      "8% token burn",
+      "3% token burn",
+      "8% token burn",
+      "1% token burn",
+      "<1% token burn",
+      "1% token burn",
+      "4% token burn",
+      "3% token burn",
+      "7% token burn",
+    ]) {
+      expect(screen.getAllByText(metric).length).toBeGreaterThan(0)
+    }
   })
 
   it("animates changing summary and anchored token estimates", () => {
@@ -253,9 +321,11 @@ describe("Checks", () => {
         }}
       />,
     )
-    expect(screen.getByText("All checks passed")).toBeInTheDocument()
+    expect(screen.getByText("No issues found")).toBeInTheDocument()
+    expect(screen.getByText("No issues found")).toHaveClass("text-label")
     const passingIcon = container.querySelector(".lucide-circle-check")
     expect(passingIcon).toBeInTheDocument()
+    expect(passingIcon).toHaveAttribute("width", "24")
     expect(passingIcon?.parentElement).toHaveClass("text-system-green")
 
     rerender(
@@ -269,7 +339,8 @@ describe("Checks", () => {
         }}
       />,
     )
-    expect(screen.getByText("No issues found where assessed")).toBeInTheDocument()
+    expect(screen.getByText("No issues found")).toBeInTheDocument()
+    expect(screen.queryByText("More evidence is needed")).not.toBeInTheDocument()
     expect(screen.queryByText("Passed")).not.toBeInTheDocument()
     expect(screen.queryByText("Passed where assessed")).not.toBeInTheDocument()
     const row = screen.getByText("Session overdepth").closest(".grid")
