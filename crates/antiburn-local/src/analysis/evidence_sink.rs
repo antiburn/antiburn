@@ -233,22 +233,25 @@ impl SessionEvidenceAccumulator {
             if name.len() != source_name.len() {
                 self.tools_cap_exceeded = true;
             }
-            if tool.name.eq_ignore_ascii_case("skill") {
-                self.invoked_skills.insert(name.clone());
-            }
-            if let Some(entry) = self.tools.get_mut(&name) {
+            let tracked = if let Some(entry) = self.tools.get_mut(&name) {
                 entry.calls = entry.calls.saturating_add(1);
+                true
             } else if self.tools.len() == MAX_TOOL_NAMES {
                 self.tools_cap_exceeded = true;
                 self.note_collection_cap("tools.by_name");
+                false
             } else {
                 self.tools.insert(
-                    name,
+                    name.clone(),
                     ToolUse {
                         calls: 1,
                         class: ToolClass::Unclassified,
                     },
                 );
+                true
+            };
+            if tracked && tool.name.eq_ignore_ascii_case("skill") {
+                self.invoked_skills.insert(name);
             }
         }
         self.observe_model_control(event);
@@ -1139,50 +1142,58 @@ impl SessionEvidenceAccumulator {
                 .then_some(CoverageReason::CapExceeded))
             .or((self.capabilities.record_identity && record_identity_gap)
                 .then_some(CoverageReason::AttributionIncomplete));
-        // The row scan selects one proven contract and excludes incompatible requests from its partial total.
-        let repeated_context_accounting = match self.identity.agent.as_str() {
-            "claude" | "claude-code" | "codex" => self.capabilities.repeated_context_accounting,
-            _ => facts.repeated_context_accounting,
-        }
-        .filter(|accounting| {
-            self.capabilities.token_classes
-                && self.capabilities.request_context_tokens
-                && (*accounting != RepeatedContextAccounting::CacheWrite
-                    || self.capabilities.cache_write_tokens
-                    || self.identity.agent == "pi")
-        });
-        let repeated_context = match repeated_context_accounting {
-            None => EvidenceValue::Unsupported,
-            Some(accounting) => {
-                let (repeated_tokens, paid_tokens) = match accounting {
-                    RepeatedContextAccounting::CacheWrite => (
-                        facts.repeated_context_cache_write_tokens,
-                        facts.repeated_context_cache_write_paid_tokens,
-                    ),
-                    RepeatedContextAccounting::UncachedInput => (
-                        facts.repeated_context_uncached_input_tokens,
-                        facts.repeated_context_uncached_input_paid_tokens,
-                    ),
-                };
-                let observed = RepeatedContext {
-                    accounting,
-                    repeated_tokens,
-                    paid_tokens,
-                    pairs_considered: facts.repeated_context_pairs_considered,
-                    pairs_skipped: facts.repeated_context_pairs_skipped,
-                };
-                if let Some(reason) = cache_partial_reason {
-                    EvidenceValue::Partial { observed, reason }
-                } else if facts.repeated_context_incomplete
-                    || facts.repeated_context_pairs_skipped > 0
-                {
-                    EvidenceValue::Partial {
-                        observed,
-                        reason: CoverageReason::AttributionIncomplete,
-                    }
-                } else {
-                    EvidenceValue::Complete(observed)
+        let supports_repeated_context =
+            self.capabilities.token_classes && self.capabilities.request_context_tokens;
+        let cache_write_supported = (facts.repeated_context_cache_write_seen
+            || matches!(self.identity.agent.as_str(), "claude" | "claude-code"))
+            && supports_repeated_context
+            && (self.capabilities.cache_write_tokens || self.identity.agent == "pi");
+        let uncached_input_supported = (facts.repeated_context_uncached_input_seen
+            || self.identity.agent == "codex")
+            && supports_repeated_context;
+        let unsupported_segment = (facts.repeated_context_cache_write_seen
+            && !cache_write_supported)
+            || (facts.repeated_context_uncached_input_seen && !uncached_input_supported);
+        let repeated_context = if !cache_write_supported && !uncached_input_supported {
+            EvidenceValue::Unsupported
+        } else {
+            let mut segments = Vec::new();
+            if cache_write_supported {
+                segments.push(crate::analysis::RepeatedContextSegment {
+                    accounting: RepeatedContextAccounting::CacheWrite,
+                    repeated_tokens: facts.repeated_context_cache_write_tokens,
+                    paid_tokens: facts.repeated_context_cache_write_paid_tokens,
+                    pairs_considered: facts.repeated_context_cache_write_pairs_considered,
+                    pairs_skipped: facts.repeated_context_cache_write_pairs_skipped,
+                });
+            }
+            if uncached_input_supported {
+                segments.push(crate::analysis::RepeatedContextSegment {
+                    accounting: RepeatedContextAccounting::UncachedInput,
+                    repeated_tokens: facts.repeated_context_uncached_input_tokens,
+                    paid_tokens: facts.repeated_context_uncached_input_paid_tokens,
+                    pairs_considered: facts.repeated_context_uncached_input_pairs_considered,
+                    pairs_skipped: facts.repeated_context_uncached_input_pairs_skipped,
+                });
+            }
+            let primary = segments.first().expect("at least one supported segment");
+            let observed = RepeatedContext {
+                accounting: primary.accounting,
+                repeated_tokens: primary.repeated_tokens,
+                paid_tokens: primary.paid_tokens,
+                pairs_considered: facts.repeated_context_pairs_considered,
+                pairs_skipped: facts.repeated_context_pairs_skipped,
+                segments,
+            };
+            if let Some(reason) = cache_partial_reason {
+                EvidenceValue::Partial { observed, reason }
+            } else if facts.repeated_context_incomplete || unsupported_segment {
+                EvidenceValue::Partial {
+                    observed,
+                    reason: CoverageReason::AttributionIncomplete,
                 }
+            } else {
+                EvidenceValue::Complete(observed)
             }
         };
         let cache = CacheEvidence {
@@ -1505,7 +1516,7 @@ impl SessionEvidenceAccumulator {
         let (Some(version), Some(model)) = (self.harness_version.as_deref(), model) else {
             return EvidenceValue::Unsupported;
         };
-        let Some(tools) = catalog.lookup(&self.identity.agent, version, model) else {
+        let Some(tools) = catalog.lookup_exact(&self.identity.agent, version, model) else {
             return EvidenceValue::Unsupported;
         };
         let mut definitions = BTreeMap::new();

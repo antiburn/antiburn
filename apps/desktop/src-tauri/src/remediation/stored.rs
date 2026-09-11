@@ -28,6 +28,10 @@ pub(crate) struct WatchDefinition {
     pub config_expected_value: Option<String>,
     #[serde(default)]
     pub config_proposed_value: Option<String>,
+    #[serde(default)]
+    pub config_original_bytes_hash: Option<String>,
+    #[serde(default)]
+    pub config_proposed_bytes_hash: Option<String>,
     pub verification_method_revision: u32,
     #[serde(default)]
     pub remediation_policy_revision: Option<u32>,

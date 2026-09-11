@@ -323,6 +323,7 @@ impl RemediationController {
             RemediationState::Watching,
             Some(now.saturating_mul(1_000)),
             now,
+            None,
         )?;
         let action_at_ms = watch
             .effective_boundary_ms
@@ -455,6 +456,7 @@ impl RemediationController {
                 RemediationState::Watching,
                 Some(now.saturating_mul(1_000)),
                 now,
+                None,
             )?;
             let action_at_ms = watch
                 .effective_boundary_ms
@@ -508,6 +510,11 @@ impl RemediationController {
                 AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
             )
         })?;
+        if !trusted_workspace_still_matches(store, &config.context)
+            .map_err(|_| ControllerError::Internal)?
+        {
+            return Err(ControllerError::TargetChanged);
+        }
         let context = refreshed_config_context(&config.context);
         let prepared = self
             .editor
@@ -625,7 +632,26 @@ impl RemediationController {
             self.remove_prepared(prepared_operation_id);
             return Err(error);
         }
-        let watch = match self.start_watch(store, &target, RemediationState::Reserved, None, now) {
+        #[cfg(not(windows))]
+        let bytes_hashes = {
+            let (original, proposed) = prepared.recovery_bytes();
+            Some((
+                hashed_bytes(store, b"antiburn/config-recovery-bytes/v1\0", original)
+                    .map_err(|_| ControllerError::PersistenceFailed)?,
+                hashed_bytes(store, b"antiburn/config-recovery-bytes/v1\0", proposed)
+                    .map_err(|_| ControllerError::PersistenceFailed)?,
+            ))
+        };
+        #[cfg(windows)]
+        let bytes_hashes = None;
+        let watch = match self.start_watch(
+            store,
+            &target,
+            RemediationState::Reserved,
+            None,
+            now,
+            bytes_hashes,
+        ) {
             Ok(watch) => watch,
             Err(error) => {
                 self.remove_prepared(prepared_operation_id);
@@ -872,6 +898,11 @@ impl RemediationController {
             .config
             .as_ref()
             .ok_or(ControllerError::TargetChanged)?;
+        if !trusted_workspace_still_matches(store, &config.context)
+            .map_err(|_| ControllerError::Internal)?
+        {
+            return Err(ControllerError::TargetChanged);
+        }
         let effective = self
             .editor
             .effective(
@@ -1002,8 +1033,9 @@ impl RemediationController {
         state: RemediationState,
         boundary_ms: Option<i64>,
         now: i64,
+        bytes_hashes: Option<(String, String)>,
     ) -> Result<RemediationRecord, ControllerError> {
-        let definition = watch_definition(target);
+        let definition = watch_definition(target, bytes_hashes);
         let result = if state == RemediationState::Reserved {
             json!({"version": 1, "verification": {"status": "reserved"}, "savings": {"status": "pending"}})
         } else if !watch_verification_available(

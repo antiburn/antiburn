@@ -2375,8 +2375,9 @@ mod tests {
 
         use antiburn_local::analysis::{
             ContextEvidence, EvidenceSource, ModelControlObservation, ModelTokens,
-            RelationConfidence, RelationProvenance, RepeatedContext, SessionEvidenceAccumulator,
-            SourceCapabilities, SourceKind, SubagentChild, TurnCounts, TurnFacts,
+            RelationConfidence, RelationProvenance, RepeatedContext, RepeatedContextSegment,
+            SessionEvidenceAccumulator, SourceCapabilities, SourceKind, SubagentChild, TurnCounts,
+            TurnFacts,
         };
         use antiburn_local::insights::{
             CoverageCounts, DetectorCounts, DetectorFindings, EfficiencyReportAccumulator,
@@ -2944,6 +2945,13 @@ mod tests {
                 paid_tokens: 235,
                 pairs_considered: 1,
                 pairs_skipped: 0,
+                segments: vec![RepeatedContextSegment {
+                    accounting: RepeatedContextAccounting::CacheWrite,
+                    repeated_tokens: 135,
+                    paid_tokens: 235,
+                    pairs_considered: 1,
+                    pairs_skipped: 0,
+                }],
             });
 
             let payload = SessionHygienePayload::for_evidence(

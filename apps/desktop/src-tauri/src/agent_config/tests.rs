@@ -781,6 +781,84 @@ fn apply_rejects_a_content_conflict() {
     );
 }
 
+#[cfg(not(windows))]
+#[test]
+fn apply_keeps_the_latest_original_backup() {
+    let (_temporary, home, project) = roots();
+    let path = home.join(".claude/settings.json");
+    let backup = home.join(".claude/settings.json.backup");
+    write(&path, r#"{"model":"old"}"#);
+    write(&backup, r#"{"model":"older"}"#);
+    let editor = AgentConfigEditor::new();
+    let prepared = editor
+        .prepare(
+            &ConfigContext::native(AgentKind::Claude, &home, Some(project)),
+            &ConfigChange {
+                expected_value: "old".into(),
+                proposed_value: "new".into(),
+            },
+        )
+        .unwrap();
+
+    editor.apply(&prepared).unwrap();
+
+    assert_eq!(fs::read(&backup).unwrap(), br#"{"model":"old"}"#);
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_rejects_a_symlinked_backup() {
+    use std::os::unix::fs::symlink;
+
+    let (_temporary, home, project) = roots();
+    let path = home.join(".claude/settings.json");
+    let backup = home.join(".claude/settings.json.backup");
+    write(&path, r#"{"model":"old"}"#);
+    symlink(&path, &backup).unwrap();
+    let editor = AgentConfigEditor::new();
+    let prepared = editor
+        .prepare(
+            &ConfigContext::native(AgentKind::Claude, &home, Some(project)),
+            &ConfigChange {
+                expected_value: "old".into(),
+                proposed_value: "new".into(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        editor.apply(&prepared),
+        Err(ApplyError::Unavailable(
+            ConfigUnavailableReason::SymlinkTarget
+        ))
+    );
+    assert_eq!(fs::read(&path).unwrap(), br#"{"model":"old"}"#);
+}
+
+#[cfg(unix)]
+#[test]
+fn apply_rejects_a_permissions_conflict() {
+    let (_temporary, home, project) = roots();
+    let path = home.join(".claude/settings.json");
+    write(&path, r#"{"model":"old"}"#);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let editor = AgentConfigEditor::new();
+    let prepared = editor
+        .prepare(
+            &ConfigContext::native(AgentKind::Claude, &home, Some(project)),
+            &ConfigChange {
+                expected_value: "old".into(),
+                proposed_value: "new".into(),
+            },
+        )
+        .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(
+        editor.apply(&prepared),
+        Err(ApplyError::Conflict(ApplyConflict::ChangedIdentity))
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn apply_preserves_mode_owner_and_group() {

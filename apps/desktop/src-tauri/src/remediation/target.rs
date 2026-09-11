@@ -1,6 +1,9 @@
 use super::*;
 
-pub(super) fn watch_definition(target: &CachedTarget) -> WatchDefinition {
+pub(super) fn watch_definition(
+    target: &CachedTarget,
+    bytes_hashes: Option<(String, String)>,
+) -> WatchDefinition {
     let (provider, api, old_model, replacement) = match target.findings[0].finding.cause() {
         FindingCause::OldModelUsage {
             provider,
@@ -71,6 +74,8 @@ pub(super) fn watch_definition(target: &CachedTarget) -> WatchDefinition {
             .config
             .as_ref()
             .map(|config| config.operation.proposed_value.clone()),
+        config_original_bytes_hash: bytes_hashes.as_ref().map(|(original, _)| original.clone()),
+        config_proposed_bytes_hash: bytes_hashes.map(|(_, proposed)| proposed),
         verification_method_revision: VERIFICATION_METHOD_REVISION,
         remediation_policy_revision: Some(REMEDIATION_POLICY_REVISION),
         savings_method_revision: SAVINGS_METHOD_REVISION,
@@ -248,7 +253,7 @@ pub(crate) fn passive_remediations(
             physical_target_key: identity.physical_target_key,
             config: None,
         };
-        let definition = watch_definition(&target);
+        let definition = watch_definition(&target, None);
         if !watch_verification_available(
             &definition,
             &target.scope_kind,

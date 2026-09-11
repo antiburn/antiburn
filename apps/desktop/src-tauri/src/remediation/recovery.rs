@@ -14,17 +14,6 @@ pub(crate) fn recover_uncertain_write(
         );
     }
     let definition = parse_watch_definition(&record.definition_json)?;
-    let Some(replacement) = definition
-        .config_proposed_value
-        .clone()
-        .or(definition.replacement.clone())
-    else {
-        return store.mark_remediation_recovery_checked(
-            &record.remediation_id,
-            "verificationUnavailable",
-            now,
-        );
-    };
     let Some(agent) = crate::agents::kind_from_slug(&record.agent) else {
         return store.mark_remediation_recovery_checked(
             &record.remediation_id,
@@ -86,6 +75,7 @@ pub(crate) fn recover_uncertain_write(
         store
             .repositories()?
             .into_iter()
+            .filter(|repository| repository.enabled && repository.status == "accessible")
             .filter_map(|repository| repository.repo_root)
             .filter_map(|root| PathBuf::from(root).canonicalize().ok())
             .find(|project| {
@@ -120,7 +110,9 @@ pub(crate) fn recover_uncertain_write(
     };
     context.runtime_override_present = runtime_override_present(agent);
     context.managed_configuration_present = managed_configuration_present(agent, &home);
-    let Ok(effective) = AgentConfigEditor::new().effective(&context, setting) else {
+    let Ok((effective, current_bytes)) =
+        AgentConfigEditor::new().effective_bytes(&context, setting)
+    else {
         return store.defer_remediation_recovery(
             &record.remediation_id,
             "verificationUnavailable",
@@ -150,9 +142,27 @@ pub(crate) fn recover_uncertain_write(
             now,
         );
     }
-    match effective.value {
-        value if value == replacement => {
+    let (Some(original_hash), Some(proposed_hash)) = (
+        definition.config_original_bytes_hash.as_deref(),
+        definition.config_proposed_bytes_hash.as_deref(),
+    ) else {
+        return store.mark_remediation_recovery_checked(
+            &record.remediation_id,
+            "contentFingerprintUnavailable",
+            now,
+        );
+    };
+    let current_hash = hashed_bytes(
+        store,
+        b"antiburn/config-recovery-bytes/v1\0",
+        &current_bytes,
+    )?;
+    match current_hash.as_str() {
+        value if value == proposed_hash => {
             store.finalize_remediation_write(&record.remediation_id, now.saturating_mul(1_000), now)
+        }
+        value if value == original_hash => {
+            store.cancel_pre_replacement_write(&record.remediation_id)
         }
         _ => store.mark_remediation_recovery_checked(
             &record.remediation_id,

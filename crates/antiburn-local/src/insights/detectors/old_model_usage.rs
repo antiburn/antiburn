@@ -72,7 +72,7 @@ pub(super) fn finding_causes(
         .by_model
         .iter()
         .flat_map(|(model, tokens)| {
-            if tokens.turns == 0 || tokens.last_ts_ms == 0 {
+            if tokens.turns == 0 || tokens.first_ts_ms == 0 || tokens.last_ts_ms == 0 {
                 return Vec::new();
             }
             let Support::Supported(ModelState::Obsolete(replacement)) =
@@ -80,6 +80,12 @@ pub(super) fn finding_causes(
             else {
                 return Vec::new();
             };
+            // The aggregate route observations retain only their final
+            // timestamp. Count them only when the model aggregate proves
+            // all of its turns followed the availability boundary.
+            if tokens.first_ts_ms < replacement.available_since_ts_ms {
+                return Vec::new();
+            }
             let mut routes = std::collections::BTreeMap::new();
             for observation in &models.control_observations {
                 if observation.model != *model {
@@ -162,6 +168,7 @@ mod tests {
             model.to_owned(),
             ModelTokens {
                 turns: 4,
+                first_ts_ms: last_ts_ms,
                 last_ts_ms,
                 ..ModelTokens::default()
             },
@@ -177,6 +184,7 @@ mod tests {
             model.to_owned(),
             ModelTokens {
                 turns: 4,
+                first_ts_ms: last_ts_ms,
                 last_ts_ms,
                 ..ModelTokens::default()
             },
@@ -295,6 +303,29 @@ mod tests {
             &finding_causes(&evidence, &catalogs())[0],
             FindingCause::OldModelUsage { provider: Some(provider), .. } if provider == "anthropic"
         ));
+    }
+
+    #[test]
+    fn causes_do_not_count_a_route_that_spans_the_availability_boundary() {
+        let mut evidence = with_model("old-model-1", 200, false);
+        let EvidenceValue::Complete(models) = &mut evidence.models else {
+            unreachable!()
+        };
+        models.by_model.get_mut("old-model-1").unwrap().first_ts_ms = 50;
+        models.control_observations = vec![ModelControlObservation {
+            provider: Some("anthropic".to_owned()),
+            api: Some("messages".to_owned()),
+            model: "old-model-1".to_owned(),
+            effort: None,
+            speed: None,
+            last_ts_ms: 200,
+            turns: TurnCounts {
+                main_loop: 2,
+                delegated: 0,
+            },
+        }];
+
+        assert!(finding_causes(&evidence, &catalogs()).is_empty());
     }
 
     #[test]

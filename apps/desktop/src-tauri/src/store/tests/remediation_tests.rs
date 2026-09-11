@@ -77,6 +77,7 @@ fn contribution(
         owner_key: owner_key.into(),
         remediation_id: remediation_id.into(),
         detector_id: "unusedBuiltInTools".into(),
+        physical_target_key: None,
         origin: "passive".into(),
         display_snapshot_json: r#"{"version":1,"title":"Unused tool"}"#.into(),
         facts_json: r#"{"version":1,"tokens":1200}"#.into(),
@@ -110,7 +111,7 @@ fn v43_adds_remediation_and_model_attribution() {
     connection.pragma_update(None, "user_version", 42).unwrap();
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v43").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 46);
+    assert_eq!(store.schema_version().unwrap(), 47);
     let connection = store.lock();
     let columns: i64 = connection
         .query_row(
@@ -167,7 +168,7 @@ fn v44_adds_nullable_snapshots_and_strict_contributions_without_backfill() {
 
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v44").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 46);
+    assert_eq!(store.schema_version().unwrap(), 47);
     assert!(store.remediation_display_snapshot("old").unwrap().is_none());
     let connection = store.lock();
     let strict: i64 = connection
@@ -189,7 +190,7 @@ fn v46_adds_reasoning_attribution_without_rewriting_model_columns() {
     connection.pragma_update(None, "user_version", 45).unwrap();
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v46").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 46);
+    assert_eq!(store.schema_version().unwrap(), 47);
     let columns: i64 = store
         .lock()
         .query_row(
@@ -268,6 +269,66 @@ fn contribution_upsert_is_idempotent_and_rejects_stale_or_cross_watch_replays() 
 }
 
 #[test]
+fn old_model_contribution_ownership_is_stable_across_evaluation_order_and_restart() {
+    fn contribution_for(remediation_id: &str, starts_at_ms: i64) -> RemediationContribution {
+        RemediationContribution {
+            owner_key: format!("allocation:v2:physical:{starts_at_ms}:30_000"),
+            remediation_id: remediation_id.into(),
+            detector_id: "oldModelUsage".into(),
+            physical_target_key: Some("physical".into()),
+            origin: "action".into(),
+            display_snapshot_json: r#"{"version":1,"title":"Old model"}"#.into(),
+            facts_json: r#"{"version":1,"tokens":1200}"#.into(),
+            starts_at_ms,
+            ends_at_ms: 30_000,
+            updated_at_ms: 30_000,
+        }
+    }
+
+    fn run(order: [&str; 2]) -> Vec<RemediationContribution> {
+        let directory = tempfile::TempDir::new().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        let guard = seed_evidence(&store, "baseline", 100);
+        for (id, target, now) in [("old-a", "old-a-target", 10), ("old-b", "old-b-target", 20)] {
+            let mut remediation = remediation(id, target, RemediationState::Watching, now);
+            remediation.definition_json =
+                r#"{"version":1,"detector":"oldModelUsage","physicalTargetKey":"physical"}"#.into();
+            store
+                .create_or_reuse_remediation(&remediation, std::slice::from_ref(&guard))
+                .unwrap()
+                .unwrap();
+        }
+        let starts_at_ms = |id| if id == "old-a" { 10_000 } else { 20_000 };
+        assert_eq!(
+            store
+                .upsert_remediation_contribution(&contribution_for(
+                    order[0],
+                    starts_at_ms(order[0])
+                ))
+                .unwrap(),
+            order[0] == "old-a"
+        );
+        drop(store);
+
+        let store = Store::open(directory.path()).unwrap();
+        assert_eq!(
+            store
+                .upsert_remediation_contribution(&contribution_for(
+                    order[1],
+                    starts_at_ms(order[1])
+                ))
+                .unwrap(),
+            order[1] == "old-a"
+        );
+        store.remediation_contributions(10).unwrap()
+    }
+
+    let expected = vec![contribution_for("old-a", 10_000)];
+    assert_eq!(run(["old-a", "old-b"]), expected);
+    assert_eq!(run(["old-b", "old-a"]), expected);
+}
+
+#[test]
 fn aggregate_win_reads_are_bounded_and_ordered() {
     let store = store();
     let guard = seed_evidence(&store, "baseline", 100);
@@ -343,6 +404,52 @@ fn passive_enrollment_caps_durable_active_watches() {
         )
         .unwrap();
     assert_eq!(count, 1_000);
+}
+
+#[test]
+fn verification_unavailable_history_does_not_use_active_watch_capacity() {
+    let store = store();
+    let guard = seed_evidence(&store, "baseline", 100);
+    for index in 0..=1_000 {
+        let mut unavailable = remediation(
+            &format!("prompt-{index:04}"),
+            &format!("unavailable-target-{index:04}"),
+            RemediationState::Watching,
+            10,
+        );
+        unavailable.result_json = r#"{"version":1,"verification":{"status":"verificationUnavailable"},"savings":{"status":"unavailable"}}"#.into();
+        assert!(
+            store
+                .create_or_reuse_remediation(&unavailable, std::slice::from_ref(&guard))
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    let admitted = store
+        .create_or_reuse_remediation(
+            &remediation(
+                "supported-auto",
+                "supported-target",
+                RemediationState::Reserved,
+                20,
+            ),
+            &[guard],
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(admitted.state, RemediationState::Reserved);
+
+    let connection = store.lock();
+    let unavailable: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM remediation
+              WHERE json_extract(result_json, '$.verification.status') = 'verificationUnavailable'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(unavailable, 1_000);
 }
 
 #[test]
@@ -882,6 +989,41 @@ fn temporary_recovery_failure_stays_retryable_without_spinning() {
             .unwrap()
             .remediation_id,
         reserved.remediation_id
+    );
+}
+
+#[test]
+fn deferred_original_write_releases_its_reservation() {
+    let store = store();
+    let guard = seed_evidence(&store, "baseline", 100);
+    let reserved = store
+        .create_or_reuse_remediation(
+            &remediation("original", "target", RemediationState::Reserved, 20),
+            &[guard],
+        )
+        .unwrap()
+        .unwrap();
+    assert!(
+        store
+            .begin_remediation_write(&reserved.remediation_id, 20)
+            .unwrap()
+    );
+    assert!(
+        store
+            .defer_remediation_recovery(&reserved.remediation_id, "homeUnavailable", 20)
+            .unwrap()
+    );
+
+    assert!(
+        store
+            .cancel_pre_replacement_write(&reserved.remediation_id)
+            .unwrap()
+    );
+    assert!(
+        store
+            .remediation(&reserved.remediation_id)
+            .unwrap()
+            .is_none()
     );
 }
 

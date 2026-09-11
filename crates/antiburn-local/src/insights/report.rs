@@ -477,7 +477,6 @@ impl TokenBurnTurnEvidence {
 struct ComparisonCandidate {
     context_tokens: u128,
     output_tokens: u64,
-    assumed_tokens: u128,
 }
 
 #[derive(Debug, Default)]
@@ -498,7 +497,6 @@ pub struct TokenBurnTurnAccumulator<'a> {
     retained_comparison_turns: usize,
     comparison_bound_exceeded: bool,
     overthinking_complete: bool,
-    overthinking_assumed: Option<u128>,
     overpowered_subagents: Option<u128>,
     old_model: Option<u128>,
     fast_mode: Option<u128>,
@@ -511,7 +509,6 @@ impl<'a> TokenBurnTurnAccumulator<'a> {
             comparison_groups: BTreeMap::new(),
             retained_comparison_turns: 0,
             comparison_bound_exceeded: false,
-            overthinking_assumed: Some(0),
             overthinking_complete: true,
             overpowered_subagents: Some(0),
             old_model: Some(0),
@@ -532,19 +529,6 @@ impl<'a> TokenBurnTurnAccumulator<'a> {
             if let Some(policy) = self.catalogs.families.get(&family) {
                 let above_cap = policy.effort.above_cap.contains(effort);
                 let lower_effort = policy.effort.recognized.contains(effort) && !above_cap;
-                let assumed_tokens = if above_cap {
-                    match effort {
-                        "xhigh" => percentage_of_tokens(u128::from(turn.output_tokens), 20),
-                        "max" | "ultra" => percentage_of_tokens(u128::from(turn.output_tokens), 35),
-                        _ => percentage_of_tokens(u128::from(turn.output_tokens), 10),
-                    }
-                } else {
-                    Some(0)
-                };
-                if above_cap {
-                    self.overthinking_assumed =
-                        checked_accumulate(self.overthinking_assumed, assumed_tokens);
-                }
                 if (above_cap || lower_effort)
                     && let Some(context_tokens) = context_tokens
                 {
@@ -554,7 +538,6 @@ impl<'a> TokenBurnTurnAccumulator<'a> {
                         ComparisonCandidate {
                             context_tokens,
                             output_tokens: turn.output_tokens,
-                            assumed_tokens: assumed_tokens.unwrap_or(0),
                         },
                         above_cap,
                     );
@@ -628,10 +611,8 @@ impl<'a> TokenBurnTurnAccumulator<'a> {
     }
 
     pub fn finish_into(self, evidence: &mut SessionTokenBurnEvidence) {
-        let model_overthinking = if !self.overthinking_complete {
+        let model_overthinking = if !self.overthinking_complete || self.comparison_bound_exceeded {
             None
-        } else if self.comparison_bound_exceeded {
-            self.overthinking_assumed
         } else {
             self.comparison_groups
                 .into_values()
@@ -662,9 +643,9 @@ fn overthinking_group_tokens(mut group: ComparisonGroup) -> OverthinkingGroupEst
     group
         .lower_effort
         .sort_unstable_by_key(|turn| (turn.output_tokens, turn.context_tokens));
-    group.above_cap.sort_unstable_by_key(|turn| {
-        (turn.output_tokens, turn.context_tokens, turn.assumed_tokens)
-    });
+    group
+        .above_cap
+        .sort_unstable_by_key(|turn| (turn.output_tokens, turn.context_tokens));
     let mut active = BTreeMap::<u128, ComparisonCandidate>::new();
     let mut lower_index = 0;
     let mut total = Some(0_u128);
@@ -705,7 +686,7 @@ fn overthinking_group_tokens(mut group: ComparisonGroup) -> OverthinkingGroupEst
                 (*difference, *reverse_output, *context)
             })
             .map(|(_, _, _, tokens)| tokens);
-        total = checked_accumulate(total, observed.or(Some(turn.assumed_tokens)));
+        total = checked_accumulate(total, observed);
     }
     OverthinkingGroupEstimate {
         tokens: total,
@@ -762,9 +743,14 @@ impl SessionTokenBurnEvidence {
                     EvidenceValue::Partial {
                         observed: repeated, ..
                     }
-                    | EvidenceValue::Complete(repeated) => {
-                        Some(u128::from(repeated.repeated_tokens))
-                    }
+                    | EvidenceValue::Complete(repeated) => Some(
+                        repeated
+                            .segments
+                            .iter()
+                            .map(|segment| u128::from(segment.repeated_tokens))
+                            .sum::<u128>()
+                            .max(u128::from(repeated.repeated_tokens)),
+                    ),
                     _ => None,
                 },
                 _ => None,
@@ -775,13 +761,6 @@ impl SessionTokenBurnEvidence {
             ..Self::default()
         }
     }
-}
-
-fn percentage_of_tokens(tokens: u128, percentage: u128) -> Option<u128> {
-    tokens
-        .checked_mul(percentage)?
-        .checked_add(99)
-        .map(|scaled| scaled / 100)
 }
 
 fn token_cost(tokens: &TokenBurnTurnEvidence, pricing: &ModelPricing) -> f64 {
@@ -799,11 +778,13 @@ fn cost_saving_tokens(
     let total_tokens = turn.total_tokens()?;
     let actual_cost = token_cost(turn, actual);
     let replacement_cost = token_cost(turn, replacement);
-    if !actual_cost.is_finite()
-        || !replacement_cost.is_finite()
-        || actual_cost <= replacement_cost
-        || actual_cost <= 0.0
-    {
+    if !actual_cost.is_finite() || !replacement_cost.is_finite() {
+        return None;
+    }
+    if actual_cost <= replacement_cost {
+        return Some(0);
+    }
+    if actual_cost <= 0.0 {
         return None;
     }
     let equivalent = total_tokens as f64 * (actual_cost - replacement_cost) / actual_cost;
@@ -858,7 +839,7 @@ fn premium_replacement(
     catalogs: &ReportCatalogs,
 ) -> Option<&'static str> {
     let policy = &catalogs.families.get(&family)?.premium;
-    if !policy.reviewed || !policy.is_premium(canonical_model) {
+    if policy.verdict(canonical_model) != Some(true) {
         return None;
     }
     match family {
@@ -928,12 +909,15 @@ impl TokenBurnAccumulator {
         findings: [bool; DetectorId::COUNT],
         source_eligible: [bool; 3],
     ) {
-        if let Some(session_tokens) = token_evidence.total_tokens {
-            if let Some(total_tokens) = self.total_tokens.checked_add(session_tokens) {
-                self.total_tokens = total_tokens;
-            } else {
-                self.total_complete = false;
+        match token_evidence.total_tokens {
+            Some(session_tokens) => {
+                if let Some(total_tokens) = self.total_tokens.checked_add(session_tokens) {
+                    self.total_tokens = total_tokens;
+                } else {
+                    self.total_complete = false;
+                }
             }
+            None => self.total_complete = false,
         }
         let session_index = self.sessions.len();
         self.sessions.push(SessionTokenContribution {
@@ -1744,6 +1728,36 @@ mod tests {
     }
 
     #[test]
+    fn missing_token_total_makes_the_denominator_incomplete() {
+        let mut findings = [false; DetectorId::COUNT];
+        findings[DetectorId::SessionsOverDepth.index()] = true;
+        let mut token_burn = TokenBurnAccumulator::new();
+        token_burn.observe(
+            SessionTokenBurnEvidence {
+                total_tokens: Some(1_000),
+                overdepth_avoidable_tokens: Some(100),
+                ..SessionTokenBurnEvidence::default()
+            },
+            findings,
+            [false; 3],
+        );
+        token_burn.observe(
+            SessionTokenBurnEvidence {
+                overdepth_avoidable_tokens: Some(100),
+                ..SessionTokenBurnEvidence::default()
+            },
+            findings,
+            [false; 3],
+        );
+
+        let (combined, estimates) =
+            token_burn.finish(&finding_statuses(&[DetectorId::SessionsOverDepth]));
+
+        assert_eq!(combined, None);
+        assert_eq!(estimates[DetectorId::SessionsOverDepth.index()], None);
+    }
+
+    #[test]
     fn token_burn_estimates_use_attributed_tokens_from_an_incomplete_ready_cohort() {
         let mut evidence = evidence_with_work("observed");
         evidence.context = EvidenceValue::Complete(ContextEvidence {
@@ -1923,7 +1937,7 @@ mod tests {
             estimates,
             [
                 Some(800),
-                Some(350),
+                None,
                 None,
                 Some(100),
                 Some(100),
@@ -1980,7 +1994,7 @@ mod tests {
             estimates,
             [
                 Some(800),
-                Some(350),
+                None,
                 Some(880),
                 Some(100),
                 Some(100),
@@ -2088,6 +2102,25 @@ mod tests {
     }
 
     #[test]
+    fn zero_and_negative_price_differences_are_known_non_savings() {
+        let turn = token_turn("main", "model", None, None, 100);
+        let actual = ModelPricing {
+            input_cost_per_token: 0.0,
+            output_cost_per_token: 1.0,
+            cache_read_cost_per_token: 0.0,
+            cache_write_cost_per_token: 0.0,
+        };
+        let equal = actual.clone();
+        let more_expensive = ModelPricing {
+            output_cost_per_token: 2.0,
+            ..actual.clone()
+        };
+
+        assert_eq!(cost_saving_tokens(&turn, &actual, &equal), Some(0));
+        assert_eq!(cost_saving_tokens(&turn, &actual, &more_expensive), Some(0));
+    }
+
+    #[test]
     fn astra_parent_usage_is_excluded_but_delegated_usage_has_savings() {
         let catalogs = ReportCatalogs::default();
         let evidence = turn_evidence(
@@ -2116,7 +2149,7 @@ mod tests {
     }
 
     #[test]
-    fn effort_comparison_retention_is_bounded_and_uses_assumptions_after_the_bound() {
+    fn effort_comparison_retention_is_bounded_without_speculative_assumptions() {
         let catalogs = ReportCatalogs::default();
         let mut accumulator = TokenBurnTurnAccumulator::new(&catalogs);
         for index in 0..=MAX_TOKEN_BURN_COMPARISON_TURNS {
@@ -2133,11 +2166,9 @@ mod tests {
         assert!(accumulator.comparison_bound_exceeded);
         assert_eq!(accumulator.retained_comparison_turns(), 0);
         assert!(accumulator.comparison_groups.is_empty());
-        let above_cap_turns = MAX_TOKEN_BURN_COMPARISON_TURNS / 2;
         let mut evidence = SessionTokenBurnEvidence::default();
         accumulator.finish_into(&mut evidence);
-        let assumed_tokens = 35 * above_cap_turns as u128;
-        assert_eq!(evidence.model_overthinking, Some(assumed_tokens));
+        assert_eq!(evidence.model_overthinking, None);
 
         evidence.total_tokens = Some(409_700);
         let mut findings = [false; DetectorId::COUNT];
@@ -2145,10 +2176,7 @@ mod tests {
         let mut token_burn = TokenBurnAccumulator::new();
         token_burn.observe(evidence, findings, [false; 3]);
         let (_, estimates) = token_burn.finish(&finding_statuses(&[DetectorId::ModelOverthinking]));
-        assert_eq!(
-            estimates[DetectorId::ModelOverthinking.index()],
-            Some(1_750)
-        );
+        assert_eq!(estimates[DetectorId::ModelOverthinking.index()], None);
     }
 
     #[test]
@@ -2158,12 +2186,10 @@ mod tests {
             group.lower_effort.push(ComparisonCandidate {
                 context_tokens: value as u128,
                 output_tokens: value as u64,
-                assumed_tokens: 0,
             });
             group.above_cap.push(ComparisonCandidate {
                 context_tokens: value as u128,
                 output_tokens: value as u64 + 1,
-                assumed_tokens: 1,
             });
         }
 
@@ -2198,14 +2224,14 @@ mod tests {
             turn.input_tokens = 800 + index * 11 % 500;
             turns.push(turn);
         }
-        let expected = turns.iter().fold(0_u128, |total, turn| {
+        let expected = turns.iter().try_fold(0_u128, |total, turn| {
             let effort = turn.effort.as_deref().unwrap().trim().to_lowercase();
             if !catalogs.families[&detectors::ModelFamily::Claude]
                 .effort
                 .above_cap
                 .contains(&effort)
             {
-                return total;
+                return Some(total);
             }
             let turn_context = turn.context_tokens().unwrap();
             let observed = turns
@@ -2244,19 +2270,10 @@ mod tests {
                     (*difference, *reverse_output, *context)
                 })
                 .map(|(_, _, _, tokens)| tokens);
-            let assumed = match effort.as_str() {
-                "xhigh" => percentage_of_tokens(u128::from(turn.output_tokens), 20),
-                "max" | "ultra" => percentage_of_tokens(u128::from(turn.output_tokens), 35),
-                _ => percentage_of_tokens(u128::from(turn.output_tokens), 10),
-            }
-            .unwrap();
-            total + observed.unwrap_or(assumed)
+            total.checked_add(observed?)
         });
 
-        assert_eq!(
-            turn_evidence(turns, &catalogs).model_overthinking,
-            Some(expected)
-        );
+        assert_eq!(turn_evidence(turns, &catalogs).model_overthinking, expected);
     }
 
     #[test]
@@ -2315,6 +2332,7 @@ mod tests {
                 paid_tokens: 200,
                 pairs_considered: 1,
                 pairs_skipped: 0,
+                segments: Vec::new(),
             },
             reason: CoverageReason::IncompleteTail,
         };
@@ -3524,6 +3542,7 @@ mod tests {
                     paid_tokens: 5_000,
                     pairs_considered: 1,
                     pairs_skipped: 0,
+                    segments: Vec::new(),
                 });
             }
             DetectorId::UnusedBuiltInTools => {

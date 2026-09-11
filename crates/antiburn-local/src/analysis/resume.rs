@@ -127,6 +127,7 @@ mod tests {
             revision,
             resume: ResumePoint {
                 offset: 0,
+                prefix_hash: 0xcbf2_9ce4_8422_2325,
                 tail_hash: 0,
                 tail_len: 0,
             },

@@ -540,10 +540,24 @@ fn evaluation_contribution(
                 .unwrap_or(snapshot.effective_boundary_ms),
         )
         .max(snapshot.effective_boundary_ms);
+    let owner_key = if definition.old_model.is_some() {
+        format!(
+            "allocation:v2:{}:{}:{}",
+            definition
+                .physical_target_key
+                .as_deref()
+                .expect("old-model remediation requires a physical target"),
+            snapshot.effective_boundary_ms,
+            ends_at_ms
+        )
+    } else {
+        record.remediation_id.clone()
+    };
     Ok(Some(RemediationContribution {
-        owner_key: format!("allocation:v1:{}", record.remediation_id),
+        owner_key,
         remediation_id: record.remediation_id.clone(),
         detector_id: definition.detector,
+        physical_target_key: definition.physical_target_key,
         origin: snapshot.origin,
         display_snapshot_json: snapshot.display_snapshot_json,
         facts_json: serde_json::to_string(&facts)?,

@@ -61,11 +61,11 @@ pub use evidence::{
     EvidenceCoverage, EvidenceSource, EvidenceValue, FAST_SPEED_KEY, LoadedSource,
     ModelControlObservation, ModelEvidence, ModelTokens, ModelTransition, OrderingObservation,
     ParseDiagnostics, QuotaConfidence, QuotaHitSeverity, QuotaIncident, QuotaLimitKind,
-    RelationConfidence, RepeatedContext, RepeatedContextAccounting, SessionCoverageRecord,
-    SessionEvidence, SessionEvidenceIdentity, SessionProvenance, SessionQuotaEvidence,
-    SessionTimeRange, SignalCoverage, SourceAcceptance, SourceCapabilities, SourceFormat,
-    SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass, ToolDefinition,
-    ToolEvidence, ToolUse, TurnCounts,
+    RelationConfidence, RepeatedContext, RepeatedContextAccounting, RepeatedContextSegment,
+    SessionCoverageRecord, SessionEvidence, SessionEvidenceIdentity, SessionProvenance,
+    SessionQuotaEvidence, SessionTimeRange, SignalCoverage, SourceAcceptance, SourceCapabilities,
+    SourceFormat, SourceKind, SubagentChild, SubagentEvidence, SubagentExample, ToolClass,
+    ToolDefinition, ToolEvidence, ToolUse, TurnCounts,
 };
 pub use evidence_query::{
     FenceScope, PublishedScope, TurnFacts, query_model_breakdown, query_model_runs,
@@ -247,7 +247,8 @@ pub const METRICS_SCHEMA_REVISION: i64 = 8;
 // harness version, and model-associated speed and effort evidence.
 // +1 for source-surface formats and fail-closed skill alias attribution.
 // +1 for nested resource evidence and paired parent-call and child-model observations.
-pub const EVIDENCE_SCHEMA_REVISION: i64 = 18;
+// +1 for independent repeated-context accounting segments.
+pub const EVIDENCE_SCHEMA_REVISION: i64 = 19;
 /// Versions [`evidence::SessionCoverageRecord`]'s own shape, separately
 /// from [`EVIDENCE_SCHEMA_REVISION`]: the record is an internal input to
 /// evidence replay, not the published `SessionEvidence` shape itself.
@@ -272,7 +273,7 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 4;
 // +1 because `ClaudeStreamState` gained a `context_window_source` field.
 // +1 because parent evidence now includes delegated model control observations.
 // This batch also changes retained nested resource and paired subagent state.
-pub const RESUME_SNAPSHOT_REVISION: i64 = 6;
+pub const RESUME_SNAPSHOT_REVISION: i64 = 7;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

@@ -653,6 +653,7 @@ fn a_serialized_snapshot_for_the_largest_corpus_tier_stays_bounded() {
         revision: RESUME_SNAPSHOT_REVISION,
         resume: ResumePoint {
             offset: 0,
+            prefix_hash: head_hash_of(&[]),
             tail_hash: head_hash_of(&[]),
             tail_len: 0,
         },
@@ -748,6 +749,7 @@ fn a_serialized_codex_snapshot_for_the_largest_fixture_stays_bounded() {
         revision: RESUME_SNAPSHOT_REVISION,
         resume: ResumePoint {
             offset: 0,
+            prefix_hash: head_hash_of(&[]),
             tail_hash: head_hash_of(&[]),
             tail_len: 0,
         },

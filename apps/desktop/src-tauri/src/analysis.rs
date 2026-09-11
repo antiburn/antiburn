@@ -651,6 +651,7 @@ fn bootstrap_snapshot(
         revision: RESUME_SNAPSHOT_REVISION,
         resume: ResumePoint {
             offset: 0,
+            prefix_hash: antiburn_local::discovery::source_version::head_hash_of(&[]),
             tail_hash: antiburn_local::discovery::source_version::head_hash_of(&[]),
             tail_len: 0,
         },

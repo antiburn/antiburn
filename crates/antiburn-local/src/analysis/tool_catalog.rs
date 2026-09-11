@@ -177,20 +177,40 @@ impl ToolCatalog {
         let surface_index = resolve_version(&agent_catalog.versions, version)?;
         let surface = agent_catalog.surfaces.get(surface_index)?;
         let resolved_model = resolve_model(surface, model)?;
-        Some(
-            surface
-                .tools
-                .iter()
-                .filter_map(|tool| {
-                    tool.tokens.get(&resolved_model).map(|&tokens| CatalogTool {
-                        name: tool.name.clone(),
-                        aliases: tool.aliases.clone(),
-                        tokens,
-                    })
-                })
-                .collect(),
-        )
+        Some(catalog_tools(surface, &resolved_model))
     }
+
+    /// Resolve only an exact captured version and model for detector evidence.
+    /// Approximate catalog matches can support display estimates, not findings.
+    pub fn lookup_exact(
+        &self,
+        agent: &str,
+        version: &str,
+        model: &str,
+    ) -> Option<Vec<CatalogTool>> {
+        let agent_catalog = self.agents.get(&agent.to_ascii_lowercase())?;
+        let surface_index = *agent_catalog.versions.get(version)?;
+        let surface = agent_catalog.surfaces.get(surface_index)?;
+        surface
+            .tools
+            .iter()
+            .any(|tool| tool.tokens.contains_key(model))
+            .then(|| catalog_tools(surface, model))
+    }
+}
+
+fn catalog_tools(surface: &Surface, model: &str) -> Vec<CatalogTool> {
+    surface
+        .tools
+        .iter()
+        .filter_map(|tool| {
+            tool.tokens.get(model).map(|&tokens| CatalogTool {
+                name: tool.name.clone(),
+                aliases: tool.aliases.clone(),
+                tokens,
+            })
+        })
+        .collect()
 }
 
 /// The catalogue embedded in the binary at build time, parsed once.
@@ -340,6 +360,21 @@ mod tests {
             tools
                 .iter()
                 .any(|tool| tool.name == "collaboration_spawn_agent")
+        );
+    }
+
+    #[test]
+    fn exact_lookup_rejects_approximate_version_and_model_matches() {
+        let catalog = fixture();
+        assert!(
+            catalog
+                .lookup_exact("claude", "2.1.240", "claude-fable-5")
+                .is_none()
+        );
+        assert!(
+            catalog
+                .lookup_exact("claude", "2.1.246", "claude-sonnet-4-5-20991231")
+                .is_none()
         );
     }
 

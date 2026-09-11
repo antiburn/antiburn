@@ -28,6 +28,7 @@ impl VendorConfig for Claude {
             return self.resolve_reasoning(home, trusted_workspace_root);
         }
         let operation = OperationSelector::JsonKey("model");
+        let mut target = None;
         if let Some(root) = trusted_workspace_root {
             for path in [
                 root.join(".claude/settings.local.json"),
@@ -38,31 +39,34 @@ impl VendorConfig for Claude {
                         .read_value(&read_checked(&path, root)?.bytes, &operation)?
                         .is_some()
                 {
-                    return Ok(Target {
+                    target.get_or_insert(Target {
                         path,
                         safety_root: root.to_owned(),
                         scope: ConfigScope::Project,
-                        operation,
+                        operation: operation.clone(),
                     });
                 }
             }
         }
 
         let path = home.join(".claude/settings.json");
-        if !path_entry_exists(&path)? {
-            return Err(ConfigUnavailableReason::MissingConfig);
-        }
-        if self
-            .read_value(&read_checked(&path, home)?.bytes, &operation)?
-            .is_none()
+        let global_exists = path_entry_exists(&path)?;
+        if global_exists
+            && self
+                .read_value(&read_checked(&path, home)?.bytes, &operation)?
+                .is_some()
         {
-            return Err(ConfigUnavailableReason::MissingTarget);
+            target.get_or_insert(Target {
+                path,
+                safety_root: home.to_owned(),
+                scope: ConfigScope::Global,
+                operation,
+            });
         }
-        Ok(Target {
-            path,
-            safety_root: home.to_owned(),
-            scope: ConfigScope::Global,
-            operation,
+        target.ok_or(if global_exists {
+            ConfigUnavailableReason::MissingTarget
+        } else {
+            ConfigUnavailableReason::MissingConfig
         })
     }
 
@@ -158,6 +162,7 @@ impl Claude {
             )?
             .ok_or(ConfigUnavailableReason::MissingTarget)?;
 
+        let mut target = None;
         if let Some(root) = trusted_workspace_root {
             for path in [
                 root.join(".claude/settings.local.json"),
@@ -169,7 +174,7 @@ impl Claude {
                         &model,
                     )?
                 {
-                    return Ok(Target {
+                    target.get_or_insert(Target {
                         path,
                         safety_root: root.to_owned(),
                         scope: ConfigScope::Project,
@@ -180,17 +185,22 @@ impl Claude {
         }
 
         let path = home.join(".claude/settings.json");
-        if !path_entry_exists(&path)? {
-            return Err(ConfigUnavailableReason::MissingConfig);
+        let global_exists = path_entry_exists(&path)?;
+        if global_exists
+            && let Some(operation) =
+                reasoning_selector(&parse_strict(&read_checked(&path, home)?.bytes)?, &model)?
+        {
+            target.get_or_insert(Target {
+                path,
+                safety_root: home.to_owned(),
+                scope: ConfigScope::Global,
+                operation,
+            });
         }
-        let operation =
-            reasoning_selector(&parse_strict(&read_checked(&path, home)?.bytes)?, &model)?
-                .ok_or(ConfigUnavailableReason::MissingTarget)?;
-        Ok(Target {
-            path,
-            safety_root: home.to_owned(),
-            scope: ConfigScope::Global,
-            operation,
+        target.ok_or(if global_exists {
+            ConfigUnavailableReason::MissingTarget
+        } else {
+            ConfigUnavailableReason::MissingConfig
         })
     }
 }
@@ -393,6 +403,57 @@ mod tests {
         assert_eq!(effective.value, "project-new");
         let document: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(document["permissions"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn rejects_a_global_model_environment_override_after_a_local_model() {
+        let temporary = tempfile::tempdir().unwrap();
+        let home = temporary.path().join("home");
+        let project = temporary.path().join("project");
+        fs::create_dir(&home).unwrap();
+        fs::create_dir(&project).unwrap();
+        write(
+            &project.join(".claude/settings.local.json"),
+            r#"{"model":"project-model"}"#,
+        );
+        write(
+            &home.join(".claude/settings.json"),
+            r#"{"env":{"ANTHROPIC_MODEL":"global-model"}}"#,
+        );
+
+        assert_eq!(
+            AgentConfigEditor::new().effective_model(&ConfigContext::native(
+                AgentKind::Claude,
+                &home,
+                Some(project),
+            )),
+            Err(crate::agent_config::ConfigUnavailableReason::RuntimeOverride)
+        );
+    }
+
+    #[test]
+    fn rejects_a_global_reasoning_environment_override_after_a_local_setting() {
+        let temporary = tempfile::tempdir().unwrap();
+        let home = temporary.path().join("home");
+        let project = temporary.path().join("project");
+        fs::create_dir(&home).unwrap();
+        fs::create_dir(&project).unwrap();
+        write(
+            &project.join(".claude/settings.local.json"),
+            r#"{"model":"project-model","effortLevel":"high"}"#,
+        );
+        write(
+            &home.join(".claude/settings.json"),
+            r#"{"env":{"CLAUDE_CODE_EFFORT_LEVEL":"low"}}"#,
+        );
+
+        assert_eq!(
+            AgentConfigEditor::new().effective(
+                &ConfigContext::native(AgentKind::Claude, &home, Some(project)),
+                crate::agent_config::ConfigSetting::Reasoning,
+            ),
+            Err(crate::agent_config::ConfigUnavailableReason::RuntimeOverride)
+        );
     }
 
     fn write(path: &Path, value: &str) {

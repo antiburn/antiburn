@@ -58,20 +58,20 @@ impl VendorConfig for Pi {
             ConfigSetting::Reasoning => {
                 let route = effective_model(project.as_ref(), global.as_ref())?
                     .ok_or(ConfigUnavailableReason::MissingTarget)?;
-                if let Some((path, document)) = project.as_ref()
-                    && let Some(operation) = reasoning_selector(document, &route)?
-                {
-                    return Ok(target(
+                let (source, operation) =
+                    effective_reasoning_source(project.as_ref(), global.as_ref(), &route)?
+                        .ok_or(ConfigUnavailableReason::MissingTarget)?;
+                match source {
+                    ModelSource::Project(path) => Ok(target(
                         path,
                         trusted_workspace_root.ok_or(ConfigUnavailableReason::UnsafePath)?,
                         ConfigScope::Project,
                         operation,
-                    ));
+                    )),
+                    ModelSource::Global(path) => {
+                        Ok(target(path, &global_root, ConfigScope::Global, operation))
+                    }
                 }
-                let (path, document) = global.ok_or(ConfigUnavailableReason::MissingConfig)?;
-                let operation = reasoning_selector(&document, &route)?
-                    .ok_or(ConfigUnavailableReason::MissingTarget)?;
-                Ok(target(&path, &global_root, ConfigScope::Global, operation))
             }
         }
     }
@@ -195,34 +195,40 @@ fn effective_model_source<'a>(
     project: Option<&'a (std::path::PathBuf, Value)>,
     global: Option<&'a (std::path::PathBuf, Value)>,
 ) -> Result<Option<ModelSource<'a>>, ConfigUnavailableReason> {
-    let project_provider = project
-        .map(|(_, document)| string_property(document, "defaultProvider"))
-        .transpose()?
-        .flatten();
-    let project_model = project
-        .map(|(_, document)| string_property(document, "defaultModel"))
-        .transpose()?
-        .flatten();
-    if project_provider.is_some() != project_model.is_some() {
-        return Err(ConfigUnavailableReason::SplitModelRoute);
-    }
-    if project_provider.is_some() {
-        return Ok(Some(ModelSource::Project(
-            &project.expect("project values exist").0,
-        )));
-    }
-
-    let Some((path, document)) = global else {
-        return Ok(None);
-    };
-    match (
-        string_property(document, "defaultProvider")?,
-        string_property(document, "defaultModel")?,
-    ) {
-        (Some(_), Some(_)) => Ok(Some(ModelSource::Global(path))),
+    let provider = model_leaf_source(project, global, "defaultProvider")?;
+    let model = model_leaf_source(project, global, "defaultModel")?;
+    match (provider, model) {
+        (Some(ModelSource::Project(provider)), Some(ModelSource::Project(model)))
+            if provider == model =>
+        {
+            Ok(Some(ModelSource::Project(provider)))
+        }
+        (Some(ModelSource::Global(provider)), Some(ModelSource::Global(model)))
+            if provider == model =>
+        {
+            Ok(Some(ModelSource::Global(provider)))
+        }
         (None, None) => Ok(None),
         _ => Err(ConfigUnavailableReason::SplitModelRoute),
     }
+}
+
+fn model_leaf_source<'a>(
+    project: Option<&'a (std::path::PathBuf, Value)>,
+    global: Option<&'a (std::path::PathBuf, Value)>,
+    key: &str,
+) -> Result<Option<ModelSource<'a>>, ConfigUnavailableReason> {
+    if let Some((path, document)) = project
+        && string_property(document, key)?.is_some()
+    {
+        return Ok(Some(ModelSource::Project(path)));
+    }
+    if let Some((path, document)) = global
+        && string_property(document, key)?.is_some()
+    {
+        return Ok(Some(ModelSource::Global(path)));
+    }
+    Ok(None)
 }
 
 fn model(document: &Value) -> Result<Option<String>, ConfigUnavailableReason> {
@@ -256,6 +262,82 @@ fn reasoning_selector(
         Ok(Some(OperationSelector::JsonKey("defaultThinkingLevel")))
     } else {
         Ok(None)
+    }
+}
+
+fn effective_reasoning_source<'a>(
+    project: Option<&'a (std::path::PathBuf, Value)>,
+    global: Option<&'a (std::path::PathBuf, Value)>,
+    route: &str,
+) -> Result<Option<(ModelSource<'a>, OperationSelector)>, ConfigUnavailableReason> {
+    let effective = merged_settings(
+        global.map(|(_, document)| document),
+        project.map(|(_, document)| document),
+    );
+    let Some(operation) = reasoning_selector(&effective, route)? else {
+        return Ok(None);
+    };
+
+    let source = match &operation {
+        OperationSelector::PiModelThinkingLevel(route) => {
+            reasoning_leaf_source(project, global, "modelThinkingLevels", Some(route))?
+        }
+        OperationSelector::JsonKey("defaultThinkingLevel") => {
+            reasoning_leaf_source(project, global, "defaultThinkingLevel", None)?
+        }
+        _ => return Err(ConfigUnavailableReason::UnsupportedSetting),
+    }
+    .ok_or(ConfigUnavailableReason::MissingTarget)?;
+    Ok(Some((source, operation)))
+}
+
+fn reasoning_leaf_source<'a>(
+    project: Option<&'a (std::path::PathBuf, Value)>,
+    global: Option<&'a (std::path::PathBuf, Value)>,
+    key: &str,
+    route: Option<&str>,
+) -> Result<Option<ModelSource<'a>>, ConfigUnavailableReason> {
+    for (source, document) in [
+        project.map(|(path, document)| (ModelSource::Project(path.as_path()), document)),
+        global.map(|(path, document)| (ModelSource::Global(path.as_path()), document)),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let value = match route {
+            Some(route) => document
+                .get(key)
+                .and_then(Value::as_object)
+                .and_then(|levels| levels.get(route)),
+            None => document.get(key),
+        };
+        if value.is_some() {
+            return Ok(Some(source));
+        }
+    }
+    Ok(None)
+}
+
+fn merged_settings(global: Option<&Value>, project: Option<&Value>) -> Value {
+    let mut effective = global.cloned().unwrap_or(Value::Null);
+    if let Some(project) = project {
+        merge_settings(&mut effective, project);
+    }
+    effective
+}
+
+fn merge_settings(base: &mut Value, override_value: &Value) {
+    if let (Some(base), Some(override_value)) = (base.as_object_mut(), override_value.as_object()) {
+        for (key, value) in override_value {
+            match base.get_mut(key) {
+                Some(base_value) => merge_settings(base_value, value),
+                None => {
+                    base.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    } else {
+        *base = override_value.clone();
     }
 }
 
@@ -322,6 +404,10 @@ fn global_root_for(
 mod tests {
     use super::*;
 
+    fn settings(path: &str, document: Value) -> (std::path::PathBuf, Value) {
+        (path.into(), document)
+    }
+
     #[test]
     fn pi_agent_dir_cases_are_explicit() {
         let temporary = tempfile::tempdir().unwrap();
@@ -356,5 +442,59 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn global_route_thinking_level_beats_project_default() {
+        let global = settings(
+            "global.json",
+            serde_json::json!({"modelThinkingLevels": {"a/m": "high"}}),
+        );
+        let project = settings(
+            "project.json",
+            serde_json::json!({"defaultThinkingLevel": "low"}),
+        );
+
+        let (source, operation) = effective_reasoning_source(Some(&project), Some(&global), "a/m")
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(source, ModelSource::Global(path) if path == global.0));
+        assert_eq!(
+            operation,
+            OperationSelector::PiModelThinkingLevel("a/m".into())
+        );
+    }
+
+    #[test]
+    fn project_route_thinking_level_overrides_global_route() {
+        let global = settings(
+            "global.json",
+            serde_json::json!({"modelThinkingLevels": {"a/m": "high"}}),
+        );
+        let project = settings(
+            "project.json",
+            serde_json::json!({"modelThinkingLevels": {"a/m": "low"}}),
+        );
+
+        let (source, operation) = effective_reasoning_source(Some(&project), Some(&global), "a/m")
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(source, ModelSource::Project(path) if path == project.0));
+        assert_eq!(
+            operation,
+            OperationSelector::PiModelThinkingLevel("a/m".into())
+        );
+    }
+
+    #[test]
+    fn project_arrays_replace_global_objects() {
+        let merged = merged_settings(
+            Some(&serde_json::json!({"modelThinkingLevels": {"a/m": "high"}})),
+            Some(&serde_json::json!({"modelThinkingLevels": []})),
+        );
+
+        assert_eq!(merged, serde_json::json!({"modelThinkingLevels": []}));
     }
 }

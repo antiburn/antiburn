@@ -76,6 +76,12 @@ pub struct TurnFacts {
     pub repeated_context_pairs_considered: u64,
     /// Candidate pairs excluded by route, order, identity, or compaction boundaries.
     pub repeated_context_pairs_skipped: u64,
+    pub repeated_context_cache_write_pairs_considered: u64,
+    pub repeated_context_cache_write_pairs_skipped: u64,
+    pub repeated_context_uncached_input_pairs_considered: u64,
+    pub repeated_context_uncached_input_pairs_skipped: u64,
+    pub repeated_context_cache_write_seen: bool,
+    pub repeated_context_uncached_input_seen: bool,
     /// Only pairs under this contract contribute to the candidate token totals.
     pub repeated_context_accounting: Option<RepeatedContextAccounting>,
     /// Unknown requests or excluded pairs prevent a complete result.
@@ -227,9 +233,22 @@ pub fn query_turn_facts(
         repeated_context_uncached_input_tokens: repeated_context.uncached_input_tokens,
         repeated_context_cache_write_paid_tokens: repeated_context.cache_write_paid_tokens,
         repeated_context_uncached_input_paid_tokens: repeated_context.uncached_input_paid_tokens,
-        repeated_context_pairs_considered: repeated_context.pairs_considered,
-        repeated_context_pairs_skipped: repeated_context.pairs_skipped,
-        repeated_context_accounting: repeated_context.accounting,
+        repeated_context_pairs_considered: repeated_context
+            .cache_write_pairs_considered
+            .saturating_add(repeated_context.uncached_input_pairs_considered),
+        repeated_context_pairs_skipped: repeated_context
+            .cache_write_pairs_skipped
+            .saturating_add(repeated_context.uncached_input_pairs_skipped),
+        repeated_context_cache_write_seen: repeated_context.cache_write_seen,
+        repeated_context_uncached_input_seen: repeated_context.uncached_input_seen,
+        repeated_context_cache_write_pairs_considered: repeated_context
+            .cache_write_pairs_considered,
+        repeated_context_cache_write_pairs_skipped: repeated_context.cache_write_pairs_skipped,
+        repeated_context_uncached_input_pairs_considered: repeated_context
+            .uncached_input_pairs_considered,
+        repeated_context_uncached_input_pairs_skipped: repeated_context
+            .uncached_input_pairs_skipped,
+        repeated_context_accounting: None,
         repeated_context_incomplete: repeated_context.incomplete
             || (key.agent == "opencode" && duplicate_turn_identities > 0),
         diagnostics,
@@ -1250,8 +1269,9 @@ const REPEATED_CONTEXT_SCAN_SQL: &str = "SELECT thread_id, ts_ms, input_tokens,
   ORDER BY source_key, thread_id, turn_index";
 
 struct RepeatedContextTotals {
-    accounting: Option<RepeatedContextAccounting>,
     incomplete: bool,
+    cache_write_seen: bool,
+    uncached_input_seen: bool,
     cache_write_tokens: u64,
     uncached_input_tokens: u64,
     /// Sum of the raw cache-write bucket (`RepeatedContext::paid_tokens`
@@ -1260,8 +1280,10 @@ struct RepeatedContextTotals {
     cache_write_paid_tokens: u64,
     /// The same sum under uncached-input accounting.
     uncached_input_paid_tokens: u64,
-    pairs_considered: u64,
-    pairs_skipped: u64,
+    cache_write_pairs_considered: u64,
+    cache_write_pairs_skipped: u64,
+    uncached_input_pairs_considered: u64,
+    uncached_input_pairs_skipped: u64,
 }
 
 /// Match explicit native routes, not model names or session-wide provider hints.
@@ -1312,10 +1334,13 @@ fn query_repeated_context(
     let mut uncached_input_tokens: u64 = 0;
     let mut cache_write_paid_tokens: u64 = 0;
     let mut uncached_input_paid_tokens: u64 = 0;
-    let mut pairs_considered: u64 = 0;
-    let mut pairs_skipped: u64 = 0;
-    let mut accounting = request_accounting(key.agent, None, None);
+    let mut cache_write_pairs_considered: u64 = 0;
+    let mut cache_write_pairs_skipped: u64 = 0;
+    let mut uncached_input_pairs_considered: u64 = 0;
+    let mut uncached_input_pairs_skipped: u64 = 0;
     let mut incomplete = false;
+    let mut cache_write_seen = false;
+    let mut uncached_input_seen = false;
     let mut current_thread = None;
     let mut previous = None;
     let mut last_uuid: Option<String> = None;
@@ -1360,8 +1385,16 @@ fn query_repeated_context(
         last_index = Some(turn_index);
         incomplete |= key.agent == "opencode" && is_compaction_boundary;
         if is_compaction_boundary || !linked {
-            if previous.take().is_some() {
-                pairs_skipped = pairs_skipped.saturating_add(1);
+            if let Some((_, _, previous_mode, _)) = previous.take() {
+                match previous_mode {
+                    RepeatedContextAccounting::CacheWrite => {
+                        cache_write_pairs_skipped = cache_write_pairs_skipped.saturating_add(1)
+                    }
+                    RepeatedContextAccounting::UncachedInput => {
+                        uncached_input_pairs_skipped =
+                            uncached_input_pairs_skipped.saturating_add(1)
+                    }
+                }
                 incomplete = true;
             }
             if is_compaction_boundary {
@@ -1372,52 +1405,85 @@ fn query_repeated_context(
             continue;
         }
         let mode = request_accounting(key.agent, provider.as_deref(), api.as_deref());
-        if accounting.is_none() {
-            accounting = mode;
+        match mode {
+            Some(RepeatedContextAccounting::CacheWrite) => cache_write_seen = true,
+            Some(RepeatedContextAccounting::UncachedInput) => uncached_input_seen = true,
+            None => {}
         }
         let depth = as_u64(input_tokens)
             .saturating_add(as_u64(cache_read_tokens))
             .saturating_add(as_u64(cache_write));
         if mode.is_none()
-            || mode != accounting
             || model.as_deref().is_none_or(|model| model.trim().is_empty())
             || depth == 0
         {
             incomplete = true;
-            pairs_skipped = pairs_skipped.saturating_add(u64::from(previous.take().is_some()));
+            if let Some((_, _, previous_mode, _)) = previous.take() {
+                match previous_mode {
+                    RepeatedContextAccounting::CacheWrite => {
+                        cache_write_pairs_skipped = cache_write_pairs_skipped.saturating_add(1)
+                    }
+                    RepeatedContextAccounting::UncachedInput => {
+                        uncached_input_pairs_skipped =
+                            uncached_input_pairs_skipped.saturating_add(1)
+                    }
+                }
+            }
             continue;
         }
+        let mode = mode.expect("checked above");
         let route = (model, provider, api);
-        if let Some((previous_ts, previous_depth, previous_route)) = previous {
+        if let Some((previous_ts, previous_depth, previous_mode, previous_route)) = previous {
             let in_order = matches!((previous_ts, ts_ms), (Some(previous_ts), Some(ts_ms)) if ts_ms >= previous_ts);
-            if in_order && route == previous_route {
-                pairs_considered = pairs_considered.saturating_add(1);
+            if in_order && mode == previous_mode && route == previous_route {
                 let growth = depth.saturating_sub(previous_depth);
                 let paid_cache_write = as_u64(cache_write);
                 let paid_uncached_input = as_u64(input_tokens);
-                cache_write_tokens =
-                    cache_write_tokens.saturating_add(paid_cache_write.saturating_sub(growth));
-                uncached_input_tokens = uncached_input_tokens
-                    .saturating_add(paid_uncached_input.saturating_sub(growth));
-                cache_write_paid_tokens = cache_write_paid_tokens.saturating_add(paid_cache_write);
-                uncached_input_paid_tokens =
-                    uncached_input_paid_tokens.saturating_add(paid_uncached_input);
+                match mode {
+                    RepeatedContextAccounting::CacheWrite => {
+                        cache_write_pairs_considered =
+                            cache_write_pairs_considered.saturating_add(1);
+                        cache_write_tokens = cache_write_tokens
+                            .saturating_add(paid_cache_write.saturating_sub(growth));
+                        cache_write_paid_tokens =
+                            cache_write_paid_tokens.saturating_add(paid_cache_write);
+                    }
+                    RepeatedContextAccounting::UncachedInput => {
+                        uncached_input_pairs_considered =
+                            uncached_input_pairs_considered.saturating_add(1);
+                        uncached_input_tokens = uncached_input_tokens
+                            .saturating_add(paid_uncached_input.saturating_sub(growth));
+                        uncached_input_paid_tokens =
+                            uncached_input_paid_tokens.saturating_add(paid_uncached_input);
+                    }
+                }
             } else {
-                pairs_skipped = pairs_skipped.saturating_add(1);
-                incomplete = true;
+                match previous_mode {
+                    RepeatedContextAccounting::CacheWrite => {
+                        cache_write_pairs_skipped = cache_write_pairs_skipped.saturating_add(1)
+                    }
+                    RepeatedContextAccounting::UncachedInput => {
+                        uncached_input_pairs_skipped =
+                            uncached_input_pairs_skipped.saturating_add(1)
+                    }
+                }
+                incomplete |= mode == previous_mode;
             }
         }
-        previous = Some((ts_ms, depth, route));
+        previous = Some((ts_ms, depth, mode, route));
     }
     Ok(RepeatedContextTotals {
-        accounting,
         incomplete,
+        cache_write_seen,
+        uncached_input_seen,
         cache_write_tokens,
         uncached_input_tokens,
         cache_write_paid_tokens,
         uncached_input_paid_tokens,
-        pairs_considered,
-        pairs_skipped,
+        cache_write_pairs_considered,
+        cache_write_pairs_skipped,
+        uncached_input_pairs_considered,
+        uncached_input_pairs_skipped,
     })
 }
 
@@ -2143,7 +2209,6 @@ mod tests {
 
     #[test]
     fn uncached_input_accounting_reads_repeated_input_beyond_growth_on_codex_shaped_rows() {
-        let conn = test_connection();
         let mut first = cache_row("s1", 0);
         first.input_tokens = 1_000;
         first.cache_write_tokens = 0;
@@ -2155,8 +2220,7 @@ mod tests {
         second.input_tokens = 6_000;
         second.cache_write_tokens = 0;
         second.ts_ms = Some(1_000);
-        insert(&conn, &[first, second]);
-        let facts = query_turn_facts(&conn, &KEY, &FenceScope::single(1)).expect("query facts");
+        let facts = route_facts("codex", &[first, second]);
         // depth grew 1000 -> 6000 (+5000); paid uncached input is 6000, so
         // 6000 - 5000 = 1000 tokens are repeated.
         assert_eq!(facts.repeated_context_uncached_input_tokens, 1_000);
@@ -2228,13 +2292,26 @@ mod tests {
                 .collect();
             let facts = route_facts(agent, &rows);
             assert_eq!(
-                facts.repeated_context_accounting,
-                Some(expected),
+                facts.repeated_context_accounting, None,
                 "{agent}/{provider:?}/{api:?}"
             );
+            assert_eq!(
+                facts.repeated_context_cache_write_seen,
+                expected == CacheWrite
+            );
+            assert_eq!(
+                facts.repeated_context_uncached_input_seen,
+                expected == UncachedInput
+            );
             assert_eq!(facts.repeated_context_pairs_considered, 2);
-            assert_eq!(facts.repeated_context_cache_write_tokens, 20);
-            assert_eq!(facts.repeated_context_uncached_input_tokens, 100);
+            assert_eq!(
+                facts.repeated_context_cache_write_tokens,
+                if expected == CacheWrite { 20 } else { 0 }
+            );
+            assert_eq!(
+                facts.repeated_context_uncached_input_tokens,
+                if expected == UncachedInput { 100 } else { 0 }
+            );
             assert!(!facts.repeated_context_incomplete);
         }
     }
@@ -2269,7 +2346,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_modes_keep_only_the_first_contract_as_partial_evidence() {
+    fn mixed_modes_keep_independent_totals_in_both_orderings() {
         let rows: Vec<_> = (0..6)
             .map(|index| {
                 let mut row = cache_row("s1", index);
@@ -2280,20 +2357,27 @@ mod tests {
                 };
                 row.provider = Some(provider.to_owned());
                 row.api = Some(api.to_owned());
+                row.model = Some(
+                    if !(2..4).contains(&index) {
+                        "claude-model"
+                    } else {
+                        "openai-model"
+                    }
+                    .to_owned(),
+                );
                 row.cache_write_tokens = 100;
                 row
             })
             .collect();
         let facts = route_facts("pi", &rows);
-        assert_eq!(
-            facts.repeated_context_accounting,
-            Some(RepeatedContextAccounting::CacheWrite)
-        );
-        assert_eq!(facts.repeated_context_pairs_considered, 2);
+        assert_eq!(facts.repeated_context_pairs_considered, 3);
         assert_eq!(facts.repeated_context_cache_write_tokens, 200);
-        assert!(facts.repeated_context_incomplete);
+        assert_eq!(facts.repeated_context_cache_write_paid_tokens, 200);
+        assert_eq!(facts.repeated_context_uncached_input_tokens, 10);
+        assert_eq!(facts.repeated_context_uncached_input_paid_tokens, 10);
+        assert!(!facts.repeated_context_incomplete);
         let mut capabilities = crate::analysis::SourceCapabilities::pi();
-        capabilities.cache_write_tokens = false;
+        capabilities.cache_write_tokens = true;
         let source = crate::analysis::EvidenceSource {
             agent: "pi".to_owned(),
             session_id: "s1".to_owned(),
@@ -2309,13 +2393,22 @@ mod tests {
         let crate::analysis::EvidenceValue::Complete(cache) = live.cache else {
             panic!("cache");
         };
-        let crate::analysis::EvidenceValue::Partial { observed, .. } = cache.repeated_context
-        else {
-            panic!("partial contract");
+        let crate::analysis::EvidenceValue::Complete(observed) = cache.repeated_context else {
+            panic!("complete contracts");
         };
-        assert_eq!(observed.accounting, RepeatedContextAccounting::CacheWrite);
-        assert_eq!(observed.repeated_tokens, 200);
-        assert_eq!(observed.paid_tokens, 200);
+        assert_eq!(observed.segments.len(), 2);
+        assert_eq!(
+            observed.segments[0].accounting,
+            RepeatedContextAccounting::CacheWrite
+        );
+        assert_eq!(observed.segments[0].repeated_tokens, 200);
+        assert_eq!(observed.segments[0].paid_tokens, 200);
+        assert_eq!(
+            observed.segments[1].accounting,
+            RepeatedContextAccounting::UncachedInput
+        );
+        assert_eq!(observed.segments[1].repeated_tokens, 10);
+        assert_eq!(observed.segments[1].paid_tokens, 10);
 
         let reversed: Vec<_> = rows
             .into_iter()
@@ -2331,13 +2424,12 @@ mod tests {
             })
             .collect();
         let facts = route_facts("pi", &reversed);
-        assert_eq!(
-            facts.repeated_context_accounting,
-            Some(RepeatedContextAccounting::UncachedInput)
-        );
-        assert_eq!(facts.repeated_context_pairs_considered, 2);
+        assert_eq!(facts.repeated_context_pairs_considered, 3);
+        assert_eq!(facts.repeated_context_cache_write_tokens, 100);
+        assert_eq!(facts.repeated_context_cache_write_paid_tokens, 100);
         assert_eq!(facts.repeated_context_uncached_input_tokens, 20);
-        assert!(facts.repeated_context_incomplete);
+        assert_eq!(facts.repeated_context_uncached_input_paid_tokens, 20);
+        assert!(!facts.repeated_context_incomplete);
     }
 
     #[test]

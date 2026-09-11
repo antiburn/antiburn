@@ -628,9 +628,9 @@ mod tests {
     use antiburn_local::analysis::{
         EVIDENCE_SCHEMA_REVISION, EligibilityEvidence, EvidenceSource, EvidenceValue, LoadedSource,
         METRICS_SCHEMA_REVISION, ModelControlObservation, ModelTokens as AnalysisModelTokens,
-        RepeatedContext, RepeatedContextAccounting, SessionEvidenceAccumulator, SessionTimeRange,
-        SignalCoverage, SourceCapabilities, SourceKind, TurnCounts, TurnFacts, TurnRow,
-        TurnRowStore, TurnScope,
+        RepeatedContext, RepeatedContextAccounting, RepeatedContextSegment,
+        SessionEvidenceAccumulator, SessionTimeRange, SignalCoverage, SourceCapabilities,
+        SourceKind, TurnCounts, TurnFacts, TurnRow, TurnRowStore, TurnScope,
     };
     use antiburn_local::model::AgentKind;
     use tempfile::TempDir;
@@ -682,6 +682,8 @@ mod tests {
             config_setting: Some("model".into()),
             config_expected_value: Some("old".into()),
             config_proposed_value: Some("new".into()),
+            config_original_bytes_hash: None,
+            config_proposed_bytes_hash: None,
             verification_method_revision: 1,
             remediation_policy_revision: Some(1),
             savings_method_revision: 1,
@@ -730,6 +732,8 @@ mod tests {
             config_setting: Some("model".into()),
             config_expected_value: Some("openai/gpt-5.5".into()),
             config_proposed_value: Some("openai/gpt-5.6-sol".into()),
+            config_original_bytes_hash: None,
+            config_proposed_bytes_hash: None,
             verification_method_revision: 1,
             remediation_policy_revision: Some(1),
             savings_method_revision: 1,
@@ -1188,6 +1192,13 @@ mod tests {
                         pairs_considered: 1,
                         pairs_skipped: 0,
                         paid_tokens: 100,
+                        segments: vec![RepeatedContextSegment {
+                            accounting: RepeatedContextAccounting::UncachedInput,
+                            repeated_tokens: 100,
+                            paid_tokens: 100,
+                            pairs_considered: 1,
+                            pairs_skipped: 0,
+                        }],
                     });
                 },
             );
@@ -1384,6 +1395,8 @@ mod tests {
                 config_setting: Some("model".into()),
                 config_expected_value: Some("openai/gpt-5.5".into()),
                 config_proposed_value: Some("openai/gpt-5.6-sol".into()),
+                config_original_bytes_hash: None,
+                config_proposed_bytes_hash: None,
                 verification_method_revision: 1,
                 remediation_policy_revision: Some(1),
                 savings_method_revision: 1,
@@ -1490,6 +1503,104 @@ mod tests {
             assert_eq!(recurred.recurrence_ms, Some(103_000), "{agent:?}");
             assert_eq!(recurred.replacement_tokens.unwrap().input_tokens, 10);
         }
+    }
+
+    #[test]
+    fn old_model_evidence_uses_only_the_watch_source_format() {
+        let data_dir = TempDir::new().unwrap();
+        let store = Store::open(data_dir.path()).unwrap();
+        let mut sqlite_capabilities = SourceCapabilities::opencode();
+        sqlite_capabilities.source_format =
+            antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2;
+        let fixture = RoutedModelFixture {
+            agent: AgentKind::OpenCode,
+            capabilities: sqlite_capabilities,
+            api: "responses",
+        };
+        publish_routed_attributed_model_turn(
+            data_dir.path(),
+            &store,
+            fixture,
+            "wrong-format-old-model",
+            103,
+            103_000,
+            "gpt-5.5",
+        );
+        publish_routed_attributed_model_turn(
+            data_dir.path(),
+            &store,
+            RoutedModelFixture {
+                agent: AgentKind::OpenCode,
+                capabilities: SourceCapabilities::opencode(),
+                api: "responses",
+            },
+            "matching-format-replacement",
+            102,
+            102_000,
+            "gpt-5.6-sol",
+        );
+        let definition = WatchDefinition {
+            version: 1,
+            detector: "old_model_usage".into(),
+            canonical_identity: "identity".into(),
+            source_format: "OpenCodeJsonl".into(),
+            workspace_key: None,
+            workspace_relative_cwd: None,
+            provider: Some("openai".into()),
+            api: Some("responses".into()),
+            old_model: Some("gpt-5.5".into()),
+            replacement: Some("gpt-5.6-sol".into()),
+            resource: None,
+            physical_target_key: Some("physical".into()),
+            config_setting: Some("model".into()),
+            config_expected_value: Some("openai/gpt-5.5".into()),
+            config_proposed_value: Some("openai/gpt-5.6-sol".into()),
+            config_original_bytes_hash: None,
+            config_proposed_bytes_hash: None,
+            verification_method_revision: 1,
+            remediation_policy_revision: Some(1),
+            savings_method_revision: 1,
+            pricing_revision: None,
+            old_pricing: None,
+            replacement_pricing: None,
+            catalog_revision: Some(ReportCatalogs::default().revision),
+            target_model: None,
+            target_control: None,
+        };
+        let record = crate::store::RemediationRecord {
+            remediation_id: "watch".into(),
+            target_key: "target".into(),
+            environment_key: "native".into(),
+            agent: AgentKind::OpenCode.slug().into(),
+            scope_kind: "global".into(),
+            scope_key: "physical".into(),
+            state: crate::store::RemediationState::Watching,
+            dirty_revision: 1,
+            evaluated_revision: 0,
+            definition_json: serde_json::to_string(&definition).unwrap(),
+            result_json: r#"{"version":1}"#.into(),
+            created_at_epoch: 100,
+            updated_at_epoch: 100,
+            effective_boundary_ms: Some(100_000),
+            verified_at_epoch: None,
+            recurred_at_epoch: None,
+            action_joined_at_ms: None,
+        };
+
+        let evidence = old_model_remediation_evidence(
+            data_dir.path(),
+            &record,
+            &definition,
+            100_000,
+            Some(102_000),
+        )
+        .unwrap();
+
+        assert_eq!(evidence.observations.len(), 1);
+        assert_eq!(evidence.observations[0].model, "gpt-5.6-sol");
+        assert_eq!(evidence.replacement_tokens.unwrap().input_tokens, 10);
+        assert_eq!(evidence.recurrence_ms, None);
+        assert_eq!(evidence.measured_through_ms, Some(102_000));
     }
 
     #[cfg(not(windows))]
@@ -1638,6 +1749,8 @@ mod tests {
             config_setting: Some("model".into()),
             config_expected_value: Some("claude-opus-4-8".into()),
             config_proposed_value: Some("claude-opus-5".into()),
+            config_original_bytes_hash: None,
+            config_proposed_bytes_hash: None,
             verification_method_revision: 1,
             remediation_policy_revision: Some(1),
             savings_method_revision: 1,

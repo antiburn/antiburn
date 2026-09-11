@@ -41,26 +41,52 @@ pub(crate) fn evaluate(evidence: &SessionEvidence, catalogs: &ReportCatalogs) ->
         EvidenceValue::Partial { observed, .. } => observed,
         EvidenceValue::Complete(observed) => observed,
     };
-    if repeated_context.repeated_tokens == 0 {
+    let segments = repeated_context.segments.iter();
+    let mut segments = segments.peekable();
+    if segments.peek().is_none() {
+        return evaluate_segment(
+            repeated_context.accounting,
+            repeated_context.repeated_tokens,
+            repeated_context.paid_tokens,
+            catalogs,
+        );
+    }
+    let mut result = Observation::NoFinding;
+    for segment in segments {
+        match evaluate_segment(
+            segment.accounting,
+            segment.repeated_tokens,
+            segment.paid_tokens,
+            catalogs,
+        ) {
+            Observation::Finding => return Observation::Finding,
+            Observation::ContractIncomplete => result = Observation::ContractIncomplete,
+            Observation::NoFinding | Observation::SignalMissing => {}
+        }
+    }
+    result
+}
+
+fn evaluate_segment(
+    accounting: crate::analysis::RepeatedContextAccounting,
+    repeated_tokens: u64,
+    paid_tokens: u64,
+    catalogs: &ReportCatalogs,
+) -> Observation {
+    if repeated_tokens == 0 {
         return Observation::NoFinding;
     }
-
-    let family = accounting_family(repeated_context.accounting);
+    let family = accounting_family(accounting);
     let Some(policy) = catalogs.families.get(&family) else {
         return Observation::ContractIncomplete;
     };
     if !policy.cache_policy_reviewed {
         return Observation::ContractIncomplete;
     }
-
-    let unique_paid_tokens = repeated_context
-        .paid_tokens
-        .saturating_sub(repeated_context.repeated_tokens);
-    if unique_paid_tokens == 0 {
-        return Observation::Finding;
-    }
-    let multiple = repeated_context.paid_tokens as f64 / unique_paid_tokens as f64;
-    if multiple >= policy.cache_overpay_multiple_threshold {
+    let unique_paid_tokens = paid_tokens.saturating_sub(repeated_tokens);
+    if unique_paid_tokens == 0
+        || paid_tokens as f64 / unique_paid_tokens as f64 >= policy.cache_overpay_multiple_threshold
+    {
         Observation::Finding
     } else {
         Observation::NoFinding
@@ -77,30 +103,56 @@ pub(super) fn finding_causes(
     let Some(repeated) = observed(&cache.repeated_context) else {
         return Vec::new();
     };
-    let family = accounting_family(repeated.accounting);
-    let Some(policy) = catalogs.families.get(&family) else {
-        return Vec::new();
-    };
-    let Some(model) = observed(&evidence.models).and_then(|models| {
-        models
-            .dominant_main_model
-            .as_ref()
-            .filter(|model| model_family(model) == family)
-            .or_else(|| {
-                models
-                    .by_model
-                    .keys()
-                    .find(|model| model_family(model) == family)
+    let segments: Vec<_> = if repeated.segments.is_empty() {
+        vec![(
+            repeated.accounting,
+            repeated.repeated_tokens,
+            repeated.paid_tokens,
+        )]
+    } else {
+        repeated
+            .segments
+            .iter()
+            .map(|segment| {
+                (
+                    segment.accounting,
+                    segment.repeated_tokens,
+                    segment.paid_tokens,
+                )
             })
-    }) else {
-        return Vec::new();
+            .collect()
     };
-    vec![FindingCause::CacheChurn {
-        model: model.clone(),
-        repeated_tokens: repeated.repeated_tokens,
-        paid_tokens: repeated.paid_tokens,
-        threshold_basis_points: (policy.cache_overpay_multiple_threshold * 10_000.0).round() as u32,
-    }]
+    segments
+        .into_iter()
+        .filter_map(|(accounting, repeated_tokens, paid_tokens)| {
+            if evaluate_segment(accounting, repeated_tokens, paid_tokens, catalogs)
+                != Observation::Finding
+            {
+                return None;
+            }
+            let family = accounting_family(accounting);
+            let policy = catalogs.families.get(&family)?;
+            let model = observed(&evidence.models).and_then(|models| {
+                models
+                    .dominant_main_model
+                    .as_ref()
+                    .filter(|model| model_family(model) == family)
+                    .or_else(|| {
+                        models
+                            .by_model
+                            .keys()
+                            .find(|model| model_family(model) == family)
+                    })
+            })?;
+            Some(FindingCause::CacheChurn {
+                model: model.clone(),
+                repeated_tokens,
+                paid_tokens,
+                threshold_basis_points: (policy.cache_overpay_multiple_threshold * 10_000.0).round()
+                    as u32,
+            })
+        })
+        .collect()
 }
 
 fn accounting_family(accounting: crate::analysis::RepeatedContextAccounting) -> ModelFamily {
@@ -148,6 +200,7 @@ mod tests {
             paid_tokens,
             pairs_considered: 1,
             pairs_skipped: 0,
+            segments: Vec::new(),
         }
     }
 

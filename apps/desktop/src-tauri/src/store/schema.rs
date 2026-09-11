@@ -13,7 +13,7 @@
 pub const MIGRATIONS: &[&str] = &[
     V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11, V12, V13, V14, V15, V16, V17, V18, V19, V20, V21,
     V22, V23, V24, V25, V26, V27, V28, V29, V30, V31, V32, V33, V34, V35, V36, V37, V38, V39, V40,
-    V41, V42, V43, V44, V45, V46,
+    V41, V42, V43, V44, V45, V46, V47,
 ];
 
 /// v1 — sessions, derived analysis, relations, settings, sources.
@@ -1007,4 +1007,13 @@ ALTER TABLE session_evidence ADD COLUMN effective_reasoning_target_hash TEXT;
 ALTER TABLE session_evidence ADD COLUMN effective_reasoning_scope TEXT
     CHECK (effective_reasoning_scope IN ('global', 'project'));
 ALTER TABLE session_evidence ADD COLUMN effective_reasoning TEXT;
+"#;
+
+/// v47 gives old-model aggregate contributions a durable physical control identity.
+const V47: &str = r#"
+ALTER TABLE remediation_contribution ADD COLUMN physical_target_key TEXT
+    CHECK (physical_target_key IS NULL OR length(physical_target_key) BETWEEN 1 AND 192);
+CREATE INDEX remediation_contribution_physical_interval
+    ON remediation_contribution (physical_target_key, starts_at_ms, ends_at_ms)
+    WHERE physical_target_key IS NOT NULL;
 "#;

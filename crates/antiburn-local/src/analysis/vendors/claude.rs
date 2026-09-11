@@ -619,16 +619,21 @@ impl ClaudeSessionReader {
                     resume: None,
                 });
             }
-            let adapter =
-                postcard::to_allocvec(&state).context("encoding Claude adapter snapshot")?;
-            let new_resume = pinned.resume_point()?;
+            let resumable = !state.incomplete_tail_seen;
+            let adapter = resumable
+                .then(|| postcard::to_allocvec(&state))
+                .transpose()
+                .context("encoding Claude adapter snapshot")?;
+            let new_resume = resumable.then(|| pinned.resume_point()).transpose()?;
             sink.finish(state.into_summary());
             Ok(ResumedVisit {
                 outcome,
-                resume: Some(AdapterResume {
-                    point: new_resume,
-                    adapter: crate::analysis::resume::AdapterSnapshot(adapter),
-                }),
+                resume: new_resume
+                    .zip(adapter)
+                    .map(|(point, adapter)| AdapterResume {
+                        point,
+                        adapter: crate::analysis::resume::AdapterSnapshot(adapter),
+                    }),
             })
         })()
         .with_context(|| format!("reading resumed Claude session {}", input.session_id))
@@ -653,7 +658,11 @@ impl ClaudeSessionReader {
         while let Some(record) = reader.next_record(cancel) {
             match record {
                 FramedRecord::Skipped(skip) => match skip {
-                    RecordSkip::Oversized { .. } | RecordSkip::IncompleteTail { .. } => {
+                    RecordSkip::Oversized { .. } => {
+                        sink.record(NormalizedRecord::Unusable(skip.partial_reason()));
+                    }
+                    RecordSkip::IncompleteTail { .. } => {
+                        state.incomplete_tail_seen = true;
                         sink.record(NormalizedRecord::Unusable(skip.partial_reason()));
                     }
                     RecordSkip::ReadFailed { index, kind } => {
@@ -831,6 +840,8 @@ struct ClaudeStreamState {
     /// 16 bytes plus hash overhead per uuid-bearing record, kept for the
     /// life of the stream and carried in the resume snapshot.
     seen_uuids: HashSet<u128>,
+    /// An unterminated record has no stable boundary for a future suffix read.
+    incomplete_tail_seen: bool,
 }
 
 impl ClaudeStreamState {
@@ -1270,6 +1281,7 @@ mod tests {
         snapshot_from(AdapterResume {
             point: ResumePoint {
                 offset: 0,
+                prefix_hash: head_hash_of(&[]),
                 tail_hash: head_hash_of(&[]),
                 tail_len: 0,
             },

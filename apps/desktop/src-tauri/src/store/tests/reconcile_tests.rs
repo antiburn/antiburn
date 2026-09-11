@@ -31,7 +31,7 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
             parser_revision: 32,
             analyzer_revision: 23,
             metrics_schema_revision: 8,
-            evidence_schema_revision: 18,
+            evidence_schema_revision: 19,
         }
     );
 }
