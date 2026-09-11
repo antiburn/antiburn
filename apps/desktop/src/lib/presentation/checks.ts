@@ -3,6 +3,7 @@ import type {
   ChecksCategoryPayload,
   ChecksReportPayload,
 } from "../insightsIpc"
+import { aggregateBurnCheckPresentation, type BurnCheckPresentation } from "./burnChecks"
 
 export const CHECK_LABELS: Record<BurnCheckDetectorId, string> = {
   sessionsOverDepth: "Session overdepth",
@@ -25,6 +26,7 @@ export interface ChecksPresentation {
   wins: ChecksCategoryPayload[]
   unavailable: ChecksCategoryPayload[]
   refreshUnavailable: boolean
+  burnChecks: BurnCheckPresentation
   estimate: ChecksEstimate
 }
 
@@ -52,6 +54,7 @@ export function checksPresentation(
       (category) => category.finding === 0 && category.clean === 0,
     ),
     refreshUnavailable,
+    burnChecks: aggregateBurnCheckPresentation(report, refreshUnavailable),
     estimate: {
       tokenBurnBasisPoints: report.estimatedTokenBurnBasisPoints,
     },

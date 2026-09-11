@@ -264,8 +264,8 @@ describe("SessionList — rows", () => {
       onBadgeMetricChange: vi.fn(),
     })
 
-    expect(screen.getByRole("radio", { name: "$" })).toHaveAttribute("aria-checked", "false")
-    expect(screen.getByRole("radio", { name: "5h" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByRole("radio", { name: "Cost" })).toHaveAttribute("aria-checked", "false")
+    expect(screen.getByRole("radio", { name: "5h %" })).toHaveAttribute("aria-checked", "true")
     expect(screen.queryByLabelText("Estimated cost $1.00")).toBeNull()
     expect(
       screen.getByLabelText("Share of your 5-hour limit is not known for this session."),
@@ -352,7 +352,7 @@ describe("SessionList — rows", () => {
       },
     })
 
-    expect(screen.queryByRole("radio", { name: "5h" })).toBeNull()
+    expect(screen.queryByRole("radio", { name: "5h %" })).toBeNull()
   })
 
   it("offers five-hour mode when the usage panel shows an empty five-hour window", () => {
@@ -402,7 +402,7 @@ describe("SessionList — rows", () => {
       },
     })
 
-    expect(screen.getByRole("radio", { name: "5h" })).toBeInTheDocument()
+    expect(screen.getByRole("radio", { name: "5h %" })).toBeInTheDocument()
   })
 
   it("keeps a five-hour allocation badge as time passes, since the factor never expires", () => {
@@ -432,12 +432,12 @@ describe("SessionList — rows", () => {
     }
     const { rerender } = render(<SessionList {...props} />)
 
-    expect(screen.getByRole("radio", { name: "5h" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByRole("radio", { name: "5h %" })).toHaveAttribute("aria-checked", "true")
     expect(screen.getByText("6.3%")).toBeInTheDocument()
 
     rerender(<SessionList {...props} now={new Date(NOW.getTime() + 3_600_001)} />)
-    expect(screen.getByRole("radio", { name: "5h" })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByRole("radio", { name: "$" })).toHaveAttribute("aria-checked", "false")
+    expect(screen.getByRole("radio", { name: "5h %" })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByRole("radio", { name: "Cost" })).toHaveAttribute("aria-checked", "false")
     expect(screen.getByText("6.3%")).toBeInTheDocument()
   })
 
@@ -454,9 +454,11 @@ describe("SessionList — rows", () => {
     expect(screen.getByText("Amp")).toBeTruthy()
   })
 
-  it("shows up to two lines of the primary text", () => {
+  it("keeps the primary text on one line and prepares overflow for hover reveal", () => {
     list({ entries: [entry({ title: "A long session title" })] })
-    expect(screen.getByText("A long session title").className).toContain("truncated-text-lines")
+    const title = screen.getByText("A long session title")
+    expect(title).toHaveClass("truncate")
+    expect(title.closest("[data-scroll-on-hover]")).not.toBeNull()
   })
 
   it("marks a hot spend with the brand pill, and a usual cost without one", () => {
@@ -529,6 +531,7 @@ describe("SessionList — rows", () => {
   })
 
   it("shows short model names in the supplied parent-first order", () => {
+    const renderAgentIcon = vi.fn(() => <span data-testid="agent-icon" />)
     list({
       entries: [
         entry({
@@ -538,23 +541,207 @@ describe("SessionList — rows", () => {
           ],
         }),
       ],
+      renderAgentIcon,
     })
-    const models = screen.getByText("5.6-sol").closest("[title]")
-    expect(models?.getAttribute("title")).toBe("gpt-5.6-sol/xhigh\nclaude-fable-5/high")
-    expect(models?.textContent).toBe("5.6-sol xhigh · fable-5 high")
+    const context = screen.getByLabelText(
+      "Session source: Claude Code. Models: gpt-5.6-sol/xhigh, claude-fable-5/high.",
+    )
+    expect(context).toHaveTextContent(/5\.6-sol xhigh\s*\+1/)
+    expect(context).not.toHaveTextContent("· +1")
+    expect(context.querySelector("[data-additional-model-count]")).toHaveClass(
+      "h-4",
+      "min-w-4",
+      "rounded-full",
+      "bg-surface-tertiary/40",
+      "font-mono",
+      "type-metadata",
+      "font-medium!",
+      "tabular-nums",
+      "text-label-tertiary",
+    )
+    expect(screen.getByText("5.6-sol").parentElement).toHaveClass(
+      "shrink-0",
+      "whitespace-nowrap",
+    )
+    expect(context).not.toHaveTextContent("fable-5 high")
+    expect(context).not.toHaveTextContent("avery/widgets")
+    expect(context).toHaveAttribute("data-shared-tooltip-trigger")
+
+    fireEvent.focus(context)
+    const tooltip = screen.getByRole("tooltip")
+    const tooltipContent = tooltip.querySelector<HTMLElement>("[data-session-context-tooltip]")!
+    expect(within(tooltipContent).getByText("Claude Code")).toHaveClass(
+      "type-callout",
+      "font-medium!",
+      "text-label",
+    )
+    expect(within(tooltipContent).getByText("Models")).toHaveClass(
+      "type-caption",
+      "text-label-tertiary",
+    )
+    expect(within(tooltipContent).getByText("gpt-5.6-sol/xhigh")).toHaveClass(
+      "font-mono",
+      "type-footnote",
+      "text-label",
+    )
+    expect(within(tooltipContent).queryByText("Repository")).toBeNull()
+    expect(within(tooltipContent).queryByText("avery/widgets")).toBeNull()
+    expect(within(tooltipContent).queryByText("Source")).toBeNull()
+    expect(tooltipContent.querySelector('[data-testid="agent-icon"]')).toBeTruthy()
+    expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 16, undefined, "neutral")
+    expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 40, undefined, "neutral")
+    expect(renderAgentIcon).not.toHaveBeenCalledWith("claude-code", 12, undefined, "neutral")
+  })
+
+  it("makes the title primary and moves vendor identity into a subtle watermark", () => {
+    const renderAgentIcon = vi.fn(() => <span data-testid="agent-icon" />)
+    list({
+      entries: [entry({ title: "Supporting identity", modelRuns: [{ model: "gpt-5" }] })],
+      renderAgentIcon,
+    })
+
+    const title = screen.getByText("Supporting identity")
+    const titleContainer = title.closest("[data-scroll-on-hover]")
+    const card = title.closest(".session-card")
+    expect(titleContainer).toHaveClass("type-body", "font-medium!", "text-label")
+    expect(card).toHaveClass(
+      "gap-y-0.5",
+      "py-3",
+      "isolate",
+      "overflow-hidden",
+      "bg-session-card",
+    )
+    expect(card).not.toHaveClass("bg-surface-card/50")
+    expect(card).not.toHaveClass("gap-y-1")
+    expect(titleContainer).not.toHaveClass("type-body-large", "text-label-secondary")
+    expect(screen.getByLabelText(/Burn Checks/)).toHaveClass("text-label-secondary")
+    const watermark = screen
+      .getByTestId("agent-icon")
+      .closest("[data-session-vendor-watermark]")
+    expect(watermark).toHaveClass(
+      "pointer-events-none",
+      "absolute",
+      "-right-1.5",
+      "-bottom-1.5",
+      "h-10",
+      "w-10",
+      "session-vendor-watermark",
+    )
+    expect(watermark).toHaveAttribute("aria-hidden", "true")
+    expect(
+      screen
+        .getByLabelText("Session source: Claude Code. Models: gpt-5.")
+        .querySelector('[data-testid="agent-icon"]'),
+    ).toBeNull()
+    expect(screen.getByText("5")).toHaveClass("font-semibold!", "text-label-secondary")
+    expect(screen.getByText("5")).not.toHaveClass("font-medium!")
+    expect(screen.getByText("5")).not.toHaveClass("text-label")
+    expect(
+      screen.getByLabelText("Session source: Claude Code. Models: gpt-5."),
+    ).toBeInTheDocument()
+  })
+
+  it("shows repositories only when they distinguish visible sessions", () => {
+    const renderAgentIcon = () => <span data-testid="agent-icon" />
+    const { rerender } = list({
+      entries: [
+        entry({ sessionId: "one", repo: "antiburn" }),
+        entry({ sessionId: "two", repo: "antiburn" }),
+      ],
+      renderAgentIcon,
+    })
+    expect(screen.queryByText("antiburn")).toBeNull()
+
+    rerender(
+      <SessionList
+        entries={[
+          entry({
+            sessionId: "one",
+            repo: "antiburn",
+            modelRuns: [{ model: "gpt-5.6-sol", thinkingMode: "medium" }],
+          }),
+          entry({
+            sessionId: "two",
+            repo: "another-repo",
+            modelRuns: [{ model: "gpt-5.6-sol", thinkingMode: "medium" }],
+          }),
+        ]}
+        days={7}
+        now={NOW}
+        renderAgentIcon={renderAgentIcon}
+      />,
+    )
+    const firstRepository = screen.getByText("antiburn")
+    const secondRepository = screen.getByText("another-repo")
+    expect(firstRepository).toBeInTheDocument()
+    expect(secondRepository).toBeInTheDocument()
+    const firstMetadata = firstRepository.closest("[data-session-trailing-metadata]")
+    const secondMetadata = secondRepository.closest("[data-session-trailing-metadata]")
+    const firstContext = firstRepository.closest("[data-session-context-row]")
+    expect(firstMetadata).toHaveClass(
+      "font-mono",
+      "type-metadata",
+      "tabular-nums",
+      "items-baseline",
+      "gap-x-0.5",
+      "ml-auto",
+      "justify-end",
+      "session-trailing-metadata",
+    )
+    expect(firstContext).toHaveClass("items-baseline", "gap-x-2")
+    expect(secondMetadata).toHaveClass("font-mono", "type-metadata", "tabular-nums")
+    expect(screen.getAllByText("medium")[0]).not.toHaveClass("type-caption")
+    expect(within(firstMetadata as HTMLElement).getByText("·")).toBeInTheDocument()
+    expect(firstContext?.textContent?.indexOf("5.6-sol")).toBeLessThan(
+      firstContext?.textContent?.indexOf("antiburn") ?? -1,
+    )
   })
 
   it("includes the relative-time suffix", () => {
     list({ entries: [entry({ timestamp: at(0, 9) })] })
-    expect(screen.getByText(/ ago$/)).toBeTruthy()
+    const time = screen.getByText(/ ago$/)
+    expect(time).toHaveClass("shrink-0", "whitespace-nowrap")
+    expect(time.closest("[data-session-trailing-metadata]")).toHaveClass(
+      "font-mono",
+      "type-metadata",
+      "tabular-nums",
+    )
+  })
+
+  it("compacts the timestamp beside a long repository name", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(NOW)
+    list({
+      entries: [
+        entry({
+          sessionId: "long-repo",
+          repo: "what-does-this-do-basics",
+          timestamp: at(0, 9),
+        }),
+        entry({ sessionId: "short-repo", repo: "antiburn", timestamp: at(0, 10) }),
+      ],
+    })
+
+    const longMetadata = screen
+      .getByText("what-does-this-do-basics")
+      .closest("[data-session-trailing-metadata]") as HTMLElement
+    const shortMetadata = screen
+      .getByText("antiburn")
+      .closest("[data-session-trailing-metadata]") as HTMLElement
+    expect(within(longMetadata).getByText("3h")).toBeInTheDocument()
+    expect(within(longMetadata).queryByText("3h ago")).toBeNull()
+    expect(within(longMetadata).getByText("3h")).toHaveAttribute(
+      "aria-label",
+      "Last activity 3h ago",
+    )
+    expect(within(shortMetadata).getByText("2h ago")).toBeInTheDocument()
   })
 
   it("shows evidence computation instead of a synthetic hygiene verdict", () => {
     list({ entries: [entry({ sessionId: "session-pending" })] })
-    const verdict = screen.getByLabelText("Computing session hygiene checks")
-    expect(verdict.textContent).toBe("Computing checks…")
-    expect(verdict.style.color).toBe("var(--color-label-tertiary)")
-    expect(screen.queryByLabelText("All checks passed")).toBeNull()
+    const verdict = screen.getByLabelText(/Running Burn Checks/)
+    expect(verdict).toHaveTextContent("Running Burn Checks…")
+    expect(screen.queryByLabelText(/All Burn Checks passed/)).toBeNull()
   })
 
   it("renders finding and clean statuses returned by the batched IPC path", async () => {
@@ -598,8 +785,8 @@ describe("SessionList — rows", () => {
     list({ entries: [entry({ sessionId: "synthetic-hygiene-result" })] })
 
     await waitFor(() => {
-      expect(screen.getByLabelText("5 of 6 burn checks passed").textContent).toBe(
-        "5/6 burn checks",
+      expect(screen.getByLabelText(/Some Burn Checks failed/)).toHaveTextContent(
+        "1 failed·5 passed",
       )
     })
     expect(getSessionHygiene).toHaveBeenCalledWith([
@@ -609,6 +796,30 @@ describe("SessionList — rows", () => {
         wslDistro: null,
       },
     ])
+  })
+
+  it("keeps a cyan all-passed verdict above the session title", async () => {
+    getSessionHygiene.mockResolvedValueOnce([
+      {
+        evidenceState: "ready",
+        badges: [
+          "sessionOverdepth",
+          "modelOverthinking",
+          "overpoweredSubagents",
+          "obsoleteModel",
+          "fastModeOveruse",
+          "excessCacheRehydration",
+        ].map((id) => ({ id, status: "clean", notAssessedReason: null })),
+      },
+    ])
+    list({ entries: [entry({ sessionId: "clean-session", title: "Primary clean title" })] })
+
+    const verdict = await screen.findByLabelText(/All Burn Checks passed/)
+    expect(verdict).toHaveTextContent("All 6 passed")
+    expect(screen.getByText("All 6 passed")).toHaveClass("text-burn-check-pass-fill")
+    expect(
+      screen.getByText("Primary clean title").closest("[data-session-status-bar]"),
+    ).toBeNull()
   })
 
   it("keeps the last verdict on screen, marked stale, while a live session recomputes", async () => {
@@ -628,11 +839,9 @@ describe("SessionList — rows", () => {
     list({ entries: [entry({ sessionId: "synthetic-hygiene-stale" })] })
 
     await waitFor(() => {
-      expect(screen.getByLabelText("Refreshing — 5 of 6 burn checks passed").textContent).toBe(
-        "5/6 burn checks",
-      )
+      expect(screen.getByLabelText(/Refreshing/)).toHaveTextContent("1 failed·5 passed")
     })
-    expect(screen.queryByLabelText("Refreshing session hygiene checks")).toBeNull()
+    expect(screen.queryByText("Refreshing Burn Checks…")).toBeNull()
   })
 
   it("states the last-activity time", () => {
@@ -669,10 +878,10 @@ describe("SessionList — navigation", () => {
     expect(screen.queryByRole("button", { name: /Untracked/ })).toBeNull()
   })
 
-  it("renders an agent icon only from the injected renderer", () => {
+  it("renders a vendor watermark only from the injected renderer", () => {
     const renderAgentIcon = vi.fn(() => <span data-testid="agent-icon" />)
     list({ entries: [entry({ surface: "cli" })], renderAgentIcon })
-    expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 14, "cli")
+    expect(renderAgentIcon).toHaveBeenCalledWith("claude-code", 40, "cli", "neutral")
     expect(screen.getByTestId("agent-icon")).toBeTruthy()
   })
 })
@@ -687,9 +896,29 @@ describe("SessionList — grouping", () => {
       ],
     })
     expect(screen.getByTestId("activity-pinned-group-label").textContent).toBe("Today")
+    expect(screen.getByTestId("activity-pinned-group-label")).not.toHaveClass(
+      "uppercase",
+      "tracking-wide",
+    )
     // The first heading is announced but not painted twice.
     expect(screen.getByText("Yesterday")).toBeTruthy()
     expect(screen.getByText("3 days ago")).toBeTruthy()
+  })
+
+  it("keeps the badge metric control inline with the pinned date label", () => {
+    list({ entries: [entry()], onBadgeMetricChange: vi.fn() })
+    const toolbar = document.querySelector<HTMLElement>("[data-list-display-toolbar]")!
+    const control = screen.getByRole("radiogroup", { name: "Session metric" })
+
+    expect(toolbar).toContainElement(control)
+    expect(toolbar).toHaveTextContent("Today")
+    expect(screen.queryByTestId("activity-pinned-group-label")).not.toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "Sessions" })).not.toBeInTheDocument()
+    expect(control).toHaveAttribute("data-variant", "text-tabs")
+    expect(control).toHaveClass("inline-flex")
+    expect(control).not.toHaveClass("bg-surface-secondary")
+    expect(screen.getByRole("radio", { name: "Week %" })).toBeInTheDocument()
+    expect(toolbar).not.toHaveTextContent("Show")
   })
 
   it("orders the newest session first within a day", () => {
@@ -717,6 +946,22 @@ describe("SessionList — grouping", () => {
 })
 
 describe("SessionList — virtualization", () => {
+  it("uses a 12px gap between cards in the same date group", async () => {
+    const { container } = list({
+      entries: [
+        entry({ sessionId: "first", title: "First fixture", timestamp: at(0, 11) }),
+        entry({ sessionId: "second", title: "Second fixture", timestamp: at(0, 10) }),
+      ],
+    })
+
+    await waitFor(() => {
+      const rows = [...container.querySelectorAll<HTMLElement>('[data-virtual-kind="row"]')]
+      expect(rows).toHaveLength(2)
+      expect(rows[0]).not.toHaveClass("pt-3")
+      expect(rows[1]).toHaveClass("pt-3")
+    })
+  })
+
   it.each([225, 500])("bounds mounted rows for %i sessions", async (count) => {
     list({ entries: entries(count), onOpenSession: vi.fn() })
 
@@ -903,7 +1148,7 @@ describe("SessionList — shared tooltips", () => {
         }),
       ],
     })
-    const status = await screen.findByLabelText("5 of 6 burn checks passed")
+    const status = await screen.findByLabelText(/Some Burn Checks failed/)
     const cost = screen.getByLabelText("Estimated cost $2.40")
     const fork = screen.getByLabelText("Forked from another session")
     const repository = screen.getByText("avery/widgets +1")
@@ -916,9 +1161,7 @@ describe("SessionList — shared tooltips", () => {
     act(() => vi.advanceTimersByTime(149))
     expect(document.querySelector(".ui-tooltip")).toBeNull()
     act(() => vi.advanceTimersByTime(1))
-    expect(document.querySelector(".ui-tooltip")?.textContent).toContain(
-      "Open the session for details",
-    )
+    expect(document.querySelector(".ui-tooltip")?.textContent).toContain("Burn Checks")
     expect(status.dataset.state).toBe("delayed-open")
     expect(status.getAttribute("aria-describedby")).toBe(
       document.querySelector(".ui-tooltip")?.id,
@@ -943,9 +1186,9 @@ describe("SessionList — shared tooltips", () => {
     fireEvent.pointerOut(fork)
     fireEvent.pointerOver(repository)
     act(() => vi.advanceTimersByTime(600))
-    expect(document.querySelector(".ui-tooltip")?.textContent).toBe("Also observed: avery/docs")
+    expect(document.querySelector(".ui-tooltip")).toBeNull()
+    expect(repository).not.toHaveAttribute("data-shared-tooltip-trigger")
 
-    fireEvent.pointerOut(repository)
     fireEvent.pointerOver(wsl)
     act(() => vi.advanceTimersByTime(600))
     expect(document.querySelector(".ui-tooltip")?.textContent).toBe(
@@ -958,7 +1201,7 @@ describe("SessionList — shared tooltips", () => {
     const { container, unmount } = list({
       entries: [entry({ hasForkParent: true, repo: "avery/widgets", wslDistro: "Ubuntu" })],
     })
-    const status = screen.getByLabelText("Computing session hygiene checks")
+    const status = screen.getByLabelText(/Running Burn Checks/)
     const fork = screen.getByLabelText("Forked from another session")
     const repository = screen.getByText("avery/widgets")
     const wsl = screen.getByLabelText("Found in Ubuntu on Windows Subsystem for Linux")
@@ -976,18 +1219,13 @@ describe("SessionList — shared tooltips", () => {
     act(() => vi.advanceTimersByTime(499))
     expect(document.querySelector(".ui-tooltip")).toBeNull()
 
-    fireEvent.pointerOver(repository)
-    act(() => vi.advanceTimersByTime(600))
-    expect(document.querySelector(".ui-tooltip")?.textContent).toBe("avery/widgets")
-
     fireEvent.scroll(viewport)
     expect(document.querySelector(".ui-tooltip")).toBeNull()
-    expect(repository.dataset.state).toBe("closed")
+    expect(repository).not.toHaveAttribute("data-state")
 
     fireEvent.focus(status)
-    expect(document.querySelector(".ui-tooltip")?.textContent).toBe(
-      "Computing session hygiene checks",
-    )
+    expect(document.querySelector(".ui-tooltip")?.textContent).toContain("Not assessed · 6")
+    expect(document.querySelector(".ui-tooltip")?.textContent).toContain("Session depth")
     fireEvent.blur(status)
     expect(document.querySelector(".ui-tooltip")).toBeNull()
 
@@ -1140,7 +1378,7 @@ describe("SessionList — native drag header", () => {
     const { container, rerender } = render(<SessionList {...props} />)
     expect(container.querySelector("[data-tauri-drag-region]")).toBeNull()
     rerender(<SessionList {...props} draggableHeader />)
-    expect(screen.getByTestId("activity-pinned-group-label")).toHaveAttribute(
+    expect(container.querySelector("[data-list-display-toolbar]")).toHaveAttribute(
       "data-tauri-drag-region",
       "deep",
     )

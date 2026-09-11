@@ -12,6 +12,9 @@
 /** Where a session was discovered from. */
 export type AgentSurface = "cli" | "ide_desktop" | "unknown"
 
+/** A call site can mute vendor colour without changing the vendor artwork. */
+export type AgentIconAppearance = "default" | "neutral"
+
 /** Everything the presentation layer knows about one agent. */
 interface AgentInfo {
   displayName: string

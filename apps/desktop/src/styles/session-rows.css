@@ -1,4 +1,104 @@
-/* These styles show active sessions with a title shimmer. */
+/* Session rows change fill without scaling the thin Burn Check geometry. */
+.session-card {
+  transition-property: background-color;
+  transition-duration: var(--duration-fast);
+  transition-timing-function: ease-out;
+}
+
+.session-card:active {
+  opacity: 1;
+  transform: none;
+}
+
+/* Crossfade context without changing the card geometry. */
+.session-vendor-watermark,
+.session-trailing-metadata {
+  transition-property: opacity;
+  transition-duration: var(--duration-medium);
+  transition-timing-function: linear;
+}
+
+/* Keep repeated vendor identity behind the card content in both themes. */
+.session-vendor-watermark {
+  opacity: 0.05;
+}
+
+.session-trailing-metadata {
+  opacity: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  .session-vendor-watermark {
+    opacity: 0.06;
+  }
+}
+
+:root[data-theme="light"] .session-vendor-watermark {
+  opacity: 0.05;
+}
+
+:root[data-theme="dark"] .session-vendor-watermark {
+  opacity: 0.06;
+}
+
+.session-card:hover .session-vendor-watermark,
+.session-card:has([data-state*="open"]) .session-vendor-watermark {
+  opacity: 0;
+  transition-delay: var(--duration-fast);
+}
+
+.session-card:hover .session-trailing-metadata,
+.session-card:has([data-state*="open"]) .session-trailing-metadata {
+  opacity: 1;
+  transition-delay: var(--duration-fast);
+}
+
+/* The radial Antigravity mark has more optical weight than the other marks. */
+.session-vendor-watermark [data-agent-icon="antigravity"] {
+  scale: 0.9;
+}
+
+/* A long title stays compact until the pointer rests on its session card. */
+.session-title-scroll {
+  position: relative;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.session-title-scroll-rest {
+  transition-property: opacity;
+  transition-duration: var(--duration-fast);
+  transition-timing-function: ease-out;
+}
+
+.session-title-scroll-copy {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: block;
+  width: max-content;
+  opacity: 0;
+  pointer-events: none;
+  transition-property: transform, opacity;
+  transition-duration: var(--duration-slow), var(--duration-fast);
+  transition-timing-function: ease-out, ease-out;
+}
+
+.session-title-scroll-copy::before {
+  content: attr(data-text);
+}
+
+.session-card:hover .session-title-scroll[data-truncated="true"] .session-title-scroll-rest {
+  opacity: 0;
+}
+
+.session-card:hover .session-title-scroll[data-truncated="true"] .session-title-scroll-copy {
+  opacity: 1;
+  transform: translateX(var(--truncated-text-offset));
+  transition-duration: var(--truncated-text-duration), var(--duration-fast);
+  transition-delay: var(--duration-slow), 0ms;
+  transition-timing-function: linear, ease-out;
+}
 
 .activity-row-active {
   --activity-row-shimmer-cycle: 4000ms;
@@ -97,6 +197,14 @@
    It keeps its resting meaning: the title drops the overlay and paints as
    plain primary text rather than staying at the dimmed shimmer base. */
 @media (prefers-reduced-motion: reduce) {
+  .session-title-scroll-rest {
+    opacity: 1 !important;
+  }
+
+  .session-title-scroll-copy {
+    display: none;
+  }
+
   .activity-row-title-shimmer {
     color: var(--color-text-primary);
   }
