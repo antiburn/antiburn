@@ -71,7 +71,7 @@ function noActionReason(target: BurnCheckTargetPayload): string | null {
 export function ActionLimit({ target }: { target: BurnCheckTargetPayload }) {
   const reason = noActionReason(target)
   if (!reason) return null
-  return <p className="mt-2 type-footnote text-label-tertiary">{reason}</p>
+  return <p className="mt-2 type-callout text-label-tertiary">{reason}</p>
 }
 
 export function SampleSessions({ target }: { target: BurnCheckTargetPayload }) {
@@ -88,7 +88,7 @@ export function SampleSessions({ target }: { target: BurnCheckTargetPayload }) {
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen((value) => !value)}
-        className="inline-flex items-center gap-1.5 rounded-control py-1 text-left type-footnote text-label-tertiary hover:text-label-secondary active:transform-none active:opacity-100"
+        className="inline-flex items-center gap-1.5 rounded-control py-1 text-left type-callout text-label-tertiary hover:text-label-secondary active:transform-none active:opacity-100"
       >
         <span>
           Sample sessions <span>({samples.length})</span>

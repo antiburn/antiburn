@@ -112,3 +112,35 @@
   inset: 0 0 auto;
   block-size: var(--main-window-titlebar-height);
 }
+
+/* Use the brand hover treatment only in Burn Checks. */
+.burn-check-action {
+  background: var(--color-surface-window);
+  border-color: var(--color-separator);
+  color: var(--color-label);
+  transition:
+    background-color var(--duration-fast) ease-out,
+    border-color var(--duration-fast) ease-out,
+    color var(--duration-fast) ease-out,
+    box-shadow var(--duration-fast) ease-out,
+    transform var(--duration-quick) ease-out;
+}
+
+.burn-check-action:enabled:hover {
+  background: color-mix(in srgb, var(--color-brand) 12%, var(--color-surface-window));
+  border-color: color-mix(in srgb, var(--color-brand) 45%, transparent);
+  color: color-mix(in srgb, var(--color-brand) 80%, var(--color-label));
+  box-shadow: var(--shadow-raised);
+}
+
+.burn-check-action:enabled:active {
+  background: color-mix(in srgb, var(--color-brand) 20%, var(--color-surface-window));
+  border-color: var(--color-brand);
+  box-shadow: none;
+}
+
+.burn-check-action:disabled {
+  opacity: 1;
+  transform: none;
+  box-shadow: none;
+}

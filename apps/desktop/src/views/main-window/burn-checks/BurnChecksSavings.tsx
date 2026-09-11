@@ -55,7 +55,7 @@ function metricCoverage(known: number, total: number): string {
 }
 
 function tokenTotal(value: number): string {
-  return `~${value.toLocaleString()} tokens`
+  return `~${value.toLocaleString()}`
 }
 
 function costTotal(value: number): string {
@@ -105,41 +105,47 @@ export function BurnChecksSavings({ wins }: { wins: readonly AggregateWinPayload
           onClick={() => setOpen((value) => !value)}
           className="flex w-full flex-wrap items-center gap-4 px-4 py-3.5 text-left hover:bg-surface-hover active:transform-none active:opacity-100"
         >
-          <span className="flex h-8 w-8 items-center justify-center rounded-control bg-system-green/10 text-system-green">
+          <span className="flex h-8 w-8 items-center justify-center rounded-control bg-share-work/10 text-share-work-text">
             <Sparkles size={16} aria-hidden="true" />
           </span>
           <div className="min-w-0 flex-1">
             <h2 id="burn-checks-savings" className="type-headline text-label">
               Your savings
             </h2>
-            <p className="type-footnote text-label-tertiary">
+            <p className="type-callout text-label-tertiary">
               {improvementWins > 0
                 ? `${improvements.toLocaleString()} improvement${improvements === 1 ? "" : "s"} across ${groups.length} check${groups.length === 1 ? "" : "s"}`
                 : `${supported.length} verified ${supported.length === 1 ? "win" : "wins"} across ${groups.length} check${groups.length === 1 ? "" : "s"}`}
             </p>
           </div>
-          <div className="text-right type-footnote tabular-nums text-label-secondary">
+          <div className="text-right type-callout tabular-nums text-share-work-text">
             {paired ? (
-              <p className="type-title-3 text-label">
+              <p className="type-title-3 text-share-work-text">
                 {tokenTotal(tokenSavings)} · {costTotal(costSavings)} saved
                 {metricCoverage(tokenWins, supported.length)}
               </p>
             ) : (
               <>
                 {tokenWins > 0 && (
-                  <p className={costWins === 0 ? "type-title-3 text-label" : undefined}>
-                    {tokenTotal(tokenSavings)}
+                  <p
+                    className={costWins === 0 ? "type-title-3 text-share-work-text" : undefined}
+                  >
+                    {tokenTotal(tokenSavings)} saved
                     {metricCoverage(tokenWins, supported.length)}
                   </p>
                 )}
                 {costWins > 0 && (
-                  <p className={tokenWins === 0 ? "type-title-3 text-label" : undefined}>
+                  <p
+                    className={
+                      tokenWins === 0 ? "type-title-3 text-share-work-text" : undefined
+                    }
+                  >
                     {costTotal(costSavings)} saved
                     {metricCoverage(costWins, supported.length)}
                   </p>
                 )}
                 {tokenWins === 0 && costWins === 0 && improvementWins > 0 && (
-                  <p className="type-title-3 text-label">
+                  <p className="type-title-3 text-share-work-text">
                     {improvements.toLocaleString()} improvement
                     {improvements === 1 ? "" : "s"}
                   </p>
@@ -164,14 +170,14 @@ export function BurnChecksSavings({ wins }: { wins: readonly AggregateWinPayload
                 <p className="type-callout font-medium! text-label">
                   {CHECK_LABELS[group.detector]}
                 </p>
-                <p className="type-footnote text-label-tertiary">
+                <p className="type-callout text-label-tertiary">
                   {group.wins.length} verified {group.wins.length === 1 ? "win" : "wins"}
                 </p>
               </div>
-              <div className="text-right type-footnote tabular-nums text-label-secondary">
+              <div className="text-right type-callout tabular-nums text-share-work-text">
                 {group.tokenWins > 0 && (
                   <p>
-                    {tokenTotal(group.tokenSavings)}
+                    {tokenTotal(group.tokenSavings)} saved
                     {metricCoverage(group.tokenWins, group.wins.length)}
                   </p>
                 )}

@@ -562,7 +562,7 @@ standard Sessions collection and detail layout. Returning to Burn checks preserv
 sample disclosure state. `Fix` opens a small modal that shows the effect, scope, and one
 current-to-new value. The modal traps focus, focuses Cancel first, and closes from Cancel, Escape,
 or the backdrop. At narrow widths, summaries, details, and actions stack without horizontal
-scrolling. The cold loading state uses one busy region, one screen-reader status, a summary card,
+scrolling. The cold loading state uses one busy region, one screen-reader status, an uncontained summary,
 a group label, and three shaped row skeletons. An expanded check uses the same one-region,
 one-status rule with a compact body, action, and sample skeleton. It must not announce each skeleton. The quiet
 `Your savings` disclosure appears only when at least one supported estimate exists. Place it below
@@ -629,3 +629,57 @@ tokens or the menu-bar list's default appearance to achieve it.
   Efficiency sits at the bottom of the Cost pane when content fits, and follows the
   checks in normal scroll order otherwise. The total appears once in the top cost
   block.
+
+### Main Burn Checks cosmetic polish
+
+The main report keeps Zack’s failed/passed grouping, ordering, disclosure states,
+target loading, sample navigation, and actions. The summary has no card. Use
+Marty’s `SegmentedRadialDial` at 88px diameter with a 5px stroke. Use an
+explicit 88px grid column, a flexible text column, and a 24px gap. The ring
+has no center icon. Put a grey 12px `Flame` before the `type-callout`
+“Estimated burn” label, matching its height. The dial represents the actual
+estimated burn basis points: `waste-warn` for avoidable usage and `share-work`
+for the remainder. Zero gaps and flat endpoints preserve small proportions.
+Unknown estimates show a neutral ring. The accessible name states the exact
+supplied percentage. Other uses retain the component’s rounded endpoints.
+
+Use neutral `type-large-title` for the complete percentage. Write “Less than 1%”
+for a positive estimate below 1%; do not add decorative decimals. Use `type-body`
+for “Of assessed usage could be avoided.” and `type-callout` for the check count,
+each with 4px above. The failed count has a small `share-waste-text` dot; its words
+stay neutral. Use the documented line heights and 24px vertical hero padding.
+The page fills the workspace with 32px horizontal padding and no centered
+maximum-width column. The cold skeleton follows this hierarchy.
+
+Use `type-title-2` group headings with 32px space above and 12px below. Check
+rows use 16px horizontal and 12px vertical padding, `type-title-3` titles,
+`type-body` summaries, and `font-mono` percentage figures. Metric qualifiers and
+“burn” labels use neutral sans-serif text, with 6px gaps between the pieces. Omit “token” from the main
+view’s displayed metrics; shared percentage calculation and popover copy stay
+unchanged. Check category icons are bare 15px glyphs in `label-secondary`, with no tinted
+container. Keep their existing grid alignment. Match Session Details’ favorability colors: failure summaries,
+and positive row burn estimates use `share-waste-text`; zero burn,
+verified savings, and action-success glyphs use `share-work-text`. Passing words,
+check titles, recommendations, and unknown estimates stay neutral. Use the matching
+fill tokens for status marks. No additional severity bands are inferred.
+
+Expanded problems use `surface-card`, `rounded-control`, a separator border, and
+16px padding. Named MCP and skill targets form a responsive grid with a local
+18rem minimum card width, 12px gaps, and 16px outer padding. Cards stack when
+space is narrow. Long resource names wrap. Regular check details keep one card.
+Every action and sample disclosure stays inside its original problem. The hero
+follows Keith’s sketch, using the dial from Marty’s `feat/desktop-pr4-burn-check-design`
+branch at `9cb51e4f`. The approved 02D refinement moves the grey flame beside the label.
+
+### Burn Checks action buttons
+
+The opt-in `burn-check-action` variant in `main-window.css` styles the existing
+copy, fix, and change-selection buttons. Keep `ui-push-button` and its standard
+22px control height, 10px horizontal padding, and `rounded-control`. Use regular
+`type-callout` labels, 12px icons, and a 4px gap, matching `PushButton`. The resting surface uses `surface-window`, `separator`,
+and `label`. Enabled hover mixes 12% `brand` into the surface, adds a 45% brand
+border, uses brand ink mixed with 20% `label` for contrast, and applies `shadow-raised`. Press increases the tint to
+20% and removes the shadow. Transitions use `duration-fast`, with `duration-quick`
+for press movement. The shared keyboard focus ring stays visible. Disabled and
+completed states keep the neutral surface and do not lift or change on hover.
+Success icons retain the documented teal. No other buttons use this variant.

@@ -39,35 +39,39 @@ export function BurnChecksView({
               role="region"
               aria-label="Loading Burn checks"
               aria-busy="true"
-              className="mx-auto w-full max-w-4xl px-6 py-6"
+              className="w-full px-8 py-6"
             >
               <p role="status" className="sr-only">
                 Loading Burn checks.
               </p>
               <section
                 data-skeleton="hero"
-                className="flex flex-wrap items-center gap-4 rounded-control border border-separator bg-surface-card p-4"
+                className="grid grid-cols-[88px_minmax(0,1fr)] items-center gap-6 py-6"
               >
-                <Skeleton
-                  data-skeleton-slot="icon"
-                  className="h-10 w-10 shrink-0 rounded-full"
-                />
-                <div className="min-w-0 flex-1 space-y-2">
-                  <Skeleton data-skeleton-slot="result" className="h-4 w-32" />
-                  <Skeleton data-skeleton-slot="summary" className="h-3 w-24" />
+                <div className="contents">
+                  <Skeleton data-skeleton-slot="icon" className="h-22 w-22 rounded-full" />
+                  <div className="min-w-0 space-y-1">
+                    <Skeleton className="h-4 w-24" />
+                    <Skeleton data-skeleton-slot="result" className="h-9 w-40" />
+                    <Skeleton data-skeleton-slot="summary" className="h-4 w-72 max-w-full" />
+                    <Skeleton className="h-4 w-24" />
+                  </div>
                 </div>
               </section>
-              <div className="mt-5 px-1">
-                <Skeleton data-skeleton="group-label" className="h-3 w-24" />
+              <div className="mt-8 px-1">
+                <Skeleton data-skeleton="group-label" className="h-6 w-28" />
               </div>
-              <div className="mt-2 overflow-hidden rounded-control border border-separator bg-surface-card/50">
+              <div className="mt-3 overflow-hidden rounded-control border border-separator bg-surface-card/50">
                 {["w-40", "w-32", "w-44"].map((width) => (
                   <div
                     key={width}
                     data-skeleton="check-row"
-                    className="grid grid-cols-[28px_minmax(0,1fr)_max-content_14px] items-center gap-x-2 border-b border-separator px-3 py-2.5 last:border-b-0"
+                    className="grid grid-cols-[28px_minmax(0,1fr)_max-content_14px] items-center gap-x-3 border-b border-separator px-4 py-3 last:border-b-0"
                   >
-                    <Skeleton data-skeleton-slot="icon" className="h-7 w-7 rounded-control" />
+                    <Skeleton
+                      data-skeleton-slot="icon"
+                      className="h-4 w-4 justify-self-center"
+                    />
                     <span className="min-w-0 space-y-1.5">
                       <Skeleton data-skeleton-slot="title" className={`h-3 ${width}`} />
                       <Skeleton data-skeleton-slot="summary" className="h-3 w-24" />
@@ -85,7 +89,7 @@ export function BurnChecksView({
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface-window">
       <ScrollPane className="min-h-0" topEdgeFade>
-        <div className="mx-auto w-full max-w-4xl px-6 py-6">
+        <div className="w-full px-8 py-6">
           <h1 className="sr-only">Burn checks</h1>
           {state.error && (
             <p role="status" className="mb-3 type-callout text-system-red-text">

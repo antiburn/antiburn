@@ -374,10 +374,10 @@ export function BurnCheckTargetActions({
               type="button"
               disabled={action.applied || action.busy !== null}
               onClick={() => void prepare()}
-              className="ui-push-button gap-1.5 disabled:opacity-100"
+              className="ui-push-button burn-check-action type-callout gap-1 disabled:opacity-100"
             >
               {action.applied ? (
-                <Check size={12} className="text-system-green" aria-hidden="true" />
+                <Check size={12} className="text-share-work-text" aria-hidden="true" />
               ) : (
                 <Wrench size={12} aria-hidden="true" />
               )}
@@ -393,10 +393,10 @@ export function BurnCheckTargetActions({
               type="button"
               disabled={action.copied || action.busy !== null}
               onClick={() => void copy()}
-              className="ui-push-button gap-1.5 disabled:opacity-100"
+              className="ui-push-button burn-check-action type-callout gap-1 disabled:opacity-100"
             >
               {action.copied ? (
-                <Check size={12} className="text-system-green" aria-hidden="true" />
+                <Check size={12} className="text-share-work-text" aria-hidden="true" />
               ) : (
                 <Clipboard size={12} aria-hidden="true" />
               )}

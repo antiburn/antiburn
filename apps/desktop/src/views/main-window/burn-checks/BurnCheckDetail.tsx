@@ -46,7 +46,7 @@ function Samples({ targets }: { targets: BurnCheckTargetPayload[] }) {
         aria-expanded={open}
         aria-controls={id}
         onClick={() => setOpen((value) => !value)}
-        className="inline-flex items-center gap-1.5 rounded-control py-1 type-footnote text-label-tertiary hover:text-label-secondary active:transform-none active:opacity-100"
+        className="inline-flex items-center gap-1.5 rounded-control py-1 type-callout text-label-tertiary hover:text-label-secondary active:transform-none active:opacity-100"
       >
         Sample sessions ({samples.length})
         <ChevronDown
@@ -190,10 +190,10 @@ function CheckPromptAction({
         type="button"
         disabled={busy || copied}
         onClick={() => void copy()}
-        className="ui-push-button gap-1.5 disabled:opacity-100"
+        className="ui-push-button burn-check-action type-callout gap-1 disabled:opacity-100"
       >
         {copied ? (
-          <Check size={12} className="text-system-green" aria-hidden="true" />
+          <Check size={12} className="text-share-work-text" aria-hidden="true" />
         ) : (
           <Clipboard size={12} aria-hidden="true" />
         )}
@@ -245,7 +245,7 @@ function FixAction({
               setSelectedFindingId(null)
               setChoosing(true)
             }}
-            className="mt-2 type-footnote text-label-secondary hover:text-label"
+            className="mt-2 type-callout text-label-secondary hover:text-label"
           >
             Choose another change
           </button>
@@ -255,7 +255,7 @@ function FixAction({
           <button
             type="button"
             onClick={() => setChoosing(true)}
-            className="ui-push-button gap-1.5"
+            className="ui-push-button burn-check-action type-callout gap-1"
           >
             <Wrench size={12} aria-hidden="true" />
             Fix
@@ -267,7 +267,7 @@ function FixAction({
                   key={target.actionId}
                   type="button"
                   onClick={() => setSelectedFindingId(target.findingId)}
-                  className="ui-push-button"
+                  className="ui-push-button burn-check-action type-callout"
                 >
                   {target.display.currentValue ?? "Review change"}
                 </button>
@@ -293,8 +293,8 @@ export function BurnCheckDetail({
     new Set(targets.map(watchStatus).filter((status): status is string => status !== null)),
   )
   return (
-    <article className="px-4 py-4">
-      <p className="type-callout text-label-secondary">{CHECK_SENTENCES[detector]}</p>
+    <article className="m-4 min-w-0 rounded-control border border-separator bg-surface-card p-4">
+      <p className="type-body text-label-secondary">{CHECK_SENTENCES[detector]}</p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <CheckPromptAction
           key={targets.map((target) => target.actionId).join(":")}
@@ -305,7 +305,7 @@ export function BurnCheckDetail({
         <FixAction targets={targets} refresh={refresh} />
       </div>
       {statuses.length === 1 && (
-        <p role="status" className="mt-3 type-footnote text-label-secondary">
+        <p role="status" className="mt-3 type-callout text-label-secondary">
           {statuses[0]}
         </p>
       )}
