@@ -96,7 +96,7 @@ Check the 1100×600 default and 1000×560 minimum with light and dark themes.
 
 - The sidebar remains visible throughout resizing; no compact navigation mode appears.
 - Sessions is the main section. Settings appears at the bottom; no Quit action appears.
-- The Settings sidebar action and Command+, (Control+, on Windows/Linux) open the existing Settings window.
+- The Settings sidebar action opens the existing Settings window. Command+, (Control+, on Windows/Linux) opens it from the main window, onboarding, and popover.
 - Check readable 28px rows and independent vertical content scrolling without horizontal overflow.
 - Restore an older saved 560×420 window; it expands to at least 1000×560 when the display allows.
 - Close and reopen the main window; the selected section persists.

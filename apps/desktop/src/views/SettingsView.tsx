@@ -69,10 +69,9 @@ export function SettingsView() {
   )
   const controller = useAppSettings()
 
-  // ⌘W closes the window. The shell runs as an accessory app with no
-  // application menu, so the standard shortcut has no owner unless it is
-  // handled here. The close request takes the same path as the title-bar
-  // button, and the shell releases this renderer.
+  // Command-W closes the window. This handler supports platforms without an
+  // application menu. The close request uses the title-bar button path, and
+  // the shell releases this renderer.
   // Esc must NOT close: dismiss-on-Escape is modal behavior and a settings
   // window is not a modal. Do not "fix" this by adding Escape.
   useGlobalKeydown(true, (event) => {

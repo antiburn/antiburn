@@ -1350,16 +1350,19 @@ describe("PopoverView — window behaviour", () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("hide_popover"))
   })
 
-  it("opens Settings on the platform preferences shortcut", async () => {
-    render(<PopoverView />)
-    await screen.findByText("Wire the tray popover")
+  it.each(["metaKey", "ctrlKey"])(
+    "opens Settings with %s+comma from the popover",
+    async (modifier) => {
+      render(<PopoverView />)
+      await screen.findByText("Wire the tray popover")
 
-    fireEvent.keyDown(document, { key: ",", metaKey: true })
+      fireEvent.keyDown(document, { key: ",", [modifier]: true })
 
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("open_settings_window", { pane: null }),
-    )
-  })
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("open_settings_window", { pane: null }),
+      )
+    },
+  )
 })
 
 describe("PopoverView — floating HUD restore", () => {

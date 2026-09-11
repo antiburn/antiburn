@@ -1,10 +1,8 @@
 //! The menu-bar / system-tray item.
 //!
 //! Left click toggles the popover; right click opens a short menu. The menu
-//! carries Quit because an agent application has no Dock icon and no
-//! application menu — without it there would be no way to exit antiburn. It
-//! also carries the popover's pin, which needs a surface that survives the
-//! popover being dismissed — and the menu bar is the only one there is.
+//! keeps Quit available when no window is open. It also carries the popover's
+//! pin, which needs a surface that survives the popover being dismissed.
 //!
 //! Linux is different. The AppIndicator backend reports no click events, and
 //! every click opens the menu. So the menu's first item, Open antiburn, is what
@@ -162,6 +160,9 @@ fn pin_label(pinned: bool) -> &'static str {
 
 /// Builds the menu-bar item and wires up its click and menu handling.
 pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
+    #[cfg(target_os = "macos")]
+    install_app_menu(app)?;
+
     let menu = build_menu(app)?;
     app.manage(TrayMenu {
         pin: menu.pin,
@@ -192,6 +193,21 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
     tray.with_inner_tray_icon(|inner| inner.set_highlight_override(Some(false)))?;
 
     Ok(tray)
+}
+
+#[cfg(target_os = "macos")]
+fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
+    let menu = Menu::default(app)?;
+    let items = menu.items()?;
+    let app_menu = items
+        .first()
+        .and_then(|item| item.as_submenu())
+        .ok_or_else(|| anyhow::anyhow!("the default macOS menu has no application submenu"))?;
+    let settings_item = MenuItem::with_id(app, MENU_SETTINGS, "Settings...", true, Some("Cmd+,"))?;
+    // The tray handler receives application menu events with the same ID.
+    app_menu.insert_items(&[&settings_item, &PredefinedMenuItem::separator(app)?], 2)?;
+    app.set_menu(menu)?;
+    Ok(())
 }
 
 /// Register the tray meter after the initial full icon is visible.
@@ -660,8 +676,8 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             }
         }
         MENU_SETTINGS => {
-            // No pane in particular: the tray's Settings item is a general
-            // entry point, so it leaves the window wherever it was last.
+            // The general Settings menu actions do not select a pane. They
+            // leave the window wherever it was last.
             if let Err(error) = settings::open(app, None) {
                 ::tracing::error!(event = "settings_window_open_failed", error = %error);
             }

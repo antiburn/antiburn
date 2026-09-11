@@ -163,6 +163,8 @@ describe("OnboardingView", () => {
     expect(
       screen.queryByRole("heading", { name: "Stop hitting your token limits." }),
     ).not.toBeInTheDocument()
+    fireEvent.keyDown(document, { key: ",", ctrlKey: true })
+    expect(invoke).toHaveBeenCalledWith("open_settings_window", { pane: null })
 
     resolveSettings(SETTINGS)
     expect(
@@ -599,4 +601,23 @@ describe("OnboardingView", () => {
       screen.getByRole("heading", { name: "Stop hitting your token limits." }),
     ).toBeInTheDocument()
   })
+
+  it.each(["metaKey", "ctrlKey"])(
+    "opens Settings with %s+comma during onboarding",
+    async (modifier) => {
+      render(<OnboardingView />)
+      await screen.findByRole("heading", {
+        name: "Stop hitting your token limits.",
+      })
+
+      fireEvent.keyDown(document, { key: ",", [modifier]: true })
+
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith("open_settings_window", { pane: null }),
+      )
+      expect(
+        invoke.mock.calls.filter(([command]) => command === "open_settings_window"),
+      ).toHaveLength(1)
+    },
+  )
 })
