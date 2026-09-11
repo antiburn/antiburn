@@ -166,6 +166,24 @@ describe("UsageLimitsBar — the ring row", () => {
 })
 
 describe("UsageLimitsBar — the disclosure", () => {
+  it("keeps the compact spacing above the Burn Checks summary", () => {
+    const { rerender } = bar()
+    expect(screen.getByTestId("usage-limits-bar").firstElementChild).toHaveClass(
+      "pt-2.5",
+      "pb-1.5",
+    )
+
+    rerender(
+      <UsageLimitsBar
+        live={liveSummary()}
+        expanded
+        onToggleExpanded={vi.fn()}
+        refreshing={false}
+      />,
+    )
+    expect(screen.getByRole("region", { name: "Usage limits" })).toHaveClass("pt-3", "pb-1")
+  })
+
   it("marks itself pressed only while the meters are open", () => {
     const { rerender } = bar()
     const collapsed = screen.getByRole("button", { name: "Expand usage limits" })

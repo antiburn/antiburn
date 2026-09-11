@@ -11,6 +11,7 @@ import type { SessionHygienePayload } from "../../lib/insightsIpc"
 import {
   agentDisplayName,
   agentProvider,
+  type AgentIconAppearance,
   type AgentSurface,
 } from "../../lib/presentation/agents"
 import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
@@ -33,7 +34,7 @@ import { SessionStatusBar } from "./SessionStatusBar"
 import { SessionTooltipOwner } from "./SessionTooltipOwner"
 import { type SessionCostBadgeProps } from "./metrics/SessionCostBadge"
 import { ScrollPane } from "../ui/ScrollPane"
-import { SegmentedControl } from "../ui/SegmentedControl"
+import { ListDisplayToolbar } from "../ui/ListDisplayToolbar"
 import { countGroupedItems, groupActivityByDay } from "../activity/activityFeedGrouping"
 import { useActivityGroupPinning, type ViewportRef } from "../activity/useActivityGroupPinning"
 import type {
@@ -50,6 +51,7 @@ type SessionAgentIconRenderer = (
   slug: string,
   size: number,
   surface?: AgentSurface,
+  appearance?: AgentIconAppearance,
 ) => ReactNode
 
 /** One coding session in the list. */
@@ -270,6 +272,7 @@ interface SessionRowProps {
   active?: boolean
   renderAgentIcon?: SessionAgentIconRenderer | undefined
   wslIcon?: ReactNode | undefined
+  showRepository?: boolean | undefined
   showCost?: boolean
   limitBadge?:
     | {
@@ -300,26 +303,108 @@ function SessionRow({
   active = true,
   renderAgentIcon,
   wslIcon,
+  showRepository = false,
   limitBadge,
   showCost = true,
 }: SessionRowProps) {
   const selectionMode = !!entry.sessionId && !!onSelect
   const clickable = !!entry.sessionId && (!!onOpen || selectionMode)
   const primary = primaryLine(entry)
-  const hasRepo = entry.repo !== ""
   const modelRuns = entry.modelRuns ?? []
   const modelPairs = modelRunShortPairs(modelRuns)
+  const modelNames = modelRunNames(modelRuns)
+  const firstModel = modelPairs[0]
+  const additionalModelCount = Math.max(0, modelPairs.length - 1)
+  const hasContextAnchor = modelPairs.length > 0
+  const hasRepo =
+    entry.repo !== "" && (showRepository || (!hasContextAnchor && !renderAgentIcon))
+  const repositoryLabel = entry.repo
+    ? `${entry.repo}${entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}`
+    : ""
+  const compactTrailingTime = hasRepo && repositoryLabel.length > 18
   const hygieneChecks = sessionHygieneChecks(hygiene)
+  const hasContextDetails = !!entry.branch || !!entry.wslDistro
+  const hasContextIdentity = hasContextAnchor || hasRepo || hasContextDetails
+  const contextDescription = [
+    `Session source: ${agentDisplayName(entry.agent)}.`,
+    modelNames.length > 0 ? `Models: ${modelNames.join(", ")}.` : "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+  const contextTooltip = (
+    <div className="flex min-w-[180px] flex-col gap-y-2" data-session-context-tooltip="">
+      <div className="flex items-center gap-x-2">
+        {renderAgentIcon && (
+          <span
+            className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
+            aria-hidden="true"
+          >
+            {renderAgentIcon(entry.agent, 16, entry.surface, "neutral")}
+          </span>
+        )}
+        <span className="min-w-0 truncate type-callout font-medium! text-label">
+          {agentDisplayName(entry.agent)}
+        </span>
+      </div>
+
+      {modelNames.length > 0 && (
+        <div className="flex flex-col gap-y-0.5">
+          <span className="type-caption text-label-tertiary">Models</span>
+          {modelNames.map((name) => (
+            <span key={name} className="font-mono type-footnote text-label">
+              {name}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+  const titleContent = (
+    <div className="relative z-10 flex min-w-0 flex-1 items-center gap-x-1">
+      <TruncatedText
+        // One ink for every title. The shimmer overlay is the only
+        // difference an active session shows.
+        className="min-w-0 type-body font-medium! text-label"
+        text={primary}
+        lines={1}
+        shimmer={entry.isActive && active}
+        scrollOnHover
+      />
+
+      {entry.hasForkParent && (
+        <Tooltip label="Forked from another session" delayMs={500}>
+          <span
+            className="inline-flex shrink-0 text-label-tertiary"
+            aria-label="Forked from another session"
+          >
+            <GitFork size={12} strokeWidth={2} aria-hidden="true" />
+          </span>
+        </Tooltip>
+      )}
+      {!!entry.forkChildCount && (
+        <Tooltip
+          label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
+          delayMs={500}
+        >
+          <span
+            className="inline-flex shrink-0 text-label-tertiary"
+            aria-label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
+          >
+            <GitBranchPlus size={12} strokeWidth={2} aria-hidden="true" />
+          </span>
+        </Tooltip>
+      )}
+    </div>
+  )
 
   return (
     <div
       className={cn(
-        "group relative",
-        "w-full grid grid-cols-[14px_minmax(0,1fr)] gap-x-2 gap-y-1",
+        "session-card group relative isolate overflow-hidden",
+        "w-full grid grid-cols-[14px_minmax(0,1fr)] gap-x-2 gap-y-0.5",
         "items-center",
         "rounded-[var(--radius-popover)] px-3 py-3",
-        selected ? "bg-surface-selected/60" : "bg-surface-card/50",
-        "transition-colors duration-[var(--duration-fast)] ease-out",
+        selected ? "bg-surface-selected/60" : "bg-session-card",
         entry.isActive && active && "activity-row-active",
         clickable && "cursor-pointer",
         clickable &&
@@ -364,7 +449,17 @@ function SessionRow({
     >
       {entry.isActive && <span className="sr-only">Active session</span>}
 
-      <div className="row-1 col-2">
+      {renderAgentIcon && (
+        <span
+          className="session-vendor-watermark pointer-events-none absolute -right-1.5 -bottom-1.5 z-0 inline-flex h-10 w-10 items-center justify-center"
+          aria-hidden="true"
+          data-session-vendor-watermark=""
+        >
+          {renderAgentIcon(entry.agent, 40, entry.surface, "neutral")}
+        </span>
+      )}
+
+      <div className="relative z-10 col-span-full">
         <SessionStatusBar
           checks={hygieneChecks}
           evidenceState={hygiene.evidenceState}
@@ -373,83 +468,42 @@ function SessionRow({
         />
       </div>
 
-      <span className="row-2 col-1 h-full pt-[3px]">
-        {renderAgentIcon?.(entry.agent, 14, entry.surface)}
-      </span>
+      <div className="col-2 min-w-0">{titleContent}</div>
 
-      <div className="col-2 flex min-w-0 items-center gap-x-1">
-        <TruncatedText
-          // One ink for every title. The shimmer overlay is the only
-          // difference an active session shows.
-          className="min-w-0 mt-px mb-0.5 type-body-large text-label"
-          text={primary}
-          lines={2}
-          shimmer={entry.isActive && active}
-        />
-
-        {entry.hasForkParent && (
-          <Tooltip label="Forked from another session" delayMs={500}>
-            <span
-              className="inline-flex shrink-0 text-label-tertiary"
-              aria-label="Forked from another session"
-            >
-              <GitFork size={12} strokeWidth={2} aria-hidden="true" />
-            </span>
-          </Tooltip>
-        )}
-        {!!entry.forkChildCount && (
-          <Tooltip
-            label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
-            delayMs={500}
-          >
-            <span
-              className="inline-flex shrink-0 text-label-tertiary"
-              aria-label={`${entry.forkChildCount} direct ${entry.forkChildCount === 1 ? "fork" : "forks"}`}
-            >
-              <GitBranchPlus size={12} strokeWidth={2} aria-hidden="true" />
-            </span>
-          </Tooltip>
-        )}
-      </div>
-
-      {modelPairs.length > 0 && (
-        <div className="col-2 min-w-0 space-y-px">
-          <div
-            className="min-w-0 max-w-full truncate type-callout text-label-tertiary"
-            title={modelRunNames(modelRuns).join("\n")}
-          >
-            {modelPairs.map((pair, index) => (
-              <span key={`${pair.model}/${pair.thinkingMode ?? ""}`}>
-                {index > 0 && " · "}
-                <span className="font-medium">{pair.model}</span>
-                {pair.thinkingMode && (
-                  <span className="type-caption"> {pair.thinkingMode}</span>
-                )}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {(entry.timestamp || hasRepo || entry.branch || entry.wslDistro) && (
-        <div className="col-2 w-full flex justify-between">
-          {(hasRepo || entry.branch || entry.wslDistro) && (
-            <div className="flex min-w-0 items-baseline gap-x-2">
-              {hasRepo && (
-                <Tooltip
-                  label={
-                    entry.additionalRepos?.length
-                      ? `Also observed: ${entry.additionalRepos.join(", ")}`
-                      : entry.repo
-                  }
-                >
-                  <span className="min-w-0 truncate type-callout text-label-tertiary">
-                    {entry.repo}
-                    {entry.additionalRepos?.length ? ` +${entry.additionalRepos.length}` : ""}
+      {(hasContextIdentity || entry.timestamp) && (
+        <div
+          className="relative z-10 col-2 flex w-full min-w-0 items-baseline gap-x-2"
+          data-session-context-row=""
+        >
+          {hasContextAnchor && (
+            <Tooltip label={contextTooltip}>
+              <div
+                aria-label={contextDescription}
+                className="flex shrink-0 items-baseline gap-x-1.5 type-callout text-label-tertiary"
+              >
+                {firstModel && (
+                  <span className="shrink-0 whitespace-nowrap">
+                    <span className="font-semibold! text-label-secondary">
+                      {firstModel.model}
+                    </span>
+                    {firstModel.thinkingMode && <span> {firstModel.thinkingMode}</span>}
                   </span>
-                </Tooltip>
-              )}
+                )}
 
+                {additionalModelCount > 0 && (
+                  <span
+                    className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-surface-tertiary/40 px-1 font-mono type-metadata font-medium! tabular-nums text-label-tertiary"
+                    data-additional-model-count=""
+                  >
+                    +{additionalModelCount}
+                  </span>
+                )}
+              </div>
+            </Tooltip>
+          )}
+
+          {hasContextDetails && (
+            <div className="flex min-w-0 items-center gap-x-1.5 overflow-hidden">
               <WslOriginBadge
                 distro={entry.wslDistro}
                 {...(wslIcon ? { icon: wslIcon } : {})}
@@ -464,15 +518,33 @@ function SessionRow({
             </div>
           )}
 
-          {entry.timestamp && (
-            <time
-              dateTime={entry.timestamp}
-              aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
-              // The host row reveals the timestamp on hover.
-              className="tabular-nums type-footnote font-mono text-label-tertiary opacity-0 transition-opacity duration-[var(--duration-fast)] group-hover:opacity-100"
+          {(hasRepo || entry.timestamp) && (
+            <div
+              className="session-trailing-metadata ml-auto flex min-w-0 flex-1 items-baseline justify-end gap-x-0.5 font-mono type-metadata tabular-nums text-label-tertiary"
+              data-session-trailing-metadata=""
             >
-              {relativeTime(entry.timestamp)}
-            </time>
+              {hasRepo && <span className="min-w-0 truncate">{repositoryLabel}</span>}
+
+              {hasRepo && entry.timestamp && (
+                <span className="shrink-0" aria-hidden="true">
+                  ·
+                </span>
+              )}
+
+              {entry.timestamp && (
+                <time
+                  dateTime={entry.timestamp}
+                  aria-label={`Last activity ${relativeTime(entry.timestamp)}`}
+                  // The host row reveals the timestamp on hover.
+                  className="shrink-0 whitespace-nowrap"
+                >
+                  {relativeTime(
+                    entry.timestamp,
+                    compactTrailingTime ? { compact: true } : undefined,
+                  )}
+                </time>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -533,6 +605,14 @@ export function SessionList({
   }))
 
   const groups = groupActivityByDay(items, { days, ...(now ? { now } : {}) })
+  const visibleRepositories = new Set<string>()
+  for (const group of groups) {
+    for (const { entry } of group.items) {
+      if (entry.repo) visibleRepositories.add(entry.repo)
+      for (const repo of entry.additionalRepos ?? []) visibleRepositories.add(repo)
+    }
+  }
+  const showRepositories = visibleRepositories.size > 1
   const visibleCount = countGroupedItems(groups)
   let rowPosition = 0
   const virtualItems: VirtualSessionItem[] = groups.flatMap((group, groupIndex) => [
@@ -732,34 +812,32 @@ export function SessionList({
         {visibleCount === 0 ? resolvedEmptyTitle : ""}
       </span>
 
-      {topLabel && (
+      {onBadgeMetricChange && (
+        <ListDisplayToolbar
+          {...(topLabel ? { label: topLabel } : {})}
+          options={[
+            { value: "cost", label: "Cost" },
+            { value: "weeklyPercent", label: "Week %" },
+            ...(fiveHourAvailable
+              ? [{ value: "fiveHourPercent" as const, label: "5h %" }]
+              : []),
+          ]}
+          value={selectedMetric}
+          onChange={onBadgeMetricChange}
+          ariaLabel="Session metric"
+          dragRegion={draggableHeader}
+        />
+      )}
+
+      {topLabel && !onBadgeMetricChange && (
         <div
           data-testid="activity-pinned-group-label"
           data-tauri-drag-region={draggableHeader ? "deep" : undefined}
           // The inset matches the cards, so the label sits on their left
           // edge. The type matches the usage view's group labels.
-          className="mb-1 flex h-7 shrink-0 items-center justify-between gap-2 px-3 type-caption font-medium tracking-wide uppercase text-label-tertiary"
+          className="mb-1 flex h-7 shrink-0 items-center px-3 type-caption font-medium text-label-tertiary"
         >
           <span>{topLabel}</span>
-          {onBadgeMetricChange && (
-            <SegmentedControl
-              options={[
-                { value: "cost", label: "$" },
-                { value: "weeklyPercent", label: "week" },
-                ...(fiveHourAvailable
-                  ? [{ value: "fiveHourPercent" as const, label: "5h" }]
-                  : []),
-              ]}
-              value={selectedMetric}
-              onChange={onBadgeMetricChange}
-              ariaLabel="Session badge metric"
-              /* The same picker treatment as the section picker over the
-                 session detail: a pill track with no outline, and a solid
-                 neutral chip for the selected metric. */
-              variant="native-tabs"
-              className="ui-segmented-solid normal-case rounded-full! bg-surface-secondary! [&_button]:rounded-full! [&_button]:px-2.5!"
-            />
-          )}
         </div>
       )}
 
@@ -805,9 +883,10 @@ export function SessionList({
                               : {})}
                             className={cn(
                               "absolute top-0 left-0 w-full",
-                              ((virtualItem.type === "heading" && virtualItem.groupIndex > 0) ||
-                                (virtualItem.type === "row" && virtualItem.itemIndex > 0)) &&
+                              virtualItem.type === "heading" &&
+                                virtualItem.groupIndex > 0 &&
                                 "pt-2",
+                              virtualItem.type === "row" && virtualItem.itemIndex > 0 && "pt-3",
                             )}
                             style={{ transform: `translateY(${measuredItem.start}px)` }}
                           >
@@ -818,7 +897,7 @@ export function SessionList({
                                 className={
                                   virtualItem.groupIndex === 0
                                     ? "sr-only"
-                                    : "py-1 type-caption font-medium tracking-wide uppercase text-label-tertiary"
+                                    : "py-1 type-caption font-medium text-label-tertiary"
                                 }
                               >
                                 {group.label}
@@ -860,6 +939,7 @@ export function SessionList({
                                   : {})}
                                 {...(renderAgentIcon ? { renderAgentIcon } : {})}
                                 {...(wslIcon ? { wslIcon } : {})}
+                                showRepository={showRepositories}
                                 {...(selectedMetric !== "cost"
                                   ? {
                                       limitBadge: sessionLimitBadge(

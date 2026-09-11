@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState, useSyncExternalStore } from "react"
 
-import { AlertTriangle, Settings } from "lucide-react"
+import { AlertTriangle } from "lucide-react"
 import type { VirtualItem } from "@tanstack/react-virtual"
 
 import { SessionList } from "../components/session/SessionList"
@@ -19,7 +19,6 @@ import {
   noteInteraction,
   openMainWindowSection,
   openMainWindowSession,
-  openGithubRepo,
   openSettingsWindow,
 } from "../lib/ipc"
 import {
@@ -100,47 +99,6 @@ function ActivitySkeleton() {
           <Skeleton className="h-3 w-28" />
         </div>
       ))}
-    </div>
-  )
-}
-
-/**
- * The activity surface's bottom bar shows the app name and version.
- * The name also carries the surface's focus heading, and opens the
- * project's GitHub repository when clicked.
- * The settings control opens the standalone Settings window.
- */
-function PopoverFooter({
-  appVersion,
-  debugBuild,
-  onOpenSettings,
-}: {
-  appVersion: string | null
-  debugBuild: boolean
-  onOpenSettings: () => void
-}) {
-  const versionLabel = appVersion ? ` v${appVersion}${debugBuild ? " debug" : ""}` : ""
-
-  return (
-    <div className="flex h-11 shrink-0 items-center gap-2 border-t border-separator px-4">
-      {/* Focused by the popover when this surface takes over, so a keyboard
-          or screen-reader user lands in the view rather than on <body>. */}
-      <button
-        type="button"
-        data-view-heading
-        onClick={() => void openGithubRepo()}
-        className="type-caption whitespace-nowrap text-label-secondary outline-none hover:underline"
-      >
-        antiburn{versionLabel}
-      </button>
-      <button
-        type="button"
-        onClick={onOpenSettings}
-        aria-label="Open settings"
-        className="-mr-0.5 ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-label-secondary hover:bg-surface-hover"
-      >
-        <Settings size={14} strokeWidth={1.75} aria-hidden="true" />
-      </button>
     </div>
   )
 }
@@ -241,16 +199,40 @@ export function PopoverView() {
             step with the list scroll. */}
         <div ref={activityHeaderWrap} className="shrink-0 overflow-hidden">
           <div>
+            <div
+              data-testid="checks-summary-overview"
+              className="shrink-0 px-[var(--space-sm)] pt-[var(--space-md)]"
+            >
+              <ChecksSummary
+                active={
+                  peekTrigger.target?.kind === "checks" && peekTrigger.activation !== "idle"
+                }
+                presentation={checks}
+                reportUnavailable={state.checksUnavailable}
+                onPreview={(anchor) => {
+                  if (!checks) return
+                  void peekTriggers.hover({ kind: "checks" }, anchor, {
+                    kind: "checks",
+                    presentation: checks,
+                    pendingEvidence: state.checksReport?.pendingEvidence ?? 0,
+                  })
+                }}
+                onLeave={() => void peekTriggers.leave()}
+                onOpen={() => {
+                  void peekTriggers.leave()
+                  void openMainWindowSection("burnChecks")
+                }}
+              />
+            </div>
             {state.usage && (
               <UsageSpendSummary
                 totals={state.usage.totals ?? EMPTY_USAGE_WINDOWS}
-                compact
                 showApiPricingCaveat={state.liveUsage.providers.some(
                   ({ plan }) => plan !== null,
                 )}
               />
             )}
-            <div className="divide-y divide-separator border-b border-separator">
+            <div>
               <UsageLimitsBar
                 live={state.liveUsage}
                 expanded={limitsExpanded}
@@ -283,29 +265,8 @@ export function PopoverView() {
                     : null
                 }
               />
-              <div className="px-2 py-1">
-                <ChecksSummary
-                  active={
-                    peekTrigger.target?.kind === "checks" && peekTrigger.activation !== "idle"
-                  }
-                  presentation={checks}
-                  reportUnavailable={state.checksUnavailable}
-                  onPreview={(anchor) => {
-                    if (!checks) return
-                    void peekTriggers.hover({ kind: "checks" }, anchor, {
-                      kind: "checks",
-                      presentation: checks,
-                      pendingEvidence: state.checksReport?.pendingEvidence ?? 0,
-                    })
-                  }}
-                  onLeave={() => void peekTriggers.leave()}
-                  onOpen={() => {
-                    void peekTriggers.leave()
-                    void openMainWindowSection("burnChecks")
-                  }}
-                />
-              </div>
             </div>
+            <div className="mx-3 border-b border-separator" aria-hidden="true" />
           </div>
         </div>
 
@@ -349,18 +310,15 @@ export function PopoverView() {
             />
           )}
         </div>
-
-        <PopoverFooter
-          appVersion={state.appVersion}
-          debugBuild={state.debugBuild}
-          onOpenSettings={() => void openSettingsWindow()}
-        />
       </div>
     )
   }
 
   return (
     <div ref={focusHeading} className="h-full">
+      <h1 data-view-heading tabIndex={-1} className="sr-only outline-none">
+        Activity
+      </h1>
       {body()}
     </div>
   )

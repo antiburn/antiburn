@@ -118,7 +118,7 @@ export function UsageLimitsBar({
   return (
     <div data-testid="usage-limits-bar" className="relative shrink-0">
       {!expanded && (
-        <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
+        <div className="flex min-w-0 items-center gap-[var(--space-md)] pt-2.5 pr-3 pb-1.5 pl-[var(--space-lg)]">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             {limited.map(({ reading, key }) => (
               <ProviderRadial
@@ -149,7 +149,7 @@ export function UsageLimitsBar({
           aria-label="Usage limits"
           // The top space keeps the disclosure near its closed position.
           // The group padding gives each hover highlight clear space.
-          className="space-y-1 px-2 pt-3 pb-2"
+          className="space-y-1 px-2 pt-3 pb-1"
         >
           {limited.map(({ reading, key }, index) => (
             <ProviderGroup
@@ -193,8 +193,7 @@ function accountDisplayName(
 /**
  * The chart-icon disclosure, and the refresh spinner that sits beside it.
  *
- * The same size, weight, and grey as the settings gear in the popover footer
- * (`PopoverView.tsx`), and the same in both states. The control marks itself
+ * The control keeps the same size, weight, and grey in both states. It marks itself
  * pressed for assistive technology, but the meters under it are the sighted
  * answer to "is it open", and an orange glyph competed with the orange arcs
  * and segments it sits among.
@@ -234,10 +233,9 @@ function LimitsDisclosure({
         aria-pressed={expanded}
         aria-controls={expanded ? regionId : undefined}
         aria-label={expanded ? "Collapse usage limits" : "Expand usage limits"}
-        // The pseudo-element extends the hit area past the glyph box. It
-        // stops at the gap before the last ring, so the two do not overlap.
+        // The centered hit area measures 40px without changing the visible button.
         className={cn(
-          "relative flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-label-secondary transition-colors duration-[var(--duration-fast)] before:absolute before:-inset-x-2 before:-inset-y-2.5 before:content-[''] hover:bg-surface-hover",
+          "relative flex h-7 w-7 shrink-0 items-center justify-center rounded-control text-label-secondary transition-colors duration-[var(--duration-fast)] before:absolute before:top-1/2 before:left-1/2 before:size-[calc(var(--space-xl)*2)] before:-translate-x-1/2 before:-translate-y-1/2 before:content-[''] hover:bg-surface-hover",
           compact && "-my-1.5",
         )}
       >
@@ -351,7 +349,7 @@ function ProviderRadial({
       onMouseLeave={() => onHover?.(null, null)}
       data-state={activation ?? "idle"}
       title={title}
-      className="flex shrink-0 items-center gap-1.5 rounded-full p-1 transition-[background-color] duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
+      className="flex shrink-0 items-center gap-1.5 rounded-full px-[var(--space-xs)] py-1 transition-[background-color] duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
       aria-label={ariaLabel}
     >
       <UsageRing
@@ -391,7 +389,7 @@ function UnavailableRadial({ entry }: { entry: UnavailableLiveProvider }) {
   return (
     <div
       data-testid="usage-limits-unavailable"
-      className="shrink-0 p-1"
+      className="shrink-0 px-[var(--space-xs)] py-1"
       title={`${entry.displayName} — ${reason}`}
       aria-label={`${entry.displayName}, usage unavailable (${reason})`}
     >

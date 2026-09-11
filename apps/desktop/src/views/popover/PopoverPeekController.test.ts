@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { PopoverPeekData } from "../../lib/popoverPeekIpc"
+import { emptyBurnCheckPresentation } from "../../lib/presentation/burnChecks"
 import { PopoverPeekController } from "./PopoverPeekController"
 
 const analytics = vi.hoisted(() => ({
@@ -67,6 +68,7 @@ function checksData(): PopoverPeekData {
       unavailable: [],
       refreshUnavailable: false,
       estimate: { tokenBurnBasisPoints: null },
+      burnChecks: emptyBurnCheckPresentation("pending"),
     },
   }
 }

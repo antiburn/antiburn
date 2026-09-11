@@ -1,8 +1,9 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import type { BurnCheckDetectorId, ChecksCategoryPayload } from "../../lib/insightsIpc"
 import type { ChecksPresentation } from "../../lib/presentation/checks"
+import { aggregateBurnCheckPresentation } from "../../lib/presentation/burnChecks"
 import { ChecksPeek, ChecksSummary } from "./ChecksView"
 
 function category(
@@ -38,6 +39,12 @@ const presentation: ChecksPresentation = {
   wins,
   unavailable: [],
   refreshUnavailable: false,
+  burnChecks: aggregateBurnCheckPresentation({
+    pendingEvidence: 0,
+    evidenceSettled: true,
+    estimatedTokenBurnBasisPoints: 1_625,
+    categories: [failure, ...wins],
+  }),
   estimate: { tokenBurnBasisPoints: 1_625 },
 }
 
@@ -54,16 +61,40 @@ describe("Checks", () => {
       />,
     )
 
-    expect(screen.getByText("16% token burn").closest(".text-system-red-text")).not.toBeNull()
+    expect(screen.getByRole("meter")).toHaveAttribute("aria-valuetext", "16% token burn")
     expect(screen.queryByText("Last 30 days")).not.toBeInTheDocument()
-    const trigger = screen.getByRole("button", { name: /Burn checks/ })
+    const trigger = screen.getByTestId("burn-check-headline").closest("button")!
+    expect(trigger).toHaveAccessibleName(
+      `All burn checks. Last 30 days. ${presentation.burnChecks.accessibleDescription} 16% token burn.`,
+    )
     fireEvent.mouseEnter(trigger)
     fireEvent.focus(trigger)
     expect(onPreview).toHaveBeenCalledTimes(2)
     expect(onPreview).toHaveBeenLastCalledWith({ top: 0, height: 0 })
   })
 
-  it("shows the aggregate token burn estimate in the main popover", () => {
+  it("opens the main view from the summary without capturing flame interactions", () => {
+    const onOpen = vi.fn()
+    render(
+      <ChecksSummary
+        active={false}
+        presentation={presentation}
+        reportUnavailable={false}
+        onPreview={vi.fn()}
+        onLeave={vi.fn()}
+        onOpen={onOpen}
+      />,
+    )
+    const trigger = screen.getByRole("button", { name: /Burn Checks/i })
+    const meter = screen.getByRole("meter")
+    expect(trigger).not.toContainElement(meter)
+    fireEvent.click(meter)
+    expect(onOpen).not.toHaveBeenCalled()
+    fireEvent.click(trigger)
+    expect(onOpen).toHaveBeenCalledOnce()
+  })
+
+  it("shows the aggregate token burn as four flames in the main popover", () => {
     const { container } = render(
       <ChecksSummary
         active={false}
@@ -74,8 +105,119 @@ describe("Checks", () => {
       />,
     )
 
-    expect(screen.getByText("16% token burn")).toBeInTheDocument()
-    expect(container.querySelectorAll(".text-roll")).toHaveLength(1)
+    expect(screen.getByRole("meter")).toHaveAttribute("aria-valuenow", "16.25")
+    expect(container.querySelectorAll("mask .lucide-flame")).toHaveLength(4)
+    expect(container.querySelectorAll(".text-roll")).toHaveLength(0)
+    expect(container.firstElementChild).toHaveAttribute("data-tone", "failure")
+    expect(container.firstElementChild).toHaveClass("rounded-control", "bg-surface-card/50")
+  })
+
+  it("uses failure, pass, and neutral border tones from assessed outcomes", () => {
+    const passedCategory = category("sessionsOverDepth")
+    const passedPresentation: ChecksPresentation = {
+      failures: [],
+      wins: [passedCategory],
+      unavailable: [],
+      refreshUnavailable: false,
+      burnChecks: aggregateBurnCheckPresentation({
+        pendingEvidence: 0,
+        evidenceSettled: true,
+        estimatedTokenBurnBasisPoints: 0,
+        categories: [passedCategory],
+      }),
+      estimate: { tokenBurnBasisPoints: 0 },
+    }
+    const partialCategory = category("sessionsOverDepth", { clean: 8, unavailable: 4 })
+    const partialPresentation: ChecksPresentation = {
+      ...passedPresentation,
+      wins: [partialCategory],
+      burnChecks: aggregateBurnCheckPresentation({
+        pendingEvidence: 0,
+        evidenceSettled: true,
+        estimatedTokenBurnBasisPoints: 0,
+        categories: [partialCategory],
+      }),
+    }
+    const unassessedCategory = category("sessionsOverDepth", {
+      clean: 0,
+      unavailable: 12,
+      estimatedTokenBurnBasisPoints: null,
+    })
+    const unassessedPresentation: ChecksPresentation = {
+      failures: [],
+      wins: [],
+      unavailable: [unassessedCategory],
+      refreshUnavailable: false,
+      burnChecks: aggregateBurnCheckPresentation({
+        pendingEvidence: 0,
+        evidenceSettled: true,
+        estimatedTokenBurnBasisPoints: null,
+        categories: [unassessedCategory],
+      }),
+      estimate: { tokenBurnBasisPoints: null },
+    }
+    const props = {
+      active: false,
+      reportUnavailable: false,
+      onPreview: vi.fn(),
+      onLeave: vi.fn(),
+    }
+    const { container, rerender } = render(
+      <ChecksSummary {...props} presentation={presentation} />,
+    )
+    expect(container.firstElementChild).toHaveAttribute("data-tone", "failure")
+
+    rerender(<ChecksSummary {...props} presentation={passedPresentation} />)
+    expect(container.firstElementChild).toHaveAttribute("data-tone", "pass")
+
+    rerender(<ChecksSummary {...props} presentation={partialPresentation} />)
+    expect(container.firstElementChild).toHaveAttribute("data-tone", "pass")
+
+    rerender(<ChecksSummary {...props} presentation={unassessedPresentation} />)
+    expect(container.firstElementChild).toHaveAttribute("data-tone", "neutral")
+
+    rerender(<ChecksSummary {...props} presentation={null} />)
+    expect(container.firstElementChild).toHaveAttribute("data-tone", "neutral")
+
+    rerender(<ChecksSummary {...props} presentation={null} reportUnavailable />)
+    expect(container.firstElementChild).toHaveAttribute("data-tone", "neutral")
+
+    rerender(
+      <ChecksSummary
+        {...props}
+        presentation={{
+          ...presentation,
+          refreshUnavailable: true,
+          burnChecks: aggregateBurnCheckPresentation(
+            {
+              pendingEvidence: 0,
+              evidenceSettled: false,
+              estimatedTokenBurnBasisPoints: 1_625,
+              categories: [failure, ...wins],
+            },
+            true,
+          ),
+        }}
+      />,
+    )
+    expect(container.firstElementChild).toHaveAttribute("data-tone", "failure")
+  })
+
+  it("omits the flame meter when the estimate is unavailable", () => {
+    render(
+      <ChecksSummary
+        active={false}
+        presentation={{ ...presentation, estimate: { tokenBurnBasisPoints: null } }}
+        reportUnavailable={false}
+        onPreview={vi.fn()}
+        onLeave={vi.fn()}
+      />,
+    )
+
+    expect(screen.queryByRole("meter")).not.toBeInTheDocument()
+    expect(screen.getByTestId("burn-check-headline").closest("button")).toHaveAccessibleName(
+      `All burn checks. Last 30 days. ${presentation.burnChecks.accessibleDescription}`,
+    )
   })
 
   it("shows a positive sub-percent fallback without rounding it to zero", () => {
@@ -89,7 +231,43 @@ describe("Checks", () => {
       />,
     )
 
-    expect(screen.getByText("<1% token burn").closest(".text-system-yellow")).not.toBeNull()
+    expect(screen.getByRole("meter")).toHaveAttribute("aria-valuetext", "<1% token burn")
+    expect(screen.getByRole("meter")).toHaveAttribute("aria-valuenow", "0.01")
+  })
+
+  it("inspects flames without opening a competing companion", async () => {
+    const onPreview = vi.fn()
+    const onLeave = vi.fn()
+    render(
+      <ChecksSummary
+        active={false}
+        presentation={presentation}
+        reportUnavailable={false}
+        onPreview={onPreview}
+        onLeave={onLeave}
+      />,
+    )
+    const meter = screen.getByRole("meter")
+    fireEvent.mouseEnter(meter)
+    expect(onPreview).not.toHaveBeenCalled()
+    expect(onLeave).toHaveBeenCalledOnce()
+
+    fireEvent.mouseLeave(meter, {
+      relatedTarget: screen.getByTestId("burn-check-headline"),
+    })
+    expect(onPreview).toHaveBeenCalledOnce()
+
+    fireEvent.focus(meter)
+    expect(onPreview).toHaveBeenCalledOnce()
+    expect(onLeave).toHaveBeenCalledTimes(2)
+    const tooltip = await screen.findByRole("tooltip")
+    expect(within(tooltip).getByText("16% token burn")).toHaveClass(
+      "text-burn-check-failure-text",
+      "font-mono",
+      "type-callout",
+    )
+    expect(tooltip).toHaveTextContent("Estimated share of tokens spent on avoidable work.")
+    expect(tooltip).toHaveTextContent("Each full flame represents 25% token burn.")
   })
 
   it("conceals only after both hover and focus leave", () => {
@@ -104,7 +282,7 @@ describe("Checks", () => {
       />,
     )
     const summary = container.firstElementChild!
-    const trigger = screen.getByRole("button", { name: /Burn checks/ })
+    const trigger = screen.getByTestId("burn-check-headline").closest("button")!
     fireEvent.mouseEnter(summary)
     fireEvent.focus(trigger)
     fireEvent.mouseLeave(summary)
@@ -137,8 +315,9 @@ describe("Checks", () => {
         onLeave={vi.fn()}
       />,
     )
-    const summary = screen.getByRole("button", { name: /Burn checks/ })
+    const summary = screen.getByText("Running Burn Checks…").closest("[aria-busy]")
     expect(summary).toBeDisabled()
+    expect(screen.queryByRole("meter")).not.toBeInTheDocument()
   })
 
   it("ends the loading state when the report is unavailable", () => {
@@ -151,8 +330,10 @@ describe("Checks", () => {
         onLeave={vi.fn()}
       />,
     )
-    expect(screen.getByText("Checks unavailable")).toBeInTheDocument()
-    expect(screen.queryByText("Checking local sessions…")).not.toBeInTheDocument()
+    const headline = screen.getByText("Burn Checks unavailable")
+    expect(headline).toBeInTheDocument()
+    expect(headline.closest("button")).toBeDisabled()
+    expect(screen.queryByText("Running Burn Checks…")).not.toBeInTheDocument()
   })
 
   it("shows floored token burn estimates and every confirmed pass in preview mode", () => {
@@ -255,7 +436,7 @@ describe("Checks", () => {
     }
   })
 
-  it("animates changing summary and anchored token estimates", () => {
+  it("updates the flame value and retains animated estimates in the companion", () => {
     const { container, rerender } = render(
       <ChecksSummary
         active={false}
@@ -265,7 +446,7 @@ describe("Checks", () => {
         onLeave={vi.fn()}
       />,
     )
-    expect(container.querySelector(".text-roll-sr")).toHaveTextContent("16% token burn")
+    expect(screen.getByRole("meter")).toHaveAttribute("aria-valuetext", "16% token burn")
 
     rerender(
       <ChecksSummary
@@ -276,8 +457,8 @@ describe("Checks", () => {
         onLeave={vi.fn()}
       />,
     )
-    expect(container.querySelector(".text-roll-sr")).toHaveTextContent("15% token burn")
-    expect(container.querySelectorAll(".text-roll-in").length).toBeGreaterThan(0)
+    expect(screen.getByRole("meter")).toHaveAttribute("aria-valuetext", "15% token burn")
+    expect(container.querySelectorAll(".text-roll-in")).toHaveLength(0)
 
     rerender(
       <ChecksPeek
@@ -317,6 +498,12 @@ describe("Checks", () => {
           wins,
           unavailable: [],
           refreshUnavailable: false,
+          burnChecks: aggregateBurnCheckPresentation({
+            pendingEvidence: 0,
+            evidenceSettled: true,
+            estimatedTokenBurnBasisPoints: 0,
+            categories: wins,
+          }),
           estimate: { tokenBurnBasisPoints: 0 },
         }}
       />,
@@ -335,6 +522,12 @@ describe("Checks", () => {
           wins: [category("sessionsOverDepth", { clean: 8, unavailable: 4 })],
           unavailable: [],
           refreshUnavailable: false,
+          burnChecks: aggregateBurnCheckPresentation({
+            pendingEvidence: 0,
+            evidenceSettled: true,
+            estimatedTokenBurnBasisPoints: 0,
+            categories: [category("sessionsOverDepth", { clean: 8, unavailable: 4 })],
+          }),
           estimate: { tokenBurnBasisPoints: 0 },
         }}
       />,

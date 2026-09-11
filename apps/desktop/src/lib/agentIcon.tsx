@@ -41,7 +41,12 @@ import {
 } from "simple-icons"
 
 import { ANTIGRAVITY_MARK, fromSimpleIcons, OPENAI_MARK, type BrandMark } from "./brandMarks"
-import { agentDisplayName, agentIconName, type AgentSurface } from "./presentation/agents"
+import {
+  agentDisplayName,
+  agentIconName,
+  type AgentIconAppearance,
+  type AgentSurface,
+} from "./presentation/agents"
 
 /**
  * Registry icon name → brand mark. Keyed by the registry's icon names (not
@@ -80,7 +85,17 @@ function glyphFor(surface: AgentSurface | undefined): LucideIcon {
   return Bot
 }
 
-function Mark({ name, mark, size }: { name: string; mark: BrandMark; size: number }) {
+function Mark({
+  name,
+  mark,
+  size,
+  appearance,
+}: {
+  name: string
+  mark: BrandMark
+  size: number
+  appearance: AgentIconAppearance
+}) {
   return (
     <svg
       viewBox={mark.viewBox}
@@ -88,7 +103,11 @@ function Mark({ name, mark, size }: { name: string; mark: BrandMark; size: numbe
       height={size}
       fill="currentColor"
       // Brand-coloured marks override the inherited ink; the rest inherit it.
-      style={BRAND_COLORED.has(name) ? { color: `#${mark.hex}` } : undefined}
+      style={
+        appearance === "default" && BRAND_COLORED.has(name)
+          ? { color: `#${mark.hex}` }
+          : undefined
+      }
       aria-hidden="true"
     >
       <path d={mark.path} />
@@ -115,19 +134,24 @@ function LetterTile({ name, size }: { name: string; size: number }) {
  * Matches the `SessionAgentIconRenderer` / `AgentIconRenderer` signatures the
  * presentation components declare, so it can be passed straight into either.
  */
-export function renderAgentIcon(slug: string, size: number, surface?: AgentSurface): ReactNode {
+export function renderAgentIcon(
+  slug: string,
+  size: number,
+  surface?: AgentSurface,
+  appearance: AgentIconAppearance = "default",
+): ReactNode {
   const iconName = agentIconName(slug)
   const mark = BRAND_MARKS[iconName]
   const Glyph = glyphFor(surface)
   return (
     <span
       data-agent-icon={iconName}
-      className="text-agent-mark"
+      className={appearance === "neutral" ? "text-label-tertiary" : "text-agent-mark"}
       role="img"
       aria-label={agentDisplayName(slug)}
     >
       {mark ? (
-        <Mark name={iconName} mark={mark} size={size} />
+        <Mark name={iconName} mark={mark} size={size} appearance={appearance} />
       ) : iconName === "generic-agent" ? (
         <Glyph size={size} strokeWidth={1.75} aria-hidden="true" />
       ) : (
