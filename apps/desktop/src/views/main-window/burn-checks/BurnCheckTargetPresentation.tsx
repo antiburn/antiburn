@@ -2,7 +2,11 @@ import { ChevronDown } from "lucide-react"
 import { useId, useState } from "react"
 
 import { cn } from "../../../lib/cn"
-import { openBurnCheckSample, type BurnCheckTargetPayload } from "../../../lib/insightsIpc"
+import {
+  openBurnCheckSample,
+  type BurnCheckSamplePayload,
+  type BurnCheckTargetPayload,
+} from "../../../lib/insightsIpc"
 import { CHECK_LABELS } from "../../../lib/presentation/checks"
 import { SessionSampleRow } from "../../../components/session/SessionSampleRow"
 
@@ -74,13 +78,13 @@ export function ActionLimit({ target }: { target: BurnCheckTargetPayload }) {
   return <p className="mt-2 type-footnote text-label-tertiary">{reason}</p>
 }
 
-export function SampleSessions({ target }: { target: BurnCheckTargetPayload }) {
+export function SampleSessions({ samples }: { samples: BurnCheckSamplePayload[] }) {
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
   const [busyHandle, setBusyHandle] = useState<string | null>(null)
   const id = useId()
-  const samples = target.samples.slice(0, 3)
-  if (samples.length === 0) return null
+  const displayedSamples = samples.slice(0, 3)
+  if (displayedSamples.length === 0) return null
   return (
     <div className="mt-3">
       <button
@@ -91,12 +95,12 @@ export function SampleSessions({ target }: { target: BurnCheckTargetPayload }) {
         className="inline-flex items-center gap-1.5 rounded-control py-1 text-left type-footnote text-label-tertiary hover:text-label-secondary active:transform-none active:opacity-100"
       >
         <span>
-          Sample sessions <span>({samples.length})</span>
+          Sample sessions <span>({displayedSamples.length})</span>
         </span>
         <DisclosureChevron open={open} />
       </button>
       <div id={id} hidden={!open} className="mt-1 space-y-1">
-        {samples.map((sample) => (
+        {displayedSamples.map((sample) => (
           <SessionSampleRow
             key={sample.navigationHandle}
             title={sample.title}

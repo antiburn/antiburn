@@ -1,18 +1,15 @@
-import { Check, ChevronDown, Clipboard, Wrench } from "lucide-react"
-import { useCallback, useId, useRef, useState } from "react"
+import { Check, Clipboard, Wrench } from "lucide-react"
+import { useCallback, useRef, useState } from "react"
 
-import { cn } from "../../../lib/cn"
 import { noteInteraction } from "../../../lib/ipc"
 import {
   copyPromptFixBurnCheckTargets,
   copyPromptFixBurnCheck,
-  openBurnCheckSample,
   type BurnCheckDetectorId,
   type BurnCheckTargetPayload,
 } from "../../../lib/insightsIpc"
-import { SessionSampleRow } from "../../../components/session/SessionSampleRow"
 import { BurnCheckTargetActions } from "./BurnCheckTargetActions"
-import { watchStatus } from "./BurnCheckTargetPresentation"
+import { SampleSessions, watchStatus } from "./BurnCheckTargetPresentation"
 
 const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
   sessionsOverDepth: "Some sessions carried context after it stopped helping.",
@@ -27,10 +24,6 @@ const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
 }
 
 function Samples({ targets }: { targets: BurnCheckTargetPayload[] }) {
-  const [open, setOpen] = useState(false)
-  const [status, setStatus] = useState<string | null>(null)
-  const [busyHandle, setBusyHandle] = useState<string | null>(null)
-  const id = useId()
   const samples = Array.from(
     new Map(
       targets
@@ -38,65 +31,7 @@ function Samples({ targets }: { targets: BurnCheckTargetPayload[] }) {
         .map((sample) => [sample.navigationHandle, sample]),
     ).values(),
   ).slice(0, 3)
-  if (samples.length === 0) return null
-  return (
-    <div className="mt-3">
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls={id}
-        onClick={() => setOpen((value) => !value)}
-        className="inline-flex items-center gap-1.5 rounded-control py-1 type-footnote text-label-tertiary hover:text-label-secondary active:transform-none active:opacity-100"
-      >
-        Sample sessions ({samples.length})
-        <ChevronDown
-          size={14}
-          className={cn(
-            "transition-transform duration-[var(--duration-fast)]",
-            open && "rotate-180",
-          )}
-          aria-hidden="true"
-        />
-      </button>
-      <div id={id} hidden={!open} className="mt-1 space-y-1">
-        {samples.map((sample) => (
-          <SessionSampleRow
-            key={sample.navigationHandle}
-            title={sample.title}
-            agent={sample.agent}
-            surface={sample.surface}
-            observedAtMs={sample.observedAtMs}
-            busy={busyHandle !== null}
-            onOpen={async () => {
-              if (busyHandle) return
-              setBusyHandle(sample.navigationHandle)
-              setStatus(null)
-              try {
-                const result = await openBurnCheckSample(sample.navigationHandle)
-                if (result?.outcome === "opened") return
-                setStatus(
-                  result?.outcome === "deleted"
-                    ? "This sample session was deleted."
-                    : result?.outcome === "expired"
-                      ? "This sample session is no longer available."
-                      : "This sample session is unavailable.",
-                )
-              } catch {
-                setStatus("Could not open this sample session. Try again.")
-              } finally {
-                setBusyHandle(null)
-              }
-            }}
-          />
-        ))}
-      </div>
-      {status && (
-        <p role="status" className="mt-2 type-callout text-system-red-text">
-          {status}
-        </p>
-      )}
-    </div>
-  )
+  return <SampleSessions samples={samples} />
 }
 
 function CheckPromptAction({
@@ -114,7 +49,7 @@ function CheckPromptAction({
   const [status, setStatus] = useState<string | null>(null)
   const promptTargets = targets.filter((target) => target.promptFix.status === "available")
   const currentKey =
-    promptTargets.length === 0
+    targets.length === 0
       ? `fallback:${detector}`
       : promptTargets.map((target) => target.actionId).join(":")
   const key = useRef("")
@@ -146,7 +81,7 @@ function CheckPromptAction({
     try {
       if (!nextPrompt) {
         const outcome =
-          promptTargets.length === 0
+          targets.length === 0
             ? await copyPromptFixBurnCheck(detector)
             : await copyPromptFixBurnCheckTargets(
                 promptTargets.map((target) => target.actionId),
@@ -184,6 +119,7 @@ function CheckPromptAction({
       setStatus("Could not copy the prompt. Check clipboard access and try again.")
     }
   }
+  if (targets.length > 0 && promptTargets.length === 0) return null
   return (
     <div ref={bindKey}>
       <button

@@ -1,4 +1,4 @@
-import { CheckCircle2, ChevronDown, CircleDashed, Flame, LoaderCircle } from "lucide-react"
+import { CheckCircle2, CircleDashed, Flame, LoaderCircle } from "lucide-react"
 import { useCallback, useId, useState } from "react"
 
 import { cn } from "../../../lib/cn"
@@ -9,21 +9,8 @@ import { checkRowPresentation } from "../../checks/checkUi"
 import type { BurnChecksSession, BurnChecksSnapshot } from "../BurnChecksSession"
 import { BurnCheckDetail } from "./BurnCheckDetail"
 import { BurnCheckTargetDetail } from "./BurnCheckTargetDetail"
+import { DisclosureChevron } from "./BurnCheckTargetPresentation"
 import { BurnChecksSavings } from "./BurnChecksSavings"
-
-function DisclosureChevron({ open }: { open: boolean }) {
-  return (
-    <ChevronDown
-      size={14}
-      strokeWidth={2}
-      className={cn(
-        "text-label-tertiary transition-transform duration-[var(--duration-fast)]",
-        open && "rotate-180",
-      )}
-      aria-hidden="true"
-    />
-  )
-}
 
 function LoadingCheckDetail() {
   return (

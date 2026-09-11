@@ -1031,6 +1031,18 @@ describe("BurnChecksView", () => {
     expect(copied.querySelector(".lucide-check")).toHaveClass("text-system-green")
   })
 
+  it("does not use a fallback prompt when exact targets are unavailable", async () => {
+    setup({
+      ...target,
+      promptFix: { status: "unavailable", reason: "unsupportedSourceFormat" },
+    }, false, aggregate, report)
+
+    await screen.findByText("Some sessions used an older model when a newer one was available.")
+    expect(screen.queryByRole("button", { name: "Copy fix prompt" })).not.toBeInTheDocument()
+    expect(commands.copyFallback).not.toHaveBeenCalled()
+    expect(commands.copyBatch).not.toHaveBeenCalled()
+  })
+
   it("shows a retryable fallback prompt error", async () => {
     commands.copyFallback.mockRejectedValueOnce(new Error("Private backend error"))
     setup(null)
