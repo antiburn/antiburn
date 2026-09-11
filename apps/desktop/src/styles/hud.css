@@ -155,8 +155,8 @@ body[data-transparent-window] #root {
  * The pace is the session list's title shimmer, cycle and phase alike. That
  * shimmer moves its band from half a title before the text to half a title
  * past it, over one `--activity-row-shimmer-cycle` in `session-rows.css`, so
- * this travel copies the range as well as the number. `livePhaseDelay` in
- * `src/lib/livePhase.ts` starts both at the same point of the cycle.
+ * this travel copies the range as well as the number. `installLivePhase` in
+ * `src/lib/livePhase.ts` holds both at the same point of the cycle.
  *
  * The travel then holds back a tenth of a bar, which is 0.2 s. The shimmer's
  * band is soft and almost a title wide, so it fades in; this band is sharp
@@ -189,9 +189,10 @@ body[data-transparent-window] #root {
   --led-gleam-peak: 0.56;
   /* Lit levels between off and the peak: two brightness options in all. */
   --led-gleam-steps: 1;
+  /* `installLivePhase` in src/lib/livePhase.ts sets the start time of this
+     animation from the wall clock, so it holds the phase of the title
+     shimmer. Do not declare a delay here, because a delay moves the phase. */
   animation: led-sweep var(--led-sweep-cycle) linear infinite;
-  /* The shared phase. See `livePhaseDelay` in src/lib/livePhase.ts. */
-  animation-delay: var(--led-sweep-delay, 0ms);
 }
 
 .led-clock-soft {

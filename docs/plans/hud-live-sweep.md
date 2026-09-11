@@ -204,7 +204,7 @@ sweep while tokens flow, not while the agent waits.
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Stop fix       | Phase E, the quiet-path lane. The renderer-side cut is the fallback.                                                                                                |
 | Off delay      | 30 s after the last transcript write, through a `quiet` event on the bus (phase G). `idle` and the session list keep 180 s. Agreed 2026-09-11.                      |
-| Sweep pace     | 4000 ms cycle, about a 2 s crossing: the session list shimmer's cycle and phase on every surface, set on 2026-09-11. One `--led-sweep-cycle` variable to tune.     |
+| Sweep pace     | 4000 ms cycle, about a 2 s crossing: the session list shimmer's cycle and phase on every surface, set on 2026-09-11. One `--led-sweep-cycle` variable to tune.      |
 | Band width     | About three dots on the HUD, so a seventh of the bar. The same fraction on the popover's 32-segment meter.                                                          |
 | Reduced motion | Steady brand tint on the next unlit segment; the ring's next eighth.                                                                                                |
 | Where it lands | E and the actor half of G on `feat/session-lifecycle-bus` (#489); F and the renderer half of G on `feat/hud-session-blink` (#490), which gets a new title and body. |
@@ -256,19 +256,13 @@ sweep while tokens flow, not while the agent waits.
 - **The shimmer and the sweep share a phase, not only a cycle.** Keith, the
   same day: "align timing of sessions list and the VU meter". A CSS
   animation starts when the browser applies it, so two animations of one
-  cycle still sit at different points of it. `livePhaseDelay` in
-  `src/lib/livePhase.ts` returns the wall clock within the cycle as a
-  negative `animation-delay`, which puts every element at the same point,
-  whenever it mounts. The session row's title, the popover's meters, and the
-  HUD's meters each set it as a custom property the stylesheet reads. The
-  clock is `Date.now`, so the HUD's webview and the popover's agree. The
-  travel range copies the shimmer's as well: the band runs from half a bar
-  before the left end to half a bar past the right end, as the shimmer's
-  band runs from half a title before the text to half a title past it. One
-  cycle alone was not enough, because the sweep then crossed its bar 500 ms
-  before the shimmer crossed its title. Measured in Chrome: the sweep
-  position then equalled the shimmer's band centre at each eighth of the
-  cycle.
+  cycle still sit at different points of it. The travel range copies the
+  shimmer's as well: the band runs from half a bar before the left end to
+  half a bar past the right end, as the shimmer's band runs from half a
+  title before the text to half a title past it. One cycle alone was not
+  enough, because the sweep then crossed its bar 500 ms before the shimmer
+  crossed its title. Measured in Chrome: the sweep position then equalled
+  the shimmer's band centre at each eighth of the cycle.
 - **The sweep holds back 0.2 s behind the shimmer.** Keith, on the running
   app: "VU meter seems to start animation about 0.2 seconds before session
   list item". The centres were equal, but the onsets are not: the shimmer's
@@ -276,6 +270,31 @@ sweep while tokens flow, not while the agent waits.
   is sharp and three segments wide, so it snaps on. The travel starts a
   tenth of a bar earlier and ends a tenth earlier, which delays the meter's
   onset by 0.2 s and leaves the pace and the crossing unchanged.
+- **The phase lives on the running animation, not in a render.** Keith, on
+  the running app: "issue; timing of active sessions and VU meters are
+  getting out of sync. Build some mechanism to force to always be in sync".
+  The first build gave each element a negative `animation-delay` of the wall
+  clock. A delay only corrects the start. Each later render wrote a new delay
+  while the animation kept its first start time, so the phase moved by the
+  time between the mount and that render. The session rows render on every
+  scan and every usage poll, so their shimmer wandered. A window that stops
+  painting holds its animations as well, while the clock runs on.
+  `installLivePhase` in `src/lib/livePhase.ts` therefore owns the phase. It
+  sets `Animation.startTime` of each live animation from the wall clock, and
+  sets it again when an animation starts, when the window comes back, and
+  once each cycle. It writes nothing when the error is under one frame. The
+  stylesheets declare no delay, and no component passes one, so a render
+  cannot move an animation. `mountWindow` installs it for every window, next
+  to `installFocusModality`.
+
+  The anchor runs inside `requestAnimationFrame`, because a timeline reports
+  the time of the last frame while `Date.now` reports now. A first build
+  compared the two directly and a window that painted rarely put them 853 ms
+  apart. Measured in Chrome with the real stylesheets and the real module:
+  two surfaces that join 2.5 s late land 5.7 ms from the two already
+  running, a forced 900 ms drift is gone one cycle later, and every
+  animation tracks the wall clock within 8.2 ms. The effect delay of each is 0.
+
 - **The gleam takes a shade of the segment's own colour.** Keith, the same
   day: the sweep must "accommodate dark mode for the various models, which
   might use white (for openAI)". The OpenAI bar takes `--color-label`, near

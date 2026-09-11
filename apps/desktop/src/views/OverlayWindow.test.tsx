@@ -2,7 +2,6 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as Ipc from "../lib/ipc"
-import { LIVE_CYCLE_MS } from "../lib/livePhase"
 import { providerBarColor } from "../lib/usageBars"
 import type { LiveUsageSummaryPayload } from "../lib/ipc"
 import { OverlayWindow } from "./OverlayWindow"
@@ -592,12 +591,11 @@ describe("OverlayWindow", () => {
     expect(container.querySelectorAll(".led-clock")).toHaveLength(1)
     // The HUD floats over the reader's work, so its gleam runs softer.
     expect(container.querySelector(".led-clock")).toHaveClass("led-clock-soft")
-    // The HUD's sweep runs on the phase the popover and the session list use.
-    const delay = container
-      .querySelector<HTMLElement>(".led-clock")
-      ?.style.getPropertyValue("--led-sweep-delay")
-    expect(delay).toMatch(/^-\d+ms$/)
-    expect(-Number.parseInt(delay ?? "", 10)).toBeLessThan(LIVE_CYCLE_MS)
+    // The view writes no phase, because `installLivePhase` owns it. A delay
+    // from a render would move the sweep on every later render.
+    const clock = container.querySelector<HTMLElement>(".led-clock")
+    expect(clock?.style.getPropertyValue("--led-sweep-delay")).toBe("")
+    expect(clock?.style.animationDelay).toBe("")
     expect(
       container.querySelector(".led-clock")?.querySelectorAll(".led-sweep-dot"),
     ).toHaveLength(32)

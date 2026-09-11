@@ -204,10 +204,15 @@ switch and in Mission Control.
 - The cycle is 4 seconds, the cycle of the shimmer the session list runs
   across a running session's title, on the HUD and in the popover alike: a
   live session moves at one pace on every surface. The two also share a
-  phase. A CSS animation starts when the browser applies it, so each
-  animation takes a negative delay of the wall clock within the cycle, and
-  a title shimmer and a meter sweep move in step whenever either one
-  starts. The sweep then holds back 0.2 seconds. The shimmer's band is soft
+  phase. A CSS animation starts when the browser applies it, so the
+  renderer sets the start time of each live animation from the wall clock
+  instead. A title shimmer and a meter sweep therefore hold the same point
+  of the cycle, however late either one starts. The renderer sets the start
+  time again when an animation starts, when the window comes back, and once
+  each cycle, so a window that stopped painting returns in step. It sets
+  the start time on an animation frame, where the animation clock and the
+  wall clock agree. The stylesheets declare no delay, because a delay would
+  move the phase on every render. The sweep then holds back 0.2 seconds. The shimmer's band is soft
   and almost a title wide, so it fades in, and this band is sharp and three
   segments wide, so it snaps on: equal centres look early on the meter. The band crosses the bar
   in about 2 seconds, half the cycle, and the bar rests for the remainder.

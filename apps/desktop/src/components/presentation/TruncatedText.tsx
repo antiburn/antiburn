@@ -7,7 +7,6 @@ import {
 } from "react"
 
 import { cn } from "../../lib/cn"
-import { livePhaseStyle } from "../../lib/livePhase"
 
 /**
  * Track whether the element overflows its box.
@@ -76,8 +75,6 @@ export function TruncatedText({
   const truncated = useTruncated(ref, text, lineLimit)
   const style: CSSProperties = {}
   if (lineLimit > 1) Object.assign(style, { "--truncated-text-lines": lineLimit })
-  // The shimmer keeps the phase of every other live animation on screen.
-  if (shimmer) Object.assign(style, livePhaseStyle("--activity-row-shimmer-delay"))
 
   return (
     <div

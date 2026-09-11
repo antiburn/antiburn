@@ -7,7 +7,6 @@ import type {
   LiveUsageSummaryPayload,
   LiveUsageWindowPayload,
 } from "../../lib/ipc"
-import { LIVE_CYCLE_MS } from "../../lib/livePhase"
 
 import { UsageLimitsBar } from "./UsageLimitsBar"
 
@@ -223,12 +222,11 @@ describe("UsageLimitsBar — the live sweep", () => {
     expect(live.container.querySelector('[data-testid="usage-limits-bar"]')).not.toHaveClass(
       "led-clock-soft",
     )
-    // The sweep takes the phase the session list's shimmer runs on.
-    const delay = live.container
-      .querySelector<HTMLElement>('[data-testid="usage-limits-bar"]')
-      ?.style.getPropertyValue("--led-sweep-delay")
-    expect(delay).toMatch(/^-\d+ms$/)
-    expect(-Number.parseInt(delay ?? "", 10)).toBeLessThan(LIVE_CYCLE_MS)
+    // The component writes no phase, because `installLivePhase` owns it. A
+    // delay from a render would move the sweep on every later render.
+    const clock = live.container.querySelector<HTMLElement>('[data-testid="usage-limits-bar"]')
+    expect(clock?.style.getPropertyValue("--led-sweep-delay")).toBe("")
+    expect(clock?.style.animationDelay).toBe("")
     const dark = bar({ live: twoProviders(), expanded: true })
     expect(dark.container.querySelector('[data-testid="usage-limits-bar"]')).not.toHaveClass(
       "led-clock",
