@@ -784,7 +784,7 @@ describe("PopoverView", () => {
   it("conceals the provider preview when the Activity list scrolls", async () => {
     render(<PopoverView />)
     await screen.findByText("1 failed")
-    fireEvent.mouseEnter(await screen.findByRole("img", { name: "Codex at 40 percent" }))
+    fireEvent.mouseEnter(await screen.findByRole("img", { name: /^Codex at 40 percent\b/ }))
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("show_popover_peek", expect.anything()),
     )
