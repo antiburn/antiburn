@@ -494,12 +494,21 @@ impl Store {
         settings: &AppSettings,
         apply: impl FnOnce(&rusqlite::Transaction<'_>, &AppSettings) -> Result<T>,
     ) -> Result<(AppSettings, AppSettings, T)> {
+        self.replace_settings_with_transition(settings, |tx, _previous, saved| apply(tx, saved))
+    }
+
+    /// Replace preferences and expose both sides of the transition in one transaction.
+    pub fn replace_settings_with_transition<T>(
+        &self,
+        settings: &AppSettings,
+        apply: impl FnOnce(&rusqlite::Transaction<'_>, &AppSettings, &AppSettings) -> Result<T>,
+    ) -> Result<(AppSettings, AppSettings, T)> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         let previous = read_settings(&tx)?;
         let saved = settings.clone().normalized();
         write_settings(&tx, &saved)?;
-        let result = apply(&tx, &saved)?;
+        let result = apply(&tx, &previous, &saved)?;
         tx.commit()?;
         Ok((previous, saved, result))
     }
@@ -658,6 +667,47 @@ impl Store {
         Ok(())
     }
 
+    /// Queue an analytics event in a transaction that also changes settings.
+    #[cfg(feature = "analytics")]
+    pub(crate) fn queue_analytics_event_in(
+        transaction: &rusqlite::Transaction<'_>,
+        name: &str,
+        payload: &str,
+    ) -> Result<()> {
+        transaction.execute(
+            "INSERT INTO analytics_event (name, payload, queued_at) VALUES (?1, ?2, ?3)",
+            params![name, payload, now_rfc3339()],
+        )?;
+        transaction.execute(
+            "DELETE FROM analytics_event WHERE id NOT IN
+                 (SELECT id FROM analytics_event ORDER BY id DESC LIMIT ?1)",
+            params![ANALYTICS_QUEUE_LIMIT],
+        )?;
+        Ok(())
+    }
+
+    /// Read the current analytics identity inside a settings transaction.
+    #[cfg(feature = "analytics")]
+    pub(crate) fn analytics_identity_in(
+        transaction: &rusqlite::Transaction<'_>,
+    ) -> Result<Option<(String, String)>> {
+        let mut statement = transaction
+            .prepare("SELECT install_id, minted_at FROM analytics_identity WHERE id = 1")?;
+        let mut rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// Whether a durable opt-out event still waits for its final flush.
+    pub fn analytics_opt_out_pending(&self) -> Result<bool> {
+        Ok(self.lock().query_row(
+            "SELECT EXISTS(SELECT 1 FROM analytics_event WHERE name = 'antiburn.analytics_opted_out')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?)
+    }
+
     /// Return the current delivery backlog depth.
     pub fn analytics_event_count(&self) -> Result<u32> {
         Ok(self
@@ -670,8 +720,11 @@ impl Store {
     /// The next batch to attempt, oldest first, as `(id, payload)`.
     pub fn pending_analytics_events(&self, limit: u32) -> Result<Vec<(i64, String)>> {
         let connection = self.lock();
-        let mut statement =
-            connection.prepare("SELECT id, payload FROM analytics_event ORDER BY id LIMIT ?1")?;
+        let mut statement = connection.prepare(
+            "SELECT id, payload FROM analytics_event
+                 ORDER BY CASE WHEN name = 'antiburn.analytics_opted_out' THEN 0 ELSE 1 END, id
+                 LIMIT ?1",
+        )?;
         let rows = statement.query_map(params![limit], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?;

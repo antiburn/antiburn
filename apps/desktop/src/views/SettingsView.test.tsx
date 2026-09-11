@@ -909,7 +909,7 @@ describe("SettingsView", () => {
       }),
     )
     expect(
-      await screen.findByText(/Antiburn deleted its analytics identifier/i),
+      await screen.findByText(/Antiburn attempts one fixed opt-out delivery/i),
     ).toBeInTheDocument()
   })
 

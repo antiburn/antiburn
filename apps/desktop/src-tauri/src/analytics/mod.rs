@@ -172,10 +172,29 @@ pub fn handle_settings_transition(
 ) {
 }
 
+#[cfg(not(feature = "analytics"))]
+pub fn prepare_opt_out_in_transaction(
+    _app: &tauri::AppHandle,
+    _transaction: &rusqlite::Transaction<'_>,
+    _previous: &crate::store::AppSettings,
+    _saved: &crate::store::AppSettings,
+) -> anyhow::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(feature = "analytics"))]
+pub struct SettingsTransitionGuard;
+
+#[cfg(not(feature = "analytics"))]
+pub fn lock_settings_transition() -> SettingsTransitionGuard {
+    SettingsTransitionGuard
+}
+
 #[cfg(feature = "analytics")]
 mod enabled {
 
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
     use antiburn_local::insights::UnrecognizedRecords;
@@ -240,6 +259,81 @@ mod enabled {
     /// Who receives the events, for copy that names them.
     pub fn operator() -> Option<&'static str> {
         config::operator()
+    }
+
+    /// Persist the withdrawal event with the preference change.
+    ///
+    /// The transaction makes the user's decision and the event durable as one
+    /// unit. A crash after commit cannot restore consent or lose the signal.
+    pub fn prepare_opt_out_in_transaction(
+        app: &tauri::AppHandle,
+        transaction: &rusqlite::Transaction<'_>,
+        previous: &AppSettings,
+        saved: &AppSettings,
+    ) -> anyhow::Result<()> {
+        if !previous.analytics_enabled
+            || saved.analytics_enabled
+            || !available()
+            || environment_disabled()
+        {
+            return Ok(());
+        }
+        let Some((anonymous_id, _minted_at)) = Store::analytics_identity_in(transaction)? else {
+            return Ok(());
+        };
+        let event = Event {
+            platform: event::PLATFORM,
+            message_id: random_identifier(),
+            anonymous_id,
+            session_id: current_session_id(),
+            event: EventName::AnalyticsOptedOut.as_str().to_string(),
+            original_timestamp: crate::store::now_rfc3339(),
+            properties: event::Properties {
+                arch: event::arch(),
+                bucket: None,
+                label: None,
+                detail: None,
+                origin: None,
+                usage_band: None,
+                response_shape: None,
+                eligibility: None,
+                ineligible_reason: None,
+                experiment: None,
+                reset_arm: None,
+                reset_availability: None,
+                resets_per_week: None,
+                next_reset_available: None,
+                plan: None,
+                factor_band: None,
+                residual_band: None,
+                resource_usage: None,
+                unrecognized_types: None,
+            },
+            context: event::Context {
+                app_version: format!("antiburn:{}", app.package_info().version),
+                os: event::os_family(),
+            },
+        };
+        let payload = serde_json::to_string(&event)?;
+        Store::queue_analytics_event_in(
+            transaction,
+            EventName::AnalyticsOptedOut.as_str(),
+            &payload,
+        )?;
+        Ok(())
+    }
+
+    /// Serialize settings writes with opt-out cleanup.
+    pub struct SettingsTransitionGuard {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    pub fn lock_settings_transition() -> SettingsTransitionGuard {
+        SettingsTransitionGuard {
+            _guard: OPT_OUT_LIFECYCLE_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        }
     }
 
     /// Whether an event may be recorded right now.
@@ -1080,6 +1174,9 @@ mod enabled {
     /// Serializes consent checks, capture, and consent withdrawal.
     static CAPTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Serializes ordinary and final queue drains.
+    static FLUSH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// The run identifier to stamp on an event, minting or rolling it as needed.
     fn current_session_id() -> String {
         let now = std::time::Instant::now();
@@ -1141,7 +1238,7 @@ mod enabled {
     /// `commands.rs` so the queue can never drift out of step with the switch.
     ///
     /// A consent change also resets and wakes the resource sampler. Opt-out
-    /// still clears the queue and identifiers before any later report.
+    /// queues one final signal, then withdraws all remaining local state.
     pub fn handle_settings_transition(
         app: &tauri::AppHandle,
         previous: &AppSettings,
@@ -1150,23 +1247,84 @@ mod enabled {
         if saved.analytics_enabled != previous.analytics_enabled {
             resources::settings_changed(app);
         }
-        if saved.analytics_enabled || !previous.analytics_enabled {
+        if saved.analytics_enabled {
+            if !previous.analytics_enabled {
+                finish_reenabled_opt_out(app);
+            }
             return;
         }
-        let Some(store) = app.try_state::<Store>() else {
+        if !previous.analytics_enabled {
+            return;
+        }
+        if app.try_state::<Store>().is_none() {
             reset_suppression();
             return;
+        }
+        let generation = begin_opt_out();
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = flush_opt_out_once(&handle, generation).await;
+            finish_opt_out(&handle, generation);
+        });
+    }
+
+    static NEXT_OPT_OUT_GENERATION: AtomicU64 = AtomicU64::new(0);
+    static ACTIVE_OPT_OUT_GENERATION: AtomicU64 = AtomicU64::new(0);
+    static OPT_OUT_LIFECYCLE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn begin_opt_out() -> u64 {
+        let generation = NEXT_OPT_OUT_GENERATION
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        let generation = if generation == 0 { 1 } else { generation };
+        ACTIVE_OPT_OUT_GENERATION.store(generation, Ordering::Release);
+        generation
+    }
+
+    fn opt_out_is_active(generation: u64) -> bool {
+        ACTIVE_OPT_OUT_GENERATION.load(Ordering::Acquire) == generation
+    }
+
+    fn cancel_opt_out() {
+        ACTIVE_OPT_OUT_GENERATION.store(0, Ordering::Release);
+    }
+
+    fn finish_reenabled_opt_out(app: &tauri::AppHandle) {
+        cancel_opt_out();
+        if let Some(store) = app.try_state::<Store>() {
+            clear_local_state(&store);
+        } else {
+            reset_suppression();
+        }
+    }
+
+    fn finish_opt_out(app: &tauri::AppHandle, generation: u64) {
+        let _lifecycle = lock_settings_transition();
+        let Some(store) = app.try_state::<Store>() else {
+            if opt_out_is_active(generation) {
+                cancel_opt_out();
+                reset_suppression();
+            }
+            return;
         };
-        clear_local_state(&store);
+        // Re-enable can commit before this worker reaches cleanup. Check the
+        // persisted preference while holding the lifecycle lock, so fresh
+        // identity state is never removed by an old opt-out task.
+        if opt_out_is_active(generation)
+            && store
+                .settings()
+                .ok()
+                .is_some_and(|settings| !settings.analytics_enabled)
+        {
+            clear_local_state(&store);
+            cancel_opt_out();
+        }
     }
 
     /// Remove all analytics state after either opt-out mechanism is used.
     fn clear_local_state(store: &Store) {
-        // Opting out is immediate and total: anything already queued is withdrawn,
-        // not merely paused, and both identifiers go with it. The run identifier
-        // lives in memory rather than in the store, so it has to be dropped
-        // separately or opting out and back in inside the same launch would resume
-        // the session that was just withdrawn.
+        // Final cleanup withdraws anything that was not delivered. The run
+        // identifier lives in memory, so it also needs a separate reset.
         {
             let _capture = CAPTURE_LOCK
                 .lock()
@@ -1198,6 +1356,13 @@ mod enabled {
                 clear_local_state(&store);
             }
             return;
+        }
+        // A crash after the atomic opt-out transaction leaves its signal on
+        // disk. The next launch completes withdrawal without retrying it.
+        if let Some(store) = app.try_state::<Store>()
+            && store.analytics_opt_out_pending().unwrap_or(false)
+        {
+            clear_local_state(&store);
         }
         if !available() {
             return;
@@ -1277,9 +1442,55 @@ mod enabled {
     /// machine was offline is still worth sending later, and a call site that
     /// blocks on the network to report on itself has its priorities inverted.
     async fn flush_once(app: &tauri::AppHandle) -> FlushOutcome {
-        if !allowed(app) {
+        flush_once_with_mode(app, None).await
+    }
+
+    /// Deliver one final bounded pass while the durable opt-out is active.
+    async fn flush_opt_out_once(app: &tauri::AppHandle, generation: u64) -> FlushOutcome {
+        match tokio::time::timeout(
+            Duration::from_secs(30),
+            flush_once_with_mode(app, Some(generation)),
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => FlushOutcome::Failed {
+                remaining: app
+                    .try_state::<Store>()
+                    .and_then(|store| store.analytics_event_count().ok())
+                    .unwrap_or(0),
+            },
+        }
+    }
+
+    async fn flush_once_with_mode(
+        app: &tauri::AppHandle,
+        opt_out_generation: Option<u64>,
+    ) -> FlushOutcome {
+        let permitted = |app: &tauri::AppHandle| match opt_out_generation {
+            Some(generation) => {
+                opt_out_is_active(generation)
+                    && available()
+                    && !environment_disabled()
+                    && app
+                        .try_state::<Store>()
+                        .and_then(|store| store.settings().ok())
+                        .is_some_and(|settings| !settings.analytics_enabled)
+            }
+            None => allowed(app),
+        };
+        if !permitted(app) {
             return FlushOutcome::Suspended;
         }
+        if opt_out_generation.is_some()
+            && !app
+                .try_state::<Store>()
+                .and_then(|store| store.analytics_opt_out_pending().ok())
+                .unwrap_or(false)
+        {
+            return FlushOutcome::Empty;
+        }
+        let _flush = FLUSH_LOCK.lock().await;
         let Some(base) = config::endpoint() else {
             return FlushOutcome::Suspended;
         };
@@ -1310,7 +1521,7 @@ mod enabled {
             // off withdraws what is queued — a batch that kept posting after the
             // switch moved would make that promise false in exactly the moment it
             // matters most.
-            if !allowed(app) {
+            if !permitted(app) {
                 suspended = true;
                 break;
             }
@@ -1400,6 +1611,20 @@ mod enabled {
                 types: types.iter().map(|name| name.to_string()).collect(),
                 ..UnrecognizedRecords::default()
             }
+        }
+
+        #[test]
+        fn opt_out_generations_do_not_reuse_a_cancelled_token() {
+            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+            cancel_opt_out();
+            let first = begin_opt_out();
+            cancel_opt_out();
+            let second = begin_opt_out();
+
+            assert_ne!(first, second);
+            assert!(!opt_out_is_active(first));
+            assert!(opt_out_is_active(second));
+            cancel_opt_out();
         }
 
         /// The delivery client must actually build.

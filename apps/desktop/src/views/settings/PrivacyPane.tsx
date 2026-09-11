@@ -214,7 +214,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 analyticsEnvironmentDisabled
                   ? "Off for this launch because ANTIBURN_ANALYTICS_ENABLED=false. Remove it to use this setting."
                   : loaded && !settings.analyticsEnabled
-                    ? "Off. Antiburn deleted its analytics identifier and anything waiting to be sent."
+                    ? "Off. Antiburn attempts one fixed opt-out delivery, then deletes its analytics identifier and anything waiting to be sent."
                     : `Sends app launches, onboarding progress, feature use, error categories, coarse Claude reset status, and hourly bands for antiburn's own resource use${
                         operator ? ` to ${operator}` : ""
                       }. Never prompts, sessions, source code, filenames, or paths.`
@@ -328,8 +328,9 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 replaced every 30 days, limiting how long that id groups events. Since every
                 event also carries a time, they do show roughly when analytics events were
                 captured within those 30 days &mdash; never what you were working on. Switching
-                analytics off deletes the id and anything still queued, so switching back on
-                starts a new id.
+                analytics off queues one fixed opt-out signal with the current id and attempts a
+                bounded final flush. It then deletes the signal, the id, and anything still
+                queued, even when delivery fails, so switching back on starts a new id.
               </p>
               <p className="mt-2">
                 The <strong className="font-medium text-label">analytics-session id</strong> is
