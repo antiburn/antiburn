@@ -15,16 +15,17 @@ Preserve the tray context menu and unrelated notification behaviour.
 | --- | --- |
 | Trace window entry points and tray controls | Complete |
 | Implement direct main-window opening and regression coverage | Complete |
-| Run relevant checks and build | Native tests and Clippy passed; bundle and doctest verification in progress |
-| Open stacked PR and verify CI | Next; results tracked in the PR |
+| Run relevant checks and build | Complete |
+| Open stacked PR and verify CI | [PR #496 and live checks](https://github.com/antiburn/antiburn/pull/496/checks) |
 
 ## Validation
 
 - All 1,198 native unit tests passed.
 - Native Clippy, Rust formatting, frontend formatting/build, design drift,
   full-tree slop, and secret checks passed.
-- The initial doctest run could not resolve compiled Tauri dependencies while
-  other Cargo jobs used the shared target. Recheck after bundling completes.
+- Native debug bundling and the separate doctest run passed.
+- The review build was launched. Automated visual verification was unavailable
+  because Computer Use permissions were not granted.
 - Confirm manually: repeated primary clicks focus main; secondary click keeps
   the application menu; setup and the menu-bar notification open the right window.
 
