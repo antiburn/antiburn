@@ -34,11 +34,15 @@ Keith approved opening the PR and fixing any CI failures.
 | Restore functional baseline and iterate on design | Complete |
 | Apply approved final UI | Complete |
 | Focused checks and native review build | Complete |
-| Final pre-push checks | In progress |
-| Open PR and resolve CI failures | Authorized; pending |
+| Final pre-push checks | Complete |
+| Open PR and resolve CI failures | PR #493 open; CI in progress |
 
 ## Validation
 
 The latest review build passed 52 BurnChecksView tests, lint, type checking,
 formatting, design drift, and changed-file aislop. Native debug bundling passed
 and the app was launched for review. The shared dial has eight additional tests.
+
+After integrating main, all 1,451 desktop tests passed, together with formatting,
+lint, type checking, unused-code checks, and design-contract drift.
+PR: https://github.com/antiburn/antiburn/pull/493
