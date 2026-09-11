@@ -858,3 +858,8 @@ state in the same slot. Sample-session disclosure labels use semibold callout
 text and the count first, such as “3 Sample sessions”, with no chevron. Hover
 uses `surface-secondary/50` and `label` text with the standard fast transition. Preserve their
 expanded state, keyboard interaction, and accessible disclosure attributes.
+
+The menu-bar Burn Checks summary uses `surface-card/50` at rest and
+`surface-secondary/70` on hover or focus within, with a `duration-fast` colour
+transition. Its summary button uses a pointer cursor. Hover does not open the
+checks companion; clicking opens Burn Checks in the main window.
