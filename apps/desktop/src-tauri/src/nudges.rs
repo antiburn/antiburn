@@ -166,17 +166,8 @@ fn on_action(app: &AppHandle, event: NudgeActionEvent) {
     // Every other CTA opens or focuses a different window. The key release
     // from the CTA's dismissal must not pull focus back to the popover.
     crate::popover::clear_nudge_yield(app);
-    // "Show me" opens the popover under the glyph the notification is already
-    // pointing at, so the reader's first sight of it is the thing the icon
-    // does rather than a settings pane about it.
     if event.kind == NudgeKind::MenuBarLocation {
-        match app
-            .tray_by_id("antiburn")
-            .and_then(|tray| tray.rect().ok().flatten())
-        {
-            Some(rect) => crate::popover::toggle(app, rect),
-            None => open_without_a_tray_rect(app),
-        }
+        crate::tray::open_main_window(app);
         return;
     }
     if event.kind == NudgeKind::UpdateAvailable {
@@ -257,21 +248,6 @@ fn classify_update_action(event: &NudgeActionEvent) -> UpdateAction<'_> {
     }
     UpdateAction::Install(expected_version)
 }
-
-/// The same CTA where the tray backend reports no rectangle.
-///
-/// On Linux that is every time: the AppIndicator backend has no item geometry
-/// to give, so the button would do nothing at all. The tray menu's own open
-/// path already knows how to make an anchor, so send the reader through it.
-#[cfg(target_os = "linux")]
-fn open_without_a_tray_rect(app: &AppHandle) {
-    crate::popover::open_from_tray_menu(app);
-}
-
-/// macOS and Windows do report a rectangle, so a missing one means the tray
-/// item is not there yet. Doing nothing is what this CTA already did.
-#[cfg(not(target_os = "linux"))]
-fn open_without_a_tray_rect(_app: &AppHandle) {}
 
 #[cfg(test)]
 mod tests {

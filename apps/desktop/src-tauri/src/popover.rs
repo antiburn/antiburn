@@ -1,41 +1,6 @@
-//! The tray-anchored popover window.
+//! Legacy popover lifecycle and IPC support.
 //!
-//! The popover is created lazily on the first tray click. After its first
-//! reveal, dismissal hides the renderer but keeps it ready for the process
-//! lifetime. Each later open reuses the same renderer and its loaded state.
-//!
-//! # Geometry
-//!
-//! The width is fixed at [`WIDTH`]; the height is **per view**, bounded by
-//! [`MIN_HEIGHT`] and [`MAX_HEIGHT`], and animated between the two ends of a
-//! change so a surface swap reads as one surface growing rather than two
-//! windows replacing each other. The webview asks for a height when its view
-//! changes ([`crate::commands::set_popover_height`]) and passes `animate: false`
-//! when the reader has asked the system for reduced motion — the preference
-//! lives in the webview, so the decision is made there and honored here.
-//!
-//! Every height change re-runs the anchoring maths against the menu-bar item's
-//! last known rectangle, because a taller popover on a bottom-anchored panel
-//! (Windows, most Linux panels) has to move as well as grow.
-//!
-//! On Linux the tray backend reports no item rectangle. The tray menu's "Open
-//! antiburn" item makes an anchor from the panel instead: the work area shows
-//! where the panel is, and the popover opens against the end of it that holds
-//! the tray. That placement needs the X11 backend `main.rs` selects.
-//!
-//! # Dismissal
-//!
-//! Three things put the popover away everywhere: looking at something else
-//! ([`hide_on_focus_loss`]), Escape ([`hide`], reached from the webview), and a
-//! second click on the menu-bar item ([`toggle`]). On macOS a fourth joins
-//! them — a click anywhere outside the application (`hide_on_outside_click`,
-//! driven by [`crate::global_click`]), which is the one case that reports no
-//! focus change at all, because clicking the Finder desktop makes no window
-//! key. All of them answer to [`set_pinned`]: while the popover is pinned none
-//! fire, and the tray menu's Unpin item is what gives them back.
-//!
-//! Whichever way it goes, it leaves through [`note_hidden`], which is also
-//! where the menu-bar item is unlit; [`note_shown`] is the other half.
+//! User entry points open the main window. No startup or tray path creates this renderer.
 
 #[cfg(target_os = "macos")]
 mod panel;
@@ -49,14 +14,12 @@ use std::time::{Duration, Instant};
 #[cfg(target_os = "macos")]
 use tauri::window::{Effect, EffectState, EffectsBuilder};
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, WebviewUrl, WebviewWindow,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder, Window,
 };
 
 use crate::window_lifecycle::{self, ManagedWindowReadiness};
-use crate::window_readiness::{
-    OpenAction, PrewarmAction, ToggleAction, WindowReadiness, renderer_generation_script,
-};
+use crate::window_readiness::{WindowReadiness, renderer_generation_script};
 
 use self::retention::{DueEviction, EvictionMode, EvictionSchedule, EvictionToken, Retention};
 
@@ -160,14 +123,6 @@ const ANCHOR_GAP: f64 = 6.0;
 /// Minimum logical gap between the popover and the edge of its display.
 const SCREEN_MARGIN: f64 = 8.0;
 
-/// How long after an automatic dismissal a tray click is treated as part of
-/// that dismissal rather than a fresh open.
-///
-/// Clicking the menu-bar item while the popover is open fires focus loss
-/// *before* the tray click arrives, so a naive toggle would hide the popover
-/// and immediately reopen it. This window swallows that second half.
-const REOPEN_SUPPRESSION: Duration = Duration::from_millis(250);
-
 /// The menu-bar item's rectangle, in physical pixels on the display it lives
 /// on. Kept as plain numbers rather than a [`Rect`] so a height change can
 /// re-anchor without the tray handing the rectangle over a second time.
@@ -177,184 +132,6 @@ struct AnchorRect {
     y: f64,
     width: f64,
     height: f64,
-}
-
-/// A rectangle on a display, in physical pixels. Used for both a monitor and
-/// the usable region inside it.
-#[cfg(any(target_os = "linux", test))]
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ScreenRect {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-}
-
-/// Makes an anchor for a popover that has no menu-bar rectangle to hang off.
-///
-/// The tray backend on Linux reports no item rectangle, so the popover needs
-/// another point to open against. That point is the outer corner of the panel
-/// that holds the tray, which the work area describes: the space a panel takes
-/// is exactly the space the work area gives up.
-///
-/// The panel with the larger inset is the one the tray sits in. Its far edge
-/// gives the anchor, because every mainstream desktop keeps the tray at the end
-/// of the panel: the right end of a horizontal bar.
-///
-/// The cursor is deliberately **not** used, although it names the very item the
-/// reader just chose. The tray menu belongs to the desktop shell, not to this
-/// application, so on a Wayland session the pointer is over a surface the X
-/// server cannot see, and the reading is a stale position somewhere else
-/// entirely. A wrong point is worse than no point, and the panel geometry
-/// answers the same question without asking the pointer.
-///
-/// The rectangle has no width and no height. [`compute_position`] then centers
-/// the popover on the point and drops it [`ANCHOR_GAP`] below. A bottom panel
-/// flips it above and the display edges clamp it, through the same code every
-/// platform already uses.
-///
-/// The placement needs the X11 backend `main.rs` selects. A session with no X
-/// server leaves the position to the compositor.
-#[cfg(any(target_os = "linux", test))]
-fn synthesized_anchor(
-    work_area: Option<ScreenRect>,
-    monitor: Option<ScreenRect>,
-) -> Option<AnchorRect> {
-    let area = work_area?;
-    let monitor = monitor?;
-
-    let top_inset = area.y - monitor.y;
-    let bottom_inset = (monitor.y + monitor.height) - (area.y + area.height);
-
-    // The tray hangs at the right end of the panel, so the anchor takes the
-    // work area's right edge either way. Only the vertical edge changes.
-    let x = area.x + area.width;
-    let y = if bottom_inset > top_inset {
-        // A bottom panel. The anchor is its top edge, so the flip in
-        // `compute_position` lifts the popover clear of it.
-        area.y + area.height
-    } else {
-        // A top panel, or no panel at all. The anchor is its bottom edge.
-        area.y
-    };
-
-    Some(AnchorRect {
-        x,
-        y,
-        width: 0.0,
-        height: 0.0,
-    })
-}
-
-/// The anchor the Linux popover opens against.
-///
-/// Every reading stays in **physical** pixels, which is what
-/// [`compute_position`] expects: it divides by the containing monitor's own
-/// scale, so logical values here would be scaled a second time.
-///
-/// The **primary** monitor answers first, and that is the point of the order.
-/// A desktop puts its panel on the primary display, so the tray is there, and
-/// the popover belongs beside the tray rather than beside whatever display the
-/// window was last on.
-#[cfg(target_os = "linux")]
-fn linux_anchor(window: &WebviewWindow) -> Option<AnchorRect> {
-    let monitor = window
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| window.current_monitor().ok().flatten())?;
-
-    let area = monitor.work_area();
-    let work = ScreenRect {
-        x: f64::from(area.position.x),
-        y: f64::from(area.position.y),
-        width: f64::from(area.size.width),
-        height: f64::from(area.size.height),
-    };
-    let bounds = ScreenRect {
-        x: f64::from(monitor.position().x),
-        y: f64::from(monitor.position().y),
-        width: f64::from(monitor.size().width),
-        height: f64::from(monitor.size().height),
-    };
-    synthesized_anchor(Some(work), Some(bounds))
-}
-
-/// Opens the popover from the tray menu's Open item.
-///
-/// This is the only route into the popover on Linux. The AppIndicator backend
-/// reports no click events, so [`toggle`] never runs there.
-///
-/// The item shows the popover; it never toggles it. A toggle is unreachable
-/// through a menu: where opening the menu takes focus, the popover is already
-/// hidden by the time the reader chooses the item, and an item that reads "Open
-/// antiburn" but hides the window reads as broken. Escape, focus loss, and the
-/// pin stay the ways to put it away.
-#[cfg(target_os = "linux")]
-pub fn open_from_tray_menu(app: &AppHandle) {
-    let requested_at = Instant::now();
-    // The same gate [`toggle`] applies: before the first run is finished the
-    // popover has nothing to show, so send the reader to the flow they are owed.
-    if crate::onboarding::is_pending(app) {
-        if let Err(error) = crate::onboarding::open(app) {
-            ::tracing::warn!(
-                event = "onboarding_window_open_failed",
-                trigger = "tray",
-                error = %error
-            );
-        }
-        return;
-    }
-
-    let Some(state) = app.try_state::<PopoverState>() else {
-        return;
-    };
-
-    // Opening the AppIndicator menu takes focus from an unpinned popover, which
-    // dismisses it and arms the reopen suppression. A menu item is an explicit
-    // command, not the second half of that gesture, so clear the latch rather
-    // than read it. `set_pinned` clears it for the same reason. If this read the
-    // latch, the item would do nothing right after the menu opens.
-    state.clear_auto_hide();
-
-    let request = match request_open_window(app, Some(requested_at)) {
-        Ok(request) => request,
-        Err(error) => {
-            ::tracing::error!(event = "popover_create_failed", error = %error);
-            return;
-        }
-    };
-    let (window, ready) = match request {
-        WindowRequest::Ready(window) => (window, true),
-        WindowRequest::Loading(window) => (window, false),
-        WindowRequest::AwaitingBuild | WindowRequest::Cancelled => return,
-    };
-
-    // Record the anchor as well as use it: `apply_height` places the window
-    // against the recorded one on every view height change.
-    //
-    // With no anchor, skip placement. The window manager decides, which is what
-    // it does today; invented coordinates would be worse.
-    if let Some(anchor) = linux_anchor(&window) {
-        state.record_anchor(anchor);
-        if let Err(error) = place(&window, anchor, WIDTH, state.height()) {
-            // Positioning is best-effort here as everywhere else.
-            ::tracing::warn!(event = "popover_anchor_failed", error = %error);
-        }
-    }
-
-    if !ready {
-        return;
-    }
-
-    if window.is_visible().unwrap_or(false) {
-        // Already on screen, and now re-placed. The scan gate is open, so
-        // `note_shown` has nothing left to do.
-        let _ = window.set_focus();
-        return;
-    }
-
-    reveal(&window);
 }
 
 /// Shared show/hide bookkeeping, registered as Tauri managed state.
@@ -426,31 +203,6 @@ impl PopoverState {
         }
     }
 
-    /// Forget any automatic dismissal, so the next open is treated as a fresh
-    /// one. Used when pinning: the tray right-click that opened the menu is
-    /// what hid the popover, and the pin must not be swallowed as the second
-    /// half of that gesture.
-    fn clear_auto_hide(&self) {
-        if let Ok(mut slot) = self.auto_hidden_at.lock() {
-            *slot = None;
-        }
-    }
-
-    /// True when an automatic dismissal just happened, meaning the tray click
-    /// being handled is the same user gesture that caused it.
-    fn suppresses_reopen(&self) -> bool {
-        let Ok(mut slot) = self.auto_hidden_at.lock() else {
-            return false;
-        };
-        match *slot {
-            Some(at) if at.elapsed() < REOPEN_SUPPRESSION => {
-                *slot = None;
-                true
-            }
-            _ => false,
-        }
-    }
-
     fn begin_focus_hold(&self) {
         self.focus_hold.fetch_add(1, Ordering::SeqCst);
     }
@@ -471,10 +223,6 @@ impl PopoverState {
 
     fn is_pinned(&self) -> bool {
         self.pinned.load(Ordering::SeqCst)
-    }
-
-    fn set_pinned(&self, pinned: bool) {
-        self.pinned.store(pinned, Ordering::SeqCst);
     }
 
     fn begin_nudge_key_handoff(&self, popover_focused: bool) {
@@ -549,24 +297,12 @@ impl PopoverState {
             .take_due(token, renderer_generation, visible)
     }
 
-    fn mark_prewarm(&self, generation: u64, now: Instant) {
-        self.retention().begin_prewarm(generation, now);
-    }
-
     fn is_prewarm(&self, generation: u64) -> bool {
         self.retention().is_prewarm(generation)
     }
 
     fn clear_prewarm(&self) {
         self.retention().take_prewarm();
-    }
-
-    fn prewarm_generation(&self) -> Option<u64> {
-        self.retention().prewarm_generation()
-    }
-
-    fn transfer_prewarm(&self, from: u64, to: u64) -> bool {
-        self.retention().transfer_prewarm(from, to)
     }
 
     fn mark_prewarm_ready(&self, generation: u64, now: Instant) -> bool {
@@ -587,12 +323,6 @@ impl PopoverState {
 
     fn take_prewarm(&self) -> Option<u64> {
         self.retention().take_prewarm()
-    }
-
-    fn record_anchor(&self, anchor: AnchorRect) {
-        if let Ok(mut slot) = self.anchor.lock() {
-            *slot = Some(anchor);
-        }
     }
 
     fn anchor(&self) -> Option<AnchorRect> {
@@ -753,278 +483,6 @@ fn destroy_window(window: &WebviewWindow) -> tauri::Result<()> {
     window.destroy()
 }
 
-enum WindowRequest {
-    Ready(WebviewWindow),
-    Loading(WebviewWindow),
-    AwaitingBuild,
-    Cancelled,
-}
-
-fn begin_open_timing(
-    state: &PopoverState,
-    requested_at: Option<Instant>,
-    generation: u64,
-    renderer_state: &'static str,
-) {
-    let Some(requested_at) = requested_at else {
-        return;
-    };
-    state.timing.begin_open(
-        generation,
-        requested_at,
-        state.is_prewarm(generation),
-        renderer_state,
-    );
-}
-
-fn transfer_prewarm_for_replacement(
-    state: &PopoverState,
-    previous_generation: Option<u64>,
-    replacement_generation: u64,
-) -> bool {
-    let Some(previous_generation) = previous_generation else {
-        return false;
-    };
-    if previous_generation != replacement_generation {
-        state.transfer_prewarm(previous_generation, replacement_generation);
-        state.cancel_eviction();
-    }
-    state.is_prewarm(replacement_generation)
-}
-
-fn replace_expired_prewarm(
-    app: &AppHandle,
-    requested_at: Option<Instant>,
-) -> tauri::Result<Option<WindowRequest>> {
-    let state = app.state::<PopoverState>();
-    let Some(expired) = state.expired_prewarm(Instant::now()) else {
-        return Ok(None);
-    };
-    let expired_generation = expired.renderer_generation();
-
-    state.cancel_eviction();
-    state.readiness().reset();
-    state.timing.cancel_open();
-    let generation = {
-        let mut readiness = state.readiness();
-        match readiness.request_open(Instant::now()) {
-            OpenAction::StartLoading { generation } => generation,
-            _ => unreachable!("a reset lifecycle starts loading"),
-        }
-    };
-    begin_open_timing(&state, requested_at, generation, "expired");
-
-    let Some(existing) = app.get_webview_window(LABEL) else {
-        state.clear_prewarm_generation(expired_generation);
-        return build_window(app, generation)
-            .map(WindowRequest::Loading)
-            .map(Some);
-    };
-
-    state.readiness().defer_build_until_destroyed(generation);
-    if let Err(error) = destroy_window(&existing) {
-        window_lifecycle::cancel_load::<PopoverState>(app, generation);
-        let retry = state.arm_eviction_retry(expired_generation, expired.mode());
-        arm_prewarm_eviction(app, retry);
-        return Err(error);
-    }
-    state.clear_prewarm_generation(expired_generation);
-    Ok(Some(WindowRequest::AwaitingBuild))
-}
-
-fn request_open_window(
-    app: &AppHandle,
-    requested_at: Option<Instant>,
-) -> tauri::Result<WindowRequest> {
-    if let Some(request) = replace_expired_prewarm(app, requested_at)? {
-        return Ok(request);
-    }
-    let state = app.state::<PopoverState>();
-    let prewarm_generation = state.prewarm_generation();
-    let prewarm_loading = prewarm_generation
-        .is_some_and(|generation| state.readiness().loading_generation() == Some(generation));
-    if !prewarm_loading {
-        state.cancel_eviction();
-    }
-    let Some(existing) = app.get_webview_window(LABEL) else {
-        let mut readiness = state.readiness();
-        let action = readiness.request_open(Instant::now());
-        let generation = match action {
-            OpenAction::StartLoading { generation } | OpenAction::Rebuild { generation } => {
-                generation
-            }
-            OpenAction::AwaitReady => {
-                let generation = readiness
-                    .loading_generation()
-                    .unwrap_or_else(|| state.renderer_generation.load(Ordering::SeqCst));
-                drop(readiness);
-                begin_open_timing(&state, requested_at, generation, "loading");
-                return Ok(WindowRequest::AwaitingBuild);
-            }
-            OpenAction::Reveal => {
-                readiness.reset();
-                match readiness.request_open(Instant::now()) {
-                    OpenAction::StartLoading { generation } => generation,
-                    _ => unreachable!("an idle lifecycle starts loading"),
-                }
-            }
-        };
-        drop(readiness);
-        transfer_prewarm_for_replacement(&state, prewarm_generation, generation);
-        begin_open_timing(&state, requested_at, generation, "build");
-        return build_window(app, generation).map(WindowRequest::Loading);
-    };
-
-    let action = {
-        let mut readiness = state.readiness();
-        readiness.request_open(Instant::now())
-    };
-    match action {
-        OpenAction::Reveal => {
-            let generation = state.renderer_generation.load(Ordering::SeqCst);
-            begin_open_timing(&state, requested_at, generation, "ready");
-            Ok(WindowRequest::Ready(existing))
-        }
-        OpenAction::AwaitReady => {
-            let generation = state
-                .readiness()
-                .loading_generation()
-                .unwrap_or_else(|| state.renderer_generation.load(Ordering::SeqCst));
-            begin_open_timing(&state, requested_at, generation, "loading");
-            Ok(WindowRequest::Loading(existing))
-        }
-        OpenAction::StartLoading { generation } | OpenAction::Rebuild { generation } => {
-            let prewarmed =
-                transfer_prewarm_for_replacement(&state, prewarm_generation, generation);
-            begin_open_timing(&state, requested_at, generation, "replacement");
-            if !state.readiness().defer_build_until_destroyed(generation) {
-                return Ok(WindowRequest::AwaitingBuild);
-            }
-            if let Err(error) = destroy_window(&existing) {
-                window_lifecycle::cancel_load::<PopoverState>(app, generation);
-                if prewarmed && let Some(prewarm_generation) = prewarm_generation {
-                    state.transfer_prewarm(generation, prewarm_generation);
-                    schedule_prewarm_eviction(app);
-                }
-                return Err(error);
-            }
-            Ok(WindowRequest::AwaitingBuild)
-        }
-    }
-}
-
-fn request_toggle_window(app: &AppHandle, requested_at: Instant) -> tauri::Result<WindowRequest> {
-    if let Some(request) = replace_expired_prewarm(app, Some(requested_at))? {
-        return Ok(request);
-    }
-    let state = app.state::<PopoverState>();
-    let prewarm_generation = state.prewarm_generation();
-    let prewarm_loading = prewarm_generation
-        .is_some_and(|generation| state.readiness().loading_generation() == Some(generation));
-    if !prewarm_loading {
-        state.cancel_eviction();
-    }
-    let Some(existing) = app.get_webview_window(LABEL) else {
-        let mut readiness = state.readiness();
-        let action = readiness.toggle_open(Instant::now());
-        let generation = match action {
-            ToggleAction::StartLoading { generation } | ToggleAction::Rebuild { generation } => {
-                generation
-            }
-            ToggleAction::AwaitReady => {
-                let generation = readiness
-                    .loading_generation()
-                    .unwrap_or_else(|| state.renderer_generation.load(Ordering::SeqCst));
-                drop(readiness);
-                state.timing.begin_open(
-                    generation,
-                    requested_at,
-                    prewarm_generation == Some(generation),
-                    "loading",
-                );
-                return Ok(WindowRequest::AwaitingBuild);
-            }
-            ToggleAction::CancelPendingReveal => {
-                drop(readiness);
-                state.timing.cancel_open();
-                return Ok(WindowRequest::Cancelled);
-            }
-            ToggleAction::UseWindowVisibility => {
-                readiness.reset();
-                match readiness.toggle_open(Instant::now()) {
-                    ToggleAction::StartLoading { generation } => generation,
-                    _ => unreachable!("an idle lifecycle starts loading"),
-                }
-            }
-        };
-        drop(readiness);
-        transfer_prewarm_for_replacement(&state, prewarm_generation, generation);
-        state.timing.begin_open(
-            generation,
-            requested_at,
-            state.is_prewarm(generation),
-            "build",
-        );
-        return build_window(app, generation).map(WindowRequest::Loading);
-    };
-
-    let action = {
-        let mut readiness = state.readiness();
-        readiness.toggle_open(Instant::now())
-    };
-    match action {
-        ToggleAction::UseWindowVisibility => {
-            let generation = state.renderer_generation.load(Ordering::SeqCst);
-            state.timing.begin_open(
-                generation,
-                requested_at,
-                prewarm_generation == Some(generation),
-                "ready",
-            );
-            Ok(WindowRequest::Ready(existing))
-        }
-        ToggleAction::AwaitReady => {
-            let generation = state
-                .readiness()
-                .loading_generation()
-                .unwrap_or_else(|| state.renderer_generation.load(Ordering::SeqCst));
-            state.timing.begin_open(
-                generation,
-                requested_at,
-                prewarm_generation == Some(generation),
-                "loading",
-            );
-            Ok(WindowRequest::Loading(existing))
-        }
-        ToggleAction::CancelPendingReveal => {
-            state.timing.cancel_open();
-            Ok(WindowRequest::Cancelled)
-        }
-        ToggleAction::StartLoading { generation } | ToggleAction::Rebuild { generation } => {
-            let prewarmed =
-                transfer_prewarm_for_replacement(&state, prewarm_generation, generation);
-            state.timing.begin_open(
-                generation,
-                requested_at,
-                state.is_prewarm(generation),
-                "replacement",
-            );
-            if !state.readiness().defer_build_until_destroyed(generation) {
-                return Ok(WindowRequest::AwaitingBuild);
-            }
-            if let Err(error) = destroy_window(&existing) {
-                window_lifecycle::cancel_load::<PopoverState>(app, generation);
-                if prewarmed && let Some(prewarm_generation) = prewarm_generation {
-                    state.transfer_prewarm(generation, prewarm_generation);
-                    schedule_prewarm_eviction(app);
-                }
-                return Err(error);
-            }
-            Ok(WindowRequest::AwaitingBuild)
-        }
-    }
-}
-
 /// Build a deferred replacement after Tauri removes the old window label.
 pub fn rebuild_after_destroy(app: &AppHandle) {
     let state = app.state::<PopoverState>();
@@ -1045,103 +503,6 @@ pub fn rebuild_after_destroy(app: &AppHandle) {
             ::tracing::error!(event = "window_rebuild_failed", window = LABEL, error = %error);
         }
     }
-}
-
-/// Build one hidden renderer for the handoff from onboarding to the menu bar.
-pub fn prewarm(app: &AppHandle) {
-    if crate::onboarding::is_pending(app) || app.get_webview_window(LABEL).is_some() {
-        return;
-    }
-    let Some(state) = app.try_state::<PopoverState>() else {
-        return;
-    };
-    let generation = {
-        let mut readiness = state.readiness();
-        match readiness.request_prewarm(Instant::now()) {
-            PrewarmAction::StartLoading { generation } => generation,
-            PrewarmAction::KeepExisting => return,
-        }
-    };
-    state.mark_prewarm(generation, Instant::now());
-    if let Err(error) = build_window(app, generation) {
-        state.clear_prewarm();
-        ::tracing::warn!(event = "popover_prewarm_failed", error = %error);
-    }
-}
-
-/// Handles a click on the menu-bar item.
-///
-/// `anchor` is the item's screen rectangle as reported by the tray backend.
-pub fn toggle(app: &AppHandle, anchor: Rect) {
-    let requested_at = Instant::now();
-    // Before the first run is finished the popover has nothing to show — the
-    // activity list is empty by construction, because the scan scheduler is
-    // gated on the same flag (see [`crate::scan`]). Send the click to the flow
-    // that is actually owed the reader, which also gets the window back for
-    // anyone who closed it partway through.
-    if crate::onboarding::is_pending(app) {
-        if let Err(error) = crate::onboarding::open(app) {
-            ::tracing::warn!(
-                event = "onboarding_window_open_failed",
-                trigger = "tray",
-                error = %error
-            );
-        }
-        return;
-    }
-
-    if let Some(window) = app.get_webview_window(LABEL)
-        && window.is_visible().unwrap_or(false)
-    {
-        // A pinned popover has no hide half to its toggle. Raise it instead of
-        // doing nothing: a menu-bar item that swallows a click reads as broken,
-        // and re-anchoring picks up a menu bar that has since moved display.
-        if is_pinned(app) {
-            if let Err(error) = anchor_to(&window, anchor) {
-                ::tracing::warn!(event = "popover_anchor_failed", error = %error);
-            }
-            focus_popover(&window);
-            return;
-        }
-        hide_window(app);
-        return;
-    }
-
-    if let Some(state) = app.try_state::<PopoverState>()
-        && state.suppresses_reopen()
-    {
-        return;
-    }
-
-    let request = match request_toggle_window(app, requested_at) {
-        Ok(request) => request,
-        Err(error) => {
-            ::tracing::error!(event = "popover_create_failed", error = %error);
-            return;
-        }
-    };
-    let (window, ready) = match request {
-        WindowRequest::Ready(window) => (window, true),
-        WindowRequest::Loading(window) => (window, false),
-        WindowRequest::AwaitingBuild => return,
-        WindowRequest::Cancelled => {
-            note_hidden(app);
-            schedule_prewarm_eviction(app);
-            return;
-        }
-    };
-
-    if let Err(error) = anchor_to(&window, anchor) {
-        // Positioning is best-effort: a popover in the wrong place still beats
-        // no popover at all.
-        ::tracing::warn!(event = "popover_anchor_failed", error = %error);
-    }
-
-    if !ready {
-        return;
-    }
-
-    reveal(&window);
 }
 
 /// Dismisses the popover from the webview — the Escape key, and anything else
@@ -1527,97 +888,6 @@ pub fn is_pinned(app: &AppHandle) -> bool {
         .is_some_and(|state| state.is_pinned())
 }
 
-/// Sets the pin, and either way hands focus back to the popover.
-///
-/// Pinning has to re-show the window, not just set a flag: the tray right-click
-/// that opened the menu took focus, so by the time this runs the popover has
-/// already hidden itself.
-///
-/// Unpinning does not hide anything — it restores ordinary dismissal rather
-/// than performing one — but it *must* refocus, for the same reason
-/// [`end_focus_hold`] does. The window sat there unfocused for as long as the
-/// menu was up, so without this there is no focus left to lose and the next
-/// click on another application would dismiss nothing.
-///
-/// Pinning is refused while the first run is unfinished. Re-showing is the
-/// point of a pin, and the popover must stay hidden during this period.
-/// Unpinning remains available so the tray action always does what it says.
-pub fn set_pinned(app: &AppHandle, pinned: bool) {
-    if pinned && crate::onboarding::is_pending(app) {
-        return;
-    }
-    let Some(state) = app.try_state::<PopoverState>() else {
-        return;
-    };
-    if !pinned {
-        state.set_pinned(false);
-        state.readiness().cancel_pending_reveal();
-        if let Some(window) = app.get_webview_window(LABEL)
-            && window.is_visible().unwrap_or(false)
-        {
-            focus_popover(&window);
-        } else {
-            schedule_prewarm_eviction(app);
-        }
-        return;
-    }
-
-    let request = match request_open_window(app, None) {
-        Ok(request) => request,
-        Err(error) => {
-            ::tracing::error!(event = "popover_create_failed", error = %error);
-            return;
-        }
-    };
-    let (window, ready) = match request {
-        WindowRequest::Ready(window) => (window, true),
-        WindowRequest::Loading(window) => (window, false),
-        WindowRequest::AwaitingBuild => {
-            state.set_pinned(true);
-            return;
-        }
-        WindowRequest::Cancelled => return,
-    };
-    state.set_pinned(true);
-
-    // Only a pin re-opens, and only from hidden: re-anchoring a window already
-    // on screen would move it for no reason the reader asked for.
-    if pinned && !window.is_visible().unwrap_or(false) {
-        // The dismissal this pin is undoing armed the reopen suppression;
-        // leaving it armed would let the next tray click be swallowed.
-        state.clear_auto_hide();
-
-        // The menu-bar item's live rectangle is the truth, and the only source
-        // that works on a cold start where the popover has never been opened.
-        // The remembered anchor covers a tray backend that reports none.
-        let placed = match app
-            .tray_by_id(crate::tray::TRAY_ID)
-            .and_then(|tray| tray.rect().ok().flatten())
-        {
-            Some(rect) => anchor_to(&window, rect),
-            None => match state.anchor() {
-                Some(anchor) => place(&window, anchor, WIDTH, state.height()),
-                None => fallback_place(&window, &state),
-            },
-        };
-        if let Err(error) = placed {
-            // Best-effort, as everywhere else: a popover in the wrong place
-            // still beats a pin that appears to do nothing.
-            ::tracing::warn!(event = "popover_anchor_failed", error = %error);
-        }
-
-        if ready {
-            reveal(&window);
-        }
-    }
-
-    // Guarded exactly as `end_focus_hold` is: focusing a hidden window would
-    // order it front, and an unpin is not a request to open anything.
-    if window.is_visible().unwrap_or(false) {
-        focus_popover(&window);
-    }
-}
-
 /// Reveal the popover after React commits its shell.
 pub fn renderer_ready(window: &WebviewWindow, generation: u64) {
     let app = window.app_handle();
@@ -1755,54 +1025,6 @@ pub fn note_hidden(app: &AppHandle) {
     crate::tray::set_highlight(app, false);
 }
 
-/// Records the menu-bar item's rectangle and places the popover against it.
-fn anchor_to(window: &WebviewWindow, anchor: Rect) -> tauri::Result<()> {
-    // Tray backends hand over *physical* coordinates on macOS and Windows, so
-    // the `to_physical(1.0)` is a no-op cast, not a conversion. Notably the
-    // popover window's own scale factor must NOT be used here: on a
-    // multi-display desktop the popover may last have been shown on a
-    // different-DPI screen than the one the menu-bar item lives on, and
-    // converting with the wrong scale lands the window on the wrong display.
-    let position = anchor.position.to_physical::<f64>(1.0);
-    let size = anchor.size.to_physical::<f64>(1.0);
-    let anchor = AnchorRect {
-        x: position.x,
-        y: position.y,
-        width: size.width,
-        height: size.height,
-    };
-    let state = window.app_handle().state::<PopoverState>();
-    state.record_anchor(anchor);
-
-    // The window's own logical geometry: the width is a constant and the
-    // height is the shell's bookkeeping, so no physical size read (whose scale
-    // depends on where the window last was) is involved.
-    place(window, anchor, WIDTH, state.height())
-}
-
-/// The last placement a pinned show can try: the tray backend reports no
-/// rectangle, and no earlier open left an anchor behind.
-///
-/// Linux only, because it is the only platform that reaches here. A pin on a
-/// cold start would otherwise leave the window wherever the window manager put
-/// it, which is the middle of the screen.
-///
-/// Records the anchor as well as using it, so the next height change places the
-/// window against the same point.
-#[cfg(target_os = "linux")]
-fn fallback_place(window: &WebviewWindow, state: &PopoverState) -> tauri::Result<()> {
-    let Some(anchor) = linux_anchor(window) else {
-        return Ok(());
-    };
-    state.record_anchor(anchor);
-    place(window, anchor, WIDTH, state.height())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn fallback_place(_window: &WebviewWindow, _state: &PopoverState) -> tauri::Result<()> {
-    Ok(())
-}
-
 /// The display's usable frame in logical coordinates, plus the scale that maps
 /// the anchor's physical rectangle into the same space.
 struct MonitorFrame {
@@ -1916,6 +1138,7 @@ fn clamp(value: f64, min: f64, max: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::window_readiness::OpenAction;
 
     #[test]
     fn clamp_prefers_the_low_edge_on_undersized_displays() {
@@ -2058,20 +1281,6 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_state_does_not_suppress_reopening() {
-        let state = PopoverState::default();
-        assert!(!state.suppresses_reopen());
-    }
-
-    #[test]
-    fn an_automatic_dismissal_suppresses_exactly_one_reopen() {
-        let state = PopoverState::default();
-        state.record_auto_hide();
-        assert!(state.suppresses_reopen());
-        assert!(!state.suppresses_reopen());
-    }
-
-    #[test]
     fn onboarding_restart_cancels_a_pending_cold_reveal() {
         let state = PopoverState::default();
         let started_at = Instant::now();
@@ -2087,43 +1296,6 @@ mod tests {
                 .renderer_ready(generation, started_at + Duration::from_millis(1)),
             crate::window_readiness::ReadyAction::StayHidden { .. }
         ));
-    }
-
-    #[test]
-    fn repeated_expired_readiness_keeps_the_deferred_replacement() {
-        let state = PopoverState::default();
-        let started_at = Instant::now();
-        assert!(matches!(
-            state.readiness().request_prewarm(started_at),
-            PrewarmAction::StartLoading { .. }
-        ));
-        let expired_generation = match state
-            .readiness()
-            .request_open(started_at + Duration::from_secs(64))
-        {
-            OpenAction::Rebuild { generation } => generation,
-            _ => unreachable!("the stale prewarm starts a replacement"),
-        };
-        state.timing.begin_open(
-            expired_generation,
-            started_at + Duration::from_secs(64),
-            true,
-            "loading",
-        );
-
-        let expired_at = started_at + Duration::from_secs(65);
-        prepare_expired_renderer_retirement(&state, expired_generation, expired_at);
-        let replacement = state
-            .readiness()
-            .loading_generation()
-            .expect("the pending click owns a replacement");
-        prepare_expired_renderer_retirement(&state, expired_generation, expired_at);
-
-        assert_eq!(state.readiness().loading_generation(), Some(replacement));
-        assert_eq!(
-            state.readiness().begin_deferred_build(expired_at),
-            Some(replacement)
-        );
     }
 
     #[test]
@@ -2200,63 +1372,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pinned_unfocused_popover_is_never_pulled_forward() {
-        let state = PopoverState::default();
-        state.set_pinned(true);
-        state.begin_nudge_key_handoff(false);
-        assert!(state.is_pinned());
-        assert!(!state.release_nudge_key_handoff());
-    }
-
-    #[test]
-    fn a_prewarm_marker_belongs_to_one_renderer_generation() {
-        let state = PopoverState::default();
-
-        state.mark_prewarm(4, Instant::now());
-        assert!(state.is_prewarm(4));
-        assert!(!state.is_prewarm(5));
-
-        state.clear_prewarm();
-        assert!(!state.is_prewarm(4));
-    }
-
-    #[test]
-    fn the_pin_is_a_latch_the_reader_can_take_back() {
-        let state = PopoverState::default();
-        state.set_pinned(true);
-        assert!(state.is_pinned());
-        state.set_pinned(false);
-        assert!(!state.is_pinned());
-    }
-
-    #[test]
-    fn every_replacement_path_transfers_the_active_prewarm_deadline() {
-        let state = PopoverState::default();
-        let started_at = Instant::now();
-        state.mark_prewarm(4, started_at);
-
-        assert!(transfer_prewarm_for_replacement(&state, Some(4), 5));
-        assert!(!state.is_prewarm(4));
-        assert!(state.is_prewarm(5));
-        let schedule = state
-            .arm_prewarm_retention(5, started_at + Duration::from_secs(10))
-            .expect("the transferred prewarm remains retained");
-        assert_eq!(schedule.delay(), Duration::from_secs(55));
-        assert_eq!(schedule.mode(), EvictionMode::PrewarmLoading);
-    }
-
-    /// The tray right-click that opens the menu hides the popover, arming the
-    /// reopen suppression. Pinning clears it, or the next tray click would be
-    /// swallowed as the second half of a dismissal that no longer stands.
-    #[test]
-    fn clearing_a_dismissal_leaves_no_suppression_behind() {
-        let state = PopoverState::default();
-        state.record_auto_hide();
-        state.clear_auto_hide();
-        assert!(!state.suppresses_reopen());
-    }
-
-    #[test]
     fn a_view_can_only_ask_for_a_height_the_window_can_actually_be() {
         assert_eq!(clamp_height(MAX_HEIGHT), MAX_HEIGHT);
         assert_eq!(clamp_height(MIN_HEIGHT), MIN_HEIGHT);
@@ -2297,127 +1412,6 @@ mod tests {
         // Ease-out: more than half the distance is covered by the halfway point.
         assert!(ease_out(0.5) > 0.5);
         assert!(ease_out(0.25) < ease_out(0.75));
-    }
-
-    /// The GNOME shape, measured from a running session: a 32px top bar and a
-    /// 67px dock on the left. The tray is at the right end of the top bar, so
-    /// the anchor is the work area's top-right corner.
-    #[test]
-    fn a_top_panel_anchors_at_the_right_end_of_that_panel() {
-        let work = ScreenRect {
-            x: 67.0,
-            y: 32.0,
-            width: 2493.0,
-            height: 1338.0,
-        };
-        let monitor = ScreenRect {
-            x: 0.0,
-            y: 0.0,
-            width: 2560.0,
-            height: 1370.0,
-        };
-        assert_eq!(
-            synthesized_anchor(Some(work), Some(monitor)),
-            Some(AnchorRect {
-                x: 2560.0,
-                y: 32.0,
-                width: 0.0,
-                height: 0.0,
-            })
-        );
-    }
-
-    /// The KDE and Windows-like shape: one panel along the bottom. The anchor
-    /// is that panel's *top* edge, so the popover has something to sit above.
-    #[test]
-    fn a_bottom_panel_anchors_at_the_top_edge_of_that_panel() {
-        let work = ScreenRect {
-            x: 0.0,
-            y: 0.0,
-            width: 1920.0,
-            height: 1036.0,
-        };
-        let monitor = ScreenRect {
-            x: 0.0,
-            y: 0.0,
-            width: 1920.0,
-            height: 1080.0,
-        };
-        assert_eq!(
-            synthesized_anchor(Some(work), Some(monitor)),
-            Some(AnchorRect {
-                x: 1920.0,
-                y: 1036.0,
-                width: 0.0,
-                height: 0.0,
-            })
-        );
-    }
-
-    /// A display whose work area fills it has no panel to read. The top edge is
-    /// the right answer, because a tray that is not in a reserved strip is in a
-    /// bar the desktop draws over its own windows.
-    #[test]
-    fn a_display_with_no_reserved_panel_anchors_at_its_top_right() {
-        let full = ScreenRect {
-            x: 0.0,
-            y: 0.0,
-            width: 1920.0,
-            height: 1080.0,
-        };
-        assert_eq!(
-            synthesized_anchor(Some(full), Some(full)),
-            Some(AnchorRect {
-                x: 1920.0,
-                y: 0.0,
-                width: 0.0,
-                height: 0.0,
-            })
-        );
-    }
-
-    /// Nothing to place against is not an excuse to invent coordinates: the
-    /// window manager keeps the decision.
-    #[test]
-    fn no_monitor_at_all_leaves_the_placement_to_the_window_manager() {
-        assert_eq!(synthesized_anchor(None, None), None);
-    }
-
-    /// The whole Linux path, end to end, on the session this was measured from:
-    /// the popover opens under the top bar and tucks against the right edge,
-    /// which is where the tray item it belongs to sits.
-    #[test]
-    fn the_gnome_anchor_places_the_popover_beside_the_tray() {
-        let work = ScreenRect {
-            x: 67.0,
-            y: 32.0,
-            width: 2493.0,
-            height: 1338.0,
-        };
-        let monitor = ScreenRect {
-            x: 0.0,
-            y: 0.0,
-            width: 2560.0,
-            height: 1370.0,
-        };
-        let frame = MonitorFrame {
-            left: 0.0,
-            top: 0.0,
-            right: 2560.0,
-            bottom: 1370.0,
-            scale: 1.0,
-        };
-        let anchor = synthesized_anchor(Some(work), Some(monitor)).expect("the monitor answered");
-        let (x, y) = compute_position(anchor, Some(&frame), WIDTH, DEFAULT_HEIGHT);
-
-        // Clamped to the display's right margin rather than centered on the
-        // corner, which is what keeps it under the tray instead of half off
-        // the screen.
-        assert!(
-            (x - (2560.0 - WIDTH - SCREEN_MARGIN)).abs() < 0.5,
-            "x was {x}"
-        );
-        assert!((y - (32.0 + ANCHOR_GAP)).abs() < 0.5, "y was {y}");
     }
 
     /// The contract the Linux glue depends on: the anchor goes in physical, the

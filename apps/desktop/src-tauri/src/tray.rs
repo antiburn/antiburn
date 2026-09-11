@@ -1,14 +1,7 @@
 //! The menu-bar / system-tray item.
 //!
-//! Left click toggles the popover; right click opens a short menu. The menu
-//! carries Quit because an agent application has no Dock icon and no
-//! application menu — without it there would be no way to exit antiburn. It
-//! also carries the popover's pin, which needs a surface that survives the
-//! popover being dismissed — and the menu bar is the only one there is.
-//!
-//! Linux is different. The AppIndicator backend reports no click events, and
-//! every click opens the menu. So the menu's first item, Open antiburn, is what
-//! opens the popover there.
+//! Left click opens the main window. Right click opens the application menu.
+//! Linux uses the menu's Open antiburn item because AppIndicator reports no clicks.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -23,7 +16,7 @@ use tauri::{Emitter, Manager, Wry};
 
 #[cfg(debug_assertions)]
 use crate::commands;
-use crate::{nudges, popover, settings};
+use crate::{nudges, settings};
 
 const DOT_COUNT: usize = 13;
 const COLUMN_COUNT: usize = 5;
@@ -89,9 +82,6 @@ impl Default for UsageMeter {
 }
 
 const MENU_MAIN: &str = "open-main";
-#[cfg(target_os = "linux")]
-const MENU_OPEN_POPOVER: &str = "open-popover";
-const MENU_PIN: &str = "pin";
 const MENU_SETTINGS: &str = "settings";
 #[cfg(debug_assertions)]
 const MENU_RESET_ONBOARDING: &str = "reset-onboarding";
@@ -101,13 +91,7 @@ const MENU_RANDOM_USAGE: &str = "random-usage";
 const MENU_BURN_CHECKS: &str = "burn-checks";
 const MENU_QUIT: &str = "quit";
 
-/// Title case, matching "Quit antiburn" and the platform's own menus.
-const PIN_LABEL: &str = "Pin Window";
-const UNPIN_LABEL: &str = "Unpin Window";
-
 const OPEN_LABEL: &str = "Open antiburn";
-#[cfg(target_os = "linux")]
-const OPEN_POPOVER_LABEL: &str = "Open Usage Popover";
 #[cfg(debug_assertions)]
 const RESET_ONBOARDING_LABEL: &str = "Reset Onboarding";
 #[cfg(debug_assertions)]
@@ -138,7 +122,6 @@ impl Default for DebugBurnChecks {
 /// marshals through `run_main_thread!`, which runs its closure inline when the
 /// caller is already on the main thread — as [`on_menu_event`] is.
 pub struct TrayMenu {
-    pin: MenuItem<Wry>,
     #[cfg(debug_assertions)]
     random_usage: CheckMenuItem<Wry>,
     #[cfg(debug_assertions)]
@@ -147,24 +130,16 @@ pub struct TrayMenu {
 
 struct BuiltMenu {
     menu: Menu<Wry>,
-    pin: MenuItem<Wry>,
     #[cfg(debug_assertions)]
     random_usage: CheckMenuItem<Wry>,
     #[cfg(debug_assertions)]
     burn_checks: CheckMenuItem<Wry>,
 }
 
-/// The label the pin item carries for a given state — it names the action, not
-/// the condition, so a pinned window offers "Unpin Window".
-fn pin_label(pinned: bool) -> &'static str {
-    if pinned { UNPIN_LABEL } else { PIN_LABEL }
-}
-
 /// Builds the menu-bar item and wires up its click and menu handling.
 pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
     let menu = build_menu(app)?;
     app.manage(TrayMenu {
-        pin: menu.pin,
         #[cfg(debug_assertions)]
         random_usage: menu.random_usage,
         #[cfg(debug_assertions)]
@@ -180,9 +155,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
         .icon_as_template(true)
         .tooltip("antiburn")
         .menu(&menu.menu)
-        // The menu belongs to the secondary button; the primary button is the
-        // popover toggle. Linux ignores this option, because the AppIndicator
-        // menu opens on every click.
+        // The primary button opens the main window. Linux opens the menu on every click.
         .show_menu_on_left_click(false)
         .on_tray_icon_event(on_tray_event)
         .on_menu_event(on_menu_event)
@@ -532,22 +505,8 @@ fn visible_windows(provider: &crate::dto::LiveProviderUsage) -> Vec<&crate::dto:
         .collect()
 }
 
-/// Returns the menu and a handle to the one item that changes after the build.
-///
-/// The pin sits above Settings: it acts on the window the reader just had in
-/// front of them, where the other two act on the application.
-///
-/// On Linux the menu is the only route into the popover, so Open goes first as
-/// the default action. It needs no separator of its own, because it acts on the
-/// same window the pin does.
+/// Build the application menu and its debug controls.
 fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
-    let pin_item = MenuItem::with_id(
-        app,
-        MENU_PIN,
-        pin_label(popover::is_pinned(app)),
-        true,
-        None::<&str>,
-    )?;
     let settings_item = MenuItem::with_id(app, MENU_SETTINGS, "Settings…", true, None::<&str>)?;
     #[cfg(debug_assertions)]
     let reset_onboarding_item = MenuItem::with_id(
@@ -578,20 +537,8 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit antiburn", true, None::<&str>)?;
     let main_item = MenuItem::with_id(app, MENU_MAIN, OPEN_LABEL, true, None::<&str>)?;
-    #[cfg(target_os = "linux")]
-    let open_popover_item = MenuItem::with_id(
-        app,
-        MENU_OPEN_POPOVER,
-        OPEN_POPOVER_LABEL,
-        true,
-        None::<&str>,
-    )?;
-
     let items: Vec<&dyn IsMenuItem<Wry>> = vec![
         &main_item,
-        #[cfg(target_os = "linux")]
-        &open_popover_item,
-        &pin_item,
         &settings_item,
         #[cfg(debug_assertions)]
         &reset_onboarding_item,
@@ -605,7 +552,6 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let menu = Menu::with_items(app, &items)?;
     Ok(BuiltMenu {
         menu,
-        pin: pin_item,
         #[cfg(debug_assertions)]
         random_usage: random_usage_item,
         #[cfg(debug_assertions)]
@@ -613,52 +559,35 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     })
 }
 
+fn opens_main_window(event: &TrayIconEvent) -> bool {
+    matches!(
+        event,
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        }
+    )
+}
+
 fn on_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
-    // Act on release, not press: pressing and dragging away should not toggle.
-    if let TrayIconEvent::Click {
-        button: MouseButton::Left,
-        button_state: MouseButtonState::Up,
-        rect,
-        ..
-    } = event
-    {
-        // The tray click acknowledges the nudge, even when it closes the popover.
+    if opens_main_window(&event) {
         nudges::dismiss(tray.app_handle());
-        popover::toggle(tray.app_handle(), rect);
+        open_main_window(tray.app_handle());
+    }
+}
+
+pub(crate) fn open_main_window(app: &AppHandle) {
+    if let Err(error) =
+        crate::open_launch_surface(app, crate::main_window::OpenTrigger::Interaction)
+    {
+        ::tracing::error!(event = "main_window_open_failed", trigger = "tray", error = %error);
     }
 }
 
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
-        MENU_MAIN => {
-            if let Err(error) =
-                crate::open_launch_surface(app, crate::main_window::OpenTrigger::Interaction)
-            {
-                ::tracing::error!(event = "main_window_open_failed", trigger = "tray", error = %error);
-            }
-        }
-        #[cfg(target_os = "linux")]
-        MENU_OPEN_POPOVER => popover::open_from_tray_menu(app),
-        MENU_PIN => {
-            // The item names the action, so choosing it always means "do the
-            // other thing"; the popover is re-shown by `set_pinned`, because
-            // opening this menu is what dismissed it.
-            popover::set_pinned(app, !popover::is_pinned(app));
-            // Read the state back rather than trusting what was asked for, so
-            // the label can never claim a pin that did not take.
-            let pinned = popover::is_pinned(app);
-            if let Some(menu) = app.try_state::<TrayMenu>()
-                && let Err(error) = menu.pin.set_text(pin_label(pinned))
-            {
-                // The pin itself took effect; only the label is stale, and the
-                // next state change relabels it.
-                ::tracing::warn!(
-                    event = "tray_pin_relabel_failed",
-                    pinned,
-                    error = %error
-                );
-            }
-        }
+        MENU_MAIN => open_main_window(app),
         MENU_SETTINGS => {
             // No pane in particular: the tray's Settings item is a general
             // entry point, so it leaves the window wherever it was last.
@@ -744,13 +673,35 @@ mod tests {
         LiveUsageSupport, LiveUsageWindow,
     };
 
-    /// A pinned window offers the way out, not a restatement of where it is.
-    /// This is the whole contract of the item, so it is worth a test that does
-    /// not need a menu to run.
     #[test]
-    fn the_pin_item_always_names_the_action_it_would_take() {
-        assert_eq!(pin_label(false), "Pin Window");
-        assert_eq!(pin_label(true), "Unpin Window");
+    fn only_primary_button_release_opens_main() {
+        for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+            for button_state in [MouseButtonState::Down, MouseButtonState::Up] {
+                let event = TrayIconEvent::Click {
+                    id: TRAY_ID.into(),
+                    position: tauri::PhysicalPosition::new(0.0, 0.0),
+                    rect: tauri::Rect {
+                        position: tauri::PhysicalPosition::new(0, 0).into(),
+                        size: tauri::PhysicalSize::new(20, 20).into(),
+                    },
+                    button,
+                    button_state,
+                };
+                assert_eq!(
+                    opens_main_window(&event),
+                    button == MouseButton::Left && button_state == MouseButtonState::Up,
+                );
+            }
+        }
+        let hover = TrayIconEvent::Enter {
+            id: TRAY_ID.into(),
+            position: tauri::PhysicalPosition::new(0.0, 0.0),
+            rect: tauri::Rect {
+                position: tauri::PhysicalPosition::new(0, 0).into(),
+                size: tauri::PhysicalSize::new(20, 20).into(),
+            },
+        };
+        assert!(!opens_main_window(&hover));
     }
 
     #[test]

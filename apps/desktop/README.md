@@ -149,49 +149,24 @@ Settings teardown, and the memory rules behind those policies.
   default section. Sessions shows the session list and selected detail. The sidebar Settings action and
   Command+, (Control+, on Windows and Linux) open the existing Settings window; see the
   [main-window validation runbook](../../docs/runbooks/main-window.md).
-- **Tray item.** Primary click toggles the popover. Secondary click opens a
-  menu with Open antiburn, Pin Window, Settings, and Quit. Native application
-  menus also provide Quit. Explicit Quit stops the
-  application; closing the main window does not. On macOS the
-  item stays highlighted for as long as the popover is open: the system's own
-  highlight is momentary and lets go on mouse-up, so the shell drives it, and
-  clears it again on every path that puts the popover away.
+- **Tray item.** Primary click opens or focuses the main window. Secondary click
+  opens a menu with Open antiburn, Settings, and Quit. Linux uses Open antiburn
+  from this menu because AppIndicator does not report primary click events.
+  Explicit Quit stops the application; closing the main window does not.
   The dot mark also shows the lowest remaining displayable provider allowance:
   bright dots remain and depleted dots stay dim. It starts full on launch,
   then moves to the cached reading without opening a provider connection.
   Unknown or disabled live usage keeps the ordinary full mark.
-- **Popover.** 380pt wide, frameless, always on top, hidden from the taskbar.
-  It is created on demand and anchored under its menu-bar item on each
-  open, flipping above the item and clamping to the display when there is no
-  room below. On macOS it follows the reader to every Space, including a
-  full-screen Space. Hover previews use a passive companion panel with the same
-  Space behavior. Their native `NSPanel` and `WKWebView` are created directly,
-  without Wry or window-class conversion. Preview creation and presentation
-  preserve the active application and keyboard recipient. The popover hides
-  when it loses focus, when Escape is pressed, on a second click of the menu-bar
-  item, and — on macOS —
-  on a click anywhere outside the app, which catches the Finder desktop:
-  clicking it makes no window key, so no focus change is reported at all.
-- **Pin.** The tray menu's first item suspends all four of those dismissals,
-  and reads Unpin Window while it does. The state is in memory only: a pin
-  means "keep this on screen while I work", and a relaunch ends that work.
-  Pinning also re-shows the popover, because opening the tray menu is what
-  took focus away from it in the first place.
 - **First run.** A 680×480 decorated window of its own, opened at launch while
   onboarding is unfinished — a fresh install should not have to discover the
   menu-bar glyph before it is told anything. While
-  it is unfinished the tray click goes here rather than to the popover, which
-  has nothing to show yet, and antiburn is an ordinary Dock application so the
+  it is unfinished the tray click opens onboarding, and antiburn is an ordinary Dock application so the
   window can be reached again once something else takes focus. Finishing it
   puts the onboarding window away, opens the main window, and retains the Dock
   icon. The existing notification still identifies the menu-bar companion.
 - **Settings.** An ordinary decorated window, created on demand and destroyed
   on close. A source list on the left, one pane on the right; every control
   writes through immediately, so there is no Save button and no dirty state.
-- **Popover lifetime.** Finishing onboarding starts one hidden renderer before
-  the onboarding window retires. After it becomes ready, the handoff renderer
-  stays warm for up to 60 seconds. The first reveal consumes that lease; later
-  dismissals use the normal 15-second grace period before renderer destruction.
 - **Local store.** One SQLite database under the app data directory
   (`ai.antiburn.desktop`, or `ai.antiburn.desktop.debug` for a development
   build — see above) holds preferences, scan roots, and the local session data

@@ -37,30 +37,6 @@ pub enum RetainedOpenAction {
     AttendTerminal,
 }
 
-/// The action for a request that toggles a window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ToggleAction {
-    /// Build the first renderer for this window.
-    StartLoading { generation: u64 },
-    /// Keep waiting and reveal the window when the renderer becomes ready.
-    AwaitReady,
-    /// Cancel the reveal that was waiting for renderer readiness.
-    CancelPendingReveal,
-    /// Use the current native visibility to show or hide the ready window.
-    UseWindowVisibility,
-    /// Replace the stale renderer once for this load cycle.
-    Rebuild { generation: u64 },
-}
-
-/// The action for a request that warms a hidden window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PrewarmAction {
-    /// Build the first renderer without a pending reveal.
-    StartLoading { generation: u64 },
-    /// Keep the renderer or load that already exists.
-    KeepExisting,
-}
-
 /// The action to take after the renderer reports readiness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadyAction {
@@ -130,17 +106,6 @@ pub struct WindowReadiness {
 }
 
 impl WindowReadiness {
-    /// Request a hidden renderer without changing an existing reveal request.
-    pub fn request_prewarm(&mut self, now: Instant) -> PrewarmAction {
-        match &self.phase {
-            Phase::Idle => {
-                let generation = self.replace_loading(now, false, false);
-                PrewarmAction::StartLoading { generation }
-            }
-            Phase::Loading(_) | Phase::Ready(_) | Phase::Terminal(_) => PrewarmAction::KeepExisting,
-        }
-    }
-
     /// Request a visible window without duplicating an active renderer load.
     pub fn request_open(&mut self, now: Instant) -> OpenAction {
         match &mut self.phase {
@@ -198,31 +163,6 @@ impl WindowReadiness {
                 }
             }
             Phase::Terminal(_) => RetainedOpenAction::AttendTerminal,
-        }
-    }
-
-    /// Request a toggle without showing a renderer that still loads.
-    pub fn toggle_open(&mut self, now: Instant) -> ToggleAction {
-        match &mut self.phase {
-            Phase::Idle => {
-                let generation = self.replace_loading(now, true, false);
-                ToggleAction::StartLoading { generation }
-            }
-            Phase::Ready(_) => ToggleAction::UseWindowVisibility,
-            Phase::Terminal(_) => ToggleAction::AwaitReady,
-            Phase::Loading(load) if load.reveal_pending => {
-                load.reveal_pending = false;
-                ToggleAction::CancelPendingReveal
-            }
-            Phase::Loading(load) => {
-                load.reveal_pending = true;
-                if load_is_stale(load, now) && !load.rebuild_used {
-                    let generation = self.replace_loading(now, true, true);
-                    ToggleAction::Rebuild { generation }
-                } else {
-                    ToggleAction::AwaitReady
-                }
-            }
         }
     }
 
@@ -569,33 +509,13 @@ mod tests {
     }
 
     fn ready_hidden(readiness: &mut WindowReadiness, now: Instant) -> u64 {
-        let PrewarmAction::StartLoading { generation } = readiness.request_prewarm(now) else {
-            panic!("an idle lifecycle must start prewarming")
-        };
+        let generation = start_loading(readiness, now);
+        readiness.cancel_pending_reveal();
         assert!(matches!(
             readiness.renderer_ready(generation, now),
             ReadyAction::StayHidden { .. }
         ));
         generation
-    }
-
-    #[test]
-    fn existing_open_and_prewarm_behavior_remains_available() {
-        let started_at = Instant::now();
-        let mut readiness = WindowReadiness::default();
-        let generation = start_loading(&mut readiness, started_at);
-        assert_eq!(readiness.request_open(started_at), OpenAction::AwaitReady);
-        assert_eq!(
-            readiness.renderer_ready(generation, started_at + Duration::from_secs(1)),
-            ReadyAction::Reveal {
-                loading_for: Duration::from_secs(1)
-            }
-        );
-        assert_eq!(readiness.request_open(started_at), OpenAction::Reveal);
-        assert_eq!(
-            readiness.request_prewarm(started_at),
-            PrewarmAction::KeepExisting
-        );
     }
 
     #[test]

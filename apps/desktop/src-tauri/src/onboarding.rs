@@ -1,28 +1,7 @@
 //! The standalone first-run window.
 //!
-//! Onboarding used to be a surface of the popover, sized at 380×520. Two things
-//! were wrong with that and both are why this module exists.
-//!
-//! The popover is created hidden and shown only by a click on the menu-bar
-//! item, so a fresh install booted into the menu bar and waited — silently —
-//! for the reader to find a 16pt template glyph. The flow whose job is to
-//! establish trust sat behind the discovery problem it should have been
-//! solving. This window opens itself at launch instead (see
-//! [`crate::run`]'s setup).
-//!
-//! And 380pt is the wrong room for the work. The Repositories step stacks a
-//! folder-permission notice — whose three buttons wrap to two rows at that
-//! width — above a list of ~60pt repository rows, which left two or three of
-//! them visible at the one moment the reader is deciding what antiburn may
-//! read. 680×480 gives the same step about 130pt of list under a notice that no
-//! longer wraps, and every other step more room than it had.
-//!
-//! The first-run flow uses a window instead of a bounded-height popover surface.
-//!
-//! Chrome follows [`crate::settings`] rather than inventing a second pattern:
-//! fixed size, non-resizable, and on macOS an overlay title bar with the
-//! floating title hidden, so the frontend paints its own
-//! `data-tauri-drag-region` strip (`src/views/onboarding/OnboardingFlow.tsx`).
+//! First launch opens this window until setup is complete.
+//! Menu-bar clicks restore unfinished setup. Completing setup opens the main window.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -53,14 +32,12 @@ const FINISH_TEARDOWN_DELAY: Duration = Duration::from_secs(1);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FinishHandoffAction {
     OpenMain,
-    PrewarmPopover,
     DestroyOnboarding,
 }
 
-fn finish_handoff_schedule() -> [(Duration, FinishHandoffAction); 3] {
+fn finish_handoff_schedule() -> [(Duration, FinishHandoffAction); 2] {
     [
         (Duration::ZERO, FinishHandoffAction::OpenMain),
-        (Duration::ZERO, FinishHandoffAction::PrewarmPopover),
         (
             FINISH_TEARDOWN_DELAY,
             FinishHandoffAction::DestroyOnboarding,
@@ -124,7 +101,7 @@ pub fn restart(app: &AppHandle) -> tauri::Result<()> {
 ///
 /// Called twice over a first run's life: once from setup, and again if the
 /// reader closes the window before finishing and then clicks the menu-bar item
-/// ([`crate::popover::toggle`]). The second path is why this reuses an existing
+/// ([`crate::open_launch_surface`]). The second path is why this reuses an existing
 /// window rather than assuming it is the only caller — a close hides rather
 /// than destroys (see `crate::on_window_event`), so the flow comes back with
 /// the steps the reader already walked still behind it.
@@ -297,9 +274,6 @@ pub fn finish(app: &AppHandle) {
                             );
                         }
                     }
-                    FinishHandoffAction::PrewarmPopover => {
-                        crate::popover::prewarm(&check_app);
-                    }
                     FinishHandoffAction::DestroyOnboarding => {
                         if let Some(window) = check_app.get_webview_window(LABEL) {
                             let _ = window.destroy();
@@ -315,8 +289,7 @@ pub fn finish(app: &AppHandle) {
 ///
 /// An unreadable store answers `false`: the flow's whole job is the *first*
 /// run, and re-running it because a read failed would be worse than skipping
-/// it. Every caller has a working fallback for that answer — the popover opens
-/// normally, and setup simply shows no window.
+/// it. The normal launch path opens the main window when setup is complete.
 pub fn is_pending(app: &AppHandle) -> bool {
     app.try_state::<crate::store::Store>()
         .and_then(|store| store.settings().ok())
@@ -338,12 +311,11 @@ mod tests {
     }
 
     #[test]
-    fn the_finish_handoff_schedules_main_and_prewarm_before_teardown() {
+    fn the_finish_handoff_opens_only_main_before_teardown() {
         assert_eq!(
             finish_handoff_schedule(),
             [
                 (Duration::ZERO, FinishHandoffAction::OpenMain),
-                (Duration::ZERO, FinishHandoffAction::PrewarmPopover),
                 (
                     FINISH_TEARDOWN_DELAY,
                     FinishHandoffAction::DestroyOnboarding

@@ -122,37 +122,6 @@ impl PopoverTiming {
         }
     }
 
-    pub(super) fn begin_open(
-        &self,
-        generation: u64,
-        requested_at: Instant,
-        prewarmed: bool,
-        renderer_state: &'static str,
-    ) {
-        let milestones = self
-            .milestones
-            .lock()
-            .map(|milestones| *milestones)
-            .unwrap_or_default();
-        if let Ok(mut open) = self.open.lock() {
-            *open = Some(OpenTiming::new(
-                generation,
-                requested_at,
-                prewarmed,
-                renderer_state,
-                milestones,
-            ));
-        }
-        ::tracing::info!(
-            event = "popover_open_timing",
-            phase = "requested",
-            generation,
-            prewarmed,
-            renderer_state,
-            elapsed_ms = 0_u64
-        );
-    }
-
     pub(super) fn cancel_open(&self) {
         if let Ok(mut open) = self.open.lock() {
             *open = None;
@@ -387,20 +356,5 @@ mod tests {
             timing.mark_revealed(7, requested_at + Duration::from_millis(70)),
             None
         );
-    }
-
-    #[test]
-    fn an_expired_replacement_keeps_the_original_click_boundary() {
-        let requested_at = Instant::now();
-        let timing = PopoverTiming::default();
-        timing.begin_open(7, requested_at, true, "loading");
-
-        assert!(timing.replace_open_generation(7, 8));
-        let open = timing.open.lock().expect("the timing lock stays available");
-        let open = open.as_ref().expect("the click remains active");
-        assert_eq!(open.generation, 8);
-        assert_eq!(open.requested_at, requested_at);
-        assert!(!open.prewarmed);
-        assert_eq!(open.renderer_state, "expired_replacement");
     }
 }
